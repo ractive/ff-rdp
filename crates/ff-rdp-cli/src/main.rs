@@ -1,26 +1,19 @@
 use clap::Parser;
 
 mod cli;
+mod commands;
 mod dispatch;
 mod error;
-#[allow(dead_code)] // Skeleton — will be called once commands are implemented
 mod output;
-#[allow(dead_code)]
 mod output_pipeline;
+mod tab_target;
 
 use cli::Cli;
 use error::AppError;
 
 fn main() {
     let cli = Cli::parse();
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("failed to build tokio runtime");
-
-    let result = rt.block_on(dispatch::dispatch(&cli));
-
+    let result = dispatch::dispatch(&cli);
     match result {
         Ok(()) => {}
         Err(AppError::User(msg)) => {

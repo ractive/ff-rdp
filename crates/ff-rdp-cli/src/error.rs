@@ -1,12 +1,13 @@
 use std::fmt;
 
-#[allow(dead_code)] // Variants will be used as commands are implemented
+#[derive(Debug)]
 pub enum AppError {
     /// User-facing error (wrong arguments, tab not found, etc.)
     User(String),
     /// Internal/unexpected error
     Internal(anyhow::Error),
-    /// Exit with specific code
+    /// Exit with specific code (reserved for commands that need a precise exit code)
+    #[allow(dead_code)]
     Exit(i32),
 }
 

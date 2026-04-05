@@ -1,15 +1,10 @@
 use crate::cli::args::{Cli, Command};
+use crate::commands;
 use crate::error::AppError;
-use crate::output_pipeline::OutputPipeline;
 
-#[allow(clippy::unused_async)] // Will be async once commands are implemented
-pub async fn dispatch(cli: &Cli) -> Result<(), AppError> {
-    let _pipeline = OutputPipeline::new(cli.jq.clone());
-
+pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
     match &cli.command {
-        Command::Tabs => Err(AppError::User(
-            "tabs: not yet implemented (iteration 2)".into(),
-        )),
+        Command::Tabs => commands::tabs::run(cli),
         Command::Navigate { url: _ } => Err(AppError::User(
             "navigate: not yet implemented (iteration 2)".into(),
         )),

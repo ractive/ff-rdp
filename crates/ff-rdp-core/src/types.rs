@@ -1,9 +1,11 @@
 use std::fmt;
 
+use serde::Serialize;
 use serde_json::Value;
 
 /// A newtype wrapping a Firefox RDP actor ID string.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
 pub struct ActorId(String);
 
 impl fmt::Display for ActorId {
