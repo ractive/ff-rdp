@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/ff-rdp-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/ractive/ff-rdp"
+
+[workspace.dependencies]
+# Internal crates
+ff-rdp-core = { path = "crates/ff-rdp-core", version = "0.1.0" }
+
+# External dependencies
+anyhow = "1"
+clap = { version = "4.6", features = ["derive"] }
+jaq-core = "3.0.0"
+jaq-json = { version = "2.0.0", features = ["serde"] }
+jaq-std = "3.0.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["net", "io-util", "time", "rt", "macros"] }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+doc_markdown = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+too_many_lines = "allow"
+module_name_repetitions = "allow"
+struct_excessive_bools = "allow"
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"
+strip = true

@@ -1,0 +1,25 @@
+[package]
+name = "ff-rdp-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI for Firefox Remote Debugging Protocol"
+
+[[bin]]
+name = "ff-rdp"
+path = "src/main.rs"
+
+[dependencies]
+ff-rdp-core = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+jaq-core = { workspace = true }
+jaq-json = { workspace = true }
+jaq-std = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true
