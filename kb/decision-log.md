@@ -34,9 +34,9 @@ status: active
 
 ## DEC-004: Tab targeting by index, URL pattern, or actor ID
 
-**Decision**: `--tab <value>` accepts an integer (index), a string (URL substring match), or `--tab-id <actor>` for precise targeting. Default is the active/selected tab.
+**Decision**: `--tab <value>` accepts an integer (1-based index), a string (URL substring match), or `--tab-id <actor>` for precise targeting. Default is the active/selected tab.
 
-**Why**: Inspired by cmux's `--surface <id|ref|index>` pattern. Index is fastest for interactive use, URL pattern is most intuitive, actor ID is for precise scripting. Active tab default means zero flags for the common case.
+**Why**: Inspired by cmux's `--surface <id|ref|index>` pattern. Index is fastest for interactive use, URL pattern is most intuitive, actor ID is for precise scripting. Active tab default means zero flags for the common case. 1-based indexing chosen because it's more natural for humans (`--tab 1` = first tab) and matches the convention in iteration plan examples.
 
 ## DEC-005: Crate split — ff-rdp-core + ff-rdp-cli
 
