@@ -45,7 +45,7 @@ fn compile_jq_filter(filter_code: &str) -> anyhow::Result<jaq_core::compile::Fil
     let modules = loader.load(&arena, program).map_err(|errs| {
         let msg = errs
             .iter()
-            .map(|e| format!("{e:?}"))
+            .map(|(_file, e)| format!("{e:?}"))
             .collect::<Vec<_>>()
             .join("; ");
         anyhow::anyhow!("jq parse error: {msg}")
@@ -61,7 +61,7 @@ fn compile_jq_filter(filter_code: &str) -> anyhow::Result<jaq_core::compile::Fil
         .map_err(|errs| {
             let msg = errs
                 .iter()
-                .map(|e| format!("{e:?}"))
+                .map(|(_file, e)| format!("{e:?}"))
                 .collect::<Vec<_>>()
                 .join("; ");
             anyhow::anyhow!("jq compile error: {msg}")
@@ -81,7 +81,7 @@ fn execute_jq_filter(
     let mut results = Vec::new();
     for result in filter.id.run((ctx, input)).map(jaq_core::unwrap_valr) {
         let val = result.map_err(|e| anyhow::anyhow!("jq runtime error: {e:?}"))?;
-        let json = val_to_value(&val);
+        let json = val_to_value(&val)?;
         results.push(json);
     }
 
@@ -92,9 +92,10 @@ fn execute_jq_filter(
 ///
 /// `Val` does not implement `Serialize`, but it does implement `Display`
 /// which outputs JSON. We format to string and re-parse.
-fn val_to_value(val: &Val) -> Value {
+fn val_to_value(val: &Val) -> anyhow::Result<Value> {
     let json_str = val.to_string();
-    serde_json::from_str(&json_str).unwrap_or(Value::String(json_str))
+    serde_json::from_str(&json_str)
+        .map_err(|e| anyhow::anyhow!("jq output is not valid JSON: {e}: {json_str}"))
 }
 
 #[cfg(test)]

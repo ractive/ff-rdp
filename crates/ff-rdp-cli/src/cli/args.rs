@@ -11,7 +11,7 @@ pub struct Cli {
     #[arg(long, default_value_t = 6000, global = true)]
     pub port: u16,
 
-    /// Target tab by index (0-based) or URL substring
+    /// Target tab by index (1-based) or URL substring
     #[arg(long, global = true)]
     pub tab: Option<String>,
 

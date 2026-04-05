@@ -134,7 +134,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Update Homebrew formula
-        uses: dawidd6/action-homebrew-bump-formula@v4
+        uses: dawidd6/action-homebrew-bump-formula@8d494330bce4434918392df134ad3db1167904db # v4
         with:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           tap: ractive/homebrew-tap

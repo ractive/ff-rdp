@@ -86,43 +86,35 @@ impl Grip {
                 "NaN" => return Self::NaN,
                 "-0" => return Self::NegZero,
                 "longString" => {
-                    let actor = obj
-                        .get("actor")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .into();
-                    let length = obj
-                        .get("length")
-                        .and_then(Value::as_u64)
-                        .unwrap_or_default();
-                    let initial = obj
-                        .get("initial")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned();
-                    return Self::LongString {
-                        actor,
-                        length,
-                        initial,
-                    };
+                    if let Some(actor) = obj.get("actor").and_then(Value::as_str) {
+                        let length = obj
+                            .get("length")
+                            .and_then(Value::as_u64)
+                            .unwrap_or_default();
+                        let initial = obj
+                            .get("initial")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned();
+                        return Self::LongString {
+                            actor: actor.into(),
+                            length,
+                            initial,
+                        };
+                    }
                 }
                 "object" => {
-                    let actor = obj
-                        .get("actor")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .into();
-                    let class = obj
-                        .get("class")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned();
-                    let preview = obj.get("preview").cloned();
-                    return Self::Object {
-                        actor,
-                        class,
-                        preview,
-                    };
+                    if let (Some(actor), Some(class)) = (
+                        obj.get("actor").and_then(Value::as_str),
+                        obj.get("class").and_then(Value::as_str),
+                    ) {
+                        let preview = obj.get("preview").cloned();
+                        return Self::Object {
+                            actor: actor.into(),
+                            class: class.to_owned(),
+                            preview,
+                        };
+                    }
                 }
                 _ => {}
             }
@@ -257,6 +249,27 @@ mod tests {
     fn grip_unknown_type_falls_through_to_value() {
         // An object with an unrecognised "type" field is treated as a plain Value.
         let v = json!({"type": "future_type", "data": 1});
+        assert_eq!(Grip::from_result_value(&v), Grip::Value(v));
+    }
+
+    #[test]
+    fn grip_long_string_missing_actor_falls_through_to_value() {
+        // longString without required "actor" falls through to Value.
+        let v = json!({"type": "longString", "length": 100, "initial": "hi"});
+        assert_eq!(Grip::from_result_value(&v), Grip::Value(v));
+    }
+
+    #[test]
+    fn grip_object_missing_actor_falls_through_to_value() {
+        // object without required "actor" falls through to Value.
+        let v = json!({"type": "object", "class": "Array"});
+        assert_eq!(Grip::from_result_value(&v), Grip::Value(v));
+    }
+
+    #[test]
+    fn grip_object_missing_class_falls_through_to_value() {
+        // object without required "class" falls through to Value.
+        let v = json!({"type": "object", "actor": "server1.conn0.child1/obj1"});
         assert_eq!(Grip::from_result_value(&v), Grip::Value(v));
     }
 }

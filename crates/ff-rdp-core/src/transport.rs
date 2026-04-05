@@ -35,8 +35,10 @@ impl RdpTransport {
         let (reader, writer) = stream.into_split();
         let mut transport = Self { reader, writer };
 
-        // Discard the Firefox greeting packet.
-        transport.recv().await?;
+        // Discard the Firefox greeting packet (also subject to the timeout).
+        tokio::time::timeout(timeout, transport.recv())
+            .await
+            .map_err(|_| ProtocolError::Timeout)??;
 
         Ok(transport)
     }
@@ -103,9 +105,9 @@ pub(crate) async fn recv_from(
         }
 
         // Guard against malformed streams with no ':' separator.
-        if length_buf.len() > 20 {
+        if length_buf.len() >= 20 {
             return Err(ProtocolError::InvalidPacket(
-                "length prefix exceeds 20 digits".to_owned(),
+                "length prefix is 20+ digits".to_owned(),
             ));
         }
     }
@@ -116,8 +118,8 @@ pub(crate) async fn recv_from(
         ));
     }
 
-    let length_str =
-        std::str::from_utf8(&length_buf).expect("already verified all bytes are ASCII digits");
+    let length_str = std::str::from_utf8(&length_buf)
+        .map_err(|_| ProtocolError::InvalidPacket("non-UTF8 in length prefix".to_owned()))?;
 
     let length: usize = length_str
         .parse()
@@ -233,8 +235,8 @@ mod tests {
 
     #[tokio::test]
     async fn recv_errors_on_length_prefix_too_long() {
-        // 21 consecutive digit bytes with no colon triggers the guard.
-        let frame = "1".repeat(21);
+        // 20 consecutive digit bytes with no colon triggers the >= 20 guard.
+        let frame = "1".repeat(20);
         let mut cursor = Cursor::new(frame.into_bytes());
 
         let err = recv_from(&mut cursor).await.unwrap_err();
