@@ -8,8 +8,8 @@ use crate::tab_target::resolve_tab;
 
 /// Shared state after connecting to Firefox and resolving a tab target.
 pub struct ConnectedTab {
-    pub connection: RdpConnection,
-    pub target: TargetInfo,
+    connection: RdpConnection,
+    pub(crate) target: TargetInfo,
 }
 
 /// Connect to Firefox, resolve the target tab, and call `getTarget` on it.

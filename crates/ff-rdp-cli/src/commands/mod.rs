@@ -1,5 +1,5 @@
-pub mod connect_tab;
-pub mod eval;
-pub mod nav_action;
-pub mod navigate;
-pub mod tabs;
+pub(crate) mod connect_tab;
+pub(crate) mod eval;
+pub(crate) mod nav_action;
+pub(crate) mod navigate;
+pub(crate) mod tabs;

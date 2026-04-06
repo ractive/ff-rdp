@@ -66,7 +66,7 @@ impl Grip {
     /// - `Null` → `null`
     /// - `Undefined` → `{"type": "undefined"}`
     /// - `NaN`, `Inf`, `NegInf`, `NegZero` → `{"type": "<name>"}`
-    /// - `LongString` → the initial string content (truncated).
+    /// - `LongString` → `{"type": "longString", "value": "<initial>", "length": <n>}`
     /// - `Object` → `{"type": "object", "class": "<class>", "actor": "<id>"}`,
     ///   plus `"preview"` if available.
     pub fn to_json(&self) -> Value {

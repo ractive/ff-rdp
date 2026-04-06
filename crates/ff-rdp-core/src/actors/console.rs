@@ -63,6 +63,8 @@ impl WebConsoleActor {
             .to_owned();
 
         // Read messages until we find the evaluationResult with matching resultID.
+        // Safety: the underlying socket has a read timeout (set during connect), so
+        // this loop will eventually fail with a timeout error if Firefox stops responding.
         loop {
             let msg = transport.recv()?;
 
