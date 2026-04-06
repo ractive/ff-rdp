@@ -8,6 +8,11 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
 
+/// Sentinel prefix prepended to JSON.stringify results in the generated JS.
+/// Used to distinguish structured multi-element results from plain strings
+/// that happen to start with `[` or `{`.
+const JSON_SENTINEL: &str = "__FF_RDP_JSON__";
+
 #[derive(Debug, Clone, Copy)]
 pub enum OutputMode {
     OuterHtml,
@@ -47,20 +52,30 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> 
         .map_err(AppError::from)
 }
 
-fn build_js(selector: &str, mode: OutputMode) -> String {
-    // Escape the selector for embedding in a JS string literal.
-    let escaped = selector.replace('\\', "\\\\").replace('\'', "\\'");
+/// Escape a CSS selector for safe embedding in a JS string literal.
+///
+/// Uses `serde_json::to_string` which handles all JS-problematic characters
+/// (backslashes, quotes, newlines, U+2028, U+2029, etc.) then strips the
+/// outer double-quotes since we embed into a single-quoted JS literal.
+fn escape_selector(selector: &str) -> String {
+    let json_str = serde_json::to_string(selector).unwrap_or_default();
+    // serde_json wraps in double quotes: "value" — strip them
+    json_str[1..json_str.len() - 1].to_owned()
+}
 
-    // For multi-element results we JSON.stringify the array so Firefox returns
-    // a plain string (or longString) rather than an object grip.  Single-element
-    // results are returned as-is so short values stay as plain JSON strings.
+fn build_js(selector: &str, mode: OutputMode) -> String {
+    let escaped = escape_selector(selector);
+
+    // Multi-element results and attrs are JSON.stringify'd with a sentinel
+    // prefix so resolve_result can distinguish them from plain text that
+    // happens to look like JSON.
     match mode {
         OutputMode::OuterHtml => format!(
             r"(function() {{
   var els = document.querySelectorAll('{escaped}');
   if (els.length === 0) return null;
   if (els.length === 1) return els[0].outerHTML;
-  return JSON.stringify(Array.from(els, function(e) {{ return e.outerHTML; }}));
+  return '{JSON_SENTINEL}' + JSON.stringify(Array.from(els, function(e) {{ return e.outerHTML; }}));
 }})()"
         ),
         OutputMode::InnerHtml => format!(
@@ -68,7 +83,7 @@ fn build_js(selector: &str, mode: OutputMode) -> String {
   var els = document.querySelectorAll('{escaped}');
   if (els.length === 0) return null;
   if (els.length === 1) return els[0].innerHTML;
-  return JSON.stringify(Array.from(els, function(e) {{ return e.innerHTML; }}));
+  return '{JSON_SENTINEL}' + JSON.stringify(Array.from(els, function(e) {{ return e.innerHTML; }}));
 }})()"
         ),
         OutputMode::Text => format!(
@@ -76,7 +91,7 @@ fn build_js(selector: &str, mode: OutputMode) -> String {
   var els = document.querySelectorAll('{escaped}');
   if (els.length === 0) return null;
   if (els.length === 1) return els[0].textContent;
-  return JSON.stringify(Array.from(els, function(e) {{ return e.textContent; }}));
+  return '{JSON_SENTINEL}' + JSON.stringify(Array.from(els, function(e) {{ return e.textContent; }}));
 }})()"
         ),
         OutputMode::Attrs => format!(
@@ -90,8 +105,8 @@ fn build_js(selector: &str, mode: OutputMode) -> String {
   }}
   var els = document.querySelectorAll('{escaped}');
   if (els.length === 0) return null;
-  if (els.length === 1) return JSON.stringify(attrs(els[0]));
-  return JSON.stringify(Array.from(els, attrs));
+  if (els.length === 1) return '{JSON_SENTINEL}' + JSON.stringify(attrs(els[0]));
+  return '{JSON_SENTINEL}' + JSON.stringify(Array.from(els, attrs));
 }})()"
         ),
     }
@@ -99,9 +114,9 @@ fn build_js(selector: &str, mode: OutputMode) -> String {
 
 /// Resolve the eval result to a JSON value, fetching LongStrings.
 ///
-/// The JS we emit uses `JSON.stringify` for multi-element results and for attrs,
-/// so the raw result is a JSON-encoded string.  We detect this and parse it back
-/// into structured JSON.
+/// Multi-element results and attrs are prefixed with [`JSON_SENTINEL`] to
+/// distinguish them from plain text.  Only strings with that sentinel are
+/// parsed back into structured JSON.
 fn resolve_result(ctx: &mut ConnectedTab, grip: &Grip) -> Result<Value, AppError> {
     let raw = match grip {
         Grip::Value(v) => v.clone(),
@@ -118,13 +133,12 @@ fn resolve_result(ctx: &mut ConnectedTab, grip: &Grip) -> Result<Value, AppError
         other => other.to_json(),
     };
 
-    // If the value is a string that looks like JSON array/object, parse it.
-    // This handles the JSON.stringify'd multi-element results.
+    // Strip the sentinel and parse the JSON payload.
     if let Some(s) = raw.as_str()
-        && (s.starts_with('[') || s.starts_with('{'))
-        && let Ok(parsed) = serde_json::from_str::<Value>(s)
+        && let Some(json_str) = s.strip_prefix(JSON_SENTINEL)
     {
-        return Ok(parsed);
+        return serde_json::from_str::<Value>(json_str)
+            .map_err(|e| AppError::from(anyhow::anyhow!("failed to parse DOM result JSON: {e}")));
     }
     Ok(raw)
 }
@@ -161,6 +175,23 @@ mod tests {
     #[test]
     fn build_js_escapes_selector() {
         let js = build_js("div[data-name='test']", OutputMode::Text);
-        assert!(js.contains(r"div[data-name=\'test\']"));
+        // serde_json escapes single quotes by leaving them as-is (they're
+        // valid in JSON strings) but escapes backslashes and control chars.
+        assert!(js.contains("div[data-name='test']"));
+    }
+
+    #[test]
+    fn escape_selector_handles_special_chars() {
+        // Newlines and backslashes should be escaped
+        assert_eq!(escape_selector("a\nb"), r"a\nb");
+        assert_eq!(escape_selector(r"a\b"), r"a\\b");
+        // Double quotes are escaped (embedded in single-quoted JS literal)
+        assert_eq!(escape_selector(r#"a"b"#), r#"a\"b"#);
+    }
+
+    #[test]
+    fn build_js_multi_uses_sentinel() {
+        let js = build_js("li", OutputMode::Text);
+        assert!(js.contains(JSON_SENTINEL));
     }
 }
