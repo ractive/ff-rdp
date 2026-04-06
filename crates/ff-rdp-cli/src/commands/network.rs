@@ -31,20 +31,26 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
     let mut all_resources = Vec::new();
     let mut all_updates = Vec::new();
 
-    while let Ok(msg) = ctx.transport_mut().recv() {
-        let msg_type = msg
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
+    loop {
+        match ctx.transport_mut().recv() {
+            Ok(msg) => {
+                let msg_type = msg
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
 
-        match msg_type {
-            "resources-available-array" => {
-                all_resources.extend(parse_network_resources(&msg));
+                match msg_type {
+                    "resources-available-array" => {
+                        all_resources.extend(parse_network_resources(&msg));
+                    }
+                    "resources-updated-array" => {
+                        all_updates.extend(parse_network_resource_updates(&msg));
+                    }
+                    _ => {}
+                }
             }
-            "resources-updated-array" => {
-                all_updates.extend(parse_network_resource_updates(&msg));
-            }
-            _ => {}
+            Err(ff_rdp_core::ProtocolError::Timeout) => break,
+            Err(e) => return Err(AppError::from(e)),
         }
     }
 
@@ -52,9 +58,7 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
     // Take the latest update for each resource_id (updates come in order).
     let mut update_map: HashMap<u64, ff_rdp_core::NetworkResourceUpdate> = HashMap::new();
     for update in all_updates {
-        let entry = update_map
-            .entry(update.resource_id)
-            .or_insert_with(|| update.clone());
+        let entry = update_map.entry(update.resource_id).or_default();
         // Merge: later updates fill in fields that earlier updates may not have.
         if update.status.is_some() {
             entry.status = update.status;
@@ -107,7 +111,8 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
                 "method": res.method,
                 "url": res.url,
                 "is_xhr": res.is_xhr,
-                "content_type": res.cause_type,
+                "cause_type": res.cause_type,
+                "content_type": null,
             });
             if let Some(u) = update {
                 if let Some(ref status) = u.status

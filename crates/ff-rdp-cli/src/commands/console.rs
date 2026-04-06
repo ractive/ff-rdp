@@ -40,7 +40,7 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
         .into_iter()
         .filter(|msg| {
             if let Some(l) = level
-                && msg.level != l
+                && !msg.level.eq_ignore_ascii_case(l)
             {
                 return false;
             }

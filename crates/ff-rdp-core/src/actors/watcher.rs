@@ -159,10 +159,9 @@ pub fn parse_network_resource_updates(event: &Value) -> Vec<NetworkResourceUpdat
         };
 
         for item in items {
-            let resource_id = item
-                .get("resourceId")
-                .and_then(Value::as_u64)
-                .unwrap_or_default();
+            let Some(resource_id) = item.get("resourceId").and_then(Value::as_u64) else {
+                continue;
+            };
 
             let Some(ru) = item.get("resourceUpdates") else {
                 continue;
@@ -219,10 +218,7 @@ fn parse_single_network_resource(item: &Value) -> Option<NetworkResource> {
         .get("timeStamp")
         .and_then(Value::as_f64)
         .unwrap_or_default();
-    let resource_id = item
-        .get("resourceId")
-        .and_then(Value::as_u64)
-        .unwrap_or_default();
+    let resource_id = item.get("resourceId").and_then(Value::as_u64)?;
 
     Some(NetworkResource {
         actor: ActorId::from(actor),
@@ -297,7 +293,7 @@ mod tests {
         let event = json!({
             "array": [
                 ["console-message", [{"actor": "foo"}]],
-                ["network-event", [{"actor": "server1.conn0.netEvent1", "method": "GET", "url": "https://test.com"}]]
+                ["network-event", [{"actor": "server1.conn0.netEvent1", "method": "GET", "url": "https://test.com", "resourceId": 1}]]
             ]
         });
 
@@ -368,6 +364,38 @@ mod tests {
         assert_eq!(updates[1].resource_id, 21474836488);
         assert_eq!(updates[1].status.as_deref(), Some("404"));
         assert_eq!(updates[1].from_cache, Some(true));
+    }
+
+    #[test]
+    fn parse_network_resources_skips_missing_resource_id() {
+        // Items without a resourceId must be skipped entirely (not mapped to 0).
+        let event = json!({
+            "array": [["network-event", [
+                {"actor": "a1", "method": "GET", "url": "https://no-id.example.com"},
+                {"actor": "a2", "method": "GET", "url": "https://has-id.example.com", "resourceId": 42}
+            ]]]
+        });
+
+        let resources = parse_network_resources(&event);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].url, "https://has-id.example.com");
+        assert_eq!(resources[0].resource_id, 42);
+    }
+
+    #[test]
+    fn parse_network_resource_updates_skips_missing_resource_id() {
+        // Updates without a resourceId must be skipped (not mapped to 0).
+        let event = json!({
+            "array": [["network-event", [
+                {"resourceUpdates": {"status": "200"}},
+                {"resourceId": 99, "resourceUpdates": {"status": "404"}}
+            ]]]
+        });
+
+        let updates = parse_network_resource_updates(&event);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].resource_id, 99);
+        assert_eq!(updates[0].status.as_deref(), Some("404"));
     }
 
     #[test]
