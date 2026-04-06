@@ -31,7 +31,9 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     // Apply filters.
     let regex = pattern
         .map(|p| {
-            regex::Regex::new(p)
+            regex::RegexBuilder::new(p)
+                .size_limit(1_000_000)
+                .build()
                 .map_err(|e| AppError::User(format!("invalid --pattern regex: {e}")))
         })
         .transpose()?;
@@ -75,4 +77,27 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     OutputPipeline::new(cli.jq.clone())
         .finalize(&envelope)
         .map_err(AppError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Verify that a normal pattern compiles successfully under the size limit.
+    #[test]
+    fn accepts_reasonable_regex() {
+        let result = regex::RegexBuilder::new(r"(?i)error|warn")
+            .size_limit(1_000_000)
+            .build();
+        assert!(result.is_ok());
+    }
+
+    /// Verify that a pattern exceeding a small compiled-regex size limit is rejected.
+    #[test]
+    fn rejects_oversized_regex() {
+        let oversized = (0..100)
+            .map(|i| format!("literal_{i}"))
+            .collect::<Vec<_>>()
+            .join("|");
+        let result = regex::RegexBuilder::new(&oversized).size_limit(64).build();
+        assert!(result.is_err(), "expected oversized pattern to be rejected");
+    }
 }

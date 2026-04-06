@@ -10,8 +10,12 @@ use super::connect_tab::connect_and_get_target;
 use super::network_events::{
     build_network_entries, drain_network_events, drain_network_from_daemon, merge_updates,
 };
+use super::url_validation::validate_url;
 
 pub fn run(cli: &Cli, url: &str) -> Result<(), AppError> {
+    if !cli.allow_unsafe_urls {
+        validate_url(url)?;
+    }
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
 
@@ -40,6 +44,9 @@ pub fn run(cli: &Cli, url: &str) -> Result<(), AppError> {
 /// 7. Unwatch resources to clean up server-side state.
 /// 8. Emit combined JSON output.
 pub fn run_with_network(cli: &Cli, url: &str) -> Result<(), AppError> {
+    if !cli.allow_unsafe_urls {
+        validate_url(url)?;
+    }
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
 

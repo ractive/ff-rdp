@@ -57,10 +57,14 @@ pub(crate) fn write_registry_in(dir: &Path, info: &DaemonInfo) -> Result<()> {
 
     // Write to a .tmp file then rename for atomicity.
     let json = serde_json::to_string_pretty(info).context("serializing DaemonInfo to JSON")?;
-    let mut tmp_file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
+    let mut opts = fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut tmp_file = opts
         .open(&tmp_path)
         .with_context(|| format!("opening tmp file {}", tmp_path.display()))?;
     tmp_file
@@ -101,6 +105,27 @@ pub(crate) fn remove_registry_in(dir: &Path) -> Result<()> {
 pub fn registry_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().context("could not determine home directory")?;
     let dir = home.join(".ff-rdp");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700);
+        match builder.create(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Idempotent hardening: reset to 0o700 on every call in case
+                // permissions were widened externally.
+                let perms = std::fs::Permissions::from_mode(0o700);
+                fs::set_permissions(&dir, perms)
+                    .with_context(|| format!("setting permissions on {}", dir.display()))?;
+            }
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("creating ff-rdp directory {}", dir.display()));
+            }
+        }
+    }
+    #[cfg(not(unix))]
     fs::create_dir_all(&dir)
         .with_context(|| format!("creating ff-rdp directory {}", dir.display()))?;
     Ok(dir)
@@ -220,6 +245,21 @@ mod tests {
         let read_back = read_registry_in(dir.path()).expect("read").expect("Some");
         assert_eq!(read_back.pid, 99999);
         assert_eq!(read_back.proxy_port, 8080);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn registry_file_has_restricted_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sub = dir.path().join("sub");
+        write_registry_in(&sub, &sample_info()).expect("write");
+        let file_perms = fs::metadata(sub.join("daemon.json"))
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_perms, 0o600, "registry file should be owner-only");
     }
 
     #[test]

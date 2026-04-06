@@ -58,6 +58,7 @@ Options:
   --timeout <TIMEOUT>        Operation timeout in milliseconds [default: 5000]
   --no-daemon                Don't use or start a daemon (direct Firefox connection)
   --daemon-timeout <SECS>    Daemon idle timeout in seconds [default: 300]
+  --allow-unsafe-urls        Allow javascript: and data: URLs in navigate
 ```
 
 All output is JSON with a standard envelope (`results`, `total`, `meta`). Use `--jq` to filter:
@@ -234,6 +235,20 @@ ff-rdp --no-daemon eval "1+1"
 - If the daemon seems stuck, delete `~/.ff-rdp/daemon.json` to force a fresh start
 - Use `--no-daemon` to bypass the daemon and test direct connectivity
 - Check `~/.ff-rdp/daemon.log` for daemon-side errors
+
+## Security
+
+ff-rdp has the same power as Firefox DevTools — it can read httpOnly cookies, execute arbitrary JavaScript, capture screenshots, and navigate to URLs. The security model is "same as opening DevTools": the user is the operator.
+
+**Transport:** Firefox RDP uses plaintext TCP with no TLS. By default ff-rdp connects to `localhost` only. For remote debugging, use SSH tunneling (`ssh -L 6000:localhost:6000 remote-host`) rather than exposing the debug port directly.
+
+**URL validation:** The `navigate` command rejects `javascript:` and `data:` URLs by default to prevent accidental code execution in the page context. Allowed schemes are `http:`, `https:`, `file:`, and `about:`. Use `--allow-unsafe-urls` to bypass this check if needed.
+
+**Daemon trust model:** The daemon listens on `127.0.0.1` (loopback only). Any local process can connect and send RDP commands through it — the same trust boundary as Firefox DevTools. The registry file (`~/.ff-rdp/daemon.json`) is created with owner-only permissions (0600 on Unix).
+
+**Regex limits:** The `--pattern` flag (used by `console` and `sources` commands) applies a 1 MiB NFA size limit to prevent denial-of-service from pathological regular expressions.
+
+**Not designed for untrusted networks.** Do not expose the Firefox debug port to the network. All RDP traffic (page content, cookies, eval results) is transmitted in plaintext.
 
 ## Architecture
 
