@@ -37,6 +37,8 @@ document.body.innerText
 
 Native Inspector/Walker actors provide more structured data (node trees, computed styles) but are significantly more complex. Use eval first, add native inspector support later if needed.
 
+**Note from iteration 4:** Eval results exceeding ~1000 chars are returned as `longString` grips. The `LongStringActor::full_string()` method (added in iter 4) must be used to fetch the complete content. Both `page-text` and `dom --outer-html` will hit this on real pages.
+
 ## Acceptance Criteria
 
 - `ff-rdp dom "h1"` returns the first h1 element's outerHTML

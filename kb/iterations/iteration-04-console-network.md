@@ -24,6 +24,16 @@ Read console messages and network requests — the two most important debugging 
 - [x] Network output format: array of `{method, url, status, duration_ms, size_bytes, content_type, is_xhr}`
 - [x] Handle the resource watcher event flow: watchResources → collect resource-available-form events → parse
 
+## Additional Work (post-PR)
+
+- [x] Implement `LongStringActor` in ff-rdp-core for fetching truncated eval results
+- [x] Add `network --cached` using Performance Resource Timing API (temporary home, moves to `perf` command in iter 8)
+- [x] Add `navigate --with-network` — same-connection watcher subscribe → navigate → drain events
+- [x] Extract shared `network_events` module (drain, merge, build helpers) used by both `network` and `navigate`
+- [x] Research: watcher does NOT buffer historical events — verified with live Firefox probe
+- [x] Research: connection persistence patterns documented in `research/connection-persistence.md`
+- [x] Iteration 8 planned: `perf` command + `navigate --with-network` improvements
+
 ## Acceptance Criteria
 
 - `ff-rdp console` shows cached console messages from the active tab
@@ -32,4 +42,6 @@ Read console messages and network requests — the two most important debugging 
 - `ff-rdp network` shows recent network requests with status codes and timing
 - `ff-rdp network --filter "api/"` filters by URL pattern
 - `ff-rdp network --jq '.results[] | select(.status >= 400)'` finds failed requests
+- `ff-rdp network --cached` shows retrospective resource data via Performance API
+- `ff-rdp navigate https://example.com --with-network` captures traffic during navigation
 - Both commands work with tab targeting

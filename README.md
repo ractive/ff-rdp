@@ -29,10 +29,10 @@ ff-rdp [OPTIONS] <COMMAND>
 
 Commands:
   tabs        List open browser tabs
-  navigate    Navigate to a URL
+  navigate    Navigate to a URL (with --with-network for traffic capture)
   eval        Evaluate JavaScript in the target tab
   console     Read console messages (with --level and --pattern filters)
-  network     Show network requests (with --filter and --method filters)
+  network     Show network requests (with --filter, --method, --cached filters)
   page-text   Get page information
   screenshot  Capture a screenshot
   reload      Reload the page
@@ -77,6 +77,16 @@ ff-rdp network --filter api
 
 # Filter network by HTTP method
 ff-rdp network --method POST
+
+# Retrospective network data via Performance API
+ff-rdp network --cached
+
+# Navigate and capture all network traffic in one shot
+ff-rdp navigate https://example.com --with-network
+
+# Find failed requests during navigation
+ff-rdp navigate https://example.com --with-network \
+  --jq '.results.network[] | select(.status >= 400)'
 
 # Reload, go back, go forward
 ff-rdp reload
