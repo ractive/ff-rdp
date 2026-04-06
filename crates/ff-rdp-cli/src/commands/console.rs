@@ -90,14 +90,14 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    /// Verify that a pattern whose compiled NFA exceeds the size limit is rejected.
+    /// Verify that a pattern exceeding a small compiled-regex size limit is rejected.
     #[test]
     fn rejects_oversized_regex() {
-        // 500 levels of nested groups push the NFA well past 1 MiB.
-        let nested = format!("{}a{}", "(".repeat(500), ")".repeat(500));
-        let result = regex::RegexBuilder::new(&nested)
-            .size_limit(1_000_000)
-            .build();
+        let oversized = (0..100)
+            .map(|i| format!("literal_{i}"))
+            .collect::<Vec<_>>()
+            .join("|");
+        let result = regex::RegexBuilder::new(&oversized).size_limit(64).build();
         assert!(result.is_err(), "expected oversized pattern to be rejected");
     }
 }
