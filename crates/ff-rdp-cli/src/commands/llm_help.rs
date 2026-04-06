@@ -198,7 +198,7 @@ Use `--jq` to filter: operates on `.results` automatically.
 
 pub fn run(cli: &Cli) -> Result<(), AppError> {
     let results = json!(LLM_REFERENCE.trim());
-    let meta = json!({"host": cli.host, "port": cli.port});
+    let meta = json!({"source": "static"});
     let envelope = output::envelope(&results, 1, &meta);
 
     OutputPipeline::new(cli.jq.clone())

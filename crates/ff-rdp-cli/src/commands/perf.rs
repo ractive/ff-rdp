@@ -323,6 +323,41 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
         .map_err(AppError::from)
 }
 
+/// Aggregate mapped performance entries by domain, returning a Vec sorted by transfer_size descending.
+fn aggregate_by_domain(mapped: &[Value]) -> Vec<Value> {
+    let mut domains: std::collections::BTreeMap<String, (usize, f64)> =
+        std::collections::BTreeMap::new();
+    for entry in mapped {
+        let url = entry.get("url").and_then(Value::as_str).unwrap_or_default();
+        let domain = extract_domain(url);
+        let size = entry
+            .get("transfer_size")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let d = domains.entry(domain).or_insert((0, 0.0));
+        d.0 += 1;
+        d.1 += size;
+    }
+    let mut list: Vec<Value> = domains
+        .into_iter()
+        .map(|(domain, (count, size))| {
+            json!({"domain": domain, "requests": count, "transfer_size": round2(size)})
+        })
+        .collect();
+    list.sort_by(|a, b| {
+        let sa = a
+            .get("transfer_size")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let sb = b
+            .get("transfer_size")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    list
+}
+
 /// Aggregate resource summary: sizes, request counts by type, slowest resources, domain breakdown.
 pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
     let script = script_get_entries("resource");
@@ -375,36 +410,7 @@ pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
         })
         .collect();
 
-    let mut domains: std::collections::BTreeMap<String, (usize, f64)> =
-        std::collections::BTreeMap::new();
-    for entry in &mapped {
-        let url = entry.get("url").and_then(Value::as_str).unwrap_or_default();
-        let domain = extract_domain(url);
-        let size = entry
-            .get("transfer_size")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
-        let entry_data = domains.entry(domain).or_insert((0, 0.0));
-        entry_data.0 += 1;
-        entry_data.1 += size;
-    }
-    let mut domain_list: Vec<Value> = domains
-        .into_iter()
-        .map(|(domain, (count, size))| {
-            json!({"domain": domain, "requests": count, "transfer_size": round2(size)})
-        })
-        .collect();
-    domain_list.sort_by(|a, b| {
-        let sa = a
-            .get("transfer_size")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
-        let sb = b
-            .get("transfer_size")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
-        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
-    });
+    let domain_list = aggregate_by_domain(&mapped);
 
     let results = json!({
         "total_resources": mapped.len(),
@@ -436,11 +442,9 @@ pub fn run_group_by_domain(
         )));
     }
 
-    let script = if OBSERVER_TYPES.contains(&canonical) {
-        script_observer(canonical)
-    } else {
-        script_get_entries(canonical)
-    };
+    // Both "resource" and "navigation" are getEntriesByType-compatible; the guard
+    // above already rejects observer-only types, so no OBSERVER_TYPES check needed.
+    let script = script_get_entries(canonical);
 
     let mut ctx = connect_and_get_target(cli)?;
     let json_str = eval_to_json_string(
@@ -469,38 +473,7 @@ pub fn run_group_by_domain(
         .map(|entry| map_entry(canonical, entry))
         .collect();
 
-    let mut domains: std::collections::BTreeMap<String, (usize, f64)> =
-        std::collections::BTreeMap::new();
-    for entry in &mapped {
-        let url = entry.get("url").and_then(Value::as_str).unwrap_or_default();
-        let domain = extract_domain(url);
-        let size = entry
-            .get("transfer_size")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
-        let d = domains.entry(domain).or_insert((0, 0.0));
-        d.0 += 1;
-        d.1 += size;
-    }
-
-    let mut results: Vec<Value> = domains
-        .into_iter()
-        .map(|(domain, (count, size))| {
-            json!({"domain": domain, "requests": count, "transfer_size": round2(size)})
-        })
-        .collect();
-    results.sort_by(|a, b| {
-        let sa = a
-            .get("transfer_size")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
-        let sb = b
-            .get("transfer_size")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
-        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
-    });
-
+    let results = aggregate_by_domain(&mapped);
     let total = results.len();
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&json!(results), total, &meta);

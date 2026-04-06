@@ -18,6 +18,14 @@ use super::url_validation::validate_url;
 const POLL_INTERVAL_MS: u64 = 100;
 
 /// Options controlling an optional wait condition after navigation.
+///
+/// # False positive risk
+///
+/// If the *previous* page already satisfies the wait condition (same selector
+/// present, or same text visible) before the new page begins loading, the poll
+/// loop may observe a truthy result on the old DOM and return immediately —
+/// before the navigation has actually completed.  Callers should be aware of
+/// this when reusing the same selector or text across navigations.
 // Field names intentionally carry the `wait_` prefix to match the CLI flags
 // they correspond to (--wait-text, --wait-selector, --wait-timeout).
 #[allow(clippy::struct_field_names)]
@@ -96,6 +104,12 @@ pub fn run_with_network(
 
         let (all_resources, all_updates) = drain_network_from_daemon(ctx.transport_mut())?;
 
+        // NOTE: In the daemon path, wait_after_navigate is called *before*
+        // building the network entries.  This differs from the non-daemon path
+        // where the wait happens *after* unwatching resources.  The ordering
+        // is intentional: the daemon keeps the subscription open across
+        // commands, so there is nothing to unwatch here, and we want to let
+        // the page settle before returning to the caller regardless.
         let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
 
         let update_map = merge_updates(all_updates);
@@ -146,6 +160,11 @@ pub fn run_with_network(
     let _ =
         WatcherActor::unwatch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"]);
 
+    // NOTE: In the non-daemon path, wait_after_navigate is called *after*
+    // draining network events and unwatching resources, so network data is
+    // already fully collected before we begin waiting.  The daemon path
+    // (above) starts the wait before building entries because there is no
+    // subscription lifecycle to tear down.
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
 
     let total = network_entries.len();
@@ -201,7 +220,19 @@ fn wait_after_navigate(
             WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js)
                 .map_err(AppError::from)?;
 
-        if eval_result.exception.is_none() && is_truthy(&eval_result.result) {
+        // A JS exception (e.g. SyntaxError from an invalid CSS selector) will
+        // never resolve to truthy — return an error immediately rather than
+        // burning the entire timeout.
+        if let Some(exc) = &eval_result.exception {
+            let msg = exc
+                .message
+                .as_deref()
+                .unwrap_or("JS exception during wait condition");
+            eprintln!("error: navigate wait aborted due to JS exception: {msg}");
+            return Err(AppError::Exit(1));
+        }
+
+        if is_truthy(&eval_result.result) {
             // Saturate at u64::MAX rather than panic.
             let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
             let condition = describe_wait_condition(opts);

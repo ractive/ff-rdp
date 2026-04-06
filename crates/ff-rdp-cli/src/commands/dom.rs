@@ -76,11 +76,7 @@ pub fn run_count(cli: &Cli, selector: &str) -> Result<(), AppError> {
 
     let results = json!({"selector": selector, "count": count});
     let meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
-    let envelope = output::envelope(
-        &results,
-        usize::try_from(count).unwrap_or(usize::MAX),
-        &meta,
-    );
+    let envelope = output::envelope(&results, usize::try_from(count).unwrap_or(0), &meta);
 
     OutputPipeline::new(cli.jq.clone())
         .finalize(&envelope)

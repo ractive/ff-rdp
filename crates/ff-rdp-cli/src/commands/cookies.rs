@@ -7,6 +7,7 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
+use super::js_helpers::escape_selector;
 
 /// Common CMP (Consent Management Platform) selectors used to detect consent
 /// banners that may be blocking cookie creation.
@@ -76,7 +77,7 @@ pub fn run(cli: &Cli, name: Option<&str>) -> Result<(), AppError> {
 fn detect_consent_banner(ctx: &mut ConnectedTab) -> Option<String> {
     let selectors_js = CMP_SELECTORS
         .iter()
-        .map(|s| format!("'{s}'"))
+        .map(|s| format!("'{}'", escape_selector(s)))
         .collect::<Vec<_>>()
         .join(",");
 

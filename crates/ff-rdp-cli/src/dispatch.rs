@@ -71,10 +71,9 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             None => {
                 if group_by.as_deref() == Some("domain") {
                     commands::perf::run_group_by_domain(cli, entry_type, filter.as_deref())
-                } else if group_by.is_some() {
+                } else if let Some(val) = group_by.as_deref() {
                     Err(AppError::User(format!(
-                        "unsupported --group-by value {:?}; supported: \"domain\"",
-                        group_by.as_deref().unwrap_or_default()
+                        "unsupported --group-by value {val:?}; supported: \"domain\""
                     )))
                 } else {
                     commands::perf::run(cli, entry_type, filter.as_deref())

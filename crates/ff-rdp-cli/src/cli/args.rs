@@ -55,10 +55,10 @@ pub enum Command {
         #[arg(long)]
         with_network: bool,
         /// After navigating, wait for this text to appear on the page
-        #[arg(long)]
+        #[arg(long, conflicts_with = "wait_selector")]
         wait_text: Option<String>,
         /// After navigating, wait for this CSS selector to match
-        #[arg(long)]
+        #[arg(long, conflicts_with = "wait_text")]
         wait_selector: Option<String>,
         /// Timeout for wait condition in milliseconds [default: 5000]
         #[arg(long, default_value_t = 5000)]
