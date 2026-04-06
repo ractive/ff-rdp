@@ -54,6 +54,15 @@ pub enum Command {
         /// Also capture network requests made during navigation
         #[arg(long)]
         with_network: bool,
+        /// After navigating, wait for this text to appear on the page
+        #[arg(long)]
+        wait_text: Option<String>,
+        /// After navigating, wait for this CSS selector to match
+        #[arg(long)]
+        wait_selector: Option<String>,
+        /// Timeout for wait condition in milliseconds [default: 5000]
+        #[arg(long, default_value_t = 5000)]
+        wait_timeout: u64,
     },
     /// Evaluate JavaScript in the target tab
     Eval {
@@ -78,6 +87,9 @@ pub enum Command {
         /// Output element attributes as JSON objects
         #[arg(long, group = "output_mode")]
         attrs: bool,
+        /// Return only the count of matching elements
+        #[arg(long, group = "output_mode")]
+        count: bool,
     },
     /// Read console messages
     Console {
@@ -128,6 +140,10 @@ affect which requests Firefox records.")]
         /// Filter by URL substring (resource/navigation types)
         #[arg(long)]
         filter: Option<String>,
+
+        /// Group results by a field (e.g., "domain" for resource entries)
+        #[arg(long)]
+        group_by: Option<String>,
     },
     /// Capture a screenshot
     Screenshot {
@@ -207,6 +223,8 @@ affect which requests Firefox records.")]
     /// Internal: run as background daemon (not for direct use)
     #[command(name = "_daemon", hide = true)]
     Daemon,
+    /// Dump complete CLI reference in compact LLM-friendly format (all commands, flags, examples)
+    LlmHelp,
     /// Launch Firefox with remote debugging enabled
     Launch {
         /// Run Firefox in headless mode
@@ -228,4 +246,6 @@ affect which requests Firefox records.")]
 pub enum PerfCommand {
     /// Compute Core Web Vitals summary (LCP, CLS, TBT, FCP, TTFB)
     Vitals,
+    /// Aggregate resource summary: sizes, request counts by type, slowest resources, domain breakdown
+    Summary,
 }

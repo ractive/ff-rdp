@@ -323,6 +323,193 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
         .map_err(AppError::from)
 }
 
+/// Aggregate resource summary: sizes, request counts by type, slowest resources, domain breakdown.
+pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
+    let script = script_get_entries("resource");
+    let mut ctx = connect_and_get_target(cli)?;
+    let json_str = eval_to_json_string(&mut ctx, &script, "perf summary")?;
+
+    let entries: Vec<Value> = serde_json::from_str(&json_str)
+        .context("perf summary: failed to parse JSON")
+        .map_err(AppError::from)?;
+
+    let mapped: Vec<Value> = entries
+        .into_iter()
+        .map(|e| map_entry("resource", e))
+        .collect();
+
+    let total_transfer_size: f64 = mapped
+        .iter()
+        .filter_map(|e| e.get("transfer_size").and_then(Value::as_f64))
+        .sum();
+
+    let mut by_type: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for entry in &mapped {
+        let itype = entry
+            .get("initiator_type")
+            .and_then(Value::as_str)
+            .unwrap_or("other")
+            .to_string();
+        *by_type.entry(itype).or_insert(0) += 1;
+    }
+
+    let mut by_duration: Vec<(&Value, f64)> = mapped
+        .iter()
+        .map(|e| {
+            (
+                e,
+                e.get("duration_ms").and_then(Value::as_f64).unwrap_or(0.0),
+            )
+        })
+        .collect();
+    by_duration.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let slowest: Vec<Value> = by_duration
+        .iter()
+        .take(5)
+        .map(|(e, _)| {
+            json!({
+                "url": e.get("url"),
+                "duration_ms": e.get("duration_ms"),
+                "transfer_size": e.get("transfer_size"),
+            })
+        })
+        .collect();
+
+    let mut domains: std::collections::BTreeMap<String, (usize, f64)> =
+        std::collections::BTreeMap::new();
+    for entry in &mapped {
+        let url = entry.get("url").and_then(Value::as_str).unwrap_or_default();
+        let domain = extract_domain(url);
+        let size = entry
+            .get("transfer_size")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let entry_data = domains.entry(domain).or_insert((0, 0.0));
+        entry_data.0 += 1;
+        entry_data.1 += size;
+    }
+    let mut domain_list: Vec<Value> = domains
+        .into_iter()
+        .map(|(domain, (count, size))| {
+            json!({"domain": domain, "requests": count, "transfer_size": round2(size)})
+        })
+        .collect();
+    domain_list.sort_by(|a, b| {
+        let sa = a
+            .get("transfer_size")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let sb = b
+            .get("transfer_size")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let results = json!({
+        "total_resources": mapped.len(),
+        "total_transfer_size": round2(total_transfer_size),
+        "requests_by_type": by_type,
+        "slowest_resources": slowest,
+        "domains": domain_list,
+    });
+
+    let meta = json!({"host": cli.host, "port": cli.port});
+    let envelope = output::envelope(&results, 1, &meta);
+
+    OutputPipeline::new(cli.jq.clone())
+        .finalize(&envelope)
+        .map_err(AppError::from)
+}
+
+/// Group performance entries by domain, showing count and total transfer size per domain.
+pub fn run_group_by_domain(
+    cli: &Cli,
+    entry_type: &str,
+    filter: Option<&str>,
+) -> Result<(), AppError> {
+    let canonical = canonical_type(entry_type)?;
+
+    if !matches!(canonical, "resource" | "navigation") {
+        return Err(AppError::User(format!(
+            "--group-by domain only works with resource or navigation types, not {canonical:?}"
+        )));
+    }
+
+    let script = if OBSERVER_TYPES.contains(&canonical) {
+        script_observer(canonical)
+    } else {
+        script_get_entries(canonical)
+    };
+
+    let mut ctx = connect_and_get_target(cli)?;
+    let json_str = eval_to_json_string(
+        &mut ctx,
+        &script,
+        &format!("perf --type {canonical} --group-by domain"),
+    )?;
+
+    let entries: Vec<Value> = serde_json::from_str(&json_str)
+        .with_context(|| format!("perf --type {canonical}: failed to parse JSON"))
+        .map_err(AppError::from)?;
+
+    let mapped: Vec<Value> = entries
+        .into_iter()
+        .filter(|entry| {
+            if let Some(f) = filter {
+                let url = entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                url.contains(f)
+            } else {
+                true
+            }
+        })
+        .map(|entry| map_entry(canonical, entry))
+        .collect();
+
+    let mut domains: std::collections::BTreeMap<String, (usize, f64)> =
+        std::collections::BTreeMap::new();
+    for entry in &mapped {
+        let url = entry.get("url").and_then(Value::as_str).unwrap_or_default();
+        let domain = extract_domain(url);
+        let size = entry
+            .get("transfer_size")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let d = domains.entry(domain).or_insert((0, 0.0));
+        d.0 += 1;
+        d.1 += size;
+    }
+
+    let mut results: Vec<Value> = domains
+        .into_iter()
+        .map(|(domain, (count, size))| {
+            json!({"domain": domain, "requests": count, "transfer_size": round2(size)})
+        })
+        .collect();
+    results.sort_by(|a, b| {
+        let sa = a
+            .get("transfer_size")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let sb = b
+            .get("transfer_size")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let total = results.len();
+    let meta = json!({"host": cli.host, "port": cli.port});
+    let envelope = output::envelope(&json!(results), total, &meta);
+
+    OutputPipeline::new(cli.jq.clone())
+        .finalize(&envelope)
+        .map_err(AppError::from)
+}
+
 // ── CWV computation helpers ──────────────────────────────────────────────────
 
 pub(crate) fn compute_ttfb(nav: &Value) -> Option<f64> {
@@ -418,6 +605,14 @@ pub(crate) fn compute_tbt(longtasks: &[Value], fcp_ms: Option<f64>) -> f64 {
         })
         .sum();
     round2(sum)
+}
+
+/// Extract the domain (host) from a URL string. Returns "unknown" for unparseable URLs.
+fn extract_domain(url: &str) -> String {
+    url::Url::parse(url).map_or_else(
+        |_| "unknown".to_string(),
+        |u| u.host_str().unwrap_or("unknown").to_string(),
+    )
 }
 
 pub(crate) fn round2(v: f64) -> f64 {
@@ -668,6 +863,19 @@ mod tests {
             repr_str.contains("object"),
             "error representation should mention 'object', got: {repr_str}"
         );
+    }
+
+    // ── extract_domain ───────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_domain_basic() {
+        assert_eq!(extract_domain("https://example.com/path"), "example.com");
+        assert_eq!(
+            extract_domain("https://cdn.example.com/file.js"),
+            "cdn.example.com"
+        );
+        assert_eq!(extract_domain("not-a-url"), "unknown");
+        assert_eq!(extract_domain(""), "unknown");
     }
 
     // ── round2 ───────────────────────────────────────────────────────────────

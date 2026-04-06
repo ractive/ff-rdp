@@ -7,6 +7,7 @@ pub(crate) mod eval;
 pub(crate) mod inspect;
 pub(crate) mod js_helpers;
 pub(crate) mod launch;
+pub(crate) mod llm_help;
 pub(crate) mod nav_action;
 pub(crate) mod navigate;
 pub(crate) mod network;

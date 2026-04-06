@@ -53,6 +53,40 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> 
         .map_err(AppError::from)
 }
 
+pub fn run_count(cli: &Cli, selector: &str) -> Result<(), AppError> {
+    let mut ctx = connect_and_get_target(cli)?;
+    let console_actor = ctx.target.console_actor.clone();
+
+    let escaped = escape_selector(selector);
+    let js = format!("document.querySelectorAll('{escaped}').length");
+
+    let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js)
+        .map_err(AppError::from)?;
+
+    if let Some(ref exc) = eval_result.exception {
+        let msg = exc.message.as_deref().unwrap_or("DOM count query failed");
+        eprintln!("error: {msg}");
+        return Err(AppError::Exit(1));
+    }
+
+    let count = match &eval_result.result {
+        Grip::Value(v) => v.as_u64().unwrap_or(0),
+        _ => 0,
+    };
+
+    let results = json!({"selector": selector, "count": count});
+    let meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
+    let envelope = output::envelope(
+        &results,
+        usize::try_from(count).unwrap_or(usize::MAX),
+        &meta,
+    );
+
+    OutputPipeline::new(cli.jq.clone())
+        .finalize(&envelope)
+        .map_err(AppError::from)
+}
+
 fn build_js(selector: &str, mode: OutputMode) -> String {
     let escaped = escape_selector(selector);
 
@@ -183,5 +217,13 @@ mod tests {
     fn build_js_multi_uses_sentinel() {
         let js = build_js("li", OutputMode::Text);
         assert!(js.contains(JSON_SENTINEL));
+    }
+
+    #[test]
+    fn build_count_js() {
+        let escaped = escape_selector("script");
+        let js = format!("document.querySelectorAll('{escaped}').length");
+        assert!(js.contains("querySelectorAll('script')"));
+        assert!(js.contains(".length"));
     }
 }
