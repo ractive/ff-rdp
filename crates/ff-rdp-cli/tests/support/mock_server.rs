@@ -119,9 +119,10 @@ impl MockRdpServer {
     /// A variant of `serve_one` that accepts a connection but never sends the
     /// greeting — useful for testing timeout behaviour.
     pub fn serve_one_silent(self) {
-        let (_stream, _peer) = self.listener.accept().expect("accept");
-        // Hold the connection open but write nothing, causing the client to
-        // time out waiting for the greeting.
-        std::thread::sleep(std::time::Duration::from_secs(30));
+        let (stream, _peer) = self.listener.accept().expect("accept");
+        // Block until the client disconnects (EOF), so the thread exits cleanly
+        // rather than leaking a sleep for 30 seconds.
+        let mut buf = [0u8; 1];
+        let _ = std::io::Read::read(&mut &stream, &mut buf);
     }
 }

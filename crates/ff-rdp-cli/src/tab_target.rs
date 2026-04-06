@@ -1,4 +1,4 @@
-use ff_rdp_core::actors::tab::TabInfo;
+use ff_rdp_core::TabInfo;
 
 use crate::error::AppError;
 

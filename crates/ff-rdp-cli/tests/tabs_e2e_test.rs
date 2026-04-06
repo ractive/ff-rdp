@@ -16,8 +16,8 @@ fn ff_rdp_bin() -> std::path::PathBuf {
 
 /// Base args shared by all tests that talk to a local mock server.
 ///
-/// The transport layer parses the host as a raw `SocketAddr`, so we must
-/// supply an IP literal rather than the default `localhost` hostname.
+/// Use an explicit IPv4 loopback address to keep tests deterministic
+/// across environments with different localhost resolution (IPv4 vs IPv6).
 fn base_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),

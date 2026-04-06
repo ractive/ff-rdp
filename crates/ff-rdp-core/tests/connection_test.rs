@@ -198,9 +198,10 @@ fn connect_times_out_when_server_does_not_send_greeting() {
     let port = listener.local_addr().unwrap().port();
 
     let silent_server = std::thread::spawn(move || {
-        // Accept and hold the connection open without writing anything.
-        let (_stream, _) = listener.accept().unwrap();
-        std::thread::sleep(Duration::from_secs(10));
+        let (stream, _) = listener.accept().unwrap();
+        // Block until the client disconnects (EOF).
+        let mut buf = [0u8; 1];
+        let _ = std::io::Read::read(&mut &stream, &mut buf);
     });
 
     let short_timeout = Duration::from_millis(100);
@@ -211,7 +212,5 @@ fn connect_times_out_when_server_does_not_send_greeting() {
         "expected Timeout, got {err:?}"
     );
 
-    // The silent server thread will eventually wake and exit; we don't need
-    // to join it — just let the OS reclaim it.
-    drop(silent_server);
+    let _ = silent_server.join();
 }

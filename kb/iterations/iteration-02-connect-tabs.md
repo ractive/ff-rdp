@@ -32,8 +32,8 @@ Establish TCP connection to Firefox, handle the RDP handshake, and implement the
 
 ### E2E Test Infrastructure
 
-- [x] Create `crates/ff-rdp-core/tests/support/mock_server.rs` — reusable mock TCP server that speaks RDP framing (length-prefixed JSON), accepts a sequence of expected request→response pairs, runs on `tokio::net::TcpListener` on a random port
-- [x] Create `crates/ff-rdp-core/tests/fixtures/` directory with captured JSON fixtures: `handshake.json` (greeting packet), `list_tabs_request.json` / `list_tabs_response.json` (real Firefox RDP exchange)
+- [x] Create `crates/ff-rdp-core/tests/support/mock_server.rs` — reusable mock TCP server that speaks RDP framing (length-prefixed JSON), matches requests by `type` field and replies with registered responses, runs on `std::net::TcpListener` on a random port
+- [x] Create `crates/ff-rdp-core/tests/fixtures/` directory with captured JSON fixtures: `handshake.json` (greeting packet) and `list_tabs_response.json` (listTabs response)
 - [x] Capture fixtures: connect to a real Firefox instance (`--start-debugger-server`), record the handshake greeting and a `listTabs` round-trip, sanitize and save as fixture files
 - [x] Write mock-server integration tests for `RdpConnection` + `RootActor.list_tabs()` — verify the full flow from connect → handshake → listTabs → typed TabInfo output, using the mock server with captured fixtures
 - [x] Write CLI e2e tests in `crates/ff-rdp-cli/tests/` — spawn `ff-rdp tabs` as a subprocess against the mock server, assert JSON envelope structure, test `--jq` filtering

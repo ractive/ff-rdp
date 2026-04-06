@@ -1,5 +1,5 @@
-pub mod actor;
-pub mod actors;
+pub(crate) mod actor;
+pub(crate) mod actors;
 pub mod connection;
 pub mod error;
 pub mod transport;

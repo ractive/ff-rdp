@@ -14,14 +14,11 @@ impl RootActor {
     /// Sends `listTabs` to the root actor and parses the response into typed
     /// [`TabInfo`] structs.
     pub fn list_tabs(transport: &mut RdpTransport) -> Result<Vec<TabInfo>, ProtocolError> {
-        let response = actor_request(transport, "root", "listTabs", None)?;
+        let mut response = actor_request(transport, "root", "listTabs", None)?;
 
-        let tabs_value = response
-            .get("tabs")
-            .ok_or_else(|| {
-                ProtocolError::InvalidPacket("listTabs response missing 'tabs' field".into())
-            })?
-            .clone();
+        let tabs_value = response.get_mut("tabs").map(Value::take).ok_or_else(|| {
+            ProtocolError::InvalidPacket("listTabs response missing 'tabs' field".into())
+        })?;
 
         let tabs: Vec<TabInfo> = serde_json::from_value(tabs_value)
             .map_err(|e| ProtocolError::InvalidPacket(format!("failed to parse tabs: {e}")))?;

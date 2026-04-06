@@ -32,39 +32,54 @@ impl RdpTransport {
     pub fn connect_raw(host: &str, port: u16, timeout: Duration) -> Result<Self, ProtocolError> {
         use std::net::ToSocketAddrs;
 
-        let addr_str = format!("{host}:{port}");
-        let addr = addr_str
+        let addrs: Vec<_> = (host, port)
             .to_socket_addrs()
             .map_err(ProtocolError::ConnectionFailed)?
-            .next()
-            .ok_or_else(|| {
-                ProtocolError::ConnectionFailed(std::io::Error::new(
-                    std::io::ErrorKind::AddrNotAvailable,
-                    format!("could not resolve {addr_str}"),
-                ))
-            })?;
+            .collect();
 
-        let stream = TcpStream::connect_timeout(&addr, timeout).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::TimedOut {
-                ProtocolError::Timeout
-            } else {
-                ProtocolError::ConnectionFailed(e)
+        if addrs.is_empty() {
+            return Err(ProtocolError::ConnectionFailed(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                format!("could not resolve {host}:{port}"),
+            )));
+        }
+
+        let mut last_err = None;
+        for addr in &addrs {
+            match TcpStream::connect_timeout(addr, timeout) {
+                Ok(stream) => {
+                    stream
+                        .set_read_timeout(Some(timeout))
+                        .map_err(ProtocolError::ConnectionFailed)?;
+                    stream
+                        .set_write_timeout(Some(timeout))
+                        .map_err(ProtocolError::ConnectionFailed)?;
+                    let reader = BufReader::new(
+                        stream
+                            .try_clone()
+                            .map_err(ProtocolError::ConnectionFailed)?,
+                    );
+                    return Ok(Self {
+                        reader,
+                        writer: stream,
+                    });
+                }
+                Err(e) => {
+                    last_err = Some(if e.kind() == std::io::ErrorKind::TimedOut {
+                        ProtocolError::Timeout
+                    } else {
+                        ProtocolError::ConnectionFailed(e)
+                    });
+                }
             }
-        })?;
+        }
 
-        stream
-            .set_read_timeout(Some(timeout))
-            .map_err(ProtocolError::ConnectionFailed)?;
-        stream
-            .set_write_timeout(Some(timeout))
-            .map_err(ProtocolError::ConnectionFailed)?;
-
-        let writer = stream
-            .try_clone()
-            .map_err(ProtocolError::ConnectionFailed)?;
-        let reader = BufReader::new(stream);
-
-        Ok(Self { reader, writer })
+        Err(last_err.unwrap_or_else(|| {
+            ProtocolError::ConnectionFailed(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                format!("could not resolve {host}:{port}"),
+            ))
+        }))
     }
 
     /// Connect to a Firefox RDP server and consume the initial greeting packet.
@@ -97,15 +112,9 @@ impl RdpTransport {
             .map_err(|e| ProtocolError::InvalidPacket(e.to_string()))?;
 
         let frame = encode_frame(&json);
-        self.writer.write_all(frame.as_bytes()).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::TimedOut
-                || e.kind() == std::io::ErrorKind::WouldBlock
-            {
-                ProtocolError::Timeout
-            } else {
-                ProtocolError::SendFailed(e)
-            }
-        })?;
+        self.writer
+            .write_all(frame.as_bytes())
+            .map_err(map_send_io_error)?;
 
         Ok(())
     }
@@ -137,15 +146,7 @@ pub fn recv_from(reader: &mut impl Read) -> Result<Value, ProtocolError> {
     let mut length_buf = Vec::with_capacity(10);
     loop {
         let mut byte = [0u8; 1];
-        reader.read_exact(&mut byte).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::TimedOut
-                || e.kind() == std::io::ErrorKind::WouldBlock
-            {
-                ProtocolError::Timeout
-            } else {
-                ProtocolError::RecvFailed(e)
-            }
-        })?;
+        reader.read_exact(&mut byte).map_err(map_recv_io_error)?;
 
         if byte[0] == b':' {
             break;
@@ -182,18 +183,32 @@ pub fn recv_from(reader: &mut impl Read) -> Result<Value, ProtocolError> {
         .map_err(|e| ProtocolError::InvalidPacket(format!("length parse error: {e}")))?;
 
     let mut body = vec![0u8; length];
-    reader.read_exact(&mut body).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::TimedOut || e.kind() == std::io::ErrorKind::WouldBlock {
-            ProtocolError::Timeout
-        } else {
-            ProtocolError::RecvFailed(e)
-        }
-    })?;
+    reader.read_exact(&mut body).map_err(map_recv_io_error)?;
 
     let value = serde_json::from_slice(&body)
         .map_err(|e| ProtocolError::InvalidPacket(format!("JSON parse error: {e}")))?;
 
     Ok(value)
+}
+
+// ---------------------------------------------------------------------------
+// I/O error mapping helpers
+// ---------------------------------------------------------------------------
+
+fn map_recv_io_error(e: std::io::Error) -> ProtocolError {
+    if e.kind() == std::io::ErrorKind::TimedOut || e.kind() == std::io::ErrorKind::WouldBlock {
+        ProtocolError::Timeout
+    } else {
+        ProtocolError::RecvFailed(e)
+    }
+}
+
+fn map_send_io_error(e: std::io::Error) -> ProtocolError {
+    if e.kind() == std::io::ErrorKind::TimedOut || e.kind() == std::io::ErrorKind::WouldBlock {
+        ProtocolError::Timeout
+    } else {
+        ProtocolError::SendFailed(e)
+    }
 }
 
 // ---------------------------------------------------------------------------
