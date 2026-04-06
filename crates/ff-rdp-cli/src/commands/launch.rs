@@ -1,4 +1,5 @@
 use std::io::Read as _;
+use std::net::ToSocketAddrs as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -86,11 +87,33 @@ fn which_binary(name: &str) -> Result<PathBuf, AppError> {
     Err(AppError::User(format!("{name} not found in PATH")))
 }
 
+/// Firefox preferences written into every temporary profile to suppress
+/// first-run UI, telemetry prompts, and session-restore dialogs.
+const USER_JS: &str = r#"// Suppress first-run / onboarding pages
+user_pref("browser.aboutwelcome.enabled", false);
+user_pref("browser.startup.homepage_override.mstone", "ignore");
+user_pref("startup.homepage_welcome_url", "about:blank");
+user_pref("startup.homepage_welcome_url.additional", "");
+user_pref("browser.startup.homepage", "about:blank");
+user_pref("browser.startup.page", 0);
+// Disable telemetry and data reporting prompts
+user_pref("datareporting.policy.dataSubmissionEnabled", false);
+user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
+// Disable default browser check
+user_pref("browser.shell.checkDefaultBrowser", false);
+// Disable session restore prompts
+user_pref("browser.sessionstore.resume_from_crash", false);
+"#;
+
 /// Build a `Command` ready to spawn Firefox, and return the effective profile
 /// path if one is in use (useful for reporting in the output JSON).
 ///
-/// For `temp_profile`, a new directory is created under the OS temp dir.
-/// Its path is included in the output so the caller knows where it is.
+/// `-no-remote` is always passed first so the new instance is fully
+/// independent of any already-running Firefox.
+///
+/// For `temp_profile`, a new directory is created under the OS temp dir and
+/// a `user.js` is written into it to suppress first-run UI. The profile path
+/// is included in the returned value so callers can surface it.
 pub(crate) fn build_command(
     firefox: &Path,
     port: u16,
@@ -99,6 +122,9 @@ pub(crate) fn build_command(
     temp_profile: bool,
 ) -> Result<(std::process::Command, Option<PathBuf>), AppError> {
     let mut cmd = std::process::Command::new(firefox);
+
+    // Always launch as an independent instance.
+    cmd.arg("-no-remote");
 
     cmd.arg("--start-debugger-server").arg(port.to_string());
 
@@ -121,6 +147,13 @@ pub(crate) fn build_command(
                 tmp.display()
             ))
         })?;
+        let user_js_path = tmp.join("user.js");
+        std::fs::write(&user_js_path, USER_JS).map_err(|e| {
+            AppError::User(format!(
+                "failed to write user.js to temporary profile {}: {e}",
+                tmp.display()
+            ))
+        })?;
         cmd.arg("--profile").arg(&tmp);
         Some(tmp)
     } else {
@@ -134,6 +167,40 @@ pub(crate) fn build_command(
     cmd.stderr(std::process::Stdio::piped());
 
     Ok((cmd, profile_path))
+}
+
+/// Poll until the TCP port at `host:port` accepts a connection or `timeout`
+/// elapses. Retries every 200 ms. Returns `Ok(())` on success.
+fn wait_for_port(host: &str, port: u16, timeout: Duration) -> Result<(), AppError> {
+    let addr_str = format!("{host}:{port}");
+    let mut addrs = addr_str
+        .to_socket_addrs()
+        .map_err(|e| AppError::User(format!("invalid host/port {addr_str}: {e}")))?;
+    let addr = addrs
+        .next()
+        .ok_or_else(|| AppError::User(format!("could not resolve address {addr_str}")))?;
+
+    let poll_interval = Duration::from_millis(200);
+    let deadline = std::time::Instant::now() + timeout;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let connect_timeout = remaining.min(poll_interval);
+        if std::net::TcpStream::connect_timeout(&addr, connect_timeout).is_ok() {
+            return Ok(());
+        }
+        if std::time::Instant::now() < deadline {
+            std::thread::sleep(poll_interval.min(remaining));
+        }
+    }
+
+    Err(AppError::User(format!(
+        "debug port {port} is not reachable after {}s — is the port already in use?",
+        timeout.as_secs()
+    )))
 }
 
 pub fn run(
@@ -179,9 +246,18 @@ pub fn run(
             )))
         }
         Ok(None) => {
-            // Still running — report connection details and leave it running.
+            // Still running — verify the debug port is actually reachable
+            // before reporting success.
+            let pid = child.id();
+            if let Err(e) = wait_for_port(host, port, Duration::from_secs(5)) {
+                let _ = child.kill();
+                return Err(AppError::User(format!(
+                    "Firefox started (pid {pid}) but {e}"
+                )));
+            }
+
             let result = json!({
-                "pid": child.id(),
+                "pid": pid,
                 "host": host,
                 "port": port,
                 "headless": headless,
@@ -245,6 +321,18 @@ mod tests {
     }
 
     #[test]
+    fn build_command_always_includes_no_remote() {
+        let tmp = fake_firefox();
+        let (cmd, _) = build_command(&tmp, 6000, false, None, false).unwrap();
+        let args = command_args(&cmd);
+        cleanup_fake_firefox(&tmp);
+        assert!(
+            args.iter().any(|a| a == "-no-remote"),
+            "expected -no-remote in args: {args:?}"
+        );
+    }
+
+    #[test]
     fn build_command_includes_debugger_server_port() {
         let tmp = fake_firefox();
         let (cmd, profile) = build_command(&tmp, 6000, false, None, false).unwrap();
@@ -257,6 +345,10 @@ mod tests {
         assert!(
             args.iter().any(|a| a == "6000"),
             "expected port 6000 in args: {args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a == "-no-remote"),
+            "expected -no-remote in args: {args:?}"
         );
         assert!(profile.is_none());
     }
@@ -322,6 +414,34 @@ mod tests {
             profile.exists(),
             "temp profile directory should have been created: {}",
             profile.display()
+        );
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn build_command_temp_profile_writes_user_js() {
+        let tmp = fake_firefox();
+        let (_, profile_path) = build_command(&tmp, 6000, false, None, true).unwrap();
+        cleanup_fake_firefox(&tmp);
+        let profile = profile_path.expect("temp_profile should set a profile path");
+        let user_js = profile.join("user.js");
+        assert!(
+            user_js.exists(),
+            "user.js should exist in temp profile: {}",
+            user_js.display()
+        );
+        let contents = std::fs::read_to_string(&user_js).unwrap();
+        assert!(
+            contents.contains("browser.aboutwelcome.enabled"),
+            "user.js should disable aboutwelcome"
+        );
+        assert!(
+            contents.contains("browser.startup.homepage"),
+            "user.js should set startup homepage"
+        );
+        assert!(
+            contents.contains("browser.sessionstore.resume_from_crash"),
+            "user.js should disable session restore"
         );
         let _ = std::fs::remove_dir_all(&profile);
     }
