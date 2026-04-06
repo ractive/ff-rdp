@@ -81,3 +81,17 @@ status: active
 
 **Alternatives considered**:
 - Keep tokio: rejected because the async complexity is not justified for sequential request/response over a single TCP connection
+
+## DEC-010: Filter unsolicited events in actor_request
+
+**Decision**: `actor_request` loops on `transport.recv()` until it receives a packet whose `from` field matches the target actor, silently discarding interleaved events.
+
+**Why**: Firefox can emit unsolicited events (tabNavigated, tabListChanged, etc.) at any time on the same TCP connection. The previous single-recv approach would misinterpret an event as the response, causing spurious errors. Filtering by `from` field is the simplest correct approach.
+
+**Trade-off**: Discarded events are lost. This is acceptable for a stateless CLI that connects, does one thing, and exits. A future REPL or streaming mode would need an event buffer or callback mechanism.
+
+## DEC-011: Async eval pattern with resultID correlation
+
+**Decision**: `evaluateJSAsync` sends a request, captures the `resultID` from the immediate ack, then loops on `recv()` until an `evaluationResult` message with a matching `resultID` arrives.
+
+**Why**: Firefox's `evaluateJSAsync` is inherently two-phase: an immediate response confirming the request (with a `resultID`), followed by a separate event containing the actual result. The resultID correlation ensures we match the correct result even if other events are interleaved.
