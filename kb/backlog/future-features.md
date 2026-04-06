@@ -8,12 +8,12 @@ status: active
 
 # Future Features Backlog
 
-Features deferred beyond the initial 7 iterations.
+Features not yet implemented. Items completed in past iterations are marked done.
 
 ## Connection & Transport
 
 - [ ] WebSocket transport mode (`ws:` prefix) for browser-based clients
-- [ ] Connection pooling / persistent daemon mode for reduced latency on repeated commands
+- [x] Connection pooling / persistent daemon mode for reduced latency on repeated commands *(done: iteration 13)*
 - [ ] `--follow` / streaming mode for real-time console and network event tailing
 - [ ] Unix socket support for local-only connections
 
@@ -22,7 +22,7 @@ Features deferred beyond the initial 7 iterations.
 - [ ] Breakpoint management: `ff-rdp breakpoint set <url:line>`, `ff-rdp breakpoint list/remove`
 - [ ] Step debugging: `ff-rdp step <into|over|out>`, `ff-rdp resume`, `ff-rdp pause`
 - [ ] Stack frame inspection: `ff-rdp frames` when paused at breakpoint
-- [ ] Source listing: `ff-rdp sources` to enumerate loaded JS files
+- [x] Source listing: `ff-rdp sources` to enumerate loaded JS files *(done: iteration 10)*
 - [ ] Source reading: `ff-rdp source <url> [--line-range]` to fetch source code
 - [ ] Blackboxing: `ff-rdp blackbox <url>` to skip library code during debugging
 
@@ -56,7 +56,7 @@ Features deferred beyond the initial 7 iterations.
 
 ## Performance
 
-- [ ] Connection caching across invocations (socket reuse via background daemon)
+- [x] Connection caching across invocations (socket reuse via background daemon) *(done: iteration 13)*
 - [ ] Parallel tab operations: query multiple tabs in one invocation
 - [ ] Lazy grip resolution: only fetch full object data when requested
 

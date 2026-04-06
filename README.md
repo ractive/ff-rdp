@@ -113,7 +113,7 @@ ff-rdp navigate https://example.com --with-network
 ff-rdp navigate https://example.com --with-network \
   --jq '.results.network[] | select(.status >= 400)'
 
-# Query Performance API resource timing entries
+# Query Performance API resource timing entries (default: --type resource)
 ff-rdp perf
 
 # Page load waterfall (DNS, TLS, TTFB, DOM timings)
@@ -176,6 +176,9 @@ ff-rdp launch
 
 # Launch headless Firefox with temporary profile
 ff-rdp launch --headless --temp-profile
+
+# Launch with a specific profile and debug port
+ff-rdp launch --profile /path/to/profile --debug-port 9222
 
 # Inspect a remote object grip (from eval output)
 ff-rdp inspect server1.conn0.child2/obj19
