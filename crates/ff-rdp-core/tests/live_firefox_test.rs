@@ -11,28 +11,21 @@
 //!    ```
 //!
 //! Optionally set `FF_RDP_PORT` to override the default port (6000).
+//! Set `FF_RDP_LIVE_TESTS_RECORD=1` to additionally write fixture files.
+
+mod support;
 
 use std::time::Duration;
 
 use ff_rdp_core::{RdpConnection, RootActor};
-
-fn live_tests_enabled() -> bool {
-    std::env::var("FF_RDP_LIVE_TESTS").is_ok()
-}
-
-fn firefox_port() -> u16 {
-    std::env::var("FF_RDP_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(6000)
-}
+use support::recording::{firefox_port, should_run_live};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1 and start Firefox with --start-debugger-server 6000"]
 fn live_connect_and_list_tabs() {
-    if !live_tests_enabled() {
+    if !should_run_live() {
         return;
     }
 
@@ -62,7 +55,7 @@ fn live_connect_and_list_tabs() {
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1 and start Firefox with --start-debugger-server 6000"]
 fn live_selected_tab_is_marked() {
-    if !live_tests_enabled() {
+    if !should_run_live() {
         return;
     }
 

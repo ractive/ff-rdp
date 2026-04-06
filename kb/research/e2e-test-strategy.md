@@ -16,7 +16,7 @@ Tests are organized in three tiers, each trading speed for realism:
 |------|----------|-----------|---------------|
 | **Unit tests** | `crates/*/src/**` (inline `#[cfg(test)]`) | Yes | None |
 | **Mock-server integration** | `crates/ff-rdp-core/tests/` | Yes | None |
-| **Live Firefox tests** | `crates/ff-rdp-core/tests/live_firefox_test.rs` | No (opt-in) | Firefox |
+| **Live Firefox tests** | `crates/ff-rdp-core/tests/live_*.rs` | No (opt-in) | Firefox |
 
 Unit tests cover pure logic. Mock-server tests exercise the full protocol path (TCP connect, length-prefix framing, JSON parsing) against a controlled server. Live tests validate against a real Firefox instance.
 
@@ -63,29 +63,29 @@ Format: raw JSON, one complete RDP response per file. Loaded at test time via th
 
 ## How to Capture / Refresh Fixtures
 
-1. **Start Firefox in debugger mode** (see [[#Starting Firefox with the Debug Server]] below):
-   ```sh
-   /Applications/Firefox.app/Contents/MacOS/firefox \
-     --start-debugger-server 6000 -no-remote \
-     -profile /tmp/ff-rdp-test-profile
-   ```
+All fixtures are recorded from a live Firefox instance using the unified recording tests.
 
-2. **Capture raw responses** using `socat` or `nc`:
-   ```sh
-   # Connect and see the greeting
-   socat - TCP:127.0.0.1:6000
+**Single command to refresh all fixtures:**
 
-   # Or use nc to send a request and capture the response
-   echo -n '20:{"type":"listTabs"}' | nc 127.0.0.1 6000
-   ```
-   Alternatively, add temporary `eprintln!` logging in the transport layer's `recv_from` and rebuild.
+```sh
+# 1. Start Firefox (see Starting Firefox below)
+# 2. Record all fixtures:
+FF_RDP_LIVE_TESTS_RECORD=1 cargo test -p ff-rdp-core --test live_record_fixtures -- --ignored
+```
 
-3. **Sanitize** the captured JSON:
-   - Replace personal URLs, page titles, and bookmark data with generic values
-   - Keep actor IDs in the `server1.conn0.*` format
-   - Preserve the full structure — do not remove fields the parser ignores today (they may matter later)
+This runs each live test against real Firefox AND writes the validated response to the corresponding fixture file on disk. Fixture files are written to both `ff-rdp-core/tests/fixtures/` and `ff-rdp-cli/tests/fixtures/` as appropriate.
 
-4. **Save** to `tests/fixtures/<descriptive_name>.json` — one response per file, pretty-printed.
+**Environment variables:**
+- `FF_RDP_LIVE_TESTS=1` — run live tests without recording (validation only)
+- `FF_RDP_LIVE_TESTS_RECORD=1` — run live tests AND write fixture files (implies live tests)
+- `FF_RDP_PORT=6000` — override the default Firefox debugger port
+
+**What happens during recording:**
+1. Each live test exercises a real Firefox command and validates the response structure
+2. When `FF_RDP_LIVE_TESTS_RECORD=1`, the validated response is normalized (actor connection IDs `conn\d+` → `conn0`) and saved as the fixture file
+3. CLI e2e tests (mock-based) continue to load these fixture files as before
+
+**Normalization:** Only actor connection IDs are normalized for cross-fixture consistency. Timestamps, window IDs, and other volatile fields are left as raw Firefox output.
 
 ## Starting Firefox with the Debug Server
 
@@ -135,10 +135,13 @@ Same `user.js` setup applies. Headless mode is useful for CI.
 
 ## Live Firefox Tests
 
-Located in `crates/ff-rdp-core/tests/live_firefox_test.rs`. Gated behind two mechanisms:
+Located in:
+- `crates/ff-rdp-core/tests/live_firefox_test.rs` — basic connection tests
+- `crates/ff-rdp-core/tests/live_record_fixtures.rs` — comprehensive fixture recording tests
 
+Gated behind two mechanisms:
 - `#[ignore]` attribute — skipped by default in `cargo test`
-- Runtime check: `FF_RDP_LIVE_TESTS=1` env var must be set
+- Runtime check: `FF_RDP_LIVE_TESTS=1` or `FF_RDP_LIVE_TESTS_RECORD=1` env var must be set
 
 To run locally:
 
@@ -148,8 +151,11 @@ To run locally:
   --start-debugger-server 6000 -no-remote \
   -profile /tmp/ff-rdp-test-profile
 
-# Terminal 2: run the live tests
+# Terminal 2: run live tests only (no recording)
 FF_RDP_LIVE_TESTS=1 cargo test --package ff-rdp-core -- --ignored
+
+# Or: run live tests AND record all fixtures
+FF_RDP_LIVE_TESTS_RECORD=1 cargo test --package ff-rdp-core -- --ignored
 ```
 
 Override the port with `FF_RDP_PORT`:
@@ -181,10 +187,10 @@ This validates the full path from CLI argument parsing through protocol interact
 
 Follow this pattern when implementing a new RDP command (e.g., `navigateTo`):
 
-1. **Capture a fixture** — connect to a real Firefox, send the request, save the response to `tests/fixtures/navigate_response.json`
-2. **Register a mock handler** — in your integration test: `.on("navigateTo", load_fixture("navigate_response.json"))`
-3. **Write integration tests** — happy path, error path, edge cases (see `connection_test.rs` for examples)
-4. **Add CLI e2e tests** — spawn the binary, assert JSON output matches expectations
-5. **Update live tests** — add an `#[ignore]` test that exercises the command against real Firefox
+1. **Add a live test** in `live_record_fixtures.rs` — exercise the command against real Firefox, validate the response, and call `save_cli_fixture()` to record the fixture
+2. **Record the fixture** — run `FF_RDP_LIVE_TESTS_RECORD=1 cargo test -p ff-rdp-core --test live_record_fixtures -- --ignored live_your_test`
+3. **Register a mock handler** — in your CLI e2e test: `.on("yourMethod", load_fixture("your_fixture.json"))`
+4. **Write CLI e2e tests** — spawn the binary, assert JSON output matches expectations
+5. **Write integration tests** — if needed, add mock-server tests for edge cases (see `connection_test.rs`)
 
 See [[decision-log]] for architectural decisions that affect the test strategy.
