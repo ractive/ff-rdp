@@ -88,7 +88,26 @@ pub enum Command {
         #[arg(long)]
         pattern: Option<String>,
     },
-    /// Show network requests
+    /// Show network requests captured by the WatcherActor.
+    ///
+    /// In direct mode (--no-daemon), only requests made after connection are
+    /// reliably captured. Use the daemon (default) for continuous buffering
+    /// that survives across commands, or use `navigate --with-network` to
+    /// capture requests triggered by a navigation.
+    #[command(long_about = "Show network requests captured by the WatcherActor.
+
+In direct mode (--no-daemon), only requests made after the connection is
+established are reliably captured. Requests completed before ff-rdp connects
+will typically not appear.
+
+Recommended workflows:
+  - Daemon mode (default): run `ff-rdp` without --no-daemon so the daemon
+    buffers events continuously across commands.
+  - Navigate with capture: use `ff-rdp navigate --with-network <url>` to
+    start network monitoring before the page load begins.
+
+The --filter and --method flags narrow results after capture; they do not
+affect which requests Firefox records.")]
     Network {
         /// Filter by URL pattern (substring match)
         #[arg(long)]
