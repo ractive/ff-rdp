@@ -140,15 +140,19 @@ pub(crate) fn build_command(
         cmd.arg("--profile").arg(&path);
         Some(path)
     } else if temp_profile {
-        let tmp = std::env::temp_dir().join(format!("ff-rdp-profile-{}", std::process::id()));
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let tmp =
+            std::env::temp_dir().join(format!("ff-rdp-profile-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&tmp).map_err(|e| {
             AppError::User(format!(
                 "failed to create temporary profile directory {}: {e}",
                 tmp.display()
             ))
         })?;
-        let user_js_path = tmp.join("user.js");
-        std::fs::write(&user_js_path, USER_JS).map_err(|e| {
+        std::fs::write(tmp.join("user.js"), USER_JS).map_err(|e| {
             AppError::User(format!(
                 "failed to write user.js to temporary profile {}: {e}",
                 tmp.display()
@@ -170,30 +174,49 @@ pub(crate) fn build_command(
 }
 
 /// Poll until the TCP port at `host:port` accepts a connection or `timeout`
-/// elapses. Retries every 200 ms. Returns `Ok(())` on success.
+/// elapses. Tries all resolved addresses (IPv4 + IPv6) each iteration so
+/// Firefox is found regardless of which address family it binds.
+/// Retries every 200 ms. Returns `Ok(())` on success.
 fn wait_for_port(host: &str, port: u16, timeout: Duration) -> Result<(), AppError> {
     let addr_str = format!("{host}:{port}");
-    let mut addrs = addr_str
+    let addrs: Vec<std::net::SocketAddr> = addr_str
         .to_socket_addrs()
-        .map_err(|e| AppError::User(format!("invalid host/port {addr_str}: {e}")))?;
-    let addr = addrs
-        .next()
-        .ok_or_else(|| AppError::User(format!("could not resolve address {addr_str}")))?;
+        .map_err(|e| AppError::User(format!("invalid host/port {addr_str}: {e}")))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(AppError::User(format!(
+            "could not resolve address {addr_str}"
+        )));
+    }
 
     let poll_interval = Duration::from_millis(200);
     let deadline = std::time::Instant::now() + timeout;
 
     loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let iteration_start = std::time::Instant::now();
+        let remaining = deadline.saturating_duration_since(iteration_start);
         if remaining.is_zero() {
             break;
         }
-        let connect_timeout = remaining.min(poll_interval);
-        if std::net::TcpStream::connect_timeout(&addr, connect_timeout).is_ok() {
-            return Ok(());
+        // Try each resolved address with a short per-address timeout.
+        let per_addr = remaining
+            .min(poll_interval)
+            .checked_div(
+                u32::try_from(addrs.len()).unwrap_or(u32::MAX),
+            )
+            .unwrap_or(Duration::from_millis(50));
+        for addr in &addrs {
+            if std::net::TcpStream::connect_timeout(addr, per_addr).is_ok() {
+                return Ok(());
+            }
         }
-        if std::time::Instant::now() < deadline {
-            std::thread::sleep(poll_interval.min(remaining));
+        // Sleep only the remainder of the poll interval so we don't
+        // busy-spin when connect returns immediately (ECONNREFUSED).
+        let spent = iteration_start.elapsed();
+        let sleep_time = poll_interval.saturating_sub(spent);
+        let new_remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if !new_remaining.is_zero() && !sleep_time.is_zero() {
+            std::thread::sleep(sleep_time.min(new_remaining));
         }
     }
 
@@ -247,9 +270,10 @@ pub fn run(
         }
         Ok(None) => {
             // Still running — verify the debug port is actually reachable
-            // before reporting success.
+            // before reporting success. Always probe localhost since we
+            // just spawned a local Firefox, regardless of --host.
             let pid = child.id();
-            if let Err(e) = wait_for_port(host, port, Duration::from_secs(5)) {
+            if let Err(e) = wait_for_port("localhost", port, Duration::from_secs(5)) {
                 let _ = child.kill();
                 return Err(AppError::User(format!(
                     "Firefox started (pid {pid}) but {e}"
