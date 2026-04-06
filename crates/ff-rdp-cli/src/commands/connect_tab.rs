@@ -24,8 +24,7 @@ pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
     )
     .map_err(|e| match e {
         ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout => AppError::User(format!(
-            "could not connect to Firefox at {}:{} \
-             — is Firefox running with --start-debugger-server {}?",
+            "could not connect to Firefox at {}:{} — is Firefox running with --start-debugger-server {}?",
             cli.host, cli.port, cli.port
         )),
         other => AppError::from(other),
