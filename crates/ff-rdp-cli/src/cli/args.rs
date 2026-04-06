@@ -146,6 +146,23 @@ pub enum Command {
     Back,
     /// Go forward in history
     Forward,
+    /// Inspect a remote JavaScript object by its grip actor ID
+    Inspect {
+        /// The actor ID of the object grip to inspect
+        actor_id: String,
+        /// Recursion depth for nested objects (default: 1)
+        #[arg(long, default_value_t = 1)]
+        depth: u32,
+    },
+    /// List JavaScript/WASM sources loaded on the page
+    Sources {
+        /// Filter sources by URL substring
+        #[arg(long)]
+        filter: Option<String>,
+        /// Filter sources by URL regex pattern
+        #[arg(long)]
+        pattern: Option<String>,
+    },
     /// Launch Firefox with remote debugging enabled
     Launch {
         /// Run Firefox in headless mode

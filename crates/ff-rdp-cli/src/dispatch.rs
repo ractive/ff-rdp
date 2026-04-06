@@ -75,6 +75,10 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         Command::Storage { storage_type, key } => {
             commands::storage::run(cli, storage_type, key.as_deref())
         }
+        Command::Inspect { actor_id, depth } => commands::inspect::run(cli, actor_id, *depth),
+        Command::Sources { filter, pattern } => {
+            commands::sources::run(cli, filter.as_deref(), pattern.as_deref())
+        }
         Command::Screenshot { output } => commands::screenshot::run(cli, output.as_deref()),
         Command::Launch {
             headless,

@@ -4,7 +4,7 @@ A fast Rust CLI for the Firefox Remote Debugging Protocol. Communicates directly
 
 ## Status
 
-**Early development** — all planned commands working: `tabs`, `navigate`, `eval`, `dom`, `page-text`, `console`, `network`, `click`, `type`, `wait`, `cookies`, `storage`, `screenshot`, `launch`, `reload`, `back`, `forward`.
+**Early development** — all planned commands working: `tabs`, `navigate`, `eval`, `dom`, `page-text`, `console`, `network`, `click`, `type`, `wait`, `cookies`, `storage`, `screenshot`, `launch`, `inspect`, `sources`, `reload`, `back`, `forward`.
 
 ## Requirements
 
@@ -41,6 +41,8 @@ Commands:
   cookies     List accessible cookies (document.cookie)
   storage     Read web storage (localStorage or sessionStorage)
   screenshot  Capture a screenshot (requires Firefox drawWindow support)
+  inspect     Inspect a remote JavaScript object by its grip actor ID
+  sources     List JavaScript/WASM sources loaded on the page
   launch      Launch Firefox with remote debugging enabled
   reload      Reload the page
   back        Go back in history
@@ -146,6 +148,21 @@ ff-rdp launch
 
 # Launch headless Firefox with temporary profile
 ff-rdp launch --headless --temp-profile
+
+# Inspect a remote object grip (from eval output)
+ff-rdp inspect server1.conn0.child2/obj19
+
+# Recursive inspection (depth 2)
+ff-rdp inspect server1.conn0.child2/obj19 --depth 2
+
+# List all loaded JavaScript sources
+ff-rdp sources
+
+# Filter sources by URL substring
+ff-rdp sources --filter vendor
+
+# Filter sources by regex pattern
+ff-rdp sources --pattern "cdn\.example\.com"
 
 # Reload, go back, go forward
 ff-rdp reload
