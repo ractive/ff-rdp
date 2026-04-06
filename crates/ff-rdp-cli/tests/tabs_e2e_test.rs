@@ -24,6 +24,7 @@ fn base_args(port: u16) -> Vec<String> {
         "127.0.0.1".to_owned(),
         "--port".to_owned(),
         port.to_string(),
+        "--no-daemon".to_owned(),
     ]
 }
 

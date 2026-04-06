@@ -27,6 +27,14 @@ pub struct Cli {
     #[arg(long, default_value_t = 5000, global = true)]
     pub timeout: u64,
 
+    /// Don't use or start a daemon (connect directly to Firefox)
+    #[arg(long, global = true)]
+    pub no_daemon: bool,
+
+    /// Daemon idle timeout in seconds
+    #[arg(long, default_value_t = 300, global = true)]
+    pub daemon_timeout: u64,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -163,6 +171,9 @@ pub enum Command {
         #[arg(long)]
         pattern: Option<String>,
     },
+    /// Internal: run as background daemon (not for direct use)
+    #[command(name = "_daemon", hide = true)]
+    Daemon,
     /// Launch Firefox with remote debugging enabled
     Launch {
         /// Run Firefox in headless mode

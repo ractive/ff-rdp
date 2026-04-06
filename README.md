@@ -49,12 +49,14 @@ Commands:
   forward     Go forward in history
 
 Options:
-  --host <HOST>        Firefox debug server host [default: localhost]
-  --port <PORT>        Firefox debug server port [default: 6000]
-  --tab <TAB>          Target tab by index (1-based) or URL substring
-  --tab-id <TAB_ID>    Target tab by exact actor ID
-  --jq <JQ>            jq filter expression applied to output
-  --timeout <TIMEOUT>  Operation timeout in milliseconds [default: 5000]
+  --host <HOST>              Firefox debug server host [default: localhost]
+  --port <PORT>              Firefox debug server port [default: 6000]
+  --tab <TAB>                Target tab by index (1-based) or URL substring
+  --tab-id <TAB_ID>          Target tab by exact actor ID
+  --jq <JQ>                  jq filter expression applied to output
+  --timeout <TIMEOUT>        Operation timeout in milliseconds [default: 5000]
+  --no-daemon                Don't use or start a daemon (direct Firefox connection)
+  --daemon-timeout <SECS>    Daemon idle timeout in seconds [default: 300]
 ```
 
 All output is JSON with a standard envelope (`results`, `total`, `meta`). Use `--jq` to filter:
@@ -170,10 +172,48 @@ ff-rdp back
 ff-rdp forward
 ```
 
+## Daemon Mode
+
+By default, the first CLI invocation auto-starts a background daemon that holds a persistent Firefox RDP connection and buffers watcher events. Subsequent invocations connect through the daemon for faster execution and cross-command workflows.
+
+**How it works:**
+- First `ff-rdp` call spawns a daemon process (`ff-rdp _daemon`) in the background
+- The daemon connects to Firefox, subscribes to watcher resources (network, console, errors), and listens on a random TCP loopback port
+- Subsequent CLI calls connect to the daemon instead of Firefox directly
+- The daemon transparently proxies RDP frames and also exposes a `"daemon"` virtual actor for draining buffered events
+- Daemon exits automatically after 5 minutes of inactivity (configurable via `--daemon-timeout`)
+
+**Cross-command workflows (enabled by daemon):**
+```bash
+# Navigate, then inspect network traffic as separate commands
+ff-rdp navigate https://example.com
+ff-rdp network
+
+# Object grips from eval survive across invocations
+ff-rdp eval 'document.querySelector("h1")'
+ff-rdp inspect server1.conn0.child2/obj19
+```
+
+**Disabling the daemon:**
+```bash
+# Connect directly to Firefox (original behavior)
+ff-rdp --no-daemon eval "1+1"
+```
+
+**Registry and logs:**
+- Registry file: `~/.ff-rdp/daemon.json` (PID, port, Firefox target)
+- Log file: `~/.ff-rdp/daemon.log`
+- Stale registry files are cleaned up automatically when the daemon PID is dead
+
+**Troubleshooting:**
+- If the daemon seems stuck, delete `~/.ff-rdp/daemon.json` to force a fresh start
+- Use `--no-daemon` to bypass the daemon and test direct connectivity
+- Check `~/.ff-rdp/daemon.log` for daemon-side errors
+
 ## Architecture
 
 - **ff-rdp-core** — Protocol library: blocking TCP transport, length-prefixed JSON framing, typed errors
-- **ff-rdp-cli** — CLI binary: clap args, jq output pipeline, command dispatch
+- **ff-rdp-cli** — CLI binary: clap args, jq output pipeline, command dispatch, daemon proxy
 
 ## License
 

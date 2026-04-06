@@ -1,0 +1,238 @@
+use std::fs;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use fs2::FileExt as _;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonInfo {
+    pub pid: u32,
+    pub proxy_port: u16,
+    pub firefox_host: String,
+    pub firefox_port: u16,
+    /// ISO 8601 timestamp of when the daemon was started.
+    pub started_at: String,
+}
+
+// ---------------------------------------------------------------------------
+// Base-dir helpers (accept an explicit directory for testability)
+// ---------------------------------------------------------------------------
+
+/// Read `<dir>/daemon.json`, returning `None` if the file does not exist.
+pub(crate) fn read_registry_in(dir: &Path) -> Result<Option<DaemonInfo>> {
+    let path = dir.join("daemon.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let contents = fs::read_to_string(&path)
+        .with_context(|| format!("reading registry at {}", path.display()))?;
+    let info: DaemonInfo = serde_json::from_str(&contents)
+        .with_context(|| format!("parsing registry at {}", path.display()))?;
+    Ok(Some(info))
+}
+
+/// Write `info` to `<dir>/daemon.json` atomically using write-then-rename.
+///
+/// An exclusive file lock is acquired on the target path (creating it if
+/// necessary) before writing, so concurrent writers do not corrupt the file.
+pub(crate) fn write_registry_in(dir: &Path, info: &DaemonInfo) -> Result<()> {
+    fs::create_dir_all(dir)
+        .with_context(|| format!("creating registry directory {}", dir.display()))?;
+
+    let registry_path = dir.join("daemon.json");
+    let tmp_path = dir.join("daemon.json.tmp");
+
+    // Acquire an exclusive lock on the registry file (creates it if absent).
+    let lock_file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&registry_path)
+        .with_context(|| format!("opening lock file {}", registry_path.display()))?;
+    lock_file
+        .lock_exclusive()
+        .with_context(|| format!("locking registry file {}", registry_path.display()))?;
+
+    // Write to a .tmp file then rename for atomicity.
+    let json = serde_json::to_string_pretty(info).context("serializing DaemonInfo to JSON")?;
+    let mut tmp_file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&tmp_path)
+        .with_context(|| format!("opening tmp file {}", tmp_path.display()))?;
+    tmp_file
+        .write_all(json.as_bytes())
+        .with_context(|| format!("writing to tmp file {}", tmp_path.display()))?;
+    tmp_file
+        .flush()
+        .with_context(|| format!("flushing tmp file {}", tmp_path.display()))?;
+    drop(tmp_file);
+
+    fs::rename(&tmp_path, &registry_path).with_context(|| {
+        format!(
+            "renaming {} -> {}",
+            tmp_path.display(),
+            registry_path.display()
+        )
+    })?;
+
+    // Lock is released when `lock_file` is dropped here.
+    Ok(())
+}
+
+/// Remove `<dir>/daemon.json` if it exists.
+pub(crate) fn remove_registry_in(dir: &Path) -> Result<()> {
+    let path = dir.join("daemon.json");
+    if path.exists() {
+        fs::remove_file(&path)
+            .with_context(|| format!("removing registry file {}", path.display()))?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Public convenience wrappers that use the real `~/.ff-rdp/` directory
+// ---------------------------------------------------------------------------
+
+/// Return the `~/.ff-rdp/` directory, creating it if it does not exist.
+pub fn registry_dir() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("could not determine home directory")?;
+    let dir = home.join(".ff-rdp");
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("creating ff-rdp directory {}", dir.display()))?;
+    Ok(dir)
+}
+
+/// Return the path to `~/.ff-rdp/daemon.json`.
+#[allow(dead_code)]
+pub fn registry_path() -> Result<PathBuf> {
+    Ok(registry_dir()?.join("daemon.json"))
+}
+
+/// Read and parse `~/.ff-rdp/daemon.json`.  Returns `Ok(None)` if the file
+/// does not exist.
+pub fn read_registry() -> Result<Option<DaemonInfo>> {
+    read_registry_in(&registry_dir()?)
+}
+
+/// Write `info` to `~/.ff-rdp/daemon.json` atomically.
+pub fn write_registry(info: &DaemonInfo) -> Result<()> {
+    write_registry_in(&registry_dir()?, info)
+}
+
+/// Remove `~/.ff-rdp/daemon.json` if it exists.
+pub fn remove_registry() -> Result<()> {
+    remove_registry_in(&registry_dir()?)
+}
+
+/// Return the path to `~/.ff-rdp/daemon.log`.
+pub fn log_path() -> Result<PathBuf> {
+    Ok(registry_dir()?.join("daemon.log"))
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    fn sample_info() -> DaemonInfo {
+        DaemonInfo {
+            pid: 12345,
+            proxy_port: 7000,
+            firefox_host: "127.0.0.1".to_owned(),
+            firefox_port: 6000,
+            started_at: "2026-04-06T12:00:00Z".to_owned(),
+        }
+    }
+
+    #[test]
+    fn write_then_read_roundtrip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let info = sample_info();
+
+        write_registry_in(dir.path(), &info).expect("write");
+        let read_back = read_registry_in(dir.path())
+            .expect("read")
+            .expect("should be Some");
+
+        assert_eq!(read_back.pid, info.pid);
+        assert_eq!(read_back.proxy_port, info.proxy_port);
+        assert_eq!(read_back.firefox_host, info.firefox_host);
+        assert_eq!(read_back.firefox_port, info.firefox_port);
+        assert_eq!(read_back.started_at, info.started_at);
+    }
+
+    #[test]
+    fn read_nonexistent_returns_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = read_registry_in(dir.path()).expect("read");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn remove_cleans_up() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_registry_in(dir.path(), &sample_info()).expect("write");
+
+        let registry_file = dir.path().join("daemon.json");
+        assert!(registry_file.exists());
+
+        remove_registry_in(dir.path()).expect("remove");
+        assert!(!registry_file.exists());
+    }
+
+    #[test]
+    fn remove_nonexistent_is_ok() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Must not return an error.
+        remove_registry_in(dir.path()).expect("remove on nonexistent should succeed");
+    }
+
+    #[test]
+    fn write_is_atomic_tmp_cleaned_up() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_registry_in(dir.path(), &sample_info()).expect("write");
+
+        // The .tmp file must not remain after a successful write.
+        let tmp = dir.path().join("daemon.json.tmp");
+        assert!(
+            !tmp.exists(),
+            ".tmp file should be gone after atomic rename"
+        );
+    }
+
+    #[test]
+    fn overwrite_updates_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_registry_in(dir.path(), &sample_info()).expect("first write");
+
+        let updated = DaemonInfo {
+            pid: 99999,
+            proxy_port: 8080,
+            firefox_host: "localhost".to_owned(),
+            firefox_port: 6001,
+            started_at: "2026-04-07T00:00:00Z".to_owned(),
+        };
+        write_registry_in(dir.path(), &updated).expect("second write");
+
+        let read_back = read_registry_in(dir.path()).expect("read").expect("Some");
+        assert_eq!(read_back.pid, 99999);
+        assert_eq!(read_back.proxy_port, 8080);
+    }
+
+    #[test]
+    fn read_corrupt_json_returns_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("daemon.json"), b"not valid json").expect("write corrupt");
+        let result = read_registry_in(dir.path());
+        assert!(result.is_err());
+    }
+}

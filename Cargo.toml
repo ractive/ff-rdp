@@ -23,7 +23,18 @@ jaq-json = { version = "2.0.0", features = ["serde"] }
 jaq-std = "3.0.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+dirs = "6"
+fs2 = "0.4"
 thiserror = "2"
+tempfile = "3"
+
+[workspace.dependencies.libc]
+version = "0.2"
+
+[workspace.dependencies.windows-sys]
+version = "0.59"
+features = ["Win32_System_Threading", "Win32_Foundation"]
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

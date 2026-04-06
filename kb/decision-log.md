@@ -123,3 +123,11 @@ status: active
 **Decision**: Added `LongStringActor::full_string()` in ff-rdp-core to fetch complete content when Firefox returns a `longString` grip (strings > ~1000 chars). Used by `network --cached` when pages have many resources.
 
 **Why**: Firefox truncates long string results in eval responses, returning a `longString` grip with an actor ID, initial prefix, and total length. The `substring` RDP method on the StringActor fetches the full content. This is a protocol-level concern (correctly in ff-rdp-core), needed by any consumer that evaluates JS producing large output.
+
+## DEC-016: Connection daemon with virtual actor protocol
+
+**Decision**: Introduced an SSH ControlMaster-style background daemon that holds a persistent Firefox RDP connection, subscribes to watcher resources, and buffers events. CLI invocations connect to the daemon via TCP loopback instead of directly to Firefox. The daemon exposes a `"daemon"` virtual actor on the same wire format (length-prefixed JSON) for draining buffered events and status queries.
+
+**Why**: Each CLI invocation previously opened a fresh TCP connection (~50-100ms overhead). For AI agent workflows running 5-10 commands in sequence, this adds up. More critically, watcher subscriptions are connection-scoped (see [[#DEC-013]]) — `navigate` and `network` on separate connections can't share events. The daemon solves both: connection reuse eliminates overhead, and persistent subscriptions enable cross-command workflows like `navigate` then `network`.
+
+**Trade-off**: Added complexity (daemon process management, registry file, signal handling). Mitigated by: auto-start/auto-stop lifecycle, TCP loopback (cross-platform), virtual actor (same wire format as RDP — no new framing), serialized one-client-at-a-time access (avoids multiplexing complexity). The `--no-daemon` flag preserves the original direct behavior. See [[research/gradle-daemon-architecture]] and [[research/connection-persistence]] for the analysis that informed this design.

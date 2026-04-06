@@ -1,6 +1,7 @@
 use crate::cli::args::{Cli, Command};
 use crate::commands;
 use crate::commands::nav_action::NavAction;
+use crate::daemon::server;
 use crate::error::AppError;
 
 pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
@@ -92,5 +93,8 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             *temp_profile,
             *debug_port,
         ),
+        Command::Daemon => {
+            server::run_daemon(&cli.host, cli.port, cli.daemon_timeout).map_err(AppError::Internal)
+        }
     }
 }

@@ -15,6 +15,7 @@ fn base_args(port: u16) -> Vec<String> {
         // Short timeout so the event drain loop exits quickly.
         "--timeout".to_owned(),
         "1000".to_owned(),
+        "--no-daemon".to_owned(),
     ]
 }
 

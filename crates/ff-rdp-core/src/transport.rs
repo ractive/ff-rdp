@@ -106,6 +106,15 @@ impl RdpTransport {
         Self { reader, writer }
     }
 
+    /// Decompose into the underlying reader/writer halves.
+    ///
+    /// Use this when you need separate ownership of the read and write sides,
+    /// e.g. to hand them to different threads while sharing the same underlying
+    /// Firefox connection.
+    pub fn into_parts(self) -> (BufReader<TcpStream>, TcpStream) {
+        (self.reader, self.writer)
+    }
+
     /// Send a JSON message using Firefox RDP framing: `{len}:{json}`.
     pub fn send(&mut self, message: &Value) -> Result<(), ProtocolError> {
         let json = serde_json::to_string(message)

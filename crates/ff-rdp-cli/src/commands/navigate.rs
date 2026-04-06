@@ -7,7 +7,9 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
-use super::network_events::{build_network_entries, drain_network_events, merge_updates};
+use super::network_events::{
+    build_network_entries, drain_network_events, drain_network_from_daemon, merge_updates,
+};
 
 pub fn run(cli: &Cli, url: &str) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
@@ -39,8 +41,34 @@ pub fn run(cli: &Cli, url: &str) -> Result<(), AppError> {
 /// 8. Emit combined JSON output.
 pub fn run_with_network(cli: &Cli, url: &str) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let tab_actor = ctx.target_tab_actor().clone();
     let target_actor = ctx.target.actor.clone();
+
+    if ctx.via_daemon {
+        // The daemon has already subscribed to network-event resources.
+        // Navigate first, then drain the daemon buffer for events from this
+        // navigation.  The daemon continues buffering after the drain so
+        // subsequent commands see events from future navigations too.
+        WindowGlobalTarget::navigate_to(ctx.transport_mut(), &target_actor, url)
+            .map_err(AppError::from)?;
+
+        let (all_resources, all_updates) = drain_network_from_daemon(ctx.transport_mut())?;
+
+        let update_map = merge_updates(all_updates);
+        let network_entries = build_network_entries(&all_resources, &update_map);
+
+        let total = network_entries.len();
+        let result = json!({
+            "navigated": url,
+            "network": network_entries,
+        });
+        let meta = json!({"host": cli.host, "port": cli.port});
+        let envelope = output::envelope(&result, total, &meta);
+        return OutputPipeline::new(cli.jq.clone())
+            .finalize(&envelope)
+            .map_err(AppError::from);
+    }
+
+    let tab_actor = ctx.target_tab_actor().clone();
 
     // Get watcher actor for resource subscriptions.
     let watcher_actor =
