@@ -2,8 +2,13 @@
 title: "Iteration 8: Performance API + Navigate with Network"
 type: iteration
 date: 2026-04-06
-tags: [iteration, performance, network, navigate, resource-timing]
-status: planned
+tags:
+  - iteration
+  - performance
+  - network
+  - navigate
+  - resource-timing
+status: obsolete
 branch: iter-8/perf-navigate-network
 ---
 

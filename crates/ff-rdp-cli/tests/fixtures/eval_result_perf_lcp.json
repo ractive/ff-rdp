@@ -1,0 +1,10 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "input": "JSON.stringify(...)",
+  "result": "[{\"entryType\":\"largest-contentful-paint\",\"startTime\":1200.0,\"renderTime\":1200.0,\"loadTime\":0,\"size\":50000,\"element\":\"img\",\"url\":\"https://example.com/hero.jpg\"},{\"entryType\":\"largest-contentful-paint\",\"startTime\":1850.0,\"renderTime\":1850.0,\"loadTime\":1800.0,\"size\":120000,\"element\":\"img\",\"url\":\"https://example.com/banner.jpg\"}]",
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183977.373,
+  "timestamp": 1775437183980.721,
+  "type": "evaluationResult"
+}
