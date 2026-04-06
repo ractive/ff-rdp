@@ -1,0 +1,12 @@
+{
+  "from": "server1.conn0.netEvent6",
+  "headers": [
+    {"name": "Host", "value": "example.com"},
+    {"name": "User-Agent", "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:149.0) Gecko/20100101 Firefox/149.0"},
+    {"name": "Accept", "value": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
+    {"name": "Accept-Language", "value": "de,en-US;q=0.9,en;q=0.8"},
+    {"name": "Accept-Encoding", "value": "gzip, deflate, br, zstd"},
+    {"name": "Connection", "value": "keep-alive"}
+  ],
+  "headersSize": 0
+}

@@ -4,7 +4,7 @@ A fast Rust CLI for the Firefox Remote Debugging Protocol. Communicates directly
 
 ## Status
 
-**Early development** — core commands working: `tabs`, `navigate`, `eval`, `reload`, `back`, `forward`. Remaining commands (`page-text`, `console`, `screenshot`) are planned.
+**Early development** — core commands working: `tabs`, `navigate`, `eval`, `console`, `network`, `reload`, `back`, `forward`. Remaining commands (`page-text`, `screenshot`) are planned.
 
 ## Requirements
 
@@ -31,8 +31,9 @@ Commands:
   tabs        List open browser tabs
   navigate    Navigate to a URL
   eval        Evaluate JavaScript in the target tab
+  console     Read console messages (with --level and --pattern filters)
+  network     Show network requests (with --filter and --method filters)
   page-text   Get page information
-  console     Read console messages
   screenshot  Capture a screenshot
   reload      Reload the page
   back        Go back in history
@@ -61,6 +62,21 @@ ff-rdp eval 'document.title' --jq '.results'
 
 # Target a specific tab by URL substring
 ff-rdp eval 'location.href' --tab example.com
+
+# Read console messages (errors only)
+ff-rdp console --level error
+
+# Filter console messages by pattern
+ff-rdp console --pattern "TypeError"
+
+# Show network requests
+ff-rdp network
+
+# Filter network by URL substring
+ff-rdp network --filter api
+
+# Filter network by HTTP method
+ff-rdp network --method POST
 
 # Reload, go back, go forward
 ff-rdp reload

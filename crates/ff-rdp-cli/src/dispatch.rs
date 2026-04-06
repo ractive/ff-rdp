@@ -14,9 +14,12 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         Command::PageText => Err(AppError::User(
             "page-text: not yet implemented (iteration 5)".into(),
         )),
-        Command::Console => Err(AppError::User(
-            "console: not yet implemented (iteration 4)".into(),
-        )),
+        Command::Console { level, pattern } => {
+            commands::console::run(cli, level.as_deref(), pattern.as_deref())
+        }
+        Command::Network { filter, method } => {
+            commands::network::run(cli, filter.as_deref(), method.as_deref())
+        }
         Command::Screenshot { output: _ } => Err(AppError::User(
             "screenshot: not yet implemented (iteration 7)".into(),
         )),

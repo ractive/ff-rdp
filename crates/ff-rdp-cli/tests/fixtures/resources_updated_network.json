@@ -1,0 +1,53 @@
+{
+  "array": [
+    [
+      "network-event",
+      [
+        {
+          "browsingContextID": 19,
+          "innerWindowId": 21474836482,
+          "resourceId": 21474836486,
+          "resourceUpdates": {
+            "eventTimingsAvailable": true,
+            "fromCache": false,
+            "httpVersion": "HTTP/2",
+            "mimeType": "text/html",
+            "remoteAddress": "93.184.215.14",
+            "remotePort": "443",
+            "responseCookiesAvailable": true,
+            "responseHeadersAvailable": true,
+            "status": "200",
+            "statusText": "",
+            "totalTime": 45,
+            "waitingTime": 30,
+            "contentSize": 528,
+            "transferredSize": 371,
+            "responseContentAvailable": true,
+            "securityState": "secure"
+          }
+        },
+        {
+          "browsingContextID": 19,
+          "innerWindowId": 21474836483,
+          "resourceId": 21474836488,
+          "resourceUpdates": {
+            "eventTimingsAvailable": true,
+            "fromCache": true,
+            "httpVersion": "HTTP/2",
+            "mimeType": "text/html",
+            "status": "404",
+            "statusText": "",
+            "totalTime": 0,
+            "waitingTime": 0,
+            "contentSize": 528,
+            "transferredSize": 371,
+            "responseContentAvailable": true,
+            "securityState": "secure"
+          }
+        }
+      ]
+    ]
+  ],
+  "from": "server1.conn0.watcher4",
+  "type": "resources-updated-array"
+}

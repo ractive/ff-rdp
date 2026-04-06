@@ -1,0 +1,23 @@
+{
+  "from": "server1.conn0.netEvent6",
+  "offsets": {
+    "blocked": 0,
+    "connect": 0,
+    "dns": 0,
+    "receive": 0,
+    "send": 0,
+    "ssl": 0,
+    "wait": 0
+  },
+  "serverTimings": [],
+  "timings": {
+    "blocked": 0,
+    "connect": 0,
+    "dns": 0,
+    "receive": 0,
+    "send": 0,
+    "ssl": 0,
+    "wait": 0
+  },
+  "totalTime": 0
+}

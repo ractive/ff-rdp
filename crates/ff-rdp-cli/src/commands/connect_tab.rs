@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use ff_rdp_core::{ProtocolError, RdpConnection, RdpTransport, RootActor, TabActor, TargetInfo};
+use ff_rdp_core::{
+    ActorId, ProtocolError, RdpConnection, RdpTransport, RootActor, TabActor, TargetInfo,
+};
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
@@ -10,6 +12,7 @@ use crate::tab_target::resolve_tab;
 pub struct ConnectedTab {
     connection: RdpConnection,
     pub(crate) target: TargetInfo,
+    tab_actor: ActorId,
 }
 
 /// Connect to Firefox, resolve the target tab, and call `getTarget` on it.
@@ -38,11 +41,19 @@ pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
     let target =
         TabActor::get_target(connection.transport_mut(), &tab_actor).map_err(AppError::from)?;
 
-    Ok(ConnectedTab { connection, target })
+    Ok(ConnectedTab {
+        connection,
+        target,
+        tab_actor,
+    })
 }
 
 impl ConnectedTab {
     pub fn transport_mut(&mut self) -> &mut RdpTransport {
         self.connection.transport_mut()
+    }
+
+    pub fn target_tab_actor(&self) -> &ActorId {
+        &self.tab_actor
     }
 }

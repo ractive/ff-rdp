@@ -16,6 +16,7 @@ ff-rdp-core = { path = "crates/ff-rdp-core", version = "0.1.0" }
 # External dependencies
 anyhow = "1"
 clap = { version = "4.6", features = ["derive"] }
+regex = "1"
 jaq-core = "3.0.0"
 jaq-json = { version = "2.0.0", features = ["serde"] }
 jaq-std = "3.0.0"

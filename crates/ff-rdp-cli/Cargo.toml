@@ -17,6 +17,7 @@ clap = { workspace = true }
 jaq-core = { workspace = true }
 jaq-json = { workspace = true }
 jaq-std = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

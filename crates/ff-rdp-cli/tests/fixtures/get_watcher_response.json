@@ -1,0 +1,18 @@
+{
+  "actor": "server1.conn0.watcher4",
+  "from": "server1.conn0.tabDescriptor1",
+  "traits": {
+    "content_script": true,
+    "frame": true,
+    "process": true,
+    "resources": {
+      "console-message": true,
+      "error-message": true,
+      "network-event": true,
+      "network-event-stacktrace": true
+    },
+    "service_worker": true,
+    "shared_worker": false,
+    "worker": true
+  }
+}
