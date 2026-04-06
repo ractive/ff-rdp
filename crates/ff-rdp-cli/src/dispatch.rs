@@ -17,9 +17,26 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         Command::Reload => commands::nav_action::run(cli, NavAction::Reload),
         Command::Back => commands::nav_action::run(cli, NavAction::Back),
         Command::Forward => commands::nav_action::run(cli, NavAction::Forward),
-        Command::PageText => Err(AppError::User(
-            "page-text: not yet implemented (iteration 5)".into(),
-        )),
+        Command::PageText => commands::page_text::run(cli),
+        Command::Dom {
+            selector,
+            outer_html: _,
+            inner_html,
+            text,
+            attrs,
+        } => {
+            let mode = if *inner_html {
+                commands::dom::OutputMode::InnerHtml
+            } else if *text {
+                commands::dom::OutputMode::Text
+            } else if *attrs {
+                commands::dom::OutputMode::Attrs
+            } else {
+                // default (including explicit --outer-html)
+                commands::dom::OutputMode::OuterHtml
+            };
+            commands::dom::run(cli, selector, mode)
+        }
         Command::Console { level, pattern } => {
             commands::console::run(cli, level.as_deref(), pattern.as_deref())
         }

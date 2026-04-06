@@ -2,8 +2,12 @@
 title: "Iteration 5: DOM + Page Text"
 type: iteration
 date: 2026-04-06
-tags: [iteration, dom, inspector, page-text]
-status: planned
+tags:
+  - iteration
+  - dom
+  - inspector
+  - page-text
+status: completed
 branch: iter-5/dom-page-text
 ---
 
@@ -13,12 +17,12 @@ DOM inspection via the Inspector/Walker actors and visible text extraction.
 
 ## Tasks
 
-- [ ] Implement `ff-rdp-core/src/actors/inspector.rs` — `InspectorActor` with `get_walker()`
-- [ ] Implement `ff-rdp-core/src/actors/inspector.rs` — `WalkerActor` with `document()`, `querySelector(node, selector)`, `querySelectorAll(node, selector)`
-- [ ] Implement DOM node serialization: tag name, attributes, text content, children (with configurable depth)
-- [ ] Implement `ff-rdp-cli/src/commands/dom.rs` — `ff-rdp dom <selector> [--tab ...] [--outer-html|--inner-html|--text|--attrs]`
-- [ ] Implement `ff-rdp-cli/src/commands/page_text.rs` — `ff-rdp page-text [--tab ...]` using eval `document.body.innerText` as efficient fallback
-- [ ] Consider: should `dom` use native Inspector actors or eval-based approach? Eval is simpler and covers most cases.
+- [x] Implement `ff-rdp-core/src/actors/inspector.rs` — `InspectorActor` with `get_walker()`
+- [x] Implement `ff-rdp-core/src/actors/inspector.rs` — `WalkerActor` with `document()`, `querySelector(node, selector)`, `querySelectorAll(node, selector)`
+- [x] Implement DOM node serialization: tag name, attributes, text content, children (with configurable depth)
+- [x] Implement `ff-rdp-cli/src/commands/dom.rs` — `ff-rdp dom <selector> [--tab ...] [--outer-html|--inner-html|--text|--attrs]`
+- [x] Implement `ff-rdp-cli/src/commands/page_text.rs` — `ff-rdp page-text [--tab ...]` using eval `document.body.innerText` as efficient fallback
+- [x] Consider: should `dom` use native Inspector actors or eval-based approach? Eval is simpler and covers most cases.
 
 ## Design Decision
 
