@@ -39,6 +39,9 @@ pub enum Command {
     Navigate {
         /// The URL to navigate to
         url: String,
+        /// Also capture network requests made during navigation
+        #[arg(long)]
+        with_network: bool,
     },
     /// Evaluate JavaScript in the target tab
     Eval {
@@ -64,6 +67,9 @@ pub enum Command {
         /// Filter by HTTP method (GET, POST, etc.)
         #[arg(long)]
         method: Option<String>,
+        /// Use Performance Resource Timing API for retrospective data instead of WatcherActor
+        #[arg(long)]
+        cached: bool,
     },
     /// Capture a screenshot
     Screenshot {

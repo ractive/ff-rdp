@@ -1,8 +1,4 @@
-use std::collections::HashMap;
-
-use ff_rdp_core::{
-    TabActor, WatcherActor, parse_network_resource_updates, parse_network_resources,
-};
+use ff_rdp_core::{Grip, LongStringActor, TabActor, WatcherActor, WebConsoleActor};
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -11,6 +7,7 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
+use super::network_events::{build_network_entries, drain_network_events, merge_updates};
 
 pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
@@ -25,118 +22,134 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
     WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
         .map_err(AppError::from)?;
 
-    // Collect resource events. After watchResources responds, Firefox sends
-    // resource-available-array and resource-updated-array events. We read
-    // with a short timeout until no more events arrive.
-    let mut all_resources = Vec::new();
-    let mut all_updates = Vec::new();
-
-    loop {
-        match ctx.transport_mut().recv() {
-            Ok(msg) => {
-                let msg_type = msg
-                    .get("type")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-
-                match msg_type {
-                    "resources-available-array" => {
-                        all_resources.extend(parse_network_resources(&msg));
-                    }
-                    "resources-updated-array" => {
-                        all_updates.extend(parse_network_resource_updates(&msg));
-                    }
-                    _ => {}
-                }
-            }
-            Err(ff_rdp_core::ProtocolError::Timeout) => break,
-            Err(e) => return Err(AppError::from(e)),
-        }
-    }
+    // Collect resource events until timeout.
+    let (all_resources, all_updates) =
+        drain_network_events(ctx.transport_mut()).map_err(AppError::from)?;
 
     // Merge updates into resources by resource_id.
-    // Take the latest update for each resource_id (updates come in order).
-    let mut update_map: HashMap<u64, ff_rdp_core::NetworkResourceUpdate> = HashMap::new();
-    for update in all_updates {
-        let entry = update_map.entry(update.resource_id).or_default();
-        // Merge: later updates fill in fields that earlier updates may not have.
-        if update.status.is_some() {
-            entry.status = update.status;
-        }
-        if update.http_version.is_some() {
-            entry.http_version = update.http_version;
-        }
-        if update.mime_type.is_some() {
-            entry.mime_type = update.mime_type;
-        }
-        if update.total_time.is_some() {
-            entry.total_time = update.total_time;
-        }
-        if update.content_size.is_some() {
-            entry.content_size = update.content_size;
-        }
-        if update.transferred_size.is_some() {
-            entry.transferred_size = update.transferred_size;
-        }
-        if update.from_cache.is_some() {
-            entry.from_cache = update.from_cache;
-        }
-        if update.remote_address.is_some() {
-            entry.remote_address.clone_from(&update.remote_address);
-        }
-        if update.security_state.is_some() {
-            entry.security_state.clone_from(&update.security_state);
-        }
-    }
+    let update_map = merge_updates(all_updates);
 
-    // Build JSON output combining resource + update data.
-    let results: Vec<serde_json::Value> = all_resources
-        .iter()
-        .filter(|res| {
-            if let Some(f) = filter
-                && !res.url.contains(f)
-            {
-                return false;
+    // Build JSON output combining resource + update data, applying filters.
+    let results: Vec<serde_json::Value> = build_network_entries(&all_resources, &update_map)
+        .into_iter()
+        .filter(|entry| {
+            if let Some(f) = filter {
+                let url = entry["url"].as_str().unwrap_or_default();
+                if !url.contains(f) {
+                    return false;
+                }
             }
-            if let Some(m) = method
-                && !res.method.eq_ignore_ascii_case(m)
-            {
-                return false;
+            if let Some(m) = method {
+                let entry_method = entry["method"].as_str().unwrap_or_default();
+                if !entry_method.eq_ignore_ascii_case(m) {
+                    return false;
+                }
             }
             true
-        })
-        .map(|res| {
-            let update = update_map.get(&res.resource_id);
-            let mut entry = json!({
-                "method": res.method,
-                "url": res.url,
-                "is_xhr": res.is_xhr,
-                "cause_type": res.cause_type,
-                "content_type": null,
-            });
-            if let Some(u) = update {
-                if let Some(ref status) = u.status
-                    && let Ok(code) = status.parse::<u16>()
-                {
-                    entry["status"] = json!(code);
-                }
-                if let Some(ref mime) = u.mime_type {
-                    entry["content_type"] = json!(mime);
-                }
-                if let Some(total) = u.total_time {
-                    entry["duration_ms"] = json!(total);
-                }
-                if let Some(size) = u.content_size {
-                    entry["size_bytes"] = json!(size);
-                }
-            }
-            entry
         })
         .collect();
 
     // Unwatch to clean up server-side resources.
     let _ =
         WatcherActor::unwatch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"]);
+
+    let total = results.len();
+    let results_json = json!(results);
+    let meta = json!({"host": cli.host, "port": cli.port});
+    let envelope = output::envelope(&results_json, total, &meta);
+
+    OutputPipeline::new(cli.jq.clone())
+        .finalize(&envelope)
+        .map_err(AppError::from)
+}
+
+/// JavaScript snippet evaluated in the page to extract Performance Resource Timing entries.
+const PERF_TIMING_SCRIPT: &str = r#"JSON.stringify(performance.getEntriesByType("resource").map(e => ({
+  name: e.name,
+  initiatorType: e.initiatorType,
+  duration: Math.round(e.duration * 100) / 100,
+  transferSize: e.transferSize,
+  encodedBodySize: e.encodedBodySize,
+  decodedBodySize: e.decodedBodySize,
+  startTime: Math.round(e.startTime * 100) / 100,
+  responseEnd: Math.round(e.responseEnd * 100) / 100,
+  protocol: e.nextHopProtocol
+})))"#;
+
+/// Run the network command in cached mode using the Performance Resource Timing API.
+///
+/// This path evaluates JavaScript in the tab to retrieve resources already loaded
+/// by the page, without subscribing to the WatcherActor. The `--method` flag is
+/// silently ignored because the Performance API does not expose HTTP method.
+pub fn run_cached(cli: &Cli, filter: Option<&str>) -> Result<(), AppError> {
+    let mut ctx = connect_and_get_target(cli)?;
+    let console_actor = ctx.target.console_actor.clone();
+
+    let eval_result =
+        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, PERF_TIMING_SCRIPT)
+            .map_err(AppError::from)?;
+
+    // If the evaluation threw, surface the error.
+    if let Some(ref exc) = eval_result.exception {
+        let msg = exc
+            .message
+            .as_deref()
+            .unwrap_or("performance timing evaluation threw an exception");
+        return Err(AppError::User(format!("network --cached: {msg}")));
+    }
+
+    // The result is a JSON string produced by JSON.stringify inside the script.
+    // For pages with many resources, Firefox returns a LongString grip that
+    // must be fetched in full via the StringActor.
+    let json_str = match &eval_result.result {
+        Grip::Value(serde_json::Value::String(s)) => s.clone(),
+        Grip::LongString {
+            actor,
+            length,
+            initial: _,
+        } => LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), *length)
+            .map_err(AppError::from)?,
+        other => {
+            return Err(AppError::User(format!(
+                "network --cached: expected string result, got: {}",
+                other.to_json()
+            )));
+        }
+    };
+
+    // Parse the JSON array of resource timing entries.
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&json_str).map_err(|e| {
+        AppError::User(format!(
+            "network --cached: failed to parse performance timing JSON: {e}"
+        ))
+    })?;
+
+    // Apply URL filter and map to output shape.
+    let results: Vec<serde_json::Value> = entries
+        .into_iter()
+        .filter(|entry| {
+            if let Some(f) = filter {
+                let name = entry.get("name").and_then(serde_json::Value::as_str).unwrap_or_default();
+                if !name.contains(f) {
+                    return false;
+                }
+            }
+            true
+        })
+        .map(|entry| {
+            json!({
+                "url": entry.get("name").cloned().unwrap_or(serde_json::Value::Null),
+                "initiator_type": entry.get("initiatorType").cloned().unwrap_or(serde_json::Value::Null),
+                "duration_ms": entry.get("duration").cloned().unwrap_or(serde_json::Value::Null),
+                "transfer_size": entry.get("transferSize").cloned().unwrap_or(serde_json::Value::Null),
+                "encoded_size": entry.get("encodedBodySize").cloned().unwrap_or(serde_json::Value::Null),
+                "decoded_size": entry.get("decodedBodySize").cloned().unwrap_or(serde_json::Value::Null),
+                "start_time_ms": entry.get("startTime").cloned().unwrap_or(serde_json::Value::Null),
+                "response_end_ms": entry.get("responseEnd").cloned().unwrap_or(serde_json::Value::Null),
+                "protocol": entry.get("protocol").cloned().unwrap_or(serde_json::Value::Null),
+            })
+        })
+        .collect();
 
     let total = results.len();
     let results_json = json!(results);
