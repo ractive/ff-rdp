@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Context as _;
 use base64::Engine as _;
-use ff_rdp_core::{Grip, LongStringActor, WebConsoleActor};
+use ff_rdp_core::{Grip, LongStringActor, ScreenshotContentActor, WebConsoleActor};
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -52,14 +52,29 @@ pub fn run(cli: &Cli, output_path: Option<&str>) -> Result<(), AppError> {
 
     // Resolve the result — the data URL may come back as a LongString when the
     // PNG is large enough to exceed Firefox's inline-string threshold.
-    let data_url = resolve_string(&mut ctx, &eval_result.result)?;
-
-    let Some(data_url) = data_url else {
-        return Err(AppError::User(
-            "screenshot: drawWindow is not available in this Firefox build — \
-             try a non-headless profile or a version with privileged canvas APIs"
-                .to_owned(),
-        ));
+    let data_url = if let Some(url) = resolve_string(&mut ctx, &eval_result.result)? {
+        url
+    } else {
+        // drawWindow unavailable — try screenshotContentActor fallback.
+        // Clone the actor ID to release the borrow on `ctx.target` before
+        // we take a mutable borrow on `ctx` for the transport call.
+        let actor_id = ctx.target.screenshot_content_actor.clone();
+        if let Some(actor) = actor_id {
+            let capture = ScreenshotContentActor::capture(ctx.transport_mut(), actor.as_ref())
+                .map_err(|e| {
+                    AppError::User(format!(
+                        "screenshot: drawWindow not available and screenshotContentActor \
+                         capture failed ({e}) — try running Firefox in headless mode"
+                    ))
+                })?;
+            capture.data
+        } else {
+            return Err(AppError::User(
+                "screenshot: drawWindow not available and no screenshotContentActor found — \
+                 try running Firefox in headless mode"
+                    .to_owned(),
+            ));
+        }
     };
 
     let b64 = data_url.strip_prefix(PNG_DATA_URL_PREFIX).ok_or_else(|| {

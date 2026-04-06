@@ -76,7 +76,7 @@ fn inspect_with_jq_filter() {
         "inspect".to_owned(),
         "server1.conn0.child2/obj19".to_owned(),
         "--jq".to_owned(),
-        ".results.ownProperties.a.value".to_owned(),
+        ".ownProperties.a.value".to_owned(),
     ]);
 
     let output = std::process::Command::new(ff_rdp_bin())

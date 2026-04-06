@@ -93,7 +93,7 @@ fn navigate_with_jq_extracts_url() {
         "navigate".to_owned(),
         "https://example.com".to_owned(),
         "--jq".to_owned(),
-        ".results.navigated".to_owned(),
+        ".navigated".to_owned(),
     ]);
 
     let output = std::process::Command::new(ff_rdp_bin())

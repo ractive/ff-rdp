@@ -148,7 +148,7 @@ fn network_with_jq_filter() {
     args.extend([
         "network".to_owned(),
         "--jq".to_owned(),
-        ".results[] | select(.status >= 400)".to_owned(),
+        ".[] | select(.status >= 400)".to_owned(),
     ]);
 
     let output = std::process::Command::new(ff_rdp_bin())

@@ -125,7 +125,7 @@ fn sources_with_jq_filter() {
     args.extend([
         "sources".to_owned(),
         "--jq".to_owned(),
-        ".results[].url".to_owned(),
+        ".[].url".to_owned(),
     ]);
 
     let output = std::process::Command::new(ff_rdp_bin())
@@ -141,4 +141,58 @@ fn sources_with_jq_filter() {
     let lines: Vec<&str> = stdout.trim().lines().collect();
     assert_eq!(lines.len(), 3);
     assert_eq!(lines[0], r#""https://example.com/app.js""#);
+}
+
+#[test]
+fn sources_handles_null_entries_in_response() {
+    // Verify that null entries in the sources array are silently skipped.
+    let response_with_nulls = serde_json::json!({
+        "from": "server1.conn0.child2/thread1",
+        "sources": [
+            {
+                "actor": "server1.conn0.child2/source42",
+                "url": "https://example.com/app.js",
+                "isBlackBoxed": false
+            },
+            null,
+            {
+                "actor": "server1.conn0.child2/source43",
+                "url": "https://example.com/lib.js",
+                "isBlackBoxed": false
+            }
+        ]
+    });
+
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("attach", load_fixture("thread_attach_response.json"))
+        .on("sources", response_with_nulls)
+        .on("resume", load_fixture("thread_resume_response.json"))
+        .on("detach", load_fixture("thread_detach_response.json"));
+
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.push("sources".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["total"], 2);
+    let results = json["results"].as_array().unwrap();
+    assert_eq!(results[0]["url"], "https://example.com/app.js");
+    assert_eq!(results[1]["url"], "https://example.com/lib.js");
 }
