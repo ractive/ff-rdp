@@ -11,6 +11,7 @@ pub use actors::object::{
     ObjectActor, PropertyDescriptor, PrototypeAndProperties, descriptor_to_json,
 };
 pub use actors::root::RootActor;
+pub use actors::storage::{CookieInfo, StorageActor};
 pub use actors::string::LongStringActor;
 pub use actors::tab::{TabActor, TabInfo, TargetInfo};
 pub use actors::target::WindowGlobalTarget;

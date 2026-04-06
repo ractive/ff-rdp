@@ -2,9 +2,14 @@
 title: "Iteration 10: Object Inspection & Native Actor Access"
 type: iteration
 date: 2026-04-06
-status: in-progress
+status: completed
 branch: iter-10/object-inspect
-tags: [iteration, grips, inspection, storage, sources]
+tags:
+  - iteration
+  - grips
+  - inspection
+  - storage
+  - sources
 ---
 
 # Iteration 10: Object Inspection & Native Actor Access
@@ -55,9 +60,9 @@ Also enhance `eval` output: when the result is an Object grip, automatically inc
 4. Function grips show name/location info
 5. All new code has e2e tests
 
-## Part B: Native Cookie Access via StorageActor — DEFERRED
+## Part B: Native Cookie Access via StorageActor — NOW ITERATION 11
 
-**Deferred to a future iteration.** The StorageActor protocol is not fully documented in the official Firefox docs, and implementing it requires live Firefox recording to discover the exact message format. This is best done as a standalone iteration with dedicated research time.
+Protocol discovery is complete — see [[storage-actor-protocol]] for findings. Implementation is underway as [[iteration-11-native-cookie-access]].
 
 ## Part C: Source Listing
 

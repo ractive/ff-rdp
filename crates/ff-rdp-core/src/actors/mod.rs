@@ -2,6 +2,7 @@ pub mod console;
 pub mod network;
 pub mod object;
 pub mod root;
+pub mod storage;
 pub mod string;
 pub mod tab;
 pub mod target;

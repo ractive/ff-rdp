@@ -1,0 +1,26 @@
+{
+  "type": "resources-available-array",
+  "from": "server1.conn0.watcher4",
+  "array": [
+    [
+      "cookies",
+      [
+        {
+          "actor": "server1.conn0.cookies5",
+          "browsingContextID": 14,
+          "hosts": {
+            "https://example.com": []
+          },
+          "resourceId": "cookies-12884901889",
+          "resourceKey": "cookies",
+          "traits": {
+            "supportsAddItem": true,
+            "supportsRemoveAll": true,
+            "supportsRemoveAllSessionCookies": true,
+            "supportsRemoveItem": true
+          }
+        }
+      ]
+    ]
+  ]
+}
