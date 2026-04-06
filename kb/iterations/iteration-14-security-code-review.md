@@ -48,6 +48,7 @@ ff-rdp is a CLI tool that connects to Firefox's Remote Debugging Protocol over T
 - [ ] `wait --text`: uses `js_helpers::escape_js_string()` — verify
 - [ ] `dom`, `click`, `type`: use `escape_js_string()` — verify
 - [ ] `storage --key`: uses `serde_json::to_string()` — verify
+- [ ] `perf --type`: validated against allow-list in iter-12 — verify still correct
 - [ ] Document in README that `eval` and `wait --eval` execute arbitrary JS by design
 
 **Conclusion from initial audit**: The `--eval` flag is *designed* to run user JS — it's not an injection vulnerability, it's the feature. The concern is only if *other* flags (selector, text, key) could be tricked into JS injection. Current escaping via `serde_json::to_string()` and `escape_js_string()` appears solid.
