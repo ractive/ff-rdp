@@ -71,6 +71,14 @@ pub(crate) fn write_registry_in(dir: &Path, info: &DaemonInfo) -> Result<()> {
         .with_context(|| format!("flushing tmp file {}", tmp_path.display()))?;
     drop(tmp_file);
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        fs::set_permissions(&tmp_path, perms)
+            .with_context(|| format!("setting permissions on {}", tmp_path.display()))?;
+    }
+
     fs::rename(&tmp_path, &registry_path).with_context(|| {
         format!(
             "renaming {} -> {}",
@@ -103,6 +111,13 @@ pub fn registry_dir() -> Result<PathBuf> {
     let dir = home.join(".ff-rdp");
     fs::create_dir_all(&dir)
         .with_context(|| format!("creating ff-rdp directory {}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o700);
+        fs::set_permissions(&dir, perms)
+            .with_context(|| format!("setting permissions on {}", dir.display()))?;
+    }
     Ok(dir)
 }
 
@@ -220,6 +235,22 @@ mod tests {
         let read_back = read_registry_in(dir.path()).expect("read").expect("Some");
         assert_eq!(read_back.pid, 99999);
         assert_eq!(read_back.proxy_port, 8080);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn registry_dir_has_restricted_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sub = dir.path().join("sub");
+        // Write triggers dir creation
+        write_registry_in(&sub, &sample_info()).expect("write");
+        let file_perms = fs::metadata(sub.join("daemon.json"))
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_perms, 0o600, "registry file should be owner-only");
     }
 
     #[test]

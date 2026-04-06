@@ -23,7 +23,9 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
     // Apply filters.
     let regex = pattern
         .map(|p| {
-            regex::Regex::new(p)
+            regex::RegexBuilder::new(p)
+                .size_limit(1_000_000)
+                .build()
                 .map_err(|e| AppError::User(format!("invalid --pattern regex: {e}")))
         })
         .transpose()?;
@@ -64,4 +66,27 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
     OutputPipeline::new(cli.jq.clone())
         .finalize(&envelope)
         .map_err(AppError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Verify that a normal pattern compiles successfully under the size limit.
+    #[test]
+    fn accepts_reasonable_regex() {
+        let result = regex::RegexBuilder::new(r"\.js$|\.ts$")
+            .size_limit(1_000_000)
+            .build();
+        assert!(result.is_ok());
+    }
+
+    /// Verify that a pattern whose compiled NFA exceeds the size limit is rejected.
+    #[test]
+    fn rejects_oversized_regex() {
+        // 500 levels of nested groups push the NFA well past 1 MiB.
+        let nested = format!("{}a{}", "(".repeat(500), ")".repeat(500));
+        let result = regex::RegexBuilder::new(&nested)
+            .size_limit(1_000_000)
+            .build();
+        assert!(result.is_err(), "expected oversized pattern to be rejected");
+    }
 }

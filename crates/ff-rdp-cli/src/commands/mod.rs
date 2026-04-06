@@ -18,4 +18,5 @@ pub(crate) mod sources;
 pub(crate) mod storage;
 pub(crate) mod tabs;
 pub(crate) mod type_text;
+pub(crate) mod url_validation;
 pub(crate) mod wait;

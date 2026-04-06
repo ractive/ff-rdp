@@ -35,6 +35,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 300, global = true)]
     pub daemon_timeout: u64,
 
+    /// Allow javascript: and data: URL schemes in navigate (unsafe)
+    #[arg(long, global = true)]
+    pub allow_unsafe_urls: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }

@@ -5,8 +5,9 @@
 /// escape single quotes (`'` → `\'`) since JSON encoding does not escape them but
 /// they would terminate our single-quoted JS literal.
 pub fn escape_selector(selector: &str) -> String {
-    let json_str =
-        serde_json::to_string(selector).expect("serde_json::to_string cannot fail for &str");
+    // serde_json::to_string is infallible for &str; the unwrap_or_else branch
+    // is unreachable in practice but satisfies the no-expect/no-unwrap policy.
+    let json_str = serde_json::to_string(selector).unwrap_or_else(|_| format!("{selector:?}"));
     // serde_json always wraps in double quotes: "value" — strip them.
     // The result is guaranteed to be at least 2 bytes (`""`), so slicing is safe.
     let inner = &json_str[1..json_str.len() - 1];
