@@ -31,12 +31,28 @@ impl LongStringActor {
     }
 
     /// Convenience: fetch the full content of a long string actor.
+    ///
+    /// Firefox's substring protocol may enforce a maximum response size per
+    /// call. Fetches in 65 536-character chunks and concatenates them so that
+    /// arbitrarily large strings are handled correctly.
     pub fn full_string(
         transport: &mut RdpTransport,
         actor: &str,
         length: u64,
     ) -> Result<String, ProtocolError> {
-        Self::substring(transport, actor, 0, length)
+        const CHUNK_SIZE: u64 = 65536;
+        if length <= CHUNK_SIZE {
+            return Self::substring(transport, actor, 0, length);
+        }
+        let mut result = String::with_capacity(usize::try_from(length).unwrap_or(usize::MAX));
+        let mut offset = 0;
+        while offset < length {
+            let end = (offset + CHUNK_SIZE).min(length);
+            let chunk = Self::substring(transport, actor, offset, end)?;
+            result.push_str(&chunk);
+            offset = end;
+        }
+        Ok(result)
     }
 }
 

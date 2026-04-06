@@ -29,7 +29,7 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             cached,
         } => {
             if *cached {
-                commands::network::run_cached(cli, filter.as_deref())
+                commands::network::run_cached(cli, filter.as_deref(), method.as_deref())
             } else {
                 commands::network::run(cli, filter.as_deref(), method.as_deref())
             }

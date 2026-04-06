@@ -1,0 +1,32 @@
+{
+  "exception": {
+    "actor": "server1.conn0.child2/obj21",
+    "class": "Error",
+    "extensible": true,
+    "frozen": false,
+    "isError": true,
+    "ownPropertyLength": 4,
+    "preview": {
+      "columnNumber": 1,
+      "fileName": "debugger eval code",
+      "kind": "Error",
+      "lineNumber": 1,
+      "message": "performance timing failed",
+      "name": "Error",
+      "stack": "@debugger eval code:1:1\n"
+    },
+    "sealed": false,
+    "type": "object"
+  },
+  "exceptionMessage": "Error: performance timing failed",
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": true,
+  "input": "JSON.stringify(...)",
+  "result": {
+    "type": "undefined"
+  },
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183977.373,
+  "timestamp": 1775437183980.721,
+  "type": "evaluationResult"
+}

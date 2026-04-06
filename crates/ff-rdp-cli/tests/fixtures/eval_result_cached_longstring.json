@@ -1,0 +1,15 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "input": "JSON.stringify(...)",
+  "result": {
+    "type": "longString",
+    "actor": "server1.conn0.longstr1",
+    "initial": "[{\"name\":\"...",
+    "length": 200
+  },
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183977.373,
+  "timestamp": 1775437183980.721,
+  "type": "evaluationResult"
+}

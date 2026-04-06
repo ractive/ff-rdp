@@ -80,8 +80,14 @@ const PERF_TIMING_SCRIPT: &str = r#"JSON.stringify(performance.getEntriesByType(
 ///
 /// This path evaluates JavaScript in the tab to retrieve resources already loaded
 /// by the page, without subscribing to the WatcherActor. The `--method` flag is
-/// silently ignored because the Performance API does not expose HTTP method.
-pub fn run_cached(cli: &Cli, filter: Option<&str>) -> Result<(), AppError> {
+/// not applicable because the Performance API does not expose HTTP method; a
+/// warning is emitted to stderr if it is supplied.
+pub fn run_cached(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), AppError> {
+    if method.is_some() {
+        eprintln!(
+            "warning: --method is ignored with --cached (Performance API does not expose HTTP method)"
+        );
+    }
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 

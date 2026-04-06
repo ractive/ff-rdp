@@ -13,7 +13,7 @@ use serde_json::Value;
 ///
 /// This is the common event-drain used by both the `network` command and the
 /// `navigate --with-network` command.
-pub fn drain_network_events(
+pub(crate) fn drain_network_events(
     transport: &mut RdpTransport,
 ) -> Result<(Vec<NetworkResource>, Vec<NetworkResourceUpdate>), ProtocolError> {
     let mut all_resources = Vec::new();
@@ -44,7 +44,7 @@ pub fn drain_network_events(
 
 /// Merge a list of [`NetworkResourceUpdate`] entries by `resource_id`, folding
 /// later values over earlier ones so that the last-seen value for each field wins.
-pub fn merge_updates(
+pub(crate) fn merge_updates(
     all_updates: Vec<NetworkResourceUpdate>,
 ) -> HashMap<u64, NetworkResourceUpdate> {
     let mut update_map: HashMap<u64, NetworkResourceUpdate> = HashMap::new();
@@ -84,7 +84,7 @@ pub fn merge_updates(
 /// Build the JSON array of network entries combining resource + update data.
 ///
 /// Applies the same field mapping used by the `network` command output.
-pub fn build_network_entries(
+pub(crate) fn build_network_entries(
     resources: &[NetworkResource],
     update_map: &HashMap<u64, NetworkResourceUpdate>,
 ) -> Vec<Value> {

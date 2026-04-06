@@ -2,6 +2,9 @@ mod support;
 
 use support::{MockRdpServer, load_fixture};
 
+/// Full JSON produced by the mock substring actor for the long-string test.
+const LONGSTRING_PERF_JSON: &str = r#"[{"name":"https://example.com/app.js","initiatorType":"script","duration":42.5,"transferSize":12345,"encodedBodySize":12000,"decodedBodySize":36000,"startTime":100.0,"responseEnd":142.5,"protocol":"h2"}]"#;
+
 fn cached_network_server() -> MockRdpServer {
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
@@ -309,4 +312,92 @@ fn network_cached_with_jq() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), r#""https://example.com/app.js""#);
+}
+
+// ---------------------------------------------------------------------------
+// --cached mode error-path tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn network_cached_exception_exits_nonzero() {
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_cached_exception.json"),
+        );
+
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["network".to_owned(), "--cached".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for exception"
+    );
+    assert_eq!(output.status.code(), Some(1));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("performance timing failed"),
+        "stderr should mention the error message: {stderr}"
+    );
+}
+
+#[test]
+fn network_cached_handles_long_string() {
+    let longstring_result = load_fixture("eval_result_cached_longstring.json");
+    let substring_response = serde_json::json!({
+        "from": "server1.conn0.longstr1",
+        "substring": LONGSTRING_PERF_JSON
+    });
+
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            longstring_result,
+        )
+        .on("substring", substring_response);
+
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["network".to_owned(), "--cached".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    assert_eq!(json["total"], 1);
+    let results = json["results"].as_array().expect("results is array");
+    assert_eq!(results[0]["url"], "https://example.com/app.js");
+    assert_eq!(results[0]["initiator_type"], "script");
+    assert_eq!(results[0]["duration_ms"], 42.5);
 }
