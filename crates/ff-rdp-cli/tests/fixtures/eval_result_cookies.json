@@ -1,0 +1,10 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "input": "(function() { ... })()",
+  "result": "[{\"name\":\"session_id\",\"value\":\"abc123\"},{\"name\":\"theme\",\"value\":\"dark\"}]",
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183977.373,
+  "timestamp": 1775437183980.721,
+  "type": "evaluationResult"
+}

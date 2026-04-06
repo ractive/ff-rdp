@@ -126,10 +126,39 @@ pub enum Command {
         #[arg(long, default_value_t = 5000)]
         wait_timeout: u64,
     },
+    /// List accessible cookies (document.cookie)
+    Cookies {
+        /// Filter by cookie name (exact match)
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Read web storage (localStorage or sessionStorage)
+    Storage {
+        /// Storage type: "local" or "session"
+        storage_type: String,
+        /// Get a specific key only
+        #[arg(long)]
+        key: Option<String>,
+    },
     /// Reload the page
     Reload,
     /// Go back in history
     Back,
     /// Go forward in history
     Forward,
+    /// Launch Firefox with remote debugging enabled
+    Launch {
+        /// Run Firefox in headless mode
+        #[arg(long)]
+        headless: bool,
+        /// Path to a Firefox profile directory
+        #[arg(long, conflicts_with = "temp_profile")]
+        profile: Option<String>,
+        /// Create a temporary profile for a clean session
+        #[arg(long, conflicts_with = "profile")]
+        temp_profile: bool,
+        /// Override the debug server port (defaults to --port value)
+        #[arg(long)]
+        debug_port: Option<u16>,
+    },
 }

@@ -1,0 +1,15 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "input": "(function() { ... })()",
+  "result": {
+    "actor": "server1.conn0.child2/longstractor55",
+    "initial": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1Pe",
+    "length": 114,
+    "type": "longString"
+  },
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183977.373,
+  "timestamp": 1775437183980.721,
+  "type": "evaluationResult"
+}

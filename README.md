@@ -4,7 +4,7 @@ A fast Rust CLI for the Firefox Remote Debugging Protocol. Communicates directly
 
 ## Status
 
-**Early development** — core commands working: `tabs`, `navigate`, `eval`, `dom`, `page-text`, `console`, `network`, `reload`, `back`, `forward`. Remaining commands (`screenshot`) are planned.
+**Early development** — all planned commands working: `tabs`, `navigate`, `eval`, `dom`, `page-text`, `console`, `network`, `click`, `type`, `wait`, `cookies`, `storage`, `screenshot`, `launch`, `reload`, `back`, `forward`.
 
 ## Requirements
 
@@ -38,7 +38,10 @@ Commands:
   click       Click an element matching a CSS selector
   type        Type text into an input element matching a CSS selector
   wait        Wait for a condition to become true (polls every 100ms)
-  screenshot  Capture a screenshot
+  cookies     List accessible cookies (document.cookie)
+  storage     Read web storage (localStorage or sessionStorage)
+  screenshot  Capture a screenshot (requires Firefox drawWindow support)
+  launch      Launch Firefox with remote debugging enabled
   reload      Reload the page
   back        Go back in history
   forward     Go forward in history
@@ -122,6 +125,27 @@ ff-rdp wait --text "Success" --wait-timeout 10000
 
 # Wait for a JavaScript expression to become truthy
 ff-rdp wait --eval "document.readyState === 'complete'"
+
+# List cookies
+ff-rdp cookies
+
+# Filter cookies by name
+ff-rdp cookies --name "session_id"
+
+# Dump all localStorage
+ff-rdp storage local
+
+# Get a specific sessionStorage key
+ff-rdp storage session --key "token"
+
+# Capture a screenshot (saves PNG)
+ff-rdp screenshot --output page.png
+
+# Launch Firefox with debugging enabled
+ff-rdp launch
+
+# Launch headless Firefox with temporary profile
+ff-rdp launch --headless --temp-profile
 
 # Reload, go back, go forward
 ff-rdp reload
