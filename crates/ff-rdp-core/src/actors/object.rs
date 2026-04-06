@@ -73,6 +73,10 @@ impl ObjectActor {
 }
 
 /// Parse a `prototypeAndProperties` response into [`PrototypeAndProperties`].
+///
+/// NOTE: `safeGetterValues` (computed getter results) from the response is
+/// intentionally not parsed here. Non-empty values in live Firefox responses
+/// will be silently dropped until a future iteration adds support.
 fn parse_prototype_and_properties(response: &Value) -> PrototypeAndProperties {
     let prototype = match response.get("prototype") {
         Some(v) => Grip::from_result_value(v),
@@ -99,9 +103,9 @@ fn parse_prototype_and_properties(response: &Value) -> PrototypeAndProperties {
 
 /// Parse a single property descriptor from the Firefox wire format.
 ///
-/// A descriptor is either a data descriptor (has `value`) or an accessor
-/// descriptor (has `get`/`set`). Returns `None` if the descriptor is
-/// malformed or not a recognisable shape.
+/// A descriptor is treated as a data descriptor if it has `value`;
+/// otherwise it is treated as an accessor descriptor, where `get` and
+/// `set` are both optional. Returns `None` if `desc` is not an object.
 fn parse_property_descriptor(desc: &Value) -> Option<PropertyDescriptor> {
     let obj = desc.as_object()?;
 

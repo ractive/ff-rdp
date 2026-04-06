@@ -26,7 +26,7 @@ pub fn run(cli: &Cli, actor_id: &str, depth: u32) -> Result<(), AppError> {
 ///
 /// - `depth` controls how many levels of nested Object grips are followed.
 /// - `seen` tracks actor IDs already visited to prevent infinite cycles.
-pub fn inspect_object(
+fn inspect_object(
     transport: &mut ff_rdp_core::RdpTransport,
     actor_id: &str,
     depth: u32,
@@ -34,7 +34,7 @@ pub fn inspect_object(
 ) -> Result<Value, ff_rdp_core::ProtocolError> {
     if !seen.insert(actor_id.to_owned()) {
         // Already visited — emit a back-reference to avoid cycles.
-        return Ok(json!({"type": "circular", "actor": actor_id}));
+        return Ok(json!({"type": "alreadyVisited", "actor": actor_id}));
     }
 
     let pap = ObjectActor::prototype_and_properties(transport, actor_id)?;

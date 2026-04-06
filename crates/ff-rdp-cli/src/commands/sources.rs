@@ -14,13 +14,11 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
     let thread_actor = ctx
         .target
         .thread_actor
-        .as_ref()
-        .ok_or_else(|| AppError::User("target does not expose a thread actor".into()))?
-        .as_ref()
-        .to_owned();
+        .clone()
+        .ok_or_else(|| AppError::User("target does not expose a thread actor".into()))?;
 
-    let sources =
-        ThreadActor::list_sources(ctx.transport_mut(), &thread_actor).map_err(AppError::from)?;
+    let sources = ThreadActor::list_sources(ctx.transport_mut(), thread_actor.as_ref())
+        .map_err(AppError::from)?;
 
     // Apply filters.
     let regex = pattern

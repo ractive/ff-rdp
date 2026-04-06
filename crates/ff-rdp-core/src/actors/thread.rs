@@ -89,9 +89,13 @@ impl ThreadActor {
             }
         };
 
-        // Resume first (Paused → Running), then detach.
-        Self::resume(transport, thread_actor)?;
-        Self::detach(transport, thread_actor)?;
+        // Resume first (Paused → Running) — critical to avoid freezing the page.
+        // If resume fails, still attempt detach as best-effort cleanup.
+        let resume_result = Self::resume(transport, thread_actor);
+        // Best-effort detach: a Running thread without detach is far less
+        // harmful than a Paused one, so we prioritise the resume error.
+        let _ = Self::detach(transport, thread_actor);
+        resume_result?;
 
         Ok(sources)
     }
