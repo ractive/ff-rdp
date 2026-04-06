@@ -94,6 +94,36 @@ pub enum Command {
         #[arg(long, short)]
         output: Option<String>,
     },
+    /// Click an element matching a CSS selector
+    Click {
+        /// CSS selector of the element to click
+        selector: String,
+    },
+    /// Type text into an input element matching a CSS selector
+    Type {
+        /// CSS selector of the input element
+        selector: String,
+        /// Text to type into the element
+        text: String,
+        /// Clear the element's current value before typing
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Wait for a condition to become true (polls every 100ms)
+    Wait {
+        /// Wait until an element matching this CSS selector exists in the DOM
+        #[arg(long)]
+        selector: Option<String>,
+        /// Wait until this text appears anywhere on the page
+        #[arg(long)]
+        text: Option<String>,
+        /// Wait until this JavaScript expression returns a truthy value
+        #[arg(long)]
+        eval: Option<String>,
+        /// Timeout in milliseconds before giving up
+        #[arg(long, default_value_t = 5000)]
+        wait_timeout: u64,
+    },
     /// Reload the page
     Reload,
     /// Go back in history

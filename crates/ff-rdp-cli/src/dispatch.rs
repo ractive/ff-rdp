@@ -51,6 +51,26 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 commands::network::run(cli, filter.as_deref(), method.as_deref())
             }
         }
+        Command::Click { selector } => commands::click::run(cli, selector),
+        Command::Type {
+            selector,
+            text,
+            clear,
+        } => commands::type_text::run(cli, selector, text, *clear),
+        Command::Wait {
+            selector,
+            text,
+            eval,
+            wait_timeout,
+        } => commands::wait::run(
+            cli,
+            &commands::wait::WaitOptions {
+                selector: selector.as_deref(),
+                text: text.as_deref(),
+                eval: eval.as_deref(),
+                wait_timeout: *wait_timeout,
+            },
+        ),
         Command::Screenshot { output: _ } => Err(AppError::User(
             "screenshot: not yet implemented (iteration 7)".into(),
         )),
