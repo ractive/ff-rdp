@@ -14,7 +14,7 @@ Read console messages and network requests — the two most important debugging 
 ## Tasks
 
 - [ ] Implement `ff-rdp-core/src/actors/watcher.rs` — `WatcherActor` with `watch_resources(types)`, `unwatch_resources(types)`
-- [ ] Implement `ff-rdp-core/src/actors/console.rs` — `start_listeners(["PageError", "ConsoleAPI"])`, `get_cached_messages(types)`
+- [ ] Extend `ff-rdp-core/src/actors/console.rs` — add `start_listeners(["PageError", "ConsoleAPI"])`, `get_cached_messages(types)` to existing `WebConsoleActor`
 - [ ] Implement console message parsing: level, message text, source file, line number, timestamp
 - [ ] Implement `ff-rdp-core/src/actors/network.rs` — network event parsing from `resource-available-form` events
 - [ ] Implement `NetworkEventActor` methods: `get_request_headers()`, `get_response_headers()`, `get_response_content()`, `get_event_timings()`

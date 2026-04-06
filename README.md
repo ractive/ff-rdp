@@ -4,7 +4,7 @@ A fast Rust CLI for the Firefox Remote Debugging Protocol. Communicates directly
 
 ## Status
 
-**Early development** — project scaffolding and transport layer complete. Commands are not yet functional.
+**Early development** — core commands working: `tabs`, `navigate`, `eval`, `reload`, `back`, `forward`. Remaining commands (`page-text`, `console`, `screenshot`) are planned.
 
 ## Requirements
 
@@ -50,12 +50,27 @@ Options:
 All output is JSON with a standard envelope (`results`, `total`, `meta`). Use `--jq` to filter:
 
 ```bash
+# List tab URLs
 ff-rdp tabs --jq '.results[].url'
+
+# Navigate to a URL
+ff-rdp navigate https://example.com
+
+# Evaluate JavaScript and extract the result
+ff-rdp eval 'document.title' --jq '.results'
+
+# Target a specific tab by URL substring
+ff-rdp eval 'location.href' --tab example.com
+
+# Reload, go back, go forward
+ff-rdp reload
+ff-rdp back
+ff-rdp forward
 ```
 
 ## Architecture
 
-- **ff-rdp-core** — Protocol library: async TCP transport, length-prefixed JSON framing, typed errors
+- **ff-rdp-core** — Protocol library: blocking TCP transport, length-prefixed JSON framing, typed errors
 - **ff-rdp-cli** — CLI binary: clap args, jq output pipeline, command dispatch
 
 ## License

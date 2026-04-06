@@ -23,7 +23,18 @@ pub fn actor_request(
     obj.insert("to".into(), json!(to));
     obj.insert("type".into(), json!(method));
 
-    let response = transport.request(&request)?;
+    transport.send(&request)?;
+
+    // Read packets until we get one from the target actor, skipping
+    // unsolicited events (e.g. tabNavigated, tabListChanged) that Firefox
+    // may send between our request and the actual response.
+    let response = loop {
+        let msg = transport.recv()?;
+        let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
+        if from == to {
+            break msg;
+        }
+    };
 
     // Check for actor-level error responses.
     if let Some(error) = response.get("error").and_then(Value::as_str) {
@@ -125,6 +136,46 @@ mod tests {
             }
             other => panic!("expected ActorError, got {other:?}"),
         }
+
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn actor_request_skips_unsolicited_events() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client = TcpStream::connect(addr).unwrap();
+        let (accept, _) = listener.accept().unwrap();
+
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        let mut transport = RdpTransport::from_parts(reader, writer);
+
+        // Server: read request, send two unsolicited events, then the real response
+        let server = std::thread::spawn(move || {
+            let mut srv_reader = BufReader::new(&accept);
+            let _request = recv_from(&mut srv_reader).unwrap();
+
+            // Unsolicited event from a different actor
+            let event1 = json!({"from": "server1.conn0.child1/tab1", "type": "tabNavigated"});
+            let frame1 = encode_frame(&serde_json::to_string(&event1).unwrap());
+            (&accept).write_all(frame1.as_bytes()).unwrap();
+
+            // Another event with no "from" at all
+            let event2 = json!({"type": "tabListChanged"});
+            let frame2 = encode_frame(&serde_json::to_string(&event2).unwrap());
+            (&accept).write_all(frame2.as_bytes()).unwrap();
+
+            // The actual response
+            let resp = json!({"from": "root", "tabs": [{"url": "about:blank"}]});
+            let frame3 = encode_frame(&serde_json::to_string(&resp).unwrap());
+            (&accept).write_all(frame3.as_bytes()).unwrap();
+        });
+
+        let response = actor_request(&mut transport, "root", "listTabs", None).unwrap();
+        assert_eq!(response["from"], "root");
+        assert_eq!(response["tabs"][0]["url"], "about:blank");
 
         server.join().unwrap();
     }

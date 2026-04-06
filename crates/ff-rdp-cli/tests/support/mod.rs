@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 pub mod mock_server;
 
 pub use mock_server::MockRdpServer;
