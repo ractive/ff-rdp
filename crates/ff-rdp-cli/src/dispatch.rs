@@ -71,8 +71,22 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 wait_timeout: *wait_timeout,
             },
         ),
-        Command::Screenshot { output: _ } => Err(AppError::User(
-            "screenshot: not yet implemented (iteration 7)".into(),
-        )),
+        Command::Cookies { name } => commands::cookies::run(cli, name.as_deref()),
+        Command::Storage { storage_type, key } => {
+            commands::storage::run(cli, storage_type, key.as_deref())
+        }
+        Command::Screenshot { output } => commands::screenshot::run(cli, output.as_deref()),
+        Command::Launch {
+            headless,
+            profile,
+            temp_profile,
+            debug_port,
+        } => commands::launch::run(
+            cli,
+            *headless,
+            profile.as_deref(),
+            *temp_profile,
+            *debug_port,
+        ),
     }
 }
