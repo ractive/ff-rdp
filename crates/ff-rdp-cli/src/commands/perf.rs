@@ -53,6 +53,8 @@ fn script_get_entries(entry_type: &str) -> String {
 
 /// Build a JS snippet that uses `PerformanceObserver` with `buffered: true`.
 fn script_observer(entry_type: &str) -> String {
+    // Firefox's evaluateJSAsync runs expressions in an implicit async context,
+    // so bare `await` is valid here.
     format!(
         r"await new Promise(resolve => {{
   try {{
@@ -246,6 +248,8 @@ pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppE
 
 /// Collect all CWV-relevant entry types in a single eval and compute Core Web Vitals.
 pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
+    // Firefox's evaluateJSAsync runs expressions in an implicit async context,
+    // so bare `await` is valid here.
     let script = r"await new Promise(resolve => {
   const entries = {};
   const observers = [];

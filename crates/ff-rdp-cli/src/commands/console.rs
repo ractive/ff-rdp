@@ -30,12 +30,17 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
         &["PageError", "ConsoleAPI"],
     ) {
         Ok(msgs) => msgs,
-        Err(_) => WebConsoleActor::get_cached_messages(
-            ctx.transport_mut(),
-            &console_actor,
-            &["ConsoleAPI"],
-        )
-        .map_err(AppError::from)?,
+        Err(e) => {
+            eprintln!(
+                "debug: getCachedMessages(PageError+ConsoleAPI) failed ({e}), retrying with ConsoleAPI only"
+            );
+            WebConsoleActor::get_cached_messages(
+                ctx.transport_mut(),
+                &console_actor,
+                &["ConsoleAPI"],
+            )
+            .map_err(AppError::from)?
+        }
     };
 
     // Apply filters.

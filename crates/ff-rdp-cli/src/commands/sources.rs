@@ -17,6 +17,8 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
         .clone()
         .ok_or_else(|| AppError::User("target does not expose a thread actor".into()))?;
 
+    // Firefox error messages are matched by substring — fragile but necessary
+    // since RDP actor errors lack structured error codes.
     let sources = ThreadActor::list_sources(ctx.transport_mut(), thread_actor.as_ref())
         .map_err(|e| match &e {
             ff_rdp_core::ProtocolError::ActorError { message, .. }

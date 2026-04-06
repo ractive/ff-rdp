@@ -61,12 +61,11 @@ pub fn run(cli: &Cli, output_path: Option<&str>) -> Result<(), AppError> {
         let actor_id = ctx.target.screenshot_content_actor.clone();
         if let Some(actor) = actor_id {
             let capture = ScreenshotContentActor::capture(ctx.transport_mut(), actor.as_ref())
-                .map_err(|_| {
-                    AppError::User(
+                .map_err(|e| {
+                    AppError::User(format!(
                         "screenshot: drawWindow not available and screenshotContentActor \
-                         capture failed — try running Firefox in headless mode"
-                            .to_owned(),
-                    )
+                         capture failed ({e}) — try running Firefox in headless mode"
+                    ))
                 })?;
             capture.data
         } else {
