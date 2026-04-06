@@ -187,8 +187,8 @@ fn perf_navigation_type() {
     assert_eq!(nav["url"], "https://example.com/");
     // dns_ms = domainLookupEnd(30) - domainLookupStart(10) = 20
     assert_eq!(nav["dns_ms"], 20.0);
-    // ttfb_ms = responseStart(340) - requestStart(65) = 275
-    assert_eq!(nav["ttfb_ms"], 275.0);
+    // ttfb_ms = responseStart(340) - activationStart(0) = 340
+    assert_eq!(nav["ttfb_ms"], 340.0);
     // tls_ms = connectEnd(60) - secureConnectionStart(35) = 25
     assert_eq!(nav["tls_ms"], 25.0);
 }

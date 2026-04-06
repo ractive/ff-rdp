@@ -57,10 +57,11 @@ fn script_observer(entry_type: &str) -> String {
         r"new Promise(resolve => {{
   try {{
     const entries = [];
-    new PerformanceObserver(list => {{
+    const obs = new PerformanceObserver(list => {{
       entries.push(...list.getEntries().map(e => e.toJSON()));
-    }}).observe({{ type: '{entry_type}', buffered: true }});
-    setTimeout(() => resolve(JSON.stringify(entries)), 100);
+    }});
+    obs.observe({{ type: '{entry_type}', buffered: true }});
+    setTimeout(() => {{ obs.disconnect(); resolve(JSON.stringify(entries)); }}, 100);
   }} catch(e) {{ resolve(JSON.stringify([])); }}
 }})"
     )
@@ -133,7 +134,7 @@ fn map_entry(entry_type: &str, entry: Value) -> Value {
                     None // HTTP connection: no TLS
                 }
             };
-            let ttfb_ms = sub_f64(&entry, "responseStart", "requestStart");
+            let ttfb_ms = compute_ttfb(&entry);
             let download_ms = sub_f64(&entry, "responseEnd", "responseStart");
             let start_time = entry
                 .get("startTime")
@@ -247,18 +248,21 @@ pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppE
 pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
     let script = r"new Promise(resolve => {
   const entries = {};
+  const observers = [];
   const observerTypes = ['largest-contentful-paint', 'layout-shift', 'longtask', 'paint'];
   observerTypes.forEach(type => {
     try {
       entries[type] = [];
-      new PerformanceObserver(list => {
+      const obs = new PerformanceObserver(list => {
         entries[type].push(...list.getEntries().map(e => e.toJSON()));
-      }).observe({ type, buffered: true });
+      });
+      obs.observe({ type, buffered: true });
+      observers.push(obs);
     } catch(e) {}
   });
   entries.navigation = performance.getEntriesByType('navigation').map(e => e.toJSON());
   entries.resource = performance.getEntriesByType('resource').map(e => e.toJSON());
-  setTimeout(() => resolve(JSON.stringify(entries)), 100);
+  setTimeout(() => { observers.forEach(o => o.disconnect()); resolve(JSON.stringify(entries)); }, 100);
 })";
 
     let mut ctx = connect_and_get_target(cli)?;
@@ -323,7 +327,7 @@ pub(crate) fn compute_ttfb(nav: &Value) -> Option<f64> {
         .get("activationStart")
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
-    Some(round2(response_start - activation_start))
+    Some(round2((response_start - activation_start).max(0.0)))
 }
 
 pub(crate) fn compute_fcp(paint_entries: &[Value]) -> Option<f64> {
@@ -386,7 +390,10 @@ pub(crate) fn compute_cls(layout_shifts: &[Value]) -> f64 {
 }
 
 pub(crate) fn compute_tbt(longtasks: &[Value], fcp_ms: Option<f64>) -> f64 {
-    let fcp = fcp_ms.unwrap_or(0.0);
+    // TBT is defined as blocking time between FCP and TTI; without FCP it is meaningless
+    let Some(fcp) = fcp_ms else {
+        return 0.0;
+    };
     let sum: f64 = longtasks
         .iter()
         .filter_map(|e| {
