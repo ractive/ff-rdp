@@ -94,14 +94,13 @@ pub enum Command {
         method: Option<String>,
     },
     /// Query browser Performance API entries and Core Web Vitals
-    #[command(subcommand_negates_reqs = true)]
     Perf {
         #[command(subcommand)]
         perf_command: Option<PerfCommand>,
 
         /// Performance entry type to query (resource, navigation, paint, lcp, cls, longtask)
         #[arg(long = "type", default_value = "resource")]
-        entry_type: Option<String>,
+        entry_type: String,
 
         /// Filter by URL substring (resource/navigation types)
         #[arg(long)]

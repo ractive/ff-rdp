@@ -17,13 +17,33 @@ const OBSERVER_TYPES: &[&str] = &[
     "paint",
 ];
 
-/// Map CLI short aliases to canonical Performance API entry type names.
-fn canonical_type(entry_type: &str) -> &str {
-    match entry_type {
+/// Valid Performance API entry types accepted by the `--type` flag.
+const VALID_TYPES: &[&str] = &[
+    "resource",
+    "navigation",
+    "paint",
+    "largest-contentful-paint",
+    "layout-shift",
+    "longtask",
+];
+
+/// Map CLI short aliases to canonical Performance API entry type names,
+/// validating against the allow-list to prevent JS injection.
+fn canonical_type(entry_type: &str) -> Result<&'static str, AppError> {
+    let canonical = match entry_type {
         "lcp" => "largest-contentful-paint",
         "cls" => "layout-shift",
-        other => other,
-    }
+        _ => entry_type,
+    };
+    VALID_TYPES
+        .iter()
+        .find(|&&t| t == canonical)
+        .copied()
+        .ok_or_else(|| {
+            AppError::User(format!(
+                "unknown entry type {entry_type:?}; valid types: resource, navigation, paint, lcp, cls, longtask"
+            ))
+        })
 }
 
 /// Build a JS snippet that uses `getEntriesByType` (works for resource/navigation).
@@ -103,14 +123,14 @@ fn map_entry(entry_type: &str, entry: Value) -> Value {
                     .get("secureConnectionStart")
                     .and_then(Value::as_f64)
                     .unwrap_or(0.0);
-                let connect_end = entry
-                    .get("connectEnd")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(0.0);
                 if secure > 0.0 {
+                    let connect_end = entry
+                        .get("connectEnd")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0);
                     Some(round2(connect_end - secure))
                 } else {
-                    Some(0.0)
+                    None // HTTP connection: no TLS
                 }
             };
             let ttfb_ms = sub_f64(&entry, "responseStart", "requestStart");
@@ -177,7 +197,7 @@ fn sub_f64(entry: &Value, a: &str, b: &str) -> Option<f64> {
 
 /// Query Performance API entries for a given type and emit the standard JSON envelope.
 pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppError> {
-    let canonical = canonical_type(entry_type);
+    let canonical = canonical_type(entry_type)?;
 
     let script = if OBSERVER_TYPES.contains(&canonical) {
         script_observer(canonical)
@@ -248,27 +268,25 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
         .context("perf vitals: failed to parse collection JSON")
         .map_err(AppError::from)?;
 
-    let empty_vec: Vec<Value> = vec![];
-
     let nav_entries = all.get("navigation").and_then(Value::as_array);
     let nav = nav_entries.and_then(|a| a.first());
 
     let paint_entries: &[Value] = all
         .get("paint")
         .and_then(Value::as_array)
-        .map_or(&empty_vec, Vec::as_slice);
+        .map_or(&[], Vec::as_slice);
     let lcp_entries: &[Value] = all
         .get("largest-contentful-paint")
         .and_then(Value::as_array)
-        .map_or(&empty_vec, Vec::as_slice);
+        .map_or(&[], Vec::as_slice);
     let cls_entries: &[Value] = all
         .get("layout-shift")
         .and_then(Value::as_array)
-        .map_or(&empty_vec, Vec::as_slice);
+        .map_or(&[], Vec::as_slice);
     let longtask_entries: &[Value] = all
         .get("longtask")
         .and_then(Value::as_array)
-        .map_or(&empty_vec, Vec::as_slice);
+        .map_or(&[], Vec::as_slice);
 
     let ttfb = nav.and_then(compute_ttfb);
     let fcp = compute_fcp(paint_entries);
@@ -328,7 +346,7 @@ pub(crate) fn compute_lcp(lcp_entries: &[Value]) -> Option<f64> {
 pub(crate) fn compute_cls(layout_shifts: &[Value]) -> f64 {
     // Session window algorithm: group shifts (excluding hadRecentInput=true) into
     // windows with max 1s gap and max 5s total duration. Return the max window sum.
-    let shifts: Vec<(f64, f64)> = layout_shifts
+    let mut shifts: Vec<(f64, f64)> = layout_shifts
         .iter()
         .filter(|e| {
             !e.get("hadRecentInput")
@@ -341,6 +359,7 @@ pub(crate) fn compute_cls(layout_shifts: &[Value]) -> f64 {
             Some((start, value))
         })
         .collect();
+    shifts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     if shifts.is_empty() {
         return 0.0;
@@ -373,9 +392,15 @@ pub(crate) fn compute_tbt(longtasks: &[Value], fcp_ms: Option<f64>) -> f64 {
         .filter_map(|e| {
             let start = e.get("startTime")?.as_f64()?;
             let duration = e.get("duration")?.as_f64()?;
-            // Count blocking time only for tasks that end after FCP and exceed 50ms
-            if start + duration > fcp && duration > 50.0 {
-                Some(duration - 50.0)
+            let end = start + duration;
+            if end <= fcp {
+                return None;
+            }
+            // For tasks straddling FCP, only count the portion after FCP
+            let effective_start = start.max(fcp);
+            let effective_duration = end - effective_start;
+            if effective_duration > 50.0 {
+                Some(effective_duration - 50.0)
             } else {
                 None
             }
@@ -551,6 +576,19 @@ mod tests {
     fn tbt_ignores_tasks_shorter_than_50ms() {
         let tasks = vec![json!({ "startTime": 200.0, "duration": 40.0 })];
         assert!(approx_eq(compute_tbt(&tasks, Some(0.0)), 0.0));
+    }
+
+    #[test]
+    fn tbt_task_straddling_fcp_counts_only_portion_after() {
+        // Task: start=100, duration=200 → ends at 300. FCP=250.
+        // Effective portion after FCP: 300-250=50ms, which is not > 50ms → TBT=0
+        let tasks = vec![json!({ "startTime": 100.0, "duration": 200.0 })];
+        assert!(approx_eq(compute_tbt(&tasks, Some(250.0)), 0.0));
+
+        // Task: start=100, duration=300 → ends at 400. FCP=250.
+        // Effective portion after FCP: 400-250=150ms, blocking=150-50=100ms
+        let tasks2 = vec![json!({ "startTime": 100.0, "duration": 300.0 })];
+        assert!(approx_eq(compute_tbt(&tasks2, Some(250.0)), 100.0));
     }
 
     #[test]

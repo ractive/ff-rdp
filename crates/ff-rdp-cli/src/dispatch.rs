@@ -50,10 +50,7 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             filter,
         } => match perf_command {
             Some(PerfCommand::Vitals) => commands::perf::run_vitals(cli),
-            None => {
-                let t = entry_type.as_deref().unwrap_or("resource");
-                commands::perf::run(cli, t, filter.as_deref())
-            }
+            None => commands::perf::run(cli, entry_type, filter.as_deref()),
         },
         Command::Click { selector } => commands::click::run(cli, selector),
         Command::Type {
