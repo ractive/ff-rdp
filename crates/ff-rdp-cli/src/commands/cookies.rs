@@ -18,21 +18,15 @@ pub fn run(cli: &Cli, name: Option<&str>) -> Result<(), AppError> {
     let mut results: Vec<Value> = cookies
         .iter()
         .map(|c| {
-            let mut obj = json!({
-                "name": c.name,
-                "value": c.value,
-                "host": c.host,
-                "path": c.path,
-                "size": c.size,
-                "isHttpOnly": c.is_http_only,
-                "isSecure": c.is_secure,
-                "sameSite": c.same_site,
-                "hostOnly": c.host_only,
-            });
-            if c.expires > 0 {
-                obj["expires"] = json!(c.expires);
-            } else {
+            let mut obj = serde_json::to_value(c).unwrap_or_default();
+            // Replace numeric expires=0 with human-readable "Session".
+            if c.expires == 0 {
                 obj["expires"] = json!("Session");
+            }
+            // Drop internal-only fields that aren't useful for CLI output.
+            if let Some(o) = obj.as_object_mut() {
+                o.remove("lastAccessed");
+                o.remove("creationTime");
             }
             obj
         })

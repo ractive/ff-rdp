@@ -1,3 +1,4 @@
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::actor::actor_request;
@@ -8,7 +9,8 @@ use crate::transport::RdpTransport;
 use crate::types::ActorId;
 
 /// Metadata about a cookie from the Firefox StorageActor.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CookieInfo {
     pub name: String,
     pub value: String,
@@ -49,13 +51,18 @@ impl StorageActor {
     ) -> Result<Vec<CookieInfo>, ProtocolError> {
         let watcher = TabActor::get_watcher(transport, tab_actor)?;
 
-        // watch_resources sends the request and returns the first message from
-        // the watcher actor. For "cookies", Firefox returns the
-        // resources-available-array directly as the response (it has `from`
-        // matching the watcher), so actor_request captures it in one round trip.
+        // watchResources may return the resources-available-array directly
+        // (observed for "cookies") or return a plain ACK followed by the
+        // resources-available-array as a separate event (as with "network-event").
+        // We try parsing the immediate response first; if that yields nothing,
+        // we read one more message from the watcher to catch the async case.
         let response = WatcherActor::watch_resources(transport, &watcher, &["cookies"])?;
 
-        let cookie_resource = parse_cookie_store_resource(&response);
+        let cookie_resource = parse_cookie_store_resource(&response).or_else(|| {
+            // The immediate response was a plain ACK — try the next message.
+            let followup = transport.recv().ok()?;
+            parse_cookie_store_resource(&followup)
+        });
 
         let mut cookies = Vec::new();
 
@@ -119,7 +126,9 @@ fn parse_cookie_store_resource(event: &Value) -> Option<CookieStoreResource> {
             continue;
         };
 
-        // Take the first item in the cookies resources list.
+        // Take the first cookies resource. Firefox may include multiple
+        // entries when iframes are present, but the CLI operates on the
+        // top-level tab context, so the first entry is correct.
         let Some(item) = items.first() else {
             continue;
         };
@@ -145,6 +154,10 @@ fn parse_cookie_store_resource(event: &Value) -> Option<CookieStoreResource> {
 }
 
 /// Parse a single cookie entry from a `getStoreObjects` data array item.
+///
+/// `name` is required — if absent the item is skipped (returns `None`).
+/// All other fields use sensible defaults when missing or when Firefox
+/// sends an unexpected type, since this is a read-only inspection tool.
 pub(crate) fn parse_cookie(item: &Value) -> Option<CookieInfo> {
     let name = item.get("name").and_then(Value::as_str)?;
     let value = item

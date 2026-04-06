@@ -934,7 +934,8 @@ fn live_cookies_empty() {
         }),
     );
 
-    // Extract cookie actor — may not have any hosts on about:blank
+    // Extract cookie actor and hosts.
+    // about:blank may still have a host entry (e.g. from prior navigation).
     let cookie_actor = watch_resp["array"][0][1][0]["actor"]
         .as_str()
         .expect("cookie actor");
@@ -942,19 +943,9 @@ fn live_cookies_empty() {
         .as_object()
         .expect("hosts map");
 
-    if hosts.is_empty() {
-        // No hosts on about:blank → record empty response directly
-        let empty_resp = json!({
-            "data": [],
-            "from": cookie_actor,
-            "offset": 0,
-            "total": 0
-        });
-        if should_record() {
-            save_cli_fixture("get_store_objects_cookies_empty_response.json", &empty_resp);
-        }
-    } else {
-        let host = hosts.keys().next().unwrap();
+    // Always query a real host — never hand-craft fixture data. If no
+    // hosts are present, the test cannot record the fixture; skip gracefully.
+    if let Some(host) = hosts.keys().next() {
         let store_resp = send_raw(
             transport,
             &json!({
@@ -971,6 +962,8 @@ fn live_cookies_empty() {
 
         let data = store_resp["data"].as_array().expect("data array");
         assert!(data.is_empty(), "cookies on about:blank should be empty");
+    } else {
+        println!("  [skip] no hosts on about:blank — cannot record empty cookie fixture");
     }
 
     // Best-effort unwatch
