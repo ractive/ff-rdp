@@ -1,9 +1,8 @@
+use std::io::{BufReader, Read, Write};
+use std::net::TcpStream;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 use crate::error::ProtocolError;
 
@@ -14,58 +13,121 @@ use crate::error::ProtocolError;
 /// - **Recv**: read ASCII digits until `:`, interpret as the byte count, then
 ///   read exactly that many bytes and parse as JSON.
 pub struct RdpTransport {
-    reader: OwnedReadHalf,
-    writer: OwnedWriteHalf,
+    reader: BufReader<TcpStream>,
+    writer: TcpStream,
+}
+
+impl std::fmt::Debug for RdpTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RdpTransport").finish_non_exhaustive()
+    }
 }
 
 impl RdpTransport {
+    /// Open a raw TCP connection without reading the Firefox greeting.
+    ///
+    /// Use this when you need to inspect the greeting packet (e.g. in
+    /// [`RdpConnection`](crate::connection::RdpConnection)). If you don't need
+    /// the greeting, prefer [`connect`](Self::connect) which discards it.
+    pub fn connect_raw(host: &str, port: u16, timeout: Duration) -> Result<Self, ProtocolError> {
+        use std::net::ToSocketAddrs;
+
+        let addrs: Vec<_> = (host, port)
+            .to_socket_addrs()
+            .map_err(ProtocolError::ConnectionFailed)?
+            .collect();
+
+        if addrs.is_empty() {
+            return Err(ProtocolError::ConnectionFailed(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                format!("could not resolve {host}:{port}"),
+            )));
+        }
+
+        let mut last_err = None;
+        for addr in &addrs {
+            match TcpStream::connect_timeout(addr, timeout) {
+                Ok(stream) => {
+                    stream
+                        .set_read_timeout(Some(timeout))
+                        .map_err(ProtocolError::ConnectionFailed)?;
+                    stream
+                        .set_write_timeout(Some(timeout))
+                        .map_err(ProtocolError::ConnectionFailed)?;
+                    let reader = BufReader::new(
+                        stream
+                            .try_clone()
+                            .map_err(ProtocolError::ConnectionFailed)?,
+                    );
+                    return Ok(Self {
+                        reader,
+                        writer: stream,
+                    });
+                }
+                Err(e) => {
+                    last_err = Some(if e.kind() == std::io::ErrorKind::TimedOut {
+                        ProtocolError::Timeout
+                    } else {
+                        ProtocolError::ConnectionFailed(e)
+                    });
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            ProtocolError::ConnectionFailed(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                format!("could not resolve {host}:{port}"),
+            ))
+        }))
+    }
+
     /// Connect to a Firefox RDP server and consume the initial greeting packet.
     ///
     /// Firefox immediately sends a greeting after the TCP connection is
     /// established. We read and discard it so that the first call to
     /// [`recv`](Self::recv) returns an application-level message.
-    pub async fn connect(host: &str, port: u16, timeout: Duration) -> Result<Self, ProtocolError> {
-        let addr = format!("{host}:{port}");
+    ///
+    /// The read timeout set on the socket handles the greeting timeout — no
+    /// separate wrapper is needed.
+    pub fn connect(host: &str, port: u16, timeout: Duration) -> Result<Self, ProtocolError> {
+        let mut transport = Self::connect_raw(host, port, timeout)?;
 
-        let stream = tokio::time::timeout(timeout, TcpStream::connect(&addr))
-            .await
-            .map_err(|_| ProtocolError::Timeout)?
-            .map_err(ProtocolError::ConnectionFailed)?;
-
-        let (reader, writer) = stream.into_split();
-        let mut transport = Self { reader, writer };
-
-        // Discard the Firefox greeting packet (also subject to the timeout).
-        tokio::time::timeout(timeout, transport.recv())
-            .await
-            .map_err(|_| ProtocolError::Timeout)??;
+        // Discard the Firefox greeting packet; socket read timeout applies.
+        transport.recv()?;
 
         Ok(transport)
     }
 
+    /// Build a transport from pre-existing reader/writer handles.
+    ///
+    /// Useful in tests where you already have a connected `TcpStream`.
+    pub fn from_parts(reader: BufReader<TcpStream>, writer: TcpStream) -> Self {
+        Self { reader, writer }
+    }
+
     /// Send a JSON message using Firefox RDP framing: `{len}:{json}`.
-    pub async fn send(&mut self, message: &Value) -> Result<(), ProtocolError> {
+    pub fn send(&mut self, message: &Value) -> Result<(), ProtocolError> {
         let json = serde_json::to_string(message)
             .map_err(|e| ProtocolError::InvalidPacket(e.to_string()))?;
 
         let frame = encode_frame(&json);
         self.writer
             .write_all(frame.as_bytes())
-            .await
-            .map_err(ProtocolError::SendFailed)?;
+            .map_err(map_send_io_error)?;
 
         Ok(())
     }
 
     /// Receive a single length-prefixed JSON message.
-    pub async fn recv(&mut self) -> Result<Value, ProtocolError> {
-        recv_from(&mut self.reader).await
+    pub fn recv(&mut self) -> Result<Value, ProtocolError> {
+        recv_from(&mut self.reader)
     }
 
     /// Send a request and immediately receive one response.
-    pub async fn request(&mut self, message: &Value) -> Result<Value, ProtocolError> {
-        self.send(message).await?;
-        self.recv().await
+    pub fn request(&mut self, message: &Value) -> Result<Value, ProtocolError> {
+        self.send(message)?;
+        self.recv()
     }
 }
 
@@ -74,22 +136,17 @@ impl RdpTransport {
 // ---------------------------------------------------------------------------
 
 /// Encode a JSON string as a Firefox RDP frame: `"{len}:{json}"`.
-pub(crate) fn encode_frame(json: &str) -> String {
+pub fn encode_frame(json: &str) -> String {
     format!("{}:{}", json.len(), json)
 }
 
 /// Read a single length-prefixed JSON packet from `reader`.
-pub(crate) async fn recv_from(
-    reader: &mut (impl AsyncReadExt + Unpin),
-) -> Result<Value, ProtocolError> {
+pub fn recv_from(reader: &mut impl Read) -> Result<Value, ProtocolError> {
     // Read one byte at a time until we hit ':'.
     let mut length_buf = Vec::with_capacity(10);
     loop {
         let mut byte = [0u8; 1];
-        reader
-            .read_exact(&mut byte)
-            .await
-            .map_err(ProtocolError::RecvFailed)?;
+        reader.read_exact(&mut byte).map_err(map_recv_io_error)?;
 
         if byte[0] == b':' {
             break;
@@ -126,15 +183,32 @@ pub(crate) async fn recv_from(
         .map_err(|e| ProtocolError::InvalidPacket(format!("length parse error: {e}")))?;
 
     let mut body = vec![0u8; length];
-    reader
-        .read_exact(&mut body)
-        .await
-        .map_err(ProtocolError::RecvFailed)?;
+    reader.read_exact(&mut body).map_err(map_recv_io_error)?;
 
     let value = serde_json::from_slice(&body)
         .map_err(|e| ProtocolError::InvalidPacket(format!("JSON parse error: {e}")))?;
 
     Ok(value)
+}
+
+// ---------------------------------------------------------------------------
+// I/O error mapping helpers
+// ---------------------------------------------------------------------------
+
+fn map_recv_io_error(e: std::io::Error) -> ProtocolError {
+    if e.kind() == std::io::ErrorKind::TimedOut || e.kind() == std::io::ErrorKind::WouldBlock {
+        ProtocolError::Timeout
+    } else {
+        ProtocolError::RecvFailed(e)
+    }
+}
+
+fn map_send_io_error(e: std::io::Error) -> ProtocolError {
+    if e.kind() == std::io::ErrorKind::TimedOut || e.kind() == std::io::ErrorKind::WouldBlock {
+        ProtocolError::Timeout
+    } else {
+        ProtocolError::SendFailed(e)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -172,19 +246,19 @@ mod tests {
     // recv_from — uses Cursor<&[u8]> instead of a live socket
     // -----------------------------------------------------------------------
 
-    #[tokio::test]
-    async fn recv_parses_valid_frame() {
+    #[test]
+    fn recv_parses_valid_frame() {
         let payload = r#"{"type":"listTabs","to":"root"}"#;
         let frame = encode_frame(payload);
         let mut cursor = Cursor::new(frame.into_bytes());
 
-        let value = recv_from(&mut cursor).await.unwrap();
+        let value = recv_from(&mut cursor).unwrap();
         assert_eq!(value["type"], "listTabs");
         assert_eq!(value["to"], "root");
     }
 
-    #[tokio::test]
-    async fn recv_handles_multi_digit_length() {
+    #[test]
+    fn recv_handles_multi_digit_length() {
         let long_value: String = "x".repeat(200);
         let payload = serde_json::to_string(&serde_json::json!({"v": long_value})).unwrap();
         assert!(payload.len() >= 100, "payload must have a 3-digit length");
@@ -192,54 +266,54 @@ mod tests {
         let frame = encode_frame(&payload);
         let mut cursor = Cursor::new(frame.into_bytes());
 
-        let value = recv_from(&mut cursor).await.unwrap();
+        let value = recv_from(&mut cursor).unwrap();
         assert_eq!(value["v"].as_str().unwrap(), long_value);
     }
 
-    #[tokio::test]
-    async fn recv_errors_on_non_digit_in_length_prefix() {
+    #[test]
+    fn recv_errors_on_non_digit_in_length_prefix() {
         let bad = b"x:{}";
         let mut cursor = Cursor::new(bad.as_ref());
 
-        let err = recv_from(&mut cursor).await.unwrap_err();
+        let err = recv_from(&mut cursor).unwrap_err();
         assert!(
             matches!(err, ProtocolError::InvalidPacket(_)),
             "expected InvalidPacket, got {err:?}"
         );
     }
 
-    #[tokio::test]
-    async fn recv_errors_on_empty_length_prefix() {
+    #[test]
+    fn recv_errors_on_empty_length_prefix() {
         let bad = b":{}";
         let mut cursor = Cursor::new(bad.as_ref());
 
-        let err = recv_from(&mut cursor).await.unwrap_err();
+        let err = recv_from(&mut cursor).unwrap_err();
         assert!(
             matches!(err, ProtocolError::InvalidPacket(_)),
             "expected InvalidPacket, got {err:?}"
         );
     }
 
-    #[tokio::test]
-    async fn recv_errors_on_invalid_json_body() {
+    #[test]
+    fn recv_errors_on_invalid_json_body() {
         let bad_body = b"not-json";
         let frame = format!("{}:{}", bad_body.len(), String::from_utf8_lossy(bad_body));
         let mut cursor = Cursor::new(frame.into_bytes());
 
-        let err = recv_from(&mut cursor).await.unwrap_err();
+        let err = recv_from(&mut cursor).unwrap_err();
         assert!(
             matches!(err, ProtocolError::InvalidPacket(_)),
             "expected InvalidPacket, got {err:?}"
         );
     }
 
-    #[tokio::test]
-    async fn recv_errors_on_length_prefix_too_long() {
+    #[test]
+    fn recv_errors_on_length_prefix_too_long() {
         // 20 consecutive digit bytes with no colon triggers the >= 20 guard.
         let frame = "1".repeat(20);
         let mut cursor = Cursor::new(frame.into_bytes());
 
-        let err = recv_from(&mut cursor).await.unwrap_err();
+        let err = recv_from(&mut cursor).unwrap_err();
         assert!(
             matches!(err, ProtocolError::InvalidPacket(_)),
             "expected InvalidPacket, got {err:?}"
@@ -250,30 +324,31 @@ mod tests {
     // send via RdpTransport — minimal loopback test
     // -----------------------------------------------------------------------
 
-    #[tokio::test]
-    async fn send_produces_correct_frame_over_socket() {
-        use tokio::io::AsyncReadExt;
-        use tokio::net::TcpListener;
+    #[test]
+    fn send_produces_correct_frame_over_socket() {
+        use std::io::Read;
+        use std::net::TcpListener;
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
 
         // Connect client before accepting so the handshake completes.
-        let client_stream = TcpStream::connect(addr).await.unwrap();
-        let (server_stream, _) = listener.accept().await.unwrap();
+        let client_stream = TcpStream::connect(addr).unwrap();
+        let (server_stream, _) = listener.accept().unwrap();
 
-        let (reader, writer) = client_stream.into_split();
+        let writer = client_stream.try_clone().unwrap();
+        let reader = BufReader::new(client_stream);
         let mut transport = RdpTransport { reader, writer };
 
         let msg = serde_json::json!({"type": "listTabs", "to": "root"});
-        transport.send(&msg).await.unwrap();
+        transport.send(&msg).unwrap();
 
-        // Drop the transport's writer so the server sees EOF.
+        // Drop the transport so the server sees EOF.
         drop(transport);
 
-        let (mut srv_reader, _srv_writer) = server_stream.into_split();
         let mut buf = Vec::new();
-        srv_reader.read_to_end(&mut buf).await.unwrap();
+        let mut srv_reader = server_stream;
+        srv_reader.read_to_end(&mut buf).unwrap();
 
         let raw = String::from_utf8(buf).unwrap();
         let expected_json = serde_json::to_string(&msg).unwrap();

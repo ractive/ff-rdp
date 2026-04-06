@@ -1,0 +1,24 @@
+{
+  "from": "root",
+  "tabs": [
+    {
+      "actor": "server1.conn0.tabDescriptor1",
+      "browsingContextID": 22,
+      "outerWindowID": 22,
+      "selected": true,
+      "title": "Example Domain",
+      "traits": { "watcher": true },
+      "url": "https://example.com/"
+    },
+    {
+      "actor": "server1.conn0.tabDescriptor2",
+      "browsingContextID": 25,
+      "outerWindowID": 25,
+      "selected": false,
+      "title": "Rust Programming Language",
+      "traits": { "watcher": true },
+      "url": "https://www.rust-lang.org/"
+    }
+  ],
+  "selected": 0
+}

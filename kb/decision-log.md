@@ -63,3 +63,21 @@ status: active
 **Why**: The eval approach is simpler (one actor needed), more reliable (JavaScript execution is the best-tested path), and covers 95% of use cases. Native actors (Inspector, Walker, Node) provide structured DOM trees but require complex multi-step actor initialization. Eval-based implementations can be swapped for native ones later without changing the CLI interface.
 
 **Trade-off**: Cannot access HttpOnly cookies, cannot inspect shadow DOM internals, cannot get computed styles directly. These are edge cases deferrable to later iterations.
+
+## DEC-009: Blocking std I/O instead of async/tokio
+
+**Context**: ff-rdp is a stateless CLI tool — each invocation opens one TCP connection, sends one request, reads one response, and exits. There is no concurrent I/O or multiplexing.
+
+**Decision**: Use blocking `std::net::TcpStream` with `set_read_timeout`/`set_write_timeout` instead of tokio async runtime.
+
+**Rationale**:
+- Simpler code: no async/await coloring, no tokio runtime boilerplate
+- Smaller binary: removes the tokio dependency from both core library and CLI
+- Faster compilation: tokio is a heavy dependency tree
+- Easier testing: plain `#[test]` instead of `#[tokio::test]`, mock server uses `std::thread::spawn`
+- Timeouts are handled natively by socket-level `set_read_timeout`/`set_write_timeout`
+- Even iteration 4 (console/network monitoring) is just a blocking read loop — no concurrency needed
+- The core library can be embedded in any context without requiring a tokio runtime
+
+**Alternatives considered**:
+- Keep tokio: rejected because the async complexity is not justified for sequential request/response over a single TCP connection

@@ -1,0 +1,8 @@
+{
+  "from": "root",
+  "applicationType": "browser",
+  "traits": {
+    "networkMonitor": { "newRecording": true },
+    "sources": true
+  }
+}
