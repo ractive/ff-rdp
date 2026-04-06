@@ -11,5 +11,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+regex = { workspace = true }
+serde_json = { workspace = true }
+
 [lints]
 workspace = true

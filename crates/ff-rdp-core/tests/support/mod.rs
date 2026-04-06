@@ -1,7 +1,12 @@
+#[allow(dead_code, unused_imports)]
 pub mod mock_server;
+#[allow(dead_code)]
+pub mod recording;
 
+#[allow(dead_code, unused_imports)]
 pub use mock_server::MockRdpServer;
 
+#[allow(dead_code)]
 /// Load a fixture JSON file from `tests/fixtures/` relative to the crate root.
 ///
 /// Panics if the file cannot be read or parsed — fixture failures should be
