@@ -1,0 +1,15 @@
+{
+  "content": {
+    "bodySize": 371,
+    "contentCharset": "",
+    "decodedBodySize": 528,
+    "headersSize": 0,
+    "isContentEncoded": false,
+    "mimeType": "text/html",
+    "size": 528,
+    "text": "<!doctype html><html lang=\"en\"><head><title>Example Domain</title></head><body><h1>Example Domain</h1></body></html>\n",
+    "transferredSize": 371
+  },
+  "contentDiscarded": false,
+  "from": "server1.conn0.netEvent6"
+}

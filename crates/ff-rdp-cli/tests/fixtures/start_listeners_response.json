@@ -1,0 +1,4 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "startedListeners": ["PageError", "ConsoleAPI"]
+}

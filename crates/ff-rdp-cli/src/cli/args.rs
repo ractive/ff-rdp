@@ -39,6 +39,9 @@ pub enum Command {
     Navigate {
         /// The URL to navigate to
         url: String,
+        /// Also capture network requests made during navigation
+        #[arg(long)]
+        with_network: bool,
     },
     /// Evaluate JavaScript in the target tab
     Eval {
@@ -48,7 +51,26 @@ pub enum Command {
     /// Get page information
     PageText,
     /// Read console messages
-    Console,
+    Console {
+        /// Filter by log level (error, warn, info, log, debug)
+        #[arg(long)]
+        level: Option<String>,
+        /// Filter by message content (regex pattern)
+        #[arg(long)]
+        pattern: Option<String>,
+    },
+    /// Show network requests
+    Network {
+        /// Filter by URL pattern (substring match)
+        #[arg(long)]
+        filter: Option<String>,
+        /// Filter by HTTP method (GET, POST, etc.)
+        #[arg(long)]
+        method: Option<String>,
+        /// Use Performance Resource Timing API for retrospective data instead of WatcherActor
+        #[arg(long)]
+        cached: bool,
+    },
     /// Capture a screenshot
     Screenshot {
         /// Output file path

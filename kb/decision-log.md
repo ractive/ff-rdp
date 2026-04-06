@@ -95,3 +95,31 @@ status: active
 **Decision**: `evaluateJSAsync` sends a request, captures the `resultID` from the immediate ack, then loops on `recv()` until an `evaluationResult` message with a matching `resultID` arrives.
 
 **Why**: Firefox's `evaluateJSAsync` is inherently two-phase: an immediate response confirming the request (with a `resultID`), followed by a separate event containing the actual result. The resultID correlation ensures we match the correct result even if other events are interleaved.
+
+## DEC-012: WatcherActor resource subscription for network events
+
+**Decision**: Network monitoring uses the WatcherActor's `watchResources`/`unwatchResources` pattern rather than individual NetworkEventActor requests. Subscribe to `"network-event"` resources, then collect `resources-available-array` and `resources-updated-array` events in a timeout-bounded recv loop.
+
+**Why**: Firefox's Watcher pattern is the modern approach (replacing the older NetworkMonitor). It delivers events in nested array format `[["network-event", [resources]]]` with resource-available for initial data (method, URL, actor) and resource-updated for completion data (status, timing, size). Merging by `resourceId` gives a complete picture. This matches how Firefox DevTools itself works.
+
+**Trade-off**: The recv loop must drain events with a timeout, making the command slightly slower than a single request-response. The `--timeout` flag controls this. No streaming/follow mode yet — the loop exits when the timeout fires.
+
+## DEC-013: Watcher subscriptions are connection-scoped — no cross-invocation reuse
+
+**Decision**: Accept that each CLI invocation gets its own watcher subscriptions that die with the connection. For capturing traffic during navigation, use `navigate --with-network` (same connection, subscribe → navigate → drain). For retrospective queries, use `network --cached` (Performance Resource Timing API via eval).
+
+**Why**: Firefox RDP actor IDs encode the connection (`conn0`, `conn1`). When a TCP connection drops, all actors and subscriptions are invalidated server-side. There is no session token, cookie, or persistence mechanism. Verified empirically: `watchResources` does NOT replay buffered network events — it is purely real-time.
+
+**Trade-off**: Cannot share watcher state across CLI invocations without a persistent proxy process. An SSH ControlMaster-style approach is documented in `research/connection-persistence.md` for future consideration.
+
+## DEC-014: Performance API as separate concern from RDP network watcher
+
+**Decision**: `network --cached` uses the W3C Performance Resource Timing API (`performance.getEntriesByType("resource")`) via eval. This is a temporary home — it will be extracted into a dedicated `perf` command (iteration 8) that covers the full Performance API family (navigation waterfall, paint milestones, LCP, CLS, long tasks).
+
+**Why**: The Performance API is eval-based browser introspection (like `page-text`), not an RDP protocol feature. Mixing it into the `network` command conflates two unrelated data sources. The `--cached` flag stays for now since the implementation works, but the architectural intent is separation.
+
+## DEC-015: LongStringActor for fetching truncated eval results
+
+**Decision**: Added `LongStringActor::full_string()` in ff-rdp-core to fetch complete content when Firefox returns a `longString` grip (strings > ~1000 chars). Used by `network --cached` when pages have many resources.
+
+**Why**: Firefox truncates long string results in eval responses, returning a `longString` grip with an actor ID, initial prefix, and total length. The `substring` RDP method on the StringActor fetches the full content. This is a protocol-level concern (correctly in ff-rdp-core), needed by any consumer that evaluates JS producing large output.

@@ -23,9 +23,9 @@ use serde_json::Value;
 pub struct MockRdpServer {
     listener: TcpListener,
     greeting: Value,
-    /// Registered (method_type, response, follow_up) triples, matched in insertion order.
-    /// The optional follow_up is sent immediately after the response (for async patterns).
-    handlers: Vec<(String, Value, Option<Value>)>,
+    /// Registered (method_type, response, follow_ups) triples, matched in insertion order.
+    /// The follow_ups are sent immediately after the response (for async patterns).
+    handlers: Vec<(String, Value, Vec<Value>)>,
 }
 
 impl MockRdpServer {
@@ -52,7 +52,8 @@ impl MockRdpServer {
     /// respond with `response`. Handlers are matched in insertion order;
     /// the first match wins.
     pub fn on(mut self, method: &str, response: Value) -> Self {
-        self.handlers.push((method.to_owned(), response, None));
+        self.handlers
+            .push((method.to_owned(), response, Vec::new()));
         self
     }
 
@@ -62,7 +63,18 @@ impl MockRdpServer {
     /// immediate response is sent, followed by an `evaluationResult` event.
     pub fn on_with_followup(mut self, method: &str, response: Value, followup: Value) -> Self {
         self.handlers
-            .push((method.to_owned(), response, Some(followup)));
+            .push((method.to_owned(), response, vec![followup]));
+        self
+    }
+
+    /// Register a handler with multiple follow-up messages sent after the response.
+    pub fn on_with_followups(
+        mut self,
+        method: &str,
+        response: Value,
+        followups: Vec<Value>,
+    ) -> Self {
+        self.handlers.push((method.to_owned(), response, followups));
         self
     }
 
@@ -104,8 +116,8 @@ impl MockRdpServer {
 
             let handler = self.handlers.iter().find(|(m, _, _)| m == method);
 
-            let (reply, followup) = if let Some((_, resp, follow)) = handler {
-                (resp.clone(), follow.clone())
+            let (reply, followups) = if let Some((_, resp, follows)) = handler {
+                (resp.clone(), follows.clone())
             } else {
                 // No handler matched — send a generic actor error so the
                 // client gets a reply and doesn't hang.
@@ -115,7 +127,7 @@ impl MockRdpServer {
                         "error": "unknownMethod",
                         "message": format!("no handler for type={method:?}")
                     }),
-                    None,
+                    Vec::new(),
                 )
             };
 
@@ -124,8 +136,8 @@ impl MockRdpServer {
                 break;
             }
 
-            // Send follow-up message if registered (e.g., evaluationResult event).
-            if let Some(followup_msg) = followup {
+            // Send follow-up messages if registered (e.g., evaluationResult event).
+            for followup_msg in followups {
                 let followup_json = serde_json::to_string(&followup_msg).expect("followup encode");
                 if writer
                     .write_all(encode_frame(&followup_json).as_bytes())

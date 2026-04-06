@@ -1,0 +1,65 @@
+{
+  "array": [
+    [
+      "network-event",
+      [
+        {
+          "actor": "server1.conn0.netEvent6",
+          "browsingContextID": 19,
+          "cause": {
+            "loadingDocumentUri": null,
+            "type": "document"
+          },
+          "chromeContext": false,
+          "innerWindowId": 21474836482,
+          "isNavigationRequest": true,
+          "isThirdPartyTrackingResource": false,
+          "isXHR": false,
+          "method": "GET",
+          "priority": -20,
+          "private": false,
+          "referrerPolicy": "",
+          "requestCookiesAvailable": true,
+          "requestHeadersAvailable": true,
+          "resourceId": 21474836486,
+          "resourceType": "network-event",
+          "securityFlags": 8,
+          "stacktraceResourceId": 21474836486,
+          "startedDateTime": "2026-04-06T01:33:30.344Z",
+          "timeStamp": 1775439210344,
+          "timings": {},
+          "url": "https://example.com/"
+        },
+        {
+          "actor": "server1.conn0.netEvent7",
+          "browsingContextID": 19,
+          "cause": {
+            "loadingDocumentUri": "https://example.com/",
+            "type": "img"
+          },
+          "chromeContext": false,
+          "innerWindowId": 21474836483,
+          "isNavigationRequest": false,
+          "isThirdPartyTrackingResource": false,
+          "isXHR": false,
+          "method": "GET",
+          "priority": 0,
+          "private": false,
+          "referrerPolicy": "strict-origin-when-cross-origin",
+          "requestCookiesAvailable": true,
+          "requestHeadersAvailable": true,
+          "resourceId": 21474836488,
+          "resourceType": "network-event",
+          "securityFlags": 3076,
+          "stacktraceResourceId": 21474836488,
+          "startedDateTime": "2026-04-06T01:33:30.374Z",
+          "timeStamp": 1775439210374,
+          "timings": {},
+          "url": "https://example.com/favicon.ico"
+        }
+      ]
+    ]
+  ],
+  "from": "server1.conn0.watcher4",
+  "type": "resources-available-array"
+}
