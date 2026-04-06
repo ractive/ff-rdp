@@ -142,7 +142,7 @@ pub(crate) fn build_command(
     } else if temp_profile {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
+            .map(|d| d.as_nanos())
             .unwrap_or(0);
         let tmp =
             std::env::temp_dir().join(format!("ff-rdp-profile-{}-{nonce}", std::process::id()));
