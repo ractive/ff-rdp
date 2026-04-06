@@ -84,5 +84,5 @@ Returns schema metadata for all cookie fields, including whether each field is e
 
 ## See Also
 
-- [[iteration-11-native-cookie-access]]
-- [[rdp-protocol-deep-dive]]
+- [[iterations/iteration-11-native-cookie-access]]
+- [[research/rdp-protocol-deep-dive]]

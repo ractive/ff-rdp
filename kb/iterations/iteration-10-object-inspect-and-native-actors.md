@@ -18,7 +18,7 @@ Add the ability to inspect remote JavaScript object grips, access httpOnly cooki
 
 ## Background
 
-An [[implementation-gap-analysis]] on 2026-04-06 compared our implementation against the [[rdp-protocol-deep-dive]] (official Firefox docs). Three high-value gaps were identified:
+An [[research/implementation-gap-analysis]] on 2026-04-06 compared our implementation against the [[research/rdp-protocol-deep-dive]] (official Firefox docs). Three high-value gaps were identified:
 
 1. **Object grips are opaque**: When `eval` returns an object, we show `{"type":"object","class":"Object"}` but cannot drill into properties. The protocol supports `prototypeAndProperties` on any object grip actor.
 
@@ -62,7 +62,7 @@ Also enhance `eval` output: when the result is an Object grip, automatically inc
 
 ## Part B: Native Cookie Access via StorageActor — NOW ITERATION 11
 
-Protocol discovery is complete — see [[storage-actor-protocol]] for findings. Implementation is underway as [[iteration-11-native-cookie-access]].
+Protocol discovery is complete — see [[research/storage-actor-protocol]] for findings. Implementation is underway as [[iterations/iteration-11-native-cookie-access]].
 
 ## Part C: Source Listing
 

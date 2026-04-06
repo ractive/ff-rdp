@@ -8,7 +8,7 @@ tags: [research, gaps, protocol, planning]
 
 # Implementation Gap Analysis
 
-Comparison of our ff-rdp implementation vs the documented Firefox RDP protocol capabilities, based on the [[rdp-protocol-deep-dive]].
+Comparison of our ff-rdp implementation vs the documented Firefox RDP protocol capabilities, based on the [[research/rdp-protocol-deep-dive]].
 
 ## What We Have (Fully Implemented)
 
