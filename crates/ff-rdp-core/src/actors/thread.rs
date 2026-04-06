@@ -102,7 +102,12 @@ impl ThreadActor {
 }
 
 /// Parse a single source entry from the `sources` response array.
+///
+/// Returns `None` for null entries and non-object values, which some
+/// Firefox builds may include in the sources array.
 fn parse_source_info(value: &Value) -> Option<SourceInfo> {
+    // Skip null or non-object entries that may appear in some Firefox versions.
+    let _ = value.as_object()?;
     let actor = value.get("actor")?.as_str()?.to_owned();
     let url = value
         .get("url")
@@ -179,6 +184,16 @@ mod tests {
             "isBlackBoxed": false
         });
         assert!(parse_source_info(&value).is_none());
+    }
+
+    #[test]
+    fn parse_source_info_null_entry() {
+        assert!(parse_source_info(&Value::Null).is_none());
+    }
+
+    #[test]
+    fn parse_source_info_non_object_entry() {
+        assert!(parse_source_info(&serde_json::json!("string")).is_none());
     }
 
     #[test]

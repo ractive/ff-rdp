@@ -54,7 +54,7 @@ fn script_get_entries(entry_type: &str) -> String {
 /// Build a JS snippet that uses `PerformanceObserver` with `buffered: true`.
 fn script_observer(entry_type: &str) -> String {
     format!(
-        r"new Promise(resolve => {{
+        r"await new Promise(resolve => {{
   try {{
     const entries = [];
     const obs = new PerformanceObserver(list => {{
@@ -246,7 +246,7 @@ pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppE
 
 /// Collect all CWV-relevant entry types in a single eval and compute Core Web Vitals.
 pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
-    let script = r"new Promise(resolve => {
+    let script = r"await new Promise(resolve => {
   const entries = {};
   const observers = [];
   const observerTypes = ['largest-contentful-paint', 'layout-shift', 'longtask', 'paint'];
@@ -632,6 +632,38 @@ mod tests {
         assert_eq!(rate(0.05, 0.1, 0.25), "good");
         assert_eq!(rate(0.15, 0.1, 0.25), "needs-improvement");
         assert_eq!(rate(0.30, 0.1, 0.25), "poor");
+    }
+
+    // ── eval_to_json_string error path ───────────────────────────────────────
+
+    /// When Firefox returns a Promise grip (an Object with class "Promise") the
+    /// error message must name the grip type so the caller knows what went wrong
+    /// rather than seeing a generic "expected string result, got: ..." message
+    /// without any hint that `await` was missing from the script.
+    #[test]
+    fn eval_result_promise_grip_error_message_names_promise() {
+        // Simulate the grip that Firefox returns when a bare `new Promise(…)` is
+        // evaluated without `await`.
+        let promise_grip = Grip::Object {
+            actor: "conn0/obj1".into(),
+            class: "Promise".to_owned(),
+            preview: None,
+        };
+
+        // The error arm in eval_to_json_string formats: "{label}: expected string
+        // result, got: {other.to_json()}". Verify that to_json() for a Promise grip
+        // produces output that clearly identifies it as a Promise object.
+        let json_repr = promise_grip.to_json();
+        let repr_str = json_repr.to_string();
+
+        assert!(
+            repr_str.contains("Promise"),
+            "error representation should mention 'Promise', got: {repr_str}"
+        );
+        assert!(
+            repr_str.contains("object"),
+            "error representation should mention 'object', got: {repr_str}"
+        );
     }
 
     // ── round2 ───────────────────────────────────────────────────────────────

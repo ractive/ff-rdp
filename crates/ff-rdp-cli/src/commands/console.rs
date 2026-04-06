@@ -12,21 +12,31 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
-    // Start listeners so Firefox tracks console events for this connection.
-    WebConsoleActor::start_listeners(
+    // Start listeners — best-effort; some Firefox builds reject certain listener types.
+    if let Err(e) = WebConsoleActor::start_listeners(
         ctx.transport_mut(),
         &console_actor,
         &["PageError", "ConsoleAPI"],
-    )
-    .map_err(AppError::from)?;
+    ) {
+        eprintln!("warning: startListeners failed: {e}");
+    }
 
     // Retrieve all cached console messages.
-    let messages = WebConsoleActor::get_cached_messages(
+    // If the combined request fails (Firefox may reject PageError serialization),
+    // fall back to ConsoleAPI-only to recover partial results.
+    let messages = match WebConsoleActor::get_cached_messages(
         ctx.transport_mut(),
         &console_actor,
         &["PageError", "ConsoleAPI"],
-    )
-    .map_err(AppError::from)?;
+    ) {
+        Ok(msgs) => msgs,
+        Err(_) => WebConsoleActor::get_cached_messages(
+            ctx.transport_mut(),
+            &console_actor,
+            &["ConsoleAPI"],
+        )
+        .map_err(AppError::from)?,
+    };
 
     // Apply filters.
     let regex = pattern

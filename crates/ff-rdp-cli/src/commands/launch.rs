@@ -201,9 +201,7 @@ fn wait_for_port(host: &str, port: u16, timeout: Duration) -> Result<(), AppErro
         // Try each resolved address with a short per-address timeout.
         let per_addr = remaining
             .min(poll_interval)
-            .checked_div(
-                u32::try_from(addrs.len()).unwrap_or(u32::MAX),
-            )
+            .checked_div(u32::try_from(addrs.len()).unwrap_or(u32::MAX))
             .unwrap_or(Duration::from_millis(50));
         for addr in &addrs {
             if std::net::TcpStream::connect_timeout(addr, per_addr).is_ok() {

@@ -136,7 +136,7 @@ fn console_with_jq_filter() {
     args.extend([
         "console".to_owned(),
         "--jq".to_owned(),
-        ".results[] | select(.level == \"error\") | .message".to_owned(),
+        ".[] | select(.level == \"error\") | .message".to_owned(),
     ]);
 
     let output = std::process::Command::new(ff_rdp_bin())
@@ -207,4 +207,71 @@ fn console_no_match_returns_empty() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["total"], 0);
     assert_eq!(json["results"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn console_handles_page_error_messages() {
+    // Verify that pageError-type messages are parsed alongside consoleAPICall messages.
+    let response_with_page_errors = serde_json::json!({
+        "from": "server1.conn0.child2/consoleActor3",
+        "messages": [
+            {
+                "message": {
+                    "arguments": ["hello"],
+                    "level": "log",
+                    "filename": "test.js",
+                    "lineNumber": 1,
+                    "columnNumber": 1,
+                    "timeStamp": 1000.0
+                },
+                "type": "consoleAPICall"
+            },
+            {
+                "pageError": {
+                    "errorMessage": "ReferenceError: foo is not defined",
+                    "sourceName": "https://example.com/app.js",
+                    "lineNumber": 42,
+                    "columnNumber": 5,
+                    "timeStamp": 2000.0
+                },
+                "type": "pageError"
+            }
+        ]
+    });
+
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on(
+            "startListeners",
+            load_fixture("start_listeners_response.json"),
+        )
+        .on("getCachedMessages", response_with_page_errors);
+
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.push("console".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["total"], 2);
+    let results = json["results"].as_array().unwrap();
+    assert_eq!(results[0]["level"], "log");
+    assert_eq!(results[0]["message"], "hello");
+    assert_eq!(results[1]["level"], "error");
+    assert_eq!(results[1]["message"], "ReferenceError: foo is not defined");
 }

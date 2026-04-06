@@ -85,7 +85,13 @@ impl WebConsoleActor {
         let messages = response
             .get("messages")
             .and_then(Value::as_array)
-            .map(|arr| arr.iter().filter_map(parse_console_message).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|wrapper| {
+                        parse_console_message(wrapper).or_else(|| parse_page_error(wrapper))
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
 
         Ok(messages)
@@ -189,6 +195,53 @@ impl WebConsoleActor {
                 exc.as_str().map(String::from)
             })
     }
+}
+
+/// Parse a `pageError` wrapper from `getCachedMessages`.
+///
+/// Firefox emits `{ "pageError": { ... }, "type": "pageError" }` entries
+/// alongside `consoleAPICall` entries. The inner object uses different field
+/// names than the `consoleAPICall` format.
+fn parse_page_error(wrapper: &Value) -> Option<ConsoleMessage> {
+    let err = wrapper.get("pageError")?;
+
+    let level = "error".to_owned();
+    let message = err
+        .get("errorMessage")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let source = err
+        .get("sourceName")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let line = err
+        .get("lineNumber")
+        .and_then(Value::as_u64)
+        .unwrap_or_default() as u32;
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let column = err
+        .get("columnNumber")
+        .and_then(Value::as_u64)
+        .unwrap_or_default() as u32;
+
+    let timestamp = err
+        .get("timeStamp")
+        .and_then(Value::as_f64)
+        .unwrap_or_default();
+
+    Some(ConsoleMessage {
+        level,
+        message,
+        source,
+        line,
+        column,
+        timestamp,
+    })
 }
 
 /// Parse a single console message from the `getCachedMessages` response.
@@ -527,5 +580,48 @@ mod tests {
     fn parse_console_message_returns_none_for_missing_message() {
         let wrapper = json!({"type": "consoleAPICall"});
         assert!(parse_console_message(&wrapper).is_none());
+    }
+
+    // --- pageError parsing tests ---
+
+    #[test]
+    fn parse_page_error_basic() {
+        let wrapper = json!({
+            "pageError": {
+                "errorMessage": "ReferenceError: foo is not defined",
+                "sourceName": "https://example.com/app.js",
+                "lineNumber": 42,
+                "columnNumber": 5,
+                "timeStamp": 1775439071166.0
+            },
+            "type": "pageError"
+        });
+        let msg = parse_page_error(&wrapper).unwrap();
+        assert_eq!(msg.level, "error");
+        assert_eq!(msg.message, "ReferenceError: foo is not defined");
+        assert_eq!(msg.source, "https://example.com/app.js");
+        assert_eq!(msg.line, 42);
+        assert_eq!(msg.column, 5);
+    }
+
+    #[test]
+    fn parse_page_error_missing_fields() {
+        let wrapper = json!({
+            "pageError": {},
+            "type": "pageError"
+        });
+        let msg = parse_page_error(&wrapper).unwrap();
+        assert_eq!(msg.level, "error");
+        assert_eq!(msg.message, "");
+        assert_eq!(msg.source, "");
+    }
+
+    #[test]
+    fn parse_page_error_returns_none_for_console_api() {
+        let wrapper = json!({
+            "message": {"level": "log", "arguments": ["test"]},
+            "type": "consoleAPICall"
+        });
+        assert!(parse_page_error(&wrapper).is_none());
     }
 }

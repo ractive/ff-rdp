@@ -18,7 +18,16 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
         .ok_or_else(|| AppError::User("target does not expose a thread actor".into()))?;
 
     let sources = ThreadActor::list_sources(ctx.transport_mut(), thread_actor.as_ref())
-        .map_err(AppError::from)?;
+        .map_err(|e| match &e {
+            ff_rdp_core::ProtocolError::ActorError { message, .. }
+                if message.contains("undefined") || message.contains("not available") =>
+            {
+                AppError::User(format!(
+                    "sources: Firefox returned an error ({message}) — the page may not have loaded scripts yet"
+                ))
+            }
+            _ => AppError::from(e),
+        })?;
 
     // Apply filters.
     let regex = pattern
