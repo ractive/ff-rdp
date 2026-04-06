@@ -139,11 +139,10 @@ fn wait_text_succeeds_immediately() {
 
 #[test]
 fn wait_no_condition_exits_nonzero() {
-    // No mock server needed — the error is caught before connecting.
-    // We still need a port to pass but the server won't be contacted.
+    // No mock server needed — clap enforces at least one condition via the
+    // "condition" argument group. We still need a port to pass.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    // Drop the listener so the port doesn't need to stay open.
     drop(listener);
 
     let mut args = base_args(port);
@@ -167,8 +166,8 @@ fn wait_no_condition_exits_nonzero() {
 }
 
 #[test]
-fn wait_times_out_exits_nonzero() {
-    // The eval returns false — the wait will time out.
+fn wait_exception_exits_nonzero() {
+    // The eval throws an exception — wait should report the error and exit 1.
     let server = wait_server("eval_result_exception.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
@@ -179,7 +178,7 @@ fn wait_times_out_exits_nonzero() {
         "--selector".to_owned(),
         ".never-appears".to_owned(),
         "--wait-timeout".to_owned(),
-        "50".to_owned(), // Very short timeout so the test is fast
+        "5000".to_owned(),
     ]);
 
     let output = std::process::Command::new(ff_rdp_bin())
@@ -189,10 +188,51 @@ fn wait_times_out_exits_nonzero() {
 
     handle.join().unwrap();
 
-    // The eval throws an exception, so we get exit code 1 with an error message.
     assert!(
         !output.status.success(),
         "expected failure for exception during wait"
     );
     assert_eq!(output.status.code(), Some(1));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("error"),
+        "stderr should contain an error message: {stderr}"
+    );
+}
+
+#[test]
+fn wait_timeout_exits_nonzero() {
+    // The eval returns false every poll — wait should time out.
+    let server = wait_server("eval_result_wait_false.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "wait".to_owned(),
+        "--selector".to_owned(),
+        ".never-appears".to_owned(),
+        "--wait-timeout".to_owned(),
+        "150".to_owned(), // Short timeout so the test is fast
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        !output.status.success(),
+        "expected failure when wait times out"
+    );
+    assert_eq!(output.status.code(), Some(1));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("timed out"),
+        "stderr should mention timeout: {stderr}"
+    );
 }

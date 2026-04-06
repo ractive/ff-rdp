@@ -166,9 +166,8 @@ mod tests {
     #[test]
     fn build_js_escapes_selector() {
         let js = build_js("div[data-name='test']", OutputMode::Text);
-        // serde_json escapes single quotes by leaving them as-is (they're
-        // valid in JSON strings) but escapes backslashes and control chars.
-        assert!(js.contains("div[data-name='test']"));
+        // Single quotes are now escaped for safe embedding in '…' JS literals.
+        assert!(js.contains(r"div[data-name=\'test\']"));
     }
 
     #[test]

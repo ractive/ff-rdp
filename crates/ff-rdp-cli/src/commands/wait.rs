@@ -21,7 +21,9 @@ pub struct WaitOptions<'a> {
 }
 
 pub fn run(cli: &Cli, opts: &WaitOptions<'_>) -> Result<(), AppError> {
-    // Validate that at least one condition is specified.
+    // Validate that at least one condition is specified (safety net — clap
+    // enforces this via the "condition" argument group, but this catches
+    // programmatic misuse of WaitOptions).
     if opts.selector.is_none() && opts.text.is_none() && opts.eval.is_none() {
         return Err(AppError::User(
             "wait: specify at least one of --selector, --text, or --eval".into(),
