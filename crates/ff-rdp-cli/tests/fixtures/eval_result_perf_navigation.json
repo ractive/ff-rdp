@@ -1,0 +1,10 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "input": "JSON.stringify(...)",
+  "result": "[{\"name\":\"https://example.com/\",\"entryType\":\"navigation\",\"startTime\":0,\"duration\":1200.5,\"domainLookupStart\":10.0,\"domainLookupEnd\":30.0,\"secureConnectionStart\":35.0,\"connectEnd\":60.0,\"requestStart\":65.0,\"responseStart\":340.0,\"responseEnd\":400.0,\"domInteractive\":800.0,\"domComplete\":1100.0,\"transferSize\":45000,\"nextHopProtocol\":\"h2\",\"activationStart\":0}]",
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183977.373,
+  "timestamp": 1775437183980.721,
+  "type": "evaluationResult"
+}

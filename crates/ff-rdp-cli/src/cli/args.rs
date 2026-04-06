@@ -92,9 +92,19 @@ pub enum Command {
         /// Filter by HTTP method (GET, POST, etc.)
         #[arg(long)]
         method: Option<String>,
-        /// Use Performance Resource Timing API for retrospective data instead of WatcherActor
+    },
+    /// Query browser Performance API entries and Core Web Vitals
+    Perf {
+        #[command(subcommand)]
+        perf_command: Option<PerfCommand>,
+
+        /// Performance entry type to query (resource, navigation, paint, lcp, cls, longtask)
+        #[arg(long = "type", default_value = "resource")]
+        entry_type: String,
+
+        /// Filter by URL substring (resource/navigation types)
         #[arg(long)]
-        cached: bool,
+        filter: Option<String>,
     },
     /// Capture a screenshot
     Screenshot {
@@ -189,4 +199,10 @@ pub enum Command {
         #[arg(long)]
         debug_port: Option<u16>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum PerfCommand {
+    /// Compute Core Web Vitals summary (LCP, CLS, TBT, FCP, TTFB)
+    Vitals,
 }

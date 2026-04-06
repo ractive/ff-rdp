@@ -1,4 +1,4 @@
-use crate::cli::args::{Cli, Command};
+use crate::cli::args::{Cli, Command, PerfCommand};
 use crate::commands;
 use crate::commands::nav_action::NavAction;
 use crate::daemon::server;
@@ -41,17 +41,17 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         Command::Console { level, pattern } => {
             commands::console::run(cli, level.as_deref(), pattern.as_deref())
         }
-        Command::Network {
-            filter,
-            method,
-            cached,
-        } => {
-            if *cached {
-                commands::network::run_cached(cli, filter.as_deref(), method.as_deref())
-            } else {
-                commands::network::run(cli, filter.as_deref(), method.as_deref())
-            }
+        Command::Network { filter, method } => {
+            commands::network::run(cli, filter.as_deref(), method.as_deref())
         }
+        Command::Perf {
+            perf_command,
+            entry_type,
+            filter,
+        } => match perf_command {
+            Some(PerfCommand::Vitals) => commands::perf::run_vitals(cli),
+            None => commands::perf::run(cli, entry_type, filter.as_deref()),
+        },
         Command::Click { selector } => commands::click::run(cli, selector),
         Command::Type {
             selector,

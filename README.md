@@ -4,7 +4,7 @@ A fast Rust CLI for the Firefox Remote Debugging Protocol. Communicates directly
 
 ## Status
 
-**Early development** — all planned commands working: `tabs`, `navigate`, `eval`, `dom`, `page-text`, `console`, `network`, `click`, `type`, `wait`, `cookies`, `storage`, `screenshot`, `launch`, `inspect`, `sources`, `reload`, `back`, `forward`.
+**Early development** — all planned commands working: `tabs`, `navigate`, `eval`, `dom`, `page-text`, `console`, `network`, `perf`, `click`, `type`, `wait`, `cookies`, `storage`, `screenshot`, `launch`, `inspect`, `sources`, `reload`, `back`, `forward`.
 
 ## Requirements
 
@@ -34,7 +34,8 @@ Commands:
   dom         Query DOM elements by CSS selector (--outer-html, --inner-html, --text, --attrs)
   page-text   Extract visible page text (document.body.innerText)
   console     Read console messages (with --level and --pattern filters)
-  network     Show network requests (with --filter, --method, --cached filters)
+  network     Show network requests (with --filter, --method filters)
+  perf        Query Performance API entries and Core Web Vitals
   click       Click an element matching a CSS selector
   type        Type text into an input element matching a CSS selector
   wait        Wait for a condition to become true (polls every 100ms)
@@ -104,15 +105,39 @@ ff-rdp network --filter api
 # Filter network by HTTP method
 ff-rdp network --method POST
 
-# Retrospective network data via Performance API
-ff-rdp network --cached
-
 # Navigate and capture all network traffic in one shot
 ff-rdp navigate https://example.com --with-network
 
 # Find failed requests during navigation
 ff-rdp navigate https://example.com --with-network \
   --jq '.results.network[] | select(.status >= 400)'
+
+# Query Performance API resource timing entries
+ff-rdp perf
+
+# Page load waterfall (DNS, TLS, TTFB, DOM timings)
+ff-rdp perf --type navigation
+
+# First Paint and First Contentful Paint timestamps
+ff-rdp perf --type paint
+
+# Largest Contentful Paint
+ff-rdp perf --type lcp
+
+# Cumulative Layout Shift entries
+ff-rdp perf --type cls
+
+# Long tasks (>50ms)
+ff-rdp perf --type longtask
+
+# Filter resource entries by URL substring
+ff-rdp perf --filter "api/"
+
+# Core Web Vitals summary with ratings (LCP, CLS, TBT, FCP, TTFB)
+ff-rdp perf vitals
+
+# Extract a single metric
+ff-rdp perf vitals --jq '.results.lcp_ms'
 
 # Click a button
 ff-rdp click "button.submit"
