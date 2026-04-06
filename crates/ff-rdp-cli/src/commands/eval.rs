@@ -1,4 +1,4 @@
-use ff_rdp_core::WebConsoleActor;
+use ff_rdp_core::{Grip, ObjectActor, WebConsoleActor};
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -31,7 +31,15 @@ pub fn run(cli: &Cli, script: &str) -> Result<(), AppError> {
         return Err(AppError::Exit(1));
     }
 
-    let result_json = eval_result.result.to_json();
+    let mut result_json = eval_result.result.to_json();
+
+    // For object grips, enrich the output with the list of own property names.
+    if let Grip::Object { ref actor, .. } = eval_result.result
+        && let Ok(names) = ObjectActor::own_property_names(ctx.transport_mut(), actor.as_ref())
+    {
+        result_json["propertyNames"] = json!(names);
+    }
+
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&result_json, 1, &meta);
 

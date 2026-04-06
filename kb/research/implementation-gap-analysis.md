@@ -42,14 +42,14 @@ The ThreadActor is a core part of the protocol enabling:
 
 **Impact**: Without this, ff-rdp cannot be used as a debugger. However, this is extremely complex and may be out of scope for the current project (which focuses on automation/inspection).
 
-### 2. **Object Grip Inspection — NOT IMPLEMENTED**
+### 2. **Object Grip Inspection — IMPLEMENTED (iteration 10)**
 The protocol supports inspecting remote objects via:
-- `prototypeAndProperties` — get all properties of an object grip
-- `property(name)` — get single property
-- `ownPropertyNames` — list property names
-- `prototype` — get prototype chain
+- `prototypeAndProperties` — get all properties of an object grip ✅
+- `ownPropertyNames` — list property names ✅
+- `property(name)` — get single property (not yet needed)
+- `prototype` — get prototype chain (returned by prototypeAndProperties)
 
-**Impact**: Currently when `eval` returns an object, we only see the grip `{type:"object", class:"Object", actor:"..."}` but cannot inspect its properties without a separate JS eval call. A dedicated `inspect` command would let users drill into object grips.
+**Status**: `inspect` command added. `eval` now auto-enriches object results with property names.
 
 ### 3. **InspectorActor / WalkerActor / NodeActor — NOT IMPLEMENTED**
 The native DOM inspection actors provide:
@@ -71,13 +71,13 @@ Firefox has a native StorageActor for:
 
 **Impact**: Our JS eval approach cannot read httpOnly cookies. The native StorageActor can. This is a real correctness gap.
 
-### 5. **Source Actor — NOT IMPLEMENTED**
+### 5. **Source Listing — IMPLEMENTED (iteration 10)**
 Sources management:
-- List all JavaScript/WASM sources loaded in page
-- Read source content
-- Blackbox sources (skip during debugging)
+- List all JavaScript/WASM sources loaded in page ✅ (via ThreadActor attach/sources/resume/detach)
+- Read source content (not yet needed)
+- Blackbox sources (not yet needed)
 
-**Impact**: Useful for understanding what scripts are loaded on a page. Could enable a `sources` command.
+**Status**: `sources` command added with `--filter` and `--pattern` flags.
 
 ### 6. **Proper Error Protocol — PARTIALLY IMPLEMENTED**
 The protocol defines structured error responses (`{ "from": actor, "error": name, "message": msg }`). We handle `ActorError` but:

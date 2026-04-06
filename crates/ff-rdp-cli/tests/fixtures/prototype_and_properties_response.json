@@ -1,0 +1,45 @@
+{
+  "from": "server1.conn0.child2/obj19",
+  "ownProperties": {
+    "a": {
+      "configurable": true,
+      "enumerable": true,
+      "value": 1,
+      "writable": true
+    },
+    "b": {
+      "configurable": true,
+      "enumerable": true,
+      "value": {
+        "actor": "server1.conn0.child2/obj20",
+        "class": "Array",
+        "extensible": true,
+        "frozen": false,
+        "isError": false,
+        "ownPropertyLength": 3,
+        "preview": {
+          "kind": "ArrayLike",
+          "length": 2
+        },
+        "sealed": false,
+        "type": "object"
+      },
+      "writable": true
+    }
+  },
+  "prototype": {
+    "actor": "server1.conn0.child2/obj21",
+    "class": "Object",
+    "extensible": true,
+    "frozen": false,
+    "isError": false,
+    "ownPropertyLength": 12,
+    "preview": {
+      "kind": "Object",
+      "ownPropertiesLength": 12
+    },
+    "sealed": false,
+    "type": "object"
+  },
+  "safeGetterValues": {}
+}

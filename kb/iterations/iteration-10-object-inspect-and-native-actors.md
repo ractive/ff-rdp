@@ -2,7 +2,7 @@
 title: "Iteration 10: Object Inspection & Native Actor Access"
 type: iteration
 date: 2026-04-06
-status: planned
+status: in-progress
 branch: iter-10/object-inspect
 tags: [iteration, grips, inspection, storage, sources]
 ---
@@ -31,23 +31,21 @@ Also enhance `eval` output: when the result is an Object grip, automatically inc
 
 ### Tasks
 
-- [ ] Add `ObjectActor` to `ff-rdp-core/src/actors/` with:
-  - `prototype_and_properties(actor_id)` → `{ prototype: Value, own_properties: Map<String, PropertyDescriptor> }`
-  - `property(actor_id, name)` → `PropertyDescriptor`
+- [x] Add `ObjectActor` to `ff-rdp-core/src/actors/object.rs` with:
+  - `prototype_and_properties(actor_id)` → `PrototypeAndProperties`
   - `own_property_names(actor_id)` → `Vec<String>`
-- [ ] Add `PropertyDescriptor` type to `types.rs`:
+- [x] Add `PropertyDescriptor` type to `object.rs`:
   - Data variant: `{ value: Grip, writable: bool, enumerable: bool, configurable: bool }`
   - Accessor variant: `{ get: Option<Grip>, set: Option<Grip>, enumerable: bool, configurable: bool }`
-- [ ] Add `inspect` CLI command in `commands/inspect.rs`:
+- [x] Add `inspect` CLI command in `commands/inspect.rs`:
   - Takes actor ID as argument
-  - Outputs JSON: `{ "class": "Object", "prototype": ..., "properties": { name: value, ... } }`
   - Support `--depth <N>` for recursive inspection (default 1)
-  - Handle function grips (show name, url, line)
-- [ ] Enhance `eval` command: when result is an Object grip, auto-fetch `ownPropertyNames` and include a `"propertyNames"` field in output
+  - Tracks visited actor IDs to prevent circular reference loops
+- [x] Enhance `eval` command: when result is an Object grip, auto-fetch `ownPropertyNames` and include a `"propertyNames"` field in output
 - [ ] Add live test `live_prototype_and_properties` — eval `({a:1, b:[2,3]})`, fetch properties on the result grip
 - [ ] Add live test `live_own_property_names` — verify property name listing
-- [ ] Add e2e tests for `inspect` command with mock server
-- [ ] Record fixtures: `prototype_and_properties_response.json`, `own_property_names_response.json`
+- [x] Add e2e tests for `inspect` command with mock server
+- [x] Create fixtures: `prototype_and_properties_response.json`, `own_property_names_response.json`
 
 ### Acceptance Criteria
 
@@ -57,41 +55,9 @@ Also enhance `eval` output: when the result is an Object grip, automatically inc
 4. Function grips show name/location info
 5. All new code has e2e tests
 
-## Part B: Native Cookie Access via StorageActor
+## Part B: Native Cookie Access via StorageActor — DEFERRED
 
-### Design
-
-Firefox's StorageActor provides access to all cookies, including httpOnly ones that `document.cookie` cannot see. Replace the JS eval approach for cookies with native actor access.
-
-The StorageActor is target-scoped. Access path: getTarget → frame → StorageActor ID.
-
-**Note**: The StorageActor protocol is not fully documented in the official docs, so we'll need to discover the exact message format via live recording. The general pattern is:
-- `getStoreObjects(host)` → returns cookie data
-- Cookie objects include: name, value, path, domain, expires, httpOnly, secure, sameSite
-
-### Tasks
-
-- [ ] Record StorageActor protocol messages from live Firefox:
-  - Discover the actual StorageActor method names and response formats
-  - Record fixture: `storage_actor_cookies_response.json`
-- [ ] Add `StorageActor` to `ff-rdp-core/src/actors/storage.rs`:
-  - Parse cookie response into `Vec<Cookie>` struct
-  - `Cookie`: `name`, `value`, `path`, `domain`, `expires`, `http_only`, `secure`, `same_site`
-- [ ] Update `cookies` command to use StorageActor instead of JS eval:
-  - Fall back to JS eval if StorageActor is not available (older Firefox)
-  - Add `--http-only` flag to show only httpOnly cookies
-  - Add `--secure` flag to show only secure cookies
-  - Add `--domain <domain>` flag to filter by domain
-- [ ] Update live recording tests for cookies
-- [ ] Add e2e tests with StorageActor mock fixtures
-- [ ] Mark old JS-eval cookie fixtures as deprecated (keep for fallback tests)
-
-### Acceptance Criteria
-
-1. `ff-rdp cookies` shows httpOnly cookies that the old command missed
-2. `--http-only` flag works correctly
-3. Falls back to JS eval on older Firefox without StorageActor error
-4. Cookie response includes all fields: name, value, path, domain, expires, httpOnly, secure, sameSite
+**Deferred to a future iteration.** The StorageActor protocol is not fully documented in the official Firefox docs, and implementing it requires live Firefox recording to discover the exact message format. This is best done as a standalone iteration with dedicated research time.
 
 ## Part C: Source Listing
 
@@ -103,19 +69,21 @@ Access path: getTarget → threadActor → attach → sources → detach.
 
 ### Tasks
 
-- [ ] Add `ThreadActor` to `ff-rdp-core/src/actors/thread.rs` with minimal methods:
+- [x] Add `ThreadActor` to `ff-rdp-core/src/actors/thread.rs` with:
   - `attach(actor_id)` → paused response
   - `sources(actor_id)` → `Vec<SourceInfo>`
-  - `detach(actor_id)`
+  - `resume(actor_id)` → resume response (Paused → Running)
+  - `detach(actor_id)` → detach response
+  - `list_sources(actor_id)` → convenience: attach, sources, resume, detach with cleanup on error
   - `SourceInfo`: `actor`, `url`, `is_black_boxed`
-- [ ] Add `sources` CLI command in `commands/sources.rs`:
+- [x] Add `sources` CLI command in `commands/sources.rs`:
   - Output: `{ "results": [{ "url": "...", "actor": "..." }], "total": N }`
   - `--filter <substring>` — filter by URL
   - `--pattern <regex>` — filter by URL regex
-- [ ] Record thread attach/sources/detach from live Firefox
+- [ ] Record thread attach/sources/resume/detach from live Firefox
 - [ ] Add live tests for source listing
-- [ ] Add e2e tests with mock fixtures
-- [ ] Record fixtures: `thread_attach_response.json`, `sources_response.json`, `thread_detach_response.json`
+- [x] Add e2e tests with mock fixtures
+- [x] Create fixtures: `thread_attach_response.json`, `sources_response.json`, `thread_resume_response.json`, `thread_detach_response.json`
 
 ### Acceptance Criteria
 

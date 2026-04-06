@@ -1,0 +1,9 @@
+{
+  "from": "server1.conn0.child2/thread1",
+  "type": "paused",
+  "actor": "server1.conn0.child2/thread1",
+  "poppedFrames": [],
+  "why": {
+    "type": "attached"
+  }
+}

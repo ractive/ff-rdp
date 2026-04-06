@@ -1,0 +1,32 @@
+{
+  "from": "server1.conn0.child2/thread1",
+  "sources": [
+    {
+      "actor": "server1.conn0.child2/source42",
+      "introductionType": "scriptElement",
+      "introductionUrl": null,
+      "isBlackBoxed": false,
+      "sourceMapBaseURL": "https://example.com/",
+      "sourceMapURL": null,
+      "url": "https://example.com/app.js"
+    },
+    {
+      "actor": "server1.conn0.child2/source43",
+      "introductionType": "scriptElement",
+      "introductionUrl": null,
+      "isBlackBoxed": false,
+      "sourceMapBaseURL": "https://example.com/",
+      "sourceMapURL": null,
+      "url": "https://example.com/vendor.min.js"
+    },
+    {
+      "actor": "server1.conn0.child2/source44",
+      "introductionType": "scriptElement",
+      "introductionUrl": null,
+      "isBlackBoxed": true,
+      "sourceMapBaseURL": "https://example.com/",
+      "sourceMapURL": null,
+      "url": "https://cdn.example.com/analytics.js"
+    }
+  ]
+}
