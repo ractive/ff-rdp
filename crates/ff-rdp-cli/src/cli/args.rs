@@ -152,10 +152,10 @@ pub enum Command {
         #[arg(long)]
         headless: bool,
         /// Path to a Firefox profile directory
-        #[arg(long)]
+        #[arg(long, conflicts_with = "temp_profile")]
         profile: Option<String>,
         /// Create a temporary profile for a clean session
-        #[arg(long)]
+        #[arg(long, conflicts_with = "profile")]
         temp_profile: bool,
         /// Override the debug server port (defaults to --port value)
         #[arg(long)]

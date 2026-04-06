@@ -25,7 +25,7 @@ const SCREENSHOT_JS: &str = r"(function() {
   canvas.width = w;
   canvas.height = h;
   var ctx = canvas.getContext('2d');
-  if (typeof ctx.drawWindow !== 'function') { return null; }
+  if (!ctx || typeof ctx.drawWindow !== 'function') { return null; }
   ctx.drawWindow(window, 0, 0, w, h, 'rgb(255,255,255)');
   return canvas.toDataURL('image/png');
 })()";
@@ -138,11 +138,12 @@ fn resolve_output_path(output_path: Option<&str>) -> anyhow::Result<PathBuf> {
         return Ok(PathBuf::from(p));
     }
 
-    // Generate a stable, unique filename from the current system time.
+    // Generate a unique filename from the current system time (millisecond
+    // resolution to avoid collisions when taking multiple screenshots quickly).
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .context("system clock is before UNIX epoch")?
-        .as_secs();
+        .as_millis();
 
     Ok(PathBuf::from(format!("screenshot-{ts}.png")))
 }

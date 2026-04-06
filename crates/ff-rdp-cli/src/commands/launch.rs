@@ -209,17 +209,13 @@ mod tests {
     use super::*;
     use std::ffi::OsStr;
 
-    /// Extract all arguments that would be passed to the spawned process.
-    ///
-    /// `std::process::Command` does not expose its args list directly, so we
-    /// serialize the debug output and scan it. This is intentionally a
-    /// white-box test of the argument construction logic.
+    /// Extract all arguments that would be passed to the spawned process,
+    /// including the program name as the first element.
     fn command_args(cmd: &std::process::Command) -> Vec<String> {
-        // Format: `"program" "arg1" "arg2" ...`
-        format!("{cmd:?}")
-            .split_whitespace()
-            .map(|s| s.trim_matches('"').to_owned())
-            .collect()
+        let mut args: Vec<String> = Vec::new();
+        args.push(cmd.get_program().to_string_lossy().into_owned());
+        args.extend(cmd.get_args().map(|a| a.to_string_lossy().into_owned()));
+        args
     }
 
     /// Write a minimal dummy script to a temp path and return that path.

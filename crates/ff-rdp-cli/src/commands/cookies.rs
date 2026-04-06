@@ -10,17 +10,20 @@ use super::connect_tab::{ConnectedTab, connect_and_get_target};
 
 /// JavaScript that serialises `document.cookie` as a JSON string.
 ///
-/// `document.cookie` returns `"key=value; key2=value2"`.  We split on `"; "`,
-/// parse each pair at the first `=`, and return the result as a
-/// `JSON.stringify`-encoded string so that it survives the Firefox RDP grip
-/// encoding unchanged (an Array grip would not carry its element values inline).
+/// `document.cookie` returns `"key=value; key2=value2"`.  We split on `";"`,
+/// trim whitespace from each segment, parse at the first `=`, and skip empty
+/// segments.  Name-only cookies (no `=`) are emitted as `{name, value: ""}`.
 const COOKIES_JS: &str = r"(function() {
   var raw = document.cookie;
   if (!raw) return '[]';
-  var cookies = raw.split('; ').map(function(c) {
-    var idx = c.indexOf('=');
-    return {name: c.substring(0, idx), value: c.substring(idx + 1)};
-  });
+  var cookies = raw.split(';').reduce(function(acc, c) {
+    var t = c.replace(/^\s+|\s+$/g, '');
+    if (!t) return acc;
+    var idx = t.indexOf('=');
+    if (idx < 0) { acc.push({name: t, value: ''}); }
+    else { acc.push({name: t.substring(0, idx), value: t.substring(idx + 1)}); }
+    return acc;
+  }, []);
   return JSON.stringify(cookies);
 })()";
 
@@ -101,7 +104,12 @@ mod tests {
     }
 
     #[test]
-    fn cookies_js_splits_on_semicolon_space() {
-        assert!(COOKIES_JS.contains("split('; ')"));
+    fn cookies_js_splits_on_semicolon() {
+        assert!(COOKIES_JS.contains("split(';')"));
+    }
+
+    #[test]
+    fn cookies_js_handles_name_only_cookies() {
+        assert!(COOKIES_JS.contains("idx < 0"));
     }
 }
