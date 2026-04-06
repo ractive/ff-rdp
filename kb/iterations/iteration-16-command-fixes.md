@@ -1,6 +1,6 @@
 ---
 title: "Iteration 16: Command Fixes & jq"
-status: done
+status: completed
 date: 2026-04-06
 tags:
   - iteration
