@@ -33,16 +33,13 @@ fn live_handshake() {
     if !should_run_live() {
         return;
     }
+    // The greeting message is consumed internally by RdpConnection::connect and is not
+    // accessible after the fact. We simply verify that the connection succeeds.
+    //
+    // handshake.json is the one fixture maintained manually: the greeting format
+    // ("from": "root", "applicationType": "browser", "traits": {...}) is stable and
+    // well-known from the Firefox Remote Debugging Protocol spec.
     let conn = connect();
-    // The greeting is consumed by RdpConnection::connect; verify connection succeeded.
-    // Record the handshake fixture from core fixtures (already present).
-    let greeting = json!({
-        "from": "root",
-        "applicationType": "browser",
-        "traits": {}
-    });
-    save_cli_fixture("handshake.json", &greeting);
-    save_core_fixture("handshake.json", &greeting);
     drop(conn);
 }
 
@@ -136,6 +133,10 @@ fn live_watch_resources() {
 
     let resp = recv_from_actor(transport, watcher_actor);
 
+    assert!(
+        resp.get("from").is_some(),
+        "watchResources response must have a 'from' field"
+    );
     save_cli_fixture("watch_resources_response.json", &resp);
 }
 
@@ -226,6 +227,11 @@ fn live_start_listeners() {
         .expect("send startListeners");
 
     let resp = recv_from_actor(transport, console_actor);
+
+    assert!(
+        resp.get("from").is_some(),
+        "startListeners response must have a 'from' field"
+    );
     save_cli_fixture("start_listeners_response.json", &resp);
 }
 
@@ -1379,11 +1385,18 @@ fn live_network_resources() {
     let events = drain_messages(transport, Duration::from_secs(3));
 
     let mut net_actor = None;
+    let mut saved_available = false;
+    let mut saved_updated = false;
     for msg in &events {
         let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
 
         if msg_type == "resources-available-array" || msg_type == "resource-available-form" {
-            save_cli_fixture("resources_available_network.json", msg);
+            // Save only the first occurrence so we capture a representative example
+            // without overwriting it with every subsequent network event message.
+            if !saved_available {
+                save_cli_fixture("resources_available_network.json", msg);
+                saved_available = true;
+            }
 
             // Extract network event actor
             if let Some(array) = msg.get("array").and_then(Value::as_array) {
@@ -1406,7 +1419,11 @@ fn live_network_resources() {
         }
 
         if msg_type == "resources-updated-array" || msg_type == "resource-updated-form" {
-            save_cli_fixture("resources_updated_network.json", msg);
+            // Save only the first occurrence.
+            if !saved_updated {
+                save_cli_fixture("resources_updated_network.json", msg);
+                saved_updated = true;
+            }
         }
     }
 
@@ -1465,8 +1482,7 @@ fn live_network_resources() {
                         && let Some(resources) = sub_arr[1].as_array()
                     {
                         for res in resources {
-                            if let Some(actor) =
-                                res.get("actor").and_then(Value::as_str)
+                            if let Some(actor) = res.get("actor").and_then(Value::as_str)
                                 && actor.contains("netEvent")
                                 && fresh_net_actor.is_none()
                                 && res
@@ -1529,11 +1545,12 @@ fn setup_target(transport: &mut RdpTransport) -> (String, String) {
     (target_actor, console_actor)
 }
 
-/// Navigate to example.com, reconnecting afterward to get fresh actors.
-/// Leaves the transport in a usable state on the reconnected connection.
+/// Send a `navigateTo` request for <https://example.com/>, wait for navigation
+/// to settle, then drain any pending messages from the transport.
 ///
-/// This consumes the connection and returns nothing — callers should
-/// reconnect after calling this.
+/// This does **not** reconnect. Actors acquired before this call remain on
+/// the same connection. Callers that need fresh actors after navigation must
+/// drop their connection and call `connect()` separately.
 fn navigate_to_example_com(transport: &mut RdpTransport) {
     let (target_actor, _console) = setup_target(transport);
 

@@ -15,6 +15,7 @@
 //! ```
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use regex::Regex;
 use serde_json::{Value, json};
@@ -64,8 +65,9 @@ fn cli_fixtures_dir() -> PathBuf {
 /// Normalize actor connection IDs (`conn\d+` → `conn0`) for cross-fixture
 /// consistency, leaving everything else (timestamps, window IDs, etc.) as-is.
 pub fn normalize_fixture(value: &Value) -> Value {
-    let re = Regex::new(r"conn\d+").expect("valid regex");
-    normalize_value(value, &re)
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"\bconn\d+\b").expect("valid regex"));
+    normalize_value(value, re)
 }
 
 fn normalize_value(value: &Value, re: &Regex) -> Value {
@@ -86,6 +88,10 @@ fn normalize_value(value: &Value, re: &Regex) -> Value {
 // ---------------------------------------------------------------------------
 
 fn write_fixture(dir: &Path, name: &str, value: &Value) {
+    debug_assert!(
+        !name.contains('/') && !name.contains('\\'),
+        "fixture name must not contain path separators: {name:?}"
+    );
     if !should_record() {
         return;
     }
@@ -127,6 +133,10 @@ pub fn recv_from_actor(transport: &mut RdpTransport, expected_from: &str) -> Val
             if msg_type == "frameUpdate"
                 || msg_type == "tabNavigated"
                 || msg_type == "tabListChanged"
+                || msg_type == "resources-available-array"
+                || msg_type == "resources-updated-array"
+                || msg_type == "resource-available-form"
+                || msg_type == "resource-updated-form"
             {
                 continue;
             }
@@ -193,7 +203,12 @@ pub fn send_raw(transport: &mut RdpTransport, request: &Value) -> Value {
     transport.recv().expect("recv")
 }
 
-/// Drain all available messages with a short timeout, returning them.
+/// Drain all available messages up to `timeout`, returning them.
+///
+/// `RdpTransport` sets a 500 ms socket read timeout internally, so `recv()`
+/// returns an `Err` once the socket goes idle — that error is the normal
+/// exit signal here, not a failure.  The wall-clock `timeout` guard prevents
+/// an indefinitely chatty peer from blocking the test suite forever.
 pub fn drain_messages(transport: &mut RdpTransport, timeout: std::time::Duration) -> Vec<Value> {
     let mut messages = Vec::new();
     let start = std::time::Instant::now();
@@ -203,6 +218,8 @@ pub fn drain_messages(transport: &mut RdpTransport, timeout: std::time::Duration
         }
         match transport.recv() {
             Ok(msg) => messages.push(msg),
+            // Socket read timeout fired (or connection closed) — no more
+            // messages available right now.
             Err(_) => break,
         }
     }

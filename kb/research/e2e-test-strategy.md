@@ -82,7 +82,7 @@ This runs each live test against real Firefox AND writes the validated response 
 
 **What happens during recording:**
 1. Each live test exercises a real Firefox command and validates the response structure
-2. When `RECORD=1`, the validated response is normalized (actor connection IDs `conn\d+` → `conn0`) and saved as the fixture file
+2. When `FF_RDP_LIVE_TESTS_RECORD=1`, the validated response is normalized (actor connection IDs `conn\d+` → `conn0`) and saved as the fixture file
 3. CLI e2e tests (mock-based) continue to load these fixture files as before
 
 **Normalization:** Only actor connection IDs are normalized for cross-fixture consistency. Timestamps, window IDs, and other volatile fields are left as raw Firefox output.
