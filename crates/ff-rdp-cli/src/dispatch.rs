@@ -1,16 +1,16 @@
 use crate::cli::args::{Cli, Command};
 use crate::commands;
+use crate::commands::nav_action::NavAction;
 use crate::error::AppError;
 
 pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
     match &cli.command {
         Command::Tabs => commands::tabs::run(cli),
-        Command::Navigate { url: _ } => Err(AppError::User(
-            "navigate: not yet implemented (iteration 2)".into(),
-        )),
-        Command::Eval { script: _ } => Err(AppError::User(
-            "eval: not yet implemented (iteration 2)".into(),
-        )),
+        Command::Navigate { url } => commands::navigate::run(cli, url),
+        Command::Eval { script } => commands::eval::run(cli, script),
+        Command::Reload => commands::nav_action::run(cli, NavAction::Reload),
+        Command::Back => commands::nav_action::run(cli, NavAction::Back),
+        Command::Forward => commands::nav_action::run(cli, NavAction::Forward),
         Command::PageText => Err(AppError::User(
             "page-text: not yet implemented (iteration 5)".into(),
         )),
@@ -19,15 +19,6 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         )),
         Command::Screenshot { output: _ } => Err(AppError::User(
             "screenshot: not yet implemented (iteration 7)".into(),
-        )),
-        Command::Reload => Err(AppError::User(
-            "reload: not yet implemented (iteration 3)".into(),
-        )),
-        Command::Back => Err(AppError::User(
-            "back: not yet implemented (iteration 3)".into(),
-        )),
-        Command::Forward => Err(AppError::User(
-            "forward: not yet implemented (iteration 3)".into(),
         )),
     }
 }

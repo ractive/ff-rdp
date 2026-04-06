@@ -1,0 +1,50 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "input": "({a: 1, b: [2,3]})",
+  "result": {
+    "actor": "server1.conn0.child2/obj19",
+    "class": "Object",
+    "extensible": true,
+    "frozen": false,
+    "isError": false,
+    "ownPropertyLength": 2,
+    "preview": {
+      "kind": "Object",
+      "ownProperties": {
+        "a": {
+          "configurable": true,
+          "enumerable": true,
+          "value": 1,
+          "writable": true
+        },
+        "b": {
+          "configurable": true,
+          "enumerable": true,
+          "value": {
+            "actor": "server1.conn0.child2/obj20",
+            "class": "Array",
+            "extensible": true,
+            "frozen": false,
+            "isError": false,
+            "ownPropertyLength": 3,
+            "preview": {
+              "kind": "ArrayLike",
+              "length": 2
+            },
+            "sealed": false,
+            "type": "object"
+          },
+          "writable": true
+        }
+      },
+      "ownPropertiesLength": 2
+    },
+    "sealed": false,
+    "type": "object"
+  },
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183982.764,
+  "timestamp": 1775437183987.678,
+  "type": "evaluationResult"
+}

@@ -1,0 +1,47 @@
+{
+  "exception": {
+    "actor": "server1.conn0.child2/obj21",
+    "class": "Error",
+    "extensible": true,
+    "frozen": false,
+    "isError": true,
+    "ownPropertyLength": 4,
+    "preview": {
+      "columnNumber": 7,
+      "fileName": "debugger eval code",
+      "kind": "Error",
+      "lineNumber": 1,
+      "message": "test error",
+      "name": "Error",
+      "stack": "@debugger eval code:1:7\n"
+    },
+    "sealed": false,
+    "type": "object"
+  },
+  "exceptionMessage": "Error: test error",
+  "exceptionStack": [
+    {
+      "columnNumber": 7,
+      "filename": "debugger eval code",
+      "functionName": null,
+      "lineNumber": 1,
+      "sourceId": null
+    }
+  ],
+  "frame": {
+    "column": 7,
+    "line": 1,
+    "source": "debugger eval code",
+    "sourceId": null
+  },
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": true,
+  "input": "throw new Error('test error')",
+  "result": {
+    "type": "undefined"
+  },
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183988.612,
+  "timestamp": 1775437183990.629,
+  "type": "evaluationResult"
+}

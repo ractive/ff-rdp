@@ -9,8 +9,6 @@ use crate::error::AppError;
 /// 2. `tab` as a 1-based integer index into `tabs`.
 /// 3. `tab` as a case-insensitive URL substring.
 /// 4. Neither flag — first selected tab, falling back to `tabs[0]`.
-// Allow dead_code until the first command that uses tab targeting is wired up.
-#[allow(dead_code)]
 pub fn resolve_tab<'a>(
     tabs: &'a [TabInfo],
     tab: Option<&str>,

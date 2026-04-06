@@ -3,22 +3,33 @@
   "tabs": [
     {
       "actor": "server1.conn0.tabDescriptor1",
-      "browsingContextID": 22,
-      "outerWindowID": 22,
+      "browserId": 3,
+      "browsingContextID": 16,
+      "isZombieTab": false,
+      "outerWindowID": 35,
       "selected": true,
       "title": "Example Domain",
-      "traits": { "watcher": true },
+      "traits": {
+        "supportsNavigation": true,
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
       "url": "https://example.com/"
     },
     {
       "actor": "server1.conn0.tabDescriptor2",
-      "browsingContextID": 25,
-      "outerWindowID": 25,
+      "browserId": 4,
+      "browsingContextID": 17,
+      "isZombieTab": false,
+      "outerWindowID": 36,
       "selected": false,
       "title": "Rust Programming Language",
-      "traits": { "watcher": true },
+      "traits": {
+        "supportsNavigation": true,
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
       "url": "https://www.rust-lang.org/"
     }
-  ],
-  "selected": 0
+  ]
 }

@@ -23,8 +23,9 @@ use serde_json::Value;
 pub struct MockRdpServer {
     listener: TcpListener,
     greeting: Value,
-    /// Registered (method_type, response) pairs, matched in insertion order.
-    handlers: Vec<(String, Value)>,
+    /// Registered (method_type, response, follow_up) triples, matched in insertion order.
+    /// The optional follow_up is sent immediately after the response (for async patterns).
+    handlers: Vec<(String, Value, Option<Value>)>,
 }
 
 impl MockRdpServer {
@@ -51,7 +52,17 @@ impl MockRdpServer {
     /// respond with `response`. Handlers are matched in insertion order;
     /// the first match wins.
     pub fn on(mut self, method: &str, response: Value) -> Self {
-        self.handlers.push((method.to_owned(), response));
+        self.handlers.push((method.to_owned(), response, None));
+        self
+    }
+
+    /// Register a handler with a follow-up message sent after the response.
+    ///
+    /// This is used for async patterns like `evaluateJSAsync` where an
+    /// immediate response is sent, followed by an `evaluationResult` event.
+    pub fn on_with_followup(mut self, method: &str, response: Value, followup: Value) -> Self {
+        self.handlers
+            .push((method.to_owned(), response, Some(followup)));
         self
     }
 
@@ -91,27 +102,37 @@ impl MockRdpServer {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
 
-            let response = self
-                .handlers
-                .iter()
-                .find(|(m, _)| m == method)
-                .map(|(_, r)| r.clone());
+            let handler = self.handlers.iter().find(|(m, _, _)| m == method);
 
-            let reply = if let Some(resp) = response {
-                resp
+            let (reply, followup) = if let Some((_, resp, follow)) = handler {
+                (resp.clone(), follow.clone())
             } else {
                 // No handler matched — send a generic actor error so the
                 // client gets a reply and doesn't hang.
-                serde_json::json!({
-                    "from": "root",
-                    "error": "unknownMethod",
-                    "message": format!("no handler for type={method:?}")
-                })
+                (
+                    serde_json::json!({
+                        "from": "root",
+                        "error": "unknownMethod",
+                        "message": format!("no handler for type={method:?}")
+                    }),
+                    None,
+                )
             };
 
             let json = serde_json::to_string(&reply).expect("response encode");
             if writer.write_all(encode_frame(&json).as_bytes()).is_err() {
                 break;
+            }
+
+            // Send follow-up message if registered (e.g., evaluationResult event).
+            if let Some(followup_msg) = followup {
+                let followup_json = serde_json::to_string(&followup_msg).expect("followup encode");
+                if writer
+                    .write_all(encode_frame(&followup_json).as_bytes())
+                    .is_err()
+                {
+                    break;
+                }
             }
         }
     }

@@ -1,7 +1,7 @@
 use std::fmt;
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 /// A newtype wrapping a Firefox RDP actor ID string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -60,6 +60,47 @@ pub enum Grip {
 }
 
 impl Grip {
+    /// Convert this grip to a JSON representation suitable for CLI output.
+    ///
+    /// - Plain values (string, number, bool) pass through as-is.
+    /// - `Null` → `null`
+    /// - `Undefined` → `{"type": "undefined"}`
+    /// - `NaN`, `Inf`, `NegInf`, `NegZero` → `{"type": "<name>"}`
+    /// - `LongString` → the initial string content (truncated).
+    /// - `Object` → `{"type": "object", "class": "<class>", "actor": "<id>"}`,
+    ///   plus `"preview"` if available.
+    pub fn to_json(&self) -> Value {
+        match self {
+            Self::Null => Value::Null,
+            Self::Undefined => json!({"type": "undefined"}),
+            Self::Inf => json!({"type": "Infinity"}),
+            Self::NegInf => json!({"type": "-Infinity"}),
+            Self::NaN => json!({"type": "NaN"}),
+            Self::NegZero => json!({"type": "-0"}),
+            Self::LongString {
+                initial, length, ..
+            } => {
+                json!({"type": "longString", "value": initial, "length": length})
+            }
+            Self::Object {
+                actor,
+                class,
+                preview,
+            } => {
+                let mut obj = json!({
+                    "type": "object",
+                    "class": class,
+                    "actor": actor.to_string(),
+                });
+                if let Some(p) = preview {
+                    obj["preview"] = p.clone();
+                }
+                obj
+            }
+            Self::Value(v) => v.clone(),
+        }
+    }
+
     /// Parse a Firefox RDP result value into a [`Grip`].
     ///
     /// The `value` argument must be the content of the `"result"` field in a
@@ -273,5 +314,87 @@ mod tests {
         // object without required "class" falls through to Value.
         let v = json!({"type": "object", "actor": "server1.conn0.child1/obj1"});
         assert_eq!(Grip::from_result_value(&v), Grip::Value(v));
+    }
+
+    // --- to_json tests ---
+
+    #[test]
+    fn to_json_null() {
+        assert_eq!(Grip::Null.to_json(), Value::Null);
+    }
+
+    #[test]
+    fn to_json_undefined() {
+        assert_eq!(Grip::Undefined.to_json(), json!({"type": "undefined"}));
+    }
+
+    #[test]
+    fn to_json_infinity() {
+        assert_eq!(Grip::Inf.to_json(), json!({"type": "Infinity"}));
+    }
+
+    #[test]
+    fn to_json_nan() {
+        assert_eq!(Grip::NaN.to_json(), json!({"type": "NaN"}));
+    }
+
+    #[test]
+    fn to_json_neg_zero() {
+        assert_eq!(Grip::NegZero.to_json(), json!({"type": "-0"}));
+    }
+
+    #[test]
+    fn to_json_plain_string() {
+        assert_eq!(Grip::Value(json!("hello")).to_json(), json!("hello"));
+    }
+
+    #[test]
+    fn to_json_number() {
+        assert_eq!(Grip::Value(json!(42)).to_json(), json!(42));
+    }
+
+    #[test]
+    fn to_json_bool() {
+        assert_eq!(Grip::Value(json!(true)).to_json(), json!(true));
+    }
+
+    #[test]
+    fn to_json_long_string() {
+        let grip = Grip::LongString {
+            actor: ActorId::from("longstr1"),
+            length: 50000,
+            initial: "first 1000 chars...".to_owned(),
+        };
+        let j = grip.to_json();
+        assert_eq!(j["type"], "longString");
+        assert_eq!(j["value"], "first 1000 chars...");
+        assert_eq!(j["length"], 50000);
+    }
+
+    #[test]
+    fn to_json_object_with_preview() {
+        let grip = Grip::Object {
+            actor: ActorId::from("obj1"),
+            class: "Array".to_owned(),
+            preview: Some(json!({"length": 3})),
+        };
+        let j = grip.to_json();
+        assert_eq!(j["type"], "object");
+        assert_eq!(j["class"], "Array");
+        assert_eq!(j["actor"], "obj1");
+        assert_eq!(j["preview"]["length"], 3);
+    }
+
+    #[test]
+    fn to_json_object_without_preview() {
+        let grip = Grip::Object {
+            actor: ActorId::from("obj1"),
+            class: "Object".to_owned(),
+            preview: None,
+        };
+        let j = grip.to_json();
+        assert_eq!(j["type"], "object");
+        assert_eq!(j["class"], "Object");
+        assert!(j.get("preview").is_none());
     }
 }

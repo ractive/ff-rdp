@@ -1,0 +1,43 @@
+{
+  "frame": {
+    "accessibilityActor": "server1.conn0.child2/accessibilityActor12",
+    "actor": "server1.conn0.child2/windowGlobalTarget2",
+    "addonId": null,
+    "animationsActor": "server1.conn0.child2/animationsActor9",
+    "browsingContextID": 16,
+    "consoleActor": "server1.conn0.child2/consoleActor3",
+    "cssPropertiesActor": "server1.conn0.child2/cssPropertiesActor8",
+    "ignoreSubFrames": false,
+    "innerWindowId": 1,
+    "inspectorActor": "server1.conn0.child2/inspectorActor4",
+    "isFallbackExtensionDocument": false,
+    "isPopup": false,
+    "isPrivate": false,
+    "isTopLevelTarget": true,
+    "manifestActor": "server1.conn0.child2/manifestActor13",
+    "memoryActor": "server1.conn0.child2/memoryActor6",
+    "networkContentActor": "server1.conn0.child2/networkContentActor14",
+    "objectsManagerActor": "server1.conn0.child2/objectsManagerActor17",
+    "outerWindowID": 35,
+    "reflowActor": "server1.conn0.child2/reflowActor7",
+    "responsiveActor": "server1.conn0.child2/responsiveActor10",
+    "screenshotContentActor": "server1.conn0.child2/screenshotContentActor15",
+    "styleSheetsActor": "server1.conn0.child2/styleSheetsActor5",
+    "targetType": "frame",
+    "threadActor": "server1.conn0.child2/thread1",
+    "title": "Example Domain",
+    "topInnerWindowId": 1,
+    "tracerActor": "server1.conn0.child2/tracerActor16",
+    "traits": {
+      "frames": true,
+      "isBrowsingContext": true,
+      "logInPage": true,
+      "navigation": true,
+      "supportsTopLevelTargetFlag": true,
+      "watchpoints": true
+    },
+    "url": "https://example.com/",
+    "webExtensionInspectedWindowActor": "server1.conn0.child2/webExtensionInspectedWindowActor11"
+  },
+  "from": "server1.conn0.tabDescriptor1"
+}
