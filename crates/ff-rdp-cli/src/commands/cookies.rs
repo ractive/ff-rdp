@@ -1,4 +1,4 @@
-use ff_rdp_core::StorageActor;
+use ff_rdp_core::{Grip, StorageActor, WebConsoleActor};
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -6,7 +6,19 @@ use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_and_get_target;
+use super::connect_tab::{ConnectedTab, connect_and_get_target};
+use super::js_helpers::escape_selector;
+
+/// Common CMP (Consent Management Platform) selectors used to detect consent
+/// banners that may be blocking cookie creation.
+const CMP_SELECTORS: &[&str] = &[
+    "#CybotCookiebotDialog",
+    "#onetrust-consent-sdk",
+    ".cmp-container",
+    "[data-testid=\"uc-default-wall\"]",
+    "#didomi-host",
+    ".qc-cmp-ui-container",
+];
 
 pub fn run(cli: &Cli, name: Option<&str>) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
@@ -39,10 +51,80 @@ pub fn run(cli: &Cli, name: Option<&str>) -> Result<(), AppError> {
 
     let total = results.len();
     let result_json = json!(results);
-    let meta = json!({"host": cli.host, "port": cli.port});
+
+    // If no cookies found, check for a consent banner that may be suppressing them.
+    let mut meta = json!({"host": cli.host, "port": cli.port});
+    if total == 0
+        && let Some(note) = detect_consent_banner(&mut ctx)
+        && let Some(m) = meta.as_object_mut()
+    {
+        m.insert("note".to_string(), json!(note));
+    }
+
     let envelope = output::envelope(&result_json, total, &meta);
 
     OutputPipeline::new(cli.jq.clone())
         .finalize(&envelope)
         .map_err(AppError::from)
+}
+
+/// Check if common CMP/consent banner elements exist on the page via JS eval.
+///
+/// Returns a human-readable note string when a banner is detected, or `None`
+/// if no banner is found or the evaluation fails for any reason.  This is
+/// intentionally best-effort: errors are silently ignored so that the primary
+/// cookie output is never blocked by a failed CMP probe.
+fn detect_consent_banner(ctx: &mut ConnectedTab) -> Option<String> {
+    let selectors_js = CMP_SELECTORS
+        .iter()
+        .map(|s| format!("'{}'", escape_selector(s)))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let js = format!(
+        r"(function() {{
+  var sels = [{selectors_js}];
+  for (var i = 0; i < sels.length; i++) {{
+    if (document.querySelector(sels[i])) return sels[i];
+  }}
+  return null;
+}})()"
+    );
+
+    let console_actor = ctx.target.console_actor.clone();
+    let eval_result =
+        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js).ok()?;
+
+    // Treat any JS exception as "no banner detected" — the page may not have a
+    // DOM at all (e.g. about:blank) or the eval may have hit a security error.
+    if eval_result.exception.is_some() {
+        return None;
+    }
+
+    match &eval_result.result {
+        Grip::Value(Value::String(selector)) => Some(format!(
+            "0 cookies found — a consent banner was detected ({selector}); \
+             cookies may appear after accepting consent"
+        )),
+        // null return from JS means no CMP element was found.
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cmp_selectors_are_valid_css() {
+        // Basic sanity: selectors must not be empty and must not contain single
+        // quotes, which would break the JS string literal embedding.
+        for sel in CMP_SELECTORS {
+            assert!(!sel.is_empty(), "CMP selector should not be empty");
+            assert!(
+                !sel.contains('\''),
+                "CMP selector should not contain single quotes: {sel}"
+            );
+        }
+    }
 }
