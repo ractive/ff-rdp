@@ -63,9 +63,11 @@ Format: raw JSON, one complete RDP response per file. Loaded at test time via th
 
 ## How to Capture / Refresh Fixtures
 
-1. **Start Firefox in debugger mode:**
+1. **Start Firefox in debugger mode** (see [[#Starting Firefox with the Debug Server]] below):
    ```sh
-   firefox --start-debugger-server 6000 -headless
+   /Applications/Firefox.app/Contents/MacOS/firefox \
+     --start-debugger-server 6000 -no-remote \
+     -profile /tmp/ff-rdp-test-profile
    ```
 
 2. **Capture raw responses** using `socat` or `nc`:
@@ -85,6 +87,52 @@ Format: raw JSON, one complete RDP response per file. Loaded at test time via th
 
 4. **Save** to `tests/fixtures/<descriptive_name>.json` — one response per file, pretty-printed.
 
+## Starting Firefox with the Debug Server
+
+Firefox requires explicit configuration to enable the remote debugging server. The `--start-debugger-server` flag alone is not enough — the `devtools.debugger.remote-enabled` preference must also be `true`.
+
+### macOS Setup
+
+You can run a debug Firefox instance alongside your normal browser using `-no-remote` and a separate profile:
+
+```sh
+# 1. Create a test profile with remote debugging enabled (one-time setup)
+mkdir -p /tmp/ff-rdp-test-profile
+cat > /tmp/ff-rdp-test-profile/user.js << 'PREFS'
+user_pref("devtools.debugger.remote-enabled", true);
+user_pref("devtools.debugger.prompt-connection", false);
+user_pref("devtools.chrome.enabled", true);
+PREFS
+
+# 2. Launch a separate Firefox process with the debug server
+/Applications/Firefox.app/Contents/MacOS/firefox \
+  --start-debugger-server 6000 \
+  -no-remote \
+  -profile /tmp/ff-rdp-test-profile
+
+# 3. Verify it's listening
+nc -z localhost 6000 && echo "listening"
+```
+
+Key flags:
+- **`-no-remote`**: Forces a new Firefox process instead of joining the already-running instance. This lets you keep your normal browser open.
+- **`-profile <path>`**: Uses a separate profile directory so the debug prefs don't affect your main profile.
+- **`user.js`**: Firefox reads this on startup and applies the preferences. The three prefs enable the debug server, disable the connection prompt, and enable chrome debugging.
+
+### Linux / Headless
+
+```sh
+firefox --start-debugger-server 6000 -headless -no-remote -profile /tmp/ff-rdp-test-profile
+```
+
+Same `user.js` setup applies. Headless mode is useful for CI.
+
+### Windows
+
+```sh
+"C:\Program Files\Mozilla Firefox\firefox.exe" --start-debugger-server 6000 -no-remote -profile %TEMP%\ff-rdp-test-profile
+```
+
 ## Live Firefox Tests
 
 Located in `crates/ff-rdp-core/tests/live_firefox_test.rs`. Gated behind two mechanisms:
@@ -95,8 +143,10 @@ Located in `crates/ff-rdp-core/tests/live_firefox_test.rs`. Gated behind two mec
 To run locally:
 
 ```sh
-# Terminal 1: start Firefox
-firefox --start-debugger-server 6000
+# Terminal 1: start Firefox (see setup above)
+/Applications/Firefox.app/Contents/MacOS/firefox \
+  --start-debugger-server 6000 -no-remote \
+  -profile /tmp/ff-rdp-test-profile
 
 # Terminal 2: run the live tests
 FF_RDP_LIVE_TESTS=1 cargo test --package ff-rdp-core -- --ignored
