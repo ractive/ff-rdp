@@ -45,7 +45,7 @@ pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
             ))
         }
         ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout if via_daemon => {
-            // Daemon was found but connection failed — fall through to direct.
+            // Daemon was found in the registry but connection failed.
             // This shouldn't normally happen since we checked PID liveness.
             AppError::User(format!(
                 "could not connect to daemon on port {connect_port} — try --no-daemon to connect directly to Firefox"

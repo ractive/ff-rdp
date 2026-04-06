@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use serde_json::Value;
 
@@ -9,8 +9,10 @@ const MAX_EVENTS_PER_TYPE: usize = 10_000;
 /// Each resource type has an independent cap of `MAX_EVENTS_PER_TYPE` entries.
 /// When the cap is reached the oldest event is evicted before inserting the new one,
 /// so the buffer never grows beyond the limit.
+///
+/// Internally uses `VecDeque` so front-eviction is O(1) instead of O(n).
 pub(crate) struct EventBuffer {
-    inner: HashMap<String, Vec<Value>>,
+    inner: HashMap<String, VecDeque<Value>>,
 }
 
 impl EventBuffer {
@@ -21,22 +23,22 @@ impl EventBuffer {
     }
 
     /// Insert an event for `resource_type`.  If the bucket is already at
-    /// `MAX_EVENTS_PER_TYPE` the oldest entry is removed first.
+    /// `MAX_EVENTS_PER_TYPE` the oldest entry is evicted first (O(1)).
     pub(crate) fn insert(&mut self, resource_type: &str, event: Value) {
         let bucket = self.inner.entry(resource_type.to_owned()).or_default();
         if bucket.len() >= MAX_EVENTS_PER_TYPE {
-            bucket.remove(0);
+            bucket.pop_front();
         }
-        bucket.push(event);
+        bucket.push_back(event);
     }
 
-    /// Drain all events for `resource_type` and return them.
+    /// Drain all events for `resource_type` and return them in insertion order.
     ///
     /// The bucket is left empty (but still present in the map).  Returns an
     /// empty `Vec` if the type is unknown.
     pub(crate) fn drain(&mut self, resource_type: &str) -> Vec<Value> {
         match self.inner.get_mut(resource_type) {
-            Some(bucket) => std::mem::take(bucket),
+            Some(bucket) => std::mem::take(bucket).into_iter().collect(),
             None => Vec::new(),
         }
     }
@@ -54,7 +56,7 @@ impl EventBuffer {
     /// Returns `true` when every bucket is empty (or no buckets exist).
     #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.inner.values().all(Vec::is_empty)
+        self.inner.values().all(VecDeque::is_empty)
     }
 }
 

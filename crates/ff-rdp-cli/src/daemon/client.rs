@@ -24,6 +24,10 @@ pub(crate) enum ConnectionTarget {
 ///
 /// Returns `Some(info)` if the daemon is alive, `None` otherwise.
 /// Automatically removes stale registry files when the recorded PID is dead.
+///
+/// Note: this only checks PID liveness, not TCP connectivity.  A daemon whose
+/// Firefox connection has broken will still appear alive until it exits.  The
+/// caller handles connection failures via the normal error path.
 pub(crate) fn find_running_daemon(
     firefox_host: &str,
     firefox_port: u16,
@@ -100,7 +104,7 @@ pub(crate) fn resolve_connection_target(
     }
 
     // 4. Wait for the daemon to write its registry entry.
-    match process::wait_for_registry(Duration::from_secs(5)) {
+    match process::wait_for_registry(Duration::from_secs(5), firefox_host, firefox_port) {
         Ok(info) => ConnectionTarget::Daemon {
             port: info.proxy_port,
         },

@@ -8,12 +8,12 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonInfo {
-    pub pid: u32,
-    pub proxy_port: u16,
-    pub firefox_host: String,
-    pub firefox_port: u16,
+    pub(crate) pid: u32,
+    pub(crate) proxy_port: u16,
+    pub(crate) firefox_host: String,
+    pub(crate) firefox_port: u16,
     /// ISO 8601 timestamp of when the daemon was started.
-    pub started_at: String,
+    pub(crate) started_at: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -104,12 +104,6 @@ pub fn registry_dir() -> Result<PathBuf> {
     fs::create_dir_all(&dir)
         .with_context(|| format!("creating ff-rdp directory {}", dir.display()))?;
     Ok(dir)
-}
-
-/// Return the path to `~/.ff-rdp/daemon.json`.
-#[allow(dead_code)]
-pub fn registry_path() -> Result<PathBuf> {
-    Ok(registry_dir()?.join("daemon.json"))
 }
 
 /// Read and parse `~/.ff-rdp/daemon.json`.  Returns `Ok(None)` if the file

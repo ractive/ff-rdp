@@ -124,13 +124,15 @@ fn validate_greeting(greeting: &Value) -> Result<()> {
 #[allow(unused_variables)]
 fn setup_signal_handler(state: &Arc<SharedState>) {
     // signal-hook requires an additional dependency we want to avoid.
-    // For SIGINT the Rust runtime already handles Ctrl-C with a default
-    // handler.  SIGTERM causes the process to exit, which is fine because
-    // the registry cleanup happens via the Drop on `state` (or the
-    // explicit remove_registry call after accept_loop returns).
+    // For SIGINT the Rust runtime's default handler terminates the process,
+    // which skips the explicit cleanup in run_daemon.  SIGTERM similarly
+    // terminates immediately.  This is acceptable for now: the registry file
+    // is a best-effort hint and stale entries are already handled by the
+    // caller (see find_running_daemon in client.rs which checks PID liveness).
     //
-    // If a more graceful shutdown is needed in the future, add signal-hook
-    // and wire it to state.shutdown here.
+    // If a more graceful shutdown is needed in the future, add signal-hook,
+    // set state.shutdown here, and rely on run_daemon calling remove_registry
+    // after accept_loop returns.
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +163,8 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: BufReader<TcpStream
 
         match recv_from(&mut reader) {
             Ok(msg) => {
+                // unwrap: poisoned mutex means a thread panicked — the daemon
+                // is in an inconsistent state and crashing is the right action.
                 *state.last_activity.lock().unwrap() = Instant::now();
 
                 if is_watcher_event(&msg) {
@@ -196,6 +200,7 @@ fn buffer_watcher_event(buffer: &Mutex<EventBuffer>, msg: &Value) {
         return;
     };
 
+    // unwrap: poisoned mutex means a thread panicked — crash is intentional.
     let mut buf = buffer.lock().unwrap();
     for sub in array {
         let Some(sub_arr) = sub.as_array() else {
@@ -218,12 +223,11 @@ fn buffer_watcher_event(buffer: &Mutex<EventBuffer>, msg: &Value) {
 
 /// Forward a message to the CLI client if one is currently connected.
 ///
+/// The lock is held only long enough to clone the writer, then released before
+/// the I/O call so the mutex is not held across a potentially-blocking write.
 /// On write error the writer is cleared (treated as disconnected).
 fn forward_to_cli(cli_writer: &Mutex<Option<TcpStream>>, msg: &Value) {
-    let mut guard = cli_writer.lock().unwrap();
-    let Some(ref mut writer) = *guard else {
-        return;
-    };
+    // Serialise first — no lock needed.
     let json = match serde_json::to_string(msg) {
         Ok(s) => s,
         Err(e) => {
@@ -232,9 +236,29 @@ fn forward_to_cli(cli_writer: &Mutex<Option<TcpStream>>, msg: &Value) {
         }
     };
     let frame = encode_frame(&json);
+
+    // Hold the lock only to clone the stream handle, then release it.
+    // `TcpStream::try_clone` duplicates the fd/handle; the write below
+    // operates on the clone without holding the mutex.
+    let mut writer = {
+        // unwrap: poisoned mutex means a thread panicked — daemon should crash.
+        let guard = cli_writer.lock().unwrap();
+        match guard.as_ref() {
+            Some(w) => match w.try_clone() {
+                Ok(cloned) => cloned,
+                Err(e) => {
+                    eprintln!("daemon: could not clone CLI writer: {e}");
+                    return;
+                }
+            },
+            None => return,
+        }
+    };
+
     if writer.write_all(frame.as_bytes()).is_err() {
         // Client disconnected while we were trying to write.
-        *guard = None;
+        // unwrap: same rationale as above.
+        *cli_writer.lock().unwrap() = None;
     }
 }
 
@@ -363,8 +387,9 @@ fn handle_client(
             Err(ProtocolError::Timeout) => {
                 // Expected poll timeout — re-check shutdown and continue.
             }
-            Err(_) => {
+            Err(e) => {
                 // EOF or connection reset: client disconnected.
+                eprintln!("daemon: client read ended: {e}");
                 break;
             }
         }

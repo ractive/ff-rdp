@@ -128,16 +128,32 @@ pub fn spawn_daemon(
 // Registry polling
 // ---------------------------------------------------------------------------
 
-/// Poll `~/.ff-rdp/daemon.json` every 50 ms until it appears and contains a
-/// valid `DaemonInfo`, or until `timeout` elapses.
+/// Poll `~/.ff-rdp/daemon.json` every 50 ms until it appears, contains a
+/// valid `DaemonInfo` targeting `expected_host`:`expected_port`, or until
+/// `timeout` elapses.
 ///
-/// Returns an error if the timeout is exceeded or if the registry cannot be
-/// read.
-pub fn wait_for_registry(timeout: Duration) -> Result<DaemonInfo> {
+/// Validating the host and port ensures we connect to the daemon we just
+/// spawned, not a leftover entry targeting a different Firefox instance.
+///
+/// Returns an error if the timeout is exceeded, the registry cannot be read,
+/// or the registry contains a mismatched host/port.
+pub fn wait_for_registry(
+    timeout: Duration,
+    expected_host: &str,
+    expected_port: u16,
+) -> Result<DaemonInfo> {
     let deadline = Instant::now() + timeout;
     loop {
         match registry::read_registry() {
-            Ok(Some(info)) => return Ok(info),
+            Ok(Some(info)) => {
+                anyhow::ensure!(
+                    info.firefox_host == expected_host && info.firefox_port == expected_port,
+                    "registry targets {}:{} but expected {expected_host}:{expected_port}",
+                    info.firefox_host,
+                    info.firefox_port,
+                );
+                return Ok(info);
+            }
             Ok(None) => {}
             Err(e) => return Err(e).context("reading daemon registry while waiting"),
         }
