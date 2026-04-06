@@ -1,0 +1,15 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "input": "document.body.innerText",
+  "result": {
+    "actor": "server1.conn0.child2/longstractor30",
+    "initial": "Example Domain\nThis domain is for use in illustrative examples...",
+    "length": 5000,
+    "type": "longString"
+  },
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183991.461,
+  "timestamp": 1775437183991.851,
+  "type": "evaluationResult"
+}

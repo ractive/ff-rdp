@@ -48,8 +48,25 @@ pub enum Command {
         /// JavaScript expression to evaluate
         script: String,
     },
-    /// Get page information
+    /// Extract visible page text (document.body.innerText)
     PageText,
+    /// Query DOM elements by CSS selector
+    Dom {
+        /// CSS selector to match elements
+        selector: String,
+        /// Output outer HTML (default)
+        #[arg(long, group = "output_mode")]
+        outer_html: bool,
+        /// Output inner HTML
+        #[arg(long, group = "output_mode")]
+        inner_html: bool,
+        /// Output text content only
+        #[arg(long, group = "output_mode")]
+        text: bool,
+        /// Output element attributes as JSON objects
+        #[arg(long, group = "output_mode")]
+        attrs: bool,
+    },
     /// Read console messages
     Console {
         /// Filter by log level (error, warn, info, log, debug)
