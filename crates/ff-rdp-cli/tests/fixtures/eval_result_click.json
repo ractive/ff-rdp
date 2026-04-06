@@ -1,0 +1,28 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "input": "(function() { ... })()",
+  "result": {
+    "actor": "server1.conn0.child2/obj42",
+    "class": "Object",
+    "extensible": true,
+    "frozen": false,
+    "isError": false,
+    "ownPropertyLength": 3,
+    "preview": {
+      "kind": "Object",
+      "ownProperties": {
+        "clicked": {"configurable": true, "enumerable": true, "value": true, "writable": true},
+        "tag": {"configurable": true, "enumerable": true, "value": "BUTTON", "writable": true},
+        "text": {"configurable": true, "enumerable": true, "value": "Submit", "writable": true}
+      },
+      "ownPropertiesLength": 3
+    },
+    "sealed": false,
+    "type": "object"
+  },
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183977.373,
+  "timestamp": 1775437183980.721,
+  "type": "evaluationResult"
+}

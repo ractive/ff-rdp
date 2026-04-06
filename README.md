@@ -35,6 +35,9 @@ Commands:
   page-text   Extract visible page text (document.body.innerText)
   console     Read console messages (with --level and --pattern filters)
   network     Show network requests (with --filter, --method, --cached filters)
+  click       Click an element matching a CSS selector
+  type        Type text into an input element matching a CSS selector
+  wait        Wait for a condition to become true (polls every 100ms)
   screenshot  Capture a screenshot
   reload      Reload the page
   back        Go back in history
@@ -103,6 +106,22 @@ ff-rdp navigate https://example.com --with-network
 # Find failed requests during navigation
 ff-rdp navigate https://example.com --with-network \
   --jq '.results.network[] | select(.status >= 400)'
+
+# Click a button
+ff-rdp click "button.submit"
+
+# Type into an input (clear first with --clear)
+ff-rdp type "input[name=email]" "user@example.com"
+ff-rdp type "input[name=email]" "new@example.com" --clear
+
+# Wait for an element to appear (default timeout: 5000ms)
+ff-rdp wait --selector ".results"
+
+# Wait for text to appear on the page
+ff-rdp wait --text "Success" --wait-timeout 10000
+
+# Wait for a JavaScript expression to become truthy
+ff-rdp wait --eval "document.readyState === 'complete'"
 
 # Reload, go back, go forward
 ff-rdp reload

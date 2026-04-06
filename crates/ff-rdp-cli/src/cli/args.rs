@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "ff-rdp", about = "Firefox Remote Debugging Protocol CLI")]
@@ -93,6 +93,38 @@ pub enum Command {
         /// Output file path
         #[arg(long, short)]
         output: Option<String>,
+    },
+    /// Click an element matching a CSS selector
+    Click {
+        /// CSS selector of the element to click
+        selector: String,
+    },
+    /// Type text into an input element matching a CSS selector
+    Type {
+        /// CSS selector of the input element
+        selector: String,
+        /// Text to type into the element
+        text: String,
+        /// Clear the element's current value before typing
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Wait for a condition to become true (polls every 100ms).
+    /// Exactly one of --selector, --text, or --eval must be specified.
+    #[command(group(ArgGroup::new("condition").required(true).multiple(false)))]
+    Wait {
+        /// Wait until an element matching this CSS selector exists in the DOM
+        #[arg(long, group = "condition")]
+        selector: Option<String>,
+        /// Wait until this text appears anywhere on the page
+        #[arg(long, group = "condition")]
+        text: Option<String>,
+        /// Wait until this JavaScript expression returns a truthy value
+        #[arg(long, group = "condition")]
+        eval: Option<String>,
+        /// Timeout in milliseconds before giving up
+        #[arg(long, default_value_t = 5000)]
+        wait_timeout: u64,
     },
     /// Reload the page
     Reload,

@@ -7,6 +7,7 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
+use super::js_helpers::escape_selector;
 
 /// Sentinel prefix prepended to JSON.stringify results in the generated JS.
 /// Used to distinguish structured multi-element results from plain strings
@@ -50,17 +51,6 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> 
     OutputPipeline::new(cli.jq.clone())
         .finalize(&envelope)
         .map_err(AppError::from)
-}
-
-/// Escape a CSS selector for safe embedding in a JS string literal.
-///
-/// Uses `serde_json::to_string` which handles all JS-problematic characters
-/// (backslashes, quotes, newlines, U+2028, U+2029, etc.) then strips the
-/// outer double-quotes since we embed into a single-quoted JS literal.
-fn escape_selector(selector: &str) -> String {
-    let json_str = serde_json::to_string(selector).unwrap_or_default();
-    // serde_json wraps in double quotes: "value" — strip them
-    json_str[1..json_str.len() - 1].to_owned()
 }
 
 fn build_js(selector: &str, mode: OutputMode) -> String {
@@ -145,6 +135,7 @@ fn resolve_result(ctx: &mut ConnectedTab, grip: &Grip) -> Result<Value, AppError
 
 #[cfg(test)]
 mod tests {
+    use super::super::js_helpers::escape_selector;
     use super::*;
 
     #[test]
@@ -175,9 +166,8 @@ mod tests {
     #[test]
     fn build_js_escapes_selector() {
         let js = build_js("div[data-name='test']", OutputMode::Text);
-        // serde_json escapes single quotes by leaving them as-is (they're
-        // valid in JSON strings) but escapes backslashes and control chars.
-        assert!(js.contains("div[data-name='test']"));
+        // Single quotes are now escaped for safe embedding in '…' JS literals.
+        assert!(js.contains(r"div[data-name=\'test\']"));
     }
 
     #[test]
