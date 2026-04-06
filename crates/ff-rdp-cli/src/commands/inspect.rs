@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 
-use ff_rdp_core::{ObjectActor, descriptor_to_json};
+use ff_rdp_core::{ObjectActor, ProtocolError, descriptor_to_json};
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -12,8 +12,28 @@ use super::connect_tab::connect_and_get_target;
 
 pub fn run(cli: &Cli, actor_id: &str, depth: u32) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let result = inspect_object(ctx.transport_mut(), actor_id, depth, &mut HashSet::new())
-        .map_err(AppError::from)?;
+    let result =
+        inspect_object(ctx.transport_mut(), actor_id, depth, &mut HashSet::new()).map_err(
+            |e| match e {
+                // A noSuchActor error means the grip actor has expired.  This
+                // commonly happens when using --no-daemon: object grips are
+                // scoped to the Firefox connection that created them, so they
+                // disappear when the `eval` command's connection closes.
+                ProtocolError::ActorError { ref error, .. }
+                    if error == "noSuchActor" || error == "unknownActor" =>
+                {
+                    let hint = if cli.no_daemon {
+                        " — re-run `eval` in the same session, or remove --no-daemon so the daemon keeps the connection alive"
+                    } else {
+                        " — re-run `eval` to get a fresh grip actor"
+                    };
+                    AppError::User(format!(
+                        "grip actor '{actor_id}' is no longer valid{hint}"
+                    ))
+                }
+                other => AppError::from(other),
+            },
+        )?;
 
     let meta = json!({"host": cli.host, "port": cli.port, "actor": actor_id});
     let envelope = output::envelope(&result, 1, &meta);

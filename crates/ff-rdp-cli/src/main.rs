@@ -2,6 +2,7 @@ use clap::Parser;
 
 mod cli;
 mod commands;
+mod daemon;
 mod dispatch;
 mod error;
 mod output;

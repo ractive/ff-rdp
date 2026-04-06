@@ -5,7 +5,10 @@ use ff_rdp_core::{
     NetworkResource, NetworkResourceUpdate, ProtocolError, parse_network_resource_updates,
     parse_network_resources,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
+
+use crate::daemon::client::drain_daemon_events;
+use crate::error::AppError;
 
 /// Drain `resources-available-array` and `resources-updated-array` events from
 /// the transport until a [`ProtocolError::Timeout`] occurs, then return the
@@ -79,6 +82,39 @@ pub(crate) fn merge_updates(
         }
     }
     update_map
+}
+
+/// Drain buffered network events from the daemon and split them into
+/// available resources and update entries.
+///
+/// The daemon stores individual items from both `resources-available-array`
+/// (items with an `actor` field) and `resources-updated-array` (items with a
+/// `resourceUpdates` field) in a single buffer keyed by `"network-event"`.
+/// This function separates them and reconstructs the wrapper format expected
+/// by [`parse_network_resources`] and [`parse_network_resource_updates`].
+pub(crate) fn drain_network_from_daemon(
+    transport: &mut RdpTransport,
+) -> Result<(Vec<NetworkResource>, Vec<NetworkResourceUpdate>), AppError> {
+    let drained = drain_daemon_events(transport, "network-event").map_err(AppError::from)?;
+
+    let mut available_items: Vec<Value> = Vec::new();
+    let mut update_items: Vec<Value> = Vec::new();
+    for item in drained {
+        if item.get("resourceUpdates").is_some() {
+            update_items.push(item);
+        } else {
+            available_items.push(item);
+        }
+    }
+
+    // Reconstruct the wrapper format so the existing parsers can be reused.
+    let available_msg = json!({"array": [["network-event", available_items]]});
+    let update_msg = json!({"array": [["network-event", update_items]]});
+
+    let resources = parse_network_resources(&available_msg);
+    let resource_updates = parse_network_resource_updates(&update_msg);
+
+    Ok((resources, resource_updates))
 }
 
 /// Build the JSON array of network entries combining resource + update data.
