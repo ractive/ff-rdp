@@ -15,24 +15,29 @@ fn base_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn cookies_server(eval_result_fixture: &str) -> MockRdpServer {
+fn cookies_server(store_objects_fixture: &str) -> MockRdpServer {
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
-        .on_with_followup(
-            "evaluateJSAsync",
-            load_fixture("eval_immediate_response.json"),
-            load_fixture(eval_result_fixture),
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on(
+            "watchResources",
+            load_fixture("watch_resources_cookies_response.json"),
+        )
+        .on("getStoreObjects", load_fixture(store_objects_fixture))
+        .on(
+            "unwatchResources",
+            load_fixture("unwatch_resources_response.json"),
         )
 }
 
 // ---------------------------------------------------------------------------
-// Happy path — two cookies returned
+// Happy path — two cookies returned with full metadata
 // ---------------------------------------------------------------------------
 
 #[test]
 fn cookies_returns_parsed_array() {
-    let server = cookies_server("eval_result_cookies.json");
+    let server = cookies_server("get_store_objects_cookies_response.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
 
@@ -62,8 +67,15 @@ fn cookies_returns_parsed_array() {
     assert_eq!(results.len(), 2, "expected 2 cookies");
     assert_eq!(results[0]["name"], "session_id");
     assert_eq!(results[0]["value"], "abc123");
+    assert_eq!(results[0]["isHttpOnly"], true);
+    assert_eq!(results[0]["isSecure"], true);
+    assert_eq!(results[0]["sameSite"], "Lax");
+    assert_eq!(results[0]["expires"], "Session");
+
     assert_eq!(results[1]["name"], "theme");
     assert_eq!(results[1]["value"], "dark");
+    assert_eq!(results[1]["isHttpOnly"], false);
+    assert!(results[1]["expires"].is_u64());
     assert_eq!(json["total"], 2);
 }
 
@@ -73,7 +85,7 @@ fn cookies_returns_parsed_array() {
 
 #[test]
 fn cookies_returns_empty_array_when_no_cookies() {
-    let server = cookies_server("eval_result_cookies_empty.json");
+    let server = cookies_server("get_store_objects_cookies_empty_response.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
 
@@ -110,7 +122,7 @@ fn cookies_returns_empty_array_when_no_cookies() {
 
 #[test]
 fn cookies_filter_by_name_returns_match() {
-    let server = cookies_server("eval_result_cookies.json");
+    let server = cookies_server("get_store_objects_cookies_response.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
 
@@ -153,7 +165,7 @@ fn cookies_filter_by_name_returns_match() {
 
 #[test]
 fn cookies_filter_by_name_no_match_returns_empty() {
-    let server = cookies_server("eval_result_cookies.json");
+    let server = cookies_server("get_store_objects_cookies_response.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
 

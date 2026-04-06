@@ -126,7 +126,7 @@ pub enum Command {
         #[arg(long, default_value_t = 5000)]
         wait_timeout: u64,
     },
-    /// List accessible cookies (document.cookie)
+    /// List cookies via the Firefox StorageActor (includes httpOnly, secure, sameSite, etc.)
     Cookies {
         /// Filter by cookie name (exact match)
         #[arg(long)]

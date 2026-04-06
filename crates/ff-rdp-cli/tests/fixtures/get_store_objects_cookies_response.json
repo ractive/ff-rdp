@@ -1,0 +1,39 @@
+{
+  "data": [
+    {
+      "name": "session_id",
+      "value": "abc123",
+      "host": "example.com",
+      "path": "/",
+      "expires": 0,
+      "size": 15,
+      "isHttpOnly": true,
+      "isSecure": true,
+      "sameSite": "Lax",
+      "hostOnly": true,
+      "lastAccessed": 1775469018311.408,
+      "creationTime": 1775468436089.921,
+      "updateTime": 1775469018311.408,
+      "uniqueKey": "session_id{9d414cc5-8319-0a04-0586-c0a6ae01670a}example.com{9d414cc5-8319-0a04-0586-c0a6ae01670a}/{9d414cc5-8319-0a04-0586-c0a6ae01670a}"
+    },
+    {
+      "name": "theme",
+      "value": "dark",
+      "host": "example.com",
+      "path": "/",
+      "expires": 1810029018311,
+      "size": 9,
+      "isHttpOnly": false,
+      "isSecure": false,
+      "sameSite": "",
+      "hostOnly": true,
+      "lastAccessed": 1775469018311.500,
+      "creationTime": 1775468436090.000,
+      "updateTime": 1775469018311.500,
+      "uniqueKey": "theme{9d414cc5-8319-0a04-0586-c0a6ae01670a}example.com{9d414cc5-8319-0a04-0586-c0a6ae01670a}/{9d414cc5-8319-0a04-0586-c0a6ae01670a}"
+    }
+  ],
+  "from": "server1.conn0.cookies5",
+  "offset": 0,
+  "total": 2
+}

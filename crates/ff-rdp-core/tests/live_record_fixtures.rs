@@ -810,42 +810,81 @@ fn live_cookies() {
     navigate_to_example_com(transport);
     let console = get_console_actor(transport);
 
-    // Set cookies
+    // Set cookies via JS so we have data to read
     let _ = record_eval(
         transport,
         &console,
-        "document.cookie = 'session_id=abc123; path=/'; document.cookie = 'theme=dark; path=/'; 'set'",
+        "document.cookie = 'session_id=abc123; path=/'; \
+         document.cookie = 'theme=dark; path=/; expires=Fri, 31 Dec 2027 23:59:59 GMT'; 'set'",
         None,
         None,
     );
 
-    // Read cookies
-    let js = "(function() { \
-        var raw = document.cookie; \
-        if (!raw) return '[]'; \
-        var cookies = raw.split(';').reduce(function(acc, c) { \
-            var t = c.replace(/^\\s+|\\s+$/g, ''); \
-            if (!t) return acc; \
-            var idx = t.indexOf('='); \
-            if (idx < 0) { acc.push({name: t, value: ''}); } \
-            else { acc.push({name: t.substring(0, idx), value: t.substring(idx + 1)}); } \
-            return acc; \
-        }, []); \
-        return JSON.stringify(cookies); \
-    })()";
+    // Now use the StorageActor protocol: getWatcher → watchResources → getStoreObjects
+    let list_tabs = send_raw(transport, &json!({"to": "root", "type": "listTabs"}));
+    let tab_actor = list_tabs["tabs"][0]["actor"].as_str().expect("tab actor");
 
-    let (_imm, result) = record_eval(
+    let watcher_resp = send_raw(transport, &json!({"to": tab_actor, "type": "getWatcher"}));
+    let watcher = watcher_resp["actor"].as_str().expect("watcher actor");
+
+    // watchResources("cookies") returns resources-available-array with cookie actor
+    let watch_resp = send_raw(
         transport,
-        &console,
-        js,
-        None,
-        Some("eval_result_cookies.json"),
+        &json!({
+            "to": watcher,
+            "type": "watchResources",
+            "resourceTypes": ["cookies"]
+        }),
     );
 
-    // Result should be a JSON string parseable as an array
-    let result_str = result["result"].as_str().unwrap_or("[]");
-    let cookies: Vec<Value> = serde_json::from_str(result_str).unwrap_or_default();
-    assert!(!cookies.is_empty(), "should have at least one cookie set");
+    if should_record() {
+        save_cli_fixture("watch_resources_cookies_response.json", &watch_resp);
+    }
+
+    // Extract cookie actor and host from the response
+    let cookie_actor = watch_resp["array"][0][1][0]["actor"]
+        .as_str()
+        .expect("cookie actor");
+    let hosts = watch_resp["array"][0][1][0]["hosts"]
+        .as_object()
+        .expect("hosts map");
+    let host = hosts.keys().next().expect("at least one host");
+
+    // getStoreObjects with sessionString to avoid Firefox sort bug
+    let store_resp = send_raw(
+        transport,
+        &json!({
+            "to": cookie_actor,
+            "type": "getStoreObjects",
+            "host": host,
+            "options": {"sessionString": "Session", "sortOn": "name"}
+        }),
+    );
+
+    if should_record() {
+        save_cli_fixture("get_store_objects_cookies_response.json", &store_resp);
+    }
+
+    let data = store_resp["data"].as_array().expect("data array");
+    assert!(!data.is_empty(), "should have at least one cookie");
+    assert!(
+        data.iter().any(|c| c["name"] == "session_id"),
+        "should contain session_id cookie"
+    );
+
+    // Best-effort unwatch
+    let unwatch_resp = send_raw(
+        transport,
+        &json!({
+            "to": watcher,
+            "type": "unwatchResources",
+            "resourceTypes": ["cookies"]
+        }),
+    );
+
+    if should_record() {
+        save_cli_fixture("unwatch_resources_response.json", &unwatch_resp);
+    }
 }
 
 #[test]
@@ -877,35 +916,72 @@ fn live_cookies_empty() {
     drain_messages(transport, Duration::from_millis(500));
     drop(conn);
 
+    // Reconnect and use StorageActor protocol
     let mut conn2 = connect();
     let transport = conn2.transport_mut();
-    let console = get_console_actor(transport);
+    let list_tabs = send_raw(transport, &json!({"to": "root", "type": "listTabs"}));
+    let tab_actor = list_tabs["tabs"][0]["actor"].as_str().expect("tab actor");
 
-    let js = "(function() { \
-        var raw = document.cookie; \
-        if (!raw) return '[]'; \
-        var cookies = raw.split(';').reduce(function(acc, c) { \
-            var t = c.replace(/^\\s+|\\s+$/g, ''); \
-            if (!t) return acc; \
-            var idx = t.indexOf('='); \
-            if (idx < 0) { acc.push({name: t, value: ''}); } \
-            else { acc.push({name: t.substring(0, idx), value: t.substring(idx + 1)}); } \
-            return acc; \
-        }, []); \
-        return JSON.stringify(cookies); \
-    })()";
+    let watcher_resp = send_raw(transport, &json!({"to": tab_actor, "type": "getWatcher"}));
+    let watcher = watcher_resp["actor"].as_str().expect("watcher actor");
 
-    let (_imm, result) = record_eval(
+    let watch_resp = send_raw(
         transport,
-        &console,
-        js,
-        None,
-        Some("eval_result_cookies_empty.json"),
+        &json!({
+            "to": watcher,
+            "type": "watchResources",
+            "resourceTypes": ["cookies"]
+        }),
     );
 
-    let result_str = result["result"].as_str().unwrap_or("[]");
-    let cookies: Vec<Value> = serde_json::from_str(result_str).unwrap_or_default();
-    assert!(cookies.is_empty(), "cookies on about:blank should be empty");
+    // Extract cookie actor — may not have any hosts on about:blank
+    let cookie_actor = watch_resp["array"][0][1][0]["actor"]
+        .as_str()
+        .expect("cookie actor");
+    let hosts = watch_resp["array"][0][1][0]["hosts"]
+        .as_object()
+        .expect("hosts map");
+
+    if hosts.is_empty() {
+        // No hosts on about:blank → record empty response directly
+        let empty_resp = json!({
+            "data": [],
+            "from": cookie_actor,
+            "offset": 0,
+            "total": 0
+        });
+        if should_record() {
+            save_cli_fixture("get_store_objects_cookies_empty_response.json", &empty_resp);
+        }
+    } else {
+        let host = hosts.keys().next().unwrap();
+        let store_resp = send_raw(
+            transport,
+            &json!({
+                "to": cookie_actor,
+                "type": "getStoreObjects",
+                "host": host,
+                "options": {"sessionString": "Session", "sortOn": "name"}
+            }),
+        );
+
+        if should_record() {
+            save_cli_fixture("get_store_objects_cookies_empty_response.json", &store_resp);
+        }
+
+        let data = store_resp["data"].as_array().expect("data array");
+        assert!(data.is_empty(), "cookies on about:blank should be empty");
+    }
+
+    // Best-effort unwatch
+    let _ = send_raw(
+        transport,
+        &json!({
+            "to": watcher,
+            "type": "unwatchResources",
+            "resourceTypes": ["cookies"]
+        }),
+    );
 }
 
 #[test]

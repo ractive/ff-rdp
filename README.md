@@ -38,7 +38,7 @@ Commands:
   click       Click an element matching a CSS selector
   type        Type text into an input element matching a CSS selector
   wait        Wait for a condition to become true (polls every 100ms)
-  cookies     List accessible cookies (document.cookie)
+  cookies     List cookies via StorageActor (includes httpOnly, secure, sameSite)
   storage     Read web storage (localStorage or sessionStorage)
   screenshot  Capture a screenshot (requires Firefox drawWindow support)
   inspect     Inspect a remote JavaScript object by its grip actor ID
