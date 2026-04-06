@@ -95,3 +95,11 @@ status: active
 **Decision**: `evaluateJSAsync` sends a request, captures the `resultID` from the immediate ack, then loops on `recv()` until an `evaluationResult` message with a matching `resultID` arrives.
 
 **Why**: Firefox's `evaluateJSAsync` is inherently two-phase: an immediate response confirming the request (with a `resultID`), followed by a separate event containing the actual result. The resultID correlation ensures we match the correct result even if other events are interleaved.
+
+## DEC-012: WatcherActor resource subscription for network events
+
+**Decision**: Network monitoring uses the WatcherActor's `watchResources`/`unwatchResources` pattern rather than individual NetworkEventActor requests. Subscribe to `"network-event"` resources, then collect `resources-available-array` and `resources-updated-array` events in a timeout-bounded recv loop.
+
+**Why**: Firefox's Watcher pattern is the modern approach (replacing the older NetworkMonitor). It delivers events in nested array format `[["network-event", [resources]]]` with resource-available for initial data (method, URL, actor) and resource-updated for completion data (status, timing, size). Merging by `resourceId` gives a complete picture. This matches how Firefox DevTools itself works.
+
+**Trade-off**: The recv loop must drain events with a timeout, making the command slightly slower than a single request-response. The `--timeout` flag controls this. No streaming/follow mode yet — the loop exits when the timeout fires.
