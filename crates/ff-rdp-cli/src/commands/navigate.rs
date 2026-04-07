@@ -11,9 +11,7 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
 use super::js_helpers::escape_selector;
-use super::network_events::{
-    build_network_entries, drain_network_events, drain_network_from_daemon, merge_updates,
-};
+use super::network_events::{build_network_entries, drain_network_events, merge_updates};
 use super::url_validation::validate_url;
 
 const POLL_INTERVAL_MS: u64 = 100;
@@ -96,21 +94,35 @@ pub fn run_with_network(
     let target_actor = ctx.target.actor.clone();
 
     if ctx.via_daemon {
-        // The daemon has already subscribed to network-event resources.
-        // Navigate first, then drain the daemon buffer for events from this
-        // navigation.  The daemon continues buffering after the drain so
-        // subsequent commands see events from future navigations too.
-        WindowGlobalTarget::navigate_to(ctx.transport_mut(), &target_actor, url)
+        // Tell the daemon to stream network events in real-time instead of
+        // buffering.  This clears the existing buffer so we only capture
+        // events from *this* navigation.
+        crate::daemon::client::start_daemon_stream(ctx.transport_mut(), "network-event")
             .map_err(AppError::from)?;
 
-        let (all_resources, all_updates) = drain_network_from_daemon(ctx.transport_mut())?;
+        // Send the navigateTo request without reading its response — same as
+        // the non-daemon path.  The daemon will forward the ack and also
+        // stream watcher events directly to us.
+        ctx.transport_mut()
+            .send(&json!({
+                "to": target_actor.as_ref(),
+                "type": "navigateTo",
+                "url": url,
+            }))
+            .map_err(AppError::from)?;
 
-        // NOTE: In the daemon path, wait_after_navigate is called *before*
-        // building the network entries.  This differs from the non-daemon path
-        // where the wait happens *after* unwatching resources.  The ordering
-        // is intentional: the daemon keeps the subscription open across
-        // commands, so there is nothing to unwatch here, and we want to let
-        // the page settle before returning to the caller regardless.
+        // Drain resource events until the timeout fires (same as non-daemon).
+        let (all_resources, all_updates) =
+            drain_network_events(ctx.transport_mut()).map_err(AppError::from)?;
+
+        // Switch back to buffering so the daemon continues capturing events
+        // for the `network` command.
+        if let Err(e) =
+            crate::daemon::client::stop_daemon_stream(ctx.transport_mut(), "network-event")
+        {
+            eprintln!("warning: failed to stop daemon stream: {e:#}");
+        }
+
         let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
 
         let update_map = merge_updates(all_updates);
