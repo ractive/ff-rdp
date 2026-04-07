@@ -36,6 +36,7 @@ windows-sys = { workspace = true }
 ff-rdp-core = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+dirs = { workspace = true }
 
 [lints]
 workspace = true

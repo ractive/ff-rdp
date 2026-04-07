@@ -153,6 +153,43 @@ pub(crate) fn drain_daemon_events(
     Ok(events)
 }
 
+/// Tell the daemon to start streaming events for `resource_type` directly
+/// to this CLI client.  Clears any buffered events for that type so only
+/// new events are received.
+pub(crate) fn start_daemon_stream(transport: &mut RdpTransport, resource_type: &str) -> Result<()> {
+    let msg = json!({
+        "to": "daemon",
+        "type": "stream",
+        "resourceType": resource_type,
+    });
+    transport
+        .send(&msg)
+        .context("sending stream request to daemon")?;
+    // Read and discard the ack.
+    let _response = transport
+        .recv()
+        .context("receiving stream response from daemon")?;
+    Ok(())
+}
+
+/// Tell the daemon to stop streaming events for `resource_type` and revert
+/// to buffering.
+pub(crate) fn stop_daemon_stream(transport: &mut RdpTransport, resource_type: &str) -> Result<()> {
+    let msg = json!({
+        "to": "daemon",
+        "type": "stop-stream",
+        "resourceType": resource_type,
+    });
+    transport
+        .send(&msg)
+        .context("sending stop-stream request to daemon")?;
+    // Read and discard the ack.
+    let _response = transport
+        .recv()
+        .context("receiving stop-stream response from daemon")?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

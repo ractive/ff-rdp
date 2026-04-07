@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::{BufReader, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +22,8 @@ struct SharedState {
     buffer: Mutex<EventBuffer>,
     /// Write half of the current CLI client's TCP connection, if any.
     cli_writer: Mutex<Option<TcpStream>>,
+    /// Resource types being streamed to the CLI client in real-time.
+    streaming_types: Mutex<HashSet<String>>,
     greeting: Value,
     start_time: Instant,
     last_activity: Mutex<Instant>,
@@ -76,6 +79,7 @@ pub(crate) fn run_daemon(
     let state = Arc::new(SharedState {
         buffer: Mutex::new(EventBuffer::new()),
         cli_writer: Mutex::new(None),
+        streaming_types: Mutex::new(HashSet::new()),
         greeting,
         start_time: Instant::now(),
         last_activity: Mutex::new(Instant::now()),
@@ -168,7 +172,14 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: BufReader<TcpStream
                 *state.last_activity.lock().unwrap() = Instant::now();
 
                 if is_watcher_event(&msg) {
-                    buffer_watcher_event(&state.buffer, &msg);
+                    // Check if any resource type in this event is being
+                    // streamed.  If so, forward the entire message to the
+                    // CLI; otherwise buffer it.
+                    if should_stream_event(&state.streaming_types, &msg) {
+                        forward_to_cli(&state.cli_writer, &msg);
+                    } else {
+                        buffer_watcher_event(&state.buffer, &msg);
+                    }
                 } else {
                     forward_to_cli(&state.cli_writer, &msg);
                 }
@@ -190,6 +201,28 @@ fn is_watcher_event(msg: &Value) -> bool {
         msg.get("type").and_then(Value::as_str),
         Some("resources-available-array" | "resources-updated-array")
     )
+}
+
+/// Check if any resource type in a watcher event is currently being streamed.
+fn should_stream_event(streaming_types: &Mutex<HashSet<String>>, msg: &Value) -> bool {
+    let Some(array) = msg.get("array").and_then(Value::as_array) else {
+        return false;
+    };
+    // unwrap: poisoned mutex means a thread panicked — daemon should crash.
+    let types = streaming_types.lock().unwrap();
+    if types.is_empty() {
+        return false;
+    }
+    for sub in array {
+        if let Some(sub_arr) = sub.as_array()
+            && sub_arr.len() == 2
+            && let Some(resource_type) = sub_arr[0].as_str()
+            && types.contains(resource_type)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Parse a watcher event and insert individual resource items into the buffer.
@@ -395,6 +428,9 @@ fn handle_client(
         }
     }
 
+    // Clear any streaming state left by this client.
+    state.streaming_types.lock().unwrap().clear();
+
     // Unregister the forwarding target.
     *state.cli_writer.lock().unwrap() = None;
 
@@ -421,6 +457,37 @@ fn handle_daemon_message(state: &SharedState, msg: &Value) -> Value {
                 "events": events,
             })
         }
+        "stream" => {
+            let resource_type = msg
+                .get("resourceType")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            // Clear existing buffered events for this type so the client
+            // only receives events from this point forward.
+            let _discarded = state.buffer.lock().unwrap().drain(resource_type);
+            state
+                .streaming_types
+                .lock()
+                .unwrap()
+                .insert(resource_type.to_owned());
+            json!({
+                "from": "daemon",
+                "streaming": true,
+                "resourceType": resource_type,
+            })
+        }
+        "stop-stream" => {
+            let resource_type = msg
+                .get("resourceType")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            state.streaming_types.lock().unwrap().remove(resource_type);
+            json!({
+                "from": "daemon",
+                "streaming": false,
+                "resourceType": resource_type,
+            })
+        }
         "status" => {
             let uptime = state.start_time.elapsed().as_secs();
             let sizes = state.buffer.lock().unwrap().sizes();
@@ -445,6 +512,7 @@ fn handle_daemon_message(state: &SharedState, msg: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicBool;
     use std::time::Instant;
@@ -457,6 +525,7 @@ mod tests {
         SharedState {
             buffer: Mutex::new(EventBuffer::new()),
             cli_writer: Mutex::new(None),
+            streaming_types: Mutex::new(HashSet::new()),
             greeting: json!({"applicationType": "browser"}),
             start_time: Instant::now(),
             last_activity: Mutex::new(Instant::now()),
@@ -735,5 +804,103 @@ mod tests {
             state.buffer.lock().expect("buffer lock").is_empty(),
             "empty items list must not add any events"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // handle_daemon_message — stream / stop-stream
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stream_clears_buffer_and_enables_streaming() {
+        let state = test_state();
+        // Pre-populate buffer.
+        state
+            .buffer
+            .lock()
+            .expect("buffer lock")
+            .insert("network-event", json!({"url": "https://stale.com"}));
+
+        let msg = json!({"to": "daemon", "type": "stream", "resourceType": "network-event"});
+        let resp = handle_daemon_message(&state, &msg);
+
+        assert_eq!(resp["from"], "daemon");
+        assert_eq!(resp["streaming"], true);
+        assert_eq!(resp["resourceType"], "network-event");
+
+        // Buffer must be cleared.
+        assert!(
+            state
+                .buffer
+                .lock()
+                .expect("buffer lock")
+                .drain("network-event")
+                .is_empty(),
+            "buffer must be empty after stream request"
+        );
+
+        // streaming_types must contain "network-event".
+        assert!(
+            state
+                .streaming_types
+                .lock()
+                .expect("streaming_types lock")
+                .contains("network-event"),
+            "streaming_types must contain the requested type"
+        );
+    }
+
+    #[test]
+    fn stop_stream_disables_streaming() {
+        let state = test_state();
+        state
+            .streaming_types
+            .lock()
+            .expect("streaming_types lock")
+            .insert("network-event".to_owned());
+
+        let msg = json!({"to": "daemon", "type": "stop-stream", "resourceType": "network-event"});
+        let resp = handle_daemon_message(&state, &msg);
+
+        assert_eq!(resp["from"], "daemon");
+        assert_eq!(resp["streaming"], false);
+
+        assert!(
+            !state
+                .streaming_types
+                .lock()
+                .expect("streaming_types lock")
+                .contains("network-event"),
+            "streaming_types must not contain the type after stop-stream"
+        );
+    }
+
+    #[test]
+    fn should_stream_event_returns_true_for_streaming_type() {
+        let streaming_types = Mutex::new(HashSet::from(["network-event".to_owned()]));
+        let msg = json!({
+            "type": "resources-available-array",
+            "array": [["network-event", [{"actor": "a1"}]]]
+        });
+        assert!(should_stream_event(&streaming_types, &msg));
+    }
+
+    #[test]
+    fn should_stream_event_returns_false_when_empty() {
+        let streaming_types = Mutex::new(HashSet::new());
+        let msg = json!({
+            "type": "resources-available-array",
+            "array": [["network-event", [{"actor": "a1"}]]]
+        });
+        assert!(!should_stream_event(&streaming_types, &msg));
+    }
+
+    #[test]
+    fn should_stream_event_returns_false_for_non_streaming_type() {
+        let streaming_types = Mutex::new(HashSet::from(["console-message".to_owned()]));
+        let msg = json!({
+            "type": "resources-available-array",
+            "array": [["network-event", [{"actor": "a1"}]]]
+        });
+        assert!(!should_stream_event(&streaming_types, &msg));
     }
 }
