@@ -21,3 +21,8 @@ Automated cross-viewport testing and multi-page performance comparison.
   → [[perf-compare-pages]]
 - [ ] `--format text` output mode with human-readable tables for all commands
 - [ ] `--label` flag for perf compare to name each page in output
+
+## Test Fixtures
+
+All e2e test fixtures must be recorded from a real Firefox instance — never hand-craft them.
+Run with `FF_RDP_LIVE_TESTS_RECORD=1 cargo test -p ff-rdp-core --test live_record_fixtures -- --ignored` to record fixtures.

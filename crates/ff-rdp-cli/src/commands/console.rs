@@ -4,6 +4,7 @@ use serde_json::json;
 use crate::cli::args::Cli;
 use crate::error::AppError;
 use crate::output;
+use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
@@ -71,7 +72,7 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
         .collect();
 
     // Convert to JSON output.
-    let results: Vec<serde_json::Value> = filtered
+    let mut results: Vec<serde_json::Value> = filtered
         .iter()
         .map(|msg| {
             json!({
@@ -84,10 +85,24 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
         })
         .collect();
 
-    let total = results.len();
-    let results_json = json!(results);
+    // Apply output controls: default sort timestamp desc, default limit 50.
+    let controls = OutputControls::from_cli(cli, SortDir::Desc);
+    if cli.sort.is_none() {
+        results.sort_by(|a, b| {
+            let ta = a["timestamp"].as_f64().unwrap_or(0.0);
+            let tb = b["timestamp"].as_f64().unwrap_or(0.0);
+            tb.partial_cmp(&ta).unwrap_or(std::cmp::Ordering::Equal)
+        });
+    } else {
+        controls.apply_sort(&mut results);
+    }
+    let (limited, total, truncated) = controls.apply_limit(results, Some(50));
+    let shown = limited.len();
+    let limited = controls.apply_fields(limited);
+
     let meta = json!({"host": cli.host, "port": cli.port});
-    let envelope = output::envelope(&results_json, total, &meta);
+    let envelope =
+        output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
 
     OutputPipeline::new(cli.jq.clone())
         .finalize(&envelope)

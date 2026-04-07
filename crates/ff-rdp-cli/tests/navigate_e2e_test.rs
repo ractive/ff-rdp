@@ -149,25 +149,18 @@ fn navigate_with_network_captures_requests() {
     // The navigated field is present.
     assert_eq!(json["results"]["navigated"], "https://example.com");
 
-    // The network array is present and populated.
-    let network = json["results"]["network"]
-        .as_array()
-        .expect("network is an array");
-    assert_eq!(network.len(), 2, "expected 2 network entries");
+    // Default mode returns a summary object, not a raw array.
+    let network = &json["results"]["network"];
+    assert!(network.is_object(), "network should be a summary object");
+    assert_eq!(network["total_requests"], 2, "expected 2 network entries");
 
     // total reflects the number of network entries.
     assert_eq!(json["total"], 2);
 
-    // First entry: main document request.
-    assert_eq!(network[0]["method"], "GET");
-    assert_eq!(network[0]["url"], "https://example.com/");
-    assert_eq!(network[0]["status"], 200);
-    assert_eq!(network[0]["is_xhr"], false);
-
-    // Second entry: favicon request.
-    assert_eq!(network[1]["method"], "GET");
-    assert_eq!(network[1]["url"], "https://example.com/favicon.ico");
-    assert_eq!(network[1]["status"], 404);
+    // Summary contains expected fields.
+    assert!(network["total_transfer_bytes"].is_number());
+    assert!(network["by_cause_type"].is_object());
+    assert!(network["slowest"].is_array());
 }
 
 #[test]
@@ -215,10 +208,10 @@ fn navigate_with_network_empty_when_no_events() {
 
     assert_eq!(json["results"]["navigated"], "https://example.com");
 
-    let network = json["results"]["network"]
-        .as_array()
-        .expect("network is an array");
-    assert!(network.is_empty(), "expected no network entries");
+    // Default mode returns a summary object even when there are no entries.
+    let network = &json["results"]["network"];
+    assert!(network.is_object(), "network should be a summary object");
+    assert_eq!(network["total_requests"], 0, "expected no network entries");
 
     assert_eq!(json["total"], 0);
 }

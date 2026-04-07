@@ -39,6 +39,34 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub allow_unsafe_urls: bool,
 
+    /// Limit number of results returned (per-command defaults apply)
+    #[arg(long, global = true)]
+    pub limit: Option<usize>,
+
+    /// Return all results, overriding any default limit
+    #[arg(long, global = true, conflicts_with = "limit")]
+    pub all: bool,
+
+    /// Sort results by field name
+    #[arg(long, global = true)]
+    pub sort: Option<String>,
+
+    /// Sort ascending (default is per-command)
+    #[arg(long, global = true)]
+    pub asc: bool,
+
+    /// Sort descending (default is per-command)
+    #[arg(long, global = true)]
+    pub desc: bool,
+
+    /// Comma-separated list of fields to include in each result entry
+    #[arg(long, global = true, value_delimiter = ',')]
+    pub fields: Option<Vec<String>>,
+
+    /// Show detailed individual entries instead of summary mode
+    #[arg(long, global = true)]
+    pub detail: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }

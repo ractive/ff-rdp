@@ -40,3 +40,8 @@ discovery: `firefox -no-remote -profile /tmp/ff-rdp-test-profile --start-debugge
   → [[native-dom-css-actors]]
 - [ ] Daemon compatibility: ensure Inspector/Walker/PageStyle actors work through
   daemon, handle `unknownActor` errors after navigation (stale actor re-discovery)
+
+## Test Fixtures
+
+All e2e test fixtures must be recorded from a real Firefox instance — never hand-craft them.
+Run with `FF_RDP_LIVE_TESTS_RECORD=1 cargo test -p ff-rdp-core --test live_record_fixtures -- --ignored` to record fixtures.

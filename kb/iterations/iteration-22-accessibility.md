@@ -34,3 +34,8 @@ discovery: `firefox -no-remote -profile /tmp/ff-rdp-test-profile --start-debugge
   → [[wcag-contrast-checking]]
 - [ ] Daemon compatibility: ensure AccessibilityActor works through daemon,
   handle `unknownActor` errors after navigation (re-discover actor and retry)
+
+## Test Fixtures
+
+All e2e test fixtures must be recorded from a real Firefox instance — never hand-craft them.
+Run with `FF_RDP_LIVE_TESTS_RECORD=1 cargo test -p ff-rdp-core --test live_record_fixtures -- --ignored` to record fixtures.

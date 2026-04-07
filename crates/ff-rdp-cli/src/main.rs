@@ -6,6 +6,7 @@ mod daemon;
 mod dispatch;
 mod error;
 mod output;
+mod output_controls;
 mod output_pipeline;
 mod tab_target;
 

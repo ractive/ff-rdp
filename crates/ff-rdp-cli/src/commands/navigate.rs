@@ -6,6 +6,7 @@ use serde_json::json;
 use crate::cli::args::Cli;
 use crate::error::AppError;
 use crate::output;
+use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
@@ -115,10 +116,38 @@ pub fn run_with_network(
         let update_map = merge_updates(all_updates);
         let network_entries = build_network_entries(&all_resources, &update_map);
 
-        let total = network_entries.len();
+        let use_detail = cli.detail
+            || cli.jq.is_some()
+            || cli.sort.is_some()
+            || cli.limit.is_some()
+            || cli.all
+            || cli.fields.is_some();
+
+        let (network_value, network_count) = if use_detail {
+            let controls = OutputControls::from_cli(cli, SortDir::Desc);
+            let mut detail = network_entries;
+            if cli.sort.is_none() {
+                detail.sort_by(|a, b| {
+                    let da = a["duration_ms"].as_f64().unwrap_or(0.0);
+                    let db = b["duration_ms"].as_f64().unwrap_or(0.0);
+                    db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            } else {
+                controls.apply_sort(&mut detail);
+            }
+            let (limited, _total, _truncated) = controls.apply_limit(detail, Some(20));
+            let limited = controls.apply_fields(limited);
+            let count = limited.len();
+            (json!(limited), count)
+        } else {
+            let summary = super::network::build_network_summary(&network_entries);
+            let count = network_entries.len();
+            (summary, count)
+        };
+
         let mut result = json!({
             "navigated": url,
-            "network": network_entries,
+            "network": network_value,
         });
         if let Some(w) = wait_result
             && let Some(obj) = result.as_object_mut()
@@ -126,7 +155,7 @@ pub fn run_with_network(
             obj.insert("wait".to_string(), w);
         }
         let meta = json!({"host": cli.host, "port": cli.port});
-        let envelope = output::envelope(&result, total, &meta);
+        let envelope = output::envelope(&result, network_count, &meta);
         return OutputPipeline::new(cli.jq.clone())
             .finalize(&envelope)
             .map_err(AppError::from);
@@ -178,10 +207,38 @@ pub fn run_with_network(
     // subscription lifecycle to tear down.
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
 
-    let total = network_entries.len();
+    let use_detail = cli.detail
+        || cli.jq.is_some()
+        || cli.sort.is_some()
+        || cli.limit.is_some()
+        || cli.all
+        || cli.fields.is_some();
+
+    let (network_value, network_count) = if use_detail {
+        let controls = OutputControls::from_cli(cli, SortDir::Desc);
+        let mut detail = network_entries;
+        if cli.sort.is_none() {
+            detail.sort_by(|a, b| {
+                let da = a["duration_ms"].as_f64().unwrap_or(0.0);
+                let db = b["duration_ms"].as_f64().unwrap_or(0.0);
+                db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        } else {
+            controls.apply_sort(&mut detail);
+        }
+        let (limited, _total, _truncated) = controls.apply_limit(detail, Some(20));
+        let limited = controls.apply_fields(limited);
+        let count = limited.len();
+        (json!(limited), count)
+    } else {
+        let summary = super::network::build_network_summary(&network_entries);
+        let count = network_entries.len();
+        (summary, count)
+    };
+
     let mut result = json!({
         "navigated": url,
-        "network": network_entries,
+        "network": network_value,
     });
     if let Some(w) = wait_result
         && let Some(obj) = result.as_object_mut()
@@ -189,7 +246,7 @@ pub fn run_with_network(
         obj.insert("wait".to_string(), w);
     }
     let meta = json!({"host": cli.host, "port": cli.port});
-    let envelope = output::envelope(&result, total, &meta);
+    let envelope = output::envelope(&result, network_count, &meta);
 
     OutputPipeline::new(cli.jq.clone())
         .finalize(&envelope)

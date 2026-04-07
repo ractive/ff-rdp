@@ -18,6 +18,20 @@ const LLM_REFERENCE: &str = r#"# ff-rdp — Firefox Remote Debugging Protocol CL
   --daemon-timeout <S>   Daemon idle timeout in seconds [default: 300]
   --allow-unsafe-urls    Allow javascript: and data: URL schemes
 
+## Output control flags (global, apply to all list-returning commands)
+  --limit <N>            Limit number of results (per-command defaults apply)
+  --all                  Return all results, overriding default limit
+  --sort <FIELD>         Sort results by field name
+  --asc                  Sort ascending
+  --desc                 Sort descending
+  --fields <F1,F2,...>   Select which fields to include in each entry
+  --detail               Show individual entries instead of summary mode
+
+Commands default to a summary view. Use --detail for per-entry output.
+Defaults: network (limit 20, sort duration_ms desc), console (limit 50,
+sort timestamp desc), dom (limit 20, document order), perf resource
+(limit 20, sort duration_ms desc). Use --all to get everything.
+
 ## Commands
 
 ### tabs
@@ -77,11 +91,14 @@ ff-rdp console --pattern "API"
 
 ### network
 Show network requests captured by WatcherActor.
+Default: summary view (counts, totals, top 20 slowest). Use --detail for per-request entries.
   --filter <URL>         Filter by URL pattern (substring)
   --method <METHOD>      Filter by HTTP method
 ```
 ff-rdp network
-ff-rdp network --filter ".js" --method GET
+ff-rdp network --detail
+ff-rdp network --detail --limit 10
+ff-rdp network --filter ".js" --method GET --detail
 ```
 
 ### perf [--type <TYPE>] [--filter <URL>]
@@ -193,7 +210,8 @@ ff-rdp launch --headless --temp-profile
 
 ## Output format
 All commands return JSON with envelope: `{"results": ..., "total": N, "meta": {...}}`
-Use `--jq` to filter: operates on `.results` automatically.
+When results are truncated: `{"results": ..., "total": N, "truncated": true, "hint": "showing 20 of 84, use --all for complete list", "meta": {...}}`
+Use `--jq` to filter: operates on `.results` automatically (implies --detail mode).
 "#;
 
 pub fn run(cli: &Cli) -> Result<(), AppError> {
