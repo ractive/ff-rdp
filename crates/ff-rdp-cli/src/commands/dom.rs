@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use crate::cli::args::Cli;
 use crate::error::AppError;
 use crate::output;
+use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
@@ -38,14 +39,29 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> 
     }
 
     let results = resolve_result(&mut ctx, &eval_result.result)?;
+    let meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
+
+    // Apply output controls when results is an array (multi-element queries).
+    // DOM results are in document order — no default sort applied.
+    if let Value::Array(arr) = results {
+        let controls = OutputControls::from_cli(cli, SortDir::Asc);
+        let mut items = arr;
+        controls.apply_sort(&mut items);
+        let (limited, total, truncated) = controls.apply_limit(items, Some(20));
+        let shown = limited.len();
+        let limited = controls.apply_fields(limited);
+        let envelope =
+            output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
+        return OutputPipeline::new(cli.jq.clone())
+            .finalize(&envelope)
+            .map_err(AppError::from);
+    }
 
     let total = match &results {
-        Value::Array(arr) => arr.len(),
         Value::Null => 0,
         _ => 1,
     };
 
-    let meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
     let envelope = output::envelope(&results, total, &meta);
 
     OutputPipeline::new(cli.jq.clone())

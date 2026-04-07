@@ -40,11 +40,11 @@ fn network_server() -> MockRdpServer {
 }
 
 // ---------------------------------------------------------------------------
-// Happy-path tests
+// Summary mode (default)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn network_shows_requests() {
+fn network_shows_summary_by_default() {
     let server = network_server();
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
@@ -68,20 +68,123 @@ fn network_shows_requests() {
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
+    // Summary mode: results is an object, not an array.
+    assert!(
+        json["results"].is_object(),
+        "default network output should be summary (object), got: {}",
+        json["results"]
+    );
+    assert_eq!(json["results"]["total_requests"], 2);
+    assert!(json["results"]["slowest"].is_array());
+    assert!(json["results"]["by_cause_type"].is_object());
+}
+
+// ---------------------------------------------------------------------------
+// Detail mode (--detail flag)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn network_detail_shows_requests() {
+    let server = network_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["--detail".to_owned(), "network".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
     assert_eq!(json["total"], 2);
     let results = json["results"].as_array().expect("results is array");
 
-    // First request: the main document
+    // Results are sorted by duration_ms desc (default for detail mode).
     assert_eq!(results[0]["method"], "GET");
     assert_eq!(results[0]["url"], "https://example.com/");
     assert_eq!(results[0]["status"], 200);
     assert_eq!(results[0]["is_xhr"], false);
 
-    // Second request: favicon
     assert_eq!(results[1]["method"], "GET");
     assert_eq!(results[1]["url"], "https://example.com/favicon.ico");
     assert_eq!(results[1]["status"], 404);
 }
+
+// ---------------------------------------------------------------------------
+// --limit flag triggers detail mode and truncates
+// ---------------------------------------------------------------------------
+
+#[test]
+fn network_limit_shows_detail_with_truncation() {
+    let server = network_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["--limit".to_owned(), "1".to_owned(), "network".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(output.status.success());
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Total should reflect the actual count before truncation.
+    assert_eq!(json["total"], 2);
+    // Only 1 result shown.
+    assert_eq!(json["results"].as_array().unwrap().len(), 1);
+    assert_eq!(json["truncated"], true);
+    assert!(json["hint"].as_str().unwrap().contains("--all"));
+}
+
+// ---------------------------------------------------------------------------
+// --all flag overrides default limit in detail mode
+// ---------------------------------------------------------------------------
+
+#[test]
+fn network_all_overrides_limit() {
+    let server = network_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["--all".to_owned(), "network".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(output.status.success());
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["total"], 2);
+    // All 2 results shown, no truncation.
+    assert_eq!(json["results"].as_array().unwrap().len(), 2);
+    assert!(json.get("truncated").is_none());
+}
+
+// ---------------------------------------------------------------------------
+// --filter URL
+// ---------------------------------------------------------------------------
 
 #[test]
 fn network_filter_by_url() {
@@ -91,6 +194,7 @@ fn network_filter_by_url() {
 
     let mut args = base_args(port);
     args.extend([
+        "--detail".to_owned(),
         "network".to_owned(),
         "--filter".to_owned(),
         "favicon".to_owned(),
@@ -111,6 +215,10 @@ fn network_filter_by_url() {
     assert_eq!(results[0]["url"], "https://example.com/favicon.ico");
 }
 
+// ---------------------------------------------------------------------------
+// --method filter
+// ---------------------------------------------------------------------------
+
 #[test]
 fn network_filter_by_method() {
     let server = network_server();
@@ -119,6 +227,7 @@ fn network_filter_by_method() {
 
     let mut args = base_args(port);
     args.extend([
+        "--detail".to_owned(),
         "network".to_owned(),
         "--method".to_owned(),
         "POST".to_owned(),
@@ -138,6 +247,10 @@ fn network_filter_by_method() {
     assert_eq!(json["total"], 0);
 }
 
+// ---------------------------------------------------------------------------
+// --jq filter activates detail mode
+// ---------------------------------------------------------------------------
+
 #[test]
 fn network_with_jq_filter() {
     let server = network_server();
@@ -146,9 +259,9 @@ fn network_with_jq_filter() {
 
     let mut args = base_args(port);
     args.extend([
-        "network".to_owned(),
         "--jq".to_owned(),
         ".[] | select(.status >= 400)".to_owned(),
+        "network".to_owned(),
     ]);
 
     let output = std::process::Command::new(ff_rdp_bin())
@@ -165,6 +278,10 @@ fn network_with_jq_filter() {
     assert_eq!(json["status"], 404);
     assert_eq!(json["url"], "https://example.com/favicon.ico");
 }
+
+// ---------------------------------------------------------------------------
+// Empty result set
+// ---------------------------------------------------------------------------
 
 #[test]
 fn network_empty_when_no_events() {
@@ -198,5 +315,6 @@ fn network_empty_when_no_events() {
     assert!(output.status.success());
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["total"], 0);
+    // Summary mode with no entries: total_requests = 0
+    assert_eq!(json["results"]["total_requests"], 0);
 }

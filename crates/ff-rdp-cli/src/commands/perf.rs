@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 use crate::cli::args::Cli;
 use crate::error::AppError;
 use crate::output;
+use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
@@ -239,9 +240,38 @@ pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppE
         .map(|entry| map_entry(canonical, entry))
         .collect();
 
-    let total = results.len();
+    // Apply output controls for resource entries: default sort duration_ms desc,
+    // default limit 20.  Other entry types (paint, lcp, etc.) are short lists
+    // that do not benefit from limiting, so we apply limit=20 only for resource.
+    let default_limit = if canonical == "resource" {
+        Some(20)
+    } else {
+        None
+    };
+
+    let controls = OutputControls::from_cli(cli, SortDir::Desc);
+    let mut results = results;
+    if cli.sort.is_none() && canonical == "resource" {
+        let dir = controls.sort_dir;
+        results.sort_by(|a, b| {
+            let da = a["duration_ms"].as_f64().unwrap_or(0.0);
+            let db = b["duration_ms"].as_f64().unwrap_or(0.0);
+            let cmp = da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal);
+            match dir {
+                SortDir::Asc => cmp,
+                SortDir::Desc => cmp.reverse(),
+            }
+        });
+    } else {
+        controls.apply_sort(&mut results);
+    }
+    let (limited, total, truncated) = controls.apply_limit(results, default_limit);
+    let shown = limited.len();
+    let limited = controls.apply_fields(limited);
+
     let meta = json!({"host": cli.host, "port": cli.port});
-    let envelope = output::envelope(&json!(results), total, &meta);
+    let envelope =
+        output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
 
     OutputPipeline::new(cli.jq.clone())
         .finalize(&envelope)

@@ -61,12 +61,13 @@ fn console_shows_all_messages() {
 
     assert_eq!(json["total"], 3);
     let results = json["results"].as_array().expect("results is array");
-    assert_eq!(results[0]["level"], "log");
-    assert_eq!(results[0]["message"], "hello from test");
+    // Default sort is timestamp desc (newest first).
+    assert_eq!(results[0]["level"], "error");
+    assert_eq!(results[0]["message"], "error msg");
     assert_eq!(results[1]["level"], "warn");
     assert_eq!(results[1]["message"], "warning msg");
-    assert_eq!(results[2]["level"], "error");
-    assert_eq!(results[2]["message"], "error msg");
+    assert_eq!(results[2]["level"], "log");
+    assert_eq!(results[2]["message"], "hello from test");
 }
 
 #[test]
@@ -270,8 +271,44 @@ fn console_handles_page_error_messages() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["total"], 2);
     let results = json["results"].as_array().unwrap();
-    assert_eq!(results[0]["level"], "log");
-    assert_eq!(results[0]["message"], "hello");
-    assert_eq!(results[1]["level"], "error");
-    assert_eq!(results[1]["message"], "ReferenceError: foo is not defined");
+    // Default sort is timestamp desc (newest first).
+    // pageError has timeStamp=2000, consoleAPICall has timeStamp=1000.
+    assert_eq!(results[0]["level"], "error");
+    assert_eq!(results[0]["message"], "ReferenceError: foo is not defined");
+    assert_eq!(results[1]["level"], "log");
+    assert_eq!(results[1]["message"], "hello");
+}
+
+// ---------------------------------------------------------------------------
+// --limit flag truncates results
+// ---------------------------------------------------------------------------
+
+#[test]
+fn console_limit_truncates_results() {
+    let server = console_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["--limit".to_owned(), "2".to_owned(), "console".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Total reflects actual count (3), but only 2 shown.
+    assert_eq!(json["total"], 3);
+    assert_eq!(json["results"].as_array().unwrap().len(), 2);
+    assert_eq!(json["truncated"], true);
+    assert!(json["hint"].as_str().unwrap().contains("--all"));
 }

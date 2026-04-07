@@ -46,3 +46,8 @@ command on top. Natural progression: fix the foundation, then build the summary.
   DOM stats — single structured JSON output
 - [ ] Add cookbook/recipes section to `ff-rdp --help` or `ff-rdp recipes`:
   curated `--jq` one-liners for common tasks
+
+## Test Fixtures
+
+All e2e test fixtures must be recorded from a real Firefox instance — never hand-craft them.
+Run with `FF_RDP_LIVE_TESTS_RECORD=1 cargo test -p ff-rdp-core --test live_record_fixtures -- --ignored` to record fixtures.

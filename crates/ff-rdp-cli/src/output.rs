@@ -9,11 +9,35 @@ type D = data::JustLut<Val>;
 
 /// Build the standard JSON output envelope.
 pub fn envelope(results: &Value, total: usize, meta: &Value) -> Value {
-    serde_json::json!({
+    envelope_with_truncation(results, total, total, false, meta)
+}
+
+/// Build the standard JSON output envelope with optional truncation info.
+///
+/// When `truncated` is true, a `"truncated": true` field and a human-readable
+/// `"hint"` field are included so callers know results were capped.
+pub fn envelope_with_truncation(
+    results: &Value,
+    shown: usize,
+    total: usize,
+    truncated: bool,
+    meta: &Value,
+) -> Value {
+    let mut env = serde_json::json!({
         "results": results,
         "total": total,
         "meta": meta,
-    })
+    });
+    if truncated && let Some(obj) = env.as_object_mut() {
+        obj.insert("truncated".to_string(), Value::Bool(true));
+        obj.insert(
+            "hint".to_string(),
+            Value::String(format!(
+                "showing {shown} of {total}, use --all for complete list"
+            )),
+        );
+    }
+    env
 }
 
 /// Compile and execute a jq filter on a JSON value.
@@ -111,6 +135,29 @@ mod tests {
         assert_eq!(env["total"], 2);
         assert_eq!(env["results"], results);
         assert_eq!(env["meta"], meta);
+        assert!(env.get("truncated").is_none());
+    }
+
+    #[test]
+    fn envelope_with_truncation_not_truncated() {
+        let results = json!(["a", "b"]);
+        let meta = json!({});
+        let env = envelope_with_truncation(&results, 2, 2, false, &meta);
+        assert_eq!(env["total"], 2);
+        assert!(env.get("truncated").is_none());
+        assert!(env.get("hint").is_none());
+    }
+
+    #[test]
+    fn envelope_with_truncation_truncated() {
+        let results = json!(["a"]);
+        let meta = json!({});
+        let env = envelope_with_truncation(&results, 1, 5, true, &meta);
+        assert_eq!(env["total"], 5);
+        assert_eq!(env["truncated"], true);
+        let hint = env["hint"].as_str().expect("hint should be a string");
+        assert!(hint.contains("1 of 5"));
+        assert!(hint.contains("--all"));
     }
 
     #[test]

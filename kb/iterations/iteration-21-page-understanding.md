@@ -32,3 +32,8 @@ about precisely, reducing reliance on expensive/imprecise vision inference.
   z-index, visibility, overflow, with automatic overlap detection between elements.
   Via eval using `getBoundingClientRect()` + `getComputedStyle()`.
   → [[element-geometry-command]]
+
+## Test Fixtures
+
+All e2e test fixtures must be recorded from a real Firefox instance — never hand-craft them.
+Run with `FF_RDP_LIVE_TESTS_RECORD=1 cargo test -p ff-rdp-core --test live_record_fixtures -- --ignored` to record fixtures.

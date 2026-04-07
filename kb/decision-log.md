@@ -131,3 +131,25 @@ status: active
 **Why**: Each CLI invocation previously opened a fresh TCP connection (~50-100ms overhead). For AI agent workflows running 5-10 commands in sequence, this adds up. More critically, watcher subscriptions are connection-scoped (see [[#DEC-013]]) — `navigate` and `network` on separate connections can't share events. The daemon solves both: connection reuse eliminates overhead, and persistent subscriptions enable cross-command workflows like `navigate` then `network`.
 
 **Trade-off**: Added complexity (daemon process management, registry file, signal handling). Mitigated by: auto-start/auto-stop lifecycle, TCP loopback (cross-platform), virtual actor (same wire format as RDP — no new framing), serialized one-client-at-a-time access (avoids multiplexing complexity). The `--no-daemon` flag preserves the original direct behavior. See [[research/gradle-daemon-architecture]] and [[research/connection-persistence]] for the analysis that informed this design.
+
+## 2026-04-07: Output Size Control Principles
+
+**Context**: As an LLM-focused CLI tool, ff-rdp output must be bounded by default to avoid flooding agent context windows.
+
+**Decision**: All list-returning commands follow these principles:
+
+1. **Bounded by default**: Every list command has a sensible default `--limit` (typically 20 for resource lists, 50 for console messages). Use `--all` to override.
+
+2. **Summary over detail**: Commands with many entries (network, perf) default to a summary view. Use `--detail` for individual entries.
+
+3. **Transparent truncation**: When results are limited, the envelope includes `"truncated": true`, `"total": N` (actual total), and a `"hint"` string so agents know data was omitted.
+
+4. **Output controls are global flags**: `--limit N`, `--all`, `--sort <field>`, `--asc`/`--desc`, `--fields <f1,f2>`, and `--detail` are available on ALL commands.
+
+5. **`--jq` implies detail mode**: When a jq filter is provided, the command skips summary mode and returns individual entries (since the user wants to process raw data).
+
+6. **Document order preserved**: DOM-related commands maintain document order by default. Use `--sort` to override.
+
+7. **Tree output**: Tree-producing commands (snapshot, a11y, dom tree) use `--depth N` and `--max-chars N` for size control, with consistent truncation markers. (Design only — implemented in iterations 22-24.)
+
+**Applies to**: All current and future list/tree-returning commands.

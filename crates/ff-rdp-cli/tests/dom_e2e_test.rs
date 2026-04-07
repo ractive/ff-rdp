@@ -182,6 +182,46 @@ fn dom_single_element_attrs() {
 }
 
 // ---------------------------------------------------------------------------
+// --limit flag truncates results
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dom_limit_truncates_results() {
+    let server = dom_server("eval_result_dom_multi_text.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "--limit".to_owned(),
+        "1".to_owned(),
+        "dom".to_owned(),
+        "ul li".to_owned(),
+        "--text".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // 3 total elements, only 1 shown.
+    assert_eq!(json["total"], 3);
+    assert_eq!(json["results"].as_array().unwrap().len(), 1);
+    assert_eq!(json["truncated"], true);
+    assert!(json["hint"].as_str().unwrap().contains("--all"));
+}
+
+// ---------------------------------------------------------------------------
 // With --jq filter
 // ---------------------------------------------------------------------------
 
