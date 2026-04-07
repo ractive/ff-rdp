@@ -199,7 +199,7 @@ const CONTRAST_JS_TEMPLATE: &str = r#"(function() {
 
   return '__FF_RDP_JSON__' + JSON.stringify({
     checks: checks,
-    summary: {total: checks.length, aa_pass: aaPass, aa_fail: aaFail}
+    summary: {total: checks.length, aa_pass: aaPass, aa_fail: aaFail, capped: elements.length >= 500}
   });
 })()"#;
 

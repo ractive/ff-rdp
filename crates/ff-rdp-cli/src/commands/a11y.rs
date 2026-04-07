@@ -277,8 +277,9 @@ const A11Y_SELECTOR_JS_TEMPLATE: &str = r#"(function() {
     }
 
     var children = [];
+    var charCapped = false;
     for (var i = 0; i < node.childNodes.length; i++) {
-      if (totalChars >= maxChars) break;
+      if (totalChars >= maxChars) { charCapped = true; break; }
       var c = walk(node.childNodes[i], depth + 1);
       if (c !== null && c.role !== 'generic') children.push(c);
       else if (c !== null && c.children) {
@@ -286,6 +287,7 @@ const A11Y_SELECTOR_JS_TEMPLATE: &str = r#"(function() {
       }
     }
     if (children.length) o.children = children;
+    if (charCapped) o.truncated = 'max characters reached';
     return o;
   }
 

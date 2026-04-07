@@ -81,7 +81,15 @@ impl AccessibilityActor {
             Some(&json!({"accessible": accessible_actor.as_ref()})),
         )?;
 
-        Ok(parse_children(&response))
+        response
+            .get("children")
+            .and_then(Value::as_array)
+            .map(|arr| arr.iter().filter_map(parse_accessible_node).collect())
+            .ok_or_else(|| {
+                ProtocolError::InvalidPacket(
+                    "children response missing 'children' array field".into(),
+                )
+            })
     }
 
     /// Get the document root accessible via the walker.
@@ -193,15 +201,6 @@ fn walk_recursive(
     }
 
     Ok(result)
-}
-
-/// Parse the children array from a `children` response.
-fn parse_children(response: &Value) -> Vec<AccessibleNode> {
-    response
-        .get("children")
-        .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(parse_accessible_node).collect())
-        .unwrap_or_default()
 }
 
 /// Parse a single accessible node from a JSON value.
@@ -347,34 +346,6 @@ mod tests {
     fn parse_accessible_node_missing_role_returns_none() {
         let v = json!({"name": "no role"});
         assert!(parse_accessible_node(&v).is_none());
-    }
-
-    #[test]
-    fn parse_children_from_response() {
-        let response = json!({
-            "children": [
-                {"role": "heading", "name": "Title", "childCount": 0},
-                {"role": "paragraph", "name": "Text", "childCount": 0}
-            ]
-        });
-        let children = parse_children(&response);
-        assert_eq!(children.len(), 2);
-        assert_eq!(children[0].role, "heading");
-        assert_eq!(children[1].role, "paragraph");
-    }
-
-    #[test]
-    fn parse_children_empty_response() {
-        let response = json!({"children": []});
-        let children = parse_children(&response);
-        assert!(children.is_empty());
-    }
-
-    #[test]
-    fn parse_children_missing_field() {
-        let response = json!({});
-        let children = parse_children(&response);
-        assert!(children.is_empty());
     }
 
     #[test]
