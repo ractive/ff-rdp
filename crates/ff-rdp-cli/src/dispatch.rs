@@ -1,4 +1,4 @@
-use crate::cli::args::{Cli, Command, PerfCommand};
+use crate::cli::args::{Cli, Command, DomCommand, PerfCommand};
 use crate::commands;
 use crate::commands::nav_action::NavAction;
 use crate::daemon::server;
@@ -31,29 +31,35 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         Command::Forward => commands::nav_action::run(cli, NavAction::Forward),
         Command::PageText => commands::page_text::run(cli),
         Command::Dom {
+            dom_command,
             selector,
             outer_html: _,
             inner_html,
             text,
             attrs,
             count,
-        } => {
-            if *count {
-                commands::dom::run_count(cli, selector)
-            } else {
-                let mode = if *inner_html {
-                    commands::dom::OutputMode::InnerHtml
-                } else if *text {
-                    commands::dom::OutputMode::Text
-                } else if *attrs {
-                    commands::dom::OutputMode::Attrs
+        } => match dom_command {
+            Some(DomCommand::Stats) => commands::dom::run_stats(cli),
+            None => {
+                let sel = selector.as_deref().ok_or_else(|| {
+                    AppError::User("dom requires a CSS selector argument".to_string())
+                })?;
+                if *count {
+                    commands::dom::run_count(cli, sel)
                 } else {
-                    // default (including explicit --outer-html)
-                    commands::dom::OutputMode::OuterHtml
-                };
-                commands::dom::run(cli, selector, mode)
+                    let mode = if *inner_html {
+                        commands::dom::OutputMode::InnerHtml
+                    } else if *text {
+                        commands::dom::OutputMode::Text
+                    } else if *attrs {
+                        commands::dom::OutputMode::Attrs
+                    } else {
+                        commands::dom::OutputMode::OuterHtml
+                    };
+                    commands::dom::run(cli, sel, mode)
+                }
             }
-        }
+        },
         Command::Console { level, pattern } => {
             commands::console::run(cli, level.as_deref(), pattern.as_deref())
         }
@@ -68,6 +74,7 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         } => match perf_command {
             Some(PerfCommand::Vitals) => commands::perf::run_vitals(cli),
             Some(PerfCommand::Summary) => commands::perf::run_summary(cli),
+            Some(PerfCommand::Audit) => commands::perf::run_audit(cli),
             None => {
                 if group_by.as_deref() == Some("domain") {
                     commands::perf::run_group_by_domain(cli, entry_type, filter.as_deref())
@@ -121,6 +128,10 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             *temp_profile,
             *debug_port,
         ),
+        Command::Recipes => {
+            commands::recipes::run();
+            Ok(())
+        }
         Command::LlmHelp => commands::llm_help::run(cli),
         Command::Daemon => {
             server::run_daemon(&cli.host, cli.port, cli.daemon_timeout).map_err(AppError::Internal)

@@ -237,7 +237,7 @@ fn dom_with_jq_filter() {
         "h1".to_owned(),
         "--text".to_owned(),
         "--jq".to_owned(),
-        ".".to_owned(),
+        ".results".to_owned(),
     ]);
 
     let output = std::process::Command::new(ff_rdp_bin())

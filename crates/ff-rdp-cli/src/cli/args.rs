@@ -101,8 +101,11 @@ pub enum Command {
     PageText,
     /// Query DOM elements by CSS selector
     Dom {
+        #[command(subcommand)]
+        dom_command: Option<DomCommand>,
+
         /// CSS selector to match elements
-        selector: String,
+        selector: Option<String>,
         /// Output outer HTML (default)
         #[arg(long, group = "output_mode")]
         outer_html: bool,
@@ -251,6 +254,8 @@ affect which requests Firefox records.")]
     /// Internal: run as background daemon (not for direct use)
     #[command(name = "_daemon", hide = true)]
     Daemon,
+    /// Show curated jq one-liners and recipes for common tasks
+    Recipes,
     /// Dump complete CLI reference in compact LLM-friendly format (all commands, flags, examples)
     LlmHelp,
     /// Launch Firefox with remote debugging enabled
@@ -276,4 +281,12 @@ pub enum PerfCommand {
     Vitals,
     /// Aggregate resource summary: sizes, request counts by type, slowest resources, domain breakdown
     Summary,
+    /// Full page performance audit: vitals, navigation timing, resource breakdown, DOM stats
+    Audit,
+}
+
+#[derive(Subcommand)]
+pub enum DomCommand {
+    /// DOM statistics: node count, document size, inline scripts, images without lazy loading
+    Stats,
 }

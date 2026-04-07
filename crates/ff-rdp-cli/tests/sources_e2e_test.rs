@@ -125,7 +125,7 @@ fn sources_with_jq_filter() {
     args.extend([
         "sources".to_owned(),
         "--jq".to_owned(),
-        ".[].url".to_owned(),
+        ".results[].url".to_owned(),
     ]);
 
     let output = std::process::Command::new(ff_rdp_bin())

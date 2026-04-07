@@ -52,6 +52,14 @@ fn script_get_entries(entry_type: &str) -> String {
     format!(r#"JSON.stringify(performance.getEntriesByType("{entry_type}").map(e => e.toJSON()))"#)
 }
 
+/// Build a JS snippet that returns both resource entries and the page hostname
+/// in a single eval, avoiding a separate roundtrip for third-party detection.
+fn script_get_entries_with_hostname(entry_type: &str) -> String {
+    format!(
+        r#"JSON.stringify({{entries: performance.getEntriesByType("{entry_type}").map(e => e.toJSON()), hostname: document.location.hostname}})"#
+    )
+}
+
 /// Build a JS snippet that uses `PerformanceObserver` with `buffered: true`.
 ///
 /// The callback fires synchronously for already-recorded entries when
@@ -107,21 +115,52 @@ fn eval_to_json_string(
 }
 
 /// Map a raw performance entry JSON object to the canonical output shape for its type.
-fn map_entry(entry_type: &str, entry: Value) -> Value {
+///
+/// `nav_domain` is the navigation document's domain, used to detect third-party resources.
+fn map_entry(entry_type: &str, entry: Value, nav_domain: Option<&str>) -> Value {
     let g = |key: &str| entry.get(key).cloned().unwrap_or(Value::Null);
 
     match entry_type {
-        "resource" => json!({
-            "url": g("name"),
-            "initiator_type": g("initiatorType"),
-            "duration_ms": g("duration"),
-            "transfer_size": g("transferSize"),
-            "encoded_size": g("encodedBodySize"),
-            "decoded_size": g("decodedBodySize"),
-            "start_time_ms": g("startTime"),
-            "response_end_ms": g("responseEnd"),
-            "protocol": g("nextHopProtocol"),
-        }),
+        "resource" => {
+            let transfer_size = entry
+                .get("transferSize")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let decoded_size = entry
+                .get("decodedBodySize")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let from_cache = transfer_size == 0.0 && decoded_size > 0.0;
+            let url_str = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let resource_type = classify_resource_type(
+                url_str,
+                entry
+                    .get("initiatorType")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            );
+            let third_party = nav_domain.is_some_and(|nav| {
+                let res_domain = extract_domain(url_str);
+                res_domain != "unknown" && res_domain != nav
+            });
+            json!({
+                "url": g("name"),
+                "initiator_type": g("initiatorType"),
+                "duration_ms": g("duration"),
+                "transfer_size": g("transferSize"),
+                "encoded_size": g("encodedBodySize"),
+                "decoded_size": g("decodedBodySize"),
+                "start_time_ms": g("startTime"),
+                "response_end_ms": g("responseEnd"),
+                "protocol": g("nextHopProtocol"),
+                "from_cache": from_cache,
+                "resource_type": resource_type,
+                "third_party": third_party,
+            })
+        }
         "navigation" => {
             let dns_ms = sub_f64(&entry, "domainLookupEnd", "domainLookupStart");
             let tls_ms = {
@@ -205,7 +244,12 @@ fn sub_f64(entry: &Value, a: &str, b: &str) -> Option<f64> {
 pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppError> {
     let canonical = canonical_type(entry_type)?;
 
-    let script = if OBSERVER_TYPES.contains(&canonical) {
+    // For resource type, use a combined script that returns both entries and
+    // the page hostname in a single eval (avoids a second roundtrip).
+    let use_combined = canonical == "resource";
+    let script = if use_combined {
+        script_get_entries_with_hostname(canonical)
+    } else if OBSERVER_TYPES.contains(&canonical) {
         script_observer(canonical)
     } else {
         script_get_entries(canonical)
@@ -214,9 +258,26 @@ pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppE
     let mut ctx = connect_and_get_target(cli)?;
     let json_str = eval_to_json_string(&mut ctx, &script, &format!("perf --type {canonical}"))?;
 
-    let entries: Vec<Value> = serde_json::from_str(&json_str)
-        .with_context(|| format!("perf --type {canonical}: failed to parse JSON"))
-        .map_err(AppError::from)?;
+    let (entries, nav_domain): (Vec<Value>, Option<String>) = if use_combined {
+        let combined: Value = serde_json::from_str(&json_str)
+            .with_context(|| format!("perf --type {canonical}: failed to parse JSON"))
+            .map_err(AppError::from)?;
+        let entries = combined
+            .get("entries")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let hostname = combined
+            .get("hostname")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        (entries, hostname)
+    } else {
+        let entries: Vec<Value> = serde_json::from_str(&json_str)
+            .with_context(|| format!("perf --type {canonical}: failed to parse JSON"))
+            .map_err(AppError::from)?;
+        (entries, None)
+    };
 
     let has_url = matches!(canonical, "resource" | "navigation");
 
@@ -237,7 +298,7 @@ pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppE
             }
             true
         })
-        .map(|entry| map_entry(canonical, entry))
+        .map(|entry| map_entry(canonical, entry, nav_domain.as_deref()))
         .collect();
 
     // Apply output controls for resource entries: default sort duration_ms desc,
@@ -297,6 +358,10 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
       obs.disconnect();
     } catch(e) {}
   });
+  // Fallback: if PerformanceObserver returned no paint entries, try getEntriesByType
+  if (!entries.paint || entries.paint.length === 0) {
+    entries.paint = performance.getEntriesByType('paint').map(function(e) { return e.toJSON(); });
+  }
   entries.navigation = performance.getEntriesByType('navigation').map(function(e) { return e.toJSON(); });
   entries.resource = performance.getEntriesByType('resource').map(function(e) { return e.toJSON(); });
   return JSON.stringify(entries);
@@ -393,17 +458,26 @@ fn aggregate_by_domain(mapped: &[Value]) -> Vec<Value> {
 
 /// Aggregate resource summary: sizes, request counts by type, slowest resources, domain breakdown.
 pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
-    let script = script_get_entries("resource");
+    let script = script_get_entries_with_hostname("resource");
     let mut ctx = connect_and_get_target(cli)?;
     let json_str = eval_to_json_string(&mut ctx, &script, "perf summary")?;
 
-    let entries: Vec<Value> = serde_json::from_str(&json_str)
+    let combined: Value = serde_json::from_str(&json_str)
         .context("perf summary: failed to parse JSON")
         .map_err(AppError::from)?;
+    let entries: Vec<Value> = combined
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let nav_domain = combined
+        .get("hostname")
+        .and_then(Value::as_str)
+        .map(str::to_string);
 
     let mapped: Vec<Value> = entries
         .into_iter()
-        .map(|e| map_entry("resource", e))
+        .map(|e| map_entry("resource", e, nav_domain.as_deref()))
         .collect();
 
     let total_transfer_size: f64 = mapped
@@ -461,6 +535,222 @@ pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
         .map_err(AppError::from)
 }
 
+/// Collect all performance data into a single structured audit report.
+pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
+    let script = r#"(function() {
+  var result = {};
+
+  // CWV via PerformanceObserver with buffered: true
+  var cwvTypes = ['largest-contentful-paint', 'layout-shift', 'longtask', 'paint'];
+  cwvTypes.forEach(function(type) {
+    try {
+      result[type] = [];
+      var obs = new PerformanceObserver(function(list) {
+        result[type] = result[type].concat(list.getEntries().map(function(e) { return e.toJSON(); }));
+      });
+      obs.observe({ type: type, buffered: true });
+      obs.disconnect();
+    } catch(e) {}
+  });
+
+  // Fallback: if PerformanceObserver returned no paint entries, try getEntriesByType
+  if (!result.paint || result.paint.length === 0) {
+    result.paint = performance.getEntriesByType('paint').map(function(e) { return e.toJSON(); });
+  }
+
+  result.navigation = performance.getEntriesByType('navigation').map(function(e) { return e.toJSON(); });
+  result.resource = performance.getEntriesByType('resource').map(function(e) { return e.toJSON(); });
+
+  // DOM stats
+  result.dom = {
+    node_count: document.querySelectorAll('*').length,
+    document_size: document.documentElement.outerHTML.length,
+    inline_script_count: document.querySelectorAll('script:not([src])').length,
+    render_blocking_resources: (function() {
+      var count = 0;
+      document.querySelectorAll('link[rel="stylesheet"], script:not([async]):not([defer]):not([type="module"])').forEach(function(el) {
+        if (el.tagName === 'LINK' || (el.tagName === 'SCRIPT' && !el.src.startsWith('data:'))) count++;
+      });
+      return count;
+    })(),
+    images_without_lazy_loading: document.querySelectorAll('img:not([loading="lazy"])').length
+  };
+
+  result.hostname = document.location.hostname;
+
+  return JSON.stringify(result);
+})()"#;
+
+    let mut ctx = connect_and_get_target(cli)?;
+    let json_str = eval_to_json_string(&mut ctx, script, "perf audit")?;
+
+    let all: Value = serde_json::from_str(&json_str)
+        .context("perf audit: failed to parse collection JSON")
+        .map_err(AppError::from)?;
+
+    let nav_domain = all
+        .get("hostname")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    // ── vitals ────────────────────────────────────────────────────────────────
+    let nav_entries = all.get("navigation").and_then(Value::as_array);
+    let nav = nav_entries.and_then(|a| a.first());
+
+    let paint_entries: &[Value] = all
+        .get("paint")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice);
+    let lcp_entries: &[Value] = all
+        .get("largest-contentful-paint")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice);
+    let cls_entries: &[Value] = all
+        .get("layout-shift")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice);
+    let longtask_entries: &[Value] = all
+        .get("longtask")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice);
+
+    let ttfb = nav.and_then(compute_ttfb);
+    let fcp = compute_fcp(paint_entries);
+    let lcp = compute_lcp(lcp_entries);
+    let cls = compute_cls(cls_entries);
+    let tbt = compute_tbt(longtask_entries, fcp);
+
+    let vitals = json!({
+        "ttfb_ms": ttfb,
+        "ttfb_rating": ttfb.map(|v| rate(v, 800.0, 1800.0)),
+        "fcp_ms": fcp,
+        "fcp_rating": fcp.map(|v| rate(v, 1800.0, 3000.0)),
+        "lcp_ms": lcp,
+        "lcp_rating": lcp.map(|v| rate(v, 2500.0, 4000.0)),
+        "cls": cls,
+        "cls_rating": rate(cls, 0.1, 0.25),
+        "tbt_ms": tbt,
+        "tbt_rating": rate(tbt, 200.0, 600.0),
+    });
+
+    // ── navigation entry ──────────────────────────────────────────────────────
+    let navigation = nav.cloned().map(|e| map_entry("navigation", e, None));
+
+    // ── resource breakdown ────────────────────────────────────────────────────
+    let raw_resources: Vec<Value> = all
+        .get("resource")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let mapped_resources: Vec<Value> = raw_resources
+        .into_iter()
+        .map(|e| map_entry("resource", e, nav_domain.as_deref()))
+        .collect();
+
+    let total_count = mapped_resources.len();
+    let total_transfer_size: f64 = mapped_resources
+        .iter()
+        .filter_map(|e| e.get("transfer_size").and_then(Value::as_f64))
+        .sum();
+
+    let resource_summary = json!({
+        "count": total_count,
+        "transfer_size": round2(total_transfer_size),
+    });
+
+    // ── resource_by_type ──────────────────────────────────────────────────────
+    let mut by_type: std::collections::BTreeMap<&str, (usize, f64)> =
+        std::collections::BTreeMap::new();
+    for entry in &mapped_resources {
+        let rtype = entry
+            .get("resource_type")
+            .and_then(Value::as_str)
+            .unwrap_or("other");
+        let size = entry
+            .get("transfer_size")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let d = by_type.entry(rtype).or_insert((0, 0.0));
+        d.0 += 1;
+        d.1 += size;
+    }
+    let resource_by_type: Vec<Value> = by_type
+        .into_iter()
+        .map(|(rtype, (count, size))| {
+            json!({"type": rtype, "count": count, "transfer_size": round2(size)})
+        })
+        .collect();
+
+    // ── resource_by_domain (top 10) ───────────────────────────────────────────
+    let domain_list = aggregate_by_domain(&mapped_resources);
+    let resource_by_domain: Vec<Value> = domain_list.into_iter().take(10).collect();
+
+    // ── third_party_summary ───────────────────────────────────────────────────
+    let third_party_resources: Vec<&Value> = mapped_resources
+        .iter()
+        .filter(|e| {
+            e.get("third_party")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .collect();
+    let third_party_count = third_party_resources.len();
+    let third_party_transfer_size: f64 = third_party_resources
+        .iter()
+        .filter_map(|e| e.get("transfer_size").and_then(Value::as_f64))
+        .sum();
+    let third_party_summary = json!({
+        "count": third_party_count,
+        "transfer_size": round2(third_party_transfer_size),
+    });
+
+    // ── slowest_resources (top 5 by duration_ms) ─────────────────────────────
+    let mut by_duration: Vec<(&Value, f64)> = mapped_resources
+        .iter()
+        .map(|e| {
+            (
+                e,
+                e.get("duration_ms").and_then(Value::as_f64).unwrap_or(0.0),
+            )
+        })
+        .collect();
+    by_duration.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let slowest_resources: Vec<Value> = by_duration
+        .iter()
+        .take(5)
+        .map(|(e, _)| {
+            json!({
+                "url": e.get("url"),
+                "duration_ms": e.get("duration_ms"),
+                "transfer_size": e.get("transfer_size"),
+                "resource_type": e.get("resource_type"),
+            })
+        })
+        .collect();
+
+    // ── dom_stats ─────────────────────────────────────────────────────────────
+    let dom_stats = all.get("dom").cloned().unwrap_or(Value::Null);
+
+    let results = json!({
+        "vitals": vitals,
+        "navigation": navigation,
+        "resource_summary": resource_summary,
+        "resource_by_type": resource_by_type,
+        "resource_by_domain": resource_by_domain,
+        "third_party_summary": third_party_summary,
+        "slowest_resources": slowest_resources,
+        "dom_stats": dom_stats,
+    });
+
+    let meta = json!({"host": cli.host, "port": cli.port});
+    let envelope = output::envelope(&results, 1, &meta);
+
+    OutputPipeline::new(cli.jq.clone())
+        .finalize(&envelope)
+        .map_err(AppError::from)
+}
+
 /// Group performance entries by domain, showing count and total transfer size per domain.
 pub fn run_group_by_domain(
     cli: &Cli,
@@ -477,7 +767,12 @@ pub fn run_group_by_domain(
 
     // Both "resource" and "navigation" are getEntriesByType-compatible; the guard
     // above already rejects observer-only types, so no OBSERVER_TYPES check needed.
-    let script = script_get_entries(canonical);
+    let use_combined = canonical == "resource";
+    let script = if use_combined {
+        script_get_entries_with_hostname(canonical)
+    } else {
+        script_get_entries(canonical)
+    };
 
     let mut ctx = connect_and_get_target(cli)?;
     let json_str = eval_to_json_string(
@@ -486,9 +781,26 @@ pub fn run_group_by_domain(
         &format!("perf --type {canonical} --group-by domain"),
     )?;
 
-    let entries: Vec<Value> = serde_json::from_str(&json_str)
-        .with_context(|| format!("perf --type {canonical}: failed to parse JSON"))
-        .map_err(AppError::from)?;
+    let (entries, nav_domain): (Vec<Value>, Option<String>) = if use_combined {
+        let combined: Value = serde_json::from_str(&json_str)
+            .with_context(|| format!("perf --type {canonical}: failed to parse JSON"))
+            .map_err(AppError::from)?;
+        let entries = combined
+            .get("entries")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let hostname = combined
+            .get("hostname")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        (entries, hostname)
+    } else {
+        let entries: Vec<Value> = serde_json::from_str(&json_str)
+            .with_context(|| format!("perf --type {canonical}: failed to parse JSON"))
+            .map_err(AppError::from)?;
+        (entries, None)
+    };
 
     let mapped: Vec<Value> = entries
         .into_iter()
@@ -503,7 +815,7 @@ pub fn run_group_by_domain(
                 true
             }
         })
-        .map(|entry| map_entry(canonical, entry))
+        .map(|entry| map_entry(canonical, entry, nav_domain.as_deref()))
         .collect();
 
     let results = aggregate_by_domain(&mapped);
@@ -613,6 +925,38 @@ pub(crate) fn compute_tbt(longtasks: &[Value], fcp_ms: Option<f64>) -> f64 {
     round2(sum)
 }
 
+/// Classify a resource URL into a high-level type based on file extension,
+/// falling back to the initiator type hint from the Performance API.
+fn classify_resource_type(url: &str, initiator_type: &str) -> &'static str {
+    // Try to extract the extension from the URL path (before query string)
+    let path = url.split('?').next().unwrap_or(url);
+    let path = path.split('#').next().unwrap_or(path);
+    if let Some(dot_pos) = path.rfind('.') {
+        let ext = &path[dot_pos + 1..];
+        match ext {
+            "js" | "mjs" | "cjs" => return "js",
+            "css" => return "css",
+            "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "avif" | "ico" | "bmp" => {
+                return "image";
+            }
+            "woff" | "woff2" | "ttf" | "otf" | "eot" => return "font",
+            "html" | "htm" => return "document",
+            "json" | "xml" => return "xhr",
+            _ => {}
+        }
+    }
+    // Fall back to initiator type
+    match initiator_type {
+        "script" => "js",
+        "css" | "link" => "css",
+        "img" | "image" => "image",
+        "font" => "font",
+        "xmlhttprequest" | "fetch" => "xhr",
+        "navigation" | "iframe" => "document",
+        _ => "other",
+    }
+}
+
 /// Extract the domain (host) from a URL string. Returns "unknown" for unparseable URLs.
 fn extract_domain(url: &str) -> String {
     url::Url::parse(url).map_or_else(
@@ -634,7 +978,6 @@ pub(crate) fn rate(value: f64, good: f64, poor: f64) -> &'static str {
         "poor"
     }
 }
-
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

@@ -14,6 +14,7 @@ pub(crate) mod network;
 pub(crate) mod network_events;
 pub(crate) mod page_text;
 pub(crate) mod perf;
+pub(crate) mod recipes;
 pub(crate) mod screenshot;
 pub(crate) mod sources;
 pub(crate) mod storage;

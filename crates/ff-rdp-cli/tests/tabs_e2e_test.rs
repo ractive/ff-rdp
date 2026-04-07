@@ -70,7 +70,7 @@ fn tabs_outputs_json_envelope() {
     assert!(json["meta"].is_object(), "meta must be present");
 }
 
-/// `--jq '.[0].url'` must extract the first tab's URL as a JSON string.
+/// `--jq '.results[0].url'` must extract the first tab's URL as a JSON string.
 #[test]
 fn tabs_with_jq_filter_extracts_url() {
     let list_tabs_response = load_fixture("list_tabs_response.json");
@@ -80,7 +80,11 @@ fn tabs_with_jq_filter_extracts_url() {
     let handle = std::thread::spawn(move || server.serve_one());
 
     let mut args = base_args(port);
-    args.extend(["tabs".to_owned(), "--jq".to_owned(), ".[0].url".to_owned()]);
+    args.extend([
+        "tabs".to_owned(),
+        "--jq".to_owned(),
+        ".results[0].url".to_owned(),
+    ]);
 
     let output = std::process::Command::new(ff_rdp_bin())
         .args(&args)
@@ -101,7 +105,7 @@ fn tabs_with_jq_filter_extracts_url() {
     assert_eq!(stdout, r#""https://example.com/""#);
 }
 
-/// `--jq 'length'` must output the count of tabs (jq filter operates on .results array).
+/// `--jq '.results | length'` must output the count of tabs.
 #[test]
 fn tabs_with_jq_total() {
     let list_tabs_response = load_fixture("list_tabs_response.json");
@@ -111,7 +115,11 @@ fn tabs_with_jq_total() {
     let handle = std::thread::spawn(move || server.serve_one());
 
     let mut args = base_args(port);
-    args.extend(["tabs".to_owned(), "--jq".to_owned(), "length".to_owned()]);
+    args.extend([
+        "tabs".to_owned(),
+        "--jq".to_owned(),
+        ".results | length".to_owned(),
+    ]);
 
     let output = std::process::Command::new(ff_rdp_bin())
         .args(&args)

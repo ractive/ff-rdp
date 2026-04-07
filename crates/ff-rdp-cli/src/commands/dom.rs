@@ -179,6 +179,89 @@ fn resolve_result(ctx: &mut ConnectedTab, grip: &Grip) -> Result<Value, AppError
     Ok(raw)
 }
 
+/// JavaScript IIFE that collects DOM statistics in a single evaluation.
+const STATS_JS: &str = r"(function() {
+  var nodeCount = document.getElementsByTagName('*').length;
+  var docSize = document.documentElement.outerHTML.length;
+  var scripts = document.getElementsByTagName('script');
+  var inlineScriptCount = 0;
+  for (var i = 0; i < scripts.length; i++) {
+    if (!scripts[i].getAttribute('src')) inlineScriptCount++;
+  }
+  var head = document.head || document.getElementsByTagName('head')[0];
+  var renderBlockingCount = 0;
+  if (head) {
+    var headLinks = head.getElementsByTagName('link');
+    for (var j = 0; j < headLinks.length; j++) {
+      if (headLinks[j].getAttribute('rel') === 'stylesheet') renderBlockingCount++;
+    }
+    var headScripts = head.getElementsByTagName('script');
+    for (var k = 0; k < headScripts.length; k++) {
+      var hs = headScripts[k];
+      if (!hs.hasAttribute('async') && !hs.hasAttribute('defer')) renderBlockingCount++;
+    }
+  }
+  var imgs = document.getElementsByTagName('img');
+  var imagesWithoutLazy = 0;
+  for (var m = 0; m < imgs.length; m++) {
+    var img = imgs[m];
+    var rect = img.getBoundingClientRect();
+    var inViewport = rect.top < window.innerHeight && rect.bottom >= 0;
+    if (!inViewport && img.getAttribute('loading') !== 'lazy') imagesWithoutLazy++;
+  }
+  return JSON.stringify({
+    node_count: nodeCount,
+    document_size: docSize,
+    inline_script_count: inlineScriptCount,
+    render_blocking_count: renderBlockingCount,
+    images_without_lazy: imagesWithoutLazy
+  });
+})()";
+
+pub fn run_stats(cli: &Cli) -> Result<(), AppError> {
+    let mut ctx = connect_and_get_target(cli)?;
+    let console_actor = ctx.target.console_actor.clone();
+
+    let eval_result =
+        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, STATS_JS)
+            .map_err(AppError::from)?;
+
+    if let Some(ref exc) = eval_result.exception {
+        let msg = exc.message.as_deref().unwrap_or("DOM stats query failed");
+        eprintln!("error: {msg}");
+        return Err(AppError::Exit(1));
+    }
+
+    let json_str = match &eval_result.result {
+        Grip::Value(Value::String(s)) => s.clone(),
+        Grip::LongString {
+            actor,
+            length,
+            initial: _,
+        } => LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), *length)
+            .map_err(AppError::from)?,
+        Grip::Null | Grip::Undefined => {
+            return Err(AppError::User("DOM stats returned no result".to_string()));
+        }
+        other => {
+            return Err(AppError::User(format!(
+                "unexpected DOM stats result type: {:?}",
+                other.to_json()
+            )));
+        }
+    };
+
+    let stats: Value = serde_json::from_str(&json_str)
+        .map_err(|e| AppError::from(anyhow::anyhow!("failed to parse DOM stats JSON: {e}")))?;
+
+    let meta = json!({"host": cli.host, "port": cli.port});
+    let envelope = output::envelope(&stats, 1, &meta);
+
+    OutputPipeline::new(cli.jq.clone())
+        .finalize(&envelope)
+        .map_err(AppError::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::js_helpers::escape_selector;

@@ -137,7 +137,7 @@ fn console_with_jq_filter() {
     args.extend([
         "console".to_owned(),
         "--jq".to_owned(),
-        ".[] | select(.level == \"error\") | .message".to_owned(),
+        ".results[] | select(.level == \"error\") | .message".to_owned(),
     ]);
 
     let output = std::process::Command::new(ff_rdp_bin())
