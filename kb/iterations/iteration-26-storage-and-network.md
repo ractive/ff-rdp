@@ -12,6 +12,11 @@ branch: iter-26/storage-and-network
 Replace JS eval-based cookie/storage access with the native StorageActor protocol,
 fixing the httpOnly cookie visibility gap. Add Performance API fallback for network.
 
+## Notes
+
+StorageActor protocol research requires a live Firefox instance. Launch headless Firefox for
+discovery: `firefox -no-remote -profile /tmp/ff-rdp-test-profile --start-debugger-server 6000 --headless`
+
 ## Tasks
 
 - [ ] Implement StorageActor discovery via watcher or target actor

@@ -12,6 +12,11 @@ branch: iter-23/dom-css-inspection
 Implement native protocol actors for DOM and CSS inspection — essential for
 debugging layout issues during development.
 
+## Notes
+
+Protocol research requires a live Firefox instance. Launch headless Firefox for
+discovery: `firefox -no-remote -profile /tmp/ff-rdp-test-profile --start-debugger-server 6000 --headless`
+
 ## Research
 
 - [ ] Protocol discovery: attach to InspectorActor, get walker and pagestyle

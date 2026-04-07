@@ -11,6 +11,11 @@ branch: iter-27/watcher-streaming
 
 Enable real-time event streaming via watcher resource subscriptions and target watching.
 
+## Notes
+
+Target watching protocol research requires a live Firefox instance. Launch headless Firefox for
+discovery: `firefox -no-remote -profile /tmp/ff-rdp-test-profile --start-debugger-server 6000 --headless`
+
 ## Tasks
 
 - [ ] Implement `watchResources(["console-message"])` for real-time console output

@@ -12,6 +12,11 @@ branch: iter-22/accessibility
 Full accessibility tree via Firefox's AccessibilityActor, plus WCAG contrast checking.
 Essential for AI agents reviewing frontend code for compliance.
 
+## Notes
+
+Protocol research requires a live Firefox instance. Launch headless Firefox for
+discovery: `firefox -no-remote -profile /tmp/ff-rdp-test-profile --start-debugger-server 6000 --headless`
+
 ## Tasks
 
 - [ ] Research: discover AccessibilityActor protocol from live Firefox session.
