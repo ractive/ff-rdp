@@ -1,0 +1,8 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "type": "evaluationResult",
+  "resultID": "1775437183977.373-0",
+  "hasException": false,
+  "result": "__FF_RDP_JSON__{\"elements\":[{\"selector\":\".box-a\",\"index\":0,\"tag\":\"div\",\"rect\":{\"x\":0,\"y\":0,\"width\":200,\"height\":200,\"top\":0,\"right\":200,\"bottom\":200,\"left\":0},\"computed\":{\"position\":\"absolute\",\"z_index\":\"1\",\"visibility\":\"visible\",\"display\":\"block\",\"overflow\":\"visible\",\"opacity\":\"1\"},\"visible\":true,\"in_viewport\":true},{\"selector\":\".box-b\",\"index\":0,\"tag\":\"div\",\"rect\":{\"x\":100,\"y\":100,\"width\":200,\"height\":200,\"top\":100,\"right\":300,\"bottom\":300,\"left\":100},\"computed\":{\"position\":\"absolute\",\"z_index\":\"2\",\"visibility\":\"visible\",\"display\":\"block\",\"overflow\":\"visible\",\"opacity\":\"1\"},\"visible\":true,\"in_viewport\":true}],\"overlaps\":[[\".box-a[0]\",\".box-b[0]\"]],\"viewport\":{\"width\":1024,\"height\":768}}",
+  "timestamp": 1775437183980.721
+}

@@ -1,7 +1,7 @@
 ---
 title: "Iteration 20: Perf Fixes & Audit Command"
 type: iteration
-status: done
+status: completed
 date: 2026-04-07
 tags:
   - iteration

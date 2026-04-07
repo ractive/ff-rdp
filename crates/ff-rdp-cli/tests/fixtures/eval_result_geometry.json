@@ -1,0 +1,8 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "type": "evaluationResult",
+  "resultID": "1775437183977.373-0",
+  "hasException": false,
+  "result": "__FF_RDP_JSON__{\"elements\":[{\"selector\":\"h1\",\"index\":0,\"tag\":\"h1\",\"rect\":{\"x\":200,\"y\":100,\"width\":400,\"height\":40,\"top\":100,\"right\":600,\"bottom\":140,\"left\":200},\"computed\":{\"position\":\"static\",\"z_index\":\"auto\",\"visibility\":\"visible\",\"display\":\"block\",\"overflow\":\"visible\",\"opacity\":\"1\"},\"visible\":true,\"in_viewport\":true},{\"selector\":\"p\",\"index\":0,\"tag\":\"p\",\"rect\":{\"x\":200,\"y\":160,\"width\":400,\"height\":60,\"top\":160,\"right\":600,\"bottom\":220,\"left\":200},\"computed\":{\"position\":\"static\",\"z_index\":\"auto\",\"visibility\":\"visible\",\"display\":\"block\",\"overflow\":\"visible\",\"opacity\":\"1\"},\"visible\":true,\"in_viewport\":true}],\"overlaps\":[],\"viewport\":{\"width\":1024,\"height\":768}}",
+  "timestamp": 1775437183980.721
+}

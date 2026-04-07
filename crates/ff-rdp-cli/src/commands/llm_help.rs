@@ -120,8 +120,29 @@ ff-rdp perf summary
 ### screenshot
 Capture a screenshot.
   -o, --output <PATH>    Output file path
+  --base64               Return screenshot as base64 PNG in JSON output (no file saved)
 ```
 ff-rdp screenshot -o page.png
+ff-rdp screenshot --base64
+```
+
+### snapshot
+Dump structured page snapshot for LLM consumption: DOM tree with semantic roles,
+key attributes, interactive elements, and text content.
+  --depth <N>            Maximum tree depth to traverse [default: 6]
+  --max-chars <N>        Maximum total characters of text content [default: 50000]
+```
+ff-rdp snapshot
+ff-rdp snapshot --depth 3
+ff-rdp snapshot --jq '.results.children[0]'
+```
+
+### geometry <SELECTOR>...
+Get element geometry: bounding rects, position, z-index, visibility, overflow,
+with automatic overlap detection between elements.
+```
+ff-rdp geometry "h1" "p"
+ff-rdp geometry ".modal" ".overlay" --jq '.results.overlaps'
 ```
 
 ### click <SELECTOR>
@@ -240,6 +261,8 @@ mod tests {
             "network",
             "perf",
             "screenshot",
+            "snapshot",
+            "geometry",
             "click",
             "type",
             "wait",

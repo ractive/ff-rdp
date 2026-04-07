@@ -2,6 +2,7 @@ mod support;
 
 use std::path::PathBuf;
 
+use base64::Engine as _;
 use support::{MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> PathBuf {
@@ -306,6 +307,147 @@ fn screenshot_falls_back_to_screenshot_content_actor_when_draw_window_unavailabl
     assert!(json["results"]["bytes"].as_u64().unwrap_or(0) > 0);
 
     let _ = std::fs::remove_dir_all(&out_dir);
+}
+
+// ---------------------------------------------------------------------------
+// --base64 mode: returns PNG as base64 in JSON, no file written
+// ---------------------------------------------------------------------------
+
+#[test]
+fn screenshot_base64_returns_png_data_without_writing_file() {
+    let server = screenshot_server("eval_result_screenshot.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let work_dir = unique_temp_dir("screenshot_base64");
+
+    let mut args = base_args(port);
+    args.extend(["screenshot".to_owned(), "--base64".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .current_dir(&work_dir)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    assert_eq!(json["total"], 1);
+    assert_eq!(json["results"]["width"], 1);
+    assert_eq!(json["results"]["height"], 1);
+    assert!(json["results"]["bytes"].as_u64().unwrap_or(0) > 0);
+
+    // results.base64 must be present and contain valid base64-encoded PNG data.
+    let b64_str = json["results"]["base64"]
+        .as_str()
+        .expect("results.base64 should be a string");
+    assert!(!b64_str.is_empty(), "base64 string should not be empty");
+
+    // Decode and verify PNG magic bytes.
+    let png_bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64_str)
+        .expect("results.base64 must be valid base64");
+    assert_eq!(&png_bytes[..4], b"\x89PNG", "decoded data should be a PNG");
+
+    // No file should have been written into the working directory.
+    let files_in_dir: Vec<_> = std::fs::read_dir(&work_dir)
+        .expect("read work_dir")
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        files_in_dir.is_empty(),
+        "no file should be written when --base64 is used, found: {:?}",
+        files_in_dir
+            .iter()
+            .map(std::fs::DirEntry::path)
+            .collect::<Vec<_>>()
+    );
+
+    // The path field must NOT be present in the output.
+    assert!(
+        json["results"]["path"].is_null(),
+        "path should not appear in --base64 output"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+#[test]
+fn screenshot_base64_handles_longstring_data_url() {
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_screenshot_longstring.json"),
+        )
+        .on(
+            "substring",
+            load_fixture("substring_screenshot_response.json"),
+        );
+
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let work_dir = unique_temp_dir("screenshot_base64_longstring");
+
+    let mut args = base_args(port);
+    args.extend(["screenshot".to_owned(), "--base64".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .current_dir(&work_dir)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    assert_eq!(json["total"], 1);
+    assert_eq!(json["results"]["width"], 1);
+    assert_eq!(json["results"]["height"], 1);
+
+    let b64_str = json["results"]["base64"]
+        .as_str()
+        .expect("results.base64 should be a string");
+    let png_bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64_str)
+        .expect("results.base64 must be valid base64");
+    assert_eq!(&png_bytes[..4], b"\x89PNG", "decoded data should be a PNG");
+
+    // No file should have been written into the working directory.
+    let files_in_dir: Vec<_> = std::fs::read_dir(&work_dir)
+        .expect("read work_dir")
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        files_in_dir.is_empty(),
+        "no file should be written when --base64 is used, found: {:?}",
+        files_in_dir
+            .iter()
+            .map(std::fs::DirEntry::path)
+            .collect::<Vec<_>>()
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
 }
 
 // ---------------------------------------------------------------------------

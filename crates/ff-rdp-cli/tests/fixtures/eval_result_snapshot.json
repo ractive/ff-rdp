@@ -1,0 +1,8 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "type": "evaluationResult",
+  "resultID": "1775437183977.373-0",
+  "hasException": false,
+  "result": "__FF_RDP_JSON__{\"tag\":\"html\",\"attrs\":{\"class\":\"no-js\"},\"children\":[{\"tag\":\"head\",\"children\":[{\"tag\":\"title\",\"children\":[\"Example Domain\"]}]},{\"tag\":\"body\",\"children\":[{\"tag\":\"div\",\"children\":[{\"tag\":\"h1\",\"children\":[\"Example Domain\"]},{\"tag\":\"p\",\"children\":[\"This domain is for use in illustrative examples in documents.\"]},{\"tag\":\"p\",\"children\":[\"You may use this domain in literature without prior coordination or asking for permission.\",{\"tag\":\"a\",\"interactive\":true,\"attrs\":{\"href\":\"https://www.iana.org/domains/example\"},\"children\":[\"More information...\"]}]}]}]}]}",
+  "timestamp": 1775437183980.721
+}

@@ -33,7 +33,7 @@ const SCREENSHOT_JS: &str = r"(function() {
 /// Data URL prefix returned by `canvas.toDataURL('image/png')`.
 const PNG_DATA_URL_PREFIX: &str = "data:image/png;base64,";
 
-pub fn run(cli: &Cli, output_path: Option<&str>) -> Result<(), AppError> {
+pub fn run(cli: &Cli, output_path: Option<&str>, base64_mode: bool) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
@@ -88,28 +88,42 @@ pub fn run(cli: &Cli, output_path: Option<&str>) -> Result<(), AppError> {
         .decode(b64)
         .map_err(|e| AppError::from(anyhow::anyhow!("screenshot: base64 decode failed: {e}")))?;
 
-    let dest = resolve_output_path(output_path)
-        .map_err(|e| AppError::from(anyhow::anyhow!("screenshot: {e}")))?;
-
-    std::fs::write(&dest, &png_bytes)
-        .with_context(|| format!("screenshot: could not write to '{}'", dest.display()))
-        .map_err(AppError::from)?;
-
-    let abs_path = dest
-        .canonicalize()
-        .unwrap_or(dest)
-        .to_string_lossy()
-        .into_owned();
-
     // Infer dimensions from PNG header: width at bytes 16–19, height at 20–23.
     let (width, height) = png_dimensions(&png_bytes).unwrap_or((0, 0));
 
-    let results = json!({
-        "path": abs_path,
-        "width": width,
-        "height": height,
-        "bytes": png_bytes.len(),
-    });
+    let results = if base64_mode {
+        // Return the base64 PNG data directly in the JSON envelope without
+        // writing to disk.  Re-encode from the decoded bytes to ensure the
+        // output is always clean standard-base64 (no data-URL prefix).
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+        json!({
+            "base64": encoded,
+            "width": width,
+            "height": height,
+            "bytes": png_bytes.len(),
+        })
+    } else {
+        let dest = resolve_output_path(output_path)
+            .map_err(|e| AppError::from(anyhow::anyhow!("screenshot: {e}")))?;
+
+        std::fs::write(&dest, &png_bytes)
+            .with_context(|| format!("screenshot: could not write to '{}'", dest.display()))
+            .map_err(AppError::from)?;
+
+        let abs_path = dest
+            .canonicalize()
+            .unwrap_or(dest)
+            .to_string_lossy()
+            .into_owned();
+
+        json!({
+            "path": abs_path,
+            "width": width,
+            "height": height,
+            "bytes": png_bytes.len(),
+        })
+    };
+
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&results, 1, &meta);
 

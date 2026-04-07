@@ -43,6 +43,25 @@ CONSOLE
   Error messages only:
     ff-rdp console --level error --jq '.results[].message'
 
+PAGE UNDERSTANDING
+  Snapshot page structure for LLM:
+    ff-rdp snapshot
+
+  Shallow snapshot (depth 3):
+    ff-rdp snapshot --depth 3
+
+  Get screenshot as base64 for AI agents:
+    ff-rdp screenshot --base64
+
+  Check if elements overlap:
+    ff-rdp geometry ".modal" ".overlay" --jq '.results.overlaps'
+
+  Get viewport dimensions:
+    ff-rdp geometry "body" --jq '.results.viewport'
+
+  Find hidden elements:
+    ff-rdp geometry "div" --jq '[.results.elements[] | select(.visible == false)]'
+
 GENERAL
   Count results from any command:
     ff-rdp <command> --jq '.total'
