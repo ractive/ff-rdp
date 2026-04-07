@@ -296,6 +296,17 @@ affect which requests Firefox records.")]
         #[arg(required = true)]
         selectors: Vec<String>,
     },
+    /// Inspect CSS styles for an element matching a CSS selector
+    Styles {
+        /// CSS selector to match the element
+        selector: String,
+        /// Show applied CSS rules with source locations instead of computed styles
+        #[arg(long, group = "style_mode")]
+        applied: bool,
+        /// Show box model layout (margin/border/padding/content) instead of computed styles
+        #[arg(long, group = "style_mode")]
+        layout: bool,
+    },
     /// Launch Firefox with remote debugging enabled
     Launch {
         /// Run Firefox in headless mode
@@ -340,4 +351,15 @@ pub enum A11yCommand {
 pub enum DomCommand {
     /// DOM statistics: node count, document size, inline scripts, images without lazy loading
     Stats,
+    /// Dump structured DOM subtree via native WalkerActor (not eval)
+    Tree {
+        /// CSS selector to root the tree at (defaults to document element)
+        selector: Option<String>,
+        /// Maximum tree depth to traverse (default: 6)
+        #[arg(long, default_value_t = 6)]
+        depth: u32,
+        /// Maximum total characters of text content to include (default: 50000)
+        #[arg(long, default_value_t = 50000)]
+        max_chars: u32,
+    },
 }

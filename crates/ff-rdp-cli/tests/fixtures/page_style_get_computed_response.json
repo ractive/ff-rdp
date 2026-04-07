@@ -1,0 +1,9 @@
+{
+  "from": "server1.conn0.child2/pageStyleActor1",
+  "computed": {
+    "color": {"value": "rgb(0, 0, 0)", "priority": ""},
+    "display": {"value": "block", "priority": ""},
+    "font-size": {"value": "32px", "priority": ""},
+    "margin-top": {"value": "21.44px", "priority": ""}
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "from": "server1.conn0.child2/pageStyleActor1",
+  "entries": [
+    {
+      "rule": {
+        "type": 1,
+        "href": "https://example.com/style.css",
+        "line": 10,
+        "column": 1,
+        "selectors": ["h1"]
+      },
+      "declarations": [
+        {"name": "font-size", "value": "2em", "priority": ""},
+        {"name": "margin-bottom", "value": "0.67em", "priority": ""}
+      ]
+    },
+    {
+      "rule": {
+        "type": 1,
+        "href": "https://example.com/style.css",
+        "line": 15,
+        "column": 1,
+        "selectors": ["h1", ".title"]
+      },
+      "declarations": [
+        {"name": "color", "value": "black", "priority": "important"}
+      ]
+    }
+  ]
+}

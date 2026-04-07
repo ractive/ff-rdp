@@ -1,0 +1,6 @@
+{
+  "from": "server1.conn0.child2/inspectorActor4",
+  "pageStyle": {
+    "actor": "server1.conn0.child2/pageStyleActor1"
+  }
+}

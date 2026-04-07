@@ -2022,3 +2022,487 @@ fn live_accessibility_tree() {
 
     save_core_fixture("a11y_children_response.json", &children_resp);
 }
+
+// ===========================================================================
+// Inspector / DomWalker / PageStyle actors
+// ===========================================================================
+
+/// Get an inspector actor from a fresh listTabs + getTarget.
+fn get_inspector_actor(transport: &mut RdpTransport) -> String {
+    transport
+        .send(&json!({"to": "root", "type": "listTabs"}))
+        .expect("send listTabs");
+    let list_tabs = recv_from_actor(transport, "root");
+    let tab_actor = list_tabs["tabs"][0]["actor"]
+        .as_str()
+        .expect("tab actor")
+        .to_owned();
+
+    transport
+        .send(&json!({"to": &tab_actor, "type": "getTarget"}))
+        .expect("send getTarget");
+    let target = recv_from_actor(transport, &tab_actor);
+    target["frame"]["inspectorActor"]
+        .as_str()
+        .expect("inspectorActor in frame")
+        .to_owned()
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_inspector_get_walker() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    let inspector_actor = get_inspector_actor(transport);
+
+    transport
+        .send(&json!({"to": &inspector_actor, "type": "getWalker"}))
+        .expect("send getWalker");
+    let resp = recv_from_actor(transport, &inspector_actor);
+
+    assert!(
+        resp.get("walker").and_then(|w| w.get("actor")).is_some(),
+        "getWalker must return a walker with an actor: {resp:#}"
+    );
+
+    save_cli_fixture("inspector_get_walker_response.json", &resp);
+    save_core_fixture("inspector_get_walker_response.json", &resp);
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_inspector_get_page_style() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    let inspector_actor = get_inspector_actor(transport);
+
+    transport
+        .send(&json!({"to": &inspector_actor, "type": "getPageStyle"}))
+        .expect("send getPageStyle");
+    let resp = recv_from_actor(transport, &inspector_actor);
+
+    assert!(
+        resp.get("pageStyle")
+            .and_then(|ps| ps.get("actor"))
+            .is_some(),
+        "getPageStyle must return a pageStyle with an actor: {resp:#}"
+    );
+
+    save_cli_fixture("inspector_get_page_style_response.json", &resp);
+    save_core_fixture("inspector_get_page_style_response.json", &resp);
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_dom_walker_document_element() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    let inspector_actor = get_inspector_actor(transport);
+
+    // Get the DOM walker
+    transport
+        .send(&json!({"to": &inspector_actor, "type": "getWalker"}))
+        .expect("send getWalker");
+    let walker_resp = recv_from_actor(transport, &inspector_actor);
+    let walker_actor = walker_resp["walker"]["actor"]
+        .as_str()
+        .expect("walker actor")
+        .to_owned();
+
+    // Get the document element
+    transport
+        .send(&json!({"to": &walker_actor, "type": "documentElement"}))
+        .expect("send documentElement");
+    let resp = recv_from_actor(transport, &walker_actor);
+
+    assert!(
+        resp.get("node").and_then(|n| n.get("actor")).is_some(),
+        "documentElement must return a node with an actor: {resp:#}"
+    );
+    assert!(
+        resp.get("node").and_then(|n| n.get("nodeName")).is_some(),
+        "documentElement must return a node with nodeName: {resp:#}"
+    );
+
+    save_cli_fixture("dom_walker_document_element_response.json", &resp);
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_dom_walker_query_selector() {
+    if !should_run_live() {
+        return;
+    }
+
+    // Navigate to example.com first, then reconnect for fresh actor IDs
+    {
+        let mut conn = connect();
+        navigate_to_example_com(conn.transport_mut());
+    }
+
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    let inspector_actor = get_inspector_actor(transport);
+
+    // Get the DOM walker
+    transport
+        .send(&json!({"to": &inspector_actor, "type": "getWalker"}))
+        .expect("send getWalker");
+    let walker_resp = recv_from_actor(transport, &inspector_actor);
+    let walker_actor = walker_resp["walker"]["actor"]
+        .as_str()
+        .expect("walker actor")
+        .to_owned();
+
+    // Get the document element (root node)
+    transport
+        .send(&json!({"to": &walker_actor, "type": "documentElement"}))
+        .expect("send documentElement");
+    let root_resp = recv_from_actor(transport, &walker_actor);
+    let root_node_actor = root_resp["node"]["actor"]
+        .as_str()
+        .expect("root node actor")
+        .to_owned();
+
+    // Query for h1
+    transport
+        .send(&json!({
+            "to": &walker_actor,
+            "type": "querySelector",
+            "node": &root_node_actor,
+            "selector": "h1"
+        }))
+        .expect("send querySelector");
+    let resp = recv_from_actor(transport, &walker_actor);
+
+    assert!(
+        resp.get("node").is_some(),
+        "querySelector must return a node: {resp:#}"
+    );
+    assert_eq!(
+        resp["node"]["nodeName"].as_str(),
+        Some("H1"),
+        "querySelector('h1') must return an H1 node: {resp:#}"
+    );
+
+    save_cli_fixture("dom_walker_query_selector_response.json", &resp);
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_dom_walker_children() {
+    if !should_run_live() {
+        return;
+    }
+
+    // Navigate to example.com first, then reconnect for fresh actor IDs
+    {
+        let mut conn = connect();
+        navigate_to_example_com(conn.transport_mut());
+    }
+
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    let inspector_actor = get_inspector_actor(transport);
+
+    // Get the DOM walker
+    transport
+        .send(&json!({"to": &inspector_actor, "type": "getWalker"}))
+        .expect("send getWalker");
+    let walker_resp = recv_from_actor(transport, &inspector_actor);
+    let walker_actor = walker_resp["walker"]["actor"]
+        .as_str()
+        .expect("walker actor")
+        .to_owned();
+
+    // Get the document element
+    transport
+        .send(&json!({"to": &walker_actor, "type": "documentElement"}))
+        .expect("send documentElement");
+    let root_resp = recv_from_actor(transport, &walker_actor);
+    let root_node_actor = root_resp["node"]["actor"]
+        .as_str()
+        .expect("root node actor")
+        .to_owned();
+
+    // Get children of the document element
+    transport
+        .send(&json!({
+            "to": &walker_actor,
+            "type": "children",
+            "node": &root_node_actor
+        }))
+        .expect("send children");
+    let resp = recv_from_actor(transport, &walker_actor);
+
+    assert!(
+        resp.get("nodes").and_then(Value::as_array).is_some(),
+        "children must return a nodes array: {resp:#}"
+    );
+
+    save_cli_fixture("dom_walker_children_response.json", &resp);
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_page_style_get_computed() {
+    if !should_run_live() {
+        return;
+    }
+
+    // Navigate to example.com first, then reconnect for fresh actor IDs
+    {
+        let mut conn = connect();
+        navigate_to_example_com(conn.transport_mut());
+    }
+
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    let inspector_actor = get_inspector_actor(transport);
+
+    // Get the DOM walker
+    transport
+        .send(&json!({"to": &inspector_actor, "type": "getWalker"}))
+        .expect("send getWalker");
+    let walker_resp = recv_from_actor(transport, &inspector_actor);
+    let walker_actor = walker_resp["walker"]["actor"]
+        .as_str()
+        .expect("walker actor")
+        .to_owned();
+
+    // Get page style
+    transport
+        .send(&json!({"to": &inspector_actor, "type": "getPageStyle"}))
+        .expect("send getPageStyle");
+    let page_style_resp = recv_from_actor(transport, &inspector_actor);
+    let page_style_actor = page_style_resp["pageStyle"]["actor"]
+        .as_str()
+        .expect("pageStyle actor")
+        .to_owned();
+
+    // Get document element and querySelector for h1
+    transport
+        .send(&json!({"to": &walker_actor, "type": "documentElement"}))
+        .expect("send documentElement");
+    let root_resp = recv_from_actor(transport, &walker_actor);
+    let root_node_actor = root_resp["node"]["actor"]
+        .as_str()
+        .expect("root node actor")
+        .to_owned();
+
+    transport
+        .send(&json!({
+            "to": &walker_actor,
+            "type": "querySelector",
+            "node": &root_node_actor,
+            "selector": "h1"
+        }))
+        .expect("send querySelector");
+    let h1_resp = recv_from_actor(transport, &walker_actor);
+    let h1_actor = h1_resp["node"]["actor"]
+        .as_str()
+        .expect("h1 node actor")
+        .to_owned();
+
+    // Get computed styles for h1
+    transport
+        .send(&json!({
+            "to": &page_style_actor,
+            "type": "getComputed",
+            "node": &h1_actor,
+            "markMatched": true,
+            "filter": "user"
+        }))
+        .expect("send getComputed");
+    let resp = recv_from_actor(transport, &page_style_actor);
+
+    assert!(
+        resp.get("computed").is_some(),
+        "getComputed must return a computed object: {resp:#}"
+    );
+
+    save_cli_fixture("page_style_get_computed_response.json", &resp);
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_page_style_get_applied() {
+    if !should_run_live() {
+        return;
+    }
+
+    // Navigate to example.com first, then reconnect for fresh actor IDs
+    {
+        let mut conn = connect();
+        navigate_to_example_com(conn.transport_mut());
+    }
+
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    let inspector_actor = get_inspector_actor(transport);
+
+    // Get the DOM walker
+    transport
+        .send(&json!({"to": &inspector_actor, "type": "getWalker"}))
+        .expect("send getWalker");
+    let walker_resp = recv_from_actor(transport, &inspector_actor);
+    let walker_actor = walker_resp["walker"]["actor"]
+        .as_str()
+        .expect("walker actor")
+        .to_owned();
+
+    // Get page style
+    transport
+        .send(&json!({"to": &inspector_actor, "type": "getPageStyle"}))
+        .expect("send getPageStyle");
+    let page_style_resp = recv_from_actor(transport, &inspector_actor);
+    let page_style_actor = page_style_resp["pageStyle"]["actor"]
+        .as_str()
+        .expect("pageStyle actor")
+        .to_owned();
+
+    // Get document element and querySelector for h1
+    transport
+        .send(&json!({"to": &walker_actor, "type": "documentElement"}))
+        .expect("send documentElement");
+    let root_resp = recv_from_actor(transport, &walker_actor);
+    let root_node_actor = root_resp["node"]["actor"]
+        .as_str()
+        .expect("root node actor")
+        .to_owned();
+
+    transport
+        .send(&json!({
+            "to": &walker_actor,
+            "type": "querySelector",
+            "node": &root_node_actor,
+            "selector": "h1"
+        }))
+        .expect("send querySelector");
+    let h1_resp = recv_from_actor(transport, &walker_actor);
+    let h1_actor = h1_resp["node"]["actor"]
+        .as_str()
+        .expect("h1 node actor")
+        .to_owned();
+
+    // Get applied styles for h1
+    transport
+        .send(&json!({
+            "to": &page_style_actor,
+            "type": "getApplied",
+            "node": &h1_actor,
+            "inherited": false,
+            "matchedSelectors": true,
+            "filter": "user"
+        }))
+        .expect("send getApplied");
+    let resp = recv_from_actor(transport, &page_style_actor);
+
+    assert!(
+        resp.get("entries").and_then(Value::as_array).is_some(),
+        "getApplied must return an entries array: {resp:#}"
+    );
+
+    save_cli_fixture("page_style_get_applied_response.json", &resp);
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_page_style_get_layout() {
+    if !should_run_live() {
+        return;
+    }
+
+    // Navigate to example.com first, then reconnect for fresh actor IDs
+    {
+        let mut conn = connect();
+        navigate_to_example_com(conn.transport_mut());
+    }
+
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    let inspector_actor = get_inspector_actor(transport);
+
+    // Get the DOM walker
+    transport
+        .send(&json!({"to": &inspector_actor, "type": "getWalker"}))
+        .expect("send getWalker");
+    let walker_resp = recv_from_actor(transport, &inspector_actor);
+    let walker_actor = walker_resp["walker"]["actor"]
+        .as_str()
+        .expect("walker actor")
+        .to_owned();
+
+    // Get page style
+    transport
+        .send(&json!({"to": &inspector_actor, "type": "getPageStyle"}))
+        .expect("send getPageStyle");
+    let page_style_resp = recv_from_actor(transport, &inspector_actor);
+    let page_style_actor = page_style_resp["pageStyle"]["actor"]
+        .as_str()
+        .expect("pageStyle actor")
+        .to_owned();
+
+    // Get document element and querySelector for h1
+    transport
+        .send(&json!({"to": &walker_actor, "type": "documentElement"}))
+        .expect("send documentElement");
+    let root_resp = recv_from_actor(transport, &walker_actor);
+    let root_node_actor = root_resp["node"]["actor"]
+        .as_str()
+        .expect("root node actor")
+        .to_owned();
+
+    transport
+        .send(&json!({
+            "to": &walker_actor,
+            "type": "querySelector",
+            "node": &root_node_actor,
+            "selector": "h1"
+        }))
+        .expect("send querySelector");
+    let h1_resp = recv_from_actor(transport, &walker_actor);
+    let h1_actor = h1_resp["node"]["actor"]
+        .as_str()
+        .expect("h1 node actor")
+        .to_owned();
+
+    // Get layout info for h1
+    transport
+        .send(&json!({
+            "to": &page_style_actor,
+            "type": "getLayout",
+            "node": &h1_actor,
+            "autoMargins": true
+        }))
+        .expect("send getLayout");
+    let resp = recv_from_actor(transport, &page_style_actor);
+
+    assert!(
+        resp.get("width").is_some(),
+        "getLayout must return width: {resp:#}"
+    );
+    assert!(
+        resp.get("height").is_some(),
+        "getLayout must return height: {resp:#}"
+    );
+
+    save_cli_fixture("page_style_get_layout_response.json", &resp);
+}

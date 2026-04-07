@@ -1,0 +1,12 @@
+{
+  "from": "server1.conn0.child2/domwalkerActor1",
+  "node": {
+    "actor": "server1.conn0.child2/domnode2",
+    "nodeType": 1,
+    "nodeName": "HTML",
+    "numChildren": 2,
+    "attrs": [
+      "lang", "en"
+    ]
+  }
+}

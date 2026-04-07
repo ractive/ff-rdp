@@ -1,0 +1,10 @@
+{
+  "from": "server1.conn0.child2/domwalkerActor1",
+  "node": {
+    "actor": "server1.conn0.child2/domnode3",
+    "nodeType": 1,
+    "nodeName": "H1",
+    "numChildren": 1,
+    "attrs": []
+  }
+}
