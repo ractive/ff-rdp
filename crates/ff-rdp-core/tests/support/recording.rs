@@ -62,21 +62,30 @@ fn cli_fixtures_dir() -> PathBuf {
 // Normalize
 // ---------------------------------------------------------------------------
 
-/// Normalize actor connection IDs (`conn\d+` → `conn0`) for cross-fixture
-/// consistency, leaving everything else (timestamps, window IDs, etc.) as-is.
+/// Normalize actor IDs (`conn\d+` → `conn0`, `child\d+` → `child0`) and
+/// `resultID` values (→ `"0"`) for cross-fixture consistency.
 pub fn normalize_fixture(value: &Value) -> Value {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"\bconn\d+\b").expect("valid regex"));
+    let re = RE.get_or_init(|| Regex::new(r"\b(conn|child)\d+\b").expect("valid regex"));
     normalize_value(value, re)
 }
 
 fn normalize_value(value: &Value, re: &Regex) -> Value {
     match value {
-        Value::String(s) => Value::String(re.replace_all(s, "conn0").into_owned()),
+        Value::String(s) => Value::String(
+            re.replace_all(s, |caps: &regex::Captures| format!("{}0", &caps[1]))
+                .into_owned(),
+        ),
         Value::Array(arr) => Value::Array(arr.iter().map(|v| normalize_value(v, re)).collect()),
         Value::Object(map) => Value::Object(
             map.iter()
-                .map(|(k, v)| (k.clone(), normalize_value(v, re)))
+                .map(|(k, v)| {
+                    if k == "resultID" {
+                        (k.clone(), Value::String("0".to_owned()))
+                    } else {
+                        (k.clone(), normalize_value(v, re))
+                    }
+                })
                 .collect(),
         ),
         other => other.clone(),
@@ -201,6 +210,27 @@ pub fn record_eval(
 pub fn send_raw(transport: &mut RdpTransport, request: &Value) -> Value {
     transport.send(request).expect("send");
     transport.recv().expect("recv")
+}
+
+/// Read messages until we get a `resources-available-array` or
+/// `resource-available-form` event from `expected_from`.
+///
+/// Skips ack messages, other async events, and resource events from
+/// different actors. Bounded by the transport's socket read timeout
+/// (which causes `recv()` to error after ~500 ms of silence).
+pub fn recv_resources_available(transport: &mut RdpTransport, expected_from: &str) -> Value {
+    loop {
+        let msg = transport.recv().unwrap_or_else(|err| {
+            panic!("recv_resources_available: waiting for resources-available from '{expected_from}': {err}")
+        });
+        let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
+        let msg_from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
+        if (msg_type == "resources-available-array" || msg_type == "resource-available-form")
+            && msg_from == expected_from
+        {
+            return msg;
+        }
+    }
 }
 
 /// Drain all available messages up to `timeout`, returning them.
