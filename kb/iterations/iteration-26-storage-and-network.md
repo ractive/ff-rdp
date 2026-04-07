@@ -1,7 +1,7 @@
 ---
 title: "Iteration 26: Native StorageActor & Network Fallback"
 type: iteration
-status: done
+status: completed
 date: 2026-04-07
 tags:
   - iteration
