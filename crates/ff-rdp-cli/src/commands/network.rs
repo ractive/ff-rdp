@@ -89,10 +89,15 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
         let mut detail = results;
         // Default sort by duration_ms desc when no explicit sort is provided.
         if cli.sort.is_none() {
+            let dir = controls.sort_dir;
             detail.sort_by(|a, b| {
                 let da = a["duration_ms"].as_f64().unwrap_or(0.0);
                 let db = b["duration_ms"].as_f64().unwrap_or(0.0);
-                db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+                let cmp = da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal);
+                match dir {
+                    SortDir::Asc => cmp,
+                    SortDir::Desc => cmp.reverse(),
+                }
             });
         } else {
             controls.apply_sort(&mut detail);

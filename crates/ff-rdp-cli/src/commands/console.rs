@@ -88,10 +88,15 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     // Apply output controls: default sort timestamp desc, default limit 50.
     let controls = OutputControls::from_cli(cli, SortDir::Desc);
     if cli.sort.is_none() {
+        let dir = controls.sort_dir;
         results.sort_by(|a, b| {
             let ta = a["timestamp"].as_f64().unwrap_or(0.0);
             let tb = b["timestamp"].as_f64().unwrap_or(0.0);
-            tb.partial_cmp(&ta).unwrap_or(std::cmp::Ordering::Equal)
+            let cmp = ta.partial_cmp(&tb).unwrap_or(std::cmp::Ordering::Equal);
+            match dir {
+                SortDir::Asc => cmp,
+                SortDir::Desc => cmp.reverse(),
+            }
         });
     } else {
         controls.apply_sort(&mut results);

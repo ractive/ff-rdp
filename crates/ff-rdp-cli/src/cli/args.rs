@@ -52,11 +52,11 @@ pub struct Cli {
     pub sort: Option<String>,
 
     /// Sort ascending (default is per-command)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, conflicts_with = "desc")]
     pub asc: bool,
 
     /// Sort descending (default is per-command)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, conflicts_with = "asc")]
     pub desc: bool,
 
     /// Comma-separated list of fields to include in each result entry

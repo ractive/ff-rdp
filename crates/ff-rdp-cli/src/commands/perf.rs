@@ -252,10 +252,15 @@ pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppE
     let controls = OutputControls::from_cli(cli, SortDir::Desc);
     let mut results = results;
     if cli.sort.is_none() && canonical == "resource" {
+        let dir = controls.sort_dir;
         results.sort_by(|a, b| {
             let da = a["duration_ms"].as_f64().unwrap_or(0.0);
             let db = b["duration_ms"].as_f64().unwrap_or(0.0);
-            db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+            let cmp = da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal);
+            match dir {
+                SortDir::Asc => cmp,
+                SortDir::Desc => cmp.reverse(),
+            }
         });
     } else {
         controls.apply_sort(&mut results);

@@ -9,11 +9,11 @@ pub enum SortDir {
 
 /// Output control options parsed from CLI flags.
 pub struct OutputControls {
-    pub limit: Option<usize>,
-    pub all: bool,
-    pub sort_field: Option<String>,
-    pub sort_dir: SortDir,
-    pub fields: Option<Vec<String>>,
+    pub(crate) limit: Option<usize>,
+    pub(crate) all: bool,
+    pub(crate) sort_field: Option<String>,
+    pub(crate) sort_dir: SortDir,
+    pub(crate) fields: Option<Vec<String>>,
 }
 
 impl OutputControls {

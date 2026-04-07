@@ -116,38 +116,11 @@ pub fn run_with_network(
         let update_map = merge_updates(all_updates);
         let network_entries = build_network_entries(&all_resources, &update_map);
 
-        let use_detail = cli.detail
-            || cli.jq.is_some()
-            || cli.sort.is_some()
-            || cli.limit.is_some()
-            || cli.all
-            || cli.fields.is_some();
-
-        let (network_value, network_count) = if use_detail {
-            let controls = OutputControls::from_cli(cli, SortDir::Desc);
-            let mut detail = network_entries;
-            if cli.sort.is_none() {
-                detail.sort_by(|a, b| {
-                    let da = a["duration_ms"].as_f64().unwrap_or(0.0);
-                    let db = b["duration_ms"].as_f64().unwrap_or(0.0);
-                    db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
-                });
-            } else {
-                controls.apply_sort(&mut detail);
-            }
-            let (limited, _total, _truncated) = controls.apply_limit(detail, Some(20));
-            let limited = controls.apply_fields(limited);
-            let count = limited.len();
-            (json!(limited), count)
-        } else {
-            let summary = super::network::build_network_summary(&network_entries);
-            let count = network_entries.len();
-            (summary, count)
-        };
+        let network_entries = apply_network_controls(cli, network_entries);
 
         let mut result = json!({
             "navigated": url,
-            "network": network_value,
+            "network": network_entries,
         });
         if let Some(w) = wait_result
             && let Some(obj) = result.as_object_mut()
@@ -155,7 +128,7 @@ pub fn run_with_network(
             obj.insert("wait".to_string(), w);
         }
         let meta = json!({"host": cli.host, "port": cli.port});
-        let envelope = output::envelope(&result, network_count, &meta);
+        let envelope = output::envelope(&result, 1, &meta);
         return OutputPipeline::new(cli.jq.clone())
             .finalize(&envelope)
             .map_err(AppError::from);
@@ -207,38 +180,11 @@ pub fn run_with_network(
     // subscription lifecycle to tear down.
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
 
-    let use_detail = cli.detail
-        || cli.jq.is_some()
-        || cli.sort.is_some()
-        || cli.limit.is_some()
-        || cli.all
-        || cli.fields.is_some();
-
-    let (network_value, network_count) = if use_detail {
-        let controls = OutputControls::from_cli(cli, SortDir::Desc);
-        let mut detail = network_entries;
-        if cli.sort.is_none() {
-            detail.sort_by(|a, b| {
-                let da = a["duration_ms"].as_f64().unwrap_or(0.0);
-                let db = b["duration_ms"].as_f64().unwrap_or(0.0);
-                db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
-            });
-        } else {
-            controls.apply_sort(&mut detail);
-        }
-        let (limited, _total, _truncated) = controls.apply_limit(detail, Some(20));
-        let limited = controls.apply_fields(limited);
-        let count = limited.len();
-        (json!(limited), count)
-    } else {
-        let summary = super::network::build_network_summary(&network_entries);
-        let count = network_entries.len();
-        (summary, count)
-    };
+    let network_entries = apply_network_controls(cli, network_entries);
 
     let mut result = json!({
         "navigated": url,
-        "network": network_value,
+        "network": network_entries,
     });
     if let Some(w) = wait_result
         && let Some(obj) = result.as_object_mut()
@@ -246,11 +192,59 @@ pub fn run_with_network(
         obj.insert("wait".to_string(), w);
     }
     let meta = json!({"host": cli.host, "port": cli.port});
-    let envelope = output::envelope(&result, network_count, &meta);
+    let envelope = output::envelope(&result, 1, &meta);
 
     OutputPipeline::new(cli.jq.clone())
         .finalize(&envelope)
         .map_err(AppError::from)
+}
+
+/// Apply output controls (sort, limit, fields) to network entries from navigate.
+///
+/// In detail mode (when the user sets --detail, --jq, --sort, --limit, --fields,
+/// or --all), returns the processed array. Otherwise returns a summary object.
+fn apply_network_controls(cli: &Cli, network_entries: Vec<serde_json::Value>) -> serde_json::Value {
+    let use_detail = cli.detail
+        || cli.jq.is_some()
+        || cli.sort.is_some()
+        || cli.limit.is_some()
+        || cli.all
+        || cli.fields.is_some();
+
+    if use_detail {
+        let controls = OutputControls::from_cli(cli, SortDir::Desc);
+        let mut detail = network_entries;
+        if cli.sort.is_none() {
+            let dir = controls.sort_dir;
+            detail.sort_by(|a, b| {
+                let da = a["duration_ms"].as_f64().unwrap_or(0.0);
+                let db = b["duration_ms"].as_f64().unwrap_or(0.0);
+                let cmp = da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal);
+                match dir {
+                    SortDir::Asc => cmp,
+                    SortDir::Desc => cmp.reverse(),
+                }
+            });
+        } else {
+            controls.apply_sort(&mut detail);
+        }
+        let (limited, total, truncated) = controls.apply_limit(detail, Some(20));
+        let limited = controls.apply_fields(limited);
+        if truncated {
+            let shown = limited.len();
+            json!({
+                "entries": limited,
+                "shown": shown,
+                "total": total,
+                "truncated": true,
+                "hint": format!("showing {shown} of {total}, use --all for complete list"),
+            })
+        } else {
+            json!(limited)
+        }
+    } else {
+        super::network::build_network_summary(&network_entries)
+    }
 }
 
 /// Poll a JS condition after navigation until it becomes truthy or times out.

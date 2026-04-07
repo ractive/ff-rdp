@@ -154,8 +154,8 @@ fn navigate_with_network_captures_requests() {
     assert!(network.is_object(), "network should be a summary object");
     assert_eq!(network["total_requests"], 2, "expected 2 network entries");
 
-    // total reflects the number of network entries.
-    assert_eq!(json["total"], 2);
+    // total reflects the outer envelope (single navigate result).
+    assert_eq!(json["total"], 1);
 
     // Summary contains expected fields.
     assert!(network["total_transfer_bytes"].is_number());
@@ -213,5 +213,5 @@ fn navigate_with_network_empty_when_no_events() {
     assert!(network.is_object(), "network should be a summary object");
     assert_eq!(network["total_requests"], 0, "expected no network entries");
 
-    assert_eq!(json["total"], 0);
+    assert_eq!(json["total"], 1);
 }
