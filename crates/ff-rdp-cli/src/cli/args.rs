@@ -179,8 +179,11 @@ affect which requests Firefox records.")]
     /// Capture a screenshot
     Screenshot {
         /// Output file path
-        #[arg(long, short)]
+        #[arg(long, short, conflicts_with = "base64")]
         output: Option<String>,
+        /// Return the screenshot as base64 PNG data in JSON output instead of saving to a file
+        #[arg(long, conflicts_with = "output")]
+        base64: bool,
     },
     /// Click an element matching a CSS selector
     Click {
@@ -251,6 +254,16 @@ affect which requests Firefox records.")]
         #[arg(long)]
         pattern: Option<String>,
     },
+    /// Dump structured page snapshot for LLM consumption: DOM tree with semantic roles,
+    /// key attributes, interactive elements, and text content
+    Snapshot {
+        /// Maximum tree depth to traverse (default: 6)
+        #[arg(long, default_value_t = 6)]
+        depth: u32,
+        /// Maximum total characters of text content to include (default: 50000)
+        #[arg(long, default_value_t = 50000)]
+        max_chars: u32,
+    },
     /// Internal: run as background daemon (not for direct use)
     #[command(name = "_daemon", hide = true)]
     Daemon,
@@ -258,6 +271,13 @@ affect which requests Firefox records.")]
     Recipes,
     /// Dump complete CLI reference in compact LLM-friendly format (all commands, flags, examples)
     LlmHelp,
+    /// Get element geometry: bounding rects, position, z-index, visibility, overflow,
+    /// with automatic overlap detection between elements
+    Geometry {
+        /// One or more CSS selectors to query
+        #[arg(required = true)]
+        selectors: Vec<String>,
+    },
     /// Launch Firefox with remote debugging enabled
     Launch {
         /// Run Firefox in headless mode

@@ -1,0 +1,8 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "type": "evaluationResult",
+  "resultID": "1775437183977.373-0",
+  "hasException": false,
+  "result": "__FF_RDP_JSON__{\"tag\":\"html\",\"attrs\":{\"class\":\"no-js\"},\"children\":[{\"tag\":\"head\",\"truncated\":\"3 children not shown\"},{\"tag\":\"body\",\"truncated\":\"1 children not shown\"}]}",
+  "timestamp": 1775437183980.721
+}

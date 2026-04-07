@@ -1664,6 +1664,186 @@ fn live_network_resources() {
     }
 }
 
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_snapshot() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+    navigate_to_example_com(transport);
+    let console = get_console_actor(transport);
+
+    let js = r"(function() {
+  var SKIP = {SCRIPT:1,STYLE:1,NOSCRIPT:1,SVG:1};
+  var INTERACTIVE = {A:1,BUTTON:1,INPUT:1,SELECT:1,TEXTAREA:1,DETAILS:1,SUMMARY:1};
+  var SEMANTIC = {NAV:'navigation',HEADER:'banner',FOOTER:'contentinfo',MAIN:'main',
+    ASIDE:'complementary',ARTICLE:'article',SECTION:'region',FORM:'form',
+    DIALOG:'dialog',SEARCH:'search'};
+  var KEY_ATTRS = ['id','class','href','src','alt','type','name','value',
+    'placeholder','aria-label','aria-expanded','aria-hidden','data-testid'];
+  var maxDepth = 6;
+  var maxChars = 50000;
+  var totalChars = 0;
+
+  function isHidden(el) {
+    if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return true;
+    try {
+      var cs = window.getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return true;
+    } catch(e) {}
+    return false;
+  }
+
+  function walk(node, depth) {
+    if (node.nodeType === 3) {
+      var t = node.textContent.trim();
+      if (!t) return null;
+      if (totalChars >= maxChars) return null;
+      if (t.length > 200) t = t.slice(0, 200) + '...';
+      totalChars += t.length;
+      return t;
+    }
+    if (node.nodeType !== 1) return null;
+    var tag = node.tagName;
+    if (SKIP[tag]) return null;
+    if (isHidden(node)) return null;
+
+    var o = {tag: tag.toLowerCase()};
+    var role = node.getAttribute('role') || SEMANTIC[tag] || null;
+    if (role) o.role = role;
+    if (INTERACTIVE[tag]) o.interactive = true;
+
+    var a = {};
+    for (var i = 0; i < KEY_ATTRS.length; i++) {
+      var v = node.getAttribute(KEY_ATTRS[i]);
+      if (v != null && v !== '') a[KEY_ATTRS[i]] = v.length > 200 ? v.slice(0,200)+'...' : v;
+    }
+    if (Object.keys(a).length) o.attrs = a;
+
+    if (depth >= maxDepth) {
+      var cc = node.children.length;
+      if (cc > 0) o.truncated = cc + ' children not shown';
+      return o;
+    }
+
+    var children = [];
+    for (var j = 0; j < node.childNodes.length; j++) {
+      var c = walk(node.childNodes[j], depth + 1);
+      if (c !== null) children.push(c);
+    }
+    if (children.length) o.children = children;
+    return o;
+  }
+
+  var tree = walk(document.documentElement, 0);
+  return '__FF_RDP_JSON__' + JSON.stringify(tree);
+})()";
+
+    let (_imm, result) = record_eval(
+        transport,
+        &console,
+        js,
+        None,
+        Some("eval_result_snapshot.json"),
+    );
+
+    assert!(
+        result["result"].is_string(),
+        "snapshot should return a string (JSON-stringified tree)"
+    );
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_geometry() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+    navigate_to_example_com(transport);
+    let console = get_console_actor(transport);
+
+    // Build the geometry JS with selectors ["h1", "p"]
+    let js = r#"(function() {
+  var selectors = ["h1","p"];
+  var vw = window.innerWidth || document.documentElement.clientWidth;
+  var vh = window.innerHeight || document.documentElement.clientHeight;
+  var elements = [];
+
+  for (var si = 0; si < selectors.length; si++) {
+    var sel = selectors[si];
+    var els = document.querySelectorAll(sel);
+    for (var ei = 0; ei < els.length; ei++) {
+      var el = els[ei];
+      var r = el.getBoundingClientRect();
+      var cs = window.getComputedStyle(el);
+      var rect = {
+        x: Math.round(r.x * 10) / 10,
+        y: Math.round(r.y * 10) / 10,
+        width: Math.round(r.width * 10) / 10,
+        height: Math.round(r.height * 10) / 10,
+        top: Math.round(r.top * 10) / 10,
+        right: Math.round(r.right * 10) / 10,
+        bottom: Math.round(r.bottom * 10) / 10,
+        left: Math.round(r.left * 10) / 10
+      };
+      var vis = r.width > 0 && r.height > 0 &&
+        cs.visibility !== 'hidden' && cs.display !== 'none' &&
+        parseFloat(cs.opacity) > 0;
+      var inVp = r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw;
+      elements.push({
+        selector: sel,
+        index: ei,
+        tag: el.tagName.toLowerCase(),
+        rect: rect,
+        computed: {
+          position: cs.position,
+          z_index: cs.zIndex,
+          visibility: cs.visibility,
+          display: cs.display,
+          overflow: cs.overflow,
+          opacity: cs.opacity
+        },
+        visible: vis,
+        in_viewport: inVp
+      });
+    }
+  }
+
+  var overlaps = [];
+  for (var i = 0; i < elements.length; i++) {
+    for (var j = i + 1; j < elements.length; j++) {
+      var a = elements[i].rect;
+      var b = elements[j].rect;
+      if (a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top) {
+        overlaps.push([
+          elements[i].selector + '[' + elements[i].index + ']',
+          elements[j].selector + '[' + elements[j].index + ']'
+        ]);
+      }
+    }
+  }
+
+  return '__FF_RDP_JSON__' + JSON.stringify({elements: elements, overlaps: overlaps, viewport: {width: vw, height: vh}});
+})()"#;
+
+    let (_imm, result) = record_eval(
+        transport,
+        &console,
+        js,
+        None,
+        Some("eval_result_geometry.json"),
+    );
+
+    assert!(
+        result["result"].is_string(),
+        "geometry should return a string (JSON-stringified result)"
+    );
+}
+
 // ===========================================================================
 // Shared helpers (not exported — internal to this test file)
 // ===========================================================================

@@ -115,7 +115,9 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         Command::Sources { filter, pattern } => {
             commands::sources::run(cli, filter.as_deref(), pattern.as_deref())
         }
-        Command::Screenshot { output } => commands::screenshot::run(cli, output.as_deref()),
+        Command::Screenshot { output, base64 } => {
+            commands::screenshot::run(cli, output.as_deref(), *base64)
+        }
         Command::Launch {
             headless,
             profile,
@@ -128,6 +130,8 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             *temp_profile,
             *debug_port,
         ),
+        Command::Geometry { selectors } => commands::geometry::run(cli, selectors),
+        Command::Snapshot { depth, max_chars } => commands::snapshot::run(cli, *depth, *max_chars),
         Command::Recipes => {
             commands::recipes::run();
             Ok(())
