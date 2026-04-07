@@ -108,8 +108,8 @@ pub fn run_applied(cli: &Cli, selector: &str) -> Result<(), AppError> {
 
     let mut items: Vec<Value> = applied
         .iter()
-        .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
-        .collect();
+        .map(|r| serde_json::to_value(r).map_err(|e| AppError::Internal(e.into())))
+        .collect::<Result<Vec<_>, _>>()?;
 
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
 

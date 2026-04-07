@@ -17,11 +17,11 @@ pub fn run(cli: &Cli, selector: Option<&str>, depth: u32, max_chars: u32) -> Res
         .clone()
         .ok_or_else(|| AppError::User("no inspector actor available".to_string()))?;
 
-    let walker = InspectorActor::get_walker(ctx.transport_mut(), &inspector_actor)
-        .map_err(|e| map_dom_error(e, cli))?;
+    let walker =
+        InspectorActor::get_walker(ctx.transport_mut(), &inspector_actor).map_err(map_dom_error)?;
 
-    let root = DomWalkerActor::document_element(ctx.transport_mut(), &walker)
-        .map_err(|e| map_dom_error(e, cli))?;
+    let root =
+        DomWalkerActor::document_element(ctx.transport_mut(), &walker).map_err(map_dom_error)?;
 
     let target_node = if let Some(sel) = selector {
         let node_actor = root.actor.as_deref().ok_or_else(|| {
@@ -32,7 +32,7 @@ pub fn run(cli: &Cli, selector: Option<&str>, depth: u32, max_chars: u32) -> Res
         let node_actor_id = node_actor.into();
 
         DomWalkerActor::query_selector(ctx.transport_mut(), &walker, &node_actor_id, sel)
-            .map_err(|e| map_dom_error(e, cli))?
+            .map_err(map_dom_error)?
             .ok_or_else(|| AppError::User(format!("no element matching selector '{sel}'")))?
     } else {
         root
@@ -40,7 +40,7 @@ pub fn run(cli: &Cli, selector: Option<&str>, depth: u32, max_chars: u32) -> Res
 
     let tree =
         DomWalkerActor::walk_tree(ctx.transport_mut(), &walker, &target_node, depth, max_chars)
-            .map_err(|e| map_dom_error(e, cli))?;
+            .map_err(map_dom_error)?;
 
     let mut results = serde_json::to_value(&tree).map_err(|e| AppError::Internal(e.into()))?;
     strip_actor_ids(&mut results);
@@ -70,17 +70,16 @@ pub fn run(cli: &Cli, selector: Option<&str>, depth: u32, max_chars: u32) -> Res
 }
 
 /// Map protocol errors to user-friendly messages, especially unknownActor / noSuchActor.
-fn map_dom_error(err: ff_rdp_core::ProtocolError, cli: &Cli) -> AppError {
+fn map_dom_error(err: ff_rdp_core::ProtocolError) -> AppError {
     match &err {
         ff_rdp_core::ProtocolError::ActorError { error, .. }
             if error == "noSuchActor" || error == "unknownActor" =>
         {
-            let hint = if cli.no_daemon {
-                " — the DOM walker actor may have expired after navigation. Re-run the command"
-            } else {
-                " — the DOM walker actor may have expired after navigation. Re-run the command to get a fresh actor"
-            };
-            AppError::User(format!("DOM walker actor is no longer valid{hint}"))
+            AppError::User(
+                "DOM walker actor is no longer valid \
+                 — the DOM walker actor may have expired after navigation. Re-run the command"
+                    .to_string(),
+            )
         }
         _ => AppError::from(err),
     }

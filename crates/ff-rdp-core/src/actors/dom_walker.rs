@@ -14,7 +14,11 @@ pub struct DomAttr {
 }
 
 /// A DOM node returned by the walker.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Note: `Deserialize` is intentionally omitted — Firefox sends `attrs` as a flat alternating
+/// string array (`["name","val",...]`), not `Vec<DomAttr>`, so standard deserialization would
+/// produce incorrect results. Use `parse_dom_node` to construct values from Firefox wire data.
+#[derive(Debug, Clone, Serialize)]
 pub struct DomNode {
     /// The node's actor ID (for further queries).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -127,8 +131,10 @@ impl DomWalkerActor {
 
     /// Recursively walk the DOM tree from a root node, respecting depth and character limits.
     ///
-    /// The `max_chars` budget counts characters from `nodeValue` and text node content.
-    /// When a limit is reached, a `"[... N more children]"` truncation marker is set.
+    /// The `max_chars` budget counts Unicode characters from `nodeValue` and text node content.
+    /// When the character budget is exceeded, a `"max characters reached"` truncation marker
+    /// is set on the current node. When the depth limit truncates remaining siblings,
+    /// a `"[... N more children]"` marker is used instead.
     pub fn walk_tree(
         transport: &mut RdpTransport,
         walker_actor: &ActorId,
@@ -151,7 +157,7 @@ impl DomWalkerActor {
 
 #[allow(clippy::cast_possible_truncation)]
 fn str_len_u32(s: &str) -> u32 {
-    s.len().min(u32::MAX as usize) as u32
+    s.chars().count().min(u32::MAX as usize) as u32
 }
 
 fn walk_recursive(
@@ -226,7 +232,7 @@ fn walk_recursive(
 ///
 /// Firefox sends attributes as a flat array of alternating name/value strings:
 /// `["class", "example", "id", "main"]` → `[{name:"class",value:"example"},{name:"id",value:"main"}]`
-pub fn parse_dom_node(value: &Value) -> Option<DomNode> {
+pub(crate) fn parse_dom_node(value: &Value) -> Option<DomNode> {
     let node_type = value
         .get("nodeType")
         .and_then(Value::as_u64)

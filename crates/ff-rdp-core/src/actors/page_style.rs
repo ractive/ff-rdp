@@ -99,6 +99,9 @@ impl PageStyleActor {
 
     /// Get applied CSS rules for a node.
     ///
+    /// Sends `inherited: false`, so inherited CSS rules from ancestor elements are excluded;
+    /// only rules that directly target this node are returned.
+    ///
     /// Send: `{"to": pagestyle_actor, "type": "getApplied", "node": node_actor, "inherited": false, "matchedSelectors": true, "filter": "user"}`
     /// Response: `{"entries": [{"rule": {...}, "declarations": [...]}, ...], ...}`
     pub fn get_applied(

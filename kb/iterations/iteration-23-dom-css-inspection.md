@@ -36,7 +36,7 @@ discovery: `firefox -no-remote -profile /tmp/ff-rdp-test-profile --start-debugge
 - [x] Implement PageStyleActor: `getComputed`, `getApplied`, `getLayout`
 - [x] Add `ff-rdp styles <selector>` command — computed styles as JSON
 - [x] Add `ff-rdp styles <selector> --applied` — applied CSS rules with
-  stylesheet source locations and specificity
+  stylesheet source locations
 - [x] Add `ff-rdp styles <selector> --layout` — box model breakdown
   (margin/border/padding/content per side)
 - [x] Add `ff-rdp dom tree <selector> --depth N` — structured DOM subtree
