@@ -72,7 +72,7 @@ pub fn run(
 
     let envelope = output::envelope(&results, 1, &meta);
 
-    OutputPipeline::new(cli.jq.clone())
+    OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
 }

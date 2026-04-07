@@ -109,7 +109,7 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     let envelope =
         output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
 
-    OutputPipeline::new(cli.jq.clone())
+    OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
 }

@@ -107,7 +107,7 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
         let limited = controls.apply_fields(limited);
         let envelope =
             output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
-        return OutputPipeline::new(cli.jq.clone())
+        return OutputPipeline::from_cli(cli)?
             .finalize(&envelope)
             .map_err(AppError::from);
     }
@@ -115,7 +115,7 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
     // Summary mode (default).
     let summary = build_network_summary(&results);
     let envelope = output::envelope(&summary, 1, &meta);
-    OutputPipeline::new(cli.jq.clone())
+    OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
 }

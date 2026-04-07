@@ -31,7 +31,7 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&results_json, tabs.len(), &meta);
 
-    OutputPipeline::new(cli.jq.clone())
+    OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
 }

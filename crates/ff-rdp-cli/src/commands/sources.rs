@@ -74,7 +74,7 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&result_json, total, &meta);
 
-    OutputPipeline::new(cli.jq.clone())
+    OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
 }

@@ -47,7 +47,7 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> 
         let limited = controls.apply_fields(limited);
         let envelope =
             output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
-        return OutputPipeline::new(cli.jq.clone())
+        return OutputPipeline::from_cli(cli)?
             .finalize(&envelope)
             .map_err(AppError::from);
     }
@@ -59,7 +59,7 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> 
 
     let envelope = output::envelope(&results, total, &meta);
 
-    OutputPipeline::new(cli.jq.clone())
+    OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
 }
@@ -89,7 +89,7 @@ pub fn run_count(cli: &Cli, selector: &str) -> Result<(), AppError> {
     let meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
     let envelope = output::envelope(&results, usize::try_from(count).unwrap_or(0), &meta);
 
-    OutputPipeline::new(cli.jq.clone())
+    OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
 }
@@ -221,7 +221,7 @@ pub fn run_stats(cli: &Cli) -> Result<(), AppError> {
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&stats, 1, &meta);
 
-    OutputPipeline::new(cli.jq.clone())
+    OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
 }

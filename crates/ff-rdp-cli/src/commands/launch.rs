@@ -342,7 +342,7 @@ pub fn run(
                 "firefox": firefox.to_string_lossy().as_ref().to_owned(),
             });
             let envelope = output::envelope(&result, 1, &meta);
-            OutputPipeline::new(cli.jq.clone())
+            OutputPipeline::from_cli(cli)?
                 .finalize(&envelope)
                 .map_err(AppError::from)
         }

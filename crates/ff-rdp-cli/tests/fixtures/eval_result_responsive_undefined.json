@@ -1,0 +1,10 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "type": "evaluationResult",
+  "resultID": "1775437183977.373-0",
+  "hasException": false,
+  "result": {
+    "type": "undefined"
+  },
+  "timestamp": 1775437183980.721
+}

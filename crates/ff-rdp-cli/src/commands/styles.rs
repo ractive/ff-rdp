@@ -94,7 +94,7 @@ pub fn run(cli: &Cli, selector: &str) -> Result<(), AppError> {
 
     let envelope = output::envelope_with_truncation(&results, shown, total, truncated, &meta);
 
-    OutputPipeline::new(cli.jq.clone())
+    OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
 }
@@ -137,7 +137,7 @@ pub fn run_applied(cli: &Cli, selector: &str) -> Result<(), AppError> {
 
     let envelope = output::envelope_with_truncation(&results, shown, total, truncated, &meta);
 
-    OutputPipeline::new(cli.jq.clone())
+    OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
 }
@@ -159,7 +159,7 @@ pub fn run_layout(cli: &Cli, selector: &str) -> Result<(), AppError> {
 
     let envelope = output::envelope(&results, 1, &meta);
 
-    OutputPipeline::new(cli.jq.clone())
+    OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
 }

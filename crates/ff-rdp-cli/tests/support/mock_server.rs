@@ -1,8 +1,25 @@
+use std::collections::VecDeque;
 use std::io::{BufReader, Write};
 use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
 
 use ff_rdp_core::transport::{encode_frame, recv_from};
 use serde_json::Value;
+
+/// One entry in a sequence handler: `(immediate_response, followup_messages)`.
+type SeqEntry = (Value, Vec<Value>);
+
+/// A single-response or sequence-of-responses handler entry.
+enum HandlerKind {
+    /// Always returns the same (response, followups).
+    Fixed(Value, Vec<Value>),
+    /// Pops the front item for each invocation; when the queue is exhausted,
+    /// repeats the last item forever.
+    Sequence {
+        queue: Arc<Mutex<VecDeque<SeqEntry>>>,
+        last: Arc<Mutex<SeqEntry>>,
+    },
+}
 
 /// A minimal mock RDP server for CLI end-to-end testing.
 ///
@@ -23,9 +40,8 @@ use serde_json::Value;
 pub struct MockRdpServer {
     listener: TcpListener,
     greeting: Value,
-    /// Registered (method_type, response, follow_ups) triples, matched in insertion order.
-    /// The follow_ups are sent immediately after the response (for async patterns).
-    handlers: Vec<(String, Value, Vec<Value>)>,
+    /// Registered handlers, matched in insertion order.  The first match wins.
+    handlers: Vec<(String, HandlerKind)>,
 }
 
 impl MockRdpServer {
@@ -53,7 +69,7 @@ impl MockRdpServer {
     /// the first match wins.
     pub fn on(mut self, method: &str, response: Value) -> Self {
         self.handlers
-            .push((method.to_owned(), response, Vec::new()));
+            .push((method.to_owned(), HandlerKind::Fixed(response, Vec::new())));
         self
     }
 
@@ -62,8 +78,10 @@ impl MockRdpServer {
     /// This is used for async patterns like `evaluateJSAsync` where an
     /// immediate response is sent, followed by an `evaluationResult` event.
     pub fn on_with_followup(mut self, method: &str, response: Value, followup: Value) -> Self {
-        self.handlers
-            .push((method.to_owned(), response, vec![followup]));
+        self.handlers.push((
+            method.to_owned(),
+            HandlerKind::Fixed(response, vec![followup]),
+        ));
         self
     }
 
@@ -74,7 +92,37 @@ impl MockRdpServer {
         response: Value,
         followups: Vec<Value>,
     ) -> Self {
-        self.handlers.push((method.to_owned(), response, followups));
+        self.handlers
+            .push((method.to_owned(), HandlerKind::Fixed(response, followups)));
+        self
+    }
+
+    /// Register a sequence handler: successive calls to `method` consume
+    /// successive entries from `responses`.  Once all entries are exhausted,
+    /// the last entry is repeated indefinitely.
+    ///
+    /// Each entry is `(immediate_response, followup_messages)`.
+    ///
+    /// This is useful for commands that issue the same RDP request type
+    /// multiple times and need different replies for each call (e.g. the
+    /// `responsive` command issues several `evaluateJSAsync` calls that must
+    /// return different values).
+    pub fn on_sequence(mut self, method: &str, responses: Vec<(Value, Vec<Value>)>) -> Self {
+        assert!(
+            !responses.is_empty(),
+            "on_sequence requires at least one response"
+        );
+
+        let last = responses.last().expect("checked non-empty").clone();
+        let queue: VecDeque<(Value, Vec<Value>)> = responses.into();
+
+        self.handlers.push((
+            method.to_owned(),
+            HandlerKind::Sequence {
+                queue: Arc::new(Mutex::new(queue)),
+                last: Arc::new(Mutex::new(last)),
+            },
+        ));
         self
     }
 
@@ -114,10 +162,22 @@ impl MockRdpServer {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
 
-            let handler = self.handlers.iter().find(|(m, _, _)| m == method);
+            let handler = self.handlers.iter().find(|(m, _)| m == method);
 
-            let (reply, followups) = if let Some((_, resp, follows)) = handler {
-                (resp.clone(), follows.clone())
+            let (reply, followups) = if let Some((_, kind)) = handler {
+                match kind {
+                    HandlerKind::Fixed(resp, follows) => (resp.clone(), follows.clone()),
+                    HandlerKind::Sequence { queue, last } => {
+                        let mut q = queue.lock().expect("sequence queue lock");
+                        if let Some(entry) = q.pop_front() {
+                            // Update last so the final item repeats correctly.
+                            *last.lock().expect("sequence last lock") = entry.clone();
+                            entry
+                        } else {
+                            last.lock().expect("sequence last lock").clone()
+                        }
+                    }
+                }
             } else {
                 // No handler matched — send a generic actor error so the
                 // client gets a reply and doesn't hang.
