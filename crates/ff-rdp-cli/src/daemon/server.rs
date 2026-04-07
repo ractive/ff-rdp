@@ -458,10 +458,12 @@ fn handle_daemon_message(state: &SharedState, msg: &Value) -> Value {
             })
         }
         "stream" => {
-            let resource_type = msg
-                .get("resourceType")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
+            let Some(resource_type) = msg.get("resourceType").and_then(Value::as_str) else {
+                return json!({
+                    "from": "daemon",
+                    "error": "stream requires a resourceType field",
+                });
+            };
             // Clear existing buffered events for this type so the client
             // only receives events from this point forward.
             let _discarded = state.buffer.lock().unwrap().drain(resource_type);
@@ -477,10 +479,12 @@ fn handle_daemon_message(state: &SharedState, msg: &Value) -> Value {
             })
         }
         "stop-stream" => {
-            let resource_type = msg
-                .get("resourceType")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
+            let Some(resource_type) = msg.get("resourceType").and_then(Value::as_str) else {
+                return json!({
+                    "from": "daemon",
+                    "error": "stop-stream requires a resourceType field",
+                });
+            };
             state.streaming_types.lock().unwrap().remove(resource_type);
             json!({
                 "from": "daemon",

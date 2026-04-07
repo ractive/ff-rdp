@@ -117,7 +117,11 @@ pub fn run_with_network(
 
         // Switch back to buffering so the daemon continues capturing events
         // for the `network` command.
-        let _ = crate::daemon::client::stop_daemon_stream(ctx.transport_mut(), "network-event");
+        if let Err(e) =
+            crate::daemon::client::stop_daemon_stream(ctx.transport_mut(), "network-event")
+        {
+            eprintln!("warning: failed to stop daemon stream: {e:#}");
+        }
 
         let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
 

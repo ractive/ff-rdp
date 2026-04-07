@@ -165,10 +165,12 @@ pub(crate) fn start_daemon_stream(transport: &mut RdpTransport, resource_type: &
     transport
         .send(&msg)
         .context("sending stream request to daemon")?;
-    // Read and discard the ack.
-    let _response = transport
+    let response = transport
         .recv()
         .context("receiving stream response from daemon")?;
+    if let Some(err) = response.get("error").and_then(Value::as_str) {
+        anyhow::bail!("daemon stream error: {err}");
+    }
     Ok(())
 }
 
@@ -183,10 +185,12 @@ pub(crate) fn stop_daemon_stream(transport: &mut RdpTransport, resource_type: &s
     transport
         .send(&msg)
         .context("sending stop-stream request to daemon")?;
-    // Read and discard the ack.
-    let _response = transport
+    let response = transport
         .recv()
         .context("receiving stop-stream response from daemon")?;
+    if let Some(err) = response.get("error").and_then(Value::as_str) {
+        anyhow::bail!("daemon stop-stream error: {err}");
+    }
     Ok(())
 }
 
