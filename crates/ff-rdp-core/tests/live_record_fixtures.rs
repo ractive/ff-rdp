@@ -151,17 +151,20 @@ fn live_watch_resources() {
         .send(&json!({"to": &tab_actor, "type": "getWatcher"}))
         .expect("send getWatcher");
     let watcher_resp = recv_from_actor(transport, &tab_actor);
-    let watcher_actor = watcher_resp["actor"].as_str().expect("watcher actor");
+    let watcher_actor = watcher_resp["actor"]
+        .as_str()
+        .expect("watcher actor")
+        .to_owned();
 
     transport
         .send(&json!({
-            "to": watcher_actor,
+            "to": &watcher_actor,
             "type": "watchResources",
             "resourceTypes": ["network-event"]
         }))
         .expect("send watchResources");
 
-    let resp = recv_from_actor(transport, watcher_actor);
+    let resp = recv_from_actor(transport, &watcher_actor);
 
     assert!(
         resp.get("from").is_some(),
@@ -884,7 +887,7 @@ fn live_cookies() {
             "resourceTypes": ["cookies"]
         }))
         .expect("send watchResources");
-    let watch_resp = recv_resources_available(transport);
+    let watch_resp = recv_resources_available(transport, watcher);
 
     if should_record() {
         save_cli_fixture("watch_resources_cookies_response.json", &watch_resp);
@@ -943,7 +946,8 @@ fn live_cookies_empty() {
     if !should_run_live() {
         return;
     }
-    // Record an empty-cookie response by querying a host that has no cookies.
+    // Record the structure of a real cookies response from the first available
+    // host, then synthesize an empty variant by clearing data/total.
     // We do NOT navigate (about:blank etc.) because that would disrupt other
     // tests running in parallel on the same Firefox instance.
     let mut conn = connect();
@@ -971,7 +975,7 @@ fn live_cookies_empty() {
             "resourceTypes": ["cookies"]
         }))
         .expect("send watchResources");
-    let watch_resp = recv_resources_available(transport);
+    let watch_resp = recv_resources_available(transport, watcher);
 
     let cookie_actor = watch_resp["array"][0][1][0]["actor"]
         .as_str()
@@ -994,7 +998,7 @@ fn live_cookies_empty() {
             }))
             .expect("send getStoreObjects");
         let store_resp = recv_from_actor(transport, cookie_actor);
-        let data = store_resp["data"].as_array().expect("data array");
+        store_resp["data"].as_array().expect("data array");
 
         if should_record() {
             // Save an empty variant: keep the response structure but clear data/total.
@@ -1009,9 +1013,6 @@ fn live_cookies_empty() {
             store_resp.get("data").is_some() && store_resp.get("total").is_some(),
             "response must have data and total fields"
         );
-        // When run in isolation (not parallel), data may be empty on about:blank.
-        // In parallel mode, other tests may have set cookies — that's acceptable.
-        let _ = data;
     } else {
         println!("  [skip] no hosts available — cannot record empty cookie fixture");
     }

@@ -212,13 +212,22 @@ pub fn send_raw(transport: &mut RdpTransport, request: &Value) -> Value {
     transport.recv().expect("recv")
 }
 
-/// Read messages until we get a `resources-available-array` event.
-/// Skips ack messages and other async events.
-pub fn recv_resources_available(transport: &mut RdpTransport) -> Value {
+/// Read messages until we get a `resources-available-array` or
+/// `resource-available-form` event from `expected_from`.
+///
+/// Skips ack messages, other async events, and resource events from
+/// different actors. Bounded by the transport's socket read timeout
+/// (which causes `recv()` to error after ~500 ms of silence).
+pub fn recv_resources_available(transport: &mut RdpTransport, expected_from: &str) -> Value {
     loop {
-        let msg = transport.recv().expect("recv");
+        let msg = transport.recv().unwrap_or_else(|err| {
+            panic!("recv_resources_available: waiting for resources-available from '{expected_from}': {err}")
+        });
         let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
-        if msg_type == "resources-available-array" || msg_type == "resource-available-form" {
+        let msg_from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
+        if (msg_type == "resources-available-array" || msg_type == "resource-available-form")
+            && msg_from == expected_from
+        {
             return msg;
         }
     }
