@@ -84,6 +84,9 @@ pub fn run(cli: &Cli, output_path: Option<&str>, base64_mode: bool) -> Result<()
         ))
     })?;
 
+    // Decode bytes only for dimension extraction and file output.
+    // For base64 mode the raw `b64` string is used directly — no need to
+    // decode and re-encode.
     let png_bytes = base64::engine::general_purpose::STANDARD
         .decode(b64)
         .map_err(|e| AppError::from(anyhow::anyhow!("screenshot: base64 decode failed: {e}")))?;
@@ -92,12 +95,11 @@ pub fn run(cli: &Cli, output_path: Option<&str>, base64_mode: bool) -> Result<()
     let (width, height) = png_dimensions(&png_bytes).unwrap_or((0, 0));
 
     let results = if base64_mode {
-        // Return the base64 PNG data directly in the JSON envelope without
-        // writing to disk.  Re-encode from the decoded bytes to ensure the
-        // output is always clean standard-base64 (no data-URL prefix).
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+        // Return the base64 string directly — strip the data-URL prefix but
+        // do not decode+re-encode; the `b64` slice is already valid
+        // standard-base64.
         json!({
-            "base64": encoded,
+            "base64": b64,
             "width": width,
             "height": height,
             "bytes": png_bytes.len(),

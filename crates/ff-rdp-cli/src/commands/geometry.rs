@@ -1,4 +1,4 @@
-use ff_rdp_core::{Grip, LongStringActor, WebConsoleActor};
+use ff_rdp_core::WebConsoleActor;
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -8,9 +8,7 @@ use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
-
-/// Sentinel prefix prepended to JSON.stringify results in the generated JS.
-const JSON_SENTINEL: &str = "__FF_RDP_JSON__";
+use super::js_helpers::resolve_result;
 
 /// JavaScript IIFE template for collecting element geometry data.
 ///
@@ -117,14 +115,43 @@ pub fn run(cli: &Cli, selectors: &[String]) -> Result<(), AppError> {
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
     let mut items = elements_array;
     controls.apply_sort(&mut items);
-    // No default limit — return all elements unless explicitly capped
-    let (limited, total, truncated) = controls.apply_limit(items, None);
+    let (limited, total, truncated) = controls.apply_limit(items, Some(20));
     let shown = limited.len();
+
+    // Filter overlaps so that only pairs where both element indices are within
+    // the limited set are included.  Each element in `limited` has an `index`
+    // field but the overlap entries use "selector[index]" strings — we compare
+    // against the set of "selector[index]" keys present after limiting.
+    let kept_keys: std::collections::HashSet<String> = limited
+        .iter()
+        .filter_map(|el| {
+            let sel = el["selector"].as_str()?;
+            let idx = el["index"].as_u64()?;
+            Some(format!("{sel}[{idx}]"))
+        })
+        .collect();
+
+    let filtered_overlaps: Vec<Value> = overlaps
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter(|pair| {
+                    pair.as_array().is_some_and(|p| {
+                        p.len() == 2
+                            && p[0].as_str().is_some_and(|a| kept_keys.contains(a))
+                            && p[1].as_str().is_some_and(|b| kept_keys.contains(b))
+                    })
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+
     let limited = controls.apply_fields(limited);
 
     let results = json!({
         "elements": limited,
-        "overlaps": overlaps,
+        "overlaps": filtered_overlaps,
         "viewport": viewport,
     });
 
@@ -145,41 +172,6 @@ fn build_js(selectors: &[String]) -> String {
         unreachable!("serde_json::to_string is infallible for Vec<String>: {e}")
     });
     GEOMETRY_JS_TEMPLATE.replace("__SELECTORS__", &selectors_json)
-}
-
-/// Resolve the eval result to a JSON Value, fetching LongStrings as needed.
-///
-/// The geometry JS always prefixes its output with [`JSON_SENTINEL`], so the
-/// sentinel is stripped and the remainder is parsed as JSON.
-fn resolve_result(
-    ctx: &mut super::connect_tab::ConnectedTab,
-    grip: &Grip,
-) -> Result<Value, AppError> {
-    let raw = match grip {
-        Grip::Value(v) => v.clone(),
-        Grip::LongString {
-            actor,
-            length,
-            initial: _,
-        } => {
-            let full = LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), *length)
-                .map_err(AppError::from)?;
-            Value::String(full)
-        }
-        Grip::Null | Grip::Undefined => return Ok(Value::Null),
-        other => other.to_json(),
-    };
-
-    // Strip the sentinel and parse the JSON payload.
-    if let Some(s) = raw.as_str()
-        && let Some(json_str) = s.strip_prefix(JSON_SENTINEL)
-    {
-        return serde_json::from_str::<Value>(json_str).map_err(|e| {
-            AppError::from(anyhow::anyhow!("failed to parse geometry result JSON: {e}"))
-        });
-    }
-
-    Ok(raw)
 }
 
 #[cfg(test)]
@@ -211,7 +203,7 @@ mod tests {
     #[test]
     fn build_js_contains_sentinel() {
         let js = build_js(&["div".to_owned()]);
-        assert!(js.contains(JSON_SENTINEL));
+        assert!(js.contains(super::super::js_helpers::JSON_SENTINEL));
     }
 
     #[test]

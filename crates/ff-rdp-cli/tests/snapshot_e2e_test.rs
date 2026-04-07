@@ -86,7 +86,7 @@ fn snapshot_with_depth_shows_truncation() {
     let handle = std::thread::spawn(move || server.serve_one());
 
     let mut args = base_args(port);
-    args.extend(["snapshot".to_owned(), "--depth".to_owned(), "2".to_owned()]);
+    args.extend(["snapshot".to_owned(), "--depth".to_owned(), "1".to_owned()]);
 
     let output = std::process::Command::new(ff_rdp_bin())
         .args(&args)

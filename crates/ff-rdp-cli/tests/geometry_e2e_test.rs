@@ -38,7 +38,7 @@ fn geometry_single_selector() {
     let handle = std::thread::spawn(move || server.serve_one());
 
     let mut args = base_args(port);
-    args.extend(["geometry".to_owned(), "h1".to_owned()]);
+    args.extend(["geometry".to_owned(), "h1".to_owned(), "p".to_owned()]);
 
     let output = std::process::Command::new(ff_rdp_bin())
         .args(&args)

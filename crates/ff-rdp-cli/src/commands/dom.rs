@@ -7,13 +7,8 @@ use crate::output;
 use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::{ConnectedTab, connect_and_get_target};
-use super::js_helpers::escape_selector;
-
-/// Sentinel prefix prepended to JSON.stringify results in the generated JS.
-/// Used to distinguish structured multi-element results from plain strings
-/// that happen to start with `[` or `{`.
-const JSON_SENTINEL: &str = "__FF_RDP_JSON__";
+use super::connect_tab::connect_and_get_target;
+use super::js_helpers::{JSON_SENTINEL, escape_selector, resolve_result};
 
 #[derive(Debug, Clone, Copy)]
 pub enum OutputMode {
@@ -146,37 +141,6 @@ fn build_js(selector: &str, mode: OutputMode) -> String {
 }})()"
         ),
     }
-}
-
-/// Resolve the eval result to a JSON value, fetching LongStrings.
-///
-/// Multi-element results and attrs are prefixed with [`JSON_SENTINEL`] to
-/// distinguish them from plain text.  Only strings with that sentinel are
-/// parsed back into structured JSON.
-fn resolve_result(ctx: &mut ConnectedTab, grip: &Grip) -> Result<Value, AppError> {
-    let raw = match grip {
-        Grip::Value(v) => v.clone(),
-        Grip::LongString {
-            actor,
-            length,
-            initial: _,
-        } => {
-            let full = LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), *length)
-                .map_err(AppError::from)?;
-            Value::String(full)
-        }
-        Grip::Null | Grip::Undefined => return Ok(Value::Null),
-        other => other.to_json(),
-    };
-
-    // Strip the sentinel and parse the JSON payload.
-    if let Some(s) = raw.as_str()
-        && let Some(json_str) = s.strip_prefix(JSON_SENTINEL)
-    {
-        return serde_json::from_str::<Value>(json_str)
-            .map_err(|e| AppError::from(anyhow::anyhow!("failed to parse DOM result JSON: {e}")));
-    }
-    Ok(raw)
 }
 
 /// JavaScript IIFE that collects DOM statistics in a single evaluation.

@@ -1,4 +1,4 @@
-use ff_rdp_core::{Grip, LongStringActor, WebConsoleActor};
+use ff_rdp_core::WebConsoleActor;
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -6,10 +6,8 @@ use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::{ConnectedTab, connect_and_get_target};
-
-/// Sentinel prefix prepended to JSON.stringify results in the generated JS.
-const JSON_SENTINEL: &str = "__FF_RDP_JSON__";
+use super::connect_tab::connect_and_get_target;
+use super::js_helpers::resolve_result;
 
 /// JavaScript IIFE that walks the DOM and returns a compact tree for LLM consumption.
 ///
@@ -26,6 +24,7 @@ const SNAPSHOT_JS_TEMPLATE: &str = r"(function() {
   var maxDepth = __DEPTH__;
   var maxChars = __MAX_CHARS__;
   var totalChars = 0;
+  var textTruncated = false;
 
   function isHidden(el) {
     if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return true;
@@ -40,7 +39,7 @@ const SNAPSHOT_JS_TEMPLATE: &str = r"(function() {
     if (node.nodeType === 3) {
       var t = node.textContent.trim();
       if (!t) return null;
-      if (totalChars >= maxChars) return null;
+      if (totalChars >= maxChars) { textTruncated = true; return null; }
       if (t.length > 200) t = t.slice(0, 200) + '...';
       totalChars += t.length;
       return t;
@@ -78,6 +77,7 @@ const SNAPSHOT_JS_TEMPLATE: &str = r"(function() {
   }
 
   var tree = walk(document.documentElement, 0);
+  if (tree && textTruncated) { tree.textTruncated = true; }
   return '__FF_RDP_JSON__' + JSON.stringify(tree);
 })()";
 
@@ -114,38 +114,6 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
     OutputPipeline::new(cli.jq.clone())
         .finalize(&envelope)
         .map_err(AppError::from)
-}
-
-/// Resolve the eval result to a JSON value, fetching LongStrings as needed.
-///
-/// The snapshot JS always prefixes its output with [`JSON_SENTINEL`], so the
-/// sentinel is stripped and the remainder is parsed as JSON.
-fn resolve_result(ctx: &mut ConnectedTab, grip: &Grip) -> Result<Value, AppError> {
-    let raw = match grip {
-        Grip::Value(v) => v.clone(),
-        Grip::LongString {
-            actor,
-            length,
-            initial: _,
-        } => {
-            let full = LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), *length)
-                .map_err(AppError::from)?;
-            Value::String(full)
-        }
-        Grip::Null | Grip::Undefined => return Ok(Value::Null),
-        other => other.to_json(),
-    };
-
-    // Strip the sentinel and parse the JSON payload.
-    if let Some(s) = raw.as_str()
-        && let Some(json_str) = s.strip_prefix(JSON_SENTINEL)
-    {
-        return serde_json::from_str::<Value>(json_str).map_err(|e| {
-            AppError::from(anyhow::anyhow!("failed to parse snapshot result JSON: {e}"))
-        });
-    }
-
-    Ok(raw)
 }
 
 #[cfg(test)]

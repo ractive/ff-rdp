@@ -1,7 +1,7 @@
 ---
 title: "Iteration 21: Page Understanding for AI Agents"
 type: iteration
-status: complete
+status: completed
 date: 2026-04-07
 tags:
   - iteration

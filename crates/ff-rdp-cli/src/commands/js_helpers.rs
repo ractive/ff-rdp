@@ -1,3 +1,48 @@
+use ff_rdp_core::{Grip, LongStringActor};
+use serde_json::Value;
+
+use crate::error::AppError;
+
+use super::connect_tab::ConnectedTab;
+
+/// Sentinel prefix prepended to JSON.stringify results in the generated JS.
+///
+/// Used in geometry, snapshot, and DOM commands to distinguish structured JSON
+/// output from plain strings that happen to start with `[` or `{`.
+pub(crate) const JSON_SENTINEL: &str = "__FF_RDP_JSON__";
+
+/// Resolve an eval result [`Grip`] to a [`Value`], fetching LongStrings as needed.
+///
+/// Commands that always prefix their JS output with [`JSON_SENTINEL`] use this
+/// to strip the sentinel and parse the JSON payload.  Grips that are
+/// `Null`/`Undefined` return [`Value::Null`] immediately.
+pub(crate) fn resolve_result(ctx: &mut ConnectedTab, grip: &Grip) -> Result<Value, AppError> {
+    let raw = match grip {
+        Grip::Value(v) => v.clone(),
+        Grip::LongString {
+            actor,
+            length,
+            initial: _,
+        } => {
+            let full = LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), *length)
+                .map_err(AppError::from)?;
+            Value::String(full)
+        }
+        Grip::Null | Grip::Undefined => return Ok(Value::Null),
+        other => other.to_json(),
+    };
+
+    // Strip the sentinel and parse the JSON payload.
+    if let Some(s) = raw.as_str()
+        && let Some(json_str) = s.strip_prefix(JSON_SENTINEL)
+    {
+        return serde_json::from_str::<Value>(json_str)
+            .map_err(|e| AppError::from(anyhow::anyhow!("failed to parse JS result JSON: {e}")));
+    }
+
+    Ok(raw)
+}
+
 /// Escape a CSS selector for safe embedding in a **single-quoted** JS string literal.
 ///
 /// Uses `serde_json::to_string` which handles backslashes, double quotes, newlines,
