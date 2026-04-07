@@ -131,14 +131,14 @@ pub(crate) fn map_perf_resource_to_network_entry(entry: &Value) -> Value {
 
     let size_bytes = entry
         .get("decodedBodySize")
-        .and_then(Value::as_f64)
-        .filter(|&v| v > 0.0)
+        .and_then(Value::as_u64)
+        .filter(|&v| v > 0)
         .map_or(Value::Null, |v| json!(v));
 
     let transfer_size = entry
         .get("transferSize")
-        .and_then(Value::as_f64)
-        .filter(|&v| v > 0.0)
+        .and_then(Value::as_u64)
+        .filter(|&v| v > 0)
         .map_or(Value::Null, |v| json!(v));
 
     json!({
@@ -158,7 +158,7 @@ pub(crate) fn map_perf_resource_to_network_entry(entry: &Value) -> Value {
 /// Evaluate `performance.getEntriesByType('resource')` in the page via JS and
 /// return the entries mapped to the same JSON shape as [`build_network_entries`].
 ///
-/// Returns `Ok(vec![])` on any failure — this is a best-effort fallback only.
+/// Returns an empty vec on any failure — this is a best-effort fallback only.
 pub(crate) fn performance_api_fallback(ctx: &mut super::connect_tab::ConnectedTab) -> Vec<Value> {
     const SCRIPT: &str =
         "JSON.stringify(performance.getEntriesByType('resource').map(e => e.toJSON()))";
@@ -216,6 +216,7 @@ pub(crate) fn build_network_entries(
                 "is_xhr": res.is_xhr,
                 "cause_type": res.cause_type,
                 "content_type": null,
+                "source": "watcher",
             });
             if let Some(u) = update {
                 if let Some(ref status) = u.status
@@ -232,6 +233,9 @@ pub(crate) fn build_network_entries(
                 if let Some(size) = u.content_size {
                     entry["size_bytes"] = serde_json::json!(size);
                 }
+                if let Some(transferred) = u.transferred_size {
+                    entry["transfer_size"] = serde_json::json!(transferred);
+                }
             }
             entry
         })
@@ -241,7 +245,6 @@ pub(crate) fn build_network_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn map_perf_resource_xhr_initiator_type() {
@@ -259,8 +262,8 @@ mod tests {
         assert_eq!(result["cause_type"], "xmlhttprequest");
         assert_eq!(result["content_type"], Value::Null);
         assert_eq!(result["duration_ms"], 123.4);
-        assert_eq!(result["size_bytes"], 2048.0);
-        assert_eq!(result["transfer_size"], 2100.0);
+        assert_eq!(result["size_bytes"], 2048);
+        assert_eq!(result["transfer_size"], 2100);
         assert_eq!(result["status"], Value::Null);
         assert_eq!(result["source"], "performance-api");
     }

@@ -74,11 +74,12 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
     };
 
     let watcher_entries = build_network_entries(&all_resources, &update_map);
+    let watcher_was_empty = watcher_entries.is_empty();
     let filtered_watcher = apply_filters(watcher_entries);
 
     // If the watcher returned nothing (page already loaded before subscribing)
     // and we are not proxied via the daemon, try the Performance API as a fallback.
-    let (results, used_perf_fallback) = if filtered_watcher.is_empty() && !ctx.via_daemon {
+    let (results, used_perf_fallback) = if watcher_was_empty && !ctx.via_daemon {
         let fallback = performance_api_fallback(&mut ctx);
         let filtered_fallback = apply_filters(fallback);
         let used = !filtered_fallback.is_empty();
