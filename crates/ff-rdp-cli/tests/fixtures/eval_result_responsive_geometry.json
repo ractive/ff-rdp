@@ -1,0 +1,8 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "type": "evaluationResult",
+  "resultID": "1775437183977.373-0",
+  "hasException": false,
+  "result": "__FF_RDP_JSON__{\"elements\":[{\"selector\":\"h1\",\"index\":0,\"tag\":\"h1\",\"rect\":{\"x\":0,\"y\":0,\"width\":320,\"height\":40,\"top\":0,\"right\":320,\"bottom\":40,\"left\":0},\"computed\":{\"position\":\"static\",\"display\":\"block\",\"visibility\":\"visible\",\"font_size\":\"32px\",\"flex_direction\":\"row\",\"flex_wrap\":\"nowrap\",\"grid_template_columns\":\"none\"},\"visible\":true,\"in_viewport\":true}],\"viewport\":{\"width\":320,\"height\":768}}",
+  "timestamp": 1775437183980.721
+}

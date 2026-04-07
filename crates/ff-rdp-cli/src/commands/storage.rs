@@ -56,14 +56,14 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
             Grip::Null => {
                 // Key does not exist in storage — return null value with total=0.
                 let envelope = output::envelope(&json!({"key": k, "value": null}), 0, &meta);
-                OutputPipeline::new(cli.jq.clone())
+                OutputPipeline::from_cli(cli)?
                     .finalize(&envelope)
                     .map_err(AppError::from)
             }
             grip => {
                 let value = resolve_string_grip(&mut ctx, grip)?;
                 let envelope = output::envelope(&json!({"key": k, "value": value}), 1, &meta);
-                OutputPipeline::new(cli.jq.clone())
+                OutputPipeline::from_cli(cli)?
                     .finalize(&envelope)
                     .map_err(AppError::from)
             }
@@ -105,7 +105,7 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
         let total = storage_map.as_object().map_or(0, serde_json::Map::len);
 
         let envelope = output::envelope(&storage_map, total, &meta);
-        OutputPipeline::new(cli.jq.clone())
+        OutputPipeline::from_cli(cli)?
             .finalize(&envelope)
             .map_err(AppError::from)
     }

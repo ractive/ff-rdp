@@ -17,6 +17,7 @@ const LLM_REFERENCE: &str = r#"# ff-rdp — Firefox Remote Debugging Protocol CL
   --no-daemon            Connect directly to Firefox (no daemon)
   --daemon-timeout <S>   Daemon idle timeout in seconds [default: 300]
   --allow-unsafe-urls    Allow javascript: and data: URL schemes
+  --format <FORMAT>      Output format: "json" (default) or "text" for human-readable tables
 
 ## Output control flags (global, apply to all list-returning commands)
   --limit <N>            Limit number of results (per-command defaults apply)
@@ -26,6 +27,7 @@ const LLM_REFERENCE: &str = r#"# ff-rdp — Firefox Remote Debugging Protocol CL
   --desc                 Sort descending
   --fields <F1,F2,...>   Select which fields to include in each entry
   --detail               Show individual entries instead of summary mode
+  --format text          Human-readable table output (mutually exclusive with --jq)
 
 Commands default to a summary view. Use --detail for per-entry output.
 Defaults: network (limit 20, sort duration_ms desc), console (limit 50,
@@ -141,12 +143,18 @@ Types: resource, navigation, paint, lcp, cls, longtask
 Subcommands:
   perf vitals            Core Web Vitals summary (LCP, CLS, TBT, FCP, TTFB)
   perf summary           Aggregated resource summary (sizes, counts, domains)
+  perf audit             Audit performance with actionable recommendations
+  perf compare <URL>...  Compare performance across multiple URLs
+    --label <L1,L2,...>  Labels for each URL in output
 ```
 ff-rdp perf --type resource
 ff-rdp perf --type resource --filter ".js"
 ff-rdp perf --type resource --group-by domain
 ff-rdp perf vitals
 ff-rdp perf summary
+ff-rdp perf audit
+ff-rdp perf compare https://a.example https://b.example
+ff-rdp perf compare https://a.example https://b.example --label "Site A,Site B"
 ```
 
 ### screenshot
@@ -200,6 +208,16 @@ with automatic overlap detection between elements.
 ```
 ff-rdp geometry "h1" "p"
 ff-rdp geometry ".modal" ".overlay" --jq '.results.overlaps'
+```
+
+### responsive <SELECTOR>...
+Test responsive layout across viewport widths: resize to each width, collect geometry
++ key computed styles (flex, grid, font-size), then restore original viewport.
+  --widths <W1,W2,...>   Viewport widths to test [default: 320,768,1024,1440]
+```
+ff-rdp responsive "h1" "nav" ".sidebar"
+ff-rdp responsive "h1" --widths 320,768,1440
+ff-rdp responsive ".card" --jq '.results.breakpoints[] | {width, elements: [.elements[] | {selector, rect}]}'
 ```
 
 ### click <SELECTOR>
@@ -287,9 +305,10 @@ ff-rdp launch --headless --temp-profile
 ```
 
 ## Output format
-All commands return JSON with envelope: `{"results": ..., "total": N, "meta": {...}}`
+All commands return JSON by default with envelope: `{"results": ..., "total": N, "meta": {...}}`
 When results are truncated: `{"results": ..., "total": N, "truncated": true, "hint": "showing 20 of 84, use --all for complete list", "meta": {...}}`
 Use `--jq` to filter: operates on `.results` automatically (implies --detail mode).
+Use `--format text` for human-readable table output (mutually exclusive with --jq).
 "#;
 
 pub fn run(cli: &Cli) -> Result<(), AppError> {
@@ -297,7 +316,7 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     let meta = json!({"source": "static"});
     let envelope = output::envelope(&results, 1, &meta);
 
-    OutputPipeline::new(cli.jq.clone())
+    OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
 }
@@ -323,6 +342,7 @@ mod tests {
             "screenshot",
             "snapshot",
             "geometry",
+            "responsive",
             "click",
             "type",
             "wait",
@@ -335,6 +355,13 @@ mod tests {
             "sources",
             "launch",
         ];
+        let subcommands = ["perf compare", "perf audit", "perf vitals", "perf summary"];
+        for cmd in subcommands {
+            assert!(
+                LLM_REFERENCE.contains(cmd),
+                "LLM reference missing subcommand: {cmd}"
+            );
+        }
         for cmd in commands {
             assert!(
                 LLM_REFERENCE.contains(&format!("### {cmd}")),

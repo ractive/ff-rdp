@@ -80,6 +80,9 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             Some(PerfCommand::Vitals) => commands::perf::run_vitals(cli),
             Some(PerfCommand::Summary) => commands::perf::run_summary(cli),
             Some(PerfCommand::Audit) => commands::perf::run_audit(cli),
+            Some(PerfCommand::Compare { urls, label }) => {
+                commands::perf_compare::run(cli, urls, label.as_ref().map(Vec::as_slice))
+            }
             None => {
                 if group_by.as_deref() == Some("domain") {
                     commands::perf::run_group_by_domain(cli, entry_type, filter.as_deref())
@@ -162,6 +165,9 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             }
         }
         Command::Geometry { selectors } => commands::geometry::run(cli, selectors),
+        Command::Responsive { selectors, widths } => {
+            commands::responsive::run(cli, selectors, widths)
+        }
         Command::Snapshot { depth, max_chars } => commands::snapshot::run(cli, *depth, *max_chars),
         Command::Recipes => {
             commands::recipes::run();

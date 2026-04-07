@@ -1,0 +1,10 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "input": "(function() { ... })() ",
+  "result": "{\"navigation\":[{\"name\":\"https://example.com/\",\"entryType\":\"navigation\",\"startTime\":0,\"duration\":1100.0,\"responseStart\":280.0,\"activationStart\":0,\"domInteractive\":750.0,\"domComplete\":1050.0,\"transferSize\":45000}],\"resource\":[{\"name\":\"https://example.com/app.js\",\"entryType\":\"resource\",\"startTime\":100.0,\"responseEnd\":180.0,\"duration\":80.0,\"transferSize\":20000,\"encodedBodySize\":19000,\"decodedBodySize\":55000,\"initiatorType\":\"script\",\"nextHopProtocol\":\"h2\"}],\"paint\":[{\"name\":\"first-paint\",\"entryType\":\"paint\",\"startTime\":480.0,\"duration\":0},{\"name\":\"first-contentful-paint\",\"entryType\":\"paint\",\"startTime\":520.0,\"duration\":0}],\"largest-contentful-paint\":[{\"entryType\":\"largest-contentful-paint\",\"startTime\":900.0,\"renderTime\":900.0,\"loadTime\":880.0,\"size\":80000,\"url\":\"https://example.com/hero.jpg\"}],\"layout-shift\":[{\"entryType\":\"layout-shift\",\"startTime\":400.0,\"value\":0.01,\"hadRecentInput\":false,\"sources\":[]}],\"longtask\":[{\"entryType\":\"longtask\",\"name\":\"self\",\"startTime\":600.0,\"duration\":80.0}]}",
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183977.373,
+  "timestamp": 1775437183980.721,
+  "type": "evaluationResult"
+}

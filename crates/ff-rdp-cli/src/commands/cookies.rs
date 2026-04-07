@@ -63,7 +63,7 @@ pub fn run(cli: &Cli, name: Option<&str>) -> Result<(), AppError> {
 
     let envelope = output::envelope(&result_json, total, &meta);
 
-    OutputPipeline::new(cli.jq.clone())
+    OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
 }

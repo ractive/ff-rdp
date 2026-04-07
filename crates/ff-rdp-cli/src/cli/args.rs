@@ -67,6 +67,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub detail: bool,
 
+    /// Output format: "json" (default) or "text" for human-readable tables
+    #[arg(long, default_value = "json", global = true)]
+    pub format: String,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -296,6 +300,17 @@ affect which requests Firefox records.")]
         #[arg(required = true)]
         selectors: Vec<String>,
     },
+    /// Test responsive layout across viewport widths: resize to each width,
+    /// collect geometry + computed styles for the given selectors, then restore
+    /// the original viewport size.  Returns results keyed by breakpoint width.
+    Responsive {
+        /// One or more CSS selectors to query at each breakpoint
+        #[arg(required = true)]
+        selectors: Vec<String>,
+        /// Comma-separated viewport widths in pixels
+        #[arg(long, value_delimiter = ',', default_value = "320,768,1024,1440")]
+        widths: Vec<u32>,
+    },
     /// Inspect CSS styles for an element matching a CSS selector
     Styles {
         /// CSS selector to match the element
@@ -332,6 +347,15 @@ pub enum PerfCommand {
     Summary,
     /// Full page performance audit: vitals, navigation timing, resource breakdown, DOM stats
     Audit,
+    /// Compare performance across multiple URLs: navigate each, collect vitals + timing
+    Compare {
+        /// URLs to compare
+        #[arg(required = true, num_args = 2..)]
+        urls: Vec<String>,
+        /// Labels for each URL (in order); defaults to the URL itself
+        #[arg(long, value_delimiter = ',')]
+        label: Option<Vec<String>>,
+    },
 }
 
 #[derive(Subcommand)]
