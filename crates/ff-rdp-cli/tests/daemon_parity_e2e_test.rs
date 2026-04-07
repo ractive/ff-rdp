@@ -4,9 +4,10 @@
 /// These tests start a real daemon process connected to a mock RDP server,
 /// then run CLI commands through the daemon and verify output parity.
 ///
-/// Because the daemon writes to a global registry (`~/.ff-rdp/daemon.json`),
-/// these tests are serialized via a process-wide mutex and each one cleans up
-/// the daemon process before returning.
+/// Each test creates an isolated HOME directory so the daemon registry never
+/// touches `~/.ff-rdp/daemon.json`.  Tests are still serialized via a
+/// process-wide mutex because the mock server binds a port and the daemon
+/// is a child process.
 mod support;
 
 use std::process::{Child, Command};
@@ -15,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use support::{MockRdpServer, load_fixture};
 
-// Serialize all daemon tests: the registry is a single global file.
+// Serialize all daemon tests to avoid port/process conflicts.
 fn daemon_test_mutex() -> &'static Mutex<()> {
     static MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
     MUTEX.get_or_init(|| Mutex::new(()))
@@ -31,11 +32,15 @@ fn ff_rdp_bin() -> std::path::PathBuf {
 
 struct DaemonGuard {
     child: Option<Child>,
+    home_dir: Option<std::path::PathBuf>,
 }
 
 impl DaemonGuard {
-    fn new(child: Child) -> Self {
-        Self { child: Some(child) }
+    fn new(child: Child, home_dir: std::path::PathBuf) -> Self {
+        Self {
+            child: Some(child),
+            home_dir: Some(home_dir),
+        }
     }
 
     fn kill(&mut self) {
@@ -43,8 +48,9 @@ impl DaemonGuard {
             let _ = c.kill();
             let _ = c.wait();
         }
-        let home = dirs::home_dir().expect("home dir");
-        let _ = std::fs::remove_file(home.join(".ff-rdp/daemon.json"));
+        if let Some(ref home) = self.home_dir {
+            let _ = std::fs::remove_file(home.join(".ff-rdp/daemon.json"));
+        }
     }
 }
 
@@ -55,11 +61,22 @@ impl Drop for DaemonGuard {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: create an isolated HOME directory for this test.
+// ---------------------------------------------------------------------------
+
+fn isolated_home() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("creating temp dir for isolated HOME");
+    std::fs::create_dir_all(dir.path().join(".ff-rdp")).expect("creating .ff-rdp in temp HOME");
+    dir
+}
+
+// ---------------------------------------------------------------------------
 // Helper: start the daemon connected to a mock server port.
 // ---------------------------------------------------------------------------
 
-fn start_daemon(mock_port: u16) -> DaemonGuard {
+fn start_daemon(mock_port: u16, home_dir: &std::path::Path) -> DaemonGuard {
     let child = Command::new(ff_rdp_bin())
+        .env("HOME", home_dir)
         .args([
             "--host",
             "127.0.0.1",
@@ -71,7 +88,7 @@ fn start_daemon(mock_port: u16) -> DaemonGuard {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("failed to spawn daemon process");
-    DaemonGuard::new(child)
+    DaemonGuard::new(child, home_dir.to_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -79,7 +96,7 @@ fn start_daemon(mock_port: u16) -> DaemonGuard {
 // Returns the proxy_port the daemon is listening on.
 // ---------------------------------------------------------------------------
 
-fn wait_for_daemon_ready(mock_port: u16, timeout: Duration) -> u16 {
+fn wait_for_daemon_ready(mock_port: u16, timeout: Duration, home_dir: &std::path::Path) -> u16 {
     let start = Instant::now();
     loop {
         assert!(
@@ -87,8 +104,7 @@ fn wait_for_daemon_ready(mock_port: u16, timeout: Duration) -> u16 {
             "daemon did not become ready within {timeout:?}"
         );
 
-        let home = dirs::home_dir().expect("home dir");
-        let registry_path = home.join(".ff-rdp/daemon.json");
+        let registry_path = home_dir.join(".ff-rdp/daemon.json");
 
         if let Ok(contents) = std::fs::read_to_string(&registry_path)
             && let Ok(info) = serde_json::from_str::<serde_json::Value>(&contents)
@@ -184,6 +200,7 @@ fn network_daemon_server() -> MockRdpServer {
 #[test]
 fn daemon_navigate_with_network_captures_requests() {
     let _guard = daemon_test_mutex().lock().expect("daemon test mutex");
+    let home = isolated_home();
 
     let server = navigate_with_network_daemon_server();
     let mock_port = server.port();
@@ -191,8 +208,8 @@ fn daemon_navigate_with_network_captures_requests() {
     // (i.e., until DaemonGuard::kill() is called below).
     let mock_handle = std::thread::spawn(move || server.serve_one());
 
-    let mut daemon = start_daemon(mock_port);
-    let _proxy_port = wait_for_daemon_ready(mock_port, Duration::from_secs(5));
+    let mut daemon = start_daemon(mock_port, home.path());
+    let _proxy_port = wait_for_daemon_ready(mock_port, Duration::from_secs(5), home.path());
 
     let mut args = daemon_args(mock_port);
     args.extend([
@@ -202,6 +219,7 @@ fn daemon_navigate_with_network_captures_requests() {
     ]);
 
     let output = Command::new(ff_rdp_bin())
+        .env("HOME", home.path())
         .args(&args)
         .output()
         .expect("failed to spawn ff-rdp");
@@ -250,42 +268,52 @@ fn daemon_navigate_with_network_captures_requests() {
 #[test]
 fn daemon_network_shows_summary() {
     let _guard = daemon_test_mutex().lock().expect("daemon test mutex");
+    let home = isolated_home();
 
     let server = network_daemon_server();
     let mock_port = server.port();
     let mock_handle = std::thread::spawn(move || server.serve_one());
 
-    let mut daemon = start_daemon(mock_port);
-    let _proxy_port = wait_for_daemon_ready(mock_port, Duration::from_secs(5));
+    let mut daemon = start_daemon(mock_port, home.path());
+    let _proxy_port = wait_for_daemon_ready(mock_port, Duration::from_secs(5), home.path());
 
-    // Give the daemon's Firefox-reader thread time to process the watchResources
-    // followup events and store them in the buffer before the CLI drains them.
-    std::thread::sleep(Duration::from_millis(200));
+    // Poll the daemon until it has buffered events, instead of a fixed sleep.
+    // The daemon's Firefox-reader thread processes watchResources followups
+    // asynchronously; poll with a short interval and a reasonable timeout.
+    let poll_timeout = Duration::from_secs(5);
+    let poll_start = Instant::now();
+    let (json, stderr) = loop {
+        let mut args = daemon_args(mock_port);
+        args.push("network".to_owned());
 
-    let mut args = daemon_args(mock_port);
-    args.push("network".to_owned());
+        let output = Command::new(ff_rdp_bin())
+            .env("HOME", home.path())
+            .args(&args)
+            .output()
+            .expect("failed to spawn ff-rdp");
 
-    let output = Command::new(ff_rdp_bin())
-        .args(&args)
-        .output()
-        .expect("failed to spawn ff-rdp");
+        if output.status.success()
+            && let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            && parsed["results"]["total_requests"].as_u64().unwrap_or(0) > 0
+        {
+            break (parsed, String::from_utf8_lossy(&output.stderr).to_string());
+        }
+
+        assert!(
+            poll_start.elapsed() < poll_timeout,
+            "daemon did not buffer events within {poll_timeout:?}; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
 
     daemon.kill();
     let _ = mock_handle.join();
 
-    assert!(
-        output.status.success(),
-        "daemon network must succeed; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let json: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
-
     // Summary mode: results is an object matching the --no-daemon output shape.
     assert!(
         json["results"].is_object(),
-        "default network output should be summary (object), got: {}",
+        "default network output should be summary (object), got: {}; stderr: {stderr}",
         json["results"]
     );
     assert_eq!(
