@@ -69,7 +69,7 @@ fn compile_jq_filter(filter_code: &str) -> anyhow::Result<jaq_core::compile::Fil
     let modules = loader.load(&arena, program).map_err(|errs| {
         let msg = errs
             .iter()
-            .map(|(_file, e)| format!("{e:?}"))
+            .map(|(_file, e)| format!("{e:#?}"))
             .collect::<Vec<_>>()
             .join("; ");
         anyhow::anyhow!("jq parse error: {msg}")
@@ -85,7 +85,7 @@ fn compile_jq_filter(filter_code: &str) -> anyhow::Result<jaq_core::compile::Fil
         .map_err(|errs| {
             let msg = errs
                 .iter()
-                .map(|(_file, e)| format!("{e:?}"))
+                .map(|(_file, e)| format!("{e:#?}"))
                 .collect::<Vec<_>>()
                 .join("; ");
             anyhow::anyhow!("jq compile error: {msg}")
@@ -104,7 +104,7 @@ fn execute_jq_filter(
 
     let mut results = Vec::new();
     for result in filter.id.run((ctx, input)).map(jaq_core::unwrap_valr) {
-        let val = result.map_err(|e| anyhow::anyhow!("jq runtime error: {e:?}"))?;
+        let val = result.map_err(|e| anyhow::anyhow!("jq runtime error: {e}"))?;
         let json = val_to_value(&val)?;
         results.push(json);
     }

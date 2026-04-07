@@ -13,17 +13,15 @@ impl OutputPipeline {
 
     /// Apply the pipeline to a JSON envelope and print to stdout.
     ///
-    /// If a jq filter is set, apply it to the `.results` value extracted from
-    /// the envelope so that users write `.[].url` rather than
-    /// `.results[].url`. When the envelope has no `.results` key the filter
-    /// falls back to the full envelope. Otherwise pretty-print the envelope
-    /// as-is.
+    /// If a jq filter is set, apply it to the full `{results, total, meta}`
+    /// envelope so that users can access any envelope field (`.results`,
+    /// `.total`, `.meta`, `.truncated`).  Use `.results[].url` to drill
+    /// into array results or `.results.lcp_ms` for object results.
+    /// Otherwise pretty-print the envelope as-is.
     pub fn finalize(&self, envelope: &Value) -> anyhow::Result<()> {
         match &self.jq_filter {
             Some(filter) => {
-                // Auto-unwrap .results so callers write `.[].url` not `.results[].url`.
-                let target = envelope.get("results").unwrap_or(envelope);
-                let output = output::apply_jq_filter(target, filter)?;
+                let output = output::apply_jq_filter(envelope, filter)?;
                 for value in output {
                     println!("{}", serde_json::to_string(&value)?);
                 }

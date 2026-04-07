@@ -1,0 +1,10 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "input": "JSON.stringify(...)",
+  "result": "{\"navigation\":[{\"name\":\"https://example.com/\",\"entryType\":\"navigation\",\"startTime\":0,\"duration\":1200.5,\"responseStart\":340.0,\"activationStart\":0,\"domainLookupStart\":10,\"domainLookupEnd\":30,\"secureConnectionStart\":35,\"connectEnd\":60,\"domContentLoadedEventStart\":800,\"domContentLoadedEventEnd\":810,\"loadEventStart\":1100,\"loadEventEnd\":1200,\"domInteractive\":700,\"domComplete\":1050}],\"resource\":[{\"name\":\"https://example.com/app.js\",\"entryType\":\"resource\",\"initiatorType\":\"script\",\"duration\":42.5,\"transferSize\":12345,\"encodedBodySize\":12000,\"decodedBodySize\":36000,\"startTime\":100.0,\"responseEnd\":142.5,\"nextHopProtocol\":\"h2\"},{\"name\":\"https://cdn.thirdparty.com/tracker.js\",\"entryType\":\"resource\",\"initiatorType\":\"script\",\"duration\":200.0,\"transferSize\":5000,\"encodedBodySize\":4800,\"decodedBodySize\":15000,\"startTime\":50.0,\"responseEnd\":250.0,\"nextHopProtocol\":\"h2\"}],\"paint\":[{\"name\":\"first-paint\",\"entryType\":\"paint\",\"startTime\":520.5,\"duration\":0},{\"name\":\"first-contentful-paint\",\"entryType\":\"paint\",\"startTime\":980.0,\"duration\":0}],\"largest-contentful-paint\":[{\"entryType\":\"largest-contentful-paint\",\"startTime\":1850.0,\"renderTime\":1850.0,\"loadTime\":1800.0,\"size\":120000}],\"layout-shift\":[{\"entryType\":\"layout-shift\",\"startTime\":500.0,\"value\":0.02,\"hadRecentInput\":false,\"sources\":[]}],\"longtask\":[{\"entryType\":\"longtask\",\"name\":\"self\",\"startTime\":1000.0,\"duration\":170.0}],\"dom\":{\"node_count\":250,\"document_size\":45000,\"inline_script_count\":3,\"render_blocking_count\":5,\"images_without_lazy\":2},\"hostname\":\"example.com\"}",
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183977.373,
+  "timestamp": 1775437183980.721,
+  "type": "evaluationResult"
+}

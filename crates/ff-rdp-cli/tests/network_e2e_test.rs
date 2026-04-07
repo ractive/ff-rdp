@@ -260,7 +260,7 @@ fn network_with_jq_filter() {
     let mut args = base_args(port);
     args.extend([
         "--jq".to_owned(),
-        ".[] | select(.status >= 400)".to_owned(),
+        ".results[] | select(.status >= 400)".to_owned(),
         "network".to_owned(),
     ]);
 

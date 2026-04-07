@@ -324,7 +324,7 @@ fn screenshot_with_jq_filter_extracts_path() {
     let mut args = base_args(port);
     args.extend([
         "--jq".to_owned(),
-        ".path".to_owned(),
+        ".results.path".to_owned(),
         "screenshot".to_owned(),
         "--output".to_owned(),
         out_path.to_string_lossy().into_owned(),

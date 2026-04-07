@@ -3,7 +3,7 @@ mod support;
 use support::{MockRdpServer, load_fixture};
 
 /// Full JSON produced by the mock substring actor for the long-string resource test.
-const LONGSTRING_PERF_JSON: &str = r#"[{"name":"https://example.com/app.js","initiatorType":"script","duration":42.5,"transferSize":12345,"encodedBodySize":12000,"decodedBodySize":36000,"startTime":100.0,"responseEnd":142.5,"nextHopProtocol":"h2"}]"#;
+const LONGSTRING_PERF_JSON: &str = r#"{"entries":[{"name":"https://example.com/app.js","initiatorType":"script","duration":42.5,"transferSize":12345,"encodedBodySize":12000,"decodedBodySize":36000,"startTime":100.0,"responseEnd":142.5,"nextHopProtocol":"h2"}],"hostname":"example.com"}"#;
 
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
@@ -70,9 +70,14 @@ fn perf_shows_resources() {
     assert_eq!(results[0]["transfer_size"], 12345);
     assert_eq!(results[0]["decoded_size"], 36000);
     assert_eq!(results[0]["protocol"], "h2");
+    assert_eq!(results[0]["from_cache"], false);
+    assert_eq!(results[0]["resource_type"], "js");
+    assert_eq!(results[0]["third_party"], false);
 
     assert_eq!(results[1]["url"], "https://example.com/favicon.ico");
     assert_eq!(results[1]["initiator_type"], "img");
+    assert_eq!(results[1]["resource_type"], "image");
+    assert_eq!(results[1]["third_party"], false);
 }
 
 #[test]
@@ -136,7 +141,7 @@ fn perf_with_jq_filter() {
     args.extend([
         "perf".to_owned(),
         "--jq".to_owned(),
-        ".[] | select(.initiator_type == \"script\") | .url".to_owned(),
+        ".results[] | select(.initiator_type == \"script\") | .url".to_owned(),
     ]);
 
     let output = std::process::Command::new(ff_rdp_bin())
@@ -153,14 +158,18 @@ fn perf_with_jq_filter() {
 
 #[test]
 fn perf_jq_array_iteration_works() {
-    // Regression test: `.[].url` must work because jq is applied to .results
-    // directly, not to the full `{meta, results, total}` envelope.
+    // Regression test: `.results[].url` must work because jq is applied to
+    // the full `{meta, results, total}` envelope.
     let server = perf_server("eval_result_perf_resource.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
 
     let mut args = base_args(port);
-    args.extend(["perf".to_owned(), "--jq".to_owned(), ".[].url".to_owned()]);
+    args.extend([
+        "perf".to_owned(),
+        "--jq".to_owned(),
+        ".results[].url".to_owned(),
+    ]);
 
     let output = std::process::Command::new(ff_rdp_bin())
         .args(&args)
@@ -171,7 +180,7 @@ fn perf_jq_array_iteration_works() {
 
     assert!(
         output.status.success(),
-        ".[].url should work: stderr: {}",
+        ".results[].url should work: stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
@@ -393,6 +402,63 @@ fn perf_vitals_computes_cwv() {
     // Task starts at 1000ms, ends at 1170ms > 980ms → blocking = 170 - 50 = 120ms
     assert_eq!(r["tbt_ms"], 120.0);
     assert_eq!(r["tbt_rating"], "good");
+}
+
+// ---------------------------------------------------------------------------
+// perf audit
+// ---------------------------------------------------------------------------
+
+#[test]
+fn perf_audit_returns_structured_report() {
+    let server = perf_server("eval_result_perf_audit.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["perf".to_owned(), "audit".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    let r = &json["results"];
+
+    // vitals section
+    assert_eq!(r["vitals"]["lcp_ms"], 1850.0);
+    assert_eq!(r["vitals"]["fcp_ms"], 980.0);
+    assert_eq!(r["vitals"]["ttfb_ms"], 340.0);
+
+    // resource summary
+    assert_eq!(r["resource_summary"]["count"], 2);
+
+    // resource_by_type has entries
+    assert!(!r["resource_by_type"].as_array().unwrap().is_empty());
+
+    // third_party_summary: one third-party resource (cdn.thirdparty.com)
+    assert_eq!(r["third_party_summary"]["count"], 1);
+
+    // dom_stats present
+    assert_eq!(r["dom_stats"]["node_count"], 250);
+    assert_eq!(r["dom_stats"]["render_blocking_count"], 5);
+    assert_eq!(r["dom_stats"]["images_without_lazy"], 2);
+
+    // slowest_resources
+    assert!(!r["slowest_resources"].as_array().unwrap().is_empty());
+
+    // navigation present
+    assert!(r["navigation"].is_object());
 }
 
 // ---------------------------------------------------------------------------
