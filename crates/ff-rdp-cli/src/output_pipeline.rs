@@ -108,7 +108,7 @@ fn render_text(envelope: &Value) {
     // Truncation hint
     if let Some(hint) = envelope.get("hint").and_then(|h| h.as_str()) {
         println!();
-        println!("Showing {hint}");
+        println!("{hint}");
     } else if let Some(total) = envelope.get("total").and_then(Value::as_u64)
         && let Some(Value::Array(arr)) = envelope.get("results")
     {
@@ -122,10 +122,10 @@ fn render_text(envelope: &Value) {
 
 /// Render an array of JSON objects as an ASCII table.
 ///
-/// Column headers come from the union of all keys in the first row (we use
-/// the first object's key order for consistency, then any extra keys from
-/// subsequent rows are appended).  Each cell is coerced to a string and
-/// padded to the column width.
+/// Column headers come from the union of all object keys across rows (sorted
+/// alphabetically by serde_json's default BTreeMap ordering, then any extra
+/// keys from subsequent rows are appended).  Each cell is coerced to a string
+/// and padded to the column width.
 fn render_table(rows: &[Value]) {
     // Collect ordered column names from the first row, then any unseen keys
     // from subsequent rows.

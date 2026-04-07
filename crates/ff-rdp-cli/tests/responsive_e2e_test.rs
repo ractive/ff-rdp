@@ -267,11 +267,12 @@ fn responsive_with_jq_filter() {
 
 #[test]
 fn responsive_zero_width_rejected() {
-    // The command should fail before connecting, so we use a server that would
-    // hang if connected — but it should never be reached.
-    let server = MockRdpServer::new();
-    let port = server.port();
-    let handle = std::thread::spawn(move || server.serve_one_silent());
+    // This test does not need a real server because the error is caught before
+    // any connection is established.  We bind a port so the CLI has a valid
+    // --port argument and fails for the right reason, not a parse error.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
 
     let mut args = base_args(port);
     args.extend([
@@ -285,10 +286,6 @@ fn responsive_zero_width_rejected() {
         .args(&args)
         .output()
         .expect("failed to spawn ff-rdp");
-
-    // Thread exits when its accept/read returns — connection may or may not
-    // happen depending on timing, so just detach.
-    drop(handle);
 
     assert!(!output.status.success(), "expected failure for zero width");
 

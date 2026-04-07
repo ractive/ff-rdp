@@ -64,6 +64,13 @@ fn navigate_and_wait(
         )
         .map_err(AppError::from)?;
 
+        if let Some(ref exc) = eval_result.exception {
+            let msg = exc.message.as_deref().unwrap_or("evaluation error");
+            return Err(AppError::User(format!(
+                "perf compare: readyState check failed for {url}: {msg}"
+            )));
+        }
+
         let ready = matches!(
             &eval_result.result,
             Grip::Value(Value::String(s)) if s == "complete"
