@@ -1,9 +1,14 @@
 ---
 title: "Iteration 26: Native StorageActor & Network Fallback"
 type: iteration
-status: planned
+status: done
 date: 2026-04-07
-tags: [iteration, storage, cookies, network, protocol]
+tags:
+  - iteration
+  - storage
+  - cookies
+  - network
+  - protocol
 branch: iter-26/storage-and-network
 ---
 
@@ -19,14 +24,15 @@ discovery: `firefox -no-remote -profile /tmp/ff-rdp-test-profile --start-debugge
 
 ## Tasks
 
-- [ ] Implement StorageActor discovery via watcher or target actor
-- [ ] Implement `listStores` / `getStoreObjects` protocol for cookies
-- [ ] Migrate `ff-rdp cookies` to use StorageActor, exposing httpOnly/secure/sameSite flags
+- [x] Implement StorageActor discovery via watcher or target actor
+- [x] Implement `listStores` / `getStoreObjects` protocol for cookies
+- [x] Migrate `ff-rdp cookies` to use StorageActor, exposing httpOnly/secure/sameSite flags
   → [[storage-actor-httponly-cookies]]
-- [ ] Add `network` command fallback to Performance API `getEntriesByType('resource')`
+- [x] Add `network` command fallback to Performance API `getEntriesByType('resource')`
   when watcher returns no events (page already loaded)
   → [[network-empty-for-loaded-pages]]
 - [ ] Optional: StorageActor for localStorage/sessionStorage
+  (skipped — Firefox RDP does not expose local-storage/session-storage via watchResources; JS eval remains the correct approach)
 
 ## Test Fixtures
 

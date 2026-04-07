@@ -10,6 +10,7 @@ use crate::output_pipeline::OutputPipeline;
 use super::connect_tab::connect_and_get_target;
 use super::network_events::{
     build_network_entries, drain_network_events, drain_network_from_daemon, merge_updates,
+    performance_api_fallback,
 };
 
 pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), AppError> {
@@ -50,27 +51,48 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
     // Merge updates into resources by resource_id.
     let update_map = merge_updates(all_updates);
 
-    // Build JSON output combining resource + update data, applying filters.
-    let results: Vec<serde_json::Value> = build_network_entries(&all_resources, &update_map)
-        .into_iter()
-        .filter(|entry| {
-            if let Some(f) = filter {
-                let url = entry["url"].as_str().unwrap_or_default();
-                if !url.contains(f) {
-                    return false;
+    // Build JSON output combining resource + update data.
+    let apply_filters = |entries: Vec<serde_json::Value>| -> Vec<serde_json::Value> {
+        entries
+            .into_iter()
+            .filter(|entry| {
+                if let Some(f) = filter {
+                    let url = entry["url"].as_str().unwrap_or_default();
+                    if !url.contains(f) {
+                        return false;
+                    }
                 }
-            }
-            if let Some(m) = method {
-                let entry_method = entry["method"].as_str().unwrap_or_default();
-                if !entry_method.eq_ignore_ascii_case(m) {
-                    return false;
+                if let Some(m) = method {
+                    let entry_method = entry["method"].as_str().unwrap_or_default();
+                    if !entry_method.eq_ignore_ascii_case(m) {
+                        return false;
+                    }
                 }
-            }
-            true
-        })
-        .collect();
+                true
+            })
+            .collect()
+    };
 
-    let meta = json!({"host": cli.host, "port": cli.port});
+    let watcher_entries = build_network_entries(&all_resources, &update_map);
+    let watcher_was_empty = watcher_entries.is_empty();
+    let filtered_watcher = apply_filters(watcher_entries);
+
+    // If the watcher returned nothing (page already loaded before subscribing)
+    // and we are not proxied via the daemon, try the Performance API as a fallback.
+    let (results, used_perf_fallback) = if watcher_was_empty && !ctx.via_daemon {
+        let fallback = performance_api_fallback(&mut ctx);
+        let filtered_fallback = apply_filters(fallback);
+        let used = !filtered_fallback.is_empty();
+        (filtered_fallback, used)
+    } else {
+        (filtered_watcher, false)
+    };
+
+    let meta = if used_perf_fallback {
+        json!({"host": cli.host, "port": cli.port, "source": "performance-api"})
+    } else {
+        json!({"host": cli.host, "port": cli.port})
+    };
 
     // Decide whether to show summary or detail mode.
     // Detail mode is used when:

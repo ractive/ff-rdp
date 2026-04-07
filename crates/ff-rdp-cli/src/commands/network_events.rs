@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use ff_rdp_core::transport::RdpTransport;
 use ff_rdp_core::{
-    NetworkResource, NetworkResourceUpdate, ProtocolError, parse_network_resource_updates,
-    parse_network_resources,
+    Grip, LongStringActor, NetworkResource, NetworkResourceUpdate, ProtocolError, WebConsoleActor,
+    parse_network_resource_updates, parse_network_resources,
 };
 use serde_json::{Value, json};
 
@@ -117,6 +117,88 @@ pub(crate) fn drain_network_from_daemon(
     Ok((resources, resource_updates))
 }
 
+/// Map a single PerformanceResourceTiming JSON entry (from `performance.getEntriesByType`)
+/// to the same JSON shape produced by [`build_network_entries`].
+pub(crate) fn map_perf_resource_to_network_entry(entry: &Value) -> Value {
+    let url = entry.get("name").cloned().unwrap_or(Value::Null);
+    let initiator_type = entry
+        .get("initiatorType")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let is_xhr = initiator_type == "xmlhttprequest" || initiator_type == "fetch";
+
+    let duration = entry.get("duration").cloned().unwrap_or(Value::Null);
+
+    let size_bytes = entry
+        .get("decodedBodySize")
+        .and_then(Value::as_u64)
+        .filter(|&v| v > 0)
+        .map_or(Value::Null, |v| json!(v));
+
+    let transfer_size = entry
+        .get("transferSize")
+        .and_then(Value::as_u64)
+        .filter(|&v| v > 0)
+        .map_or(Value::Null, |v| json!(v));
+
+    json!({
+        "method": "GET",
+        "url": url,
+        "is_xhr": is_xhr,
+        "cause_type": initiator_type,
+        "content_type": null,
+        "duration_ms": duration,
+        "size_bytes": size_bytes,
+        "transfer_size": transfer_size,
+        "status": null,
+        "source": "performance-api",
+    })
+}
+
+/// Evaluate `performance.getEntriesByType('resource')` in the page via JS and
+/// return the entries mapped to the same JSON shape as [`build_network_entries`].
+///
+/// Returns an empty vec on any failure — this is a best-effort fallback only.
+pub(crate) fn performance_api_fallback(ctx: &mut super::connect_tab::ConnectedTab) -> Vec<Value> {
+    const SCRIPT: &str =
+        "JSON.stringify(performance.getEntriesByType('resource').map(e => e.toJSON()))";
+
+    let console_actor = ctx.target.console_actor.clone();
+    let Ok(eval_result) =
+        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, SCRIPT)
+    else {
+        return vec![];
+    };
+
+    // If the eval threw an exception treat it as an empty result.
+    if eval_result.exception.is_some() {
+        return vec![];
+    }
+
+    // The result is a JSON string — possibly a LongString grip for large pages.
+    let json_str = match &eval_result.result {
+        Grip::Value(Value::String(s)) => s.clone(),
+        Grip::LongString {
+            actor,
+            length,
+            initial: _,
+        } => match LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), *length) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        },
+        _ => return vec![],
+    };
+
+    let Ok(entries) = serde_json::from_str::<Vec<Value>>(&json_str) else {
+        return vec![];
+    };
+
+    entries
+        .iter()
+        .map(map_perf_resource_to_network_entry)
+        .collect()
+}
+
 /// Build the JSON array of network entries combining resource + update data.
 ///
 /// Applies the same field mapping used by the `network` command output.
@@ -134,6 +216,7 @@ pub(crate) fn build_network_entries(
                 "is_xhr": res.is_xhr,
                 "cause_type": res.cause_type,
                 "content_type": null,
+                "source": "watcher",
             });
             if let Some(u) = update {
                 if let Some(ref status) = u.status
@@ -150,8 +233,94 @@ pub(crate) fn build_network_entries(
                 if let Some(size) = u.content_size {
                     entry["size_bytes"] = serde_json::json!(size);
                 }
+                if let Some(transferred) = u.transferred_size {
+                    entry["transfer_size"] = serde_json::json!(transferred);
+                }
             }
             entry
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_perf_resource_xhr_initiator_type() {
+        let entry = json!({
+            "name": "https://example.com/api/data",
+            "initiatorType": "xmlhttprequest",
+            "duration": 123.4,
+            "decodedBodySize": 2048,
+            "transferSize": 2100,
+        });
+        let result = map_perf_resource_to_network_entry(&entry);
+        assert_eq!(result["method"], "GET");
+        assert_eq!(result["url"], "https://example.com/api/data");
+        assert_eq!(result["is_xhr"], true);
+        assert_eq!(result["cause_type"], "xmlhttprequest");
+        assert_eq!(result["content_type"], Value::Null);
+        assert_eq!(result["duration_ms"], 123.4);
+        assert_eq!(result["size_bytes"], 2048);
+        assert_eq!(result["transfer_size"], 2100);
+        assert_eq!(result["status"], Value::Null);
+        assert_eq!(result["source"], "performance-api");
+    }
+
+    #[test]
+    fn map_perf_resource_fetch_initiator_type() {
+        let entry = json!({
+            "name": "https://example.com/api/fetch",
+            "initiatorType": "fetch",
+            "duration": 50.0,
+            "decodedBodySize": 512,
+            "transferSize": 600,
+        });
+        let result = map_perf_resource_to_network_entry(&entry);
+        assert_eq!(result["is_xhr"], true);
+        assert_eq!(result["cause_type"], "fetch");
+    }
+
+    #[test]
+    fn map_perf_resource_script_initiator_type_not_xhr() {
+        let entry = json!({
+            "name": "https://example.com/bundle.js",
+            "initiatorType": "script",
+            "duration": 200.0,
+            "decodedBodySize": 40000,
+            "transferSize": 12000,
+        });
+        let result = map_perf_resource_to_network_entry(&entry);
+        assert_eq!(result["is_xhr"], false);
+        assert_eq!(result["cause_type"], "script");
+        assert_eq!(result["url"], "https://example.com/bundle.js");
+    }
+
+    #[test]
+    fn map_perf_resource_zero_sizes_become_null() {
+        let entry = json!({
+            "name": "https://example.com/cached",
+            "initiatorType": "img",
+            "duration": 0.5,
+            "decodedBodySize": 0,
+            "transferSize": 0,
+        });
+        let result = map_perf_resource_to_network_entry(&entry);
+        assert_eq!(result["size_bytes"], Value::Null);
+        assert_eq!(result["transfer_size"], Value::Null);
+        assert_eq!(result["duration_ms"], 0.5);
+    }
+
+    #[test]
+    fn map_perf_resource_missing_size_fields_become_null() {
+        let entry = json!({
+            "name": "https://example.com/resource",
+            "initiatorType": "link",
+            "duration": 10.0,
+        });
+        let result = map_perf_resource_to_network_entry(&entry);
+        assert_eq!(result["size_bytes"], Value::Null);
+        assert_eq!(result["transfer_size"], Value::Null);
+    }
 }
