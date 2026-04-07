@@ -1,4 +1,4 @@
-use crate::cli::args::{Cli, Command, DomCommand, PerfCommand};
+use crate::cli::args::{A11yCommand, Cli, Command, DomCommand, PerfCommand};
 use crate::commands;
 use crate::commands::nav_action::NavAction;
 use crate::daemon::server;
@@ -107,6 +107,19 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 wait_timeout: *wait_timeout,
             },
         ),
+        Command::A11y {
+            a11y_command,
+            depth,
+            max_chars,
+            selector,
+            interactive,
+        } => match a11y_command {
+            Some(A11yCommand::Contrast {
+                selector: contrast_selector,
+                fail_only,
+            }) => commands::a11y_contrast::run(cli, contrast_selector.as_deref(), *fail_only),
+            None => commands::a11y::run(cli, *depth, *max_chars, selector.as_deref(), *interactive),
+        },
         Command::Cookies { name } => commands::cookies::run(cli, name.as_deref()),
         Command::Storage { storage_type, key } => {
             commands::storage::run(cli, storage_type, key.as_deref())

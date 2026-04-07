@@ -62,6 +62,28 @@ PAGE UNDERSTANDING
   Find hidden elements:
     ff-rdp geometry "div" --jq '[.results.elements[] | select(.visible == false)]'
 
+ACCESSIBILITY
+  Full accessibility tree:
+    ff-rdp a11y
+
+  Interactive elements only (buttons, links, inputs):
+    ff-rdp a11y --interactive
+
+  Accessibility subtree for a section:
+    ff-rdp a11y --selector ".main-content" --depth 4
+
+  Extract all link names:
+    ff-rdp a11y --jq '[.. | select(.role? == "link") | .name]'
+
+  WCAG contrast check (all text elements):
+    ff-rdp a11y contrast
+
+  Show only contrast failures:
+    ff-rdp a11y contrast --fail-only
+
+  Contrast summary stats:
+    ff-rdp a11y contrast --jq '.meta.summary'
+
 GENERAL
   Count results from any command:
     ff-rdp <command> --jq '.total'

@@ -1,0 +1,7 @@
+{
+  "from": "server1.conn0.child2/accessibilityActor12",
+  "walker": {
+    "actor": "server1.conn0.child2/accessibleWalkerActor13",
+    "traits": {}
+  }
+}

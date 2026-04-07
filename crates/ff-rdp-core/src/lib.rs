@@ -5,6 +5,7 @@ pub mod error;
 pub mod transport;
 pub mod types;
 
+pub use actors::accessibility::{AccessibilityActor, AccessibleNode, filter_interactive};
 pub use actors::console::{ConsoleMessage, EvalException, EvalResult, WebConsoleActor};
 pub use actors::network::{EventTimings, Header, NetworkEventActor, ResponseContent};
 pub use actors::object::{
