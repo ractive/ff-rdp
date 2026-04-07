@@ -113,7 +113,7 @@ fn render_text(envelope: &Value) {
         && let Some(Value::Array(arr)) = envelope.get("results")
     {
         let shown = arr.len() as u64;
-        if shown == total && total > 0 {
+        if shown < total {
             println!();
             println!("Showing {shown} of {total} results");
         }
@@ -129,11 +129,12 @@ fn render_text(envelope: &Value) {
 fn render_table(rows: &[Value]) {
     // Collect ordered column names from the first row, then any unseen keys
     // from subsequent rows.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut columns: Vec<String> = Vec::new();
     for row in rows {
         if let Value::Object(map) = row {
             for key in map.keys() {
-                if !columns.contains(key) {
+                if seen.insert(key.clone()) {
                     columns.push(key.clone());
                 }
             }
