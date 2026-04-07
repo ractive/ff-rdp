@@ -48,7 +48,7 @@ pub fn run(
             name: Some("(no interactive elements)".to_string()),
             value: None,
             description: None,
-            child_count: Some(0),
+            child_count: None,
             states: vec![],
             dom_node_type: None,
             index_in_parent: None,
@@ -90,7 +90,7 @@ fn run_selector_mode(
     let js = A11Y_SELECTOR_JS_TEMPLATE
         .replace(
             "__SELECTOR__",
-            &selector.replace('\\', "\\\\").replace('"', "\\\""),
+            &super::js_helpers::escape_selector(selector),
         )
         .replace("__DEPTH__", &depth.to_string())
         .replace("__MAX_CHARS__", &max_chars.to_string());

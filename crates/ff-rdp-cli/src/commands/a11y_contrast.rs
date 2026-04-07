@@ -15,10 +15,7 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
     let console_actor = ctx.target.console_actor.clone();
 
     let sel = selector.unwrap_or("*");
-    let js = CONTRAST_JS_TEMPLATE.replace(
-        "__SELECTOR__",
-        &sel.replace('\\', "\\\\").replace('"', "\\\""),
-    );
+    let js = CONTRAST_JS_TEMPLATE.replace("__SELECTOR__", &super::js_helpers::escape_selector(sel));
 
     let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js)
         .map_err(AppError::from)?;
@@ -28,19 +25,25 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
         return Err(AppError::User(format!("contrast check failed: {msg}")));
     }
 
-    let result = resolve_result(&mut ctx, &eval_result.result)?;
+    let mut result = resolve_result(&mut ctx, &eval_result.result)?;
 
-    let checks = result
-        .get("checks")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let checks = match result.get_mut("checks").and_then(Value::as_array_mut) {
+        Some(arr) => std::mem::take(arr),
+        None => Vec::new(),
+    };
 
-    // Apply fail_only filter.
+    // Apply fail_only filter: use aa_large for large text, aa_normal otherwise.
     let mut filtered: Vec<Value> = if fail_only {
         checks
             .into_iter()
-            .filter(|c| c.get("aa_normal").and_then(Value::as_bool) == Some(false))
+            .filter(|c| {
+                let is_large = c
+                    .get("is_large_text")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let key = if is_large { "aa_large" } else { "aa_normal" };
+                c.get(key).and_then(Value::as_bool) == Some(false)
+            })
             .collect()
     } else {
         checks
@@ -96,10 +99,8 @@ const CONTRAST_JS_TEMPLATE: &str = r#"(function() {
   }
 
   function parseColor(str) {
-    var m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-    if (m) return {r: +m[1], g: +m[2], b: +m[3], a: 1};
-    m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)/);
-    if (m) return {r: +m[1], g: +m[2], b: +m[3], a: +m[4]};
+    var m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+    if (m) return {r: +m[1], g: +m[2], b: +m[3], a: m[4] !== undefined ? +m[4] : 1};
     return null;
   }
 

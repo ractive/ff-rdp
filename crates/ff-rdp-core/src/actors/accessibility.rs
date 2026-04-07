@@ -131,8 +131,19 @@ fn walk_recursive(
     max_chars: u32,
     char_count: &mut u32,
 ) -> Result<AccessibleNode, ProtocolError> {
-    let mut result = node.clone();
-    result.children = Vec::new();
+    let mut result = AccessibleNode {
+        actor: node.actor.clone(),
+        role: node.role.clone(),
+        name: node.name.clone(),
+        value: node.value.clone(),
+        description: node.description.clone(),
+        child_count: node.child_count,
+        states: node.states.clone(),
+        dom_node_type: node.dom_node_type,
+        index_in_parent: node.index_in_parent,
+        children: Vec::new(),
+        truncated: None,
+    };
 
     // Count characters from this node's text content.
     if let Some(ref name) = result.name {
