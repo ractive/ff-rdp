@@ -137,6 +137,31 @@ ff-rdp snapshot --depth 3
 ff-rdp snapshot --jq '.results.children[0]'
 ```
 
+### a11y
+Inspect accessibility tree via Firefox's AccessibilityActor.
+  --depth <N>            Maximum tree depth [default: 6]
+  --max-chars <N>        Maximum characters of text content [default: 50000]
+  --selector <SEL>       Root tree at a specific CSS selector
+  --interactive          Only show interactive elements (buttons, links, inputs)
+```
+ff-rdp a11y
+ff-rdp a11y --depth 3
+ff-rdp a11y --selector ".main-content"
+ff-rdp a11y --interactive
+ff-rdp a11y --jq '.results.children[] | select(.role == "link")'
+```
+
+### a11y contrast
+Check WCAG color contrast ratios for text elements.
+  --selector <SEL>       CSS selector to limit checking [default: all]
+  --fail-only            Only show elements that fail AA contrast
+```
+ff-rdp a11y contrast
+ff-rdp a11y contrast --selector "h1,p,a"
+ff-rdp a11y contrast --fail-only
+ff-rdp a11y contrast --jq '.meta.summary'
+```
+
 ### geometry <SELECTOR>...
 Get element geometry: bounding rects, position, z-index, visibility, overflow,
 with automatic overlap detection between elements.

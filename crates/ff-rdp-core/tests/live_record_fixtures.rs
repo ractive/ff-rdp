@@ -1901,3 +1901,124 @@ fn get_console_actor(transport: &mut RdpTransport) -> String {
     let (_target, console) = setup_target(transport);
     console
 }
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_accessibility_get_walker() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    // Get tab
+    transport
+        .send(&json!({"to": "root", "type": "listTabs"}))
+        .expect("send listTabs");
+    let list_tabs = recv_from_actor(transport, "root");
+    let tab_actor = list_tabs["tabs"][0]["actor"]
+        .as_str()
+        .expect("tab actor")
+        .to_owned();
+
+    // Get target to find accessibility actor
+    transport
+        .send(&json!({"to": &tab_actor, "type": "getTarget"}))
+        .expect("send getTarget");
+    let target = recv_from_actor(transport, &tab_actor);
+    let a11y_actor = target["frame"]["accessibilityActor"]
+        .as_str()
+        .expect("accessibilityActor in frame")
+        .to_owned();
+
+    // Get walker
+    transport
+        .send(&json!({"to": &a11y_actor, "type": "getWalker"}))
+        .expect("send getWalker on accessibility actor");
+    let resp = recv_from_actor(transport, &a11y_actor);
+
+    assert!(
+        resp.get("walker").and_then(|w| w.get("actor")).is_some(),
+        "getWalker must return a walker with an actor: {resp:#}"
+    );
+
+    save_core_fixture("a11y_get_walker_response.json", &resp);
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_accessibility_tree() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    // Get tab
+    transport
+        .send(&json!({"to": "root", "type": "listTabs"}))
+        .expect("send listTabs");
+    let list_tabs = recv_from_actor(transport, "root");
+    let tab_actor = list_tabs["tabs"][0]["actor"]
+        .as_str()
+        .expect("tab actor")
+        .to_owned();
+
+    // Get target
+    transport
+        .send(&json!({"to": &tab_actor, "type": "getTarget"}))
+        .expect("send getTarget");
+    let target = recv_from_actor(transport, &tab_actor);
+    let a11y_actor = target["frame"]["accessibilityActor"]
+        .as_str()
+        .expect("accessibilityActor in frame")
+        .to_owned();
+
+    // Get walker
+    transport
+        .send(&json!({"to": &a11y_actor, "type": "getWalker"}))
+        .expect("send getWalker");
+    let walker_resp = recv_from_actor(transport, &a11y_actor);
+    let walker_actor = walker_resp["walker"]["actor"]
+        .as_str()
+        .expect("walker actor")
+        .to_owned();
+
+    // Get root node
+    transport
+        .send(&json!({"to": &walker_actor, "type": "getRootNode"}))
+        .expect("send getRootNode");
+    let root_resp = recv_from_actor(transport, &walker_actor);
+
+    assert!(
+        root_resp.get("role").is_some(),
+        "getRootNode must return an accessible with a role: {root_resp:#}"
+    );
+
+    save_core_fixture("a11y_get_root_response.json", &root_resp);
+
+    // Get children of root
+    let root_actor = root_resp["actor"]
+        .as_str()
+        .expect("root accessible actor")
+        .to_owned();
+
+    transport
+        .send(&json!({
+            "to": &walker_actor,
+            "type": "children",
+            "accessible": &root_actor
+        }))
+        .expect("send children");
+    let children_resp = recv_from_actor(transport, &walker_actor);
+
+    assert!(
+        children_resp
+            .get("children")
+            .and_then(Value::as_array)
+            .is_some(),
+        "children must return a children array: {children_resp:#}"
+    );
+
+    save_core_fixture("a11y_children_response.json", &children_resp);
+}

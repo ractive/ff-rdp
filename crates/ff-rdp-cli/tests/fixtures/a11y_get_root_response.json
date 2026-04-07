@@ -1,0 +1,12 @@
+{
+  "from": "server1.conn0.child2/accessibleWalkerActor13",
+  "actor": "server1.conn0.child2/accessible14",
+  "childCount": 2,
+  "description": "",
+  "domNodeType": 9,
+  "indexInParent": 0,
+  "name": "",
+  "role": "document",
+  "states": ["enabled", "sensitive"],
+  "value": ""
+}

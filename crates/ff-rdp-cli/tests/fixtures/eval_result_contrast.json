@@ -1,0 +1,8 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "type": "evaluationResult",
+  "resultID": "1775437183977.373-0",
+  "hasException": false,
+  "result": "__FF_RDP_JSON__{\"checks\":[{\"selector\":\"h1\",\"text\":\"Example Domain\",\"foreground\":\"#000000\",\"background\":\"#ffffff\",\"ratio\":21,\"font_size\":\"32px\",\"is_large_text\":true,\"aa_normal\":true,\"aa_large\":true,\"aaa_normal\":true,\"aaa_large\":true},{\"selector\":\"p\",\"text\":\"This domain is for use in illustrative examples.\",\"foreground\":\"#333333\",\"background\":\"#ffffff\",\"ratio\":12.63,\"font_size\":\"14px\",\"is_large_text\":false,\"aa_normal\":true,\"aa_large\":true,\"aaa_normal\":true,\"aaa_large\":true}],\"summary\":{\"total\":2,\"aa_pass\":2,\"aa_fail\":0}}",
+  "timestamp": 1775437183980.721
+}

@@ -231,6 +231,24 @@ affect which requests Firefox records.")]
         #[arg(long)]
         key: Option<String>,
     },
+    /// Inspect accessibility tree and check WCAG compliance
+    A11y {
+        #[command(subcommand)]
+        a11y_command: Option<A11yCommand>,
+
+        /// Maximum tree depth to traverse (default: 6)
+        #[arg(long, default_value_t = 6)]
+        depth: u32,
+        /// Maximum total characters of text content to include (default: 50000)
+        #[arg(long, default_value_t = 50000)]
+        max_chars: u32,
+        /// CSS selector to root the tree at a specific element
+        #[arg(long)]
+        selector: Option<String>,
+        /// Only show interactive elements (buttons, links, inputs, etc.)
+        #[arg(long)]
+        interactive: bool,
+    },
     /// Reload the page
     Reload,
     /// Go back in history
@@ -303,6 +321,19 @@ pub enum PerfCommand {
     Summary,
     /// Full page performance audit: vitals, navigation timing, resource breakdown, DOM stats
     Audit,
+}
+
+#[derive(Subcommand)]
+pub enum A11yCommand {
+    /// Check WCAG color contrast ratios for text elements
+    Contrast {
+        /// CSS selector to limit checking (default: all text elements)
+        #[arg(long)]
+        selector: Option<String>,
+        /// Only show elements that fail AA contrast requirements
+        #[arg(long)]
+        fail_only: bool,
+    },
 }
 
 #[derive(Subcommand)]

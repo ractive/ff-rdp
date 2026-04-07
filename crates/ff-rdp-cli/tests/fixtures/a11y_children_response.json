@@ -1,0 +1,27 @@
+{
+  "from": "server1.conn0.child2/accessibleWalkerActor13",
+  "children": [
+    {
+      "actor": "server1.conn0.child2/accessible15",
+      "childCount": 0,
+      "description": "",
+      "domNodeType": 1,
+      "indexInParent": 0,
+      "name": "Example Domain",
+      "role": "heading",
+      "states": ["enabled", "sensitive"],
+      "value": ""
+    },
+    {
+      "actor": "server1.conn0.child2/accessible16",
+      "childCount": 0,
+      "description": "",
+      "domNodeType": 1,
+      "indexInParent": 1,
+      "name": "More information...",
+      "role": "link",
+      "states": ["enabled", "sensitive", "focusable"],
+      "value": ""
+    }
+  ]
+}

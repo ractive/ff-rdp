@@ -43,6 +43,8 @@ pub struct TargetInfo {
     pub inspector_actor: Option<ActorId>,
     /// The screenshot content actor ID (for screenshots without drawWindow).
     pub screenshot_content_actor: Option<ActorId>,
+    /// The accessibility actor ID (for accessibility tree inspection).
+    pub accessibility_actor: Option<ActorId>,
 }
 
 /// Operations on a tab descriptor actor.
@@ -116,12 +118,18 @@ fn parse_target_response(response: &Value) -> Result<TargetInfo, ProtocolError> 
         .and_then(Value::as_str)
         .map(ActorId::from);
 
+    let accessibility_actor = frame
+        .get("accessibilityActor")
+        .and_then(Value::as_str)
+        .map(ActorId::from);
+
     Ok(TargetInfo {
         actor: actor.into(),
         console_actor: console_actor.into(),
         thread_actor,
         inspector_actor,
         screenshot_content_actor,
+        accessibility_actor,
     })
 }
 
@@ -192,7 +200,8 @@ mod tests {
                 "consoleActor": "server1.conn3.child2/consoleActor3",
                 "threadActor": "server1.conn3.child2/thread1",
                 "inspectorActor": "server1.conn3.child2/inspectorActor4",
-                "screenshotContentActor": "server1.conn3.child2/screenshotContentActor5"
+                "screenshotContentActor": "server1.conn3.child2/screenshotContentActor5",
+                "accessibilityActor": "server1.conn3.child2/accessibilityActor6"
             },
             "from": "server1.conn3.tabDescriptor1"
         });
@@ -217,6 +226,10 @@ mod tests {
             info.screenshot_content_actor.as_ref().map(ActorId::as_ref),
             Some("server1.conn3.child2/screenshotContentActor5")
         );
+        assert_eq!(
+            info.accessibility_actor.as_ref().map(ActorId::as_ref),
+            Some("server1.conn3.child2/accessibilityActor6")
+        );
     }
 
     #[test]
@@ -232,6 +245,7 @@ mod tests {
         assert!(info.thread_actor.is_none());
         assert!(info.inspector_actor.is_none());
         assert!(info.screenshot_content_actor.is_none());
+        assert!(info.accessibility_actor.is_none());
     }
 
     #[test]
