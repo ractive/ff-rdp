@@ -40,6 +40,11 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             count,
         } => match dom_command {
             Some(DomCommand::Stats) => commands::dom::run_stats(cli),
+            Some(DomCommand::Tree {
+                selector,
+                depth,
+                max_chars,
+            }) => commands::dom_tree::run(cli, selector.as_deref(), *depth, *max_chars),
             None => {
                 let sel = selector.as_deref().ok_or_else(|| {
                     AppError::User("dom requires a CSS selector argument".to_string())
@@ -143,6 +148,19 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             *temp_profile,
             *debug_port,
         ),
+        Command::Styles {
+            selector,
+            applied,
+            layout,
+        } => {
+            if *applied {
+                commands::styles::run_applied(cli, selector)
+            } else if *layout {
+                commands::styles::run_layout(cli, selector)
+            } else {
+                commands::styles::run(cli, selector)
+            }
+        }
         Command::Geometry { selectors } => commands::geometry::run(cli, selectors),
         Command::Snapshot { depth, max_chars } => commands::snapshot::run(cli, *depth, *max_chars),
         Command::Recipes => {

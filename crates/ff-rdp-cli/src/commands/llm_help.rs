@@ -80,6 +80,38 @@ ff-rdp dom "img" --attrs --jq '.[].src'
 ff-rdp dom "script" --count
 ```
 
+### dom stats
+DOM statistics: node count, document size, inline scripts, render-blocking resources.
+```
+ff-rdp dom stats
+ff-rdp dom stats --jq '.results.node_count'
+```
+
+### dom tree [SELECTOR]
+Dump structured DOM subtree via native WalkerActor (not JS eval).
+  --depth <N>            Maximum tree depth [default: 6]
+  --max-chars <N>        Maximum characters of text content [default: 50000]
+```
+ff-rdp dom tree
+ff-rdp dom tree "main" --depth 3
+ff-rdp dom tree ".content" --max-chars 10000
+ff-rdp dom tree --jq '.results.children | map(.nodeName)'
+```
+
+### styles <SELECTOR>
+Inspect CSS styles for an element matching a CSS selector.
+Default: computed styles as JSON array of {name, value, priority}.
+  --applied              Show applied CSS rules with source locations
+  --layout               Show box model (margin/border/padding/content per side)
+```
+ff-rdp styles "h1"
+ff-rdp styles "h1" --jq '.results[] | select(.name == "color")'
+ff-rdp styles "h1" --applied
+ff-rdp styles "h1" --applied --jq '.results[].selector'
+ff-rdp styles "h1" --layout
+ff-rdp styles "h1" --layout --jq '.results.margin'
+```
+
 ### console
 Read console messages.
   --level <LEVEL>        Filter by log level (error, warn, info, log, debug)
@@ -282,6 +314,9 @@ mod tests {
             "eval",
             "page-text",
             "dom",
+            "dom stats",
+            "dom tree",
+            "styles",
             "console",
             "network",
             "perf",

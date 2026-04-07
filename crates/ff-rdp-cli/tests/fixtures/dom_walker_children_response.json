@@ -1,0 +1,19 @@
+{
+  "from": "server1.conn0.child2/domwalkerActor1",
+  "nodes": [
+    {
+      "actor": "server1.conn0.child2/domnode4",
+      "nodeType": 1,
+      "nodeName": "HEAD",
+      "numChildren": 0,
+      "attrs": []
+    },
+    {
+      "actor": "server1.conn0.child2/domnode5",
+      "nodeType": 1,
+      "nodeName": "BODY",
+      "numChildren": 0,
+      "attrs": []
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "from": "server1.conn0.child2/inspectorActor4",
+  "walker": {
+    "actor": "server1.conn0.child2/domwalkerActor1",
+    "rootNode": {
+      "actor": "server1.conn0.child2/domnode1",
+      "nodeType": 9,
+      "nodeName": "#document",
+      "numChildren": 1,
+      "attrs": []
+    }
+  }
+}

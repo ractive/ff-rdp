@@ -7,9 +7,14 @@ pub mod types;
 
 pub use actors::accessibility::{AccessibilityActor, AccessibleNode, filter_interactive};
 pub use actors::console::{ConsoleMessage, EvalException, EvalResult, WebConsoleActor};
+pub use actors::dom_walker::{DomAttr, DomNode, DomWalkerActor};
+pub use actors::inspector::InspectorActor;
 pub use actors::network::{EventTimings, Header, NetworkEventActor, ResponseContent};
 pub use actors::object::{
     ObjectActor, PropertyDescriptor, PrototypeAndProperties, descriptor_to_json,
+};
+pub use actors::page_style::{
+    AppliedRule, BoxModelLayout, BoxSides, ComputedProperty, PageStyleActor, RuleProperty,
 };
 pub use actors::root::RootActor;
 pub use actors::screenshot_content::{ScreenshotCapture, ScreenshotContentActor};
