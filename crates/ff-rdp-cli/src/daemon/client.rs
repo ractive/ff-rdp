@@ -165,13 +165,7 @@ pub(crate) fn start_daemon_stream(transport: &mut RdpTransport, resource_type: &
     transport
         .send(&msg)
         .context("sending stream request to daemon")?;
-    let response = transport
-        .recv()
-        .context("receiving stream response from daemon")?;
-    if let Some(err) = response.get("error").and_then(Value::as_str) {
-        anyhow::bail!("daemon stream error: {err}");
-    }
-    Ok(())
+    recv_daemon_ack(transport, "stream")
 }
 
 /// Tell the daemon to stop streaming events for `resource_type` and revert
@@ -185,13 +179,30 @@ pub(crate) fn stop_daemon_stream(transport: &mut RdpTransport, resource_type: &s
     transport
         .send(&msg)
         .context("sending stop-stream request to daemon")?;
-    let response = transport
-        .recv()
-        .context("receiving stop-stream response from daemon")?;
-    if let Some(err) = response.get("error").and_then(Value::as_str) {
-        anyhow::bail!("daemon stop-stream error: {err}");
+    recv_daemon_ack(transport, "stop-stream")
+}
+
+/// Read frames until we receive a daemon ack (`{from: "daemon", ...}`).
+///
+/// The daemon's Firefox-reader thread may forward watcher events between
+/// the moment we send a daemon-local request and the moment the daemon
+/// processes it.  Those forwarded frames are silently discarded here; they
+/// will be picked up by the normal drain/stream path later.
+fn recv_daemon_ack(transport: &mut RdpTransport, context: &str) -> Result<()> {
+    // Limit iterations to avoid spinning forever on a broken connection.
+    for _ in 0..64 {
+        let response = transport
+            .recv()
+            .with_context(|| format!("receiving {context} response from daemon"))?;
+        if response.get("from").and_then(Value::as_str) == Some("daemon") {
+            if let Some(err) = response.get("error").and_then(Value::as_str) {
+                anyhow::bail!("daemon {context} error: {err}");
+            }
+            return Ok(());
+        }
+        // Not a daemon message — discard and keep reading.
     }
-    Ok(())
+    anyhow::bail!("did not receive daemon ack for {context} within 64 frames")
 }
 
 // ---------------------------------------------------------------------------

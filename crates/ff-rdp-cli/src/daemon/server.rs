@@ -256,8 +256,8 @@ fn buffer_watcher_event(buffer: &Mutex<EventBuffer>, msg: &Value) {
 
 /// Forward a message to the CLI client if one is currently connected.
 ///
-/// The lock is held only long enough to clone the writer, then released before
-/// the I/O call so the mutex is not held across a potentially-blocking write.
+/// The lock is held for the entire write to prevent interleaved frames from
+/// the firefox-reader thread and the client-handler thread.
 /// On write error the writer is cleared (treated as disconnected).
 fn forward_to_cli(cli_writer: &Mutex<Option<TcpStream>>, msg: &Value) {
     // Serialise first — no lock needed.
@@ -270,28 +270,16 @@ fn forward_to_cli(cli_writer: &Mutex<Option<TcpStream>>, msg: &Value) {
     };
     let frame = encode_frame(&json);
 
-    // Hold the lock only to clone the stream handle, then release it.
-    // `TcpStream::try_clone` duplicates the fd/handle; the write below
-    // operates on the clone without holding the mutex.
-    let mut writer = {
-        // unwrap: poisoned mutex means a thread panicked — daemon should crash.
-        let guard = cli_writer.lock().unwrap();
-        match guard.as_ref() {
-            Some(w) => match w.try_clone() {
-                Ok(cloned) => cloned,
-                Err(e) => {
-                    eprintln!("daemon: could not clone CLI writer: {e}");
-                    return;
-                }
-            },
-            None => return,
-        }
+    // Hold the lock for the entire write so concurrent forward_to_cli and
+    // handle_client daemon-response writes cannot interleave bytes.
+    // unwrap: poisoned mutex means a thread panicked — daemon should crash.
+    let mut guard = cli_writer.lock().unwrap();
+    let Some(writer) = guard.as_mut() else {
+        return;
     };
-
     if writer.write_all(frame.as_bytes()).is_err() {
         // Client disconnected while we were trying to write.
-        // unwrap: same rationale as above.
-        *cli_writer.lock().unwrap() = None;
+        *guard = None;
     }
 }
 
@@ -368,13 +356,16 @@ fn handle_client(
     let greeting_json = serde_json::to_string(&state.greeting).context("serialising greeting")?;
     let greeting_frame = encode_frame(&greeting_json);
 
-    // Clone for writing; `reader` will wrap the original.
-    let mut writer = stream
-        .try_clone()
-        .context("cloning client stream for writer")?;
-    writer
-        .write_all(greeting_frame.as_bytes())
-        .context("sending greeting to CLI client")?;
+    // Write the greeting before registering the client as the forwarding
+    // target — no concurrent writes are possible yet.
+    {
+        let mut writer = stream
+            .try_clone()
+            .context("cloning client stream for greeting")?;
+        writer
+            .write_all(greeting_frame.as_bytes())
+            .context("sending greeting to CLI client")?;
+    }
 
     // Register this client as the current forwarding target.
     {
@@ -403,9 +394,13 @@ fn handle_client(
                     let resp_json =
                         serde_json::to_string(&response).context("serialising daemon response")?;
                     let frame = encode_frame(&resp_json);
-                    writer
-                        .write_all(frame.as_bytes())
-                        .context("sending daemon response to CLI client")?;
+                    // Write through the shared cli_writer mutex to prevent
+                    // interleaving with forward_to_cli on the reader thread.
+                    let mut guard = state.cli_writer.lock().unwrap();
+                    if let Some(w) = guard.as_mut() {
+                        w.write_all(frame.as_bytes())
+                            .context("sending daemon response to CLI client")?;
+                    }
                 } else {
                     // Forward to Firefox.
                     let json = serde_json::to_string(&msg).context("serialising CLI message")?;
@@ -447,10 +442,16 @@ fn handle_daemon_message(state: &SharedState, msg: &Value) -> Value {
 
     match msg_type {
         "drain" => {
-            let resource_type = msg
+            let Some(resource_type) = msg
                 .get("resourceType")
                 .and_then(Value::as_str)
-                .unwrap_or_default();
+                .filter(|s| !s.is_empty())
+            else {
+                return json!({
+                    "from": "daemon",
+                    "error": "drain requires a non-empty resourceType field",
+                });
+            };
             let events = state.buffer.lock().unwrap().drain(resource_type);
             json!({
                 "from": "daemon",
@@ -458,10 +459,14 @@ fn handle_daemon_message(state: &SharedState, msg: &Value) -> Value {
             })
         }
         "stream" => {
-            let Some(resource_type) = msg.get("resourceType").and_then(Value::as_str) else {
+            let Some(resource_type) = msg
+                .get("resourceType")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            else {
                 return json!({
                     "from": "daemon",
-                    "error": "stream requires a resourceType field",
+                    "error": "stream requires a non-empty resourceType field",
                 });
             };
             // Clear existing buffered events for this type so the client
@@ -479,10 +484,14 @@ fn handle_daemon_message(state: &SharedState, msg: &Value) -> Value {
             })
         }
         "stop-stream" => {
-            let Some(resource_type) = msg.get("resourceType").and_then(Value::as_str) else {
+            let Some(resource_type) = msg
+                .get("resourceType")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            else {
                 return json!({
                     "from": "daemon",
-                    "error": "stop-stream requires a resourceType field",
+                    "error": "stop-stream requires a non-empty resourceType field",
                 });
             };
             state.streaming_types.lock().unwrap().remove(resource_type);
@@ -589,16 +598,46 @@ mod tests {
     }
 
     #[test]
-    fn drain_missing_resource_type_returns_empty() {
+    fn drain_missing_resource_type_returns_error() {
         let state = test_state();
-        // No "resourceType" key at all — defaults to empty string, maps to
-        // an unknown bucket.
         let msg = json!({"to": "daemon", "type": "drain"});
         let resp = handle_daemon_message(&state, &msg);
-        assert_eq!(
-            resp["events"].as_array().expect("events array").len(),
-            0,
-            "missing resourceType key must yield empty events"
+        assert!(
+            resp["error"].as_str().is_some(),
+            "missing resourceType must produce an error"
+        );
+    }
+
+    #[test]
+    fn drain_empty_resource_type_returns_error() {
+        let state = test_state();
+        let msg = json!({"to": "daemon", "type": "drain", "resourceType": ""});
+        let resp = handle_daemon_message(&state, &msg);
+        assert!(
+            resp["error"].as_str().is_some(),
+            "empty resourceType must produce an error"
+        );
+    }
+
+    #[test]
+    fn stream_missing_resource_type_returns_error() {
+        let state = test_state();
+        let msg = json!({"to": "daemon", "type": "stream"});
+        let resp = handle_daemon_message(&state, &msg);
+        assert!(
+            resp["error"].as_str().is_some(),
+            "stream without resourceType must produce an error"
+        );
+    }
+
+    #[test]
+    fn stop_stream_missing_resource_type_returns_error() {
+        let state = test_state();
+        let msg = json!({"to": "daemon", "type": "stop-stream"});
+        let resp = handle_daemon_message(&state, &msg);
+        assert!(
+            resp["error"].as_str().is_some(),
+            "stop-stream without resourceType must produce an error"
         );
     }
 

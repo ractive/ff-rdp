@@ -111,17 +111,17 @@ pub fn run_with_network(
             }))
             .map_err(AppError::from)?;
 
-        // Drain resource events until the timeout fires (same as non-daemon).
-        let (all_resources, all_updates) =
-            drain_network_events(ctx.transport_mut()).map_err(AppError::from)?;
+        // Always stop streaming before propagating errors from drain so the
+        // daemon does not get stuck in streaming mode on failure.
+        let drain_result = drain_network_events(ctx.transport_mut());
 
-        // Switch back to buffering so the daemon continues capturing events
-        // for the `network` command.
         if let Err(e) =
             crate::daemon::client::stop_daemon_stream(ctx.transport_mut(), "network-event")
         {
             eprintln!("warning: failed to stop daemon stream: {e:#}");
         }
+
+        let (all_resources, all_updates) = drain_result.map_err(AppError::from)?;
 
         let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
 
