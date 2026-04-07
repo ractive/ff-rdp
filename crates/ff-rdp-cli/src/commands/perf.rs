@@ -54,6 +54,8 @@ fn script_get_entries(entry_type: &str) -> String {
 
 /// Build a JS snippet that returns both resource entries and the page hostname
 /// in a single eval, avoiding a separate roundtrip for third-party detection.
+///
+/// Safety: `entry_type` must have passed through `canonical_type()` to prevent JS injection.
 fn script_get_entries_with_hostname(entry_type: &str) -> String {
     format!(
         r#"JSON.stringify({{entries: performance.getEntriesByType("{entry_type}").map(e => e.toJSON()), hostname: document.location.hostname}})"#
@@ -130,6 +132,9 @@ fn map_entry(entry_type: &str, entry: Value, nav_domain: Option<&str>) -> Value 
                 .get("decodedBodySize")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0);
+            // Heuristic: cross-origin resources without Timing-Allow-Origin have both
+            // transferSize and decodedBodySize blocked (both 0), so from_cache will be
+            // false even if the resource was served from cache.
             let from_cache = transfer_size == 0.0 && decoded_size > 0.0;
             let url_str = entry
                 .get("name")
@@ -487,12 +492,12 @@ pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
 
     let mut by_type: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for entry in &mapped {
-        let itype = entry
-            .get("initiator_type")
+        let rtype = entry
+            .get("resource_type")
             .and_then(Value::as_str)
             .unwrap_or("other")
             .to_string();
-        *by_type.entry(itype).or_insert(0) += 1;
+        *by_type.entry(rtype).or_insert(0) += 1;
     }
 
     let mut by_duration: Vec<(&Value, f64)> = mapped
@@ -566,14 +571,14 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
     node_count: document.querySelectorAll('*').length,
     document_size: document.documentElement.outerHTML.length,
     inline_script_count: document.querySelectorAll('script:not([src])').length,
-    render_blocking_resources: (function() {
+    render_blocking_count: (function() {
       var count = 0;
       document.querySelectorAll('link[rel="stylesheet"], script:not([async]):not([defer]):not([type="module"])').forEach(function(el) {
         if (el.tagName === 'LINK' || (el.tagName === 'SCRIPT' && !el.src.startsWith('data:'))) count++;
       });
       return count;
     })(),
-    images_without_lazy_loading: document.querySelectorAll('img:not([loading="lazy"])').length
+    images_without_lazy: document.querySelectorAll('img:not([loading="lazy"])').length
   };
 
   result.hostname = document.location.hostname;
@@ -941,7 +946,7 @@ fn classify_resource_type(url: &str, initiator_type: &str) -> &'static str {
             }
             "woff" | "woff2" | "ttf" | "otf" | "eot" => return "font",
             "html" | "htm" => return "document",
-            "json" | "xml" => return "xhr",
+            "json" | "xml" => return "data",
             _ => {}
         }
     }

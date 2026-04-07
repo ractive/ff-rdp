@@ -1,0 +1,10 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "input": "JSON.stringify(...)",
+  "result": "{\"node_count\":150,\"document_size\":32000,\"inline_script_count\":2,\"render_blocking_count\":4,\"images_without_lazy\":1}",
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183977.373,
+  "timestamp": 1775437183980.721,
+  "type": "evaluationResult"
+}

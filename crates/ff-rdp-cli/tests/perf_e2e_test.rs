@@ -405,6 +405,63 @@ fn perf_vitals_computes_cwv() {
 }
 
 // ---------------------------------------------------------------------------
+// perf audit
+// ---------------------------------------------------------------------------
+
+#[test]
+fn perf_audit_returns_structured_report() {
+    let server = perf_server("eval_result_perf_audit.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["perf".to_owned(), "audit".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    let r = &json["results"];
+
+    // vitals section
+    assert_eq!(r["vitals"]["lcp_ms"], 1850.0);
+    assert_eq!(r["vitals"]["fcp_ms"], 980.0);
+    assert_eq!(r["vitals"]["ttfb_ms"], 340.0);
+
+    // resource summary
+    assert_eq!(r["resource_summary"]["count"], 2);
+
+    // resource_by_type has entries
+    assert!(!r["resource_by_type"].as_array().unwrap().is_empty());
+
+    // third_party_summary: one third-party resource (cdn.thirdparty.com)
+    assert_eq!(r["third_party_summary"]["count"], 1);
+
+    // dom_stats present
+    assert_eq!(r["dom_stats"]["node_count"], 250);
+    assert_eq!(r["dom_stats"]["render_blocking_count"], 5);
+    assert_eq!(r["dom_stats"]["images_without_lazy"], 2);
+
+    // slowest_resources
+    assert!(!r["slowest_resources"].as_array().unwrap().is_empty());
+
+    // navigation present
+    assert!(r["navigation"].is_object());
+}
+
+// ---------------------------------------------------------------------------
 // Error path: exception exits non-zero
 // ---------------------------------------------------------------------------
 

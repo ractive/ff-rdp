@@ -222,6 +222,43 @@ fn dom_limit_truncates_results() {
 }
 
 // ---------------------------------------------------------------------------
+// dom stats
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dom_stats_returns_dom_statistics() {
+    let server = dom_server("eval_result_dom_stats.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["dom".to_owned(), "stats".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    let r = &json["results"];
+    assert_eq!(r["node_count"], 150);
+    assert_eq!(r["document_size"], 32000);
+    assert_eq!(r["inline_script_count"], 2);
+    assert_eq!(r["render_blocking_count"], 4);
+    assert_eq!(r["images_without_lazy"], 1);
+}
+
+// ---------------------------------------------------------------------------
 // With --jq filter
 // ---------------------------------------------------------------------------
 
