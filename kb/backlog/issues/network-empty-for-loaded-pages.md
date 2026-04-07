@@ -1,10 +1,14 @@
 ---
-title: "network command returns empty for already-loaded pages"
+title: network command returns empty for already-loaded pages
 type: bug
-status: open
+status: resolved
 priority: low
 discovered: 2026-04-07
-tags: [network, watcher, dogfooding]
+tags:
+  - network
+  - watcher
+  - dogfooding
+resolved_by: iteration-26
 ---
 
 # network command returns empty for already-loaded pages

@@ -1,10 +1,15 @@
 ---
-title: "Native StorageActor for httpOnly cookies"
+title: Native StorageActor for httpOnly cookies
 type: feature
-status: open
+status: resolved
 priority: high
 discovered: 2026-04-07
-tags: [storage, cookies, protocol, correctness]
+tags:
+  - storage
+  - cookies
+  - protocol
+  - correctness
+resolved_by: iteration-26
 ---
 
 # Native StorageActor for httpOnly cookies

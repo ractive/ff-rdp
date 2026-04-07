@@ -138,14 +138,18 @@ pub enum Command {
     /// Show network requests captured by the WatcherActor.
     ///
     /// In direct mode (--no-daemon), only requests made after connection are
-    /// reliably captured. Use the daemon (default) for continuous buffering
-    /// that survives across commands, or use `navigate --with-network` to
-    /// capture requests triggered by a navigation.
+    /// reliably captured. When no live events are found, falls back to the
+    /// Performance API for historical resource data. Use the daemon (default)
+    /// for continuous buffering, or `navigate --with-network` to capture
+    /// requests triggered by a navigation.
     #[command(long_about = "Show network requests captured by the WatcherActor.
 
 In direct mode (--no-daemon), only requests made after the connection is
-established are reliably captured. Requests completed before ff-rdp connects
-will typically not appear.
+established are reliably captured. When no live network events are available
+(e.g. the page finished loading before ff-rdp connected), the command
+automatically falls back to the Performance API to retrieve historical
+resource timing data. Fallback entries have source=performance-api in the
+output metadata and lack HTTP status codes.
 
 Recommended workflows:
   - Daemon mode (default): run `ff-rdp` without --no-daemon so the daemon
