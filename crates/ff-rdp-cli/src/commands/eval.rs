@@ -35,9 +35,13 @@ pub fn run(cli: &Cli, script: &str) -> Result<(), AppError> {
 
     // For object grips, enrich the output with the list of own property names.
     // Best-effort: if the actor is gone or the request fails, we skip silently.
+    //
+    // Firefox 149 removed the `ownPropertyNames` packet type, so we use
+    // `prototypeAndProperties` and extract the keys from the result.
     if let Grip::Object { ref actor, .. } = eval_result.result {
-        match ObjectActor::own_property_names(ctx.transport_mut(), actor.as_ref()) {
-            Ok(names) => {
+        match ObjectActor::prototype_and_properties(ctx.transport_mut(), actor.as_ref()) {
+            Ok(pap) => {
+                let names: Vec<&str> = pap.own_properties.keys().map(String::as_str).collect();
                 result_json["propertyNames"] = json!(names);
             }
             Err(e) => {

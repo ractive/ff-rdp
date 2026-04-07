@@ -142,11 +142,22 @@ pub fn run_with_network(
     WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
         .map_err(AppError::from)?;
 
-    // Navigate to the target URL.
-    WindowGlobalTarget::navigate_to(ctx.transport_mut(), &target_actor, url)
+    // Send the navigateTo request without reading its response.  The normal
+    // `WindowGlobalTarget::navigate_to` uses `actor_request` which loops
+    // reading messages until it finds one from the target actor — silently
+    // discarding any `resources-available-array` events from the watcher that
+    // arrive in between.  By sending raw, we let `drain_network_events`
+    // collect those events (it skips non-network message types harmlessly).
+    ctx.transport_mut()
+        .send(&json!({
+            "to": target_actor.as_ref(),
+            "type": "navigateTo",
+            "url": url,
+        }))
         .map_err(AppError::from)?;
 
     // Drain resource events until the timeout fires (no more events).
+    // This also harmlessly skips the navigateTo ack from the target actor.
     let (all_resources, all_updates) =
         drain_network_events(ctx.transport_mut()).map_err(AppError::from)?;
 

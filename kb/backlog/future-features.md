@@ -50,7 +50,8 @@ Features not yet implemented. Items completed in past iterations are marked done
 ## Output & Integration
 
 - [ ] `--format text` output mode with human-readable tables
-- [ ] MCP server mode: `ff-rdp serve --mcp` to expose tools via MCP protocol
+- [ ] `ff-rdp perf audit` — single-command page performance report: TTFB, CWV, resource breakdown by type/domain, top-N slowest resources, third-party weight, DOM stats (node count, inline script size, render-blocking resources). Replaces multi-step jq workflows with one structured JSON output.
+- [ ] Cookbook / recipes in `ff-rdp --help`: curated `--jq` one-liners for common tasks (top-N slowest resources, network summary by type, DOM size audit, third-party breakdown, etc.)
 - [ ] Shell completions: `ff-rdp completions <bash|zsh|fish>`
 - [ ] Configuration file: `.ff-rdp.toml` for default host/port/timeout settings
 

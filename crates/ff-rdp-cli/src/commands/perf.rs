@@ -52,20 +52,22 @@ fn script_get_entries(entry_type: &str) -> String {
 }
 
 /// Build a JS snippet that uses `PerformanceObserver` with `buffered: true`.
+///
+/// The callback fires synchronously for already-recorded entries when
+/// `buffered: true` is set, so we don't need Promises or async/await.
 fn script_observer(entry_type: &str) -> String {
-    // Firefox's evaluateJSAsync runs expressions in an implicit async context,
-    // so bare `await` is valid here.
     format!(
-        r"await new Promise(resolve => {{
+        r"(function() {{
   try {{
-    const entries = [];
-    const obs = new PerformanceObserver(list => {{
-      entries.push(...list.getEntries().map(e => e.toJSON()));
+    var entries = [];
+    var obs = new PerformanceObserver(function(list) {{
+      entries = entries.concat(list.getEntries().map(function(e) {{ return e.toJSON(); }}));
     }});
     obs.observe({{ type: '{entry_type}', buffered: true }});
-    setTimeout(() => {{ obs.disconnect(); resolve(JSON.stringify(entries)); }}, 100);
-  }} catch(e) {{ resolve(JSON.stringify([])); }}
-}})"
+    obs.disconnect();
+    return JSON.stringify(entries);
+  }} catch(e) {{ return JSON.stringify([]); }}
+}})()"
     )
 }
 
@@ -248,26 +250,27 @@ pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppE
 
 /// Collect all CWV-relevant entry types in a single eval and compute Core Web Vitals.
 pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
-    // Firefox's evaluateJSAsync runs expressions in an implicit async context,
-    // so bare `await` is valid here.
-    let script = r"await new Promise(resolve => {
-  const entries = {};
-  const observers = [];
-  const observerTypes = ['largest-contentful-paint', 'layout-shift', 'longtask', 'paint'];
-  observerTypes.forEach(type => {
+    // Use synchronous PerformanceObserver with `buffered: true`.  The
+    // callback fires synchronously for already-recorded entries, so we
+    // don't need Promises or async/await (which `evaluateJSAsync` doesn't
+    // auto-resolve).
+    let script = r"(function() {
+  var entries = {};
+  var types = ['largest-contentful-paint', 'layout-shift', 'longtask', 'paint'];
+  types.forEach(function(type) {
     try {
       entries[type] = [];
-      const obs = new PerformanceObserver(list => {
-        entries[type].push(...list.getEntries().map(e => e.toJSON()));
+      var obs = new PerformanceObserver(function(list) {
+        entries[type] = entries[type].concat(list.getEntries().map(function(e) { return e.toJSON(); }));
       });
-      obs.observe({ type, buffered: true });
-      observers.push(obs);
+      obs.observe({ type: type, buffered: true });
+      obs.disconnect();
     } catch(e) {}
   });
-  entries.navigation = performance.getEntriesByType('navigation').map(e => e.toJSON());
-  entries.resource = performance.getEntriesByType('resource').map(e => e.toJSON());
-  setTimeout(() => { observers.forEach(o => o.disconnect()); resolve(JSON.stringify(entries)); }, 100);
-})";
+  entries.navigation = performance.getEntriesByType('navigation').map(function(e) { return e.toJSON(); });
+  entries.resource = performance.getEntriesByType('resource').map(function(e) { return e.toJSON(); });
+  return JSON.stringify(entries);
+})()";
 
     let mut ctx = connect_and_get_target(cli)?;
     let json_str = eval_to_json_string(&mut ctx, script, "perf vitals")?;

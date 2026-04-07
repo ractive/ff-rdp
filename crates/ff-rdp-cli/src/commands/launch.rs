@@ -87,8 +87,51 @@ fn which_binary(name: &str) -> Result<PathBuf, AppError> {
     Err(AppError::User(format!("{name} not found in PATH")))
 }
 
+/// Devtools prefs that must be present for the debugger server to start.
+const DEVTOOLS_PREFS: &[(&str, &str)] = &[
+    ("devtools.debugger.remote-enabled", "true"),
+    ("devtools.debugger.prompt-connection", "false"),
+    ("devtools.chrome.enabled", "true"),
+];
+
+/// Ensure the devtools prefs are present in the profile's `user.js`.
+/// Appends only missing prefs to avoid overwriting user customisations.
+fn ensure_devtools_prefs(profile: &Path) -> Result<(), AppError> {
+    use std::fmt::Write as FmtWrite;
+    use std::io::Write as IoWrite;
+
+    let user_js = profile.join("user.js");
+    let existing = std::fs::read_to_string(&user_js).unwrap_or_default();
+    let mut additions = String::new();
+    for (key, val) in DEVTOOLS_PREFS {
+        if !existing.contains(key) {
+            let _ = writeln!(additions, "user_pref(\"{key}\", {val});");
+        }
+    }
+    if !additions.is_empty() {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&user_js)
+            .map_err(|e| {
+                AppError::User(format!(
+                    "failed to write devtools prefs to {}: {e}",
+                    user_js.display()
+                ))
+            })?;
+        f.write_all(additions.as_bytes()).map_err(|e| {
+            AppError::User(format!(
+                "failed to write devtools prefs to {}: {e}",
+                user_js.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 /// Firefox preferences written into every temporary profile to suppress
-/// first-run UI, telemetry prompts, and session-restore dialogs.
+/// first-run UI, telemetry prompts, and session-restore dialogs, and to
+/// enable the remote debugging server (required since Firefox ~149).
 const USER_JS: &str = r#"// Suppress first-run / onboarding pages
 user_pref("browser.aboutwelcome.enabled", false);
 user_pref("browser.startup.homepage_override.mstone", "ignore");
@@ -103,6 +146,10 @@ user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
 user_pref("browser.shell.checkDefaultBrowser", false);
 // Disable session restore prompts
 user_pref("browser.sessionstore.resume_from_crash", false);
+// Enable remote debugging server (required since Firefox ~149)
+user_pref("devtools.debugger.remote-enabled", true);
+user_pref("devtools.debugger.prompt-connection", false);
+user_pref("devtools.chrome.enabled", true);
 "#;
 
 /// Build a `Command` ready to spawn Firefox, and return the effective profile
@@ -137,6 +184,9 @@ pub(crate) fn build_command(
     // order of precedence.
     let profile_path: Option<PathBuf> = if let Some(p) = profile {
         let path = PathBuf::from(p);
+        // Ensure the devtools prefs exist so the debugger server starts.
+        // We append to any existing user.js rather than overwriting it.
+        ensure_devtools_prefs(&path)?;
         cmd.arg("--profile").arg(&path);
         Some(path)
     } else if temp_profile {
@@ -305,7 +355,6 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsStr;
 
     /// Extract all arguments that would be passed to the spawned process,
     /// including the program name as the first element.
@@ -402,22 +451,21 @@ mod tests {
     #[test]
     fn build_command_explicit_profile() {
         let tmp = fake_firefox();
+        let profile_dir = std::env::temp_dir().join("ff-rdp-test-explicit-profile");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        let profile_str = profile_dir.to_str().unwrap();
         let (cmd, profile_path) =
-            build_command(&tmp, 6000, false, Some("/my/profile"), false).unwrap();
+            build_command(&tmp, 6000, false, Some(profile_str), false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
+        let _ = std::fs::remove_dir_all(&profile_dir);
         assert!(
             args.iter().any(|a| a.contains("profile")),
             "expected --profile in args: {args:?}"
         );
-        assert!(
-            args.iter()
-                .any(|a| a.contains("my") || a.contains("profile")),
-            "expected profile path in args: {args:?}"
-        );
         assert_eq!(
             profile_path.as_deref().map(std::path::Path::as_os_str),
-            Some(OsStr::new("/my/profile"))
+            Some(profile_dir.as_os_str())
         );
     }
 

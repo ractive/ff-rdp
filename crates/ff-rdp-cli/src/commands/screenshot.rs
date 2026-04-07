@@ -64,14 +64,15 @@ pub fn run(cli: &Cli, output_path: Option<&str>) -> Result<(), AppError> {
                 .map_err(|e| {
                     AppError::User(format!(
                         "screenshot: drawWindow not available and screenshotContentActor \
-                         capture failed ({e}) — try running Firefox in headless mode"
+                         capture failed ({e}) — screenshots require headless mode; \
+                         relaunch with: ff-rdp launch --headless"
                     ))
                 })?;
             capture.data
         } else {
             return Err(AppError::User(
                 "screenshot: drawWindow not available and no screenshotContentActor found — \
-                 try running Firefox in headless mode"
+                 screenshots require headless mode; relaunch with: ff-rdp launch --headless"
                     .to_owned(),
             ));
         }
