@@ -25,8 +25,15 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
         let watcher_actor =
             TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
 
-        // Subscribe to network events. This triggers Firefox to send existing
-        // network events as `resources-available-array` messages.
+        // Subscribe to network events. The watchResources response from Firefox
+        // 149+ includes existing network events as a `resources` field in the
+        // ack itself (not as separate resources-available-array events).  We
+        // parse the ack for inline resources, then drain for any subsequent
+        // events (updates, late-arriving resources).
+        // Subscribe to network events. Firefox 149+ only delivers events that
+        // occur *after* the subscription — historical events from the already-
+        // loaded page are not sent.  For a standalone `network` command this
+        // means results will be empty unless the page is actively loading.
         WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
             .map_err(AppError::from)?;
 
