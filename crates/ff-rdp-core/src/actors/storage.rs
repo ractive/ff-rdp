@@ -49,12 +49,12 @@ impl StorageActor {
     /// This performs the full protocol sequence:
     /// 1. Get a watcher via `TabActor::get_watcher`
     /// 2. Watch for `"cookies"` resources to get the cookie store actor + resource ID
-    /// 3. Call `getStoreObjects` with `host` + `resourceId` for each host
+    /// 3. Call `getStoreObjects` with `host` + `resourceId` + `options.sessionString` for each host
     /// 4. Unwatch when done (best-effort)
     ///
     /// # Firefox 149 compatibility
     ///
-    /// Firefox 149 changed the `getStoreObjects` API in two ways:
+    /// Firefox 149 changed the `getStoreObjects` API in three ways:
     ///
     /// 1. **`host` is no longer used for routing** — older versions routed the
     ///    request via the watcher when a `host` field was present, returning an
@@ -66,7 +66,15 @@ impl StorageActor {
     ///    "undefined passed where a value is required".  The `resourceId` is
     ///    returned as part of the `watchResources("cookies")` response.
     ///
-    /// Both `host` and `resourceId` must be supplied together.
+    /// 3. **`options.sessionString` is now required** — Firefox 149 accesses
+    ///    `options.sessionString` unconditionally in its internal JS before
+    ///    filtering cookies.  Without it, Firefox crashes with:
+    ///    `TypeError: can't access property "toLowerCase", sessionString is undefined`.
+    ///    Passing `"Session"` satisfies the requirement; all cookies are returned
+    ///    regardless of the value (it is used as a display/sort hint, not a filter).
+    ///
+    /// All three fields — `host`, `resourceId`, and `options.sessionString` — must
+    /// be supplied together.
     pub fn list_cookies(
         transport: &mut RdpTransport,
         tab_actor: &ActorId,
@@ -90,13 +98,20 @@ impl StorageActor {
 
         if let Some(resource) = cookie_resource {
             for host in &resource.hosts {
-                // Firefox 149+: pass both `host` and `resourceId`.  The `host`
-                // must be one of the keys from the `hosts` map returned by
-                // watchResources.  The `resourceId` is required when getTarget
-                // has been called first (establishing a child browsing context).
+                // Firefox 149+: pass `host`, `resourceId`, and `options.sessionString`.
+                // - `host` must be one of the keys from the `hosts` map returned by
+                //   watchResources (used as a filter parameter).
+                // - `resourceId` is required when getTarget has been called first
+                //   (establishing a child browsing context).
+                // - `options.sessionString` is required by Firefox 149+ internal JS
+                //   to avoid a TypeError crash; "Session" is the expected value and
+                //   all cookies are returned regardless.
                 let params = json!({
                     "host": host,
                     "resourceId": resource.resource_id,
+                    "options": {
+                        "sessionString": "Session",
+                    },
                 });
                 let store_response = actor_request(
                     transport,
