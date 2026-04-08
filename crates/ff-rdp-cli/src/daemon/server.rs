@@ -38,7 +38,11 @@ struct SharedState {
     /// can be active at a time (Firefox RDP has no per-request correlation ID
     /// for most messages, so we cannot demultiplex responses to multiple
     /// concurrent senders).  Replaced atomically when a new client connects.
-    rpc_writer: Mutex<Option<TcpStream>>,
+    ///
+    /// The `RawHandle` is the identity of the *original* stream (not the
+    /// `try_clone`d writer), so disconnect cleanup can reliably compare it
+    /// against `client_id` which is taken from the original stream.
+    rpc_writer: Mutex<Option<(RawHandle, TcpStream)>>,
     /// All currently-connected streaming subscribers.
     ///
     /// These are clients that have issued one or more `stream` daemon requests
@@ -315,7 +319,7 @@ fn dispatch_watcher_event(state: &SharedState, msg: &Value) {
 /// The lock is held for the entire write to prevent interleaved frames from
 /// the firefox-reader thread and the client-handler thread.
 /// On write error the writer is cleared (treated as disconnected).
-fn forward_to_rpc_client(rpc_writer: &Mutex<Option<TcpStream>>, msg: &Value) {
+fn forward_to_rpc_client(rpc_writer: &Mutex<Option<(RawHandle, TcpStream)>>, msg: &Value) {
     // Serialise first — no lock needed.
     let json = match serde_json::to_string(msg) {
         Ok(s) => s,
@@ -328,7 +332,7 @@ fn forward_to_rpc_client(rpc_writer: &Mutex<Option<TcpStream>>, msg: &Value) {
 
     // unwrap: poisoned mutex means a thread panicked — daemon should crash.
     let mut guard = rpc_writer.lock().unwrap();
-    let Some(writer) = guard.as_mut() else {
+    let Some((_id, writer)) = guard.as_mut() else {
         return;
     };
     if writer.write_all(frame.as_bytes()).is_err() {
@@ -497,6 +501,10 @@ fn handle_client(
             .context("sending greeting to CLI client")?;
     }
 
+    // Capture the client identity from the *original* stream before any
+    // try_clone() calls — cloned streams get a different OS handle.
+    let client_id = stream.as_raw_fd_or_handle();
+
     // Register this client as the current RPC forwarding target.
     // The previous RPC client (if any) is simply replaced — it is no longer
     // the active RDP session and will not receive Firefox responses anyway.
@@ -505,13 +513,8 @@ fn handle_client(
         .context("cloning client stream for RPC forwarding")?;
     {
         let mut guard = state.rpc_writer.lock().unwrap();
-        *guard = Some(client_writer);
+        *guard = Some((client_id, client_writer));
     }
-
-    // Unique token used to identify this client's stream-subscriber entry so
-    // we can remove the right one on disconnect.  We use a raw pointer to the
-    // TcpStream as a stable, cheap address-based key.
-    let client_id = stream.as_raw_fd_or_handle();
 
     let mut reader = BufReader::new(stream);
 
@@ -526,14 +529,18 @@ fn handle_client(
 
                 let to = msg.get("to").and_then(Value::as_str).unwrap_or_default();
                 if to == "daemon" {
-                    let response = handle_daemon_message(state, &msg, client_id);
+                    // Provide a fresh writer clone for this client so that
+                    // handle_daemon_message can register a StreamSubscriber
+                    // that writes to the correct connection.
+                    let writer_for_sub = reader.get_ref().try_clone().ok();
+                    let response = handle_daemon_message(state, &msg, client_id, writer_for_sub);
                     let resp_json =
                         serde_json::to_string(&response).context("serialising daemon response")?;
                     let frame = encode_frame(&resp_json);
                     // Write through the rpc_writer mutex to prevent interleaving
                     // with forward_to_rpc_client on the firefox-reader thread.
                     let mut guard = state.rpc_writer.lock().unwrap();
-                    if let Some(w) = guard.as_mut() {
+                    if let Some((_id, w)) = guard.as_mut() {
                         w.write_all(frame.as_bytes())
                             .context("sending daemon response to CLI client")?;
                     }
@@ -569,11 +576,9 @@ fn handle_client(
     // (another client may have already taken over).
     {
         let mut guard = state.rpc_writer.lock().unwrap();
-        // Compare by OS handle; if replaced, leave the new client registered.
-        if guard
-            .as_ref()
-            .is_some_and(|w| w.as_raw_fd_or_handle() == client_id)
-        {
+        // Compare by the stored identity (taken from the original stream,
+        // not from the try_clone'd writer whose OS handle differs).
+        if guard.as_ref().is_some_and(|(id, _)| *id == client_id) {
             *guard = None;
         }
     }
@@ -623,7 +628,18 @@ impl AsRawFdOrHandle for TcpStream {
 /// `client_id` is the raw handle of the sending client's TCP stream — used to
 /// identify which stream-subscriber entry to modify when processing `stream`
 /// and `stop-stream` requests.
-fn handle_daemon_message(state: &SharedState, msg: &Value, client_id: RawHandle) -> Value {
+///
+/// `client_writer` is the client's own write-half (a `try_clone` of its
+/// original stream), supplied by `handle_client` where the stream is
+/// available.  It is used when a new `StreamSubscriber` entry needs to be
+/// created so that the subscriber's writer is guaranteed to belong to the
+/// correct client, not whatever happens to be stored in `rpc_writer`.
+fn handle_daemon_message(
+    state: &SharedState,
+    msg: &Value,
+    client_id: RawHandle,
+    client_writer: Option<TcpStream>,
+) -> Value {
     let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
 
     match msg_type {
@@ -664,26 +680,16 @@ fn handle_daemon_message(state: &SharedState, msg: &Value, client_id: RawHandle)
             let mut subs = state.stream_subs.lock().unwrap();
             if let Some(sub) = subs.iter_mut().find(|s| s.id == client_id) {
                 sub.types.insert(resource_type.to_owned());
-            } else {
-                // Create a new subscriber entry for this client.
-                // We need a write-capable clone of the client's stream.
-                // The rpc_writer holds a clone — use that as the subscriber
-                // writer by cloning it again.
-                drop(subs); // release before acquiring rpc_writer
-                let writer_clone = {
-                    let guard = state.rpc_writer.lock().unwrap();
-                    guard.as_ref().and_then(|w| w.try_clone().ok())
-                };
-                let mut subs = state.stream_subs.lock().unwrap();
-                if let Some(writer) = writer_clone {
-                    let mut types = HashSet::new();
-                    types.insert(resource_type.to_owned());
-                    subs.push(StreamSubscriber {
-                        id: client_id,
-                        writer,
-                        types,
-                    });
-                }
+            } else if let Some(writer) = client_writer {
+                // Create a new subscriber entry using the caller-supplied
+                // writer which belongs to this specific client.
+                let mut types = HashSet::new();
+                types.insert(resource_type.to_owned());
+                subs.push(StreamSubscriber {
+                    id: client_id,
+                    writer,
+                    types,
+                });
             }
 
             json!({
@@ -784,7 +790,7 @@ mod tests {
             .insert("network-event", json!({"url": "https://b.com"}));
 
         let msg = json!({"to": "daemon", "type": "drain", "resourceType": "network-event"});
-        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
 
         assert_eq!(resp["from"], "daemon");
         let events = resp["events"].as_array().expect("events array");
@@ -793,7 +799,7 @@ mod tests {
         assert_eq!(events[1]["url"], "https://b.com");
 
         // Drain again should return empty slice.
-        let resp2 = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
+        let resp2 = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
         assert_eq!(
             resp2["events"]
                 .as_array()
@@ -807,7 +813,7 @@ mod tests {
     fn drain_unknown_resource_type_returns_empty() {
         let state = test_state();
         let msg = json!({"to": "daemon", "type": "drain", "resourceType": "nonexistent"});
-        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
         assert_eq!(resp["from"], "daemon");
         assert_eq!(
             resp["events"].as_array().expect("events array").len(),
@@ -820,7 +826,7 @@ mod tests {
     fn drain_missing_resource_type_returns_error() {
         let state = test_state();
         let msg = json!({"to": "daemon", "type": "drain"});
-        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
         assert!(
             resp["error"].as_str().is_some(),
             "missing resourceType must produce an error"
@@ -831,7 +837,7 @@ mod tests {
     fn drain_empty_resource_type_returns_error() {
         let state = test_state();
         let msg = json!({"to": "daemon", "type": "drain", "resourceType": ""});
-        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
         assert!(
             resp["error"].as_str().is_some(),
             "empty resourceType must produce an error"
@@ -842,7 +848,7 @@ mod tests {
     fn stream_missing_resource_type_returns_error() {
         let state = test_state();
         let msg = json!({"to": "daemon", "type": "stream"});
-        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
         assert!(
             resp["error"].as_str().is_some(),
             "stream without resourceType must produce an error"
@@ -853,7 +859,7 @@ mod tests {
     fn stop_stream_missing_resource_type_returns_error() {
         let state = test_state();
         let msg = json!({"to": "daemon", "type": "stop-stream"});
-        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
         assert!(
             resp["error"].as_str().is_some(),
             "stop-stream without resourceType must produce an error"
@@ -884,7 +890,7 @@ mod tests {
             .insert("console-message", json!({}));
 
         let msg = json!({"to": "daemon", "type": "status"});
-        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
 
         assert_eq!(resp["from"], "daemon");
         assert!(
@@ -905,7 +911,7 @@ mod tests {
     fn status_with_empty_buffer_omits_zero_sizes() {
         let state = test_state();
         let msg = json!({"to": "daemon", "type": "status"});
-        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
 
         assert_eq!(resp["from"], "daemon");
         // sizes() filters out empty buckets, so buffer_sizes should be an
@@ -932,7 +938,7 @@ mod tests {
     fn unknown_message_type_returns_error() {
         let state = test_state();
         let msg = json!({"to": "daemon", "type": "unknown-stuff"});
-        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
 
         assert_eq!(resp["from"], "daemon");
         let err = resp["error"].as_str().expect("error string");
@@ -947,7 +953,7 @@ mod tests {
         let state = test_state();
         // No "type" key — defaults to empty string, which is unrecognised.
         let msg = json!({"to": "daemon"});
-        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
         assert!(
             resp["error"].as_str().is_some(),
             "missing type must produce an error field"
@@ -1083,7 +1089,7 @@ mod tests {
             .insert("network-event", json!({"url": "https://stale.com"}));
 
         let msg = json!({"to": "daemon", "type": "stream", "resourceType": "network-event"});
-        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
 
         assert_eq!(resp["from"], "daemon");
         assert_eq!(resp["streaming"], true);
@@ -1105,7 +1111,7 @@ mod tests {
     fn stop_stream_returns_streaming_false() {
         let state = test_state();
         let msg = json!({"to": "daemon", "type": "stop-stream", "resourceType": "network-event"});
-        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
 
         assert_eq!(resp["from"], "daemon");
         assert_eq!(resp["streaming"], false);

@@ -143,8 +143,9 @@ fn render_node(node: &Value, depth: usize) {
         // Leaf text node: a plain JSON string
         Value::String(text) => {
             // Truncate long text to keep output readable
-            if text.len() > 80 {
-                println!("{indent}\"{}...\"", &text[..77]);
+            if text.chars().count() > 80 {
+                let truncated = text.chars().take(77).collect::<String>();
+                println!("{indent}\"{truncated}...\"");
             } else {
                 println!("{indent}\"{text}\"");
             }
@@ -168,8 +169,8 @@ fn render_node(node: &Value, depth: usize) {
             if let Some(attrs) = node.get("attrs").and_then(Value::as_object) {
                 for key in SNAPSHOT_TEXT_ATTRS {
                     if let Some(val) = attrs.get(*key).and_then(Value::as_str) {
-                        let val = if val.len() > 40 {
-                            format!("{}...", &val[..37])
+                        let val = if val.chars().count() > 40 {
+                            format!("{}...", val.chars().take(37).collect::<String>())
                         } else {
                             val.to_string()
                         };

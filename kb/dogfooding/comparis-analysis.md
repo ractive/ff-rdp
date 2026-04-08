@@ -98,7 +98,7 @@ Analyzed using `ff-rdp` against a live headless Firefox 149 instance on 2026-04-
 ## Accessibility Findings
 
 ### a11y Tree
-- Firefox 149 broke the `getRootNode` RDP method — accessibility tree inspection via the AccesibilityActor is unavailable.
+- Firefox 149 broke the `getRootNode` RDP method — accessibility tree inspection via the AccessibilityActor is unavailable.
 
 ### Contrast Check (a11y contrast, JS-based)
 - **7 elements sampled, all pass AA** (via JS evaluation fallback)
