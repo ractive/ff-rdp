@@ -20,8 +20,8 @@ abstractions now that all features are implemented.
 
 20+ commands repeat the same eval-exception-check pattern. Extract a helper.
 
-- [x] Create `eval_or_bail(transport, actor, js) -> Result<EvalResult>` in
-  `ff-rdp-cli/src/commands/` (or a shared module) that calls
+- [x] Create `eval_or_bail(ctx, console_actor, js, error_context) -> Result<EvalResult>` in
+  `ff-rdp-cli/src/commands/js_helpers.rs` that calls
   `WebConsoleActor::evaluate_js_async()` and returns an `AppError` if
   `exception` is present
 - [x] Migrate all commands that use the pattern: eval, click, type, navigate,
@@ -33,7 +33,8 @@ abstractions now that all features are implemented.
 `navigate.rs` `wait_after_navigate()` and `wait.rs` `build_wait_js()` share
 timeout polling logic. Extract a reusable polling primitive.
 
-- [x] Create `poll_js_condition(transport, actor, js_fn, timeout, interval) -> Result<bool>`
+- [x] Create `poll_js_condition(ctx, console_actor, js, timeout_ms, error_context, timeout_context) -> Result<u64>`
+  (uses fixed 100ms poll interval via `POLL_INTERVAL_MS` constant)
 - [x] Refactor `navigate.rs` wait logic to use it
 - [x] Refactor `wait.rs` to use it
 - [x] Verify via tests

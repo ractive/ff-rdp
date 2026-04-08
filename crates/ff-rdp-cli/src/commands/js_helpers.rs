@@ -91,6 +91,9 @@ const POLL_INTERVAL_MS: u64 = 100;
 /// Returns the elapsed time in milliseconds on success.  Returns
 /// `Err(AppError::Exit(1))` if a JS exception is thrown or the timeout expires.
 ///
+/// A timeout of 0 means the condition is evaluated once; if falsy, a timeout
+/// error is returned immediately.
+///
 /// - `error_context`: used as a fallback message when a JS exception has no message.
 /// - `timeout_context`: printed to stderr when the timeout expires.
 pub(crate) fn poll_js_condition(
@@ -111,8 +114,11 @@ pub(crate) fn poll_js_condition(
                 .map_err(AppError::from)?;
 
         if let Some(ref exc) = eval_result.exception {
-            let msg = exc.message.as_deref().unwrap_or(error_context);
-            eprintln!("error: {msg}");
+            if let Some(msg) = exc.message.as_deref() {
+                eprintln!("error: {error_context}: {msg}");
+            } else {
+                eprintln!("error: {error_context}");
+            }
             return Err(AppError::Exit(1));
         }
 
@@ -120,6 +126,7 @@ pub(crate) fn poll_js_condition(
             return Ok(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
         }
 
+        // Check timeout before sleeping to avoid an unnecessary extra poll interval.
         if started.elapsed() >= timeout {
             eprintln!("error: {timeout_context}");
             return Err(AppError::Exit(1));

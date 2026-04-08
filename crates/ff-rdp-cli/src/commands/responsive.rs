@@ -161,11 +161,7 @@ pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppErr
         };
 
         if let Some(ref exc) = resize_result.exception {
-            let msg = exc
-                .message
-                .as_deref()
-                .unwrap_or("resize failed")
-                .to_string();
+            let msg = exc.message.as_deref().unwrap_or("resize failed");
             loop_error = Some(AppError::User(format!("resize to {width}: {msg}")));
             break 'bp;
         }
@@ -190,8 +186,7 @@ pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppErr
             let msg = exc
                 .message
                 .as_deref()
-                .unwrap_or("geometry evaluation failed")
-                .to_string();
+                .unwrap_or("geometry evaluation failed");
             loop_error = Some(AppError::User(format!("geometry at {width}: {msg}")));
             break 'bp;
         }

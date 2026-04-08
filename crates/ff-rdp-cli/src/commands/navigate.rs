@@ -292,7 +292,7 @@ fn wait_after_navigate(
         &console_actor,
         &js,
         opts.wait_timeout,
-        "JS exception during wait condition",
+        "navigate wait aborted due to JS exception",
         &timeout_msg,
     )?;
 
