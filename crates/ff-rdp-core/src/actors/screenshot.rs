@@ -55,12 +55,22 @@ impl ScreenshotActor {
     ) -> Result<String, ProtocolError> {
         let snapshot_scale = prep.window_dpr * prep.window_zoom;
 
-        let args = json!({
+        let mut args = json!({
             "browsingContextID": browsing_context_id,
             "fullpage": full_page,
             "dpr": prep.window_dpr,
             "snapshotScale": snapshot_scale,
         });
+
+        // Forward the capture rect if present (required for fullpage/element captures).
+        if let Some(ref rect) = prep.rect {
+            args["rect"] = json!({
+                "left": rect.left,
+                "top": rect.top,
+                "width": rect.width,
+                "height": rect.height,
+            });
+        }
 
         let response = actor_request(
             transport,
@@ -190,9 +200,81 @@ mod tests {
         let prep = PrepareCapture {
             window_dpr: 1.0,
             window_zoom: 1.0,
+            rect: None,
         };
         let data = ScreenshotActor::capture(&mut transport, &actor_id, 42, false, &prep).unwrap();
         assert_eq!(data, "data:image/png;base64,abc123");
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn capture_forwards_rect_when_present() {
+        let (mut transport, server) = make_transport_pair();
+        let actor_id = ActorId::from("server1.conn0.screenshotActor7");
+
+        let t = std::thread::spawn(move || {
+            let req = server_read(&server);
+            let args = &req["args"];
+            // rect must be forwarded to the server
+            assert_eq!(args["rect"]["left"], 10.0);
+            assert_eq!(args["rect"]["top"], 20.0);
+            assert_eq!(args["rect"]["width"], 800.0);
+            assert_eq!(args["rect"]["height"], 600.0);
+
+            server_reply(
+                &server,
+                json!({
+                    "from": "server1.conn0.screenshotActor7",
+                    "value": { "data": "data:image/png;base64,rect_test" }
+                }),
+            );
+        });
+
+        let prep = PrepareCapture {
+            window_dpr: 1.0,
+            window_zoom: 1.0,
+            rect: Some(crate::actors::screenshot_content::CaptureRect {
+                left: 10.0,
+                top: 20.0,
+                width: 800.0,
+                height: 600.0,
+            }),
+        };
+        let data = ScreenshotActor::capture(&mut transport, &actor_id, 99, true, &prep).unwrap();
+        assert_eq!(data, "data:image/png;base64,rect_test");
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn capture_omits_rect_when_none() {
+        let (mut transport, server) = make_transport_pair();
+        let actor_id = ActorId::from("server1.conn0.screenshotActor7");
+
+        let t = std::thread::spawn(move || {
+            let req = server_read(&server);
+            let args = &req["args"];
+            // rect must not be present in the request
+            assert!(
+                args.get("rect").is_none(),
+                "rect should be absent when None"
+            );
+
+            server_reply(
+                &server,
+                json!({
+                    "from": "server1.conn0.screenshotActor7",
+                    "value": { "data": "data:image/png;base64,no_rect" }
+                }),
+            );
+        });
+
+        let prep = PrepareCapture {
+            window_dpr: 1.0,
+            window_zoom: 1.0,
+            rect: None,
+        };
+        let data = ScreenshotActor::capture(&mut transport, &actor_id, 5, false, &prep).unwrap();
+        assert_eq!(data, "data:image/png;base64,no_rect");
         t.join().unwrap();
     }
 
@@ -215,6 +297,7 @@ mod tests {
         let prep = PrepareCapture {
             window_dpr: 1.0,
             window_zoom: 1.0,
+            rect: None,
         };
         let err =
             ScreenshotActor::capture(&mut transport, &actor_id, 42, false, &prep).unwrap_err();
@@ -249,6 +332,7 @@ mod tests {
         let prep = PrepareCapture {
             window_dpr: 2.0,
             window_zoom: 1.5,
+            rect: None,
         };
         ScreenshotActor::capture(&mut transport, &actor_id, 1, false, &prep).unwrap();
         t.join().unwrap();
