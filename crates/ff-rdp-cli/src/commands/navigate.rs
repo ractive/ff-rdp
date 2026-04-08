@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use ff_rdp_core::{RdpTransport, TabActor, WatcherActor, WindowGlobalTarget};
+use ff_rdp_core::{
+    RdpTransport, TabActor, WatcherActor, WindowGlobalTarget, parse_network_resource_updates,
+    parse_network_resources,
+};
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -137,6 +140,7 @@ pub fn run_with_network(
         // detection uses --network-timeout instead of the global --timeout.
         set_network_timeout(ctx.transport_mut(), network_timeout_ms)?;
 
+        // Drain streamed watcher events until the idle timeout fires.
         // Always stop streaming before propagating errors from drain so the
         // daemon does not get stuck in streaming mode on failure.
         let drain_result = drain_network_events(ctx.transport_mut());
@@ -145,13 +149,39 @@ pub fn run_with_network(
         // so any RDP round-trip uses the right timeout.
         restore_timeout(ctx.transport_mut(), cli.timeout);
 
-        if let Err(e) =
-            crate::daemon::client::stop_daemon_stream(ctx.transport_mut(), "network-event")
-        {
-            eprintln!("warning: failed to stop daemon stream: {e:#}");
-        }
+        // Stop streaming and collect any in-flight watcher frames that arrived
+        // between the idle-timeout cutoff and the stop-stream acknowledgement.
+        // These are events the daemon forwarded after drain_network_events
+        // returned but before it processed our stop-stream request.
+        let inflight = match crate::daemon::client::stop_daemon_stream_draining(
+            ctx.transport_mut(),
+            "network-event",
+        ) {
+            Ok(frames) => frames,
+            Err(e) => {
+                eprintln!("warning: failed to stop daemon stream: {e:#}");
+                vec![]
+            }
+        };
 
-        let (all_resources, all_updates) = drain_result.map_err(AppError::from)?;
+        let (mut all_resources, mut all_updates) = drain_result.map_err(AppError::from)?;
+
+        // Parse and merge any in-flight frames collected from stop_daemon_stream.
+        for frame in &inflight {
+            let msg_type = frame
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            match msg_type {
+                "resources-available-array" => {
+                    all_resources.extend(parse_network_resources(frame));
+                }
+                "resources-updated-array" => {
+                    all_updates.extend(parse_network_resource_updates(frame));
+                }
+                _ => {}
+            }
+        }
 
         let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
 

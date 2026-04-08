@@ -197,6 +197,34 @@ impl WebConsoleActor {
     }
 }
 
+/// Parse a direct console notification pushed by the console actor when
+/// `startListeners` is active.
+///
+/// Firefox 149+ pushes `consoleAPICall` and `pageError` events directly to the
+/// console actor connection in addition to (or instead of) routing them through
+/// the Watcher's `resources-available-array` stream.  This matters in particular
+/// when a `console.log()` is executed via `evaluateJSAsync` — the message arrives
+/// as a direct push notification on the console actor rather than as a watcher
+/// resource event.
+///
+/// Returns `None` when the message is not a console notification.
+pub fn parse_console_notification(msg: &Value) -> Option<ConsoleMessage> {
+    let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
+    match msg_type {
+        "consoleAPICall" => {
+            // Direct consoleAPICall: { "type": "consoleAPICall", "message": { ... }, "from": "..." }
+            let wrapper = msg;
+            parse_console_message(wrapper)
+        }
+        "pageError" => {
+            // Direct pageError: { "type": "pageError", "pageError": { ... }, "from": "..." }
+            let wrapper = msg;
+            parse_page_error(wrapper)
+        }
+        _ => None,
+    }
+}
+
 /// Parse a `pageError` wrapper from `getCachedMessages`.
 ///
 /// Firefox emits `{ "pageError": { ... }, "type": "pageError" }` entries
@@ -623,5 +651,70 @@ mod tests {
             "type": "consoleAPICall"
         });
         assert!(parse_page_error(&wrapper).is_none());
+    }
+
+    // --- parse_console_notification tests ---
+
+    #[test]
+    fn parse_console_notification_consoleapicall() {
+        // Direct consoleAPICall push from Firefox with startListeners active.
+        let msg = json!({
+            "type": "consoleAPICall",
+            "from": "server1.conn0.child2/consoleActor3",
+            "message": {
+                "arguments": ["hello from eval"],
+                "level": "log",
+                "filename": "debugger eval code",
+                "lineNumber": 1,
+                "columnNumber": 9,
+                "timeStamp": 1775439071165.699_f64
+            }
+        });
+        let result = super::parse_console_notification(&msg).unwrap();
+        assert_eq!(result.level, "log");
+        assert_eq!(result.message, "hello from eval");
+        assert_eq!(result.source, "debugger eval code");
+        assert_eq!(result.line, 1);
+    }
+
+    #[test]
+    fn parse_console_notification_pageerror() {
+        // Direct pageError push from Firefox.
+        let msg = json!({
+            "type": "pageError",
+            "from": "server1.conn0.child2/consoleActor3",
+            "pageError": {
+                "errorMessage": "ReferenceError: x is not defined",
+                "sourceName": "https://example.com/app.js",
+                "lineNumber": 10,
+                "columnNumber": 3,
+                "timeStamp": 1775439071200.0_f64
+            }
+        });
+        let result = super::parse_console_notification(&msg).unwrap();
+        assert_eq!(result.level, "error");
+        assert_eq!(result.message, "ReferenceError: x is not defined");
+        assert_eq!(result.source, "https://example.com/app.js");
+        assert_eq!(result.line, 10);
+    }
+
+    #[test]
+    fn parse_console_notification_ignores_unrelated_type() {
+        let msg = json!({
+            "type": "evaluationResult",
+            "from": "server1.conn0.child2/consoleActor3",
+            "result": "some value"
+        });
+        assert!(super::parse_console_notification(&msg).is_none());
+    }
+
+    #[test]
+    fn parse_console_notification_ignores_resources_available_array() {
+        let msg = json!({
+            "type": "resources-available-array",
+            "from": "server1.conn0.watcher4",
+            "array": []
+        });
+        assert!(super::parse_console_notification(&msg).is_none());
     }
 }

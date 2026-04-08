@@ -5,6 +5,7 @@ pub mod inspector;
 pub mod network;
 pub mod object;
 pub mod page_style;
+pub mod responsive;
 pub mod root;
 pub mod screenshot_content;
 pub mod storage;

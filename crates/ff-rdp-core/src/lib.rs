@@ -6,7 +6,9 @@ pub mod transport;
 pub mod types;
 
 pub use actors::accessibility::{AccessibilityActor, AccessibleNode, filter_interactive};
-pub use actors::console::{ConsoleMessage, EvalException, EvalResult, WebConsoleActor};
+pub use actors::console::{
+    ConsoleMessage, EvalException, EvalResult, WebConsoleActor, parse_console_notification,
+};
 pub use actors::dom_walker::{DomAttr, DomNode, DomWalkerActor};
 pub use actors::inspector::InspectorActor;
 pub use actors::network::{EventTimings, Header, NetworkEventActor, ResponseContent};
@@ -16,6 +18,7 @@ pub use actors::object::{
 pub use actors::page_style::{
     AppliedRule, BoxModelLayout, BoxSides, ComputedProperty, PageStyleActor, RuleProperty,
 };
+pub use actors::responsive::ResponsiveActor;
 pub use actors::root::RootActor;
 pub use actors::screenshot_content::{ScreenshotCapture, ScreenshotContentActor};
 pub use actors::storage::{CookieInfo, StorageActor};

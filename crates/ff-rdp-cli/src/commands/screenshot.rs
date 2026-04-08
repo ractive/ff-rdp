@@ -59,11 +59,11 @@ pub fn run(cli: &Cli, output_path: Option<&str>, base64_mode: bool) -> Result<()
                 .map_err(|e| {
                     if e.is_unrecognized_packet_type() {
                         AppError::User(
-                            "screenshot: the screenshotContentActor does not support \
-                             'captureScreenshot' in this Firefox version — \
-                             the method may have been renamed or removed in Firefox 125+. \
-                             The drawWindow JS fallback also failed; screenshots may not \
-                             be available in headless mode with this Firefox build."
+                            "screenshot: all known screenshotContentActor methods \
+                             (captureScreenshot, screenshot, capture) are unrecognized \
+                             in this Firefox version. The drawWindow JS fallback also \
+                             failed; this Firefox build may have removed both APIs. \
+                             Try upgrading ff-rdp or filing a bug with your Firefox version."
                                 .to_owned(),
                         )
                     } else {

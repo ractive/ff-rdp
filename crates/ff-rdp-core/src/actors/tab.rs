@@ -45,6 +45,12 @@ pub struct TargetInfo {
     pub screenshot_content_actor: Option<ActorId>,
     /// The accessibility actor ID (for accessibility tree inspection).
     pub accessibility_actor: Option<ActorId>,
+    /// The responsive design actor ID (for viewport size emulation).
+    ///
+    /// Present on Firefox ≥ 68 with RDM support.  Used by the `responsive`
+    /// command to call `setViewportSize` instead of the browser-blocked
+    /// `window.resizeTo()`.
+    pub responsive_actor: Option<ActorId>,
 }
 
 /// Operations on a tab descriptor actor.
@@ -123,6 +129,11 @@ fn parse_target_response(response: &Value) -> Result<TargetInfo, ProtocolError> 
         .and_then(Value::as_str)
         .map(ActorId::from);
 
+    let responsive_actor = frame
+        .get("responsiveActor")
+        .and_then(Value::as_str)
+        .map(ActorId::from);
+
     Ok(TargetInfo {
         actor: actor.into(),
         console_actor: console_actor.into(),
@@ -130,6 +141,7 @@ fn parse_target_response(response: &Value) -> Result<TargetInfo, ProtocolError> 
         inspector_actor,
         screenshot_content_actor,
         accessibility_actor,
+        responsive_actor,
     })
 }
 

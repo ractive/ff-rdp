@@ -60,8 +60,10 @@ fn type_text_returns_confirmation_json() {
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
-    assert_eq!(json["results"]["type"], "object");
-    assert_eq!(json["results"]["class"], "Object");
+    // The type command now returns a flat JSON object (same pattern as click).
+    assert_eq!(json["results"]["typed"], true);
+    assert_eq!(json["results"]["tag"], "INPUT");
+    assert_eq!(json["results"]["value"], "test@example.com");
     assert_eq!(json["meta"]["selector"], "input[name=email]");
 }
 
@@ -95,7 +97,8 @@ fn type_text_with_clear_flag() {
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
-    assert_eq!(json["results"]["type"], "object");
+    assert_eq!(json["results"]["typed"], true);
+    assert_eq!(json["results"]["tag"], "INPUT");
 }
 
 // ---------------------------------------------------------------------------

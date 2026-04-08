@@ -1,4 +1,6 @@
-use ff_rdp_core::{AccessibilityActor, AccessibleNode, WebConsoleActor, filter_interactive};
+use ff_rdp_core::{
+    AccessibilityActor, AccessibleNode, ActorId, WebConsoleActor, filter_interactive,
+};
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -29,15 +31,9 @@ pub fn run(
     let tree = if let Some(sel) = selector {
         run_selector_mode(&mut ctx, sel, depth, max_chars)?
     } else {
-        // Use native RDP protocol.
-        let walker = AccessibilityActor::get_walker(ctx.transport_mut(), &accessibility_actor)
-            .map_err(|e| map_a11y_error(e, cli))?;
-
-        let root = AccessibilityActor::get_root(ctx.transport_mut(), &walker)
-            .map_err(|e| map_a11y_error(e, cli))?;
-
-        AccessibilityActor::walk_tree(ctx.transport_mut(), &walker, &root, depth, max_chars)
-            .map_err(|e| map_a11y_error(e, cli))?
+        // Use native RDP protocol with JS eval fallback for Firefox 149+ where
+        // both `getDocument` and `getRootNode` are unrecognized on the walker.
+        run_native_or_js_fallback(&mut ctx, &accessibility_actor, depth, max_chars, cli)?
     };
 
     // Apply interactive filter.
@@ -75,6 +71,48 @@ pub fn run(
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
+}
+
+/// Attempt native RDP accessibility protocol, falling back to JS eval on
+/// `unrecognizedPacketType` errors (Firefox 149+ renamed/removed both
+/// `getDocument` and `getRootNode` on the walker actor).
+fn run_native_or_js_fallback(
+    ctx: &mut ConnectedTab,
+    accessibility_actor: &ActorId,
+    depth: u32,
+    max_chars: u32,
+    cli: &Cli,
+) -> Result<AccessibleNode, AppError> {
+    // Step 1: try to get the walker.
+    let walker = match AccessibilityActor::get_walker(ctx.transport_mut(), accessibility_actor) {
+        Ok(w) => w,
+        Err(e) if e.is_unrecognized_packet_type() => {
+            eprintln!(
+                "debug: accessibility getWalker unrecognized in this Firefox version; \
+                 falling back to JS eval"
+            );
+            return run_selector_mode(ctx, "body", depth, max_chars);
+        }
+        Err(e) => return Err(map_a11y_error(e, cli)),
+    };
+
+    // Step 2: try to get the root node via the walker.
+    let root = match AccessibilityActor::get_root(ctx.transport_mut(), &walker) {
+        Ok(r) => r,
+        Err(e) if e.is_unrecognized_packet_type() => {
+            // Both getDocument and getRootNode failed — Firefox 149+ protocol change.
+            eprintln!(
+                "debug: accessibility walker root methods unrecognized in this Firefox \
+                 version (tried getDocument and getRootNode); falling back to JS eval"
+            );
+            return run_selector_mode(ctx, "body", depth, max_chars);
+        }
+        Err(e) => return Err(map_a11y_error(e, cli)),
+    };
+
+    // Step 3: walk the tree with the native protocol.
+    AccessibilityActor::walk_tree(ctx.transport_mut(), &walker, &root, depth, max_chars)
+        .map_err(|e| map_a11y_error(e, cli))
 }
 
 /// Selector-based subtree extraction via JS eval.

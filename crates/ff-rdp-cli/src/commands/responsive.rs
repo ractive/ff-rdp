@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ff_rdp_core::WebConsoleActor;
+use ff_rdp_core::{ResponsiveActor, WebConsoleActor};
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -65,14 +65,12 @@ const RESPONSIVE_JS_TEMPLATE: &str = r"(function() {
   return '__FF_RDP_JSON__' + JSON.stringify({elements: elements, viewport: {width: vw, height: vh}});
 })()";
 
-/// JS snippet that retrieves the current outer window dimensions.
+/// JS snippet that retrieves the current viewport dimensions.
+///
+/// `outerWidth`/`outerHeight` are needed as fallback values for the
+/// `ResponsiveActor.setViewportSize` restore call, while `innerWidth`/`innerHeight`
+/// reflect the content viewport size that layout code uses.
 const GET_VIEWPORT_JS: &str = "JSON.stringify({width: window.outerWidth, height: window.outerHeight, innerWidth: window.innerWidth, innerHeight: window.innerHeight})";
-
-/// Build a JS snippet that resizes the browser window to the given width,
-/// keeping the current outer height.
-fn resize_js(width: u32) -> String {
-    format!("window.resizeTo({width}, window.outerHeight)")
-}
 
 /// Build the geometry IIFE by serializing selectors as a JSON array and
 /// substituting the `__SELECTORS__` placeholder.
@@ -106,6 +104,7 @@ pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppErr
 
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
+    let responsive_actor = ctx.target.responsive_actor.clone();
 
     // --- Step 1: capture original viewport dimensions -----------------------
     let vp_result =
@@ -144,25 +143,33 @@ pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppErr
     let mut loop_error: Option<AppError> = None;
 
     'bp: for &width in widths {
-        // Resize the viewport to the target width.
-        let resize_script = resize_js(width);
-        let resize_result = match WebConsoleActor::evaluate_js_async(
-            ctx.transport_mut(),
-            &console_actor,
-            &resize_script,
-        )
-        .map_err(AppError::from)
-        {
-            Ok(r) => r,
-            Err(e) => {
-                loop_error = Some(e);
-                break 'bp;
-            }
+        // Resize the viewport to the target width using the ResponsiveActor
+        // (Firefox DevTools API) when available.  This is the only reliable
+        // way to resize in headless mode and in non-popup windows.
+        //
+        // `window.resizeTo()` is intentionally NOT used here: browsers block
+        // it for non-popup windows (security restriction) and it has no effect
+        // in headless Firefox, so it always reports the default 1366px width.
+        let resize_result = if let Some(ref ra) = responsive_actor {
+            ResponsiveActor::set_viewport_size(
+                ctx.transport_mut(),
+                ra,
+                width,
+                original_outer_height,
+            )
+            .map_err(AppError::from)
+        } else {
+            // ResponsiveActor unavailable (very old Firefox): fall back to
+            // evaluating a resize JS snippet.  This path is unlikely in
+            // practice but keeps backward compatibility.
+            let resize_script = format!("window.resizeTo({width}, window.outerHeight)");
+            WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &resize_script)
+                .map(|_| ())
+                .map_err(AppError::from)
         };
 
-        if let Some(ref exc) = resize_result.exception {
-            let msg = exc.message.as_deref().unwrap_or("resize failed");
-            loop_error = Some(AppError::User(format!("resize to {width}: {msg}")));
+        if let Err(e) = resize_result {
+            loop_error = Some(e);
             break 'bp;
         }
 
@@ -210,12 +217,24 @@ pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppErr
     }
 
     // --- Step 3: restore original viewport ----------------------------------
-    let restore_script =
-        format!("window.resizeTo({original_outer_width}, {original_outer_height})");
     // Ignore restore errors — we've already collected our data (or have an
     // error to return).  Best-effort restore is the right tradeoff here.
-    let _ =
-        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &restore_script);
+    if let Some(ref ra) = responsive_actor {
+        let _ = ResponsiveActor::set_viewport_size(
+            ctx.transport_mut(),
+            ra,
+            original_outer_width,
+            original_outer_height,
+        );
+    } else {
+        let restore_script =
+            format!("window.resizeTo({original_outer_width}, {original_outer_height})");
+        let _ = WebConsoleActor::evaluate_js_async(
+            ctx.transport_mut(),
+            &console_actor,
+            &restore_script,
+        );
+    }
 
     // Return any loop error after restoring.
     if let Some(e) = loop_error {
@@ -304,11 +323,5 @@ mod tests {
         assert!(js.contains("flexDirection"));
         assert!(js.contains("gridTemplateColumns"));
         assert!(js.contains("fontSize"));
-    }
-
-    #[test]
-    fn resize_js_embeds_width() {
-        let js = resize_js(768);
-        assert_eq!(js, "window.resizeTo(768, window.outerHeight)");
     }
 }

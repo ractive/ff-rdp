@@ -10,7 +10,9 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
-use super::perf::{compute_cls, compute_fcp, compute_lcp, compute_tbt, compute_ttfb, round2};
+use super::perf::{
+    compute_cls, compute_fcp, compute_lcp, compute_tbt, compute_ttfb, is_lcp_approximate, round2,
+};
 use super::url_validation::validate_url;
 
 const POLL_INTERVAL_MS: u64 = 100;
@@ -96,6 +98,11 @@ fn navigate_and_wait(
 
 /// Combined JS script that collects all CWV-relevant entry types plus resource
 /// stats in a single eval, mirroring the script used by `run_vitals` / `run_audit`.
+///
+/// Includes three fallback layers for LCP (same as `run_vitals`):
+/// 1. PerformanceObserver with buffered:true
+/// 2. `performance.getEntriesByType('largest-contentful-paint')` direct query
+/// 3. DOM-based approximation using the largest visible img/video/svg/canvas element
 const COLLECT_SCRIPT: &str = r"(function() {
   var result = {};
   var cwvTypes = ['largest-contentful-paint', 'layout-shift', 'longtask', 'paint'];
@@ -111,6 +118,49 @@ const COLLECT_SCRIPT: &str = r"(function() {
   });
   if (!result.paint || result.paint.length === 0) {
     result.paint = performance.getEntriesByType('paint').map(function(e) { return e.toJSON(); });
+  }
+  // LCP layer 2: direct getEntriesByType query if observer returned nothing
+  if (!result['largest-contentful-paint'] || result['largest-contentful-paint'].length === 0) {
+    try {
+      var direct = performance.getEntriesByType('largest-contentful-paint');
+      if (direct && direct.length > 0) {
+        result['largest-contentful-paint'] = direct.map(function(e) { return e.toJSON(); });
+      }
+    } catch(e) {}
+  }
+  // LCP layer 3: DOM-based approximation if still empty
+  if (!result['largest-contentful-paint'] || result['largest-contentful-paint'].length === 0) {
+    try {
+      var best = null;
+      var bestArea = 0;
+      var candidates = Array.prototype.slice.call(
+        document.querySelectorAll('img, video, svg, canvas, [style*=background-image]')
+      );
+      candidates.forEach(function(el) {
+        var rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) { return; }
+        var area = rect.width * rect.height;
+        if (area > bestArea) { bestArea = area; best = el; }
+      });
+      if (best) {
+        var src = best.src || best.currentSrc || best.getAttribute('src') || '';
+        var loadTime = 0;
+        if (src) {
+          var res = performance.getEntriesByName(src);
+          if (res && res.length > 0) { loadTime = res[0].responseEnd || 0; }
+        }
+        result['largest-contentful-paint'] = [{
+          entryType: 'largest-contentful-paint',
+          startTime: loadTime,
+          renderTime: loadTime,
+          loadTime: loadTime,
+          size: bestArea,
+          url: src,
+          element: null,
+          approximate: true
+        }];
+      }
+    } catch(e) {}
   }
   result.navigation = performance.getEntriesByType('navigation').map(function(e) { return e.toJSON(); });
   result.resource = performance.getEntriesByType('resource').map(function(e) { return e.toJSON(); });
@@ -185,14 +235,23 @@ fn collect_page_perf(ctx: &mut ConnectedTab, label: &str) -> Result<Value, AppEr
     let lcp = compute_lcp(lcp_entries);
     let cls = compute_cls(cls_entries);
     let tbt = compute_tbt(longtask_entries, fcp);
+    let lcp_approximate = is_lcp_approximate(lcp_entries);
 
-    let vitals = json!({
+    let mut vitals = json!({
         "ttfb_ms": ttfb,
         "fcp_ms": fcp,
         "lcp_ms": lcp,
         "cls": cls,
         "tbt_ms": tbt,
     });
+    if lcp_approximate {
+        vitals["lcp_approximate"] = json!(true);
+        vitals["lcp_note"] = json!(
+            "LCP estimated via DOM approximation; not available from PerformanceObserver in headless Firefox"
+        );
+    } else if lcp.is_none() {
+        vitals["lcp_note"] = json!("LCP not available in headless Firefox");
+    }
 
     // ── navigation timing ────────────────────────────────────────────────────
     let navigation = if let Some(nav_entry) = nav {

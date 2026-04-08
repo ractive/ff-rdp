@@ -91,6 +91,26 @@ impl OutputControls {
             })
             .collect()
     }
+
+    /// Filter to only the requested fields on a single object value.
+    ///
+    /// This is the single-object counterpart to [`apply_fields`] for commands
+    /// that return one record (e.g. `perf vitals`) rather than a list.
+    /// Non-object values are returned unchanged.
+    pub fn apply_fields_object(&self, value: Value) -> Value {
+        let Some(ref fields) = self.fields else {
+            return value;
+        };
+        if let Value::Object(map) = value {
+            let filtered: serde_json::Map<String, Value> = map
+                .into_iter()
+                .filter(|(k, _)| fields.iter().any(|f| f == k))
+                .collect();
+            Value::Object(filtered)
+        } else {
+            value
+        }
+    }
 }
 
 /// Compare two optional JSON values for sorting purposes.

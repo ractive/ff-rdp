@@ -18,33 +18,37 @@ fn base_args(port: u16) -> Vec<String> {
 
 /// Build a `MockRdpServer` pre-wired for a `responsive` run.
 ///
-/// `eval_sequence` is the ordered list of `(immediate, followup)` pairs
-/// for each `evaluateJSAsync` request the command will issue.  Use
-/// `on_sequence` so that successive calls consume successive entries.
+/// The server handles:
+/// - `evaluateJSAsync` with a sequence: GET_VIEWPORT (once) + geometry×N
+/// - `setViewportSize` with a fixed response: used for each width resize and
+///   the final restore (the responsive actor is used instead of JS resizeTo).
 fn responsive_server(
     eval_sequence: Vec<(serde_json::Value, Vec<serde_json::Value>)>,
 ) -> MockRdpServer {
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
+        .on(
+            "setViewportSize",
+            load_fixture("set_viewport_size_response.json"),
+        )
         .on_sequence("evaluateJSAsync", eval_sequence)
 }
 
 /// Build an eval sequence for `N` viewport widths.
 ///
-/// The protocol for each width is:
-///   GET_VIEWPORT (once) → resize×N → geometry×N → restore (once)
+/// The protocol for each width is now:
+///   GET_VIEWPORT (evaluateJSAsync, once) → setViewportSize×N → geometry×N
+///   → setViewportSize for restore (once)
 ///
-/// The immediate response is always `eval_immediate_response.json`.
-/// The followup alternates:
-///   - viewport: `eval_result_responsive_viewport.json`
-///   - resize:   `eval_result_responsive_undefined.json`
-///   - geometry: `eval_result_responsive_geometry.json`
-///   - restore:  `eval_result_responsive_undefined.json`
+/// The `evaluateJSAsync` sequence is therefore:
+///   - viewport: `eval_result_responsive_viewport.json`  (1×)
+///   - geometry: `eval_result_responsive_geometry.json`  (N×)
+///
+/// The `setViewportSize` calls are handled by a fixed handler (N+1 calls total).
 fn build_eval_sequence(width_count: usize) -> Vec<(serde_json::Value, Vec<serde_json::Value>)> {
     let immediate = load_fixture("eval_immediate_response.json");
     let viewport = load_fixture("eval_result_responsive_viewport.json");
-    let undefined = load_fixture("eval_result_responsive_undefined.json");
     let geometry = load_fixture("eval_result_responsive_geometry.json");
 
     let mut seq = Vec::new();
@@ -52,14 +56,10 @@ fn build_eval_sequence(width_count: usize) -> Vec<(serde_json::Value, Vec<serde_
     // Step 1: get current viewport
     seq.push((immediate.clone(), vec![viewport]));
 
-    // Step 2: for each width — resize then collect geometry
+    // Step 2: for each width — collect geometry (resize is now setViewportSize)
     for _ in 0..width_count {
-        seq.push((immediate.clone(), vec![undefined.clone()])); // resize
-        seq.push((immediate.clone(), vec![geometry.clone()])); // geometry
+        seq.push((immediate.clone(), vec![geometry.clone()]));
     }
-
-    // Step 3: restore — undefined result, last entry repeats if needed
-    seq.push((immediate.clone(), vec![undefined.clone()]));
 
     seq
 }
