@@ -152,7 +152,8 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
     }
 
     // Summary mode (default).
-    let summary = build_network_summary(&results);
+    // The non-timed drain_network_events() stops on idle, so timeout is never reached.
+    let summary = build_network_summary(&results, false);
     let envelope = output::envelope(&summary, 1, &meta);
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
@@ -166,7 +167,12 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
 /// - `total_transfer_bytes`: sum of `transfer_size` across all entries
 /// - `by_cause_type`: count per `cause_type` field
 /// - `slowest`: top-20 slowest requests (url, duration_ms, status, transfer_size)
-pub fn build_network_summary(entries: &[serde_json::Value]) -> serde_json::Value {
+/// - `timeout_reached`: whether the collection deadline fired while events were still arriving
+/// - `hint` (only when `timeout_reached` is true): advice to increase `--network-timeout`
+pub fn build_network_summary(
+    entries: &[serde_json::Value],
+    timeout_reached: bool,
+) -> serde_json::Value {
     let total_requests = entries.len();
 
     let total_transfer_bytes: f64 = entries
@@ -210,12 +216,20 @@ pub fn build_network_summary(entries: &[serde_json::Value]) -> serde_json::Value
         })
         .collect();
 
-    json!({
+    let mut summary = json!({
         "total_requests": total_requests,
         "total_transfer_bytes": total_transfer_bytes,
         "by_cause_type": by_cause_type,
         "slowest": slowest,
-    })
+        "timeout_reached": timeout_reached,
+    });
+    if timeout_reached {
+        summary["hint"] = json!(
+            "Network collection was still receiving events when the timeout was reached. \
+             Consider increasing --network-timeout for more complete results."
+        );
+    }
+    summary
 }
 
 /// Stream network events in real time.
@@ -412,10 +426,12 @@ mod tests {
 
     #[test]
     fn build_network_summary_empty() {
-        let s = build_network_summary(&[]);
+        let s = build_network_summary(&[], false);
         assert_eq!(s["total_requests"], 0);
         assert_eq!(s["total_transfer_bytes"], 0.0);
         assert!(s["slowest"].as_array().unwrap().is_empty());
+        assert_eq!(s["timeout_reached"], false);
+        assert!(s.get("hint").is_none());
     }
 
     #[test]
@@ -423,7 +439,7 @@ mod tests {
         // An empty slice sums to 0.0; IEEE 754 can sometimes produce -0.0.
         // Verify the returned value serialises as "0.0" (positive zero) and
         // that the IEEE bit pattern is positive zero, not negative zero.
-        let s = build_network_summary(&[]);
+        let s = build_network_summary(&[], false);
         let v = s["total_transfer_bytes"]
             .as_f64()
             .expect("total_transfer_bytes is f64");
@@ -449,7 +465,7 @@ mod tests {
             json!({"url": "a", "duration_ms": 10.0, "status": 200, "cause_type": "doc"}),
             json!({"url": "b", "duration_ms": 20.0, "status": 200, "cause_type": "doc"}),
         ];
-        let s = build_network_summary(&entries);
+        let s = build_network_summary(&entries, false);
         let v = s["total_transfer_bytes"]
             .as_f64()
             .expect("total_transfer_bytes is f64");
@@ -464,7 +480,7 @@ mod tests {
             json!({"url": "b", "duration_ms": 50.0, "status": 404, "transfer_size": 100.0, "cause_type": "script"}),
             json!({"url": "c", "duration_ms": 200.0, "status": 200, "transfer_size": 1000.0, "cause_type": "img"}),
         ];
-        let s = build_network_summary(&entries);
+        let s = build_network_summary(&entries, false);
         assert_eq!(s["total_requests"], 3);
         assert_eq!(s["total_transfer_bytes"], 1600.0);
         assert_eq!(s["by_cause_type"]["script"], 2);
@@ -474,5 +490,34 @@ mod tests {
         assert_eq!(slowest[0]["url"], "c");
         assert_eq!(slowest[1]["url"], "a");
         assert_eq!(slowest[2]["url"], "b");
+        assert_eq!(s["timeout_reached"], false);
+        assert!(s.get("hint").is_none());
+    }
+
+    #[test]
+    fn build_network_summary_timeout_reached_adds_hint() {
+        let entries =
+            vec![json!({"url": "a", "duration_ms": 10.0, "status": 200, "cause_type": "doc"})];
+        let s = build_network_summary(&entries, true);
+        assert_eq!(s["timeout_reached"], true);
+        let hint = s["hint"]
+            .as_str()
+            .expect("hint should be a string when timeout_reached");
+        assert!(
+            hint.contains("--network-timeout"),
+            "hint should mention --network-timeout"
+        );
+    }
+
+    #[test]
+    fn build_network_summary_no_timeout_no_hint() {
+        let entries =
+            vec![json!({"url": "a", "duration_ms": 10.0, "status": 200, "cause_type": "doc"})];
+        let s = build_network_summary(&entries, false);
+        assert_eq!(s["timeout_reached"], false);
+        assert!(
+            s.get("hint").is_none(),
+            "hint should not be present when timeout_reached is false"
+        );
     }
 }
