@@ -15,7 +15,7 @@ date: 2026-04-08
    - Step 1: `screenshotContentActor.prepareCapture` -- returns capture metadata
    - Step 2: `screenshotActor.capture` (root actor) -- performs the actual capture
 
-3. **The `rect` field from `prepareCapture` MUST be forwarded to `capture`.** The `prepareCapture` response includes a `rect` field (with `left`, `top`, `width`, `height`) that must be passed through to `capture`. Without it, Firefox times out because `drawSnapshot` does not know the capture region.
+3. **When non-null, the `rect` field from `prepareCapture` MUST be forwarded to `capture`.** For fullpage/element captures, `prepareCapture` returns a `rect` field (with `left`, `top`, `width`, `height`) that must be passed through to `capture`. Without it, Firefox times out because `drawSnapshot` does not know the capture region. Viewport-only captures return `rect: null`, in which case it should be omitted.
 
 4. **`rect` semantics by capture type:**
    - Viewport-only captures: `rect` is `null`

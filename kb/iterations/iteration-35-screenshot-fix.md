@@ -108,11 +108,12 @@ Firefox never responds (timeout).
 
 ## Root Cause
 
-`prepareCapture` returns a `rect` field that must be forwarded to
-`screenshotActor.capture`. The code was ignoring `rect`, causing Firefox to
-time out because `drawSnapshot` didn't know the capture region. Fix: added
-`CaptureRect` to the `PrepareCapture` struct and forwarded it in the capture
-args.
+`prepareCapture` may return a non-null `rect` field that must be forwarded to
+`screenshotActor.capture` for fullpage/element captures. The code was
+ignoring that returned `rect`, causing Firefox to time out because
+`drawSnapshot` didn't know the capture region. Viewport captures can
+legitimately return `rect: null`. Fix: added `CaptureRect` to the
+`PrepareCapture` struct and forwarded the non-null `rect` in the capture args.
 
 ## Test Fixtures
 
