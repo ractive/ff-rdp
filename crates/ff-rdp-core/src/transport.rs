@@ -115,6 +115,26 @@ impl RdpTransport {
         (self.reader, self.writer)
     }
 
+    /// Override the socket read timeout.
+    ///
+    /// Pass `None` to block indefinitely (not recommended in production).
+    /// This is used by commands that need a different idle-detection window
+    /// than the one established at connect time (e.g. `navigate --with-network`
+    /// with a shorter `--network-timeout`).
+    ///
+    /// Sets the timeout on both the reader and writer halves.  On most
+    /// platforms `SO_RCVTIMEO` is a socket-level option shared across cloned
+    /// handles, but setting it on both is the safe, cross-platform approach.
+    pub fn set_read_timeout(&mut self, timeout: Option<Duration>) -> Result<(), ProtocolError> {
+        self.reader
+            .get_mut()
+            .set_read_timeout(timeout)
+            .map_err(ProtocolError::ConnectionFailed)?;
+        self.writer
+            .set_read_timeout(timeout)
+            .map_err(ProtocolError::ConnectionFailed)
+    }
+
     /// Send a JSON message using Firefox RDP framing: `{len}:{json}`.
     pub fn send(&mut self, message: &Value) -> Result<(), ProtocolError> {
         let json = serde_json::to_string(message)

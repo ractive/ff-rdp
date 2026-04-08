@@ -40,6 +40,9 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
                 ff_rdp_core::ActorErrorKind::ThreadWouldRun => Self::User(format!(
                     "{err} — the page script is paused in the debugger; resume execution first"
                 )),
+                ff_rdp_core::ActorErrorKind::UnrecognizedPacketType => Self::User(format!(
+                    "{err} — the method is not supported by this Firefox version"
+                )),
                 ff_rdp_core::ActorErrorKind::Other(_) => Self::Internal(anyhow::Error::new(err)),
             },
             _ => Self::Internal(anyhow::Error::new(err)),

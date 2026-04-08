@@ -150,6 +150,20 @@ fn run_follow_direct(
     regex: Option<&regex::Regex>,
     jq_filter: Option<&str>,
 ) -> Result<(), AppError> {
+    // Activate the console actor's internal listeners before subscribing via
+    // the Watcher.  Firefox requires the console actor to be "listening" for
+    // the watcher's console-message subscription to deliver events; without
+    // this call, console.log() calls made via eval produce no events.
+    // Best-effort: some Firefox builds reject certain listener types.
+    let console_actor = ctx.target.console_actor.clone();
+    if let Err(e) = WebConsoleActor::start_listeners(
+        ctx.transport_mut(),
+        &console_actor,
+        &["PageError", "ConsoleAPI"],
+    ) {
+        eprintln!("warning: startListeners failed: {e}");
+    }
+
     let tab_actor = ctx.target_tab_actor().clone();
     let watcher_actor =
         TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;

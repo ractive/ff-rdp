@@ -25,6 +25,7 @@ fn a11y_server() -> MockRdpServer {
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
         .on("getWalker", load_fixture("a11y_get_walker_response.json"))
+        .on("getDocument", load_fixture("a11y_get_root_response.json"))
         .on("getRootNode", load_fixture("a11y_get_root_response.json"))
         .on("children", load_fixture("a11y_children_response.json"))
 }

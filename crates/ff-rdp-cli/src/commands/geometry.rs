@@ -14,8 +14,13 @@ use super::js_helpers::{eval_or_bail, resolve_result};
 /// `__SELECTORS__` is replaced with the JSON-encoded array of CSS selectors
 /// before evaluation.  All selectors come through `serde_json::to_string`
 /// so no manual escaping is needed.
+///
+/// `__VISIBLE_ONLY__` is replaced with `true` or `false` to enable filtering
+/// of invisible elements (zero-size, display:none, visibility:hidden, opacity:0)
+/// before computing overlaps.
 const GEOMETRY_JS_TEMPLATE: &str = r"(function() {
   var selectors = __SELECTORS__;
+  var visibleOnly = __VISIBLE_ONLY__;
   var vw = window.innerWidth || document.documentElement.clientWidth;
   var vh = window.innerHeight || document.documentElement.clientHeight;
   var elements = [];
@@ -40,6 +45,7 @@ const GEOMETRY_JS_TEMPLATE: &str = r"(function() {
       var vis = r.width > 0 && r.height > 0 &&
         cs.visibility !== 'hidden' && cs.display !== 'none' &&
         parseFloat(cs.opacity) > 0;
+      if (visibleOnly && !vis) { continue; }
       var inVp = r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw;
       elements.push({
         selector: sel,
@@ -77,11 +83,11 @@ const GEOMETRY_JS_TEMPLATE: &str = r"(function() {
   return '__FF_RDP_JSON__' + JSON.stringify({elements: elements, overlaps: overlaps, viewport: {width: vw, height: vh}});
 })()";
 
-pub fn run(cli: &Cli, selectors: &[String]) -> Result<(), AppError> {
+pub fn run(cli: &Cli, selectors: &[String], visible_only: bool) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
-    let js = build_js(selectors);
+    let js = build_js(selectors, visible_only);
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "geometry evaluation failed")?;
 
@@ -154,13 +160,16 @@ pub fn run(cli: &Cli, selectors: &[String]) -> Result<(), AppError> {
 }
 
 /// Build the JS IIFE by serializing selectors as a JSON array and substituting
-/// the placeholder.
-fn build_js(selectors: &[String]) -> String {
+/// the placeholders.
+fn build_js(selectors: &[String], visible_only: bool) -> String {
     // serde_json::to_string is infallible for Vec<String>
     let selectors_json = serde_json::to_string(selectors).unwrap_or_else(|e| {
         unreachable!("serde_json::to_string is infallible for Vec<String>: {e}")
     });
-    GEOMETRY_JS_TEMPLATE.replace("__SELECTORS__", &selectors_json)
+    let visible_only_str = if visible_only { "true" } else { "false" };
+    GEOMETRY_JS_TEMPLATE
+        .replace("__SELECTORS__", &selectors_json)
+        .replace("__VISIBLE_ONLY__", visible_only_str)
 }
 
 #[cfg(test)]
@@ -170,7 +179,7 @@ mod tests {
     #[test]
     fn build_js_inserts_selectors() {
         let selectors = vec!["h1".to_owned(), "p".to_owned()];
-        let js = build_js(&selectors);
+        let js = build_js(&selectors, false);
         assert!(js.contains(r#"["h1","p"]"#));
         assert!(!js.contains("__SELECTORS__"));
     }
@@ -179,7 +188,7 @@ mod tests {
     fn build_js_escapes_special_chars_in_selectors() {
         // Selectors with quotes — serde_json handles JSON escaping
         let selectors = vec!["[data-id=\"foo\"]".to_owned()];
-        let js = build_js(&selectors);
+        let js = build_js(&selectors, false);
         assert!(!js.contains("__SELECTORS__"));
         // The result must be valid JSON for the array element
         let start = js.find("var selectors = ").expect("placeholder replaced") + 16;
@@ -191,15 +200,35 @@ mod tests {
 
     #[test]
     fn build_js_contains_sentinel() {
-        let js = build_js(&["div".to_owned()]);
+        let js = build_js(&["div".to_owned()], false);
         assert!(js.contains(super::super::js_helpers::JSON_SENTINEL));
     }
 
     #[test]
     fn build_js_contains_overlap_detection() {
-        let js = build_js(&["div".to_owned()]);
+        let js = build_js(&["div".to_owned()], false);
         assert!(js.contains("overlaps"));
         assert!(js.contains("getBoundingClientRect"));
         assert!(js.contains("getComputedStyle"));
+    }
+
+    #[test]
+    fn build_js_visible_only_false_uses_false_literal() {
+        let js = build_js(&["div".to_owned()], false);
+        assert!(js.contains("var visibleOnly = false;"));
+        assert!(!js.contains("__VISIBLE_ONLY__"));
+    }
+
+    #[test]
+    fn build_js_visible_only_true_uses_true_literal() {
+        let js = build_js(&["div".to_owned()], true);
+        assert!(js.contains("var visibleOnly = true;"));
+        assert!(!js.contains("__VISIBLE_ONLY__"));
+    }
+
+    #[test]
+    fn build_js_visible_only_includes_filter_guard() {
+        let js = build_js(&["div".to_owned()], true);
+        assert!(js.contains("if (visibleOnly && !vis) { continue; }"));
     }
 }

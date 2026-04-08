@@ -56,9 +56,10 @@ fn click_returns_confirmation_json() {
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
-    // The result is an Object grip (type: "object", class: "Object")
-    assert_eq!(json["results"]["type"], "object");
-    assert_eq!(json["results"]["class"], "Object");
+    // The result is a clean {clicked, tag, text} object — no raw RDP grip fields.
+    assert_eq!(json["results"]["clicked"], true);
+    assert_eq!(json["results"]["tag"], "BUTTON");
+    assert_eq!(json["results"]["text"], "Submit");
     assert_eq!(json["meta"]["selector"], "button.submit");
 }
 

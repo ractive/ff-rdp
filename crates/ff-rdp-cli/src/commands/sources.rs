@@ -19,17 +19,31 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
 
     // Firefox error messages are matched by substring — fragile but necessary
     // since RDP actor errors lack structured error codes.
-    let sources = ThreadActor::list_sources(ctx.transport_mut(), thread_actor.as_ref())
-        .map_err(|e| match &e {
+    let sources = ThreadActor::list_sources(ctx.transport_mut(), thread_actor.as_ref()).map_err(
+        |e| match &e {
+            ff_rdp_core::ProtocolError::ActorError { error, .. }
+                if error == "unrecognizedPacketType" =>
+            {
+                AppError::User(
+                    "sources: Firefox does not recognise the 'sources' method on the thread \
+                     actor — this indicates a protocol change in Firefox 125+. \
+                     The thread-based source listing API may have been removed or moved. \
+                     Try the `eval` command to inspect `performance.getEntries()` instead."
+                        .to_owned(),
+                )
+            }
             ff_rdp_core::ProtocolError::ActorError { message, .. }
                 if message.contains("undefined") || message.contains("not available") =>
             {
                 AppError::User(format!(
-                    "sources: Firefox returned an error ({message}) — the page may not have loaded scripts yet"
+                    "sources: Firefox returned an error ({message}) — \
+                     the page may not have loaded scripts yet, or this Firefox version \
+                     (125+) may use a different protocol for source listing"
                 ))
             }
             _ => AppError::from(e),
-        })?;
+        },
+    )?;
 
     // Apply filters.
     let regex = pattern

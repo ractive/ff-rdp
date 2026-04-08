@@ -23,6 +23,8 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
         other => AppError::from(other),
     })?;
 
+    connection.warn_if_version_unsupported();
+
     let tabs = RootActor::list_tabs(connection.transport_mut()).map_err(AppError::from)?;
 
     let results_json: serde_json::Value = serde_json::to_value(&tabs)

@@ -100,14 +100,178 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
 
     let envelope = output::envelope(&results, total, &meta);
 
+    if cli.format == "text" && cli.jq.is_none() {
+        render_snapshot_text(&results);
+        return Ok(());
+    }
+
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
 }
 
+/// Render a DOM snapshot as an indented tree.
+///
+/// Each node is printed as:
+///   `<indent><tag>[role=…][interactive] [attr=val …] "text content"`
+///
+/// String nodes (raw text) are printed inline as quoted strings.
+/// Truncation and depth-limit notices from the JS walker are preserved.
+fn render_snapshot_text(node: &Value) {
+    if node.is_null() {
+        println!("(empty snapshot)");
+        return;
+    }
+    render_node(node, 0);
+}
+
+const SNAPSHOT_TEXT_ATTRS: &[&str] = &[
+    "id",
+    "class",
+    "href",
+    "src",
+    "type",
+    "aria-label",
+    "data-testid",
+];
+
+fn render_node(node: &Value, depth: usize) {
+    use std::fmt::Write as _;
+    let indent = "  ".repeat(depth);
+
+    match node {
+        // Leaf text node: a plain JSON string
+        Value::String(text) => {
+            // Truncate long text to keep output readable
+            if text.chars().count() > 80 {
+                let truncated = text.chars().take(77).collect::<String>();
+                println!("{indent}\"{truncated}...\"");
+            } else {
+                println!("{indent}\"{text}\"");
+            }
+        }
+        Value::Object(_) => {
+            let tag = node.get("tag").and_then(Value::as_str).unwrap_or("?");
+
+            let mut line = format!("{indent}<{tag}");
+
+            if let Some(role) = node.get("role").and_then(Value::as_str) {
+                let _ = write!(line, " role={role}");
+            }
+            if node
+                .get("interactive")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                line.push_str(" [interactive]");
+            }
+
+            if let Some(attrs) = node.get("attrs").and_then(Value::as_object) {
+                for key in SNAPSHOT_TEXT_ATTRS {
+                    if let Some(val) = attrs.get(*key).and_then(Value::as_str) {
+                        let val = if val.chars().count() > 40 {
+                            format!("{}...", val.chars().take(37).collect::<String>())
+                        } else {
+                            val.to_string()
+                        };
+                        let _ = write!(line, " {key}={val:?}");
+                    }
+                }
+            }
+
+            if let Some(truncated) = node.get("truncated").and_then(Value::as_str) {
+                let _ = write!(line, " ({truncated})");
+            }
+
+            println!("{line}");
+
+            if let Some(Value::Array(children)) = node.get("children") {
+                for child in children {
+                    render_node(child, depth + 1);
+                }
+            }
+
+            if node
+                .get("textTruncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                println!("{indent}  [text truncated — increase --max-chars]");
+            }
+        }
+        // Unexpected node shape: fall back to compact JSON
+        other => {
+            println!("{indent}{other}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── render_snapshot_text smoke tests ─────────────────────────────────────
+    //
+    // stdout cannot easily be captured in unit tests, so we verify the
+    // rendering functions do not panic on representative inputs.
+
+    #[test]
+    fn render_snapshot_null_does_not_panic() {
+        render_snapshot_text(&Value::Null);
+    }
+
+    #[test]
+    fn render_snapshot_simple_element_does_not_panic() {
+        let node = json!({
+            "tag": "div",
+            "attrs": {"id": "main", "class": "container"},
+            "children": [
+                {"tag": "h1", "children": ["Hello World"]},
+                {"tag": "a", "interactive": true, "attrs": {"href": "https://example.com"}}
+            ]
+        });
+        render_snapshot_text(&node);
+    }
+
+    #[test]
+    fn render_snapshot_with_role_and_truncated_does_not_panic() {
+        let node = json!({
+            "tag": "nav",
+            "role": "navigation",
+            "truncated": "3 children not shown"
+        });
+        render_snapshot_text(&node);
+    }
+
+    #[test]
+    fn render_snapshot_text_truncated_flag_does_not_panic() {
+        let node = json!({
+            "tag": "body",
+            "textTruncated": true,
+            "children": ["some text"]
+        });
+        render_snapshot_text(&node);
+    }
+
+    #[test]
+    fn render_snapshot_long_text_does_not_panic() {
+        let long_text = "a".repeat(200);
+        let node = json!({
+            "tag": "p",
+            "children": [long_text]
+        });
+        render_snapshot_text(&node);
+    }
+
+    #[test]
+    fn render_snapshot_long_attr_does_not_panic() {
+        let long_class = "x".repeat(100);
+        let node = json!({
+            "tag": "div",
+            "attrs": {"class": long_class}
+        });
+        render_snapshot_text(&node);
+    }
 
     #[test]
     fn snapshot_js_template_substitution() {

@@ -57,11 +57,22 @@ pub fn run(cli: &Cli, output_path: Option<&str>, base64_mode: bool) -> Result<()
         if let Some(actor) = actor_id {
             let capture = ScreenshotContentActor::capture(ctx.transport_mut(), actor.as_ref())
                 .map_err(|e| {
-                    AppError::User(format!(
-                        "screenshot: drawWindow not available and screenshotContentActor \
-                         capture failed ({e}) — screenshots require headless mode; \
-                         relaunch with: ff-rdp launch --headless"
-                    ))
+                    if e.is_unrecognized_packet_type() {
+                        AppError::User(
+                            "screenshot: the screenshotContentActor does not support \
+                             'captureScreenshot' in this Firefox version — \
+                             the method may have been renamed or removed in Firefox 125+. \
+                             The drawWindow JS fallback also failed; screenshots may not \
+                             be available in headless mode with this Firefox build."
+                                .to_owned(),
+                        )
+                    } else {
+                        AppError::User(format!(
+                            "screenshot: drawWindow not available and screenshotContentActor \
+                             capture failed ({e}) — screenshots require headless mode; \
+                             relaunch with: ff-rdp launch --headless"
+                        ))
+                    }
                 })?;
             capture.data
         } else {

@@ -86,6 +86,10 @@ pub enum Command {
         /// Also capture network requests made during navigation
         #[arg(long)]
         with_network: bool,
+        /// Idle timeout for network event collection in milliseconds (--with-network only).
+        /// Collection stops when no new network events arrive within this window.
+        #[arg(long, default_value_t = 5000)]
+        network_timeout: u64,
         /// After navigating, wait for this text to appear on the page
         #[arg(long, conflicts_with = "wait_selector")]
         wait_text: Option<String>,
@@ -239,7 +243,7 @@ affect which requests Firefox records.")]
     },
     /// Read web storage (localStorage or sessionStorage)
     Storage {
-        /// Storage type: "local" or "session"
+        /// Storage type: "local" (or "localStorage") / "session" (or "sessionStorage")
         storage_type: String,
         /// Get a specific key only
         #[arg(long)]
@@ -309,6 +313,9 @@ affect which requests Firefox records.")]
         /// One or more CSS selectors to query
         #[arg(required = true)]
         selectors: Vec<String>,
+        /// Exclude invisible elements (zero-size, display:none, visibility:hidden, opacity:0)
+        #[arg(long)]
+        visible_only: bool,
     },
     /// Test responsive layout across viewport widths: resize to each width,
     /// collect geometry + computed styles for the given selectors, then restore

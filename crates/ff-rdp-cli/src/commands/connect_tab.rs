@@ -54,6 +54,8 @@ pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
         other => AppError::from(other),
     })?;
 
+    connection.warn_if_version_unsupported();
+
     let tabs = RootActor::list_tabs(connection.transport_mut()).map_err(AppError::from)?;
 
     let tab = resolve_tab(&tabs, cli.tab.as_deref(), cli.tab_id.as_deref())?;

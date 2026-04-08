@@ -176,6 +176,8 @@ user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
 user_pref("browser.shell.checkDefaultBrowser", false);
 // Disable session restore prompts
 user_pref("browser.sessionstore.resume_from_crash", false);
+// Disable auto-updates so Firefox cannot restart mid-session and break the RDP connection
+user_pref("app.update.enabled", false);
 // Enable remote debugging server (required since Firefox ~149)
 user_pref("devtools.debugger.remote-enabled", true);
 user_pref("devtools.debugger.prompt-connection", false);

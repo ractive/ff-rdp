@@ -66,7 +66,73 @@ fn script_get_entries_with_hostname(entry_type: &str) -> String {
 ///
 /// The callback fires synchronously for already-recorded entries when
 /// `buffered: true` is set, so we don't need Promises or async/await.
+///
+/// For `largest-contentful-paint` a three-layer fallback is used:
+/// 1. PerformanceObserver with buffered:true
+/// 2. `performance.getEntriesByType('largest-contentful-paint')` direct query
+/// 3. DOM-based approximation using the largest visible img/video/svg/canvas element
 fn script_observer(entry_type: &str) -> String {
+    if entry_type == "largest-contentful-paint" {
+        // Single-quote raw string — no double quotes inside. The CSS attribute selector
+        // intentionally omits quotes around the attribute value: [style*=background-image]
+        // is valid CSS and avoids the double-quote restriction.
+        return r"(function() {
+  try {
+    var entries = [];
+    var obs = new PerformanceObserver(function(list) {
+      entries = entries.concat(list.getEntries().map(function(e) { return e.toJSON(); }));
+    });
+    obs.observe({ type: 'largest-contentful-paint', buffered: true });
+    obs.disconnect();
+    if (entries.length > 0) { return JSON.stringify(entries); }
+  } catch(e) {}
+  // Layer 2: direct getEntriesByType query
+  try {
+    var direct = performance.getEntriesByType('largest-contentful-paint');
+    if (direct && direct.length > 0) {
+      return JSON.stringify(direct.map(function(e) { return e.toJSON(); }));
+    }
+  } catch(e) {}
+  // Layer 3: DOM-based approximation — find largest visible img/video/svg/canvas
+  try {
+    var best = null;
+    var bestArea = 0;
+    var candidates = Array.prototype.slice.call(
+      document.querySelectorAll('img, video, svg, canvas, [style*=background-image]')
+    );
+    candidates.forEach(function(el) {
+      var rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) { return; }
+      var area = rect.width * rect.height;
+      if (area > bestArea) {
+        bestArea = area;
+        best = el;
+      }
+    });
+    if (best) {
+      var src = best.src || best.currentSrc || best.getAttribute('src') || '';
+      var loadTime = 0;
+      if (src) {
+        var res = performance.getEntriesByName(src);
+        if (res && res.length > 0) { loadTime = res[0].responseEnd || 0; }
+      }
+      return JSON.stringify([{
+        entryType: 'largest-contentful-paint',
+        startTime: loadTime,
+        renderTime: loadTime,
+        loadTime: loadTime,
+        size: bestArea,
+        url: src,
+        element: null,
+        approximate: true
+      }]);
+    }
+  } catch(e) {}
+  return JSON.stringify([]);
+})()"
+            .to_string();
+    }
+
     format!(
         r"(function() {{
   try {{
@@ -367,6 +433,49 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
   if (!entries.paint || entries.paint.length === 0) {
     entries.paint = performance.getEntriesByType('paint').map(function(e) { return e.toJSON(); });
   }
+  // LCP layer 2: direct getEntriesByType query if observer returned nothing
+  if (!entries['largest-contentful-paint'] || entries['largest-contentful-paint'].length === 0) {
+    try {
+      var direct = performance.getEntriesByType('largest-contentful-paint');
+      if (direct && direct.length > 0) {
+        entries['largest-contentful-paint'] = direct.map(function(e) { return e.toJSON(); });
+      }
+    } catch(e) {}
+  }
+  // LCP layer 3: DOM-based approximation if still empty
+  if (!entries['largest-contentful-paint'] || entries['largest-contentful-paint'].length === 0) {
+    try {
+      var best = null;
+      var bestArea = 0;
+      var candidates = Array.prototype.slice.call(
+        document.querySelectorAll('img, video, svg, canvas, [style*=background-image]')
+      );
+      candidates.forEach(function(el) {
+        var rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) { return; }
+        var area = rect.width * rect.height;
+        if (area > bestArea) { bestArea = area; best = el; }
+      });
+      if (best) {
+        var src = best.src || best.currentSrc || best.getAttribute('src') || '';
+        var loadTime = 0;
+        if (src) {
+          var res = performance.getEntriesByName(src);
+          if (res && res.length > 0) { loadTime = res[0].responseEnd || 0; }
+        }
+        entries['largest-contentful-paint'] = [{
+          entryType: 'largest-contentful-paint',
+          startTime: loadTime,
+          renderTime: loadTime,
+          loadTime: loadTime,
+          size: bestArea,
+          url: src,
+          element: null,
+          approximate: true
+        }];
+      }
+    } catch(e) {}
+  }
   entries.navigation = performance.getEntriesByType('navigation').map(function(e) { return e.toJSON(); });
   entries.resource = performance.getEntriesByType('resource').map(function(e) { return e.toJSON(); });
   return JSON.stringify(entries);
@@ -404,8 +513,9 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
     let lcp = compute_lcp(lcp_entries);
     let cls = compute_cls(cls_entries);
     let tbt = compute_tbt(longtask_entries, fcp);
+    let lcp_approximate = is_lcp_approximate(lcp_entries);
 
-    let results = json!({
+    let mut results = json!({
         "lcp_ms": lcp,
         "lcp_rating": lcp.map(|v| rate(v, 2500.0, 4000.0)),
         "cls": cls,
@@ -417,6 +527,14 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
         "ttfb_ms": ttfb,
         "ttfb_rating": ttfb.map(|v| rate(v, 800.0, 1800.0)),
     });
+    if lcp_approximate {
+        results["lcp_approximate"] = json!(true);
+        results["lcp_note"] = json!(
+            "LCP estimated via DOM approximation; not available from PerformanceObserver in headless Firefox"
+        );
+    } else if lcp.is_none() {
+        results["lcp_note"] = json!("LCP not available in headless Firefox");
+    }
 
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&results, 1, &meta);
@@ -563,6 +681,50 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
     result.paint = performance.getEntriesByType('paint').map(function(e) { return e.toJSON(); });
   }
 
+  // LCP layer 2: direct getEntriesByType query if observer returned nothing
+  if (!result['largest-contentful-paint'] || result['largest-contentful-paint'].length === 0) {
+    try {
+      var lcpDirect = performance.getEntriesByType('largest-contentful-paint');
+      if (lcpDirect && lcpDirect.length > 0) {
+        result['largest-contentful-paint'] = lcpDirect.map(function(e) { return e.toJSON(); });
+      }
+    } catch(e) {}
+  }
+  // LCP layer 3: DOM-based approximation if still empty
+  if (!result['largest-contentful-paint'] || result['largest-contentful-paint'].length === 0) {
+    try {
+      var lcpBest = null;
+      var lcpBestArea = 0;
+      var lcpCandidates = Array.prototype.slice.call(
+        document.querySelectorAll('img, video, svg, canvas, [style*=background-image]')
+      );
+      lcpCandidates.forEach(function(el) {
+        var rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) { return; }
+        var area = rect.width * rect.height;
+        if (area > lcpBestArea) { lcpBestArea = area; lcpBest = el; }
+      });
+      if (lcpBest) {
+        var lcpSrc = lcpBest.src || lcpBest.currentSrc || lcpBest.getAttribute('src') || '';
+        var lcpLoad = 0;
+        if (lcpSrc) {
+          var lcpRes = performance.getEntriesByName(lcpSrc);
+          if (lcpRes && lcpRes.length > 0) { lcpLoad = lcpRes[0].responseEnd || 0; }
+        }
+        result['largest-contentful-paint'] = [{
+          entryType: 'largest-contentful-paint',
+          startTime: lcpLoad,
+          renderTime: lcpLoad,
+          loadTime: lcpLoad,
+          size: lcpBestArea,
+          url: lcpSrc,
+          element: null,
+          approximate: true
+        }];
+      }
+    } catch(e) {}
+  }
+
   result.navigation = performance.getEntriesByType('navigation').map(function(e) { return e.toJSON(); });
   result.resource = performance.getEntriesByType('resource').map(function(e) { return e.toJSON(); });
 
@@ -624,8 +786,9 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
     let lcp = compute_lcp(lcp_entries);
     let cls = compute_cls(cls_entries);
     let tbt = compute_tbt(longtask_entries, fcp);
+    let lcp_approximate = is_lcp_approximate(lcp_entries);
 
-    let vitals = json!({
+    let mut vitals = json!({
         "ttfb_ms": ttfb,
         "ttfb_rating": ttfb.map(|v| rate(v, 800.0, 1800.0)),
         "fcp_ms": fcp,
@@ -637,6 +800,14 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
         "tbt_ms": tbt,
         "tbt_rating": rate(tbt, 200.0, 600.0),
     });
+    if lcp_approximate {
+        vitals["lcp_approximate"] = json!(true);
+        vitals["lcp_note"] = json!(
+            "LCP estimated via DOM approximation; not available from PerformanceObserver in headless Firefox"
+        );
+    } else if lcp.is_none() {
+        vitals["lcp_note"] = json!("LCP not available in headless Firefox");
+    }
 
     // ── navigation entry ──────────────────────────────────────────────────────
     let navigation = nav.cloned().map(|e| map_entry("navigation", e, None));
@@ -748,12 +919,134 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
         "dom_stats": dom_stats,
     });
 
+    // ── text output short-circuit ─────────────────────────────────────────────
+    if cli.format == "text" && cli.jq.is_none() {
+        render_audit_text(&results);
+        return Ok(());
+    }
+
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&results, 1, &meta);
 
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
+}
+
+/// Render an audit result as human-readable text to stdout.
+///
+/// Does not panic on missing fields — all accesses use safe fallbacks.
+fn render_audit_text(results: &Value) {
+    let vitals = &results["vitals"];
+
+    println!("=== Core Web Vitals ===");
+    let metrics = [
+        ("FCP", "fcp_ms", "fcp_rating", "ms"),
+        ("LCP", "lcp_ms", "lcp_rating", "ms"),
+        ("CLS", "cls", "cls_rating", ""),
+        ("TBT", "tbt_ms", "tbt_rating", "ms"),
+        ("TTFB", "ttfb_ms", "ttfb_rating", "ms"),
+    ];
+    for (label, val_key, rating_key, unit) in &metrics {
+        let val = vitals.get(val_key).and_then(Value::as_f64);
+        let rating = vitals
+            .get(rating_key)
+            .and_then(Value::as_str)
+            .unwrap_or("n/a");
+        match val {
+            Some(v) => println!("  {label:5}  {v:>10.2}{unit:2}  [{rating}]"),
+            None => println!("  {label:5}  {:>12}  [{rating}]", "n/a"),
+        }
+    }
+    if let Some(note) = vitals.get("lcp_note").and_then(Value::as_str) {
+        println!("  note: {note}");
+    }
+
+    println!();
+    println!("=== Flagged Issues ===");
+    let mut flagged = false;
+    for (label, val_key, rating_key, unit) in &metrics {
+        let rating = vitals
+            .get(rating_key)
+            .and_then(Value::as_str)
+            .unwrap_or("n/a");
+        if rating == "needs-improvement" || rating == "poor" {
+            let val = vitals.get(val_key).and_then(Value::as_f64).unwrap_or(0.0);
+            println!("  {label}: {val:.2}{unit} ({rating})");
+            flagged = true;
+        }
+    }
+    if !flagged {
+        println!("  None");
+    }
+
+    println!();
+    println!("=== Resources ===");
+    let res_summary = &results["resource_summary"];
+    let total_count = res_summary
+        .get("count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let total_size = res_summary
+        .get("transfer_size")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    println!("  Total: {total_count} requests, {total_size:.0} bytes transferred");
+
+    if let Some(by_type) = results.get("resource_by_type").and_then(Value::as_array) {
+        println!("  By type:");
+        for entry in by_type {
+            let rtype = entry.get("type").and_then(Value::as_str).unwrap_or("?");
+            let count = entry.get("count").and_then(Value::as_u64).unwrap_or(0);
+            let size = entry
+                .get("transfer_size")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            println!("    {rtype:12}  {count:>4} requests  {size:>10.0} bytes");
+        }
+    }
+
+    if let Some(slowest) = results.get("slowest_resources").and_then(Value::as_array) {
+        println!("  Top 5 slowest:");
+        for (i, entry) in slowest.iter().enumerate() {
+            let url = entry.get("url").and_then(Value::as_str).unwrap_or("?");
+            let dur = entry
+                .get("duration_ms")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let size = entry
+                .get("transfer_size")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            println!("    {}. {url}  ({dur:.0}ms, {size:.0}b)", i + 1);
+        }
+    }
+
+    println!();
+    println!("=== DOM Stats ===");
+    let dom = &results["dom_stats"];
+    let node_count = dom.get("node_count").and_then(Value::as_u64).unwrap_or(0);
+    let doc_size = dom
+        .get("document_size")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let inline_scripts = dom
+        .get("inline_script_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let render_blocking = dom
+        .get("render_blocking_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let no_lazy = dom
+        .get("images_without_lazy")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    println!("  DOM nodes:              {node_count}");
+    println!("  Document size (bytes):  {doc_size}");
+    println!("  Inline scripts:         {inline_scripts}");
+    println!("  Render-blocking:        {render_blocking}");
+    println!("  Images without lazy:    {no_lazy}");
 }
 
 /// Group performance entries by domain, showing count and total transfer size per domain.
@@ -861,6 +1154,16 @@ pub(crate) fn compute_lcp(lcp_entries: &[Value]) -> Option<f64> {
         .map(round2)
 }
 
+/// Returns true if the last LCP entry was produced by the DOM-based approximation
+/// (i.e. has `approximate: true`).
+pub(crate) fn is_lcp_approximate(lcp_entries: &[Value]) -> bool {
+    lcp_entries
+        .last()
+        .and_then(|e| e.get("approximate"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 pub(crate) fn compute_cls(layout_shifts: &[Value]) -> f64 {
     // Session window algorithm: group shifts (excluding hadRecentInput=true) into
     // windows with max 1s gap and max 5s total duration. Return the max window sum.
@@ -927,7 +1230,9 @@ pub(crate) fn compute_tbt(longtasks: &[Value], fcp_ms: Option<f64>) -> f64 {
             }
         })
         .sum();
-    round2(sum)
+    let result = round2(sum);
+    // Normalize -0.0 to 0.0: IEEE 754 treats -0.0 == 0.0, so this comparison catches it
+    if result == 0.0 { 0.0 } else { result }
 }
 
 /// Classify a resource URL into a high-level type based on file extension,

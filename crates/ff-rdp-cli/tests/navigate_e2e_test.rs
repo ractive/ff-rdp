@@ -164,6 +164,48 @@ fn navigate_with_network_captures_requests() {
 }
 
 #[test]
+fn navigate_with_network_respects_network_timeout_flag() {
+    // Same fixture setup as navigate_with_network_captures_requests, but we
+    // explicitly pass a short --network-timeout and verify the output is the
+    // same — the flag is wired through correctly and the drain still collects
+    // events that arrive before the timeout.
+    let server = navigate_with_network_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "navigate".to_owned(),
+        "https://example.com".to_owned(),
+        "--with-network".to_owned(),
+        "--network-timeout".to_owned(),
+        "500".to_owned(), // 500 ms idle timeout
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    assert_eq!(json["results"]["navigated"], "https://example.com");
+
+    let network = &json["results"]["network"];
+    assert!(network.is_object(), "network should be a summary object");
+    assert_eq!(network["total_requests"], 2, "expected 2 network entries");
+}
+
+#[test]
 fn navigate_with_network_empty_when_no_events() {
     // Server handles the protocol sequence but sends no resource event followups.
     let server = MockRdpServer::new()

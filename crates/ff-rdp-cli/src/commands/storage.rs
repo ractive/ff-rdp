@@ -11,12 +11,12 @@ use super::js_helpers::eval_or_bail;
 
 /// Read all keys or a single key from localStorage or sessionStorage.
 pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppError> {
-    let storage_obj = match storage_type {
-        "local" => "localStorage",
-        "session" => "sessionStorage",
+    let (storage_obj, canonical_type) = match storage_type {
+        "local" | "localStorage" => ("localStorage", "local"),
+        "session" | "sessionStorage" => ("sessionStorage", "session"),
         other => {
             return Err(AppError::User(format!(
-                "invalid storage type {other:?}: expected \"local\" or \"session\""
+                "invalid storage type {other:?}: expected \"local\", \"localStorage\", \"session\", or \"sessionStorage\""
             )));
         }
     };
@@ -27,7 +27,7 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
     let meta = json!({
         "host": cli.host,
         "port": cli.port,
-        "storage_type": storage_type,
+        "storage_type": canonical_type,
     });
 
     if let Some(k) = key {
@@ -123,21 +123,46 @@ fn resolve_string_grip(
 mod tests {
     use serde_json::json;
 
+    fn resolve_storage_type(storage_type: &str) -> Result<(&'static str, &'static str), String> {
+        match storage_type {
+            "local" | "localStorage" => Ok(("localStorage", "local")),
+            "session" | "sessionStorage" => Ok(("sessionStorage", "session")),
+            other => Err(format!(
+                "invalid storage type {other:?}: expected \"local\", \"localStorage\", \"session\", or \"sessionStorage\""
+            )),
+        }
+    }
+
     /// Validate that an unknown storage_type returns an error.
     #[test]
     fn invalid_storage_type_is_user_error() {
-        // Reproduce the validation logic directly since we can't call run()
-        // without a live server in unit tests.
-        let storage_type = "cookie";
-        let result: Result<&str, String> = match storage_type {
-            "local" => Ok("localStorage"),
-            "session" => Ok("sessionStorage"),
-            other => Err(format!(
-                "invalid storage type {other:?}: expected \"local\" or \"session\""
-            )),
-        };
+        let result = resolve_storage_type("cookie");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("cookie"));
+    }
+
+    /// "local" and "localStorage" both resolve to localStorage with canonical type "local".
+    #[test]
+    fn local_alias_accepted() {
+        let (obj, canonical) = resolve_storage_type("local").unwrap();
+        assert_eq!(obj, "localStorage");
+        assert_eq!(canonical, "local");
+
+        let (obj, canonical) = resolve_storage_type("localStorage").unwrap();
+        assert_eq!(obj, "localStorage");
+        assert_eq!(canonical, "local");
+    }
+
+    /// "session" and "sessionStorage" both resolve to sessionStorage with canonical type "session".
+    #[test]
+    fn session_alias_accepted() {
+        let (obj, canonical) = resolve_storage_type("session").unwrap();
+        assert_eq!(obj, "sessionStorage");
+        assert_eq!(canonical, "session");
+
+        let (obj, canonical) = resolve_storage_type("sessionStorage").unwrap();
+        assert_eq!(obj, "sessionStorage");
+        assert_eq!(canonical, "session");
     }
 
     /// Verify that the key name is JSON-encoded to prevent injection.

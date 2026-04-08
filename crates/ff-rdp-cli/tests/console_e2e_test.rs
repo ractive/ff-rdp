@@ -325,6 +325,12 @@ fn follow_server_with_events(console_event: serde_json::Value) -> MockRdpServer 
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
+        // run_follow_direct calls startListeners before subscribing via the
+        // Watcher to ensure console events flow through the watcher subscription.
+        .on(
+            "startListeners",
+            load_fixture("start_listeners_response.json"),
+        )
         .on("getWatcher", load_fixture("get_watcher_response.json"))
         .on_with_followups(
             "watchResources",

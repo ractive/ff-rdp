@@ -10,6 +10,7 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         Command::Navigate {
             url,
             with_network,
+            network_timeout,
             wait_text,
             wait_selector,
             wait_timeout,
@@ -20,7 +21,7 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 wait_timeout: *wait_timeout,
             };
             if *with_network {
-                commands::navigate::run_with_network(cli, url, &wait_opts)
+                commands::navigate::run_with_network(cli, url, &wait_opts, *network_timeout)
             } else {
                 commands::navigate::run(cli, url, &wait_opts)
             }
@@ -182,7 +183,10 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 commands::styles::run(cli, selector)
             }
         }
-        Command::Geometry { selectors } => commands::geometry::run(cli, selectors),
+        Command::Geometry {
+            selectors,
+            visible_only,
+        } => commands::geometry::run(cli, selectors, *visible_only),
         Command::Responsive { selectors, widths } => {
             commands::responsive::run(cli, selectors, widths)
         }
