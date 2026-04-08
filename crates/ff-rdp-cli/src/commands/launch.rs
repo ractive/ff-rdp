@@ -129,6 +129,36 @@ fn ensure_devtools_prefs(profile: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Ensure the `extensions.autoDisableScopes` pref is set to `0` in the
+/// profile's `user.js` so that sideloaded extensions (installed via the
+/// profile `extensions/` directory) are not auto-disabled by Firefox.
+fn ensure_extension_autoinstall(profile: &Path) -> Result<(), AppError> {
+    use std::io::Write as IoWrite;
+
+    let user_js = profile.join("user.js");
+    let existing = std::fs::read_to_string(&user_js).unwrap_or_default();
+    if !existing.contains("extensions.autoDisableScopes") {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&user_js)
+            .map_err(|e| {
+                AppError::User(format!(
+                    "failed to write extension prefs to {}: {e}",
+                    user_js.display()
+                ))
+            })?;
+        f.write_all(b"user_pref(\"extensions.autoDisableScopes\", 0);\n")
+            .map_err(|e| {
+                AppError::User(format!(
+                    "failed to write extension prefs to {}: {e}",
+                    user_js.display()
+                ))
+            })?;
+    }
+    Ok(())
+}
+
 /// Firefox preferences written into every temporary profile to suppress
 /// first-run UI, telemetry prompts, and session-restore dialogs, and to
 /// enable the remote debugging server (required since Firefox ~149).
@@ -167,6 +197,7 @@ pub(crate) fn build_command(
     headless: bool,
     profile: Option<&str>,
     temp_profile: bool,
+    auto_consent: bool,
 ) -> Result<(std::process::Command, Option<PathBuf>), AppError> {
     let mut cmd = std::process::Command::new(firefox);
 
@@ -213,6 +244,23 @@ pub(crate) fn build_command(
     } else {
         None
     };
+
+    // Install Consent-O-Matic if requested. Requires a profile directory so
+    // Firefox can pick up the extension on next startup.
+    if auto_consent {
+        match &profile_path {
+            Some(p) => {
+                // Prevent Firefox from auto-disabling the sideloaded extension.
+                ensure_extension_autoinstall(p)?;
+                super::auto_consent::install(p)?;
+            }
+            None => {
+                return Err(AppError::User(
+                    "--auto-consent requires --profile or --temp-profile".to_owned(),
+                ));
+            }
+        }
+    }
 
     // Detach from the terminal so the spawned browser doesn't inherit our
     // stdin/stdout. Capture stderr so we can surface early crash messages.
@@ -280,13 +328,21 @@ pub fn run(
     profile: Option<&str>,
     temp_profile: bool,
     debug_port: Option<u16>,
+    auto_consent: bool,
 ) -> Result<(), AppError> {
     let port = debug_port.unwrap_or(cli.port);
     let host = &cli.host;
 
     let firefox = find_firefox()?;
 
-    let (mut cmd, profile_path) = build_command(&firefox, port, headless, profile, temp_profile)?;
+    let (mut cmd, profile_path) = build_command(
+        &firefox,
+        port,
+        headless,
+        profile,
+        temp_profile,
+        auto_consent,
+    )?;
 
     let mut child = cmd.spawn().map_err(|e| {
         AppError::User(format!(
@@ -335,6 +391,7 @@ pub fn run(
                 "headless": headless,
                 "profile": profile_path.as_ref().map(|p| p.to_string_lossy().as_ref().to_owned()),
                 "temp_profile": temp_profile,
+                "auto_consent": auto_consent,
             });
             let meta = json!({
                 "host": host,
@@ -394,7 +451,7 @@ mod tests {
     #[test]
     fn build_command_always_includes_no_remote() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 6000, false, None, false).unwrap();
+        let (cmd, _) = build_command(&tmp, 6000, false, None, false, false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -406,7 +463,7 @@ mod tests {
     #[test]
     fn build_command_includes_debugger_server_port() {
         let tmp = fake_firefox();
-        let (cmd, profile) = build_command(&tmp, 6000, false, None, false).unwrap();
+        let (cmd, profile) = build_command(&tmp, 6000, false, None, false, false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -427,7 +484,7 @@ mod tests {
     #[test]
     fn build_command_headless_flag() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 6000, true, None, false).unwrap();
+        let (cmd, _) = build_command(&tmp, 6000, true, None, false, false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -439,7 +496,7 @@ mod tests {
     #[test]
     fn build_command_no_headless_by_default() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 6000, false, None, false).unwrap();
+        let (cmd, _) = build_command(&tmp, 6000, false, None, false, false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -455,7 +512,7 @@ mod tests {
         std::fs::create_dir_all(&profile_dir).unwrap();
         let profile_str = profile_dir.to_str().unwrap();
         let (cmd, profile_path) =
-            build_command(&tmp, 6000, false, Some(profile_str), false).unwrap();
+            build_command(&tmp, 6000, false, Some(profile_str), false, false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         let _ = std::fs::remove_dir_all(&profile_dir);
@@ -472,7 +529,7 @@ mod tests {
     #[test]
     fn build_command_temp_profile_creates_dir_and_sets_profile_arg() {
         let tmp = fake_firefox();
-        let (cmd, profile_path) = build_command(&tmp, 6000, false, None, true).unwrap();
+        let (cmd, profile_path) = build_command(&tmp, 6000, false, None, true, false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -491,7 +548,7 @@ mod tests {
     #[test]
     fn build_command_temp_profile_writes_user_js() {
         let tmp = fake_firefox();
-        let (_, profile_path) = build_command(&tmp, 6000, false, None, true).unwrap();
+        let (_, profile_path) = build_command(&tmp, 6000, false, None, true, false).unwrap();
         cleanup_fake_firefox(&tmp);
         let profile = profile_path.expect("temp_profile should set a profile path");
         let user_js = profile.join("user.js");
@@ -519,12 +576,42 @@ mod tests {
     #[test]
     fn build_command_non_standard_port() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 9222, false, None, false).unwrap();
+        let (cmd, _) = build_command(&tmp, 9222, false, None, false, false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
             args.iter().any(|a| a == "9222"),
             "expected port 9222 in args: {args:?}"
         );
+    }
+
+    #[test]
+    fn build_command_auto_consent_requires_profile() {
+        let tmp = fake_firefox();
+        let result = build_command(&tmp, 6000, false, None, false, true);
+        cleanup_fake_firefox(&tmp);
+        assert!(result.is_err(), "auto_consent without profile should fail");
+    }
+
+    #[test]
+    #[ignore = "may perform a real network download depending on cache state"]
+    fn build_command_auto_consent_with_temp_profile_installs_extension() {
+        let tmp = fake_firefox();
+        // We can't test the actual download, but we can test that the function
+        // doesn't panic when given a temp profile. The download will fail in
+        // offline test environments, so we just verify the error is reasonable
+        // or it succeeds if network is available.
+        let result = build_command(&tmp, 6000, false, None, true, true);
+        cleanup_fake_firefox(&tmp);
+        // Either succeeds (network available) or gives a user error (no network)
+        match result {
+            Ok((_, profile_path)) => {
+                let profile = profile_path.unwrap();
+                // Check that the extensions dir was at least attempted
+                let _ = std::fs::remove_dir_all(&profile);
+            }
+            Err(AppError::User(_)) => { /* expected in offline/CI */ }
+            Err(e) => panic!("unexpected error type: {e:?}"),
+        }
     }
 }

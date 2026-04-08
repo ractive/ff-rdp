@@ -306,8 +306,10 @@ Launch Firefox with remote debugging enabled.
   --profile <PATH>       Use specific profile directory
   --temp-profile         Create a temporary profile
   --debug-port <PORT>    Override debug port
+  --auto-consent         Install Consent-O-Matic extension to auto-dismiss cookie consent banners (requires --profile or --temp-profile)
 ```
 ff-rdp launch --headless --temp-profile
+ff-rdp launch --headless --temp-profile --auto-consent
 ```
 
 ## Output format

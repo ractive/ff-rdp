@@ -160,12 +160,14 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             profile,
             temp_profile,
             debug_port,
+            auto_consent,
         } => commands::launch::run(
             cli,
             *headless,
             profile.as_deref(),
             *temp_profile,
             *debug_port,
+            *auto_consent,
         ),
         Command::Styles {
             selector,

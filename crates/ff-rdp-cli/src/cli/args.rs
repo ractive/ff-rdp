@@ -346,6 +346,9 @@ affect which requests Firefox records.")]
         /// Override the debug server port (defaults to --port value)
         #[arg(long)]
         debug_port: Option<u16>,
+        /// Install Consent-O-Matic extension to auto-dismiss cookie consent banners
+        #[arg(long)]
+        auto_consent: bool,
     },
 }
 
