@@ -1,7 +1,7 @@
 ---
 title: "Iteration 36: Fix Console --follow (No Output)"
 type: iteration
-status: complete
+status: completed
 date: 2026-04-08
 tags: [iteration, bugfix, console, firefox-149, protocol, research]
 branch: iter-36/console-follow-fix
@@ -9,8 +9,9 @@ branch: iter-36/console-follow-fix
 
 # Iteration 36: Fix Console --follow (No Output)
 
-`console --follow` produces zero output even when console.log/warn/error
-messages are generated via `eval` in a parallel connection.
+`console --follow` was reported to produce zero output even when
+console.log/warn/error messages were generated via `eval` in a parallel
+connection.
 
 ## Symptom
 

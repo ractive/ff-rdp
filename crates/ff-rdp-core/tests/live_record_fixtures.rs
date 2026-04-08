@@ -2612,22 +2612,26 @@ fn record_console_follow_cross_connection() {
             "eager": false
         }))
         .expect("send evaluateJSAsync (conn2)");
+    let eval_resp2 = recv_from_actor(transport2, &console_actor2);
+    assert!(
+        eval_resp2.get("error").is_none(),
+        "evaluateJSAsync (conn2) failed: {eval_resp2:#}"
+    );
 
     // ------------------------------------------------------------------
     // Connection 1: read until we get a consoleAPICall push event
     // ------------------------------------------------------------------
     // The consoleAPICall arrives from the console actor as a direct push.
-    // recv_from_actor skips known async types (frameUpdate, resources-*-array,
-    // etc.) but returns consoleAPICall, which is exactly what we want.
-    let event = recv_from_actor(transport1, &console_actor1);
-    let event_type = event
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    assert_eq!(
-        event_type, "consoleAPICall",
-        "expected consoleAPICall push event from console actor, got: {event:#}"
-    );
+    // Other push types (e.g. pageError) may arrive first, so loop until
+    // we find the expected consoleAPICall with our marker string.
+    let event = loop {
+        let msg = recv_from_actor(transport1, &console_actor1);
+        let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
+        if msg_type == "consoleAPICall" {
+            break msg;
+        }
+        // Skip other push types (e.g. pageError) and keep reading.
+    };
 
     assert!(
         event.get("message").is_some(),
