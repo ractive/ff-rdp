@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ff_rdp_core::{ResponsiveActor, WebConsoleActor};
+use ff_rdp_core::WebConsoleActor;
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -16,9 +16,15 @@ use super::js_helpers::resolve_result;
 /// `__SELECTORS__` is replaced with the JSON-encoded array of CSS selectors
 /// before evaluation.  All selectors come through `serde_json::to_string`
 /// so no manual escaping is needed.
+///
+/// `vw` is read from `document.documentElement.offsetWidth` rather than
+/// `window.innerWidth` because the CSS-based viewport simulation (see
+/// `SET_VIEWPORT_CSS_JS`) constrains layout by setting an inline `width` on
+/// `<html>`.  `offsetWidth` reflects that constraint; `window.innerWidth`
+/// always returns the physical viewport width and is unaffected by inline CSS.
 const RESPONSIVE_JS_TEMPLATE: &str = r"(function() {
   var selectors = __SELECTORS__;
-  var vw = window.innerWidth || document.documentElement.clientWidth;
+  var vw = document.documentElement.offsetWidth || window.innerWidth;
   var vh = window.innerHeight || document.documentElement.clientHeight;
   var elements = [];
 
@@ -66,11 +72,46 @@ const RESPONSIVE_JS_TEMPLATE: &str = r"(function() {
 })()";
 
 /// JS snippet that retrieves the current viewport dimensions.
+const GET_VIEWPORT_JS: &str =
+    "JSON.stringify({innerWidth: window.innerWidth, innerHeight: window.innerHeight})";
+
+/// JS template that constrains the page layout to a specific width by setting
+/// inline CSS on `<html>` and `<body>`.
 ///
-/// `outerWidth`/`outerHeight` are needed as fallback values for the
-/// `ResponsiveActor.setViewportSize` restore call, while `innerWidth`/`innerHeight`
-/// reflect the content viewport size that layout code uses.
-const GET_VIEWPORT_JS: &str = "JSON.stringify({width: window.outerWidth, height: window.outerHeight, innerWidth: window.innerWidth, innerHeight: window.innerHeight})";
+/// This is the only reliable way to simulate a narrower viewport in headless
+/// Firefox without browser-chrome APIs:
+///
+/// - `window.resizeTo()` is silently ignored in headless mode and blocked for
+///   non-popup windows in windowed mode.
+/// - The `responsiveActor` RDP actor no longer exposes a `setViewportSize`
+///   packet type in Firefox 149+; viewport sizing was moved to browser-chrome
+///   APIs (`synchronouslyUpdateRemoteBrowserDimensions`) that are inaccessible
+///   from the RDP protocol's content-process execution context.
+/// - WebDriver BiDi `browsingContext.setViewport` requires the BiDi WebSocket
+///   transport, not the RDP TCP socket used by this tool.
+///
+/// Setting `document.documentElement.style.width` causes `getBoundingClientRect`
+/// and all layout geometry to reflect the simulated width accurately.  CSS
+/// `@media` queries still fire on the physical viewport width, but element
+/// geometry and computed layout values are correct for the requested width.
+///
+/// `__WIDTH__` is replaced with a bare numeric pixel value (e.g. `320`).
+const SET_VIEWPORT_CSS_JS: &str = "(function(){
+  var w = __WIDTH__;
+  document.documentElement.style.setProperty('width', w + 'px', 'important');
+  document.documentElement.style.setProperty('max-width', w + 'px', 'important');
+  document.documentElement.style.setProperty('overflow-x', 'hidden', 'important');
+  document.body.style.setProperty('max-width', w + 'px', 'important');
+})()";
+
+/// JS snippet that removes the inline styles applied by `SET_VIEWPORT_CSS_JS`,
+/// restoring the original layout.
+const RESTORE_VIEWPORT_CSS_JS: &str = "(function(){
+  document.documentElement.style.removeProperty('width');
+  document.documentElement.style.removeProperty('max-width');
+  document.documentElement.style.removeProperty('overflow-x');
+  document.body.style.removeProperty('max-width');
+})()";
 
 /// Build the geometry IIFE by serializing selectors as a JSON array and
 /// substituting the `__SELECTORS__` placeholder.
@@ -80,6 +121,12 @@ pub(crate) fn build_geometry_js(selectors: &[String]) -> String {
         unreachable!("serde_json::to_string is infallible for Vec<String>: {e}")
     });
     RESPONSIVE_JS_TEMPLATE.replace("__SELECTORS__", &selectors_json)
+}
+
+/// Build a JS snippet that applies the CSS-based viewport simulation for the
+/// given pixel width by substituting `__WIDTH__`.
+fn build_set_viewport_js(width: u32) -> String {
+    SET_VIEWPORT_CSS_JS.replace("__WIDTH__", &width.to_string())
 }
 
 /// Validate that all requested widths are non-zero.
@@ -104,7 +151,6 @@ pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppErr
 
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
-    let responsive_actor = ctx.target.responsive_actor.clone();
 
     // --- Step 1: capture original viewport dimensions -----------------------
     let vp_result =
@@ -128,55 +174,40 @@ pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppErr
     let original_viewport: Value = serde_json::from_str(&vp_json_str)
         .map_err(|e| AppError::from(anyhow::anyhow!("failed to parse viewport JSON: {e}")))?;
 
-    let original_outer_width =
-        u32::try_from(original_viewport["width"].as_u64().unwrap_or(1280)).unwrap_or(1280);
-    let original_outer_height =
-        u32::try_from(original_viewport["height"].as_u64().unwrap_or(800)).unwrap_or(800);
-
     // --- Step 2: iterate over each breakpoint width -------------------------
     let geom_js = build_geometry_js(selectors);
     let mut breakpoints: Vec<Value> = Vec::with_capacity(widths.len());
 
-    // We always attempt to restore the viewport, even when an error occurs
+    // We always attempt to restore the page styles, even when an error occurs
     // mid-loop.  Collect the first error encountered and restore before
     // returning it.
     let mut loop_error: Option<AppError> = None;
 
     'bp: for &width in widths {
-        // Resize the viewport to the target width using the ResponsiveActor
-        // (Firefox DevTools API) when available.  This is the only reliable
-        // way to resize in headless mode and in non-popup windows.
-        //
-        // `window.resizeTo()` is intentionally NOT used here: browsers block
-        // it for non-popup windows (security restriction) and it has no effect
-        // in headless Firefox, so it always reports the default 1366px width.
-        let resize_result = if let Some(ref ra) = responsive_actor {
-            ResponsiveActor::set_viewport_size(
-                ctx.transport_mut(),
-                ra,
-                width,
-                original_outer_height,
-            )
+        // Simulate a narrower viewport by constraining the layout width via
+        // inline CSS on <html> and <body>.  See SET_VIEWPORT_CSS_JS for the
+        // full rationale of why this approach is used.
+        let set_vp_js = build_set_viewport_js(width);
+        match WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &set_vp_js)
             .map_err(AppError::from)
-        } else {
-            // ResponsiveActor unavailable (very old Firefox): fall back to
-            // evaluating a resize JS snippet.  This path is unlikely in
-            // practice but keeps backward compatibility.
-            let resize_script = format!("window.resizeTo({width}, window.outerHeight)");
-            WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &resize_script)
-                .map(|_| ())
-                .map_err(AppError::from)
-        };
-
-        if let Err(e) = resize_result {
-            loop_error = Some(e);
-            break 'bp;
+        {
+            Err(e) => {
+                loop_error = Some(e);
+                break 'bp;
+            }
+            Ok(r) => {
+                if let Some(ref exc) = r.exception {
+                    let msg = exc.message.as_deref().unwrap_or("set viewport failed");
+                    loop_error = Some(AppError::User(format!("set viewport at {width}: {msg}")));
+                    break 'bp;
+                }
+            }
         }
 
-        // Allow the browser layout to settle after resize.
-        std::thread::sleep(Duration::from_millis(100));
+        // Allow the browser layout to reflow after the style change.
+        std::thread::sleep(Duration::from_millis(50));
 
-        // Collect geometry at this viewport width.
+        // Collect geometry at this simulated viewport width.
         let geo_result =
             WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &geom_js)
                 .map_err(AppError::from);
@@ -216,25 +247,14 @@ pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppErr
         }));
     }
 
-    // --- Step 3: restore original viewport ----------------------------------
+    // --- Step 3: restore original page styles -------------------------------
     // Ignore restore errors — we've already collected our data (or have an
     // error to return).  Best-effort restore is the right tradeoff here.
-    if let Some(ref ra) = responsive_actor {
-        let _ = ResponsiveActor::set_viewport_size(
-            ctx.transport_mut(),
-            ra,
-            original_outer_width,
-            original_outer_height,
-        );
-    } else {
-        let restore_script =
-            format!("window.resizeTo({original_outer_width}, {original_outer_height})");
-        let _ = WebConsoleActor::evaluate_js_async(
-            ctx.transport_mut(),
-            &console_actor,
-            &restore_script,
-        );
-    }
+    let _ = WebConsoleActor::evaluate_js_async(
+        ctx.transport_mut(),
+        &console_actor,
+        RESTORE_VIEWPORT_CSS_JS,
+    );
 
     // Return any loop error after restoring.
     if let Some(e) = loop_error {
@@ -323,5 +343,36 @@ mod tests {
         assert!(js.contains("flexDirection"));
         assert!(js.contains("gridTemplateColumns"));
         assert!(js.contains("fontSize"));
+    }
+
+    #[test]
+    fn build_set_viewport_js_substitutes_width() {
+        let js = build_set_viewport_js(320);
+        assert!(js.contains("var w = 320;"), "expected width substitution");
+        assert!(!js.contains("__WIDTH__"), "placeholder should be replaced");
+    }
+
+    #[test]
+    fn build_set_viewport_js_uses_important() {
+        // The `!important` flag is critical to override site stylesheets that
+        // set a width on <html> or <body>.
+        let js = build_set_viewport_js(768);
+        assert!(js.contains("'important'"), "must use !important");
+    }
+
+    #[test]
+    fn restore_viewport_css_js_removes_all_properties() {
+        // Each property set by SET_VIEWPORT_CSS_JS must have a matching remove.
+        assert!(RESTORE_VIEWPORT_CSS_JS.contains("removeProperty('width')"));
+        assert!(RESTORE_VIEWPORT_CSS_JS.contains("removeProperty('max-width')"));
+        assert!(RESTORE_VIEWPORT_CSS_JS.contains("removeProperty('overflow-x')"));
+    }
+
+    #[test]
+    fn geometry_js_uses_offset_width_for_vw() {
+        // `offsetWidth` must be used (not `innerWidth`) so that the CSS
+        // constraint applied by SET_VIEWPORT_CSS_JS is reflected in `vw`.
+        assert!(RESPONSIVE_JS_TEMPLATE.contains("documentElement.offsetWidth"));
+        assert!(!RESPONSIVE_JS_TEMPLATE.starts_with("window.innerWidth"));
     }
 }

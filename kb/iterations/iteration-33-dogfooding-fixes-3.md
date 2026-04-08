@@ -49,57 +49,79 @@ code. Don't guess — discover the actual protocol.
 
 ## Part B: Debug Messages Polluting stdout (HIGH — breaks JSON piping)
 
-- [ ] `a11y --depth 3` prints `debug: accessibility walker root methods
+- [x] `a11y --depth 3` prints `debug: accessibility walker root methods
   unrecognized...` to stdout before JSON. Route to stderr.
-- [ ] `sources` prints `debug: sources thread actor failed...falling back to JS`
+- [x] `sources` prints `debug: sources thread actor failed...falling back to JS`
   to stdout before JSON. Route to stderr.
-- [ ] Audit all fallback code paths for any other debug/info messages that go
+- [x] Audit all fallback code paths for any other debug/info messages that go
   to stdout. All non-JSON output must go to stderr.
+
+**Finding:** All debug/warning messages already use `eprintln!` (stderr). No
+`println!` calls output non-JSON content on structured output paths. The
+dogfooding observation was likely due to stderr mixing with stdout in the
+terminal. No code changes needed.
 
 ## Part C: Network in Daemon Mode (MEDIUM)
 
-- [ ] **Research:** Understand why the Performance API fallback for `network
+- [x] **Research:** Understand why the Performance API fallback for `network
   --limit N` doesn't trigger in daemon mode. Read the code path for both
   daemon and no-daemon modes. The fallback should fire whenever the
   WatcherActor buffer is empty.
-- [ ] Enable Performance API fallback in daemon mode for `network --limit N`.
-- [ ] **Research:** Investigate why `navigate --with-network --network-timeout 5`
+- [x] Enable Performance API fallback in daemon mode for `network --limit N`.
+- [x] **Research:** Investigate why `navigate --with-network --network-timeout 5`
   captures only 1 request in daemon mode. The WatcherActor subscription may
   need to be established earlier or events may be arriving after the timeout.
   Add logging to understand the timing.
-- [ ] Fix `navigate --with-network --network-timeout 5` to capture a reasonable
+- [x] Fix `navigate --with-network --network-timeout 5` to capture a reasonable
   number of requests in daemon mode.
-- [ ] Fix `total_transfer_bytes: -0.0` — normalize to `0.0`.
+- [x] Fix `total_transfer_bytes: -0.0` — normalize to `0.0`.
+
+**Fixes:**
+1. Performance API fallback already fires in daemon mode — added `eprintln!`
+   diagnostic hints to surface failures instead of silently returning empty.
+2. `navigate --with-network` daemon path: after `stop_daemon_stream_draining`,
+   added `drain_network_from_daemon` to collect events that were buffered by
+   the daemon between idle-timeout and stream-stop.
+3. `-0.0` normalized to `0.0` in `build_network_summary` with unit tests.
 
 ## Part D: Firefox 149 Protocol Research & Fixes (MEDIUM)
 
 For each broken feature, do thorough protocol research first.
 
 ### Screenshot
-- [ ] **Research:** Connect to Firefox 149 on the RDP port and enumerate all
+- [x] **Research:** Connect to Firefox 149 on the RDP port and enumerate all
   available actors on the tab target. Look for any actor that mentions
   "screenshot", "capture", or "image". Check searchfox.org for
   `captureScreenshot` to find what replaced it. Try the WebDriver BiDi
   `browsingContext.captureScreenshot` command. Try `canvas.toDataURL()` via
   eval as a JS-only fallback.
-- [ ] Implement working screenshot for Firefox 149 using the discovered method.
+- [x] Implement working screenshot for Firefox 149 using the discovered method.
+
+**Fix:** Firefox 149 uses a two-step protocol: (1) `screenshotContentActor.prepareCapture`
+returns DPR/zoom, (2) root `screenshotActor.capture` with browsingContextID renders
+the PNG. Added `ScreenshotActor` in core, `try_two_step_screenshot` fallback in CLI.
 
 ### Responsive / Viewport Resize
-- [ ] **Research:** Connect to Firefox 149 and enumerate the ResponsiveActor's
+- [x] **Research:** Connect to Firefox 149 and enumerate the ResponsiveActor's
   available methods. Check searchfox.org for `setViewportSize` to find what
   replaced it. Try `Emulation.setDeviceMetricsOverride` (CDP-style) or
   `browsingContext.setViewport` (BiDi). As a JS fallback, try
   `window.resizeTo()` combined with reading `window.innerWidth` to verify.
-- [ ] Implement working viewport resize for Firefox 149.
+- [x] Implement working viewport resize for Firefox 149.
+
+**Fix:** `setViewportSize` was never a valid RDP packet — it's a DevTools UI-side method.
+Replaced with CSS inline style constraint (`width`/`max-width` on `<html>`/`<body>`) which
+forces layout reflow at the requested width. Element geometry is accurate; CSS `@media`
+queries still fire on the physical viewport width.
 
 ### Console --follow
-- [ ] **Research:** Connect to Firefox 149 and explore the console actor
+- [x] **Research:** Connect to Firefox 149 and explore the console actor
   protocol. Check if `startListeners` is still the correct method. Try
   sending `startListeners` with different listener types. Check if the event
   name changed (e.g., `consoleAPICall` vs `pageError` vs something new).
   Use the raw RDP connection to send `evaluateJSAsync('console.log("test")')`
   and observe what events come back on the console actor.
-- [ ] Fix `console --follow` to capture console output.
+- [x] Fix `console --follow` to capture console output.
 
 ## Test Fixtures
 

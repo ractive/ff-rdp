@@ -51,6 +51,11 @@ pub struct TargetInfo {
     /// command to call `setViewportSize` instead of the browser-blocked
     /// `window.resizeTo()`.
     pub responsive_actor: Option<ActorId>,
+    /// The browsing context ID for this target.
+    ///
+    /// Required by the Firefox 149+ two-step screenshot protocol:
+    /// `screenshotContentActor.prepareCapture` + `screenshotActor.capture`.
+    pub browsing_context_id: Option<u64>,
 }
 
 /// Operations on a tab descriptor actor.
@@ -134,6 +139,8 @@ fn parse_target_response(response: &Value) -> Result<TargetInfo, ProtocolError> 
         .and_then(Value::as_str)
         .map(ActorId::from);
 
+    let browsing_context_id = frame.get("browsingContextID").and_then(Value::as_u64);
+
     Ok(TargetInfo {
         actor: actor.into(),
         console_actor: console_actor.into(),
@@ -142,6 +149,7 @@ fn parse_target_response(response: &Value) -> Result<TargetInfo, ProtocolError> 
         screenshot_content_actor,
         accessibility_actor,
         responsive_actor,
+        browsing_context_id,
     })
 }
 

@@ -20,7 +20,8 @@ pub use actors::page_style::{
 };
 pub use actors::responsive::ResponsiveActor;
 pub use actors::root::RootActor;
-pub use actors::screenshot_content::{ScreenshotCapture, ScreenshotContentActor};
+pub use actors::screenshot::ScreenshotActor;
+pub use actors::screenshot_content::{PrepareCapture, ScreenshotCapture, ScreenshotContentActor};
 pub use actors::storage::{CookieInfo, StorageActor};
 pub use actors::string::LongStringActor;
 pub use actors::tab::{TabActor, TabInfo, TargetInfo};

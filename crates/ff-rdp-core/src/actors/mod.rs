@@ -7,6 +7,7 @@ pub mod object;
 pub mod page_style;
 pub mod responsive;
 pub mod root;
+pub mod screenshot;
 pub mod screenshot_content;
 pub mod storage;
 pub mod string;

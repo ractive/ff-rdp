@@ -159,19 +159,26 @@ pub(crate) fn map_perf_resource_to_network_entry(entry: &Value) -> Value {
 /// return the entries mapped to the same JSON shape as [`build_network_entries`].
 ///
 /// Returns an empty vec on any failure — this is a best-effort fallback only.
+/// Errors are printed to stderr so the caller can diagnose why the fallback
+/// returned nothing (e.g. daemon JS forwarding broken, page not yet loaded).
 pub(crate) fn performance_api_fallback(ctx: &mut super::connect_tab::ConnectedTab) -> Vec<Value> {
     const SCRIPT: &str =
         "JSON.stringify(performance.getEntriesByType('resource').map(e => e.toJSON()))";
 
     let console_actor = ctx.target.console_actor.clone();
-    let Ok(eval_result) =
-        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, SCRIPT)
-    else {
-        return vec![];
-    };
+    let eval_result =
+        match WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, SCRIPT) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("hint: performance-api fallback eval failed: {e:#}");
+                return vec![];
+            }
+        };
 
     // If the eval threw an exception treat it as an empty result.
-    if eval_result.exception.is_some() {
+    if let Some(ref exc) = eval_result.exception {
+        let msg = exc.message.as_deref().unwrap_or("(no message)");
+        eprintln!("hint: performance-api fallback JS exception: {msg}");
         return vec![];
     }
 
@@ -184,19 +191,27 @@ pub(crate) fn performance_api_fallback(ctx: &mut super::connect_tab::ConnectedTa
             initial: _,
         } => match LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), *length) {
             Ok(s) => s,
-            Err(_) => return vec![],
+            Err(e) => {
+                eprintln!("hint: performance-api fallback failed to fetch long string: {e:#}");
+                return vec![];
+            }
         },
-        _ => return vec![],
+        other => {
+            eprintln!("hint: performance-api fallback returned unexpected grip type: {other:?}");
+            return vec![];
+        }
     };
 
-    let Ok(entries) = serde_json::from_str::<Vec<Value>>(&json_str) else {
-        return vec![];
-    };
-
-    entries
-        .iter()
-        .map(map_perf_resource_to_network_entry)
-        .collect()
+    match serde_json::from_str::<Vec<Value>>(&json_str) {
+        Ok(entries) => entries
+            .iter()
+            .map(map_perf_resource_to_network_entry)
+            .collect(),
+        Err(e) => {
+            eprintln!("hint: performance-api fallback failed to parse JSON result: {e:#}");
+            vec![]
+        }
+    }
 }
 
 /// Build the JSON array of network entries combining resource + update data.

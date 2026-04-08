@@ -14,7 +14,9 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
 use super::js_helpers::{escape_selector, poll_js_condition};
-use super::network_events::{build_network_entries, drain_network_events, merge_updates};
+use super::network_events::{
+    build_network_entries, drain_network_events, drain_network_from_daemon, merge_updates,
+};
 use super::url_validation::validate_url;
 
 /// Set the socket read timeout to `network_timeout_ms` for idle-based network
@@ -180,6 +182,20 @@ pub fn run_with_network(
                     all_updates.extend(parse_network_resource_updates(frame));
                 }
                 _ => {}
+            }
+        }
+
+        // After stop-stream the daemon reverts to buffering.  Any events that
+        // arrived at Firefox between the idle-timeout firing and the daemon
+        // removing this client's stream subscription get buffered instead of
+        // forwarded.  Drain that residual buffer now so nothing is lost.
+        match drain_network_from_daemon(ctx.transport_mut()) {
+            Ok((residual_resources, residual_updates)) => {
+                all_resources.extend(residual_resources);
+                all_updates.extend(residual_updates);
+            }
+            Err(e) => {
+                eprintln!("warning: failed to drain residual daemon buffer after stream: {e:#}");
             }
         }
 
