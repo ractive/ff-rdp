@@ -1,9 +1,33 @@
-use ff_rdp_core::{Grip, LongStringActor};
+use std::time::{Duration, Instant};
+
+use ff_rdp_core::{ActorId, EvalResult, Grip, LongStringActor, WebConsoleActor};
 use serde_json::Value;
 
+use super::connect_tab::ConnectedTab;
 use crate::error::AppError;
 
-use super::connect_tab::ConnectedTab;
+/// Evaluate JavaScript on a tab and bail with an error if the result is an exception.
+///
+/// This is the standard "eval and check" helper used by most commands.
+/// The `error_context` string is used as the fallback message when the
+/// exception has no message field.
+pub(crate) fn eval_or_bail(
+    ctx: &mut ConnectedTab,
+    console_actor: &ActorId,
+    js: &str,
+    error_context: &str,
+) -> Result<EvalResult, AppError> {
+    let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, js)
+        .map_err(AppError::from)?;
+
+    if let Some(ref exc) = eval_result.exception {
+        let msg = exc.message.as_deref().unwrap_or(error_context);
+        eprintln!("error: {msg}");
+        return Err(AppError::Exit(1));
+    }
+
+    Ok(eval_result)
+}
 
 /// Sentinel prefix prepended to JSON.stringify results in the generated JS.
 ///
@@ -60,8 +84,88 @@ pub fn escape_selector(selector: &str) -> String {
     inner.replace('\'', "\\'")
 }
 
+const POLL_INTERVAL_MS: u64 = 100;
+
+/// Poll a JS expression until it returns a truthy value or the timeout expires.
+///
+/// Returns the elapsed time in milliseconds on success.  Returns
+/// `Err(AppError::Exit(1))` if a JS exception is thrown or the timeout expires.
+///
+/// A timeout of 0 means the condition is evaluated once; if falsy, a timeout
+/// error is returned immediately.
+///
+/// - `error_context`: used as a fallback message when a JS exception has no message.
+/// - `timeout_context`: printed to stderr when the timeout expires.
+pub(crate) fn poll_js_condition(
+    ctx: &mut ConnectedTab,
+    console_actor: &ActorId,
+    js: &str,
+    timeout_ms: u64,
+    error_context: &str,
+    timeout_context: &str,
+) -> Result<u64, AppError> {
+    let timeout = Duration::from_millis(timeout_ms);
+    let poll = Duration::from_millis(POLL_INTERVAL_MS);
+    let started = Instant::now();
+
+    loop {
+        let eval_result =
+            WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, js)
+                .map_err(AppError::from)?;
+
+        if let Some(ref exc) = eval_result.exception {
+            if let Some(msg) = exc.message.as_deref() {
+                eprintln!("error: {error_context}: {msg}");
+            } else {
+                eprintln!("error: {error_context}");
+            }
+            return Err(AppError::Exit(1));
+        }
+
+        if is_truthy(&eval_result.result) {
+            return Ok(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+        }
+
+        // Check timeout before sleeping to avoid an unnecessary extra poll interval.
+        if started.elapsed() >= timeout {
+            eprintln!("error: {timeout_context}");
+            return Err(AppError::Exit(1));
+        }
+
+        std::thread::sleep(poll);
+    }
+}
+
+/// Check whether a JavaScript [`Grip`] value is truthy.
+///
+/// Follows JavaScript truthiness rules: `null`, `undefined`, `NaN`, `-0`,
+/// `false`, `0`, and empty string are falsy; everything else is truthy.
+pub(crate) fn is_truthy(grip: &Grip) -> bool {
+    match grip {
+        // Null, Undefined, NaN, and -0 are all falsy in JavaScript.
+        Grip::Null | Grip::Undefined | Grip::NaN | Grip::NegZero => false,
+        Grip::Value(v) => {
+            if let Some(b) = v.as_bool() {
+                return b;
+            }
+            if let Some(n) = v.as_f64() {
+                return n != 0.0;
+            }
+            if let Some(s) = v.as_str() {
+                return !s.is_empty();
+            }
+            // Objects and arrays are truthy.
+            !v.is_null()
+        }
+        // Infinity, -Infinity, LongString, Object are all truthy.
+        Grip::Inf | Grip::NegInf | Grip::LongString { .. } | Grip::Object { .. } => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     #[test]
@@ -83,5 +187,25 @@ mod tests {
     fn escape_selector_plain() {
         assert_eq!(escape_selector("button.submit"), "button.submit");
         assert_eq!(escape_selector("input[name=email]"), "input[name=email]");
+    }
+
+    #[test]
+    fn is_truthy_true_values() {
+        assert!(is_truthy(&Grip::Value(json!(true))));
+        assert!(is_truthy(&Grip::Value(json!(1))));
+        assert!(is_truthy(&Grip::Value(json!("hello"))));
+        assert!(is_truthy(&Grip::Inf));
+        assert!(is_truthy(&Grip::NegInf));
+    }
+
+    #[test]
+    fn is_truthy_false_values() {
+        assert!(!is_truthy(&Grip::Null));
+        assert!(!is_truthy(&Grip::Undefined));
+        assert!(!is_truthy(&Grip::Value(json!(false))));
+        assert!(!is_truthy(&Grip::Value(json!(0))));
+        assert!(!is_truthy(&Grip::Value(json!(""))));
+        assert!(!is_truthy(&Grip::NaN));
+        assert!(!is_truthy(&Grip::NegZero));
     }
 }
