@@ -1,7 +1,7 @@
 ---
 title: "Iteration 37: Fix Network Commands in Daemon Mode"
 type: iteration
-status: done
+status: completed
 date: 2026-04-08
 tags:
   - iteration
