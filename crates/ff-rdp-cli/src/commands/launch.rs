@@ -129,6 +129,36 @@ fn ensure_devtools_prefs(profile: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Ensure the `extensions.autoDisableScopes` pref is set to `0` in the
+/// profile's `user.js` so that sideloaded extensions (installed via the
+/// profile `extensions/` directory) are not auto-disabled by Firefox.
+fn ensure_extension_autoinstall(profile: &Path) -> Result<(), AppError> {
+    use std::io::Write as IoWrite;
+
+    let user_js = profile.join("user.js");
+    let existing = std::fs::read_to_string(&user_js).unwrap_or_default();
+    if !existing.contains("extensions.autoDisableScopes") {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&user_js)
+            .map_err(|e| {
+                AppError::User(format!(
+                    "failed to write extension prefs to {}: {e}",
+                    user_js.display()
+                ))
+            })?;
+        f.write_all(b"user_pref(\"extensions.autoDisableScopes\", 0);\n")
+            .map_err(|e| {
+                AppError::User(format!(
+                    "failed to write extension prefs to {}: {e}",
+                    user_js.display()
+                ))
+            })?;
+    }
+    Ok(())
+}
+
 /// Firefox preferences written into every temporary profile to suppress
 /// first-run UI, telemetry prompts, and session-restore dialogs, and to
 /// enable the remote debugging server (required since Firefox ~149).
@@ -219,10 +249,14 @@ pub(crate) fn build_command(
     // Firefox can pick up the extension on next startup.
     if auto_consent {
         match &profile_path {
-            Some(p) => super::auto_consent::install(p)?,
+            Some(p) => {
+                // Prevent Firefox from auto-disabling the sideloaded extension.
+                ensure_extension_autoinstall(p)?;
+                super::auto_consent::install(p)?;
+            }
             None => {
                 return Err(AppError::User(
-                    "auto-consent requires --profile or --temp-profile".to_owned(),
+                    "--auto-consent requires --profile or --temp-profile".to_owned(),
                 ));
             }
         }
@@ -560,6 +594,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "may perform a real network download depending on cache state"]
     fn build_command_auto_consent_with_temp_profile_installs_extension() {
         let tmp = fake_firefox();
         // We can't test the actual download, but we can test that the function

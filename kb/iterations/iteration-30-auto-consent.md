@@ -34,7 +34,7 @@ universal "disable" API.
 
 - [x] Evaluate **browser extension approach** — install a consent-dismissing
   extension in the headless Firefox profile. Candidates:
-  - [Consent-O-Matic](https://github.com/nicedayfor/nicedayfor.github.io) —
+  - [Consent-O-Matic](https://github.com/cavi-au/Consent-O-Matic) —
     open-source, community-maintained rules for all major CMPs
   - [I don't care about cookies](https://www.i-dont-care-about-cookies.eu/) —
     popular, available as Firefox extension

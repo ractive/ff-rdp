@@ -38,8 +38,15 @@ fn ensure_cached() -> Result<std::path::PathBuf, AppError> {
         })?;
     }
 
-    // Download the XPI
-    let response = ureq::get(XPI_URL).call().map_err(|e| {
+    // Download the XPI with a reasonable timeout so a slow/unreachable AMO
+    // doesn't block the launch indefinitely.
+    let agent = ureq::Agent::new_with_config(
+        ureq::config::Config::builder()
+            .timeout_connect(Some(std::time::Duration::from_secs(10)))
+            .timeout_recv_body(Some(std::time::Duration::from_secs(30)))
+            .build(),
+    );
+    let response = agent.get(XPI_URL).call().map_err(|e| {
         AppError::User(format!("failed to download Consent-O-Matic extension: {e}"))
     })?;
 
@@ -49,8 +56,9 @@ fn ensure_cached() -> Result<std::path::PathBuf, AppError> {
         .read_to_vec()
         .map_err(|e| AppError::User(format!("failed to read extension download: {e}")))?;
 
-    // Write atomically: write to temp file then rename
-    let tmp_path = path.with_extension("xpi.tmp");
+    // Write atomically: write to a per-process temp file then rename, so
+    // concurrent launches don't corrupt each other's download.
+    let tmp_path = path.with_extension(format!("xpi.tmp.{}", std::process::id()));
     std::fs::write(&tmp_path, &body)
         .map_err(|e| AppError::User(format!("failed to write cached extension: {e}")))?;
     std::fs::rename(&tmp_path, &path)
