@@ -1,7 +1,7 @@
 ---
 title: "Iteration 38: Fix Daemon Client Timeout + Network Timeout UX"
 type: iteration
-status: in-progress
+status: completed
 date: 2026-04-08
 branch: iter-38/daemon-client-timeout
 tags:
