@@ -55,7 +55,10 @@ impl ScreenshotContentActor {
 ///   `{ "capture": { "data": "data:...", "width": N, "height": N } }`
 /// or directly:
 ///   `{ "data": "...", "width": N, "height": N }`
-fn extract_capture_data(response: &Value, method: &str) -> Result<ScreenshotCapture, ProtocolError> {
+fn extract_capture_data(
+    response: &Value,
+    method: &str,
+) -> Result<ScreenshotCapture, ProtocolError> {
     let capture = response.get("capture").unwrap_or(response);
 
     let data = capture

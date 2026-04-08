@@ -147,12 +147,12 @@ fn list_sources_via_js(ctx: &mut super::connect_tab::ConnectedTab) -> Result<Vec
 
     let parsed = resolve_result(ctx, &eval_result.result)?;
 
-    let arr = parsed
-        .as_array()
-        .ok_or_else(|| AppError::from(anyhow::anyhow!("sources JS fallback returned non-array")))?
-        .clone();
-
-    Ok(arr)
+    match parsed {
+        Value::Array(arr) => Ok(arr),
+        _ => Err(AppError::from(anyhow::anyhow!(
+            "sources JS fallback returned non-array"
+        ))),
+    }
 }
 
 #[cfg(test)]
