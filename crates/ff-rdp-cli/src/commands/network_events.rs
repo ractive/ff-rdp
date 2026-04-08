@@ -53,10 +53,15 @@ pub(crate) fn drain_network_events(
 /// using a short per-read poll interval.  This is better for navigation where
 /// events arrive in bursts with gaps between them (e.g. the initial navigation
 /// request takes 1-2 seconds before any network events start flowing).
+///
+/// The third element of the returned tuple is `timeout_reached`: `true` when
+/// the wall-clock deadline fired while events were still arriving (i.e. the
+/// last `recv()` before the deadline check returned an event, not an idle
+/// timeout), `false` when collection stopped because the connection went idle.
 pub(crate) fn drain_network_events_timed(
     transport: &mut RdpTransport,
     total_timeout: Duration,
-) -> Result<(Vec<NetworkResource>, Vec<NetworkResourceUpdate>), ProtocolError> {
+) -> Result<(Vec<NetworkResource>, Vec<NetworkResourceUpdate>, bool), ProtocolError> {
     let start = Instant::now();
     let poll_interval = Duration::from_millis(500);
 
@@ -65,6 +70,9 @@ pub(crate) fn drain_network_events_timed(
 
     let mut all_resources = Vec::new();
     let mut all_updates = Vec::new();
+    // True after a recv that returned actual data; reset to false on idle timeout.
+    // When the deadline fires, this tells us whether events were still arriving.
+    let mut last_recv_was_event = false;
 
     loop {
         // Check wall-clock deadline before each read so we stop even when
@@ -73,14 +81,17 @@ pub(crate) fn drain_network_events_timed(
             break;
         }
 
+        last_recv_was_event = false;
         match transport.recv() {
             Ok(msg) => {
                 let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
                 match msg_type {
                     "resources-available-array" => {
+                        last_recv_was_event = true;
                         all_resources.extend(parse_network_resources(&msg));
                     }
                     "resources-updated-array" => {
+                        last_recv_was_event = true;
                         all_updates.extend(parse_network_resource_updates(&msg));
                     }
                     _ => {}
@@ -94,7 +105,7 @@ pub(crate) fn drain_network_events_timed(
         }
     }
 
-    Ok((all_resources, all_updates))
+    Ok((all_resources, all_updates, last_recv_was_event))
 }
 
 /// Merge a list of [`NetworkResourceUpdate`] entries by `resource_id`, folding

@@ -157,7 +157,8 @@ pub fn run_with_network(
             }
         };
 
-        let (mut all_resources, mut all_updates) = drain_result.map_err(AppError::from)?;
+        let (mut all_resources, mut all_updates, timeout_reached) =
+            drain_result.map_err(AppError::from)?;
 
         // Parse and merge any in-flight frames collected from stop_daemon_stream.
         for frame in &inflight {
@@ -195,7 +196,7 @@ pub fn run_with_network(
         let update_map = merge_updates(all_updates);
         let network_entries = build_network_entries(&all_resources, &update_map);
 
-        let network_entries = apply_network_controls(cli, network_entries);
+        let network_entries = apply_network_controls(cli, network_entries, timeout_reached);
 
         let mut result = json!({
             "navigated": url,
@@ -249,7 +250,7 @@ pub fn run_with_network(
     // Restore original timeout before any further RDP round-trips (unwatch).
     restore_timeout(ctx.transport_mut(), cli.timeout);
 
-    let (all_resources, all_updates) = drain_result.map_err(AppError::from)?;
+    let (all_resources, all_updates, timeout_reached) = drain_result.map_err(AppError::from)?;
 
     // Merge updates into resources by resource_id.
     let update_map = merge_updates(all_updates);
@@ -268,7 +269,7 @@ pub fn run_with_network(
     // subscription lifecycle to tear down.
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
 
-    let network_entries = apply_network_controls(cli, network_entries);
+    let network_entries = apply_network_controls(cli, network_entries, timeout_reached);
 
     let mut result = json!({
         "navigated": url,
@@ -291,7 +292,14 @@ pub fn run_with_network(
 ///
 /// In detail mode (when the user sets --detail, --jq, --sort, --limit, --fields,
 /// or --all), returns the processed array. Otherwise returns a summary object.
-fn apply_network_controls(cli: &Cli, network_entries: Vec<serde_json::Value>) -> serde_json::Value {
+///
+/// `timeout_reached` is forwarded to [`build_network_summary`] so it can include
+/// the hint field when the collection deadline fired while events were still arriving.
+fn apply_network_controls(
+    cli: &Cli,
+    network_entries: Vec<serde_json::Value>,
+    timeout_reached: bool,
+) -> serde_json::Value {
     let use_detail = cli.detail
         || cli.jq.is_some()
         || cli.sort.is_some()
@@ -331,7 +339,7 @@ fn apply_network_controls(cli: &Cli, network_entries: Vec<serde_json::Value>) ->
             json!(limited)
         }
     } else {
-        super::network::build_network_summary(&network_entries)
+        super::network::build_network_summary(&network_entries, timeout_reached)
     }
 }
 
