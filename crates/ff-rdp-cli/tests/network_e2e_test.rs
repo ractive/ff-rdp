@@ -320,6 +320,174 @@ fn network_empty_when_no_events() {
 }
 
 // ---------------------------------------------------------------------------
+// Performance API fallback when watcher has no events
+// ---------------------------------------------------------------------------
+
+#[test]
+fn network_falls_back_to_performance_api_when_watcher_empty() {
+    // Watcher returns no network events (no followups); Performance API eval
+    // returns two resource entries as a plain JSON array.
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on(
+            "unwatchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_network_perf_fallback.json"),
+        );
+
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["--detail".to_owned(), "network".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    // Should have fallen back to Performance API and returned 2 entries.
+    assert_eq!(json["total"], 2, "expected 2 entries from perf fallback");
+    let results = json["results"].as_array().expect("results is array");
+    // All entries should have source = "performance-api".
+    for entry in results {
+        assert_eq!(
+            entry["source"], "performance-api",
+            "expected performance-api source, got: {entry}"
+        );
+    }
+    // Meta should advertise the performance-api source.
+    assert_eq!(json["meta"]["source"], "performance-api");
+}
+
+#[test]
+fn network_summary_falls_back_to_performance_api() {
+    // Summary mode: watcher empty, perf fallback returns 2 entries.
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on(
+            "unwatchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_network_perf_fallback.json"),
+        );
+
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.push("network".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    // Summary mode: results is an object with total_requests = 2.
+    assert!(json["results"].is_object(), "expected summary object");
+    assert_eq!(json["results"]["total_requests"], 2);
+    assert_eq!(json["meta"]["source"], "performance-api");
+}
+
+#[test]
+fn network_prints_hint_when_both_sources_empty() {
+    // Watcher has no events and Performance API returns an empty array.
+    // The command should still succeed but print a hint to stderr.
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on(
+            "unwatchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_empty_array.json"),
+        );
+
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.push("network".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("hint:"),
+        "expected a hint on stderr when both sources empty, got: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("--follow") || stderr.contains("Navigate"),
+        "hint should mention --follow or Navigate, got: {stderr:?}"
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    // Summary mode with no entries: total_requests = 0.
+    assert_eq!(json["results"]["total_requests"], 0);
+}
+
+// ---------------------------------------------------------------------------
 // --follow: streaming mode
 // ---------------------------------------------------------------------------
 

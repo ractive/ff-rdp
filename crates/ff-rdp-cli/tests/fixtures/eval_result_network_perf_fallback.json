@@ -1,0 +1,10 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "input": "JSON.stringify(performance.getEntriesByType('resource').map(e => e.toJSON()))",
+  "result": "[{\"name\":\"https://example.com/app.js\",\"initiatorType\":\"script\",\"duration\":42.5,\"transferSize\":12345,\"decodedBodySize\":36000,\"startTime\":100.0,\"responseEnd\":142.5},{\"name\":\"https://example.com/favicon.ico\",\"initiatorType\":\"img\",\"duration\":10.25,\"transferSize\":1024,\"decodedBodySize\":900,\"startTime\":50.0,\"responseEnd\":60.25}]",
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183977.373,
+  "timestamp": 1775437183980.721,
+  "type": "evaluationResult"
+}

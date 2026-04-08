@@ -1,4 +1,6 @@
-use ff_rdp_core::{TabActor, WatcherActor, WindowGlobalTarget};
+use std::time::Duration;
+
+use ff_rdp_core::{RdpTransport, TabActor, WatcherActor, WindowGlobalTarget};
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -11,6 +13,29 @@ use super::connect_tab::connect_and_get_target;
 use super::js_helpers::{escape_selector, poll_js_condition};
 use super::network_events::{build_network_entries, drain_network_events, merge_updates};
 use super::url_validation::validate_url;
+
+/// Set the socket read timeout to `network_timeout_ms` for idle-based network
+/// event collection.  The caller must restore the original timeout afterwards
+/// via [`restore_timeout`].
+fn set_network_timeout(
+    transport: &mut RdpTransport,
+    network_timeout_ms: u64,
+) -> Result<(), AppError> {
+    transport
+        .set_read_timeout(Some(Duration::from_millis(network_timeout_ms)))
+        .map_err(AppError::from)
+}
+
+/// Restore the socket read timeout to the value established at connect time.
+///
+/// Called after `drain_network_events` completes so that subsequent RDP
+/// round-trips (e.g. unwatch, wait condition polling) use the original timeout.
+/// Failures are logged and swallowed — the drain has already completed.
+fn restore_timeout(transport: &mut RdpTransport, original_timeout_ms: u64) {
+    if let Err(e) = transport.set_read_timeout(Some(Duration::from_millis(original_timeout_ms))) {
+        eprintln!("warning: failed to restore socket read timeout: {e:#}");
+    }
+}
 
 /// Options controlling an optional wait condition after navigation.
 ///
@@ -82,6 +107,7 @@ pub fn run_with_network(
     cli: &Cli,
     url: &str,
     wait_opts: &WaitAfterNav<'_>,
+    network_timeout_ms: u64,
 ) -> Result<(), AppError> {
     if !cli.allow_unsafe_urls {
         validate_url(url)?;
@@ -107,9 +133,17 @@ pub fn run_with_network(
             }))
             .map_err(AppError::from)?;
 
+        // Override the socket read timeout for the drain phase so idle
+        // detection uses --network-timeout instead of the global --timeout.
+        set_network_timeout(ctx.transport_mut(), network_timeout_ms)?;
+
         // Always stop streaming before propagating errors from drain so the
         // daemon does not get stuck in streaming mode on failure.
         let drain_result = drain_network_events(ctx.transport_mut());
+
+        // Restore the original connection timeout before stopping the stream
+        // so any RDP round-trip uses the right timeout.
+        restore_timeout(ctx.transport_mut(), cli.timeout);
 
         if let Err(e) =
             crate::daemon::client::stop_daemon_stream(ctx.transport_mut(), "network-event")
@@ -166,10 +200,18 @@ pub fn run_with_network(
         }))
         .map_err(AppError::from)?;
 
+    // Override the socket read timeout for the drain phase so idle detection
+    // uses --network-timeout instead of the global --timeout.
+    set_network_timeout(ctx.transport_mut(), network_timeout_ms)?;
+
     // Drain resource events until the timeout fires (no more events).
     // This also harmlessly skips the navigateTo ack from the target actor.
-    let (all_resources, all_updates) =
-        drain_network_events(ctx.transport_mut()).map_err(AppError::from)?;
+    let drain_result = drain_network_events(ctx.transport_mut());
+
+    // Restore original timeout before any further RDP round-trips (unwatch).
+    restore_timeout(ctx.transport_mut(), cli.timeout);
+
+    let (all_resources, all_updates) = drain_result.map_err(AppError::from)?;
 
     // Merge updates into resources by resource_id.
     let update_map = merge_updates(all_updates);

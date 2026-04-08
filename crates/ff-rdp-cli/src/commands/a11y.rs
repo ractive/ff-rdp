@@ -164,7 +164,7 @@ fn parse_js_a11y_tree(value: &Value) -> Option<AccessibleNode> {
     })
 }
 
-/// Map protocol errors to user-friendly messages, especially unknownActor.
+/// Map protocol errors to user-friendly messages.
 fn map_a11y_error(err: ff_rdp_core::ProtocolError, cli: &Cli) -> AppError {
     match &err {
         ff_rdp_core::ProtocolError::ActorError { error, .. }
@@ -176,6 +176,17 @@ fn map_a11y_error(err: ff_rdp_core::ProtocolError, cli: &Cli) -> AppError {
                 " — the accessibility actor may have expired after navigation. Re-run the command to get a fresh actor"
             };
             AppError::User(format!("accessibility actor is no longer valid{hint}"))
+        }
+        ff_rdp_core::ProtocolError::ActorError { error, message, .. }
+            if error == "unrecognizedPacketType" =>
+        {
+            AppError::User(format!(
+                "accessibility: Firefox does not recognise the '{message}' method \
+                 — this may indicate a protocol incompatibility with your Firefox version. \
+                 If you are running Firefox 125+, try updating ff-rdp. \
+                 As a workaround, use `a11y --selector <css>` which uses JS evaluation \
+                 instead of the native RDP accessibility actor."
+            ))
         }
         _ => AppError::from(err),
     }

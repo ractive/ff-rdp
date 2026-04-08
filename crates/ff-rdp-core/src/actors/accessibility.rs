@@ -93,14 +93,28 @@ impl AccessibilityActor {
     }
 
     /// Get the document root accessible via the walker.
+    ///
+    /// Firefox 125+ renamed `getRootNode` → `getDocument` on the walker actor.
+    /// This method tries `getDocument` first and falls back to `getRootNode`
+    /// for older Firefox versions (< 125).
     pub fn get_root(
         transport: &mut RdpTransport,
         walker_actor: &ActorId,
     ) -> Result<AccessibleNode, ProtocolError> {
-        let response = actor_request(transport, walker_actor.as_ref(), "getRootNode", None)?;
+        // Try the modern method name first (Firefox 125+).
+        let response = match actor_request(transport, walker_actor.as_ref(), "getDocument", None) {
+            Ok(r) => r,
+            Err(e) if e.is_unrecognized_packet_type() => {
+                // Older Firefox (< 125): fall back to the legacy method name.
+                actor_request(transport, walker_actor.as_ref(), "getRootNode", None)?
+            }
+            Err(e) => return Err(e),
+        };
 
         parse_accessible_node(&response).ok_or_else(|| {
-            ProtocolError::InvalidPacket("getRootNode response missing accessible data".into())
+            ProtocolError::InvalidPacket(
+                "getDocument/getRootNode response missing accessible data".into(),
+            )
         })
     }
 

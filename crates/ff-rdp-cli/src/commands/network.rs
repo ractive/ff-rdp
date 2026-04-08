@@ -94,6 +94,15 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
         (filtered_watcher, false)
     };
 
+    // When both the watcher and the Performance API returned nothing, print a
+    // hint so the user knows how to get data.
+    if results.is_empty() && watcher_was_empty {
+        eprintln!(
+            "hint: no network events captured. \
+             Navigate first or use `--follow` to stream events in real time."
+        );
+    }
+
     let meta = if used_perf_fallback {
         json!({"host": cli.host, "port": cli.port, "source": "performance-api"})
     } else {

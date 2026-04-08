@@ -148,7 +148,13 @@ fn navigate_with_network_daemon_server() -> MockRdpServer {
     MockRdpServer::new()
         // Both daemon startup and CLI-forwarded call use the same Fixed handler.
         .on("listTabs", load_fixture("list_tabs_response.json"))
+        // Daemon startup now calls getTarget to obtain the consoleActor and
+        // then startListeners to activate console event delivery.
         .on("getTarget", load_fixture("get_target_response.json"))
+        .on(
+            "startListeners",
+            load_fixture("start_listeners_response.json"),
+        )
         .on("getWatcher", load_fixture("get_watcher_response.json"))
         // Daemon startup watchResources has no followups; network events arrive
         // as followups to navigateTo because the daemon streams them in real-time.
@@ -179,7 +185,13 @@ fn navigate_with_network_daemon_server() -> MockRdpServer {
 fn network_daemon_server() -> MockRdpServer {
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
+        // Daemon startup now calls getTarget to obtain the consoleActor and
+        // then startListeners to activate console event delivery.
         .on("getTarget", load_fixture("get_target_response.json"))
+        .on(
+            "startListeners",
+            load_fixture("start_listeners_response.json"),
+        )
         .on("getWatcher", load_fixture("get_watcher_response.json"))
         // watchResources is called at daemon startup. The followups simulate
         // network events that the daemon buffers for later drain by the CLI.

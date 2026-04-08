@@ -206,6 +206,94 @@ fn geometry_null_result() {
 }
 
 // ---------------------------------------------------------------------------
+// --visible-only: server already filtered (JS-side), all returned are visible
+// ---------------------------------------------------------------------------
+
+#[test]
+fn geometry_visible_only_excludes_invisible_elements() {
+    // The mock returns the JS output for visibleOnly=true: only the visible div
+    let server = geometry_server("eval_result_geometry_visible_only.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "geometry".to_owned(),
+        "--visible-only".to_owned(),
+        "div".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    let elements = json["results"]["elements"]
+        .as_array()
+        .expect("elements must be an array");
+
+    assert_eq!(
+        elements.len(),
+        1,
+        "only the visible element should be returned"
+    );
+    assert_eq!(elements[0]["visible"], true);
+    assert_eq!(elements[0]["selector"], "div");
+    assert_eq!(elements[0]["rect"]["width"], 400);
+    assert_eq!(elements[0]["rect"]["height"], 40);
+}
+
+#[test]
+fn geometry_without_visible_only_includes_invisible_elements() {
+    // The mock returns both visible and invisible elements (no JS-side filtering)
+    let server = geometry_server("eval_result_geometry_mixed_visibility.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["geometry".to_owned(), "div".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    let elements = json["results"]["elements"]
+        .as_array()
+        .expect("elements must be an array");
+
+    assert_eq!(
+        elements.len(),
+        2,
+        "both visible and invisible elements should be returned without --visible-only"
+    );
+    assert_eq!(elements[0]["visible"], true);
+    assert_eq!(elements[1]["visible"], false);
+}
+
+// ---------------------------------------------------------------------------
 // --jq filter
 // ---------------------------------------------------------------------------
 

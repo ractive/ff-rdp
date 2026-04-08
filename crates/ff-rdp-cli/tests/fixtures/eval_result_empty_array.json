@@ -1,8 +1,8 @@
 {
   "from": "server1.conn0.child2/consoleActor3",
   "hasException": false,
-  "input": "(function() { ... })()",
-  "result": "__FF_RDP_JSON__{\"clicked\":true,\"tag\":\"BUTTON\",\"text\":\"Submit\"}",
+  "input": "JSON.stringify(performance.getEntriesByType('resource').map(e => e.toJSON()))",
+  "result": "[]",
   "resultID": "1775437183977.373-0",
   "startTime": 1775437183977.373,
   "timestamp": 1775437183980.721,

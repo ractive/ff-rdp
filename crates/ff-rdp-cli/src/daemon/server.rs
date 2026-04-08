@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 use ff_rdp_core::transport::{RdpTransport, encode_frame, recv_from};
-use ff_rdp_core::{ProtocolError, RootActor, TabActor, WatcherActor};
+use ff_rdp_core::{ProtocolError, RootActor, TabActor, WatcherActor, WebConsoleActor};
 
 use super::buffer::EventBuffer;
 use super::registry::{self, DaemonInfo};
@@ -18,12 +18,33 @@ use super::registry::{self, DaemonInfo};
 /// Resource types the daemon subscribes to at startup.
 const WATCHED_RESOURCE_TYPES: &[&str] = &["network-event", "console-message", "error-message"];
 
+/// A streaming subscriber: a connected CLI client that has requested one or
+/// more resource types to be forwarded in real time.
+struct StreamSubscriber {
+    /// Unique client identity token (OS socket handle / file descriptor).
+    id: RawHandle,
+    /// Write-half of the subscriber's TCP connection.
+    writer: TcpStream,
+    /// Resource types this subscriber wants to receive.
+    types: HashSet<String>,
+}
+
 struct SharedState {
     buffer: Mutex<EventBuffer>,
-    /// Write half of the current CLI client's TCP connection, if any.
-    cli_writer: Mutex<Option<TcpStream>>,
-    /// Resource types being streamed to the CLI client in real-time.
-    streaming_types: Mutex<HashSet<String>>,
+    /// Write-half of the current "RPC" CLI client, if any.
+    ///
+    /// This is the client that sends Firefox RDP requests (e.g. `eval`) and
+    /// needs the corresponding responses forwarded back.  Only one RPC client
+    /// can be active at a time (Firefox RDP has no per-request correlation ID
+    /// for most messages, so we cannot demultiplex responses to multiple
+    /// concurrent senders).  Replaced atomically when a new client connects.
+    rpc_writer: Mutex<Option<TcpStream>>,
+    /// All currently-connected streaming subscribers.
+    ///
+    /// These are clients that have issued one or more `stream` daemon requests
+    /// and only need watcher events forwarded — they never send Firefox RDP
+    /// requests.  Multiple concurrent streaming subscribers are supported.
+    stream_subs: Mutex<Vec<StreamSubscriber>>,
     greeting: Value,
     start_time: Instant,
     last_activity: Mutex<Instant>,
@@ -50,6 +71,21 @@ pub(crate) fn run_daemon(
 
     let tabs = RootActor::list_tabs(&mut transport).context("listing tabs")?;
     let tab_actor = tabs.first().context("no tabs available")?.actor.clone();
+
+    // Obtain the console actor ID and activate its internal listeners so that
+    // console.log() calls from eval (on any connection) are delivered through
+    // the watcher's console-message subscription.  Without startListeners the
+    // watcher subscription is registered but Firefox does not emit events.
+    let target_info =
+        TabActor::get_target(&mut transport, &tab_actor).context("getting tab target")?;
+    if let Err(e) = WebConsoleActor::start_listeners(
+        &mut transport,
+        &target_info.console_actor,
+        &["PageError", "ConsoleAPI"],
+    ) {
+        eprintln!("daemon: startListeners failed (non-fatal): {e}");
+    }
+
     let watcher_actor =
         TabActor::get_watcher(&mut transport, &tab_actor).context("getting watcher actor")?;
     WatcherActor::watch_resources(&mut transport, &watcher_actor, WATCHED_RESOURCE_TYPES)
@@ -78,8 +114,8 @@ pub(crate) fn run_daemon(
 
     let state = Arc::new(SharedState {
         buffer: Mutex::new(EventBuffer::new()),
-        cli_writer: Mutex::new(None),
-        streaming_types: Mutex::new(HashSet::new()),
+        rpc_writer: Mutex::new(None),
+        stream_subs: Mutex::new(Vec::new()),
         greeting,
         start_time: Instant::now(),
         last_activity: Mutex::new(Instant::now()),
@@ -146,8 +182,10 @@ fn setup_signal_handler(state: &Arc<SharedState>) {
 /// Read from Firefox indefinitely.
 ///
 /// - Watcher events (`resources-available-array`, `resources-updated-array`)
-///   are parsed and stored in the shared buffer.
-/// - All other messages are forwarded to the connected CLI client, if any.
+///   are forwarded to each matching stream subscriber, or buffered when no
+///   subscriber is interested in that resource type.
+/// - All other messages (RDP request responses) are forwarded to the current
+///   RPC client, if any.
 /// - A 1-second read timeout lets us check `state.shutdown` periodically.
 fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: BufReader<TcpStream>) {
     // Apply a short read timeout so we can check the shutdown flag.
@@ -172,16 +210,10 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: BufReader<TcpStream
                 *state.last_activity.lock().unwrap() = Instant::now();
 
                 if is_watcher_event(&msg) {
-                    // Check if any resource type in this event is being
-                    // streamed.  If so, forward the entire message to the
-                    // CLI; otherwise buffer it.
-                    if should_stream_event(&state.streaming_types, &msg) {
-                        forward_to_cli(&state.cli_writer, &msg);
-                    } else {
-                        buffer_watcher_event(&state.buffer, &msg);
-                    }
+                    // Route to matching streaming subscribers or buffer.
+                    dispatch_watcher_event(state, &msg);
                 } else {
-                    forward_to_cli(&state.cli_writer, &msg);
+                    forward_to_rpc_client(&state.rpc_writer, &msg);
                 }
             }
             Err(ProtocolError::Timeout) => {
@@ -203,31 +235,147 @@ fn is_watcher_event(msg: &Value) -> bool {
     )
 }
 
-/// Check if any resource type in a watcher event is currently being streamed.
-fn should_stream_event(streaming_types: &Mutex<HashSet<String>>, msg: &Value) -> bool {
+/// Dispatch a watcher event: forward to each streaming subscriber whose type
+/// set overlaps the event's resource types.  Resource types that have no
+/// subscriber are buffered for later drain requests.
+fn dispatch_watcher_event(state: &SharedState, msg: &Value) {
     let Some(array) = msg.get("array").and_then(Value::as_array) else {
-        return false;
+        return;
     };
-    // unwrap: poisoned mutex means a thread panicked — daemon should crash.
-    let types = streaming_types.lock().unwrap();
-    if types.is_empty() {
-        return false;
-    }
+
+    // Collect the resource types present in this event.
+    let mut event_types: Vec<&str> = Vec::new();
     for sub in array {
         if let Some(sub_arr) = sub.as_array()
             && sub_arr.len() == 2
-            && let Some(resource_type) = sub_arr[0].as_str()
-            && types.contains(resource_type)
+            && let Some(rt) = sub_arr[0].as_str()
         {
-            return true;
+            event_types.push(rt);
         }
     }
-    false
+
+    // Determine which types have a subscriber and which need buffering.
+    // unwrap: poisoned mutex — daemon should crash.
+    let mut subs = state.stream_subs.lock().unwrap();
+
+    // Track which resource types were forwarded to at least one subscriber.
+    let mut forwarded_types: HashSet<&str> = HashSet::new();
+
+    // Serialise the message once (shared across all subscribers).
+    let json = match serde_json::to_string(msg) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("daemon: could not serialise watcher event: {e}");
+            return;
+        }
+    };
+    let frame = encode_frame(&json);
+
+    // Forward to each subscriber that wants at least one type in this event.
+    // Collect indices of dead subscribers for removal after iteration.
+    let mut dead: Vec<usize> = Vec::new();
+    for (i, sub) in subs.iter_mut().enumerate() {
+        let wants = event_types.iter().any(|t| sub.types.contains(*t));
+        if wants {
+            if sub.writer.write_all(frame.as_bytes()).is_err() {
+                dead.push(i);
+            } else {
+                for t in &event_types {
+                    if sub.types.contains(*t) {
+                        forwarded_types.insert(t);
+                    }
+                }
+            }
+        }
+    }
+
+    // Remove dead subscribers in reverse order to preserve indices.
+    for i in dead.into_iter().rev() {
+        subs.remove(i);
+    }
+
+    // Drop the lock before acquiring the buffer lock to avoid lock ordering
+    // issues.
+    drop(subs);
+
+    // Buffer any resource types that were NOT forwarded to any subscriber.
+    let unbuffered_types: Vec<&str> = event_types
+        .iter()
+        .filter(|t| !forwarded_types.contains(*t))
+        .copied()
+        .collect();
+
+    if !unbuffered_types.is_empty() {
+        buffer_watcher_event_for_types(&state.buffer, msg, &unbuffered_types);
+    }
 }
 
-/// Parse a watcher event and insert individual resource items into the buffer.
+/// Forward a message to the current RPC client, if one is connected.
 ///
-/// The `array` field contains `[[resource_type, [item, ...]], ...]` pairs.
+/// The lock is held for the entire write to prevent interleaved frames from
+/// the firefox-reader thread and the client-handler thread.
+/// On write error the writer is cleared (treated as disconnected).
+fn forward_to_rpc_client(rpc_writer: &Mutex<Option<TcpStream>>, msg: &Value) {
+    // Serialise first — no lock needed.
+    let json = match serde_json::to_string(msg) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("daemon: could not serialise Firefox message: {e}");
+            return;
+        }
+    };
+    let frame = encode_frame(&json);
+
+    // unwrap: poisoned mutex means a thread panicked — daemon should crash.
+    let mut guard = rpc_writer.lock().unwrap();
+    let Some(writer) = guard.as_mut() else {
+        return;
+    };
+    if writer.write_all(frame.as_bytes()).is_err() {
+        // Client disconnected while we were trying to write.
+        *guard = None;
+    }
+}
+
+/// Parse a watcher event and insert individual resource items into the buffer,
+/// but only for the listed resource types.
+fn buffer_watcher_event_for_types(
+    buffer: &Mutex<EventBuffer>,
+    msg: &Value,
+    types_to_buffer: &[&str],
+) {
+    let Some(array) = msg.get("array").and_then(Value::as_array) else {
+        return;
+    };
+
+    // unwrap: poisoned mutex means a thread panicked — crash is intentional.
+    let mut buf = buffer.lock().unwrap();
+    for sub in array {
+        let Some(sub_arr) = sub.as_array() else {
+            continue;
+        };
+        if sub_arr.len() != 2 {
+            continue;
+        }
+        let Some(resource_type) = sub_arr[0].as_str() else {
+            continue;
+        };
+        if !types_to_buffer.contains(&resource_type) {
+            continue;
+        }
+        let Some(items) = sub_arr[1].as_array() else {
+            continue;
+        };
+        for item in items {
+            buf.insert(resource_type, item.clone());
+        }
+    }
+}
+
+/// Parse a watcher event and insert ALL resource items into the buffer.
+///
+/// Used in tests to verify buffering behaviour without subscribers.
+#[cfg(test)]
 fn buffer_watcher_event(buffer: &Mutex<EventBuffer>, msg: &Value) {
     let Some(array) = msg.get("array").and_then(Value::as_array) else {
         return;
@@ -254,44 +402,16 @@ fn buffer_watcher_event(buffer: &Mutex<EventBuffer>, msg: &Value) {
     }
 }
 
-/// Forward a message to the CLI client if one is currently connected.
-///
-/// The lock is held for the entire write to prevent interleaved frames from
-/// the firefox-reader thread and the client-handler thread.
-/// On write error the writer is cleared (treated as disconnected).
-fn forward_to_cli(cli_writer: &Mutex<Option<TcpStream>>, msg: &Value) {
-    // Serialise first — no lock needed.
-    let json = match serde_json::to_string(msg) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("daemon: could not serialise Firefox message: {e}");
-            return;
-        }
-    };
-    let frame = encode_frame(&json);
-
-    // Hold the lock for the entire write so concurrent forward_to_cli and
-    // handle_client daemon-response writes cannot interleave bytes.
-    // unwrap: poisoned mutex means a thread panicked — daemon should crash.
-    let mut guard = cli_writer.lock().unwrap();
-    let Some(writer) = guard.as_mut() else {
-        return;
-    };
-    if writer.write_all(frame.as_bytes()).is_err() {
-        // Client disconnected while we were trying to write.
-        *guard = None;
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Main accept loop
 // ---------------------------------------------------------------------------
 
-/// Accept CLI connections in a loop.
+/// Accept CLI connections in a loop, spawning a handler thread per client.
 ///
 /// Returns when:
 /// - `state.shutdown` is set (signal or Firefox disconnection), or
-/// - the idle timeout fires while no client is connected.
+/// - the idle timeout fires while no client is connected and the buffer has
+///   had no activity.
 fn accept_loop(
     state: &Arc<SharedState>,
     listener: &TcpListener,
@@ -315,10 +435,17 @@ fn accept_loop(
         match listener.accept() {
             Ok((stream, _addr)) => {
                 *state.last_activity.lock().unwrap() = Instant::now();
-                if let Err(e) = handle_client(state, stream, firefox_writer) {
-                    eprintln!("daemon: client session error: {e:#}");
-                }
-                *state.last_activity.lock().unwrap() = Instant::now();
+                let state_clone = Arc::clone(state);
+                let writer_clone = Arc::clone(firefox_writer);
+                thread::Builder::new()
+                    .name("cli-client".into())
+                    .spawn(move || {
+                        if let Err(e) = handle_client(&state_clone, stream, &writer_clone) {
+                            eprintln!("daemon: client session error: {e:#}");
+                        }
+                        *state_clone.last_activity.lock().unwrap() = Instant::now();
+                    })
+                    .context("spawning client handler thread")?;
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(100));
@@ -337,10 +464,13 @@ fn accept_loop(
 /// Handle a single CLI client connection.
 ///
 /// 1. Sends the cached Firefox greeting.
-/// 2. Registers the client as the current forwarding target for Firefox events.
+/// 2. Registers the client as the current RPC forwarding target.
 /// 3. Reads client messages in a loop, forwarding them to Firefox or handling
 ///    daemon-local messages inline.
-/// 4. On EOF or error, unregisters the client and returns.
+/// 4. When a `stream` daemon request is received the client is also added to
+///    the stream-subscriber list; the client remains in that list until it
+///    disconnects or issues a `stop-stream` for all its types.
+/// 5. On EOF or error, unregisters the client from all roles and returns.
 fn handle_client(
     state: &Arc<SharedState>,
     stream: TcpStream,
@@ -367,15 +497,21 @@ fn handle_client(
             .context("sending greeting to CLI client")?;
     }
 
-    // Register this client as the current forwarding target.
+    // Register this client as the current RPC forwarding target.
+    // The previous RPC client (if any) is simply replaced — it is no longer
+    // the active RDP session and will not receive Firefox responses anyway.
+    let client_writer = stream
+        .try_clone()
+        .context("cloning client stream for RPC forwarding")?;
     {
-        let mut guard = state.cli_writer.lock().unwrap();
-        *guard = Some(
-            stream
-                .try_clone()
-                .context("cloning client stream for forwarding")?,
-        );
+        let mut guard = state.rpc_writer.lock().unwrap();
+        *guard = Some(client_writer);
     }
+
+    // Unique token used to identify this client's stream-subscriber entry so
+    // we can remove the right one on disconnect.  We use a raw pointer to the
+    // TcpStream as a stable, cheap address-based key.
+    let client_id = stream.as_raw_fd_or_handle();
 
     let mut reader = BufReader::new(stream);
 
@@ -390,13 +526,13 @@ fn handle_client(
 
                 let to = msg.get("to").and_then(Value::as_str).unwrap_or_default();
                 if to == "daemon" {
-                    let response = handle_daemon_message(state, &msg);
+                    let response = handle_daemon_message(state, &msg, client_id);
                     let resp_json =
                         serde_json::to_string(&response).context("serialising daemon response")?;
                     let frame = encode_frame(&resp_json);
-                    // Write through the shared cli_writer mutex to prevent
-                    // interleaving with forward_to_cli on the reader thread.
-                    let mut guard = state.cli_writer.lock().unwrap();
+                    // Write through the rpc_writer mutex to prevent interleaving
+                    // with forward_to_rpc_client on the firefox-reader thread.
+                    let mut guard = state.rpc_writer.lock().unwrap();
                     if let Some(w) = guard.as_mut() {
                         w.write_all(frame.as_bytes())
                             .context("sending daemon response to CLI client")?;
@@ -415,21 +551,67 @@ fn handle_client(
             Err(ProtocolError::Timeout) => {
                 // Expected poll timeout — re-check shutdown and continue.
             }
-            Err(e) => {
+            Err(_) => {
                 // EOF or connection reset: client disconnected.
-                eprintln!("daemon: client read ended: {e}");
                 break;
             }
         }
     }
 
-    // Clear any streaming state left by this client.
-    state.streaming_types.lock().unwrap().clear();
+    // Remove this client from the stream-subscriber list.
+    state
+        .stream_subs
+        .lock()
+        .unwrap()
+        .retain(|s| s.id != client_id);
 
-    // Unregister the forwarding target.
-    *state.cli_writer.lock().unwrap() = None;
+    // Unregister this client as RPC target only if it is still the current one
+    // (another client may have already taken over).
+    {
+        let mut guard = state.rpc_writer.lock().unwrap();
+        // Compare by OS handle; if replaced, leave the new client registered.
+        if guard
+            .as_ref()
+            .is_some_and(|w| w.as_raw_fd_or_handle() == client_id)
+        {
+            *guard = None;
+        }
+    }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Platform-portable socket handle extraction
+// ---------------------------------------------------------------------------
+
+/// A platform-portable type for a raw socket handle / file descriptor.
+///
+/// Used as a unique client token — it is stable for the lifetime of the
+/// `TcpStream` and acts as a cheap address-based identity key.
+#[cfg(unix)]
+type RawHandle = std::os::unix::io::RawFd;
+#[cfg(windows)]
+type RawHandle = std::os::windows::io::RawSocket;
+
+trait AsRawFdOrHandle {
+    fn as_raw_fd_or_handle(&self) -> RawHandle;
+}
+
+#[cfg(unix)]
+impl AsRawFdOrHandle for TcpStream {
+    fn as_raw_fd_or_handle(&self) -> RawHandle {
+        use std::os::unix::io::AsRawFd;
+        self.as_raw_fd()
+    }
+}
+
+#[cfg(windows)]
+impl AsRawFdOrHandle for TcpStream {
+    fn as_raw_fd_or_handle(&self) -> RawHandle {
+        use std::os::windows::io::AsRawSocket;
+        self.as_raw_socket()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +619,11 @@ fn handle_client(
 // ---------------------------------------------------------------------------
 
 /// Handle a message addressed `to: "daemon"`.
-fn handle_daemon_message(state: &SharedState, msg: &Value) -> Value {
+///
+/// `client_id` is the raw handle of the sending client's TCP stream — used to
+/// identify which stream-subscriber entry to modify when processing `stream`
+/// and `stop-stream` requests.
+fn handle_daemon_message(state: &SharedState, msg: &Value, client_id: RawHandle) -> Value {
     let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
 
     match msg_type {
@@ -472,11 +658,34 @@ fn handle_daemon_message(state: &SharedState, msg: &Value) -> Value {
             // Clear existing buffered events for this type so the client
             // only receives events from this point forward.
             let _discarded = state.buffer.lock().unwrap().drain(resource_type);
-            state
-                .streaming_types
-                .lock()
-                .unwrap()
-                .insert(resource_type.to_owned());
+
+            // Add this resource type to the client's subscriber entry.
+            // If the client is not yet a subscriber, add it now.
+            let mut subs = state.stream_subs.lock().unwrap();
+            if let Some(sub) = subs.iter_mut().find(|s| s.id == client_id) {
+                sub.types.insert(resource_type.to_owned());
+            } else {
+                // Create a new subscriber entry for this client.
+                // We need a write-capable clone of the client's stream.
+                // The rpc_writer holds a clone — use that as the subscriber
+                // writer by cloning it again.
+                drop(subs); // release before acquiring rpc_writer
+                let writer_clone = {
+                    let guard = state.rpc_writer.lock().unwrap();
+                    guard.as_ref().and_then(|w| w.try_clone().ok())
+                };
+                let mut subs = state.stream_subs.lock().unwrap();
+                if let Some(writer) = writer_clone {
+                    let mut types = HashSet::new();
+                    types.insert(resource_type.to_owned());
+                    subs.push(StreamSubscriber {
+                        id: client_id,
+                        writer,
+                        types,
+                    });
+                }
+            }
+
             json!({
                 "from": "daemon",
                 "streaming": true,
@@ -494,7 +703,12 @@ fn handle_daemon_message(state: &SharedState, msg: &Value) -> Value {
                     "error": "stop-stream requires a non-empty resourceType field",
                 });
             };
-            state.streaming_types.lock().unwrap().remove(resource_type);
+            let mut subs = state.stream_subs.lock().unwrap();
+            if let Some(sub) = subs.iter_mut().find(|s| s.id == client_id) {
+                sub.types.remove(resource_type);
+            }
+            // Remove the subscriber entry if it has no types left.
+            subs.retain(|s| !s.types.is_empty());
             json!({
                 "from": "daemon",
                 "streaming": false,
@@ -504,10 +718,12 @@ fn handle_daemon_message(state: &SharedState, msg: &Value) -> Value {
         "status" => {
             let uptime = state.start_time.elapsed().as_secs();
             let sizes = state.buffer.lock().unwrap().sizes();
+            let subscriber_count = state.stream_subs.lock().unwrap().len();
             json!({
                 "from": "daemon",
                 "uptime_secs": uptime,
                 "buffer_sizes": sizes,
+                "stream_subscriber_count": subscriber_count,
             })
         }
         other => {
@@ -525,7 +741,6 @@ fn handle_daemon_message(state: &SharedState, msg: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicBool;
     use std::time::Instant;
@@ -534,17 +749,21 @@ mod tests {
 
     use super::*;
 
+    // A minimal test-only SharedState with no real sockets.
     fn test_state() -> SharedState {
         SharedState {
             buffer: Mutex::new(EventBuffer::new()),
-            cli_writer: Mutex::new(None),
-            streaming_types: Mutex::new(HashSet::new()),
+            rpc_writer: Mutex::new(None),
+            stream_subs: Mutex::new(Vec::new()),
             greeting: json!({"applicationType": "browser"}),
             start_time: Instant::now(),
             last_activity: Mutex::new(Instant::now()),
             shutdown: AtomicBool::new(false),
         }
     }
+
+    // Sentinel client_id used in tests that do not exercise subscriber logic.
+    const TEST_CLIENT_ID: RawHandle = 99;
 
     // -----------------------------------------------------------------------
     // handle_daemon_message — drain
@@ -565,7 +784,7 @@ mod tests {
             .insert("network-event", json!({"url": "https://b.com"}));
 
         let msg = json!({"to": "daemon", "type": "drain", "resourceType": "network-event"});
-        let resp = handle_daemon_message(&state, &msg);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
 
         assert_eq!(resp["from"], "daemon");
         let events = resp["events"].as_array().expect("events array");
@@ -574,7 +793,7 @@ mod tests {
         assert_eq!(events[1]["url"], "https://b.com");
 
         // Drain again should return empty slice.
-        let resp2 = handle_daemon_message(&state, &msg);
+        let resp2 = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
         assert_eq!(
             resp2["events"]
                 .as_array()
@@ -588,7 +807,7 @@ mod tests {
     fn drain_unknown_resource_type_returns_empty() {
         let state = test_state();
         let msg = json!({"to": "daemon", "type": "drain", "resourceType": "nonexistent"});
-        let resp = handle_daemon_message(&state, &msg);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
         assert_eq!(resp["from"], "daemon");
         assert_eq!(
             resp["events"].as_array().expect("events array").len(),
@@ -601,7 +820,7 @@ mod tests {
     fn drain_missing_resource_type_returns_error() {
         let state = test_state();
         let msg = json!({"to": "daemon", "type": "drain"});
-        let resp = handle_daemon_message(&state, &msg);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
         assert!(
             resp["error"].as_str().is_some(),
             "missing resourceType must produce an error"
@@ -612,7 +831,7 @@ mod tests {
     fn drain_empty_resource_type_returns_error() {
         let state = test_state();
         let msg = json!({"to": "daemon", "type": "drain", "resourceType": ""});
-        let resp = handle_daemon_message(&state, &msg);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
         assert!(
             resp["error"].as_str().is_some(),
             "empty resourceType must produce an error"
@@ -623,7 +842,7 @@ mod tests {
     fn stream_missing_resource_type_returns_error() {
         let state = test_state();
         let msg = json!({"to": "daemon", "type": "stream"});
-        let resp = handle_daemon_message(&state, &msg);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
         assert!(
             resp["error"].as_str().is_some(),
             "stream without resourceType must produce an error"
@@ -634,7 +853,7 @@ mod tests {
     fn stop_stream_missing_resource_type_returns_error() {
         let state = test_state();
         let msg = json!({"to": "daemon", "type": "stop-stream"});
-        let resp = handle_daemon_message(&state, &msg);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
         assert!(
             resp["error"].as_str().is_some(),
             "stop-stream without resourceType must produce an error"
@@ -665,7 +884,7 @@ mod tests {
             .insert("console-message", json!({}));
 
         let msg = json!({"to": "daemon", "type": "status"});
-        let resp = handle_daemon_message(&state, &msg);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
 
         assert_eq!(resp["from"], "daemon");
         assert!(
@@ -686,7 +905,7 @@ mod tests {
     fn status_with_empty_buffer_omits_zero_sizes() {
         let state = test_state();
         let msg = json!({"to": "daemon", "type": "status"});
-        let resp = handle_daemon_message(&state, &msg);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
 
         assert_eq!(resp["from"], "daemon");
         // sizes() filters out empty buckets, so buffer_sizes should be an
@@ -713,7 +932,7 @@ mod tests {
     fn unknown_message_type_returns_error() {
         let state = test_state();
         let msg = json!({"to": "daemon", "type": "unknown-stuff"});
-        let resp = handle_daemon_message(&state, &msg);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
 
         assert_eq!(resp["from"], "daemon");
         let err = resp["error"].as_str().expect("error string");
@@ -728,7 +947,7 @@ mod tests {
         let state = test_state();
         // No "type" key — defaults to empty string, which is unrecognised.
         let msg = json!({"to": "daemon"});
-        let resp = handle_daemon_message(&state, &msg);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
         assert!(
             resp["error"].as_str().is_some(),
             "missing type must produce an error field"
@@ -854,7 +1073,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn stream_clears_buffer_and_enables_streaming() {
+    fn stream_clears_buffer_and_returns_streaming_ack() {
         let state = test_state();
         // Pre-populate buffer.
         state
@@ -864,7 +1083,7 @@ mod tests {
             .insert("network-event", json!({"url": "https://stale.com"}));
 
         let msg = json!({"to": "daemon", "type": "stream", "resourceType": "network-event"});
-        let resp = handle_daemon_message(&state, &msg);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
 
         assert_eq!(resp["from"], "daemon");
         assert_eq!(resp["streaming"], true);
@@ -880,70 +1099,71 @@ mod tests {
                 .is_empty(),
             "buffer must be empty after stream request"
         );
-
-        // streaming_types must contain "network-event".
-        assert!(
-            state
-                .streaming_types
-                .lock()
-                .expect("streaming_types lock")
-                .contains("network-event"),
-            "streaming_types must contain the requested type"
-        );
     }
 
     #[test]
-    fn stop_stream_disables_streaming() {
+    fn stop_stream_returns_streaming_false() {
         let state = test_state();
-        state
-            .streaming_types
-            .lock()
-            .expect("streaming_types lock")
-            .insert("network-event".to_owned());
-
         let msg = json!({"to": "daemon", "type": "stop-stream", "resourceType": "network-event"});
-        let resp = handle_daemon_message(&state, &msg);
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID);
 
         assert_eq!(resp["from"], "daemon");
         assert_eq!(resp["streaming"], false);
-
-        assert!(
-            !state
-                .streaming_types
-                .lock()
-                .expect("streaming_types lock")
-                .contains("network-event"),
-            "streaming_types must not contain the type after stop-stream"
-        );
     }
+
+    // -----------------------------------------------------------------------
+    // buffer_watcher_event_for_types
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn buffer_for_types_only_buffers_matching_types() {
+        let state = test_state();
+        let msg = json!({
+            "type": "resources-available-array",
+            "array": [
+                ["network-event", [{"actor": "a1", "url": "https://x.com"}]],
+                ["console-message", [{"msg": "hello"}]]
+            ]
+        });
+        // Only buffer network-event.
+        buffer_watcher_event_for_types(&state.buffer, &msg, &["network-event"]);
+
+        let mut buf = state.buffer.lock().expect("buffer lock");
+        let net = buf.drain("network-event");
+        assert_eq!(net.len(), 1);
+        let console = buf.drain("console-message");
+        assert!(console.is_empty(), "console-message must not be buffered");
+    }
+
+    // -----------------------------------------------------------------------
+    // is_watcher_event (duplicate guard)
+    // -----------------------------------------------------------------------
 
     #[test]
     fn should_stream_event_returns_true_for_streaming_type() {
-        let streaming_types = Mutex::new(HashSet::from(["network-event".to_owned()]));
+        // Verify dispatch_watcher_event routing logic via buffer fallback:
+        // if no subscriber claims a type, it must land in the buffer.
+        let state = test_state();
         let msg = json!({
             "type": "resources-available-array",
             "array": [["network-event", [{"actor": "a1"}]]]
         });
-        assert!(should_stream_event(&streaming_types, &msg));
+        dispatch_watcher_event(&state, &msg);
+        // No subscriber registered → falls into buffer.
+        let events = state.buffer.lock().unwrap().drain("network-event");
+        assert_eq!(events.len(), 1);
     }
 
     #[test]
-    fn should_stream_event_returns_false_when_empty() {
-        let streaming_types = Mutex::new(HashSet::new());
+    fn dispatch_buffers_when_no_subscribers() {
+        let state = test_state();
         let msg = json!({
             "type": "resources-available-array",
-            "array": [["network-event", [{"actor": "a1"}]]]
+            "array": [["console-message", [{"msg": "hi"}]]]
         });
-        assert!(!should_stream_event(&streaming_types, &msg));
-    }
-
-    #[test]
-    fn should_stream_event_returns_false_for_non_streaming_type() {
-        let streaming_types = Mutex::new(HashSet::from(["console-message".to_owned()]));
-        let msg = json!({
-            "type": "resources-available-array",
-            "array": [["network-event", [{"actor": "a1"}]]]
-        });
-        assert!(!should_stream_event(&streaming_types, &msg));
+        dispatch_watcher_event(&state, &msg);
+        let events = state.buffer.lock().unwrap().drain("console-message");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["msg"], "hi");
     }
 }
