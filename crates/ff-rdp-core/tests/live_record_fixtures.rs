@@ -2506,3 +2506,134 @@ fn live_page_style_get_layout() {
 
     save_cli_fixture("page_style_get_layout_response.json", &resp);
 }
+
+// ===========================================================================
+// Part E: Console follow — cross-connection delivery
+// ===========================================================================
+
+/// Regression test for `console --follow` cross-connection delivery.
+///
+/// Verifies that a `consoleAPICall` push event emitted by `evaluateJSAsync`
+/// on Connection 2 is received by Connection 1, which has subscribed via
+/// `startListeners` on the same tab.  This exercises the Firefox broadcast
+/// behaviour documented in `kb/research/console-follow-protocol-ff149.md`.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn record_console_follow_cross_connection() {
+    if !should_run_live() {
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // Connection 1: subscribe to console events
+    // ------------------------------------------------------------------
+    let mut conn1 = connect();
+    let transport1 = conn1.transport_mut();
+
+    // listTabs + getTarget
+    transport1
+        .send(&json!({"to": "root", "type": "listTabs"}))
+        .expect("send listTabs (conn1)");
+    let list_tabs1 = recv_from_actor(transport1, "root");
+    let tab_actor1 = list_tabs1["tabs"][0]["actor"]
+        .as_str()
+        .expect("tab actor (conn1)")
+        .to_owned();
+
+    transport1
+        .send(&json!({"to": &tab_actor1, "type": "getTarget"}))
+        .expect("send getTarget (conn1)");
+    let target_resp1 = recv_from_actor(transport1, &tab_actor1);
+    let console_actor1 = target_resp1["frame"]["consoleActor"]
+        .as_str()
+        .expect("consoleActor (conn1)")
+        .to_owned();
+
+    // startListeners — required for direct consoleAPICall push delivery
+    transport1
+        .send(&json!({
+            "to": &console_actor1,
+            "type": "startListeners",
+            "listeners": ["PageError", "ConsoleAPI"]
+        }))
+        .expect("send startListeners (conn1)");
+    let _ = recv_from_actor(transport1, &console_actor1);
+
+    // getWatcher + watchResources — belt-and-suspenders; watcher stream may
+    // not deliver eval-triggered events in Firefox 149, but we subscribe
+    // anyway to validate the protocol round-trip and capture fixtures.
+    transport1
+        .send(&json!({"to": &tab_actor1, "type": "getWatcher"}))
+        .expect("send getWatcher (conn1)");
+    let watcher_resp1 = recv_from_actor(transport1, &tab_actor1);
+    let watcher_actor1 = watcher_resp1["actor"]
+        .as_str()
+        .expect("watcher actor (conn1)")
+        .to_owned();
+
+    transport1
+        .send(&json!({
+            "to": &watcher_actor1,
+            "type": "watchResources",
+            "resourceTypes": ["console-message", "error-message"]
+        }))
+        .expect("send watchResources (conn1)");
+    let _ = recv_from_actor(transport1, &watcher_actor1);
+
+    // ------------------------------------------------------------------
+    // Connection 2: trigger console.log via evaluateJSAsync
+    // ------------------------------------------------------------------
+    let mut conn2 = connect();
+    let transport2 = conn2.transport_mut();
+
+    transport2
+        .send(&json!({"to": "root", "type": "listTabs"}))
+        .expect("send listTabs (conn2)");
+    let list_tabs2 = recv_from_actor(transport2, "root");
+    let tab_actor2 = list_tabs2["tabs"][0]["actor"]
+        .as_str()
+        .expect("tab actor (conn2)")
+        .to_owned();
+
+    transport2
+        .send(&json!({"to": &tab_actor2, "type": "getTarget"}))
+        .expect("send getTarget (conn2)");
+    let target_resp2 = recv_from_actor(transport2, &tab_actor2);
+    let console_actor2 = target_resp2["frame"]["consoleActor"]
+        .as_str()
+        .expect("consoleActor (conn2)")
+        .to_owned();
+
+    transport2
+        .send(&json!({
+            "to": &console_actor2,
+            "type": "evaluateJSAsync",
+            "text": "console.log(\"follow-cross-test\")",
+            "eager": false
+        }))
+        .expect("send evaluateJSAsync (conn2)");
+
+    // ------------------------------------------------------------------
+    // Connection 1: read until we get a consoleAPICall push event
+    // ------------------------------------------------------------------
+    // The consoleAPICall arrives from the console actor as a direct push.
+    // recv_from_actor skips known async types (frameUpdate, resources-*-array,
+    // etc.) but returns consoleAPICall, which is exactly what we want.
+    let event = recv_from_actor(transport1, &console_actor1);
+    let event_type = event
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert_eq!(
+        event_type, "consoleAPICall",
+        "expected consoleAPICall push event from console actor, got: {event:#}"
+    );
+
+    assert!(
+        event.get("message").is_some(),
+        "consoleAPICall event must have a 'message' field: {event:#}"
+    );
+
+    save_core_fixture("console_follow_cross_connection.json", &event);
+    save_cli_fixture("console_follow_cross_connection.json", &event);
+}
