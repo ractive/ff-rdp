@@ -20,12 +20,12 @@ This occurs because Firefox's StorageActor implementation calls `.toLowerCase()`
 
 ## Root Cause
 
-The `getStoreObjects` method in Firefox's cookie store actor expects an `options` object with at least a `sessionString` field. The valid values are:
+The `getStoreObjects` method in Firefox's cookie store actor expects an `options` object with at least a `sessionString` field. The accepted/expected values are:
 
-- `"Session"` — filters for session cookies (expires=0)
-- `"Persistent"` — filters for persistent cookies (expires>0)
+- `"Session"` — standard DevTools label for the session-cookie grouping
+- `"Persistent"` — standard DevTools label for the persistent-cookie grouping
 
-In practice, Firefox uses `sessionString` for grouping/display in DevTools. When omitted, Firefox still tries to process it by calling `.toLowerCase()`, which crashes on `undefined`.
+In practice, Firefox uses `sessionString` as a grouping/display hint in DevTools rather than as a response filter. When omitted, Firefox still tries to process it by calling `.toLowerCase()`, which crashes on `undefined`.
 
 ## Correct Protocol Sequence
 
@@ -78,7 +78,7 @@ In practice, Firefox uses `sessionString` for grouping/display in DevTools. When
 | `host` | Yes | Host origin filter (from watchResources hosts map) |
 | `resourceId` | Yes (FF149+) | Resource ID from watchResources response |
 | `options.sessionString` | Yes (FF149+) | Session type string; crashes if missing |
-| `options.sortOn` | No | Server-side sort field; we sort client-side |
+| `options.sortOn` | No | Optional server-side sort field |
 
 ## Comparison with localStorage
 

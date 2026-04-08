@@ -49,7 +49,7 @@ impl StorageActor {
     /// This performs the full protocol sequence:
     /// 1. Get a watcher via `TabActor::get_watcher`
     /// 2. Watch for `"cookies"` resources to get the cookie store actor + resource ID
-    /// 3. Call `getStoreObjects` with `host` + `resourceId` for each host
+    /// 3. Call `getStoreObjects` with `host` + `resourceId` + `options.sessionString` for each host
     /// 4. Unwatch when done (best-effort)
     ///
     /// # Firefox 149 compatibility
