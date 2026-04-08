@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use crate::error::ProtocolError;
+use crate::error::{ActorErrorKind, ProtocolError};
 use crate::transport::RdpTransport;
 
 /// Send a request to a named actor and return the response.
@@ -44,6 +44,7 @@ pub fn actor_request(
                 .and_then(Value::as_str)
                 .unwrap_or(to)
                 .to_owned(),
+            kind: ActorErrorKind::from_code(error),
             error: error.to_owned(),
             message: response
                 .get("message")
@@ -127,10 +128,12 @@ mod tests {
         match err {
             ProtocolError::ActorError {
                 actor,
+                kind,
                 error,
                 message,
             } => {
                 assert_eq!(actor, "root");
+                assert_eq!(kind, ActorErrorKind::Other("unknownError".to_owned()));
                 assert_eq!(error, "unknownError");
                 assert_eq!(message, "something went wrong");
             }

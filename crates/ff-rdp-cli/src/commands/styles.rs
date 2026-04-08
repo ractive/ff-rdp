@@ -189,6 +189,7 @@ mod tests {
     fn map_style_error_no_such_actor() {
         let err = ff_rdp_core::ProtocolError::ActorError {
             actor: "conn0/pageStyleActor1".to_string(),
+            kind: ff_rdp_core::ActorErrorKind::UnknownActor,
             error: "noSuchActor".to_string(),
             message: "actor not found".to_string(),
         };
@@ -203,6 +204,7 @@ mod tests {
     fn map_style_error_unknown_actor() {
         let err = ff_rdp_core::ProtocolError::ActorError {
             actor: "conn0/pageStyleActor1".to_string(),
+            kind: ff_rdp_core::ActorErrorKind::UnknownActor,
             error: "unknownActor".to_string(),
             message: String::new(),
         };

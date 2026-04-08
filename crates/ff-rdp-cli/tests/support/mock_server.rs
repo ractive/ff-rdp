@@ -42,6 +42,10 @@ pub struct MockRdpServer {
     greeting: Value,
     /// Registered handlers, matched in insertion order.  The first match wins.
     handlers: Vec<(String, HandlerKind)>,
+    /// When true, close the connection immediately after sending all followup
+    /// messages for a handler that has followups.  Used to test streaming
+    /// commands that loop until the server closes the connection.
+    close_after_followups: bool,
 }
 
 impl MockRdpServer {
@@ -56,7 +60,20 @@ impl MockRdpServer {
                 "traits": {}
             }),
             handlers: Vec::new(),
+            close_after_followups: false,
         }
+    }
+
+    /// When set, the server closes the connection immediately after sending all
+    /// followup messages for any handler that has followups.
+    ///
+    /// This is useful for testing streaming/follow commands that loop until
+    /// the connection is closed — otherwise `serve_one` would block forever
+    /// waiting for the client to send the next request.
+    #[allow(dead_code)]
+    pub fn close_after_followups(mut self) -> Self {
+        self.close_after_followups = true;
+        self
     }
 
     /// Return the local port the server is listening on.
@@ -197,6 +214,7 @@ impl MockRdpServer {
             }
 
             // Send follow-up messages if registered (e.g., evaluationResult event).
+            let has_followups = !followups.is_empty();
             for followup_msg in followups {
                 let followup_json = serde_json::to_string(&followup_msg).expect("followup encode");
                 if writer
@@ -205,6 +223,13 @@ impl MockRdpServer {
                 {
                     break;
                 }
+            }
+
+            // If requested, close the connection after sending followups so
+            // that streaming clients (e.g. `console --follow`) receive EOF and
+            // exit cleanly instead of blocking forever on the next recv.
+            if self.close_after_followups && has_followups {
+                break;
             }
         }
     }

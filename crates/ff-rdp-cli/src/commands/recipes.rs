@@ -39,9 +39,17 @@ NETWORK
   Total transfer by domain:
     ff-rdp perf --all --group-by domain --jq '.results'
 
+  Stream network events live:
+    ff-rdp network --follow
+    ff-rdp network --follow --filter ".js"
+
 CONSOLE
   Error messages only:
     ff-rdp console --level error --jq '.results[].message'
+
+  Tail console output live:
+    ff-rdp console --follow
+    ff-rdp console --follow --level error
 
 PAGE UNDERSTANDING
   Snapshot page structure for LLM:

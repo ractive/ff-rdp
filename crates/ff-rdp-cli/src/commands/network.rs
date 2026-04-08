@@ -1,5 +1,11 @@
-use ff_rdp_core::{TabActor, WatcherActor};
-use serde_json::json;
+use std::collections::HashMap;
+use std::io::Write;
+
+use ff_rdp_core::{
+    NetworkResource, ProtocolError, RdpTransport, TabActor, WatcherActor,
+    parse_network_resource_updates, parse_network_resources,
+};
+use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
@@ -7,7 +13,7 @@ use crate::output;
 use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_and_get_target;
+use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::network_events::{
     build_network_entries, drain_network_events, drain_network_from_daemon, merge_updates,
     performance_api_fallback,
@@ -190,6 +196,191 @@ pub fn build_network_summary(entries: &[serde_json::Value]) -> serde_json::Value
         "by_cause_type": by_cause_type,
         "slowest": slowest,
     })
+}
+
+/// Stream network events in real time.
+///
+/// Subscribes to `network-event` resources via the WatcherActor (direct mode)
+/// or daemon stream protocol (daemon mode), then loops reading events and
+/// printing each entry as a JSON line (NDJSON) to stdout.
+///
+/// Both request arrivals (`resources-available-array`) and response completions
+/// (`resources-updated-array`) are emitted.  Each request appears first with
+/// `event: "request"`, then again with `event: "response"` once the response
+/// arrives.
+///
+/// Exits cleanly when the connection is closed (e.g. Firefox exits).
+pub fn run_follow(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), AppError> {
+    let mut ctx = connect_and_get_target(cli)?;
+    let jq_filter = cli.jq.clone();
+
+    if ctx.via_daemon {
+        run_follow_daemon(&mut ctx, filter, method, jq_filter.as_deref())
+    } else {
+        run_follow_direct(&mut ctx, filter, method, jq_filter.as_deref())
+    }
+}
+
+fn run_follow_direct(
+    ctx: &mut ConnectedTab,
+    filter: Option<&str>,
+    method: Option<&str>,
+    jq_filter: Option<&str>,
+) -> Result<(), AppError> {
+    let tab_actor = ctx.target_tab_actor().clone();
+    let watcher_actor =
+        TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+
+    WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
+        .map_err(AppError::from)?;
+
+    let result = network_follow_loop(ctx.transport_mut(), filter, method, jq_filter);
+
+    // Best-effort cleanup — ignore errors since we may be exiting anyway.
+    let _ =
+        WatcherActor::unwatch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"]);
+
+    result
+}
+
+fn run_follow_daemon(
+    ctx: &mut ConnectedTab,
+    filter: Option<&str>,
+    method: Option<&str>,
+    jq_filter: Option<&str>,
+) -> Result<(), AppError> {
+    use crate::daemon::client::{start_daemon_stream, stop_daemon_stream};
+
+    start_daemon_stream(ctx.transport_mut(), "network-event").map_err(AppError::from)?;
+
+    let result = network_follow_loop(ctx.transport_mut(), filter, method, jq_filter);
+
+    // Best-effort cleanup — ignore errors since we may be exiting anyway.
+    let _ = stop_daemon_stream(ctx.transport_mut(), "network-event");
+
+    result
+}
+
+/// Emit a single NDJSON line for `entry`, applying `jq_filter` if set.
+fn emit_ndjson(entry: &Value, jq_filter: Option<&str>) -> Result<(), AppError> {
+    if let Some(filter) = jq_filter {
+        let values = output::apply_jq_filter(entry, filter).map_err(AppError::from)?;
+        for v in values {
+            println!(
+                "{}",
+                serde_json::to_string(&v).map_err(|e| AppError::Internal(e.into()))?
+            );
+        }
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string(entry).map_err(|e| AppError::Internal(e.into()))?
+        );
+    }
+    Ok(())
+}
+
+/// Inner loop for `--follow` mode.
+///
+/// Maintains a map of in-flight requests keyed by `resource_id`.  When a
+/// `resources-available-array` message arrives, each resource is emitted with
+/// `event: "request"` (after filter/method checks) and stored in `pending`.
+/// When a `resources-updated-array` message arrives, matching entries from
+/// `pending` are emitted with `event: "response"`.
+fn network_follow_loop(
+    transport: &mut RdpTransport,
+    filter: Option<&str>,
+    method: Option<&str>,
+    jq_filter: Option<&str>,
+) -> Result<(), AppError> {
+    // Track in-flight requests so we can correlate updates with their requests.
+    // Only resources that pass the filters are stored here.
+    let mut pending: HashMap<u64, NetworkResource> = HashMap::new();
+
+    loop {
+        match transport.recv() {
+            Ok(msg) => {
+                let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
+                match msg_type {
+                    "resources-available-array" => {
+                        let resources = parse_network_resources(&msg);
+                        for res in resources {
+                            // Apply filters before emitting or tracking.
+                            if let Some(f) = filter
+                                && !res.url.contains(f)
+                            {
+                                continue;
+                            }
+                            if let Some(m) = method
+                                && !res.method.eq_ignore_ascii_case(m)
+                            {
+                                continue;
+                            }
+                            let entry = json!({
+                                "event": "request",
+                                "method": res.method,
+                                "url": res.url,
+                                "is_xhr": res.is_xhr,
+                                "cause_type": res.cause_type,
+                                "resource_id": res.resource_id,
+                            });
+                            emit_ndjson(&entry, jq_filter)?;
+                            let _ = std::io::stdout().flush();
+                            pending.insert(res.resource_id, res);
+                        }
+                    }
+                    "resources-updated-array" => {
+                        let updates = parse_network_resource_updates(&msg);
+                        for update in updates {
+                            // Only emit updates for requests that passed the filters.
+                            let Some(res) = pending.get(&update.resource_id) else {
+                                continue;
+                            };
+                            let mut entry = json!({
+                                "event": "response",
+                                "method": res.method,
+                                "url": res.url,
+                                "is_xhr": res.is_xhr,
+                                "cause_type": res.cause_type,
+                                "resource_id": update.resource_id,
+                            });
+                            if let Some(ref status) = update.status
+                                && let Ok(code) = status.parse::<u16>()
+                            {
+                                entry["status"] = json!(code);
+                            }
+                            if let Some(ref mime) = update.mime_type {
+                                entry["content_type"] = json!(mime);
+                            }
+                            if let Some(total) = update.total_time {
+                                entry["duration_ms"] = json!(total);
+                            }
+                            if let Some(size) = update.content_size {
+                                entry["size_bytes"] = json!(size);
+                            }
+                            if let Some(transferred) = update.transferred_size {
+                                entry["transfer_size"] = json!(transferred);
+                            }
+                            emit_ndjson(&entry, jq_filter)?;
+                            let _ = std::io::stdout().flush();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Err(ProtocolError::Timeout) => {
+                // Normal poll timeout — keep waiting for more events.
+            }
+            Err(ProtocolError::RecvFailed(ref e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof
+                    || e.kind() == std::io::ErrorKind::ConnectionReset =>
+            {
+                // Connection closed cleanly (Firefox exited, daemon stopped, etc.).
+                return Ok(());
+            }
+            Err(e) => return Err(AppError::from(e)),
+        }
+    }
 }
 
 #[cfg(test)]

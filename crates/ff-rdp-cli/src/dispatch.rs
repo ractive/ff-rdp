@@ -65,11 +65,27 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 }
             }
         },
-        Command::Console { level, pattern } => {
-            commands::console::run(cli, level.as_deref(), pattern.as_deref())
+        Command::Console {
+            level,
+            pattern,
+            follow,
+        } => {
+            if *follow {
+                commands::console::run_follow(cli, level.as_deref(), pattern.as_deref())
+            } else {
+                commands::console::run(cli, level.as_deref(), pattern.as_deref())
+            }
         }
-        Command::Network { filter, method } => {
-            commands::network::run(cli, filter.as_deref(), method.as_deref())
+        Command::Network {
+            filter,
+            method,
+            follow,
+        } => {
+            if *follow {
+                commands::network::run_follow(cli, filter.as_deref(), method.as_deref())
+            } else {
+                commands::network::run(cli, filter.as_deref(), method.as_deref())
+            }
         }
         Command::Perf {
             perf_command,
