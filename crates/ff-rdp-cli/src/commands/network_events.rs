@@ -67,6 +67,12 @@ pub(crate) fn drain_network_events_timed(
     let mut all_updates = Vec::new();
 
     loop {
+        // Check wall-clock deadline before each read so we stop even when
+        // messages arrive faster than the poll interval (continuous traffic).
+        if start.elapsed() >= total_timeout {
+            break;
+        }
+
         match transport.recv() {
             Ok(msg) => {
                 let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
@@ -81,11 +87,8 @@ pub(crate) fn drain_network_events_timed(
                 }
             }
             Err(ProtocolError::Timeout) => {
-                // Per-read timeout — check if total elapsed time has exceeded the limit.
-                if start.elapsed() >= total_timeout {
-                    break;
-                }
-                // Otherwise keep polling.
+                // Per-read timeout with no message — the top-of-loop check
+                // will enforce the total deadline on the next iteration.
             }
             Err(e) => return Err(e),
         }
