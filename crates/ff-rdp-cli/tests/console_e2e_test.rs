@@ -481,3 +481,134 @@ fn console_follow_level_filter_applies_to_stream() {
     assert_eq!(msg["level"], "warn");
     assert_eq!(msg["message"], "important warning");
 }
+
+// ---------------------------------------------------------------------------
+// Direct consoleAPICall push (Firefox 149+ eval-triggered messages)
+// ---------------------------------------------------------------------------
+
+/// Build a server that delivers a direct `consoleAPICall` push notification
+/// (the path taken by Firefox 149+ when `console.log()` is called via eval).
+///
+/// The `consoleAPICall` event arrives directly from the console actor rather
+/// than via the Watcher's `resources-available-array` stream.
+fn follow_server_with_direct_notification(notification: serde_json::Value) -> MockRdpServer {
+    MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on(
+            "startListeners",
+            load_fixture("start_listeners_response.json"),
+        )
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on_with_followups(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
+            vec![notification],
+        )
+        .on(
+            "unwatchResources",
+            load_fixture("unwatch_resources_response.json"),
+        )
+        .close_after_followups()
+}
+
+#[test]
+fn console_follow_handles_direct_consoleapicall_notification() {
+    // Simulate Firefox 149+ sending a `consoleAPICall` push directly on the
+    // console actor (triggered by console.log() called from evaluateJSAsync).
+    let notification = json!({
+        "type": "consoleAPICall",
+        "from": "server1.conn0.child2/consoleActor3",
+        "message": {
+            "arguments": ["eval log output"],
+            "level": "log",
+            "filename": "debugger eval code",
+            "lineNumber": 1,
+            "columnNumber": 9,
+            "timeStamp": 1_775_439_071_165.699_f64
+        }
+    });
+
+    let server = follow_server_with_direct_notification(notification);
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["console".to_owned(), "--follow".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().expect("server thread panicked");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "expected 1 NDJSON line from direct push, got: {stdout}"
+    );
+
+    let msg: serde_json::Value = serde_json::from_str(lines[0]).expect("output must be valid JSON");
+    assert_eq!(msg["level"], "log");
+    assert_eq!(msg["message"], "eval log output");
+    assert_eq!(msg["source"], "debugger eval code");
+}
+
+#[test]
+fn console_follow_handles_direct_pageerror_notification() {
+    // Simulate Firefox 149+ sending a `pageError` push directly on the
+    // console actor.
+    let notification = json!({
+        "type": "pageError",
+        "from": "server1.conn0.child2/consoleActor3",
+        "pageError": {
+            "errorMessage": "ReferenceError: x is not defined",
+            "sourceName": "https://example.com/app.js",
+            "lineNumber": 42,
+            "columnNumber": 5,
+            "timeStamp": 1_775_439_071_200.0_f64
+        }
+    });
+
+    let server = follow_server_with_direct_notification(notification);
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["console".to_owned(), "--follow".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().expect("server thread panicked");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "expected 1 NDJSON line from direct pageError push, got: {stdout}"
+    );
+
+    let msg: serde_json::Value = serde_json::from_str(lines[0]).expect("output must be valid JSON");
+    assert_eq!(msg["level"], "error");
+    assert_eq!(msg["message"], "ReferenceError: x is not defined");
+    assert_eq!(msg["source"], "https://example.com/app.js");
+}

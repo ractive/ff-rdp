@@ -536,6 +536,10 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
         results["lcp_note"] = json!("LCP not available in headless Firefox");
     }
 
+    // Apply --fields filtering to the single-object result before wrapping it.
+    let controls = OutputControls::from_cli(cli, SortDir::Asc);
+    let results = controls.apply_fields_object(results);
+
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&results, 1, &meta);
 

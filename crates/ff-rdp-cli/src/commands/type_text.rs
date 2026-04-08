@@ -6,7 +6,7 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
-use super::js_helpers::{escape_selector, eval_or_bail};
+use super::js_helpers::{JSON_SENTINEL, escape_selector, eval_or_bail, resolve_result};
 
 pub fn run(cli: &Cli, selector: &str, text: &str, clear: bool) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
@@ -27,13 +27,13 @@ pub fn run(cli: &Cli, selector: &str, text: &str, clear: bool) -> Result<(), App
   el.value = {escaped_text_json};
   el.dispatchEvent(new Event('input', {{bubbles: true}}));
   el.dispatchEvent(new Event('change', {{bubbles: true}}));
-  return {{typed: true, value: el.value}};
+  return '{JSON_SENTINEL}' + JSON.stringify({{typed: true, tag: el.tagName, value: el.value}});
 }})()"
     );
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "type failed")?;
 
-    let result_json = eval_result.result.to_json();
+    let result_json = resolve_result(&mut ctx, &eval_result.result)?;
     let meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
     let envelope = output::envelope(&result_json, 1, &meta);
 

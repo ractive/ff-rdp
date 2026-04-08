@@ -165,7 +165,7 @@ pub(crate) fn start_daemon_stream(transport: &mut RdpTransport, resource_type: &
     transport
         .send(&msg)
         .context("sending stream request to daemon")?;
-    recv_daemon_ack(transport, "stream")
+    recv_daemon_ack(transport, "stream").map(|_leftovers| ())
 }
 
 /// Tell the daemon to stop streaming events for `resource_type` and revert
@@ -179,16 +179,43 @@ pub(crate) fn stop_daemon_stream(transport: &mut RdpTransport, resource_type: &s
     transport
         .send(&msg)
         .context("sending stop-stream request to daemon")?;
+    recv_daemon_ack(transport, "stop-stream").map(|_leftovers| ())
+}
+
+/// Tell the daemon to stop streaming events for `resource_type` and return
+/// any watcher frames that arrived in-flight between the CLI's read timeout
+/// and the daemon's `stop-stream` acknowledgement.
+///
+/// When `drain_network_events` returns due to its idle timeout, the daemon may
+/// still have watcher events in-flight that it is forwarding to the CLI client.
+/// These frames arrive in the TCP receive buffer between the moment we stop
+/// reading and the moment we send `stop-stream`.  The normal `recv_daemon_ack`
+/// implementation discards them; this variant collects them so the caller can
+/// merge them into the drain result.
+pub(crate) fn stop_daemon_stream_draining(
+    transport: &mut RdpTransport,
+    resource_type: &str,
+) -> Result<Vec<Value>> {
+    let msg = json!({
+        "to": "daemon",
+        "type": "stop-stream",
+        "resourceType": resource_type,
+    });
+    transport
+        .send(&msg)
+        .context("sending stop-stream request to daemon")?;
     recv_daemon_ack(transport, "stop-stream")
 }
 
 /// Read frames until we receive a daemon ack (`{from: "daemon", ...}`).
 ///
-/// The daemon's Firefox-reader thread may forward watcher events between
-/// the moment we send a daemon-local request and the moment the daemon
-/// processes it.  Those forwarded frames are silently discarded here; they
-/// will be picked up by the normal drain/stream path later.
-fn recv_daemon_ack(transport: &mut RdpTransport, context: &str) -> Result<()> {
+/// Returns any non-daemon frames collected while waiting for the ack.  These
+/// are watcher events that the daemon's Firefox-reader thread forwarded between
+/// the moment the CLI sent a daemon-local request and the moment the daemon
+/// processed it.  Callers that need to collect those in-flight events should
+/// use the returned `Vec`; callers that don't care can discard it.
+fn recv_daemon_ack(transport: &mut RdpTransport, context: &str) -> Result<Vec<Value>> {
+    let mut leftovers: Vec<Value> = Vec::new();
     // Limit iterations to avoid spinning forever on a broken connection.
     for _ in 0..64 {
         let response = transport
@@ -198,9 +225,11 @@ fn recv_daemon_ack(transport: &mut RdpTransport, context: &str) -> Result<()> {
             if let Some(err) = response.get("error").and_then(Value::as_str) {
                 anyhow::bail!("daemon {context} error: {err}");
             }
-            return Ok(());
+            return Ok(leftovers);
         }
-        // Not a daemon message — discard and keep reading.
+        // Not a daemon message — collect instead of discarding so callers can
+        // process in-flight watcher events that arrived before the ack.
+        leftovers.push(response);
     }
     anyhow::bail!("did not receive daemon ack for {context} within 64 frames")
 }
