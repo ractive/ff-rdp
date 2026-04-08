@@ -146,15 +146,21 @@ pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppErr
     'bp: for &width in widths {
         // Resize the viewport to the target width.
         let resize_script = resize_js(width);
-        let resize_result =
-            WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &resize_script)
-                .map_err(AppError::from);
+        let resize_result = match WebConsoleActor::evaluate_js_async(
+            ctx.transport_mut(),
+            &console_actor,
+            &resize_script,
+        )
+        .map_err(AppError::from)
+        {
+            Ok(r) => r,
+            Err(e) => {
+                loop_error = Some(e);
+                break 'bp;
+            }
+        };
 
-        if let Err(e) = resize_result {
-            loop_error = Some(e);
-            break 'bp;
-        }
-        if let Some(ref exc) = resize_result.as_ref().unwrap().exception {
+        if let Some(ref exc) = resize_result.exception {
             let msg = exc
                 .message
                 .as_deref()

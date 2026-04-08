@@ -1,4 +1,4 @@
-use ff_rdp_core::{LongStringActor, WebConsoleActor};
+use ff_rdp_core::LongStringActor;
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -7,26 +7,18 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
+use super::js_helpers::eval_or_bail;
 
 pub fn run(cli: &Cli) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
-    let eval_result = WebConsoleActor::evaluate_js_async(
-        ctx.transport_mut(),
+    let eval_result = eval_or_bail(
+        &mut ctx,
         &console_actor,
         "document.body.innerText",
-    )
-    .map_err(AppError::from)?;
-
-    if let Some(ref exc) = eval_result.exception {
-        let msg = exc
-            .message
-            .as_deref()
-            .unwrap_or("failed to extract page text");
-        eprintln!("error: {msg}");
-        return Err(AppError::Exit(1));
-    }
+        "failed to extract page text",
+    )?;
 
     let text = resolve_string_result(&mut ctx, &eval_result.result)?;
 

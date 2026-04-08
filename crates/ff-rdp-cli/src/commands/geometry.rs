@@ -1,4 +1,3 @@
-use ff_rdp_core::WebConsoleActor;
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -8,7 +7,7 @@ use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
-use super::js_helpers::resolve_result;
+use super::js_helpers::{eval_or_bail, resolve_result};
 
 /// JavaScript IIFE template for collecting element geometry data.
 ///
@@ -84,17 +83,7 @@ pub fn run(cli: &Cli, selectors: &[String]) -> Result<(), AppError> {
 
     let js = build_js(selectors);
 
-    let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js)
-        .map_err(AppError::from)?;
-
-    if let Some(ref exc) = eval_result.exception {
-        let msg = exc
-            .message
-            .as_deref()
-            .unwrap_or("geometry evaluation failed");
-        eprintln!("error: {msg}");
-        return Err(AppError::Exit(1));
-    }
+    let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "geometry evaluation failed")?;
 
     let geometry = resolve_result(&mut ctx, &eval_result.result)?;
 

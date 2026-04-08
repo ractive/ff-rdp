@@ -1,6 +1,4 @@
-use std::time::{Duration, Instant};
-
-use ff_rdp_core::{Grip, TabActor, WatcherActor, WebConsoleActor, WindowGlobalTarget};
+use ff_rdp_core::{TabActor, WatcherActor, WindowGlobalTarget};
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -10,11 +8,9 @@ use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
-use super::js_helpers::escape_selector;
+use super::js_helpers::{escape_selector, poll_js_condition};
 use super::network_events::{build_network_entries, drain_network_events, merge_updates};
 use super::url_validation::validate_url;
-
-const POLL_INTERVAL_MS: u64 = 100;
 
 /// Options controlling an optional wait condition after navigation.
 ///
@@ -285,49 +281,26 @@ fn wait_after_navigate(
     };
 
     let console_actor = ctx.target.console_actor.clone();
-    let timeout = Duration::from_millis(opts.wait_timeout);
-    let poll = Duration::from_millis(POLL_INTERVAL_MS);
-    let started = Instant::now();
+    let condition = describe_wait_condition(opts);
+    let timeout_msg = format!(
+        "navigate wait timed out after {}ms — condition not met: {condition}",
+        opts.wait_timeout
+    );
 
-    loop {
-        let eval_result =
-            WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js)
-                .map_err(AppError::from)?;
+    let elapsed_ms = poll_js_condition(
+        ctx,
+        &console_actor,
+        &js,
+        opts.wait_timeout,
+        "JS exception during wait condition",
+        &timeout_msg,
+    )?;
 
-        // A JS exception (e.g. SyntaxError from an invalid CSS selector) will
-        // never resolve to truthy — return an error immediately rather than
-        // burning the entire timeout.
-        if let Some(exc) = &eval_result.exception {
-            let msg = exc
-                .message
-                .as_deref()
-                .unwrap_or("JS exception during wait condition");
-            eprintln!("error: navigate wait aborted due to JS exception: {msg}");
-            return Err(AppError::Exit(1));
-        }
-
-        if is_truthy(&eval_result.result) {
-            // Saturate at u64::MAX rather than panic.
-            let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let condition = describe_wait_condition(opts);
-            return Ok(Some(json!({
-                "waited": true,
-                "elapsed_ms": elapsed_ms,
-                "condition": condition,
-            })));
-        }
-
-        if started.elapsed() >= timeout {
-            let condition = describe_wait_condition(opts);
-            eprintln!(
-                "error: navigate wait timed out after {}ms — condition not met: {condition}",
-                opts.wait_timeout
-            );
-            return Err(AppError::Exit(1));
-        }
-
-        std::thread::sleep(poll);
-    }
+    Ok(Some(json!({
+        "waited": true,
+        "elapsed_ms": elapsed_ms,
+        "condition": condition,
+    })))
 }
 
 fn describe_wait_condition(opts: &WaitAfterNav<'_>) -> String {
@@ -337,28 +310,6 @@ fn describe_wait_condition(opts: &WaitAfterNav<'_>) -> String {
         format!("text={text:?}")
     } else {
         "(none)".into()
-    }
-}
-
-fn is_truthy(grip: &Grip) -> bool {
-    match grip {
-        // Null, Undefined, NaN, and -0 are all falsy in JavaScript.
-        Grip::Null | Grip::Undefined | Grip::NaN | Grip::NegZero => false,
-        Grip::Value(v) => {
-            if let Some(b) = v.as_bool() {
-                return b;
-            }
-            if let Some(n) = v.as_f64() {
-                return n != 0.0;
-            }
-            if let Some(s) = v.as_str() {
-                return !s.is_empty();
-            }
-            // Objects and arrays are truthy.
-            !v.is_null()
-        }
-        // Infinity, -Infinity, LongString, Object are all truthy.
-        Grip::Inf | Grip::NegInf | Grip::LongString { .. } | Grip::Object { .. } => true,
     }
 }
 
@@ -394,26 +345,6 @@ mod tests {
             wait_timeout: 5000,
         };
         assert!(opts.has_condition());
-    }
-
-    #[test]
-    fn is_truthy_true_values() {
-        assert!(is_truthy(&Grip::Value(json!(true))));
-        assert!(is_truthy(&Grip::Value(json!(1))));
-        assert!(is_truthy(&Grip::Value(json!("hello"))));
-        assert!(is_truthy(&Grip::Inf));
-        assert!(is_truthy(&Grip::NegInf));
-    }
-
-    #[test]
-    fn is_truthy_false_values() {
-        assert!(!is_truthy(&Grip::Null));
-        assert!(!is_truthy(&Grip::Undefined));
-        assert!(!is_truthy(&Grip::Value(json!(false))));
-        assert!(!is_truthy(&Grip::Value(json!(0))));
-        assert!(!is_truthy(&Grip::Value(json!(""))));
-        assert!(!is_truthy(&Grip::NaN));
-        assert!(!is_truthy(&Grip::NegZero));
     }
 
     #[test]

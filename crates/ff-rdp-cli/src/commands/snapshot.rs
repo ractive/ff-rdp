@@ -1,4 +1,3 @@
-use ff_rdp_core::WebConsoleActor;
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -7,7 +6,7 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
-use super::js_helpers::resolve_result;
+use super::js_helpers::{eval_or_bail, resolve_result};
 
 /// JavaScript IIFE that walks the DOM and returns a compact tree for LLM consumption.
 ///
@@ -89,17 +88,7 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
         .replace("__DEPTH__", &depth.to_string())
         .replace("__MAX_CHARS__", &max_chars.to_string());
 
-    let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js)
-        .map_err(AppError::from)?;
-
-    if let Some(ref exc) = eval_result.exception {
-        let msg = exc
-            .message
-            .as_deref()
-            .unwrap_or("snapshot evaluation failed");
-        eprintln!("error: {msg}");
-        return Err(AppError::Exit(1));
-    }
+    let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "snapshot evaluation failed")?;
 
     let results = resolve_result(&mut ctx, &eval_result.result)?;
     let meta = json!({"host": cli.host, "port": cli.port, "depth": depth, "max_chars": max_chars});
