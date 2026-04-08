@@ -1,0 +1,18 @@
+{
+  "from": "server1.conn0.child0/consoleActor3",
+  "message": {
+    "arguments": [
+      "follow-cross-test"
+    ],
+    "category": "webdev",
+    "chromeContext": false,
+    "columnNumber": 9,
+    "filename": "debugger eval code",
+    "innerWindowID": 79456894977,
+    "level": "log",
+    "lineNumber": 1,
+    "sourceId": null,
+    "timeStamp": 1775674262644.502
+  },
+  "type": "consoleAPICall"
+}
