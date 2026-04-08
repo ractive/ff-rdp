@@ -82,9 +82,23 @@ impl ScreenshotContentActor {
             .and_then(Value::as_f64)
             .unwrap_or(1.0);
 
+        let rect = value.get("rect").and_then(|r| {
+            if r.is_null() {
+                None
+            } else {
+                Some(CaptureRect {
+                    left: r.get("left")?.as_f64()?,
+                    top: r.get("top")?.as_f64()?,
+                    width: r.get("width")?.as_f64()?,
+                    height: r.get("height")?.as_f64()?,
+                })
+            }
+        });
+
         Ok(PrepareCapture {
             window_dpr,
             window_zoom,
+            rect,
         })
     }
 }
@@ -129,6 +143,22 @@ pub struct PrepareCapture {
     pub window_dpr: f64,
     /// Current zoom level of the window.
     pub window_zoom: f64,
+    /// Capture region returned by `prepareCapture`.  `None` for viewport-only
+    /// captures; `Some(...)` for full-page or element captures.
+    pub rect: Option<CaptureRect>,
+}
+
+/// Capture region as returned by `screenshotContentActor.prepareCapture`.
+#[derive(Debug, Clone)]
+pub struct CaptureRect {
+    /// Left edge of the capture region in CSS pixels.
+    pub left: f64,
+    /// Top edge of the capture region in CSS pixels.
+    pub top: f64,
+    /// Width of the capture region in CSS pixels.
+    pub width: f64,
+    /// Height of the capture region in CSS pixels.
+    pub height: f64,
 }
 
 #[cfg(test)]
@@ -167,5 +197,106 @@ mod tests {
     fn capture_methods_is_non_empty() {
         assert!(!CAPTURE_METHODS.is_empty());
         assert_eq!(CAPTURE_METHODS[0], "captureScreenshot");
+    }
+
+    // --- prepare_capture parsing ---
+
+    /// Helper: build a PrepareCapture by parsing a fake `prepareCapture` response.
+    fn parse_prepare_capture(response: serde_json::Value) -> PrepareCapture {
+        use std::io::{BufReader, Write as _};
+        use std::net::{TcpListener, TcpStream};
+
+        use crate::transport::{RdpTransport, encode_frame, recv_from};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+
+        // Send the actor request from a thread so the server side can reply.
+        let t = std::thread::spawn(move || {
+            let mut reader = BufReader::new(&server);
+            let _req = recv_from(&mut reader).unwrap();
+            let frame = encode_frame(&serde_json::to_string(&response).unwrap());
+            (&server).write_all(frame.as_bytes()).unwrap();
+        });
+
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        let mut transport = RdpTransport::from_parts(reader, writer);
+
+        let result = ScreenshotContentActor::prepare_capture(
+            &mut transport,
+            "server1.conn0.screenshotContentActor1",
+            false,
+        )
+        .unwrap();
+        t.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn prepare_capture_parses_rect_when_present() {
+        let response = serde_json::json!({
+            "from": "server1.conn0.screenshotContentActor1",
+            "value": {
+                "windowDpr": 2.0,
+                "windowZoom": 1.5,
+                "rect": {
+                    "left": 10.0,
+                    "top": 20.0,
+                    "width": 800.0,
+                    "height": 600.0
+                },
+                "messages": []
+            }
+        });
+
+        let prep = parse_prepare_capture(response);
+        assert!((prep.window_dpr - 2.0).abs() < f64::EPSILON);
+        assert!((prep.window_zoom - 1.5).abs() < f64::EPSILON);
+
+        let rect = prep.rect.expect("rect should be Some when non-null");
+        assert!((rect.left - 10.0).abs() < f64::EPSILON);
+        assert!((rect.top - 20.0).abs() < f64::EPSILON);
+        assert!((rect.width - 800.0).abs() < f64::EPSILON);
+        assert!((rect.height - 600.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn prepare_capture_returns_none_rect_when_null() {
+        let response = serde_json::json!({
+            "from": "server1.conn0.screenshotContentActor1",
+            "value": {
+                "windowDpr": 1.0,
+                "windowZoom": 1.0,
+                "rect": null,
+                "messages": []
+            }
+        });
+
+        let prep = parse_prepare_capture(response);
+        assert!(
+            prep.rect.is_none(),
+            "rect should be None when response contains null"
+        );
+    }
+
+    #[test]
+    fn prepare_capture_returns_none_rect_when_field_absent() {
+        let response = serde_json::json!({
+            "from": "server1.conn0.screenshotContentActor1",
+            "value": {
+                "windowDpr": 1.0,
+                "windowZoom": 1.0,
+                "messages": []
+            }
+        });
+
+        let prep = parse_prepare_capture(response);
+        assert!(
+            prep.rect.is_none(),
+            "rect should be None when field is absent"
+        );
     }
 }
