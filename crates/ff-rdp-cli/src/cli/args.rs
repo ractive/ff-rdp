@@ -86,8 +86,8 @@ pub enum Command {
         /// Also capture network requests made during navigation
         #[arg(long)]
         with_network: bool,
-        /// Idle timeout for network event collection in milliseconds (--with-network only).
-        /// Collection stops when no new network events arrive within this window.
+        /// Total time limit for network event collection in milliseconds (--with-network only).
+        /// Collection runs for this duration then returns all captured events.
         #[arg(long, default_value_t = 5000)]
         network_timeout: u64,
         /// After navigating, wait for this text to appear on the page

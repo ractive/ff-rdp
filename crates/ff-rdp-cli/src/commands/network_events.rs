@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use ff_rdp_core::transport::RdpTransport;
 use ff_rdp_core::{
@@ -38,6 +39,57 @@ pub(crate) fn drain_network_events(
                 }
             }
             Err(ProtocolError::Timeout) => break,
+            Err(e) => return Err(e),
+        }
+    }
+
+    Ok((all_resources, all_updates))
+}
+
+/// Drain network events with a total time limit instead of an idle timeout.
+///
+/// Unlike [`drain_network_events`] which stops after a single idle timeout,
+/// this function collects events for up to `total_timeout` of wall-clock time,
+/// using a short per-read poll interval.  This is better for navigation where
+/// events arrive in bursts with gaps between them (e.g. the initial navigation
+/// request takes 1-2 seconds before any network events start flowing).
+pub(crate) fn drain_network_events_timed(
+    transport: &mut RdpTransport,
+    total_timeout: Duration,
+) -> Result<(Vec<NetworkResource>, Vec<NetworkResourceUpdate>), ProtocolError> {
+    let start = Instant::now();
+    let poll_interval = Duration::from_millis(500);
+
+    // Set a short read timeout for responsive polling.
+    transport.set_read_timeout(Some(poll_interval))?;
+
+    let mut all_resources = Vec::new();
+    let mut all_updates = Vec::new();
+
+    loop {
+        // Check wall-clock deadline before each read so we stop even when
+        // messages arrive faster than the poll interval (continuous traffic).
+        if start.elapsed() >= total_timeout {
+            break;
+        }
+
+        match transport.recv() {
+            Ok(msg) => {
+                let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
+                match msg_type {
+                    "resources-available-array" => {
+                        all_resources.extend(parse_network_resources(&msg));
+                    }
+                    "resources-updated-array" => {
+                        all_updates.extend(parse_network_resource_updates(&msg));
+                    }
+                    _ => {}
+                }
+            }
+            Err(ProtocolError::Timeout) => {
+                // Per-read timeout with no message — the top-of-loop check
+                // will enforce the total deadline on the next iteration.
+            }
             Err(e) => return Err(e),
         }
     }
