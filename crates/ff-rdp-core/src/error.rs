@@ -53,7 +53,7 @@ pub enum ProtocolError {
     #[error("operation timed out")]
     Timeout,
 
-    #[error("actor error from {actor}: {kind} — {message}")]
+    #[error("actor error from {actor}: {error} ({kind}) — {message}")]
     ActorError {
         actor: String,
         kind: ActorErrorKind,

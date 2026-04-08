@@ -212,12 +212,10 @@ pub fn build_network_summary(entries: &[serde_json::Value]) -> serde_json::Value
 /// Exits cleanly when the connection is closed (e.g. Firefox exits).
 pub fn run_follow(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let jq_filter = cli.jq.clone();
-
     if ctx.via_daemon {
-        run_follow_daemon(&mut ctx, filter, method, jq_filter.as_deref())
+        run_follow_daemon(&mut ctx, filter, method, cli.jq.as_deref())
     } else {
-        run_follow_direct(&mut ctx, filter, method, jq_filter.as_deref())
+        run_follow_direct(&mut ctx, filter, method, cli.jq.as_deref())
     }
 }
 
@@ -333,7 +331,8 @@ fn network_follow_loop(
                         let updates = parse_network_resource_updates(&msg);
                         for update in updates {
                             // Only emit updates for requests that passed the filters.
-                            let Some(res) = pending.get(&update.resource_id) else {
+                            // Remove from pending so memory doesn't grow without bound.
+                            let Some(res) = pending.remove(&update.resource_id) else {
                                 continue;
                             };
                             let mut entry = json!({
@@ -344,10 +343,12 @@ fn network_follow_loop(
                                 "cause_type": res.cause_type,
                                 "resource_id": update.resource_id,
                             });
-                            if let Some(ref status) = update.status
-                                && let Ok(code) = status.parse::<u16>()
-                            {
-                                entry["status"] = json!(code);
+                            if let Some(ref status) = update.status {
+                                if let Ok(code) = status.parse::<u16>() {
+                                    entry["status"] = json!(code);
+                                } else {
+                                    entry["status"] = json!(status);
+                                }
                             }
                             if let Some(ref mime) = update.mime_type {
                                 entry["content_type"] = json!(mime);
@@ -373,7 +374,8 @@ fn network_follow_loop(
             }
             Err(ProtocolError::RecvFailed(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof
-                    || e.kind() == std::io::ErrorKind::ConnectionReset =>
+                    || e.kind() == std::io::ErrorKind::ConnectionReset
+                    || e.kind() == std::io::ErrorKind::BrokenPipe =>
             {
                 // Connection closed cleanly (Firefox exited, daemon stopped, etc.).
                 return Ok(());

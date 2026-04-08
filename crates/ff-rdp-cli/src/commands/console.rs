@@ -137,12 +137,10 @@ pub fn run_follow(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Resu
         })
         .transpose()?;
 
-    let jq_filter = cli.jq.clone();
-
     if ctx.via_daemon {
-        run_follow_daemon(&mut ctx, level, regex.as_ref(), jq_filter.as_deref())
+        run_follow_daemon(&mut ctx, level, regex.as_ref(), cli.jq.as_deref())
     } else {
-        run_follow_direct(&mut ctx, level, regex.as_ref(), jq_filter.as_deref())
+        run_follow_direct(&mut ctx, level, regex.as_ref(), cli.jq.as_deref())
     }
 }
 
@@ -199,7 +197,7 @@ fn run_follow_daemon(
 /// messages as compact JSON lines (NDJSON).
 ///
 /// Each message is a single compact JSON object on its own line so that
-/// consumers can process the stream with tools like `jq --raw-input`.
+/// consumers can process the stream with tools like `jq` or `jq -c`.
 /// If `jq_filter` is set, it is applied to each message before printing.
 fn follow_loop(
     transport: &mut RdpTransport,
@@ -261,7 +259,8 @@ fn follow_loop(
             }
             Err(ProtocolError::RecvFailed(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof
-                    || e.kind() == std::io::ErrorKind::ConnectionReset =>
+                    || e.kind() == std::io::ErrorKind::ConnectionReset
+                    || e.kind() == std::io::ErrorKind::BrokenPipe =>
             {
                 // Connection closed cleanly (Firefox exited, daemon stopped, etc.).
                 return Ok(());
