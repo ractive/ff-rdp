@@ -1,4 +1,3 @@
-use ff_rdp_core::WebConsoleActor;
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -7,6 +6,7 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
+use super::eval_helpers::eval_or_bail;
 use super::js_helpers::escape_selector;
 
 pub fn run(cli: &Cli, selector: &str, text: &str, clear: bool) -> Result<(), AppError> {
@@ -32,14 +32,7 @@ pub fn run(cli: &Cli, selector: &str, text: &str, clear: bool) -> Result<(), App
 }})()"
     );
 
-    let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js)
-        .map_err(AppError::from)?;
-
-    if let Some(ref exc) = eval_result.exception {
-        let msg = exc.message.as_deref().unwrap_or("type failed");
-        eprintln!("error: {msg}");
-        return Err(AppError::Exit(1));
-    }
+    let eval_result = eval_or_bail(ctx.transport_mut(), &console_actor, &js)?;
 
     let result_json = eval_result.result.to_json();
     let meta = json!({"host": cli.host, "port": cli.port, "selector": selector});

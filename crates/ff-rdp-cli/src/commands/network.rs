@@ -15,8 +15,8 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::network_events::{
-    build_network_entries, drain_network_events, drain_network_from_daemon, merge_updates,
-    performance_api_fallback,
+    apply_update_fields, build_network_entries, drain_network_events, drain_network_from_daemon,
+    merge_updates, performance_api_fallback,
 };
 
 pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), AppError> {
@@ -343,25 +343,7 @@ fn network_follow_loop(
                                 "cause_type": res.cause_type,
                                 "resource_id": update.resource_id,
                             });
-                            if let Some(ref status) = update.status {
-                                if let Ok(code) = status.parse::<u16>() {
-                                    entry["status"] = json!(code);
-                                } else {
-                                    entry["status"] = json!(status);
-                                }
-                            }
-                            if let Some(ref mime) = update.mime_type {
-                                entry["content_type"] = json!(mime);
-                            }
-                            if let Some(total) = update.total_time {
-                                entry["duration_ms"] = json!(total);
-                            }
-                            if let Some(size) = update.content_size {
-                                entry["size_bytes"] = json!(size);
-                            }
-                            if let Some(transferred) = update.transferred_size {
-                                entry["transfer_size"] = json!(transferred);
-                            }
+                            apply_update_fields(&mut entry, &update);
                             emit_ndjson(&entry, jq_filter)?;
                             let _ = std::io::stdout().flush();
                         }

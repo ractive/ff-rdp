@@ -199,6 +199,37 @@ pub(crate) fn performance_api_fallback(ctx: &mut super::connect_tab::ConnectedTa
         .collect()
 }
 
+/// Apply fields from a [`NetworkResourceUpdate`] onto an existing JSON entry.
+///
+/// The same field mapping is used by both the batch `network` command
+/// ([`build_network_entries`]) and the streaming `--follow` loop in
+/// `network.rs`, so the logic lives here as the single source of truth.
+///
+/// Status is parsed to a `u16` when possible (numeric codes are more
+/// ergonomic for downstream consumers); if parsing fails the raw string
+/// is kept.  All other optional fields are copied verbatim when present.
+pub(crate) fn apply_update_fields(entry: &mut Value, update: &NetworkResourceUpdate) {
+    if let Some(ref status) = update.status {
+        if let Ok(code) = status.parse::<u16>() {
+            entry["status"] = serde_json::json!(code);
+        } else {
+            entry["status"] = serde_json::json!(status);
+        }
+    }
+    if let Some(ref mime) = update.mime_type {
+        entry["content_type"] = serde_json::json!(mime);
+    }
+    if let Some(total) = update.total_time {
+        entry["duration_ms"] = serde_json::json!(total);
+    }
+    if let Some(size) = update.content_size {
+        entry["size_bytes"] = serde_json::json!(size);
+    }
+    if let Some(transferred) = update.transferred_size {
+        entry["transfer_size"] = serde_json::json!(transferred);
+    }
+}
+
 /// Build the JSON array of network entries combining resource + update data.
 ///
 /// Applies the same field mapping used by the `network` command output.
@@ -209,7 +240,6 @@ pub(crate) fn build_network_entries(
     resources
         .iter()
         .map(|res| {
-            let update = update_map.get(&res.resource_id);
             let mut entry = serde_json::json!({
                 "method": res.method,
                 "url": res.url,
@@ -218,24 +248,8 @@ pub(crate) fn build_network_entries(
                 "content_type": null,
                 "source": "watcher",
             });
-            if let Some(u) = update {
-                if let Some(ref status) = u.status
-                    && let Ok(code) = status.parse::<u16>()
-                {
-                    entry["status"] = serde_json::json!(code);
-                }
-                if let Some(ref mime) = u.mime_type {
-                    entry["content_type"] = serde_json::json!(mime);
-                }
-                if let Some(total) = u.total_time {
-                    entry["duration_ms"] = serde_json::json!(total);
-                }
-                if let Some(size) = u.content_size {
-                    entry["size_bytes"] = serde_json::json!(size);
-                }
-                if let Some(transferred) = u.transferred_size {
-                    entry["transfer_size"] = serde_json::json!(transferred);
-                }
+            if let Some(u) = update_map.get(&res.resource_id) {
+                apply_update_fields(&mut entry, u);
             }
             entry
         })

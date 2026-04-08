@@ -1,4 +1,4 @@
-use ff_rdp_core::{Grip, LongStringActor, WebConsoleActor};
+use ff_rdp_core::{Grip, LongStringActor};
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -7,6 +7,7 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
+use super::eval_helpers::eval_or_bail;
 
 /// Read all keys or a single key from localStorage or sessionStorage.
 pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppError> {
@@ -42,15 +43,7 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
              }})()"
         );
 
-        let eval_result =
-            WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js)
-                .map_err(AppError::from)?;
-
-        if let Some(ref exc) = eval_result.exception {
-            let msg = exc.message.as_deref().unwrap_or("storage getItem failed");
-            eprintln!("error: {msg}");
-            return Err(AppError::Exit(1));
-        }
+        let eval_result = eval_or_bail(ctx.transport_mut(), &console_actor, &js)?;
 
         match &eval_result.result {
             Grip::Null => {
@@ -82,15 +75,7 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
              }})()"
         );
 
-        let eval_result =
-            WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js)
-                .map_err(AppError::from)?;
-
-        if let Some(ref exc) = eval_result.exception {
-            let msg = exc.message.as_deref().unwrap_or("storage dump failed");
-            eprintln!("error: {msg}");
-            return Err(AppError::Exit(1));
-        }
+        let eval_result = eval_or_bail(ctx.transport_mut(), &console_actor, &js)?;
 
         let raw = resolve_string_grip(&mut ctx, &eval_result.result)?;
 

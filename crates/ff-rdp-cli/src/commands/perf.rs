@@ -1,5 +1,5 @@
 use anyhow::Context;
-use ff_rdp_core::{Grip, LongStringActor, WebConsoleActor};
+use ff_rdp_core::{Grip, LongStringActor};
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -89,17 +89,12 @@ fn eval_to_json_string(
     label: &str,
 ) -> Result<String, AppError> {
     let console_actor = ctx.target.console_actor.clone();
-    let eval_result =
-        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, script)
-            .map_err(AppError::from)?;
-
-    if let Some(ref exc) = eval_result.exception {
-        let msg = exc
-            .message
-            .as_deref()
-            .unwrap_or("evaluation threw an exception");
-        return Err(AppError::User(format!("{label}: {msg}")));
-    }
+    let eval_result = super::eval_helpers::eval_or_user_error(
+        ctx.transport_mut(),
+        &console_actor,
+        script,
+        label,
+    )?;
 
     match &eval_result.result {
         Grip::Value(Value::String(s)) => Ok(s.clone()),

@@ -1,4 +1,4 @@
-use ff_rdp_core::{AccessibilityActor, AccessibleNode, WebConsoleActor, filter_interactive};
+use ff_rdp_core::{AccessibilityActor, AccessibleNode, filter_interactive};
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -7,6 +7,7 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
+use super::eval_helpers::eval_or_user_error;
 use super::js_helpers::resolve_result;
 
 pub fn run(
@@ -96,16 +97,12 @@ fn run_selector_mode(
         .replace("__MAX_CHARS__", &max_chars.to_string());
 
     let console_actor = ctx.target.console_actor.clone();
-    let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js)
-        .map_err(AppError::from)?;
-
-    if let Some(ref exc) = eval_result.exception {
-        let msg = exc
-            .message
-            .as_deref()
-            .unwrap_or("a11y selector evaluation failed");
-        return Err(AppError::User(format!("a11y --selector failed: {msg}")));
-    }
+    let eval_result = eval_or_user_error(
+        ctx.transport_mut(),
+        &console_actor,
+        &js,
+        "a11y --selector failed",
+    )?;
 
     let result = resolve_result(ctx, &eval_result.result)?;
 

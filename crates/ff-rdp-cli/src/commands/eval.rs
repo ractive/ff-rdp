@@ -17,6 +17,9 @@ pub fn run(cli: &Cli, script: &str) -> Result<(), AppError> {
             .map_err(AppError::from)?;
 
     // If an exception occurred, print it to stderr and exit non-zero.
+    // Also print the exception value as pretty JSON for richer debugging output —
+    // this extra detail is why eval.rs keeps the explicit check rather than
+    // delegating to eval_or_bail.
     if let Some(ref exc) = eval_result.exception {
         let msg = exc
             .message

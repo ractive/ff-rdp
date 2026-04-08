@@ -1,4 +1,3 @@
-use ff_rdp_core::WebConsoleActor;
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -8,6 +7,7 @@ use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
+use super::eval_helpers::eval_or_user_error;
 use super::js_helpers::resolve_result;
 
 pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), AppError> {
@@ -17,13 +17,12 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
     let sel = selector.unwrap_or("*");
     let js = CONTRAST_JS_TEMPLATE.replace("__SELECTOR__", &super::js_helpers::escape_selector(sel));
 
-    let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js)
-        .map_err(AppError::from)?;
-
-    if let Some(ref exc) = eval_result.exception {
-        let msg = exc.message.as_deref().unwrap_or("contrast check failed");
-        return Err(AppError::User(format!("contrast check failed: {msg}")));
-    }
+    let eval_result = eval_or_user_error(
+        ctx.transport_mut(),
+        &console_actor,
+        &js,
+        "contrast check failed",
+    )?;
 
     let mut result = resolve_result(&mut ctx, &eval_result.result)?;
 

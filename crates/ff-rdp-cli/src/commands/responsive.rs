@@ -9,6 +9,7 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
+use super::eval_helpers::eval_or_user_error;
 use super::js_helpers::resolve_result;
 
 /// JavaScript IIFE template for collecting element geometry at a specific viewport width.
@@ -108,14 +109,12 @@ pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppErr
     let console_actor = ctx.target.console_actor.clone();
 
     // --- Step 1: capture original viewport dimensions -----------------------
-    let vp_result =
-        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, GET_VIEWPORT_JS)
-            .map_err(AppError::from)?;
-
-    if let Some(ref exc) = vp_result.exception {
-        let msg = exc.message.as_deref().unwrap_or("viewport query failed");
-        return Err(AppError::User(format!("get viewport: {msg}")));
-    }
+    let vp_result = eval_or_user_error(
+        ctx.transport_mut(),
+        &console_actor,
+        GET_VIEWPORT_JS,
+        "get viewport",
+    )?;
 
     let vp_json_str = match &vp_result.result {
         ff_rdp_core::Grip::Value(Value::String(s)) => s.clone(),
@@ -146,49 +145,35 @@ pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppErr
     'bp: for &width in widths {
         // Resize the viewport to the target width.
         let resize_script = resize_js(width);
-        let resize_result =
-            WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &resize_script)
-                .map_err(AppError::from);
-
-        if let Err(e) = resize_result {
-            loop_error = Some(e);
-            break 'bp;
-        }
-        if let Some(ref exc) = resize_result.as_ref().unwrap().exception {
-            let msg = exc
-                .message
-                .as_deref()
-                .unwrap_or("resize failed")
-                .to_string();
-            loop_error = Some(AppError::User(format!("resize to {width}: {msg}")));
-            break 'bp;
+        match eval_or_user_error(
+            ctx.transport_mut(),
+            &console_actor,
+            &resize_script,
+            &format!("resize to {width}"),
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                loop_error = Some(e);
+                break 'bp;
+            }
         }
 
         // Allow the browser layout to settle after resize.
         std::thread::sleep(Duration::from_millis(100));
 
         // Collect geometry at this viewport width.
-        let geo_result =
-            WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &geom_js)
-                .map_err(AppError::from);
-
-        let geo_result = match geo_result {
+        let geo_result = match eval_or_user_error(
+            ctx.transport_mut(),
+            &console_actor,
+            &geom_js,
+            &format!("geometry at {width}"),
+        ) {
             Ok(r) => r,
             Err(e) => {
                 loop_error = Some(e);
                 break 'bp;
             }
         };
-
-        if let Some(ref exc) = geo_result.exception {
-            let msg = exc
-                .message
-                .as_deref()
-                .unwrap_or("geometry evaluation failed")
-                .to_string();
-            loop_error = Some(AppError::User(format!("geometry at {width}: {msg}")));
-            break 'bp;
-        }
 
         let geometry = match resolve_result(&mut ctx, &geo_result.result) {
             Ok(v) => v,

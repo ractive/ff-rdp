@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Context as _;
 use base64::Engine as _;
-use ff_rdp_core::{Grip, LongStringActor, ScreenshotContentActor, WebConsoleActor};
+use ff_rdp_core::{Grip, LongStringActor, ScreenshotContentActor};
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -11,6 +11,7 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
+use super::eval_helpers::eval_or_bail;
 
 /// JavaScript injected into the page to capture a screenshot.
 ///
@@ -37,18 +38,7 @@ pub fn run(cli: &Cli, output_path: Option<&str>, base64_mode: bool) -> Result<()
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
-    let eval_result =
-        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, SCREENSHOT_JS)
-            .map_err(AppError::from)?;
-
-    if let Some(ref exc) = eval_result.exception {
-        let msg = exc
-            .message
-            .as_deref()
-            .unwrap_or("screenshot JS threw an exception");
-        eprintln!("error: {msg}");
-        return Err(AppError::Exit(1));
-    }
+    let eval_result = eval_or_bail(ctx.transport_mut(), &console_actor, SCREENSHOT_JS)?;
 
     // Resolve the result — the data URL may come back as a LongString when the
     // PNG is large enough to exceed Firefox's inline-string threshold.

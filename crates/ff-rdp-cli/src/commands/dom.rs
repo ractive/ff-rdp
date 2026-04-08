@@ -1,4 +1,4 @@
-use ff_rdp_core::{Grip, LongStringActor, WebConsoleActor};
+use ff_rdp_core::{Grip, LongStringActor};
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -8,6 +8,7 @@ use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
+use super::eval_helpers::eval_or_bail;
 use super::js_helpers::{JSON_SENTINEL, escape_selector, resolve_result};
 
 #[derive(Debug, Clone, Copy)]
@@ -24,14 +25,7 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> 
 
     let js = build_js(selector, mode);
 
-    let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js)
-        .map_err(AppError::from)?;
-
-    if let Some(ref exc) = eval_result.exception {
-        let msg = exc.message.as_deref().unwrap_or("DOM query failed");
-        eprintln!("error: {msg}");
-        return Err(AppError::Exit(1));
-    }
+    let eval_result = eval_or_bail(ctx.transport_mut(), &console_actor, &js)?;
 
     let results = resolve_result(&mut ctx, &eval_result.result)?;
     let meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
@@ -71,14 +65,7 @@ pub fn run_count(cli: &Cli, selector: &str) -> Result<(), AppError> {
     let escaped = escape_selector(selector);
     let js = format!("document.querySelectorAll('{escaped}').length");
 
-    let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js)
-        .map_err(AppError::from)?;
-
-    if let Some(ref exc) = eval_result.exception {
-        let msg = exc.message.as_deref().unwrap_or("DOM count query failed");
-        eprintln!("error: {msg}");
-        return Err(AppError::Exit(1));
-    }
+    let eval_result = eval_or_bail(ctx.transport_mut(), &console_actor, &js)?;
 
     let count = match &eval_result.result {
         Grip::Value(v) => v.as_u64().unwrap_or(0),
@@ -186,15 +173,7 @@ pub fn run_stats(cli: &Cli) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
-    let eval_result =
-        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, STATS_JS)
-            .map_err(AppError::from)?;
-
-    if let Some(ref exc) = eval_result.exception {
-        let msg = exc.message.as_deref().unwrap_or("DOM stats query failed");
-        eprintln!("error: {msg}");
-        return Err(AppError::Exit(1));
-    }
+    let eval_result = eval_or_bail(ctx.transport_mut(), &console_actor, STATS_JS)?;
 
     let json_str = match &eval_result.result {
         Grip::Value(Value::String(s)) => s.clone(),

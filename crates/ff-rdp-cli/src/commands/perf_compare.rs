@@ -1,7 +1,7 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Context;
-use ff_rdp_core::{ActorId, Grip, LongStringActor, WebConsoleActor, WindowGlobalTarget};
+use ff_rdp_core::{ActorId, Grip, LongStringActor, WindowGlobalTarget};
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -10,10 +10,10 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
+use super::eval_helpers::eval_or_user_error;
 use super::perf::{compute_cls, compute_fcp, compute_lcp, compute_tbt, compute_ttfb, round2};
+use super::polling::{POLL_INTERVAL_MS, poll_js_condition};
 use super::url_validation::validate_url;
-
-const POLL_INTERVAL_MS: u64 = 100;
 
 /// Validate that the number of labels matches the number of URLs.
 ///
@@ -52,41 +52,18 @@ fn navigate_and_wait(
 
     // Poll readyState until complete.
     let console_actor = ctx.target.console_actor.clone();
-    let timeout = Duration::from_millis(timeout_ms);
-    let poll = Duration::from_millis(POLL_INTERVAL_MS);
-    let started = Instant::now();
+    let poll_result = poll_js_condition(
+        ctx.transport_mut(),
+        &console_actor,
+        "document.readyState === 'complete'",
+        timeout_ms,
+        POLL_INTERVAL_MS,
+    )?;
 
-    loop {
-        let eval_result = WebConsoleActor::evaluate_js_async(
-            ctx.transport_mut(),
-            &console_actor,
-            "document.readyState",
-        )
-        .map_err(AppError::from)?;
-
-        if let Some(ref exc) = eval_result.exception {
-            let msg = exc.message.as_deref().unwrap_or("evaluation error");
-            return Err(AppError::User(format!(
-                "perf compare: readyState check failed for {url}: {msg}"
-            )));
-        }
-
-        let ready = matches!(
-            &eval_result.result,
-            Grip::Value(Value::String(s)) if s == "complete"
-        );
-
-        if ready {
-            break;
-        }
-
-        if started.elapsed() >= timeout {
-            return Err(AppError::User(format!(
-                "perf compare: page did not reach readyState=complete within {timeout_ms}ms for {url}"
-            )));
-        }
-
-        std::thread::sleep(poll);
+    if !poll_result.matched {
+        return Err(AppError::User(format!(
+            "perf compare: page did not reach readyState=complete within {timeout_ms}ms for {url}"
+        )));
     }
 
     // Give PerformanceObserver entries a moment to settle.
@@ -124,17 +101,7 @@ fn eval_to_json_string(
     label: &str,
 ) -> Result<String, AppError> {
     let console_actor = ctx.target.console_actor.clone();
-    let eval_result =
-        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, script)
-            .map_err(AppError::from)?;
-
-    if let Some(ref exc) = eval_result.exception {
-        let msg = exc
-            .message
-            .as_deref()
-            .unwrap_or("evaluation threw an exception");
-        return Err(AppError::User(format!("{label}: {msg}")));
-    }
+    let eval_result = eval_or_user_error(ctx.transport_mut(), &console_actor, script, label)?;
 
     match &eval_result.result {
         Grip::Value(Value::String(s)) => Ok(s.clone()),
