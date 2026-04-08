@@ -330,7 +330,10 @@ fn daemon_screenshot_saves_png_file() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time")
         .as_nanos();
-    let out_path = std::env::temp_dir().join(format!("daemon_screenshot_{ts}.png"));
+    // Canonicalize the temp directory so that on macOS (where /var is a symlink
+    // to /private/var) the path matches whatever the daemon returns.
+    let temp_dir = std::fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
+    let out_path = temp_dir.join(format!("daemon_screenshot_{ts}.png"));
 
     let mut args = daemon_args(mock_port);
     args.extend([
@@ -350,7 +353,9 @@ fn daemon_screenshot_saves_png_file() {
     daemon.kill();
     let _ = mock_handle.join();
 
-    // Clean up the PNG file regardless of test outcome.
+    // Assert file was created before cleaning it up.
+    let file_existed = out_path.exists();
+    let file_len = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
     let _ = std::fs::remove_file(&out_path);
 
     assert!(
@@ -358,6 +363,9 @@ fn daemon_screenshot_saves_png_file() {
         "daemon screenshot must succeed; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+
+    assert!(file_existed, "screenshot PNG file should have been created");
+    assert!(file_len > 0, "screenshot PNG file should be non-empty");
 
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
@@ -370,11 +378,10 @@ fn daemon_screenshot_saves_png_file() {
         "bytes should be non-zero"
     );
     let path_str = json["results"]["path"].as_str().unwrap_or("");
-    assert!(
-        std::path::Path::new(path_str)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("png")),
-        "results.path should end with .png; got: {path_str}"
+    assert_eq!(
+        path_str,
+        out_path.to_string_lossy(),
+        "results.path should match requested output path"
     );
 }
 

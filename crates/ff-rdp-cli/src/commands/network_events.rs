@@ -84,13 +84,14 @@ pub(crate) fn drain_network_events_timed(
         last_recv_was_event = false;
         match transport.recv() {
             Ok(msg) => {
-                last_recv_was_event = true;
                 let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
                 match msg_type {
                     "resources-available-array" => {
+                        last_recv_was_event = true;
                         all_resources.extend(parse_network_resources(&msg));
                     }
                     "resources-updated-array" => {
+                        last_recv_was_event = true;
                         all_updates.extend(parse_network_resource_updates(&msg));
                     }
                     _ => {}
