@@ -1,5 +1,6 @@
 mod support;
 
+use serde_json::json;
 use support::{MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> std::path::PathBuf {
@@ -311,4 +312,166 @@ fn console_limit_truncates_results() {
     assert_eq!(json["results"].as_array().unwrap().len(), 2);
     assert_eq!(json["truncated"], true);
     assert!(json["hint"].as_str().unwrap().contains("--all"));
+}
+
+// ---------------------------------------------------------------------------
+// --follow flag: streams messages as NDJSON until connection closes
+// ---------------------------------------------------------------------------
+
+fn follow_server_with_events(console_event: serde_json::Value) -> MockRdpServer {
+    // `close_after_followups` causes the server to drop the connection
+    // immediately after delivering the console event followup.  The client's
+    // follow_loop then receives EOF and exits cleanly without blocking.
+    MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on_with_followups(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
+            vec![console_event],
+        )
+        .on(
+            "unwatchResources",
+            load_fixture("unwatch_resources_response.json"),
+        )
+        .close_after_followups()
+}
+
+#[test]
+fn console_follow_streams_messages_as_ndjson() {
+    let console_event = json!({
+        "type": "resources-available-array",
+        "from": "server1.conn0.watcher4",
+        "array": [
+            ["console-message", [
+                {
+                    "resourceType": "console-message",
+                    "message": {
+                        "arguments": ["live message 1"],
+                        "level": "log",
+                        "filename": "test.js",
+                        "lineNumber": 1,
+                        "columnNumber": 1,
+                        "timeStamp": 1000.0
+                    }
+                },
+                {
+                    "resourceType": "console-message",
+                    "message": {
+                        "arguments": ["live message 2"],
+                        "level": "warn",
+                        "filename": "test.js",
+                        "lineNumber": 2,
+                        "columnNumber": 1,
+                        "timeStamp": 2000.0
+                    }
+                }
+            ]]
+        ]
+    });
+
+    let server = follow_server_with_events(console_event);
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["console".to_owned(), "--follow".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().expect("server thread panicked");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Each message is emitted as a separate JSON line (NDJSON).
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 2, "expected 2 NDJSON lines, got: {stdout}");
+
+    let msg1: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("line 1 must be valid JSON");
+    assert_eq!(msg1["level"], "log");
+    assert_eq!(msg1["message"], "live message 1");
+    assert_eq!(msg1["source"], "test.js");
+
+    let msg2: serde_json::Value =
+        serde_json::from_str(lines[1]).expect("line 2 must be valid JSON");
+    assert_eq!(msg2["level"], "warn");
+    assert_eq!(msg2["message"], "live message 2");
+}
+
+#[test]
+fn console_follow_level_filter_applies_to_stream() {
+    // Only warn-level messages should be emitted when --level warn is given.
+    let console_event = json!({
+        "type": "resources-available-array",
+        "from": "server1.conn0.watcher4",
+        "array": [
+            ["console-message", [
+                {
+                    "resourceType": "console-message",
+                    "message": {
+                        "arguments": ["debug noise"],
+                        "level": "debug",
+                        "filename": "app.js",
+                        "lineNumber": 10,
+                        "columnNumber": 1,
+                        "timeStamp": 500.0
+                    }
+                },
+                {
+                    "resourceType": "console-message",
+                    "message": {
+                        "arguments": ["important warning"],
+                        "level": "warn",
+                        "filename": "app.js",
+                        "lineNumber": 20,
+                        "columnNumber": 1,
+                        "timeStamp": 600.0
+                    }
+                }
+            ]]
+        ]
+    });
+
+    let server = follow_server_with_events(console_event);
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "console".to_owned(),
+        "--follow".to_owned(),
+        "--level".to_owned(),
+        "warn".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().expect("server thread panicked");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 1, "expected only 1 (warn) line, got: {stdout}");
+
+    let msg: serde_json::Value = serde_json::from_str(lines[0]).expect("output must be valid JSON");
+    assert_eq!(msg["level"], "warn");
+    assert_eq!(msg["message"], "important warning");
 }

@@ -1,5 +1,7 @@
-use ff_rdp_core::WebConsoleActor;
-use serde_json::json;
+use ff_rdp_core::{
+    ProtocolError, RdpTransport, TabActor, WatcherActor, WebConsoleActor, parse_console_resources,
+};
+use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
@@ -7,7 +9,7 @@ use crate::output;
 use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_and_get_target;
+use super::connect_tab::{ConnectedTab, connect_and_get_target};
 
 pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
@@ -112,6 +114,160 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
+}
+
+/// Stream console messages in real time until the connection is closed.
+///
+/// Subscribes to `console-message` and `error-message` resource types via the
+/// WatcherActor (direct mode) or daemon stream protocol (daemon mode), then
+/// loops reading events and printing each matching message as a compact JSON
+/// line (NDJSON format) to stdout.
+///
+/// Exits cleanly when the connection is closed (e.g. Firefox exits or the
+/// daemon is killed). Ctrl-C terminates the process, which is acceptable.
+pub fn run_follow(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), AppError> {
+    let mut ctx = connect_and_get_target(cli)?;
+
+    let regex = pattern
+        .map(|p| {
+            regex::RegexBuilder::new(p)
+                .size_limit(1_000_000)
+                .build()
+                .map_err(|e| AppError::User(format!("invalid --pattern regex: {e}")))
+        })
+        .transpose()?;
+
+    if ctx.via_daemon {
+        run_follow_daemon(&mut ctx, level, regex.as_ref(), cli.jq.as_deref())
+    } else {
+        run_follow_direct(&mut ctx, level, regex.as_ref(), cli.jq.as_deref())
+    }
+}
+
+fn run_follow_direct(
+    ctx: &mut ConnectedTab,
+    level: Option<&str>,
+    regex: Option<&regex::Regex>,
+    jq_filter: Option<&str>,
+) -> Result<(), AppError> {
+    let tab_actor = ctx.target_tab_actor().clone();
+    let watcher_actor =
+        TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+
+    WatcherActor::watch_resources(
+        ctx.transport_mut(),
+        &watcher_actor,
+        &["console-message", "error-message"],
+    )
+    .map_err(AppError::from)?;
+
+    let result = follow_loop(ctx.transport_mut(), level, regex, jq_filter);
+
+    // Best-effort cleanup — ignore errors since we may be exiting anyway.
+    let _ = WatcherActor::unwatch_resources(
+        ctx.transport_mut(),
+        &watcher_actor,
+        &["console-message", "error-message"],
+    );
+
+    result
+}
+
+fn run_follow_daemon(
+    ctx: &mut ConnectedTab,
+    level: Option<&str>,
+    regex: Option<&regex::Regex>,
+    jq_filter: Option<&str>,
+) -> Result<(), AppError> {
+    use crate::daemon::client::{start_daemon_stream, stop_daemon_stream};
+
+    start_daemon_stream(ctx.transport_mut(), "console-message").map_err(AppError::from)?;
+    start_daemon_stream(ctx.transport_mut(), "error-message").map_err(AppError::from)?;
+
+    let result = follow_loop(ctx.transport_mut(), level, regex, jq_filter);
+
+    // Best-effort cleanup — ignore errors since we may be exiting anyway.
+    let _ = stop_daemon_stream(ctx.transport_mut(), "console-message");
+    let _ = stop_daemon_stream(ctx.transport_mut(), "error-message");
+
+    result
+}
+
+/// Inner loop: read events from the transport and emit matching console
+/// messages as compact JSON lines (NDJSON).
+///
+/// Each message is a single compact JSON object on its own line so that
+/// consumers can process the stream with tools like `jq` or `jq -c`.
+/// If `jq_filter` is set, it is applied to each message before printing.
+fn follow_loop(
+    transport: &mut RdpTransport,
+    level: Option<&str>,
+    regex: Option<&regex::Regex>,
+    jq_filter: Option<&str>,
+) -> Result<(), AppError> {
+    use std::io::Write;
+
+    loop {
+        match transport.recv() {
+            Ok(msg) => {
+                let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
+                if msg_type != "resources-available-array" {
+                    continue;
+                }
+                let resources = parse_console_resources(&msg);
+                for res in resources {
+                    if let Some(l) = level
+                        && !res.level.eq_ignore_ascii_case(l)
+                    {
+                        continue;
+                    }
+                    if let Some(re) = regex
+                        && !re.is_match(&res.message)
+                    {
+                        continue;
+                    }
+                    let entry = json!({
+                        "level": res.level,
+                        "message": res.message,
+                        "source": res.source,
+                        "line": res.line,
+                        "timestamp": res.timestamp,
+                    });
+                    if let Some(filter) = jq_filter {
+                        let values =
+                            output::apply_jq_filter(&entry, filter).map_err(AppError::from)?;
+                        for v in values {
+                            println!(
+                                "{}",
+                                serde_json::to_string(&v)
+                                    .map_err(|e| AppError::Internal(e.into()))?
+                            );
+                        }
+                    } else {
+                        println!(
+                            "{}",
+                            serde_json::to_string(&entry)
+                                .map_err(|e| AppError::Internal(e.into()))?
+                        );
+                    }
+                    // Flush stdout so each message appears immediately in tail-like usage.
+                    let _ = std::io::stdout().flush();
+                }
+            }
+            Err(ProtocolError::Timeout) => {
+                // Normal poll timeout — keep waiting for more events.
+            }
+            Err(ProtocolError::RecvFailed(ref e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof
+                    || e.kind() == std::io::ErrorKind::ConnectionReset
+                    || e.kind() == std::io::ErrorKind::BrokenPipe =>
+            {
+                // Connection closed cleanly (Firefox exited, daemon stopped, etc.).
+                return Ok(());
+            }
+            Err(e) => return Err(AppError::from(e)),
+        }
+    }
 }
 
 #[cfg(test)]

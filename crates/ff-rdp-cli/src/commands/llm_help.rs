@@ -118,9 +118,12 @@ ff-rdp styles "h1" --layout --jq '.results.margin'
 Read console messages.
   --level <LEVEL>        Filter by log level (error, warn, info, log, debug)
   --pattern <REGEX>      Filter by message content (regex)
+  --follow               Stream console messages in real time (NDJSON, Ctrl-C to stop)
 ```
 ff-rdp console --level error
 ff-rdp console --pattern "API"
+ff-rdp console --follow
+ff-rdp console --follow --level warn
 ```
 
 ### network
@@ -128,11 +131,14 @@ Show network requests captured by WatcherActor.
 Default: summary view (counts, totals, top 20 slowest). Use --detail for per-request entries.
   --filter <URL>         Filter by URL pattern (substring)
   --method <METHOD>      Filter by HTTP method
+  --follow               Stream network events in real time (NDJSON, Ctrl-C to stop)
 ```
 ff-rdp network
 ff-rdp network --detail
 ff-rdp network --detail --limit 10
 ff-rdp network --filter ".js" --method GET --detail
+ff-rdp network --follow
+ff-rdp network --follow --filter ".js"
 ```
 
 ### perf [--type <TYPE>] [--filter <URL>]

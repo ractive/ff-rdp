@@ -24,10 +24,11 @@ pub use actors::tab::{TabActor, TabInfo, TargetInfo};
 pub use actors::target::WindowGlobalTarget;
 pub use actors::thread::{SourceInfo, ThreadActor};
 pub use actors::watcher::{
-    NetworkResource, NetworkResourceUpdate, WatcherActor, parse_network_resource_updates,
-    parse_network_resources,
+    ConsoleResource, NetworkResource, NetworkResourceUpdate, TargetEvent, WatcherActor,
+    parse_console_resources, parse_network_resource_updates, parse_network_resources,
+    parse_target_event,
 };
 pub use connection::RdpConnection;
-pub use error::ProtocolError;
+pub use error::{ActorErrorKind, ProtocolError};
 pub use transport::RdpTransport;
 pub use types::{ActorId, Grip};

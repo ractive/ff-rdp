@@ -134,6 +134,9 @@ pub enum Command {
         /// Filter by message content (regex pattern)
         #[arg(long)]
         pattern: Option<String>,
+        /// Stream console messages in real time (connection closed or Ctrl-C to stop)
+        #[arg(long)]
+        follow: bool,
     },
     /// Show network requests captured by the WatcherActor.
     ///
@@ -166,6 +169,9 @@ affect which requests Firefox records.")]
         /// Filter by HTTP method (GET, POST, etc.)
         #[arg(long)]
         method: Option<String>,
+        /// Stream network events in real time (Ctrl-C to stop)
+        #[arg(long)]
+        follow: bool,
     },
     /// Query browser Performance API entries and Core Web Vitals
     Perf {
