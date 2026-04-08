@@ -1,5 +1,6 @@
 pub(crate) mod a11y;
 pub(crate) mod a11y_contrast;
+pub(crate) mod auto_consent;
 pub(crate) mod click;
 pub(crate) mod connect_tab;
 pub(crate) mod console;

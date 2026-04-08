@@ -29,6 +29,7 @@ fs2 = "0.4"
 thiserror = "2"
 tempfile = "3"
 url = "2"
+ureq = "3"
 
 [workspace.dependencies.libc]
 version = "0.2"
