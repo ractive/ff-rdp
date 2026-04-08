@@ -15,21 +15,9 @@ use crate::output_pipeline::OutputPipeline;
 use super::connect_tab::connect_and_get_target;
 use super::js_helpers::{escape_selector, poll_js_condition};
 use super::network_events::{
-    build_network_entries, drain_network_events, drain_network_from_daemon, merge_updates,
+    build_network_entries, drain_network_events_timed, drain_network_from_daemon, merge_updates,
 };
 use super::url_validation::validate_url;
-
-/// Set the socket read timeout to `network_timeout_ms` for idle-based network
-/// event collection.  The caller must restore the original timeout afterwards
-/// via [`restore_timeout`].
-fn set_network_timeout(
-    transport: &mut RdpTransport,
-    network_timeout_ms: u64,
-) -> Result<(), AppError> {
-    transport
-        .set_read_timeout(Some(Duration::from_millis(network_timeout_ms)))
-        .map_err(AppError::from)
-}
 
 /// Restore the socket read timeout to the value established at connect time.
 ///
@@ -138,14 +126,17 @@ pub fn run_with_network(
             }))
             .map_err(AppError::from)?;
 
-        // Override the socket read timeout for the drain phase so idle
-        // detection uses --network-timeout instead of the global --timeout.
-        set_network_timeout(ctx.transport_mut(), network_timeout_ms)?;
-
-        // Drain streamed watcher events until the idle timeout fires.
+        // Drain streamed watcher events for the total_timeout wall-clock
+        // duration, using short 500ms poll intervals internally.  This
+        // captures events that arrive in bursts with gaps (e.g. the page
+        // navigation itself may take 1-2 seconds before any network events
+        // start, which would incorrectly fire an idle-based timeout early).
         // Always stop streaming before propagating errors from drain so the
         // daemon does not get stuck in streaming mode on failure.
-        let drain_result = drain_network_events(ctx.transport_mut());
+        let drain_result = drain_network_events_timed(
+            ctx.transport_mut(),
+            Duration::from_millis(network_timeout_ms),
+        );
 
         // Restore the original connection timeout before stopping the stream
         // so any RDP round-trip uses the right timeout.
@@ -246,13 +237,14 @@ pub fn run_with_network(
         }))
         .map_err(AppError::from)?;
 
-    // Override the socket read timeout for the drain phase so idle detection
-    // uses --network-timeout instead of the global --timeout.
-    set_network_timeout(ctx.transport_mut(), network_timeout_ms)?;
-
-    // Drain resource events until the timeout fires (no more events).
-    // This also harmlessly skips the navigateTo ack from the target actor.
-    let drain_result = drain_network_events(ctx.transport_mut());
+    // Drain resource events for the total_timeout wall-clock duration,
+    // using short 500ms poll intervals internally.  This captures events
+    // that arrive in bursts with gaps — the navigateTo ack is harmlessly
+    // skipped by the drain since it is not a network resource message type.
+    let drain_result = drain_network_events_timed(
+        ctx.transport_mut(),
+        Duration::from_millis(network_timeout_ms),
+    );
 
     // Restore original timeout before any further RDP round-trips (unwatch).
     restore_timeout(ctx.transport_mut(), cli.timeout);

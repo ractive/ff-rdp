@@ -140,17 +140,27 @@ pub(crate) fn drain_daemon_events(
         .send(&msg)
         .context("sending drain request to daemon")?;
 
-    let response = transport
-        .recv()
-        .context("receiving drain response from daemon")?;
-
-    let events = response
-        .get("events")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-
-    Ok(events)
+    // Read messages until we receive the daemon's drain response.
+    // In daemon mode, forwarded Firefox messages (e.g. consoleAPICall push
+    // events) may arrive before the daemon's own response; skip them.
+    for _ in 0..64 {
+        let response = transport
+            .recv()
+            .context("receiving drain response from daemon")?;
+        if response.get("from").and_then(Value::as_str) == Some("daemon") {
+            if let Some(err) = response.get("error").and_then(Value::as_str) {
+                anyhow::bail!("daemon drain error: {err}");
+            }
+            let events = response
+                .get("events")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            return Ok(events);
+        }
+        // Not a daemon message — discard (forwarded Firefox event).
+    }
+    anyhow::bail!("did not receive daemon drain response within 64 frames")
 }
 
 /// Tell the daemon to start streaming events for `resource_type` directly

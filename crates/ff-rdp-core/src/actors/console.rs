@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 
 use crate::actor::actor_request;
-use crate::error::ProtocolError;
+use crate::error::{ActorErrorKind, ProtocolError};
 use crate::transport::RdpTransport;
 use crate::types::{ActorId, Grip};
 
@@ -102,23 +102,52 @@ impl WebConsoleActor {
     /// Sends `evaluateJSAsync` to the console actor, captures the `resultID`
     /// from the immediate response, then reads messages until the matching
     /// `evaluationResult` event arrives.
+    ///
+    /// In daemon mode, Firefox `consoleAPICall` and `pageError` push events are
+    /// forwarded from the daemon to the RPC client and arrive on the same
+    /// transport with `from` set to the console actor.  We skip those here so
+    /// they are not mistaken for the eval ack or the evaluation result.
     pub fn evaluate_js_async(
         transport: &mut RdpTransport,
         console_actor: &ActorId,
         text: &str,
     ) -> Result<EvalResult, ProtocolError> {
-        let params = json!({
+        let request = json!({
+            "to": console_actor.as_ref(),
+            "type": "evaluateJSAsync",
             "text": text,
             "eager": false,
         });
+        transport.send(&request)?;
 
-        // Send the eval request and get the immediate response with resultID.
-        let immediate = actor_request(
-            transport,
-            console_actor.as_ref(),
-            "evaluateJSAsync",
-            Some(&params),
-        )?;
+        // Read packets until we get the ack from the console actor.
+        // Skip unsolicited push events (consoleAPICall, pageError) that the
+        // daemon forwards from Firefox — they share the same `from` field as
+        // real responses but are NOT replies to our eval request.
+        let immediate = loop {
+            let msg = transport.recv()?;
+            let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
+            if msg_type == "consoleAPICall" || msg_type == "pageError" {
+                continue;
+            }
+            let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
+            if from == console_actor.as_ref() {
+                // Check for actor-level error response.
+                if let Some(error) = msg.get("error").and_then(Value::as_str) {
+                    return Err(ProtocolError::ActorError {
+                        actor: from.to_owned(),
+                        kind: ActorErrorKind::from_code(error),
+                        error: error.to_owned(),
+                        message: msg
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned(),
+                    });
+                }
+                break msg;
+            }
+        };
 
         let result_id = immediate
             .get("resultID")
@@ -135,8 +164,13 @@ impl WebConsoleActor {
         // this loop will eventually fail with a timeout error if Firefox stops responding.
         loop {
             let msg = transport.recv()?;
-
             let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
+
+            // Skip console push events forwarded by the daemon — same reason as above.
+            if msg_type == "consoleAPICall" || msg_type == "pageError" {
+                continue;
+            }
+
             let msg_result_id = msg
                 .get("resultID")
                 .and_then(Value::as_str)
