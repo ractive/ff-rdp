@@ -53,6 +53,14 @@ struct SharedState {
     start_time: Instant,
     last_activity: Mutex<Instant>,
     shutdown: AtomicBool,
+    /// The actor ID of the daemon's own watcher subscription.
+    ///
+    /// Only `resources-available-array` / `resources-updated-array` events
+    /// whose `from` field matches this actor are treated as watcher events and
+    /// dispatched/buffered.  Events from other watchers (e.g. created by CLI
+    /// clients for the cookies or storage command) are forwarded to the RPC
+    /// client instead, so that the protocol handshake completes correctly.
+    watcher_actor: String,
 }
 
 /// Main entry point for the daemon process.
@@ -124,6 +132,7 @@ pub(crate) fn run_daemon(
         start_time: Instant::now(),
         last_activity: Mutex::new(Instant::now()),
         shutdown: AtomicBool::new(false),
+        watcher_actor: watcher_actor.as_ref().to_owned(),
     });
 
     setup_signal_handler(&state);
@@ -213,9 +222,15 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: BufReader<TcpStream
                 // is in an inconsistent state and crashing is the right action.
                 *state.last_activity.lock().unwrap() = Instant::now();
 
-                if is_watcher_event(&msg) {
+                if is_watcher_event(&msg, &state.watcher_actor) {
                     // Route to matching streaming subscribers or buffer.
                     dispatch_watcher_event(state, &msg);
+                } else if is_console_push_event(&msg) {
+                    // Firefox 149+: direct consoleAPICall / pageError push.
+                    // Forward to console-message/error-message stream subscribers
+                    // AND to the RPC client (e.g. eval may be awaiting results).
+                    dispatch_console_push_event(state, &msg);
+                    forward_to_rpc_client(&state.rpc_writer, &msg);
                 } else {
                     forward_to_rpc_client(&state.rpc_writer, &msg);
                 }
@@ -232,11 +247,79 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: BufReader<TcpStream
     }
 }
 
-fn is_watcher_event(msg: &Value) -> bool {
-    matches!(
+/// Returns `true` only for `resources-available-array` / `resources-updated-array`
+/// events that originate from the **daemon's own watcher actor**.
+///
+/// Events of the same type from other watcher actors (e.g. one the CLI created
+/// for the `cookies` command) must be forwarded to the RPC client so that the
+/// `watchResources` handshake completes correctly.
+fn is_watcher_event(msg: &Value, daemon_watcher_actor: &str) -> bool {
+    let is_watcher_type = matches!(
         msg.get("type").and_then(Value::as_str),
         Some("resources-available-array" | "resources-updated-array")
+    );
+    if !is_watcher_type {
+        return false;
+    }
+    // Only intercept events sent by the daemon's own watcher.
+    msg.get("from").and_then(Value::as_str) == Some(daemon_watcher_actor)
+}
+
+/// Return `true` when `msg` is a direct console push notification from the
+/// console actor: either `consoleAPICall` (from `console.log()` etc.) or
+/// `pageError` (from uncaught JS errors).
+///
+/// Firefox 149+ delivers these directly to the connection that called
+/// `startListeners` rather than routing them through the watcher's
+/// `resources-available-array` stream.  The daemon must forward them to
+/// stream subscribers registered for `console-message` or `error-message`
+/// so that `console --follow` receives them even in daemon mode.
+fn is_console_push_event(msg: &Value) -> bool {
+    matches!(
+        msg.get("type").and_then(Value::as_str),
+        Some("consoleAPICall" | "pageError")
     )
+}
+
+/// Forward a direct console push event to stream subscribers.
+///
+/// - `consoleAPICall` is forwarded to subscribers registered for `"console-message"`.
+/// - `pageError` is forwarded to subscribers registered for `"error-message"`.
+///
+/// The raw message is sent as-is; `follow_loop` in the CLI already handles
+/// both `consoleAPICall` and `pageError` via `parse_console_notification`.
+fn dispatch_console_push_event(state: &SharedState, msg: &Value) {
+    let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
+    let target_resource_type = match msg_type {
+        "consoleAPICall" => "console-message",
+        "pageError" => "error-message",
+        _ => return,
+    };
+
+    let json = match serde_json::to_string(msg) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("daemon: could not serialise console push event: {e}");
+            return;
+        }
+    };
+    let frame = encode_frame(&json);
+
+    // unwrap: poisoned mutex — daemon should crash.
+    let mut subs = state.stream_subs.lock().unwrap();
+    let mut dead: Vec<usize> = Vec::new();
+
+    for (i, sub) in subs.iter_mut().enumerate() {
+        if sub.types.contains(target_resource_type)
+            && sub.writer.write_all(frame.as_bytes()).is_err()
+        {
+            dead.push(i);
+        }
+    }
+
+    for i in dead.into_iter().rev() {
+        subs.remove(i);
+    }
 }
 
 /// Dispatch a watcher event: forward to each streaming subscriber whose type
@@ -765,6 +848,7 @@ mod tests {
             start_time: Instant::now(),
             last_activity: Mutex::new(Instant::now()),
             shutdown: AtomicBool::new(false),
+            watcher_actor: String::new(),
         }
     }
 
@@ -966,29 +1050,52 @@ mod tests {
 
     #[test]
     fn is_watcher_event_detects_resource_array_types() {
+        let watcher = "server1.conn0.watcher1";
         assert!(
-            is_watcher_event(&json!({"type": "resources-available-array"})),
-            "resources-available-array must be recognised"
+            is_watcher_event(
+                &json!({"type": "resources-available-array", "from": watcher}),
+                watcher
+            ),
+            "resources-available-array from the daemon watcher must be recognised"
         );
         assert!(
-            is_watcher_event(&json!({"type": "resources-updated-array"})),
-            "resources-updated-array must be recognised"
+            is_watcher_event(
+                &json!({"type": "resources-updated-array", "from": watcher}),
+                watcher
+            ),
+            "resources-updated-array from the daemon watcher must be recognised"
         );
     }
 
     #[test]
     fn is_watcher_event_rejects_non_resource_types() {
+        let watcher = "server1.conn0.watcher1";
         assert!(
-            !is_watcher_event(&json!({"type": "someOtherType"})),
+            !is_watcher_event(&json!({"type": "someOtherType", "from": watcher}), watcher),
             "unrelated type must not be a watcher event"
         );
         assert!(
-            !is_watcher_event(&json!({"from": "root"})),
+            !is_watcher_event(&json!({"from": watcher}), watcher),
             "message without type must not be a watcher event"
         );
         assert!(
-            !is_watcher_event(&json!({})),
+            !is_watcher_event(&json!({}), watcher),
             "empty message must not be a watcher event"
+        );
+    }
+
+    #[test]
+    fn is_watcher_event_rejects_events_from_other_watchers() {
+        // Events from a watcher the CLI created (not the daemon's watcher)
+        // must NOT be intercepted — they need to reach the RPC client.
+        let daemon_watcher = "server1.conn0.watcher1";
+        let cli_watcher = "server1.conn0.watcher99";
+        assert!(
+            !is_watcher_event(
+                &json!({"type": "resources-available-array", "from": cli_watcher}),
+                daemon_watcher
+            ),
+            "resources-available-array from a non-daemon watcher must not be intercepted"
         );
     }
 
@@ -1171,5 +1278,191 @@ mod tests {
         let events = state.buffer.lock().unwrap().drain("console-message");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["msg"], "hi");
+    }
+
+    // -----------------------------------------------------------------------
+    // is_console_push_event
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn is_console_push_event_detects_console_api_call() {
+        assert!(
+            is_console_push_event(&json!({"type": "consoleAPICall", "message": {}})),
+            "consoleAPICall must be a console push event"
+        );
+    }
+
+    #[test]
+    fn is_console_push_event_detects_page_error() {
+        assert!(
+            is_console_push_event(&json!({"type": "pageError", "pageError": {}})),
+            "pageError must be a console push event"
+        );
+    }
+
+    #[test]
+    fn is_console_push_event_rejects_watcher_events() {
+        assert!(
+            !is_console_push_event(&json!({"type": "resources-available-array"})),
+            "resources-available-array must not be a console push event"
+        );
+        assert!(
+            !is_console_push_event(&json!({"type": "evaluationResult"})),
+            "evaluationResult must not be a console push event"
+        );
+        assert!(
+            !is_console_push_event(&json!({})),
+            "empty message must not be a console push event"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // dispatch_console_push_event — uses loopback TCP to verify delivery
+    // -----------------------------------------------------------------------
+
+    /// Build a loopback (server, client) TCP pair for use in tests.
+    fn loopback_pair() -> (TcpStream, TcpStream) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+        let client = TcpStream::connect(addr).expect("connect");
+        let (server, _) = listener.accept().expect("accept");
+        (server, client)
+    }
+
+    #[test]
+    fn dispatch_console_push_forwards_console_api_call_to_console_message_subscriber() {
+        use std::io::Read;
+
+        let state = test_state();
+        let (server_side, mut client_side) = loopback_pair();
+
+        // Register a stream subscriber for "console-message".
+        state.stream_subs.lock().unwrap().push(StreamSubscriber {
+            id: 1,
+            writer: server_side,
+            types: {
+                let mut s = HashSet::new();
+                s.insert("console-message".to_owned());
+                s
+            },
+        });
+
+        let msg = json!({
+            "type": "consoleAPICall",
+            "from": "server1.conn0.child0/consoleActor0",
+            "message": {
+                "arguments": ["hello"],
+                "level": "log",
+                "filename": "debugger eval code",
+                "lineNumber": 1,
+                "columnNumber": 9,
+                "timeStamp": 1_234_567_890.0
+            }
+        });
+
+        dispatch_console_push_event(&state, &msg);
+
+        // The subscriber's writer should have received the framed message.
+        client_side
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let mut buf = Vec::new();
+        let _ = client_side.read_to_end(&mut buf);
+        let raw = String::from_utf8_lossy(&buf);
+
+        assert!(
+            raw.contains("consoleAPICall"),
+            "forwarded frame must contain consoleAPICall; got: {raw}"
+        );
+        assert!(
+            raw.contains("hello"),
+            "forwarded frame must contain message content; got: {raw}"
+        );
+    }
+
+    #[test]
+    fn dispatch_console_push_forwards_page_error_to_error_message_subscriber() {
+        use std::io::Read;
+
+        let state = test_state();
+        let (server_side, mut client_side) = loopback_pair();
+
+        // Register a stream subscriber for "error-message".
+        state.stream_subs.lock().unwrap().push(StreamSubscriber {
+            id: 2,
+            writer: server_side,
+            types: {
+                let mut s = HashSet::new();
+                s.insert("error-message".to_owned());
+                s
+            },
+        });
+
+        let msg = json!({
+            "type": "pageError",
+            "from": "server1.conn0.child0/consoleActor0",
+            "pageError": {
+                "errorMessage": "ReferenceError: foo is not defined",
+                "sourceName": "https://example.com/app.js",
+                "lineNumber": 10,
+                "columnNumber": 3,
+                "timeStamp": 1_234_567_890.0
+            }
+        });
+
+        dispatch_console_push_event(&state, &msg);
+
+        client_side
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let mut buf = Vec::new();
+        let _ = client_side.read_to_end(&mut buf);
+        let raw = String::from_utf8_lossy(&buf);
+
+        assert!(
+            raw.contains("pageError"),
+            "forwarded frame must contain pageError; got: {raw}"
+        );
+        assert!(
+            raw.contains("ReferenceError"),
+            "forwarded frame must contain error message; got: {raw}"
+        );
+    }
+
+    #[test]
+    fn dispatch_console_push_does_not_deliver_to_wrong_subscriber_type() {
+        use std::io::Read;
+
+        let state = test_state();
+        let (server_side, mut client_side) = loopback_pair();
+
+        // Register subscriber for "network-event" only — NOT console-message.
+        state.stream_subs.lock().unwrap().push(StreamSubscriber {
+            id: 3,
+            writer: server_side,
+            types: {
+                let mut s = HashSet::new();
+                s.insert("network-event".to_owned());
+                s
+            },
+        });
+
+        let msg = json!({
+            "type": "consoleAPICall",
+            "message": {"arguments": ["secret"], "level": "log", "timeStamp": 1.0}
+        });
+
+        dispatch_console_push_event(&state, &msg);
+
+        // The writer is not closed; read must time out with no data.
+        client_side
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let mut buf = vec![0u8; 256];
+        let result = client_side.read(&mut buf);
+        assert!(
+            result.is_err() || result.is_ok_and(|n| n == 0),
+            "network-event subscriber must not receive consoleAPICall"
+        );
     }
 }

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Context as _;
 use base64::Engine as _;
-use ff_rdp_core::{Grip, LongStringActor, ScreenshotContentActor};
+use ff_rdp_core::{Grip, LongStringActor, ScreenshotActor, ScreenshotContentActor};
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -50,31 +50,31 @@ pub fn run(cli: &Cli, output_path: Option<&str>, base64_mode: bool) -> Result<()
     let data_url = if let Some(url) = resolve_string(&mut ctx, &eval_result.result)? {
         url
     } else {
-        // drawWindow unavailable — try screenshotContentActor fallback.
-        // Clone the actor ID to release the borrow on `ctx.target` before
-        // we take a mutable borrow on `ctx` for the transport call.
-        let actor_id = ctx.target.screenshot_content_actor.clone();
-        if let Some(actor) = actor_id {
-            let capture = ScreenshotContentActor::capture(ctx.transport_mut(), actor.as_ref())
-                .map_err(|e| {
-                    if e.is_unrecognized_packet_type() {
-                        AppError::User(
-                            "screenshot: all known screenshotContentActor methods \
-                             (captureScreenshot, screenshot, capture) are unrecognized \
-                             in this Firefox version. The drawWindow JS fallback also \
-                             failed; this Firefox build may have removed both APIs. \
-                             Try upgrading ff-rdp or filing a bug with your Firefox version."
-                                .to_owned(),
-                        )
-                    } else {
-                        AppError::User(format!(
-                            "screenshot: drawWindow not available and screenshotContentActor \
-                             capture failed ({e}) — screenshots require headless mode; \
-                             relaunch with: ff-rdp launch --headless"
-                        ))
-                    }
-                })?;
-            capture.data
+        // drawWindow unavailable.  Try fallbacks in order:
+        //   1. Legacy single-step screenshotContentActor (Firefox < 149)
+        //   2. Two-step protocol: screenshotContentActor.prepareCapture +
+        //      root screenshotActor.capture (Firefox 149+)
+        //
+        // Clone actor IDs to release the borrow on `ctx.target` before
+        // taking a mutable borrow on `ctx` for transport calls.
+        let sc_actor = ctx.target.screenshot_content_actor.clone();
+        let browsing_ctx_id = ctx.target.browsing_context_id;
+
+        if let Some(actor) = sc_actor {
+            // Try legacy method first.
+            match ScreenshotContentActor::capture(ctx.transport_mut(), actor.as_ref()) {
+                Ok(capture) => capture.data,
+                Err(legacy_err) if legacy_err.is_unrecognized_packet_type() => {
+                    // Legacy method not available — try the Firefox 149+ two-step protocol.
+                    try_two_step_screenshot(&mut ctx, &actor, browsing_ctx_id)?
+                }
+                Err(e) => {
+                    return Err(AppError::User(format!(
+                        "screenshot: screenshotContentActor capture failed ({e}) — \
+                         screenshots require headless mode; relaunch with: ff-rdp launch --headless"
+                    )));
+                }
+            }
         } else {
             return Err(AppError::User(
                 "screenshot: drawWindow not available and no screenshotContentActor found — \
@@ -138,6 +138,60 @@ pub fn run(cli: &Cli, output_path: Option<&str>, base64_mode: bool) -> Result<()
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
+}
+
+/// Firefox 149+ two-step screenshot protocol.
+///
+/// Step 1: `screenshotContentActor.prepareCapture` → viewport DPR/zoom/rect
+/// Step 2: `screenshotActor.capture` (root actor) → PNG data URL
+///
+/// Returns the `data:image/png;base64,...` string on success.
+fn try_two_step_screenshot(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    sc_actor: &ff_rdp_core::ActorId,
+    browsing_ctx_id: Option<u64>,
+) -> Result<String, AppError> {
+    let browsing_ctx_id = browsing_ctx_id.ok_or_else(|| {
+        AppError::User(
+            "screenshot: Firefox 149+ screenshot requires a browsing context ID \
+             which was not found in the target response. \
+             Try upgrading ff-rdp or filing a bug with your Firefox version."
+                .to_owned(),
+        )
+    })?;
+
+    // Step 1: prepare — collect viewport DPR/zoom from the content process actor.
+    let prep =
+        ScreenshotContentActor::prepare_capture(ctx.transport_mut(), sc_actor.as_ref(), false)
+            .map_err(|e| {
+                AppError::User(format!(
+                    "screenshot: screenshotContentActor.prepareCapture failed ({e})"
+                ))
+            })?;
+
+    // Step 2: capture — call the root-level screenshotActor.
+    let screenshot_actor = ScreenshotActor::get_actor_id(ctx.transport_mut()).map_err(|e| {
+        AppError::User(format!(
+            "screenshot: could not find root screenshotActor ({e}) — \
+             this Firefox version may not support the two-step screenshot protocol"
+        ))
+    })?;
+
+    let data = ScreenshotActor::capture(
+        ctx.transport_mut(),
+        &screenshot_actor,
+        browsing_ctx_id,
+        false,
+        &prep,
+    )
+    .map_err(|e| {
+        AppError::User(format!(
+            "screenshot: screenshotActor.capture failed ({e}) — \
+             screenshots require headless mode; relaunch with: ff-rdp launch --headless"
+        ))
+    })?;
+
+    Ok(data)
 }
 
 /// Resolve the eval result to an `Option<String>`:

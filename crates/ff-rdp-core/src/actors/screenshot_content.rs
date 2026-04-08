@@ -7,8 +7,8 @@ use crate::transport::RdpTransport;
 /// Method names tried in order when sending a capture request to the
 /// `screenshotContentActor`.  Firefox has renamed this method across versions:
 ///
-/// - `captureScreenshot` — Firefox < 149 (original name)
-/// - `screenshot`        — Firefox 149+ candidate fallback
+/// - `captureScreenshot` — Firefox < 87 (original name)
+/// - `screenshot`        — intermediate fallback
 /// - `capture`           — additional fallback for future renames
 const CAPTURE_METHODS: &[&str] = &["captureScreenshot", "screenshot", "capture"];
 
@@ -21,6 +21,10 @@ impl ScreenshotContentActor {
     /// Tries each method name in [`CAPTURE_METHODS`] in order, falling back to the
     /// next when Firefox returns `unrecognizedPacketType`.  Returns the screenshot
     /// data as a `data:image/png;base64,...` string.
+    ///
+    /// This is the **legacy** single-step method.  Firefox 149+ replaced this
+    /// with the two-step [`prepareCapture`](Self::prepareCapture) / root
+    /// `screenshotActor.capture` protocol.
     pub fn capture(
         transport: &mut RdpTransport,
         actor: &str,
@@ -46,6 +50,42 @@ impl ScreenshotContentActor {
 
         // All method names were unrecognised — return the last unrecognized error.
         Err(last_err.expect("CAPTURE_METHODS is non-empty"))
+    }
+
+    /// Prepare viewport metadata for the Firefox 149+ two-step screenshot protocol.
+    ///
+    /// Firefox 149 split screenshot capture into two actors:
+    /// 1. (Content process) `screenshotContentActor.prepareCapture` → collects
+    ///    viewport rect, device pixel ratio, and zoom level.
+    /// 2. (Parent process) `screenshotActor.capture` on the root actor → performs
+    ///    the actual `browsingContext.drawSnapshot` and returns the PNG data URL.
+    ///
+    /// This method handles step 1.  Pass the returned [`PrepareCapture`] value to
+    /// [`ScreenshotActor::capture`] to complete step 2.
+    pub fn prepare_capture(
+        transport: &mut RdpTransport,
+        actor: &str,
+        full_page: bool,
+    ) -> Result<PrepareCapture, ProtocolError> {
+        let params = json!({ "args": { "fullpage": full_page } });
+        let response = actor_request(transport, actor, "prepareCapture", Some(&params))?;
+
+        // Firefox wraps the result in a `value` envelope: `{ "value": { ... } }`
+        let value = response.get("value").unwrap_or(&response);
+
+        let window_dpr = value
+            .get("windowDpr")
+            .and_then(Value::as_f64)
+            .unwrap_or(1.0);
+        let window_zoom = value
+            .get("windowZoom")
+            .and_then(Value::as_f64)
+            .unwrap_or(1.0);
+
+        Ok(PrepareCapture {
+            window_dpr,
+            window_zoom,
+        })
     }
 }
 
@@ -77,6 +117,18 @@ fn extract_capture_data(
 pub struct ScreenshotCapture {
     /// The screenshot as a data URL (`data:image/png;base64,...`).
     pub data: String,
+}
+
+/// Viewport metadata returned by [`ScreenshotContentActor::prepare_capture`].
+///
+/// Used as input for the second step of the Firefox 149+ screenshot protocol:
+/// [`ScreenshotActor::capture`](crate::actors::screenshot::ScreenshotActor::capture).
+#[derive(Debug, Clone)]
+pub struct PrepareCapture {
+    /// Device pixel ratio of the window.
+    pub window_dpr: f64,
+    /// Current zoom level of the window.
+    pub window_zoom: f64,
 }
 
 #[cfg(test)]

@@ -174,6 +174,15 @@ pub fn build_network_summary(entries: &[serde_json::Value]) -> serde_json::Value
         .filter_map(|e| e["transfer_size"].as_f64())
         .sum();
 
+    // Normalise -0.0 → 0.0: IEEE 754 defines -0.0 == 0.0, so this is safe.
+    // An empty (or all-null) entries slice sums to 0.0 but floating-point
+    // addition can produce negative zero in some edge cases.
+    let total_transfer_bytes = if total_transfer_bytes == 0.0 {
+        0.0_f64
+    } else {
+        total_transfer_bytes
+    };
+
     let mut by_cause_type: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     for entry in entries {
@@ -407,6 +416,45 @@ mod tests {
         assert_eq!(s["total_requests"], 0);
         assert_eq!(s["total_transfer_bytes"], 0.0);
         assert!(s["slowest"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn build_network_summary_total_transfer_bytes_not_negative_zero() {
+        // An empty slice sums to 0.0; IEEE 754 can sometimes produce -0.0.
+        // Verify the returned value serialises as "0.0" (positive zero) and
+        // that the IEEE bit pattern is positive zero, not negative zero.
+        let s = build_network_summary(&[]);
+        let v = s["total_transfer_bytes"]
+            .as_f64()
+            .expect("total_transfer_bytes is f64");
+        assert!(v == 0.0, "expected 0.0, got {v}");
+        // f64::is_sign_negative distinguishes -0.0 from +0.0.
+        assert!(
+            !v.is_sign_negative(),
+            "total_transfer_bytes should be positive zero, not negative zero"
+        );
+        // Serialised form must not contain a minus sign.
+        let json_str = serde_json::to_string(&s["total_transfer_bytes"]).unwrap();
+        assert!(
+            !json_str.starts_with('-'),
+            "serialised total_transfer_bytes should not start with '-', got {json_str:?}"
+        );
+    }
+
+    #[test]
+    fn build_network_summary_null_transfer_sizes_give_zero_not_negative_zero() {
+        // Entries where transfer_size is null contribute nothing to the sum.
+        // The result must be positive 0.0, not -0.0.
+        let entries = vec![
+            json!({"url": "a", "duration_ms": 10.0, "status": 200, "cause_type": "doc"}),
+            json!({"url": "b", "duration_ms": 20.0, "status": 200, "cause_type": "doc"}),
+        ];
+        let s = build_network_summary(&entries);
+        let v = s["total_transfer_bytes"]
+            .as_f64()
+            .expect("total_transfer_bytes is f64");
+        assert!(v == 0.0, "expected 0.0, got {v}");
+        assert!(!v.is_sign_negative(), "should be +0.0, not -0.0");
     }
 
     #[test]

@@ -233,9 +233,14 @@ fn screenshot_null_result_exits_nonzero_with_helpful_message() {
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // The error should mention either the failed mechanism or the required mode
+    // so the user knows what went wrong and how to fix it.
     assert!(
-        stderr.contains("drawWindow"),
-        "stderr should mention drawWindow: {stderr}"
+        stderr.contains("screenshot")
+            && (stderr.contains("headless")
+                || stderr.contains("drawWindow")
+                || stderr.contains("screenshotContentActor")),
+        "stderr should contain a helpful screenshot error message: {stderr}"
     );
 }
 
@@ -448,6 +453,112 @@ fn screenshot_base64_handles_longstring_data_url() {
     );
 
     let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+// ---------------------------------------------------------------------------
+// Firefox 149+ two-step screenshot protocol fallback
+// ---------------------------------------------------------------------------
+
+#[test]
+fn screenshot_falls_back_to_two_step_protocol_on_firefox_149() {
+    // The 1x1 PNG data URL used throughout these tests.
+    let png_data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC";
+
+    // The screenshotContentActor in the fixture is:
+    //   server1.conn0.child2/screenshotContentActor15
+    // and browsingContextID is 16.
+
+    let unrecognized_err = serde_json::json!({
+        "from": "server1.conn0.child2/screenshotContentActor15",
+        "error": "unrecognizedPacketType",
+        "message": "Actor does not recognize the packet type 'captureScreenshot'"
+    });
+
+    let prepare_capture_response = serde_json::json!({
+        "from": "server1.conn0.child2/screenshotContentActor15",
+        "value": {
+            "rect": null,
+            "messages": [],
+            "windowDpr": 1.0,
+            "windowZoom": 1.0
+        }
+    });
+
+    let get_root_response = serde_json::json!({
+        "from": "root",
+        "screenshotActor": "server1.conn0.screenshotActor7",
+        "preferenceActor": "server1.conn0.preferenceActor1",
+        "addonsActor": "server1.conn0.addonsActor2"
+    });
+
+    let capture_response = serde_json::json!({
+        "from": "server1.conn0.screenshotActor7",
+        "value": {
+            "data": png_data_url,
+            "filename": "screenshot.png",
+            "messages": []
+        }
+    });
+
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_screenshot_null.json"),
+        )
+        // Legacy captureScreenshot and screenshot methods are unrecognized:
+        .on("captureScreenshot", unrecognized_err.clone())
+        .on("screenshot", unrecognized_err.clone())
+        // "capture" is called twice: once by the legacy path (unrecognized),
+        // then once by the two-step screenshotActor path (success).
+        .on_sequence(
+            "capture",
+            vec![(unrecognized_err, vec![]), (capture_response, vec![])],
+        )
+        // Two-step protocol steps:
+        .on("prepareCapture", prepare_capture_response)
+        .on("getRoot", get_root_response);
+
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let out_dir = unique_temp_dir("screenshot_two_step");
+    let out_path = out_dir.join("twostep.png");
+
+    let mut args = base_args(port);
+    args.extend([
+        "screenshot".to_owned(),
+        "--output".to_owned(),
+        out_path.to_string_lossy().into_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success via Firefox 149+ two-step screenshot, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(out_path.exists(), "PNG file should have been written");
+    let png_bytes = std::fs::read(&out_path).expect("read png");
+    assert_eq!(&png_bytes[..4], b"\x89PNG", "file should be a PNG");
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    assert_eq!(json["total"], 1);
+    assert_eq!(json["results"]["width"], 1);
+    assert_eq!(json["results"]["height"], 1);
+    assert!(json["results"]["bytes"].as_u64().unwrap_or(0) > 0);
+
+    let _ = std::fs::remove_dir_all(&out_dir);
 }
 
 // ---------------------------------------------------------------------------

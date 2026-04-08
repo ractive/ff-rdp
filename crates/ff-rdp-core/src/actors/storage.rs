@@ -31,6 +31,12 @@ pub struct CookieInfo {
 #[derive(Debug, Clone)]
 pub(crate) struct CookieStoreResource {
     pub actor: ActorId,
+    /// The resource ID from the watchResources response.
+    ///
+    /// Firefox 149+ requires this to be passed back with `getStoreObjects` when
+    /// called after `getTarget` has established a child browsing context.
+    pub resource_id: String,
+    /// Host origins associated with this cookie store (keys of the `hosts` object).
     pub hosts: Vec<String>,
 }
 
@@ -42,9 +48,25 @@ impl StorageActor {
     ///
     /// This performs the full protocol sequence:
     /// 1. Get a watcher via `TabActor::get_watcher`
-    /// 2. Watch for `"cookies"` resources to get the cookie actor
-    /// 3. Call `getStoreObjects` on each host
+    /// 2. Watch for `"cookies"` resources to get the cookie store actor + resource ID
+    /// 3. Call `getStoreObjects` with `host` + `resourceId` for each host
     /// 4. Unwatch when done (best-effort)
+    ///
+    /// # Firefox 149 compatibility
+    ///
+    /// Firefox 149 changed the `getStoreObjects` API in two ways:
+    ///
+    /// 1. **`host` is no longer used for routing** — older versions routed the
+    ///    request via the watcher when a `host` field was present, returning an
+    ///    empty ACK from the wrong actor.  Now `host` goes directly to the cookie
+    ///    store actor as a filter parameter.
+    ///
+    /// 2. **`resourceId` is now required** when `getTarget` has been called first
+    ///    (which creates a child browsing context).  Without it, Firefox fails with
+    ///    "undefined passed where a value is required".  The `resourceId` is
+    ///    returned as part of the `watchResources("cookies")` response.
+    ///
+    /// Both `host` and `resourceId` must be supplied together.
     pub fn list_cookies(
         transport: &mut RdpTransport,
         tab_actor: &ActorId,
@@ -68,9 +90,13 @@ impl StorageActor {
 
         if let Some(resource) = cookie_resource {
             for host in &resource.hosts {
+                // Firefox 149+: pass both `host` and `resourceId`.  The `host`
+                // must be one of the keys from the `hosts` map returned by
+                // watchResources.  The `resourceId` is required when getTarget
+                // has been called first (establishing a child browsing context).
                 let params = json!({
                     "host": host,
-                    "options": {"sessionString": "Session", "sortOn": "name"}
+                    "resourceId": resource.resource_id,
                 });
                 let store_response = actor_request(
                     transport,
@@ -97,13 +123,24 @@ impl StorageActor {
 }
 
 /// Parse a `resources-available-array` response to extract the cookies store
-/// resource actor and its associated hosts.
+/// resource actor, its resource ID, and the associated host origins.
 ///
-/// Expected shape:
+/// Expected shape (Firefox < 149):
 /// ```json
 /// {
 ///   "type": "resources-available-array",
-///   "array": [["cookies", [{"actor": "...", "hosts": {"host1": null, ...}}]]],
+///   "array": [["cookies", [{"actor": "...", "hosts": {"host1": null}}]]],
+///   "from": "..."
+/// }
+/// ```
+///
+/// Firefox 149+ shape (`hosts` values changed from `null` to `[]`, and a
+/// `resourceId` field is present and required for subsequent `getStoreObjects`
+/// calls when `getTarget` has established a child browsing context):
+/// ```json
+/// {
+///   "type": "resources-available-array",
+///   "array": [["cookies", [{"actor": "...", "hosts": {"host1": []}, "resourceId": "cookies-..."}]]],
 ///   "from": "..."
 /// }
 /// ```
@@ -137,7 +174,19 @@ fn parse_cookie_store_resource(event: &Value) -> Option<CookieStoreResource> {
             continue;
         };
 
-        // `hosts` is a JSON object whose keys are the host strings.
+        // `resourceId` is a string ID required by Firefox 149+ when calling
+        // `getStoreObjects` after `getTarget` has established a child context.
+        // Absent in older Firefox — default to empty string, which is harmless
+        // there since the field is ignored by older cookie store actors.
+        let resource_id = item
+            .get("resourceId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+
+        // `hosts` is a JSON object whose keys are the host origin strings.
+        // The values were `null` in older Firefox and `[]` in Firefox 149+;
+        // we only need the keys.
         let hosts: Vec<String> = item
             .get("hosts")
             .and_then(Value::as_object)
@@ -146,6 +195,7 @@ fn parse_cookie_store_resource(event: &Value) -> Option<CookieStoreResource> {
 
         return Some(CookieStoreResource {
             actor: ActorId::from(actor),
+            resource_id,
             hosts,
         });
     }
@@ -294,7 +344,8 @@ mod tests {
 
     #[test]
     fn parse_cookie_store_resource_extracts_actor_and_hosts() {
-        let event = json!({
+        // Firefox < 149: hosts values are null, no resourceId field.
+        let event_old = json!({
             "type": "resources-available-array",
             "from": "server1.conn7.watcher3",
             "array": [[
@@ -310,13 +361,39 @@ mod tests {
             ]]
         });
 
-        let resource = parse_cookie_store_resource(&event).expect("should extract cookie resource");
+        let resource =
+            parse_cookie_store_resource(&event_old).expect("should extract cookie resource");
         assert_eq!(resource.actor.as_ref(), "server1.conn7.storage10");
-
-        // Order of keys from a JSON object is not guaranteed, so sort before asserting.
+        // resource_id defaults to empty string when absent.
+        assert_eq!(resource.resource_id, "");
         let mut hosts = resource.hosts.clone();
         hosts.sort();
         assert_eq!(hosts, vec!["https://example.com", "https://other.com"]);
+
+        // Firefox 149+: hosts values are empty arrays, resourceId is present.
+        let event_new = json!({
+            "type": "resources-available-array",
+            "from": "server1.conn7.watcher3",
+            "array": [[
+                "cookies",
+                [{
+                    "actor": "server1.conn7.storage10",
+                    "hosts": {
+                        "https://httpbin.org": []
+                    },
+                    "resourceId": "cookies-208305913857",
+                    "traits": {
+                        "supportsAddItem": true
+                    }
+                }]
+            ]]
+        });
+
+        let resource2 = parse_cookie_store_resource(&event_new)
+            .expect("should extract cookie resource (FF149+)");
+        assert_eq!(resource2.actor.as_ref(), "server1.conn7.storage10");
+        assert_eq!(resource2.resource_id, "cookies-208305913857");
+        assert_eq!(resource2.hosts, vec!["https://httpbin.org"]);
     }
 
     #[test]
