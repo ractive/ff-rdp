@@ -16,7 +16,7 @@ pub fn run(cli: &Cli, selector: &str) -> Result<(), AppError> {
     let js = format!(
         r"(function() {{
   var el = document.querySelector('{escaped}');
-  if (!el) throw new Error('Element not found: {escaped}');
+  if (!el) throw new Error('Element not found: {escaped} — use ff-rdp dom SELECTOR --count to verify the selector matches');
   el.click();
   return '{JSON_SENTINEL}' + JSON.stringify({{clicked: true, tag: el.tagName, text: (el.textContent || '').trim().substring(0, 100)}});
 }})()"

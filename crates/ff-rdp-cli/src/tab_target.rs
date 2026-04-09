@@ -15,19 +15,24 @@ pub fn resolve_tab<'a>(
     tab_id: Option<&str>,
 ) -> Result<&'a TabInfo, AppError> {
     if let Some(id) = tab_id {
-        return tabs
-            .iter()
-            .find(|t| t.actor.as_ref() == id)
-            .ok_or_else(|| AppError::User(format!("no tab with actor ID '{id}'")));
+        return tabs.iter().find(|t| t.actor.as_ref() == id).ok_or_else(|| {
+            AppError::User(format!(
+                "no tab with actor ID '{id}'; use `ff-rdp tabs` to list available tabs"
+            ))
+        });
     }
 
     if let Some(selector) = tab {
         // Try 1-based integer index first.
         if let Ok(n) = selector.parse::<usize>() {
             let count = tabs.len();
-            return if n == 0 || n > count {
+            return if count == 0 {
+                Err(AppError::User(
+                    "no tabs available — use `ff-rdp launch --headless --temp-profile` to start Firefox, then `ff-rdp tabs`".to_owned(),
+                ))
+            } else if n == 0 || n > count {
                 Err(AppError::User(format!(
-                    "tab index {n} out of range (1–{count} tabs available)"
+                    "tab index {n} out of range (1–{count} tabs available); use `ff-rdp tabs` to list available tabs"
                 )))
             } else {
                 Ok(&tabs[n - 1])
@@ -39,13 +44,13 @@ pub fn resolve_tab<'a>(
         return tabs
             .iter()
             .find(|t| t.url.to_lowercase().contains(&lower))
-            .ok_or_else(|| AppError::User(format!("no tab matching URL pattern '{selector}'")));
+            .ok_or_else(|| AppError::User(format!("no tab matching URL pattern '{selector}'; use `ff-rdp tabs` to list available tabs")));
     }
 
     // No flag — prefer the selected tab, then the first tab.
     if tabs.is_empty() {
         return Err(AppError::User(
-            "no tabs available — is a page open in Firefox?".to_owned(),
+            "no tabs available — is a page open in Firefox? Use `ff-rdp launch --headless --temp-profile` to start one".to_owned(),
         ));
     }
 

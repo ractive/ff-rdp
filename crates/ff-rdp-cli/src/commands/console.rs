@@ -109,8 +109,19 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     let limited = controls.apply_fields(limited);
 
     let meta = json!({"host": cli.host, "port": cli.port});
-    let envelope =
+    let mut envelope =
         output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
+    if total == 0
+        && let Some(obj) = envelope.as_object_mut()
+    {
+        obj.insert(
+            "hint".to_string(),
+            json!(
+                "No console messages captured. Use --follow to stream live messages, \
+                 or generate some with: ff-rdp eval 'console.log(\"test\")'"
+            ),
+        );
+    }
 
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
