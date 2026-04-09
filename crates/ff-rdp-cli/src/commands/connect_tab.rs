@@ -72,6 +72,43 @@ pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
     })
 }
 
+/// Like [`connect_and_get_target`] but always bypasses the daemon and
+/// connects directly to Firefox.  Use this for commands (e.g. screenshot)
+/// whose protocol interactions are incompatible with the daemon proxy.
+pub fn connect_direct(cli: &Cli) -> Result<ConnectedTab, AppError> {
+    let mut connection = RdpConnection::connect(
+        &cli.host,
+        cli.port,
+        Duration::from_millis(cli.timeout),
+    )
+    .map_err(|e| match e {
+        ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout => {
+            AppError::User(format!(
+                "could not connect to Firefox at {}:{} — is Firefox running with --start-debugger-server {}?",
+                cli.host, cli.port, cli.port
+            ))
+        }
+        other => AppError::from(other),
+    })?;
+
+    connection.warn_if_version_unsupported();
+
+    let tabs = RootActor::list_tabs(connection.transport_mut()).map_err(AppError::from)?;
+
+    let tab = resolve_tab(&tabs, cli.tab.as_deref(), cli.tab_id.as_deref())?;
+    let tab_actor = tab.actor.clone();
+
+    let target_info =
+        TabActor::get_target(connection.transport_mut(), &tab_actor).map_err(AppError::from)?;
+
+    Ok(ConnectedTab {
+        connection,
+        target: target_info,
+        tab_actor,
+        via_daemon: false,
+    })
+}
+
 impl ConnectedTab {
     pub fn transport_mut(&mut self) -> &mut RdpTransport {
         self.connection.transport_mut()
