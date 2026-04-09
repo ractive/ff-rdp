@@ -28,8 +28,8 @@ pub fn run(
     })?;
 
     // If selector is provided, use JS eval approach (similar to snapshot).
-    let tree = if let Some(sel) = selector {
-        run_selector_mode(&mut ctx, sel, depth, max_chars)?
+    let (tree, used_js_fallback) = if let Some(sel) = selector {
+        (run_selector_mode(&mut ctx, sel, depth, max_chars)?, false)
     } else {
         // Use native RDP protocol with JS eval fallback for Firefox 149+ where
         // both `getDocument` and `getRootNode` are unrecognized on the walker.
@@ -59,12 +59,18 @@ pub fn run(
     let mut results = serde_json::to_value(&tree).map_err(|e| AppError::Internal(e.into()))?;
     strip_actor_ids(&mut results);
 
-    let meta = json!({
+    let mut meta = json!({
         "host": cli.host,
         "port": cli.port,
         "depth": depth,
         "max_chars": max_chars,
     });
+    if used_js_fallback
+        && let Some(m) = meta.as_object_mut()
+    {
+        m.insert("fallback".to_string(), json!(true));
+        m.insert("fallback_method".to_string(), json!("js-eval"));
+    }
 
     let envelope = output::envelope(&results, 1, &meta);
 
@@ -82,7 +88,7 @@ fn run_native_or_js_fallback(
     depth: u32,
     max_chars: u32,
     cli: &Cli,
-) -> Result<AccessibleNode, AppError> {
+) -> Result<(AccessibleNode, bool), AppError> {
     // Step 1: try to get the walker.
     let walker = match AccessibilityActor::get_walker(ctx.transport_mut(), accessibility_actor) {
         Ok(w) => w,
@@ -91,7 +97,7 @@ fn run_native_or_js_fallback(
                 "debug: accessibility getWalker unrecognized in this Firefox version; \
                  falling back to JS eval"
             );
-            return run_selector_mode(ctx, "body", depth, max_chars);
+            return run_selector_mode(ctx, "body", depth, max_chars).map(|t| (t, true));
         }
         Err(e) => return Err(map_a11y_error(e, cli)),
     };
@@ -105,13 +111,14 @@ fn run_native_or_js_fallback(
                 "debug: accessibility walker root methods unrecognized in this Firefox \
                  version (tried getDocument and getRootNode); falling back to JS eval"
             );
-            return run_selector_mode(ctx, "body", depth, max_chars);
+            return run_selector_mode(ctx, "body", depth, max_chars).map(|t| (t, true));
         }
         Err(e) => return Err(map_a11y_error(e, cli)),
     };
 
     // Step 3: walk the tree with the native protocol.
     AccessibilityActor::walk_tree(ctx.transport_mut(), &walker, &root, depth, max_chars)
+        .map(|t| (t, false))
         .map_err(|e| map_a11y_error(e, cli))
 }
 

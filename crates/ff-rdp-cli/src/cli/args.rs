@@ -27,7 +27,7 @@ pub struct Cli {
     #[arg(long, default_value_t = 5000, global = true)]
     pub timeout: u64,
 
-    /// Don't use or start a daemon (connect directly to Firefox)
+    /// Connect directly to Firefox, bypassing the daemon. Use for one-off commands or fresh connections. The daemon (default) keeps a persistent connection and buffers events for streaming commands (--follow).
     #[arg(long, global = true)]
     pub no_daemon: bool,
 
@@ -78,8 +78,14 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// List open browser tabs
+    #[command(long_about = "List open browser tabs.
+
+Output: {\"results\": [{\"url\": \"...\", \"title\": \"...\", \"actor\": \"...\", \"selected\": true}], \"total\": N, \"meta\": {...}}")]
     Tabs,
     /// Navigate to a URL
+    #[command(long_about = "Navigate to a URL.
+
+Output: {\"results\": {\"url\": \"...\", \"title\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
     Navigate {
         /// The URL to navigate to
         url: String,
@@ -90,17 +96,20 @@ pub enum Command {
         /// Collection runs for this duration then returns all captured events.
         #[arg(long, default_value_t = 10000)]
         network_timeout: u64,
-        /// After navigating, wait for this text to appear on the page
+        /// After navigating, wait for this text to appear in the page's visible content. Runs after the navigation load event completes.
         #[arg(long, conflicts_with = "wait_selector")]
         wait_text: Option<String>,
-        /// After navigating, wait for this CSS selector to match
+        /// After navigating, wait for this CSS selector to match an element in the DOM. Runs after the navigation load event completes.
         #[arg(long, conflicts_with = "wait_text")]
         wait_selector: Option<String>,
-        /// Timeout for wait condition in milliseconds [default: 5000]
+        /// Timeout for the --wait-text/--wait-selector condition in milliseconds. If the condition is not met within this time, the command fails with an error showing the elapsed time.
         #[arg(long, default_value_t = 5000)]
         wait_timeout: u64,
     },
     /// Evaluate JavaScript in the target tab
+    #[command(long_about = "Evaluate JavaScript in the target tab.
+
+Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}")]
     Eval {
         /// JavaScript expression to evaluate
         script: String,
@@ -108,6 +117,10 @@ pub enum Command {
     /// Extract visible page text (document.body.innerText)
     PageText,
     /// Query DOM elements by CSS selector
+    #[command(long_about = "Query DOM elements by CSS selector.
+
+Output: {\"results\": [\"<html_string>\", ...], \"total\": N, \"meta\": {...}}
+With --count: {\"results\": {\"count\": N}, \"total\": 1, \"meta\": {...}}")]
     Dom {
         #[command(subcommand)]
         dom_command: Option<DomCommand>,
@@ -131,6 +144,10 @@ pub enum Command {
         count: bool,
     },
     /// Read console messages
+    #[command(long_about = "Read console messages.
+
+Default: 50 messages, sorted by timestamp (newest first).
+Output: {\"results\": [{\"level\": \"...\", \"message\": \"...\", \"source\": \"...\", \"line\": N, \"timestamp\": N}], \"total\": N, \"meta\": {...}}")]
     Console {
         /// Filter by log level (error, warn, info, log, debug)
         #[arg(long)]
@@ -165,7 +182,11 @@ Recommended workflows:
     start network monitoring before the page load begins.
 
 The --filter and --method flags narrow results after capture; they do not
-affect which requests Firefox records.")]
+affect which requests Firefox records.
+
+Default: 20 results, sorted by duration (slowest first).
+Output (summary mode): {\"results\": {\"summary\": {...}, \"top_slowest\": [...]}, \"total\": N, \"meta\": {...}}
+Output (--detail): {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"status\": 200, \"duration_ms\": N, ...}], \"total\": N, \"meta\": {...}}")]
     Network {
         /// Filter by URL pattern (substring match)
         #[arg(long)]
@@ -178,6 +199,12 @@ affect which requests Firefox records.")]
         follow: bool,
     },
     /// Query browser Performance API entries and Core Web Vitals
+    #[command(
+        long_about = "Query browser Performance API entries and Core Web Vitals.
+
+Default: 20 resources, sorted by duration (slowest first).
+Output: {\"results\": [{\"url\": \"...\", \"duration_ms\": N, \"transfer_size\": N, ...}], \"total\": N, \"meta\": {...}}"
+    )]
     Perf {
         #[command(subcommand)]
         perf_command: Option<PerfCommand>,
@@ -195,6 +222,10 @@ affect which requests Firefox records.")]
         group_by: Option<String>,
     },
     /// Capture a screenshot
+    #[command(long_about = "Capture a screenshot.
+
+Output: {\"results\": {\"file\": \"...\", \"width\": N, \"height\": N}, \"total\": 1, \"meta\": {...}}
+With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
     Screenshot {
         /// Output file path
         #[arg(long, short, conflicts_with = "base64")]
@@ -236,6 +267,11 @@ affect which requests Firefox records.")]
         wait_timeout: u64,
     },
     /// List cookies via the Firefox StorageActor (includes httpOnly, secure, sameSite, etc.)
+    #[command(
+        long_about = "List cookies via the Firefox StorageActor (includes httpOnly, secure, sameSite, etc.).
+
+Output: {\"results\": [{\"name\": \"...\", \"value\": \"...\", \"domain\": \"...\", \"path\": \"...\", \"secure\": true, \"httpOnly\": true}], \"total\": N, \"meta\": {...}}"
+    )]
     Cookies {
         /// Filter by cookie name (exact match)
         #[arg(long)]
@@ -292,6 +328,11 @@ affect which requests Firefox records.")]
     },
     /// Dump structured page snapshot for LLM consumption: DOM tree with semantic roles,
     /// key attributes, interactive elements, and text content
+    #[command(
+        long_about = "Dump structured page snapshot for LLM consumption: DOM tree with semantic roles, key attributes, interactive elements, and text content.
+
+Output: {\"results\": {\"tag\": \"HTML\", \"children\": [...], ...}, \"total\": 1, \"meta\": {...}}"
+    )]
     Snapshot {
         /// Maximum tree depth to traverse (default: 6)
         #[arg(long, default_value_t = 6)]

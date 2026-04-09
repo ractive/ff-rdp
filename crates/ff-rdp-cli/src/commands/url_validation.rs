@@ -15,7 +15,7 @@ pub fn validate_url(url: &str) -> Result<(), AppError> {
 
     if !ALLOWED_SCHEMES.contains(&scheme.as_str()) {
         return Err(AppError::User(format!(
-            "URL scheme '{scheme}:' is not allowed; permitted schemes: http, https, file, about"
+            "URL scheme '{scheme}:' is not allowed; permitted schemes: http, https, file, about. Use --allow-unsafe-urls to allow javascript: and data: schemes"
         )));
     }
 

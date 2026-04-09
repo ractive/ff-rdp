@@ -100,6 +100,59 @@ GENERAL
     ff-rdp <command> --jq '.results[0]'
 
   Extract specific fields:
-    ff-rdp perf --jq '[.results[] | {{url, duration_ms}}]'"#
+    ff-rdp perf --jq '[.results[] | {{url, duration_ms}}]'
+
+INTERACTION WORKFLOWS
+  Fill and submit a form:
+    ff-rdp click "input[name=email]"
+    ff-rdp type "input[name=email]" "user@example.com"
+    ff-rdp type "input[name=password]" "secret" --clear
+    ff-rdp click "button[type=submit]"
+    ff-rdp wait --text "Dashboard" --wait-timeout 10000
+
+  Wait for dynamic content:
+    ff-rdp navigate https://example.com
+    ff-rdp wait --selector ".content-loaded"
+    ff-rdp dom ".content-loaded" --text
+
+  Navigate and verify:
+    ff-rdp navigate https://example.com --wait-text "Welcome"
+    ff-rdp eval "document.title"
+    ff-rdp dom "h1" --text
+
+ERROR HANDLING
+  Check if element exists before clicking:
+    ff-rdp dom "button.submit" --count --jq '.results.count'
+    ff-rdp click "button.submit"
+
+  Retry on timeout:
+    ff-rdp wait --selector ".loaded" --wait-timeout 10000
+    # If timed out, increase timeout or check the page:
+    ff-rdp snapshot --depth 2
+
+  Verify navigation succeeded:
+    ff-rdp navigate https://example.com --wait-text "Expected content"
+    ff-rdp eval "document.readyState"
+    ff-rdp eval "window.location.href"
+
+CROSS-COMMAND WORKFLOWS
+  Full page audit (navigate → perf → a11y → network → screenshot):
+    ff-rdp navigate https://example.com --with-network --wait-text "loaded"
+    ff-rdp perf audit
+    ff-rdp a11y contrast --fail-only
+    ff-rdp network --detail --limit 10
+    ff-rdp screenshot -o audit.png
+
+  Monitor console while testing:
+    ff-rdp console --follow --level error &
+    ff-rdp navigate https://example.com
+    ff-rdp eval "triggerAction()"
+    ff-rdp console --level error
+
+  Compare before/after performance:
+    ff-rdp perf compare https://old.example.com https://new.example.com --label "Before,After"
+
+  Extract all links and check status:
+    ff-rdp dom "a[href]" --attrs --jq '[.results[].href]'"#
     );
 }

@@ -317,6 +317,68 @@ All commands return JSON by default with envelope: `{"results": ..., "total": N,
 When results are truncated: `{"results": ..., "total": N, "truncated": true, "hint": "showing 20 of 84, use --all for complete list", "meta": {...}}`
 Use `--jq` to filter: operates on `.results` automatically (implies --detail mode).
 Use `--format text` for human-readable table output (mutually exclusive with --jq).
+
+## Output examples
+
+### tabs output
+{"results": [{"url": "https://...", "title": "Page Title", "actor": "server1.conn0.tab1", "selected": true}], "total": 1, "meta": {"host": "localhost", "port": 6000}}
+
+### network output (summary mode, default)
+{"results": {"summary": {"total_requests": 42, "total_duration_ms": 3200}, "top_slowest": [...]}, "total": 42, "meta": {...}}
+
+### network output (detail mode: --detail, --jq, etc.)
+{"results": [{"url": "...", "method": "GET", "status": 200, "duration_ms": 150}], "total": 42, "meta": {...}}
+
+### console output
+{"results": [{"level": "error", "message": "...", "source": "...", "line": 42, "timestamp": 1700000000}], "total": 5, "meta": {...}}
+
+### dom output
+{"results": ["<h1>Hello</h1>"], "total": 1, "meta": {...}}
+
+### cookies output
+{"results": [{"name": "session", "value": "abc", "domain": ".example.com", "path": "/", "secure": true, "httpOnly": true}], "total": 1, "meta": {...}}
+
+## Troubleshooting
+
+### Zero results
+- `network` returns 0: page may have loaded before connection. Use `navigate --with-network <url>` or `network --follow`.
+- `console` returns 0: no messages yet. Use `--follow` to stream, or generate with `eval 'console.log("test")'`.
+- `cookies` returns 0: page may not set cookies, or a consent banner is blocking them. Check `meta.note` in the output.
+- `dom` returns 0: selector may not match. Use `dom stats` to verify the page has content, then refine the selector.
+
+### Timeout errors
+- `wait`/`navigate --wait-*` timeout: the condition was not met. Increase `--wait-timeout` or verify the condition is correct.
+- Connection timeout: Firefox may not be running or the port is wrong. Use `ff-rdp launch --headless --temp-profile` to start it.
+
+### Tab not found
+- Use `ff-rdp tabs` to list all available tabs and their indices/URLs.
+- Tab index is 1-based (first tab is `--tab 1`).
+- URL matching is case-insensitive substring: `--tab github` matches `https://github.com/...`.
+
+## Workflow patterns
+
+### Navigate and inspect
+ff-rdp navigate https://example.com --wait-text "Welcome"
+ff-rdp snapshot --depth 3
+ff-rdp a11y --interactive
+
+### Full page audit
+ff-rdp navigate https://example.com --with-network
+ff-rdp perf audit
+ff-rdp a11y contrast --fail-only
+ff-rdp screenshot -o audit.png
+
+### Form interaction
+ff-rdp click "input[name=email]"
+ff-rdp type "input[name=email]" "user@example.com"
+ff-rdp type "input[name=password]" "secret" --clear
+ff-rdp click "button[type=submit]"
+ff-rdp wait --text "Dashboard" --wait-timeout 10000
+
+### Monitor and debug
+ff-rdp console --follow --level error &
+ff-rdp navigate https://example.com
+ff-rdp console --level error
 "#;
 
 pub fn run(cli: &Cli) -> Result<(), AppError> {
@@ -363,7 +425,13 @@ mod tests {
             "sources",
             "launch",
         ];
-        let subcommands = ["perf compare", "perf audit", "perf vitals", "perf summary"];
+        let subcommands = [
+            "perf compare",
+            "perf audit",
+            "perf vitals",
+            "perf summary",
+            "a11y contrast",
+        ];
         for cmd in subcommands {
             assert!(
                 LLM_REFERENCE.contains(cmd),

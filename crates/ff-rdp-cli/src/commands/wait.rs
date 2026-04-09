@@ -32,7 +32,7 @@ pub fn run(cli: &Cli, opts: &WaitOptions<'_>) -> Result<(), AppError> {
 
     let condition = describe_condition(opts);
     let timeout_msg = format!(
-        "wait timed out after {}ms — condition not met: {condition}",
+        "wait timed out after {}ms — condition not met: {condition}; increase with --wait-timeout",
         opts.wait_timeout
     );
 

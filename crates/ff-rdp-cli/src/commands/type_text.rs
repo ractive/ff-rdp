@@ -22,7 +22,7 @@ pub fn run(cli: &Cli, selector: &str, text: &str, clear: bool) -> Result<(), App
     let js = format!(
         r"(function() {{
   var el = document.querySelector('{escaped_sel}');
-  if (!el) throw new Error('Element not found: {escaped_sel}');
+  if (!el) throw new Error('Element not found: {escaped_sel} — use ff-rdp dom SELECTOR --count to verify the selector matches');
   {clear_stmt}
   el.value = {escaped_text_json};
   el.dispatchEvent(new Event('input', {{bubbles: true}}));

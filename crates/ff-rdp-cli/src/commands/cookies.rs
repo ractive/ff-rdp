@@ -85,7 +85,18 @@ pub fn run(cli: &Cli, name: Option<&str>) -> Result<(), AppError> {
         m.insert("note".to_string(), json!(note));
     }
 
-    let envelope = output::envelope(&result_json, total, &meta);
+    let mut envelope = output::envelope(&result_json, total, &meta);
+    if total == 0
+        && let Some(obj) = envelope.as_object_mut()
+    {
+        obj.insert(
+            "hint".to_string(),
+            json!(
+                "No cookies found. The page may not set cookies, or try navigating first. \
+                 If a consent banner is present, accept it or use `ff-rdp launch --auto-consent`."
+            ),
+        );
+    }
 
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)

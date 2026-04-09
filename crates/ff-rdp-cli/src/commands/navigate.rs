@@ -371,7 +371,7 @@ fn wait_after_navigate(
     let console_actor = ctx.target.console_actor.clone();
     let condition = describe_wait_condition(opts);
     let timeout_msg = format!(
-        "navigate wait timed out after {}ms — condition not met: {condition}",
+        "navigate wait timed out after {}ms — condition not met: {condition}; increase with --wait-timeout",
         opts.wait_timeout
     );
 

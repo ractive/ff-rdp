@@ -59,6 +59,7 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
     // Attempt native thread-actor source listing; fall back to JS eval on errors
     // that indicate Firefox 149+ protocol changes (unrecognized method or
     // `undefined passed where a value is required`).
+    let mut used_js_fallback = false;
     let sources = match ThreadActor::list_sources(ctx.transport_mut(), thread_actor.as_ref()) {
         Ok(s) => s
             .into_iter()
@@ -75,6 +76,7 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
                 "debug: sources thread actor failed ({e}); \
                  falling back to JS DOM/Performance API"
             );
+            used_js_fallback = true;
             list_sources_via_js(&mut ctx)?
         }
         Err(e) => return Err(AppError::from(e)),
@@ -110,7 +112,13 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
 
     let total = results.len();
     let result_json = json!(results);
-    let meta = json!({"host": cli.host, "port": cli.port});
+    let mut meta = json!({"host": cli.host, "port": cli.port});
+    if used_js_fallback
+        && let Some(m) = meta.as_object_mut()
+    {
+        m.insert("fallback".to_string(), json!(true));
+        m.insert("fallback_method".to_string(), json!("js-eval"));
+    }
     let envelope = output::envelope(&result_json, total, &meta);
 
     OutputPipeline::from_cli(cli)?

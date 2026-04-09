@@ -123,6 +123,14 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
         || cli.all
         || cli.fields.is_some();
 
+    let empty_hint = if results.is_empty() {
+        Some(json!(
+            "No network events captured. Events are buffered by the daemon; navigate first with: ff-rdp navigate <url> --with-network, or use --follow to stream events in real time."
+        ))
+    } else {
+        None
+    };
+
     if use_detail {
         let controls = OutputControls::from_cli(cli, SortDir::Desc);
         let mut detail = results;
@@ -144,8 +152,13 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
         let (limited, total, truncated) = controls.apply_limit(detail, Some(20));
         let shown = limited.len();
         let limited = controls.apply_fields(limited);
-        let envelope =
+        let mut envelope =
             output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
+        if let Some(hint) = empty_hint
+            && let Some(obj) = envelope.as_object_mut()
+        {
+            obj.insert("hint".to_string(), hint);
+        }
         return OutputPipeline::from_cli(cli)?
             .finalize(&envelope)
             .map_err(AppError::from);
@@ -154,7 +167,12 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
     // Summary mode (default).
     // The non-timed drain_network_events() stops on idle, so timeout is never reached.
     let summary = build_network_summary(&results, false);
-    let envelope = output::envelope(&summary, 1, &meta);
+    let mut envelope = output::envelope(&summary, 1, &meta);
+    if let Some(hint) = empty_hint
+        && let Some(obj) = envelope.as_object_mut()
+    {
+        obj.insert("hint".to_string(), hint);
+    }
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
