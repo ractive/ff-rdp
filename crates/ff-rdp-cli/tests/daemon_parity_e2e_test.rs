@@ -76,8 +76,7 @@ fn isolated_home() -> tempfile::TempDir {
 
 fn start_daemon(mock_port: u16, home_dir: &std::path::Path) -> DaemonGuard {
     let child = Command::new(ff_rdp_bin())
-        .env("HOME", home_dir)
-        .env("USERPROFILE", home_dir)
+        .env("FF_RDP_HOME", home_dir)
         .args([
             "--host",
             "127.0.0.1",
@@ -232,8 +231,7 @@ fn daemon_navigate_with_network_captures_requests() {
     ]);
 
     let output = Command::new(ff_rdp_bin())
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
+        .env("FF_RDP_HOME", home.path())
         .args(&args)
         .output()
         .expect("failed to spawn ff-rdp");

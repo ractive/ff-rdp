@@ -102,8 +102,15 @@ pub(crate) fn remove_registry_in(dir: &Path) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Return the `~/.ff-rdp/` directory, creating it if it does not exist.
+///
+/// Respects `FF_RDP_HOME` env var as an override (useful for testing on
+/// Windows where `dirs::home_dir()` uses the Windows API and ignores
+/// `HOME`/`USERPROFILE` overrides).
 pub fn registry_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("could not determine home directory")?;
+    let home = match std::env::var_os("FF_RDP_HOME") {
+        Some(h) => PathBuf::from(h),
+        None => dirs::home_dir().context("could not determine home directory")?,
+    };
     let dir = home.join(".ff-rdp");
     #[cfg(unix)]
     {
