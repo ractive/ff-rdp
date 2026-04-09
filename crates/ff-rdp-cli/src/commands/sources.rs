@@ -6,7 +6,7 @@ use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_and_get_target;
+use super::connect_tab::connect_direct;
 use super::js_helpers::eval_or_bail;
 
 /// JavaScript fallback for listing script sources via the DOM and Performance API.
@@ -48,7 +48,7 @@ const SOURCES_JS: &str = r#"(function() {
 })()"#;
 
 pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(), AppError> {
-    let mut ctx = connect_and_get_target(cli)?;
+    let mut ctx = connect_direct(cli)?;
 
     let thread_actor = ctx
         .target

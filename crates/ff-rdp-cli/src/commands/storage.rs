@@ -6,7 +6,7 @@ use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_and_get_target;
+use super::connect_tab::connect_direct;
 use super::js_helpers::eval_or_bail;
 
 /// Read all keys or a single key from localStorage or sessionStorage.
@@ -21,7 +21,7 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
         }
     };
 
-    let mut ctx = connect_and_get_target(cli)?;
+    let mut ctx = connect_direct(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
     let meta = json!({

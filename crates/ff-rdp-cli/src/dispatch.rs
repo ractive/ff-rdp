@@ -4,6 +4,40 @@ use crate::commands::nav_action::NavAction;
 use crate::daemon::server;
 use crate::error::AppError;
 
+/// Dispatch a CLI command to its handler.
+///
+/// # Connection routing
+///
+/// Most commands connect via the daemon proxy when one is available.  The
+/// following commands always bypass the daemon and connect directly to
+/// Firefox (`connect_direct`), because their protocol interactions are
+/// incompatible with the daemon's watcher subscription or message routing:
+///
+/// | Command      | Reason                                          |
+/// |--------------|-------------------------------------------------|
+/// | `screenshot` | Two-step capture protocol conflicts with watcher|
+/// | `cookies`    | `watchResources("cookies")` intercepted by daemon watcher |
+/// | `storage`    | Same watcher interception issue as cookies       |
+/// | `a11y`       | Accessibility walker actors conflict with proxy  |
+/// | `sources`    | Thread actor `sources` method conflicts with proxy |
+///
+/// Commands that **require** daemon event buffering or streaming:
+///
+/// | Command                   | Reason                              |
+/// |---------------------------|-------------------------------------|
+/// | `console --follow`        | Streams buffered console events     |
+/// | `network --follow`        | Streams buffered network events     |
+/// | `navigate --with-network` | Captures network during navigation  |
+/// | `network` (no --follow)   | Drains buffered network events      |
+/// | `console` (no --follow)   | Drains buffered console events      |
+///
+/// All other commands use `connect_and_get_target`, which routes through
+/// the daemon when available or falls back to direct connection.
+///
+/// **Note:** Non-streaming `network` and `console` intentionally use the
+/// daemon path because they drain events the daemon has been buffering in
+/// the background — this is the daemon's primary value proposition for
+/// these commands.
 pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
     match &cli.command {
         Command::Tabs => commands::tabs::run(cli),
