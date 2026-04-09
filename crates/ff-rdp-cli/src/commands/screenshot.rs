@@ -10,7 +10,7 @@ use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_and_get_target;
+use super::connect_tab::connect_direct;
 use super::js_helpers::eval_or_bail;
 
 /// JavaScript injected into the page to capture a screenshot.
@@ -35,7 +35,10 @@ const SCREENSHOT_JS: &str = r"(function() {
 const PNG_DATA_URL_PREFIX: &str = "data:image/png;base64,";
 
 pub fn run(cli: &Cli, output_path: Option<&str>, base64_mode: bool) -> Result<(), AppError> {
-    let mut ctx = connect_and_get_target(cli)?;
+    // Screenshot always connects directly to Firefox, bypassing the daemon.
+    // The daemon's watcher subscription interferes with the two-step screenshot
+    // protocol, causing Firefox-side timeouts.
+    let mut ctx = connect_direct(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
     let eval_result = eval_or_bail(

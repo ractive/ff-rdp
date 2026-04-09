@@ -76,8 +76,7 @@ fn isolated_home() -> tempfile::TempDir {
 
 fn start_daemon(mock_port: u16, home_dir: &std::path::Path) -> DaemonGuard {
     let child = Command::new(ff_rdp_bin())
-        .env("HOME", home_dir)
-        .env("USERPROFILE", home_dir)
+        .env("FF_RDP_HOME", home_dir)
         .args([
             "--host",
             "127.0.0.1",
@@ -232,8 +231,7 @@ fn daemon_navigate_with_network_captures_requests() {
     ]);
 
     let output = Command::new(ff_rdp_bin())
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
+        .env("FF_RDP_HOME", home.path())
         .args(&args)
         .output()
         .expect("failed to spawn ff-rdp");
@@ -273,116 +271,6 @@ fn daemon_navigate_with_network_captures_requests() {
         "by_cause_type must be an object"
     );
     assert!(network["slowest"].is_array(), "slowest must be an array");
-}
-
-// ---------------------------------------------------------------------------
-// Mock server: daemon startup + screenshot command
-//
-// Message flow (single TCP connection from daemon):
-//   Daemon startup: listTabs, getTarget, startListeners, getWatcher, watchResources
-//   CLI via daemon: listTabs (forwarded), getTarget (forwarded)
-//   CLI via daemon: evaluateJSAsync (forwarded) + evaluationResult followup
-// ---------------------------------------------------------------------------
-
-fn screenshot_daemon_server() -> MockRdpServer {
-    MockRdpServer::new()
-        // Both daemon startup and CLI-forwarded calls use the same Fixed handler.
-        .on("listTabs", load_fixture("list_tabs_response.json"))
-        // Daemon startup calls getTarget to obtain the consoleActor and
-        // then startListeners to activate console event delivery.
-        .on("getTarget", load_fixture("get_target_response.json"))
-        .on(
-            "startListeners",
-            load_fixture("start_listeners_response.json"),
-        )
-        .on("getWatcher", load_fixture("get_watcher_response.json"))
-        .on(
-            "watchResources",
-            load_fixture("watch_resources_response.json"),
-        )
-        // The screenshot command uses evaluateJSAsync (drawWindow JS path) with an
-        // async evaluationResult followup carrying the PNG data URL.
-        .on_with_followup(
-            "evaluateJSAsync",
-            load_fixture("eval_immediate_response.json"),
-            load_fixture("eval_result_screenshot.json"),
-        )
-}
-
-// ---------------------------------------------------------------------------
-// screenshot through daemon
-// ---------------------------------------------------------------------------
-
-#[test]
-fn daemon_screenshot_saves_png_file() {
-    let _guard = daemon_test_mutex().lock().expect("daemon test mutex");
-    let home = isolated_home();
-
-    let server = screenshot_daemon_server();
-    let mock_port = server.port();
-    let mock_handle = std::thread::spawn(move || server.serve_one());
-
-    let mut daemon = start_daemon(mock_port, home.path());
-    let _proxy_port = wait_for_daemon_ready(mock_port, Duration::from_secs(5), home.path());
-
-    // Use a unique temp path for the output PNG so tests don't collide.
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time")
-        .as_nanos();
-    // Canonicalize the temp directory so that on macOS (where /var is a symlink
-    // to /private/var) the path matches whatever the daemon returns.
-    let temp_dir = std::fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
-    let out_path = temp_dir.join(format!("daemon_screenshot_{ts}.png"));
-
-    let mut args = daemon_args(mock_port);
-    args.extend([
-        "screenshot".to_owned(),
-        "--output".to_owned(),
-        out_path.to_string_lossy().into_owned(),
-    ]);
-
-    let output = Command::new(ff_rdp_bin())
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
-        .args(&args)
-        .output()
-        .expect("failed to spawn ff-rdp");
-
-    // Kill daemon before asserting so cleanup always happens, even on panic.
-    daemon.kill();
-    let _ = mock_handle.join();
-
-    // Assert file was created before cleaning it up.
-    let file_existed = out_path.exists();
-    let file_len = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
-    let _ = std::fs::remove_file(&out_path);
-
-    assert!(
-        output.status.success(),
-        "daemon screenshot must succeed; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    assert!(file_existed, "screenshot PNG file should have been created");
-    assert!(file_len > 0, "screenshot PNG file should be non-empty");
-
-    let json: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
-
-    assert_eq!(json["total"], 1, "total should be 1");
-    assert_eq!(json["results"]["width"], 1, "width should match fixture");
-    assert_eq!(json["results"]["height"], 1, "height should match fixture");
-    assert!(
-        json["results"]["bytes"].as_u64().unwrap_or(0) > 0,
-        "bytes should be non-zero"
-    );
-    let path_str = json["results"]["path"].as_str().unwrap_or("");
-    assert_eq!(
-        path_str,
-        out_path.to_string_lossy(),
-        "results.path should match requested output path"
-    );
 }
 
 // ---------------------------------------------------------------------------
