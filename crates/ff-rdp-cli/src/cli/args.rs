@@ -185,7 +185,7 @@ The --filter and --method flags narrow results after capture; they do not
 affect which requests Firefox records.
 
 Default: 20 results, sorted by duration (slowest first).
-Output (summary mode): {\"results\": {\"summary\": {...}, \"top_slowest\": [...]}, \"total\": N, \"meta\": {...}}
+Output (summary mode): {\"results\": {\"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false}, \"total\": N, \"meta\": {...}}
 Output (--detail): {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"status\": 200, \"duration_ms\": N, ...}], \"total\": N, \"meta\": {...}}")]
     Network {
         /// Filter by URL pattern (substring match)

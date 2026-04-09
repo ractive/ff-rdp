@@ -26,13 +26,13 @@ Before writing code, do a focused dogfooding session as an LLM user:
 - [x] Note every time you have to guess a flag, re-run a command, or read source code to understand output
 - [x] Record specific instances where a hint, better help text, or recipe would have saved a round-trip
 
-Save findings in `kb/dogfooding/dogfooding-session-34.md`.
+Save findings in [[dogfooding-session-34]].
 
 ## Part A: Help Text Improvements [0/5]
 
 ### A1: Add output format examples to subcommand help [0/1]
 - [x] For the 10 most-used commands (`tabs`, `navigate`, `eval`, `cookies`, `screenshot`, `network`, `console`, `perf vitals`, `dom`, `snapshot`), add an `Output:` section to the clap `long_about` showing the JSON structure. Keep it short — just the key fields, not every possible field. Example:
-  ```
+  ```json
   Output: {"results": [{"url": "...", "title": "...", "index": 1}], "total": N}
   ```
 
@@ -85,7 +85,7 @@ Save findings in `kb/dogfooding/dogfooding-session-34.md`.
 - [x] Re-run the same tasks from the pre-implementation session
 - [x] Verify hints appear when expected and are helpful
 - [x] Verify help text answers questions without needing to read source
-- [x] Save findings in `kb/dogfooding/dogfooding-session-35.md`
+- [x] Save findings in [[dogfooding-session-35]]
 
 ## Test Fixtures
 

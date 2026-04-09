@@ -152,7 +152,7 @@ CROSS-COMMAND WORKFLOWS
   Compare before/after performance:
     ff-rdp perf compare https://old.example.com https://new.example.com --label "Before,After"
 
-  Extract all links and check status:
+  Extract all links:
     ff-rdp dom "a[href]" --attrs --jq '[.results[].href]'"#
     );
 }

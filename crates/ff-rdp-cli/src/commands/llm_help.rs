@@ -315,7 +315,7 @@ ff-rdp launch --headless --temp-profile --auto-consent
 ## Output format
 All commands return JSON by default with envelope: `{"results": ..., "total": N, "meta": {...}}`
 When results are truncated: `{"results": ..., "total": N, "truncated": true, "hint": "showing 20 of 84, use --all for complete list", "meta": {...}}`
-Use `--jq` to filter: operates on `.results` automatically (implies --detail mode).
+Use `--jq` to filter: operates on the full envelope `{results, total, meta}` (use `.results`, `.total`, `.meta` to access fields; also implies --detail mode for list commands).
 Use `--format text` for human-readable table output (mutually exclusive with --jq).
 
 ## Output examples
@@ -324,7 +324,7 @@ Use `--format text` for human-readable table output (mutually exclusive with --j
 {"results": [{"url": "https://...", "title": "Page Title", "actor": "server1.conn0.tab1", "selected": true}], "total": 1, "meta": {"host": "localhost", "port": 6000}}
 
 ### network output (summary mode, default)
-{"results": {"summary": {"total_requests": 42, "total_duration_ms": 3200}, "top_slowest": [...]}, "total": 42, "meta": {...}}
+{"results": {"total_requests": 42, "total_transfer_bytes": 512000, "by_cause_type": {"script": 10, "img": 5}, "slowest": [...], "timeout_reached": false}, "total": 42, "meta": {...}}
 
 ### network output (detail mode: --detail, --jq, etc.)
 {"results": [{"url": "...", "method": "GET", "status": 200, "duration_ms": 150}], "total": 42, "meta": {...}}

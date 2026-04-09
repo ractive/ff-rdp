@@ -93,7 +93,7 @@ pub fn run(cli: &Cli, name: Option<&str>) -> Result<(), AppError> {
             "hint".to_string(),
             json!(
                 "No cookies found. The page may not set cookies, or try navigating first. \
-                 If a consent banner is present, accept it or use `ff-rdp launch --auto-consent`."
+                 If a consent banner is present, accept it or use `ff-rdp launch --temp-profile --auto-consent`."
             ),
         );
     }

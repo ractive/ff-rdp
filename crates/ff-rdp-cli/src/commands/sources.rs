@@ -113,9 +113,7 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
     let total = results.len();
     let result_json = json!(results);
     let mut meta = json!({"host": cli.host, "port": cli.port});
-    if used_js_fallback
-        && let Some(m) = meta.as_object_mut()
-    {
+    if used_js_fallback && let Some(m) = meta.as_object_mut() {
         m.insert("fallback".to_string(), json!(true));
         m.insert("fallback_method".to_string(), json!("js-eval"));
     }

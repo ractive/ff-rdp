@@ -26,7 +26,11 @@ pub fn resolve_tab<'a>(
         // Try 1-based integer index first.
         if let Ok(n) = selector.parse::<usize>() {
             let count = tabs.len();
-            return if n == 0 || n > count {
+            return if count == 0 {
+                Err(AppError::User(
+                    "no tabs available — use `ff-rdp launch --headless --temp-profile` to start Firefox, then `ff-rdp tabs`".to_owned(),
+                ))
+            } else if n == 0 || n > count {
                 Err(AppError::User(format!(
                     "tab index {n} out of range (1–{count} tabs available); use `ff-rdp tabs` to list available tabs"
                 )))
