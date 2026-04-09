@@ -30,7 +30,28 @@ pub(crate) fn read_registry_in(dir: &Path) -> Result<Option<DaemonInfo>> {
         .with_context(|| format!("reading registry at {}", path.display()))?;
     let info: DaemonInfo = serde_json::from_str(&contents)
         .with_context(|| format!("parsing registry at {}", path.display()))?;
+    validate_registry(&info)
+        .with_context(|| format!("validating registry at {}", path.display()))?;
     Ok(Some(info))
+}
+
+/// Validate that a deserialized [`DaemonInfo`] contains sane values.
+///
+/// Guards against corrupted or maliciously crafted registry files that
+/// could cause confusing downstream errors (e.g. connecting to port 0).
+fn validate_registry(info: &DaemonInfo) -> Result<()> {
+    anyhow::ensure!(
+        info.proxy_port > 0,
+        "proxy_port must be > 0, got {}",
+        info.proxy_port
+    );
+    anyhow::ensure!(
+        info.firefox_port > 0,
+        "firefox_port must be > 0, got {}",
+        info.firefox_port
+    );
+    anyhow::ensure!(info.pid > 0, "pid must be > 0, got {}", info.pid);
+    Ok(())
 }
 
 /// Write `info` to `<dir>/daemon.json` atomically using write-then-rename.
@@ -275,5 +296,32 @@ mod tests {
         fs::write(dir.path().join("daemon.json"), b"not valid json").expect("write corrupt");
         let result = read_registry_in(dir.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_invalid_port_zero_returns_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let json = r#"{"pid":1234,"proxy_port":0,"firefox_host":"127.0.0.1","firefox_port":6000,"started_at":"2026-04-09T00:00:00Z"}"#;
+        fs::write(dir.path().join("daemon.json"), json).expect("write");
+        let result = read_registry_in(dir.path());
+        assert!(result.is_err(), "port 0 should fail validation");
+    }
+
+    #[test]
+    fn read_invalid_firefox_port_zero_returns_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let json = r#"{"pid":1234,"proxy_port":7000,"firefox_host":"127.0.0.1","firefox_port":0,"started_at":"2026-04-09T00:00:00Z"}"#;
+        fs::write(dir.path().join("daemon.json"), json).expect("write");
+        let result = read_registry_in(dir.path());
+        assert!(result.is_err(), "firefox_port 0 should fail validation");
+    }
+
+    #[test]
+    fn read_invalid_pid_zero_returns_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let json = r#"{"pid":0,"proxy_port":7000,"firefox_host":"127.0.0.1","firefox_port":6000,"started_at":"2026-04-09T00:00:00Z"}"#;
+        fs::write(dir.path().join("daemon.json"), json).expect("write");
+        let result = read_registry_in(dir.path());
+        assert!(result.is_err(), "pid 0 should fail validation");
     }
 }

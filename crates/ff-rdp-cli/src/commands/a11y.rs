@@ -8,7 +8,7 @@ use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::{ConnectedTab, connect_and_get_target};
+use super::connect_tab::{ConnectedTab, connect_direct};
 use super::js_helpers::resolve_result;
 
 pub fn run(
@@ -18,7 +18,7 @@ pub fn run(
     selector: Option<&str>,
     interactive: bool,
 ) -> Result<(), AppError> {
-    let mut ctx = connect_and_get_target(cli)?;
+    let mut ctx = connect_direct(cli)?;
 
     let accessibility_actor = ctx.target.accessibility_actor.clone().ok_or_else(|| {
         AppError::User(

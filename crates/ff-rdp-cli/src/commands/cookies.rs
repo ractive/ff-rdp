@@ -1,15 +1,12 @@
-use std::time::Duration;
-
-use ff_rdp_core::{Grip, RdpConnection, RootActor, StorageActor, WebConsoleActor};
+use ff_rdp_core::{Grip, StorageActor, WebConsoleActor};
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
-use crate::tab_target::resolve_tab;
 
-use super::connect_tab::{ConnectedTab, connect_and_get_target};
+use super::connect_tab::{ConnectedTab, connect_direct};
 use super::js_helpers::escape_selector;
 
 /// Common CMP (Consent Management Platform) selectors used to detect consent
@@ -24,32 +21,11 @@ const CMP_SELECTORS: &[&str] = &[
 ];
 
 pub fn run(cli: &Cli, name: Option<&str>) -> Result<(), AppError> {
-    let mut ctx = connect_and_get_target(cli)?;
+    let mut ctx = connect_direct(cli)?;
     let tab_actor = ctx.target_tab_actor().clone();
 
-    let cookies = if ctx.via_daemon {
-        // In daemon mode, the daemon proxy multiplexes all CLI requests through
-        // a single Firefox connection.  Because `watchResources("cookies")` sends
-        // a `resources-available-array` response and Firefox assigns the same
-        // watcher actor to every `getWatcher` call on a given connection, the
-        // daemon's `firefox_reader_loop` intercepts this response and it never
-        // reaches the CLI client.
-        //
-        // Work around this by opening a short-lived *direct* connection to Firefox
-        // (bypassing the daemon proxy) only for the cookies lookup.  Firefox
-        // accepts multiple simultaneous connections, each with its own actor
-        // namespace, so this is safe and has no effect on the daemon's state.
-        let direct_timeout = Duration::from_millis(cli.timeout);
-        let mut direct_conn =
-            RdpConnection::connect(&cli.host, cli.port, direct_timeout).map_err(AppError::from)?;
-        let direct_transport = direct_conn.transport_mut();
-        let tabs = RootActor::list_tabs(direct_transport).map_err(AppError::from)?;
-        let tab = resolve_tab(&tabs, cli.tab.as_deref(), cli.tab_id.as_deref())?;
-        let direct_tab_actor = tab.actor.clone();
-        StorageActor::list_cookies(direct_transport, &direct_tab_actor).map_err(AppError::from)?
-    } else {
-        StorageActor::list_cookies(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?
-    };
+    let cookies =
+        StorageActor::list_cookies(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
 
     let mut results: Vec<Value> = cookies
         .iter()

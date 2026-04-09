@@ -80,7 +80,10 @@ pub(crate) fn resolve_connection_target(
         }
         Ok(None) => {} // not running — fall through to spawn
         Err(e) => {
-            eprintln!("warning: failed to check daemon status: {e:#}");
+            eprintln!(
+                "warning: failed to check daemon status: {e:#}{}",
+                log_path_hint()
+            );
             return ConnectionTarget::Direct;
         }
     }
@@ -99,7 +102,10 @@ pub(crate) fn resolve_connection_target(
     if let Err(e) =
         process::spawn_daemon(&exe_path, firefox_host, firefox_port, daemon_timeout_secs)
     {
-        eprintln!("warning: failed to start daemon: {e:#}, connecting directly");
+        eprintln!(
+            "warning: failed to start daemon: {e:#}, connecting directly{}",
+            log_path_hint()
+        );
         return ConnectionTarget::Direct;
     }
 
@@ -109,7 +115,10 @@ pub(crate) fn resolve_connection_target(
             port: info.proxy_port,
         },
         Err(e) => {
-            eprintln!("warning: daemon started but registry not found: {e:#}, connecting directly");
+            eprintln!(
+                "warning: daemon started but registry not found: {e:#}, connecting directly{}",
+                log_path_hint()
+            );
             ConnectionTarget::Direct
         }
     }
@@ -242,6 +251,15 @@ fn recv_daemon_ack(transport: &mut RdpTransport, context: &str) -> Result<Vec<Va
         leftovers.push(response);
     }
     anyhow::bail!("did not receive daemon ack for {context} within 64 frames")
+}
+
+/// Format a hint pointing to the daemon log file, or an empty string if
+/// the path cannot be determined.
+fn log_path_hint() -> String {
+    match super::registry::log_path() {
+        Ok(p) => format!(" (check {} for details)", p.display()),
+        Err(_) => String::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -250,9 +250,9 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: BufReader<TcpStream
 /// Returns `true` only for `resources-available-array` / `resources-updated-array`
 /// events that originate from the **daemon's own watcher actor**.
 ///
-/// Events of the same type from other watcher actors (e.g. one the CLI created
-/// for the `cookies` command) must be forwarded to the RPC client so that the
-/// `watchResources` handshake completes correctly.
+/// Events of the same type from other watcher actors (e.g. one created by a
+/// CLI command forwarded through the daemon) must be forwarded to the RPC
+/// client so that the `watchResources` handshake completes correctly.
 fn is_watcher_event(msg: &Value, daemon_watcher_actor: &str) -> bool {
     let is_watcher_type = matches!(
         msg.get("type").and_then(Value::as_str),
@@ -589,8 +589,16 @@ fn handle_client(
     let client_id = stream.as_raw_fd_or_handle();
 
     // Register this client as the current RPC forwarding target.
-    // The previous RPC client (if any) is simply replaced — it is no longer
-    // the active RDP session and will not receive Firefox responses anyway.
+    // The previous RPC client (if any) is simply replaced.
+    //
+    // KNOWN LIMITATION: When multiple CLI clients connect simultaneously,
+    // the last one becomes the RPC writer and may receive RDP responses
+    // intended for a previous client.  Firefox RDP lacks per-request
+    // correlation IDs, so there is no way to demultiplex responses to
+    // the correct client.  This is not a security concern (all clients
+    // run as the same local user on localhost) but can cause confusing
+    // behaviour when running parallel CLI invocations through the daemon.
+    // Workaround: use `--no-daemon` for parallel CLI usage.
     let client_writer = stream
         .try_clone()
         .context("cloning client stream for RPC forwarding")?;
