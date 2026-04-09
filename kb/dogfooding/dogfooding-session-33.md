@@ -30,8 +30,8 @@ Post iterations 34-37 regression test of the 5 commands that failed in [[dogfood
 ### Screenshot via daemon (still broken)
 - Works perfectly in direct mode (`--no-daemon`): 698KB PNG saved
 - Fails via daemon: `screenshotActor.capture failed (operation timed out)`
-- Root cause: daemon's `handle_client()` has hardcoded 500ms client read timeout; screenshot's two-step protocol takes >500ms
-- Tracked in [[iterations/iteration-38-daemon-client-timeout|iteration 38]]
+- Root cause: the daemon's active watcher subscription interferes with Firefox 149's two-step screenshot protocol, causing server-side timeouts (not a client read timeout — the 500ms was already bumped to 30s in iter 38)
+- Fix: screenshot now always bypasses the daemon and connects directly to Firefox
 
 ### Navigate --with-network timeout
 - The fix in iter 37 changed from idle-timeout to wall-clock-time semantics — this works correctly
