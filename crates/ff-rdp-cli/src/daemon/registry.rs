@@ -308,6 +308,15 @@ mod tests {
     }
 
     #[test]
+    fn read_invalid_firefox_port_zero_returns_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let json = r#"{"pid":1234,"proxy_port":7000,"firefox_host":"127.0.0.1","firefox_port":0,"started_at":"2026-04-09T00:00:00Z"}"#;
+        fs::write(dir.path().join("daemon.json"), json).expect("write");
+        let result = read_registry_in(dir.path());
+        assert!(result.is_err(), "firefox_port 0 should fail validation");
+    }
+
+    #[test]
     fn read_invalid_pid_zero_returns_error() {
         let dir = tempfile::tempdir().expect("tempdir");
         let json = r#"{"pid":0,"proxy_port":7000,"firefox_host":"127.0.0.1","firefox_port":6000,"started_at":"2026-04-09T00:00:00Z"}"#;
