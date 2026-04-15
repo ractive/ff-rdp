@@ -23,6 +23,7 @@ pub(crate) mod perf_compare;
 pub(crate) mod recipes;
 pub(crate) mod responsive;
 pub(crate) mod screenshot;
+pub(crate) mod scroll;
 pub(crate) mod snapshot;
 pub(crate) mod sources;
 pub(crate) mod storage;

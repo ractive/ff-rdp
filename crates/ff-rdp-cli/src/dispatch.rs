@@ -1,4 +1,4 @@
-use crate::cli::args::{A11yCommand, Cli, Command, DomCommand, PerfCommand};
+use crate::cli::args::{A11yCommand, Cli, Command, DomCommand, PerfCommand, ScrollCommand};
 use crate::commands;
 use crate::commands::nav_action::NavAction;
 use crate::daemon::server;
@@ -230,6 +230,33 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             Ok(())
         }
         Command::LlmHelp => commands::llm_help::run(cli),
+        Command::Scroll { scroll_command } => match scroll_command {
+            ScrollCommand::To {
+                selector,
+                block,
+                smooth,
+            } => commands::scroll::run_to(cli, selector, *block, *smooth),
+            ScrollCommand::By {
+                dx,
+                dy,
+                page_down,
+                page_up,
+                smooth,
+            } => commands::scroll::run_by(cli, *dx, *dy, *page_down, *page_up, *smooth),
+            ScrollCommand::Container {
+                selector,
+                dx,
+                dy,
+                to_end,
+                to_start,
+            } => commands::scroll::run_container(cli, selector, *dx, *dy, *to_end, *to_start),
+            ScrollCommand::Until {
+                selector,
+                direction,
+                timeout,
+            } => commands::scroll::run_until(cli, selector, direction, *timeout),
+            ScrollCommand::Text { text } => commands::scroll::run_text(cli, text),
+        },
         Command::Daemon => {
             server::run_daemon(&cli.host, cli.port, cli.daemon_timeout).map_err(AppError::Internal)
         }

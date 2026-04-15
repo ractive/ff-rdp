@@ -5,7 +5,7 @@ use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-const LLM_REFERENCE: &str = r#"# ff-rdp — Firefox Remote Debugging Protocol CLI
+const LLM_REFERENCE: &str = r##"# ff-rdp — Firefox Remote Debugging Protocol CLI
 
 ## Global flags
   --host <HOST>          Firefox debug server host [default: localhost]
@@ -300,6 +300,62 @@ ff-rdp sources
 ff-rdp sources --filter "main.js"
 ```
 
+### scroll
+Scroll the page or a specific element.
+
+#### scroll to <SELECTOR>
+Scroll an element into the viewport using scrollIntoView.
+  --block <ALIGN>        Alignment: top, center, bottom, nearest [default: top]
+  --smooth               Use smooth scrolling
+```
+ff-rdp scroll to ".listing:nth-child(5)"
+ff-rdp scroll to ".listing:nth-child(5)" --block center
+ff-rdp scroll to "footer" --smooth
+```
+
+#### scroll by
+Scroll the viewport by pixels or by a page.
+  --dx <PX>              Horizontal delta in pixels [default: 0]
+  --dy <PX>              Vertical delta in pixels (mutually exclusive with --page-down/--page-up)
+  --page-down            Scroll down by 85% of viewport height
+  --page-up              Scroll up by 85% of viewport height
+  --smooth               Use smooth scrolling
+```
+ff-rdp scroll by --page-down
+ff-rdp scroll by --page-up
+ff-rdp scroll by --dy 600 --smooth
+ff-rdp scroll by --dx 200
+```
+
+#### scroll container <SELECTOR>
+Scroll an overflow container element directly (scrollTop/scrollLeft).
+  --dx <PX>              Horizontal delta [default: 0]
+  --dy <PX>              Vertical delta [default: 0]
+  --to-end               Scroll to bottom/right of container
+  --to-start             Scroll to top/left of container
+```
+ff-rdp scroll container ".sidebar" --dy 300
+ff-rdp scroll container ".feed" --to-end
+ff-rdp scroll container ".panel" --to-start
+```
+
+#### scroll until <SELECTOR>
+Scroll until an element is visible in the viewport (polls every 200ms).
+  --direction <DIR>      up or down [default: down]
+  --timeout <MS>         Timeout in milliseconds [default: 10000]
+```
+ff-rdp scroll until "#load-more-sentinel"
+ff-rdp scroll until ".item:nth-child(50)" --timeout 15000
+ff-rdp scroll until ".header" --direction up
+```
+
+#### scroll text <TEXT>
+Find text on the page (case-sensitive) and scroll its container into view.
+```
+ff-rdp scroll text "Contact Us"
+ff-rdp scroll text "Privacy Policy"
+```
+
 ### launch
 Launch Firefox with remote debugging enabled.
   --headless             Run in headless mode
@@ -379,7 +435,7 @@ ff-rdp wait --text "Dashboard" --wait-timeout 10000
 ff-rdp console --follow --level error &
 ff-rdp navigate https://example.com
 ff-rdp console --level error
-"#;
+"##;
 
 pub fn run(cli: &Cli) -> Result<(), AppError> {
     let results = json!(LLM_REFERENCE.trim());
@@ -424,6 +480,7 @@ mod tests {
             "inspect",
             "sources",
             "launch",
+            "scroll",
         ];
         let subcommands = [
             "perf compare",
@@ -431,6 +488,11 @@ mod tests {
             "perf vitals",
             "perf summary",
             "a11y contrast",
+            "scroll to",
+            "scroll by",
+            "scroll container",
+            "scroll until",
+            "scroll text",
         ];
         for cmd in subcommands {
             assert!(

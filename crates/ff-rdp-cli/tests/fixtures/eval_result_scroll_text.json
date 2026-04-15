@@ -1,0 +1,10 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "input": "(function() { ... })()",
+  "result": "__FF_RDP_JSON__{\"scrolled\":true,\"text\":\"Contact Us\",\"viewport\":{\"x\":0,\"y\":800,\"width\":1280,\"height\":720},\"target\":{\"tag\":\"h2\",\"rect\":{\"top\":50,\"left\":0,\"width\":600,\"height\":40}}}",
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183977.373,
+  "timestamp": 1775437183980.721,
+  "type": "evaluationResult"
+}
