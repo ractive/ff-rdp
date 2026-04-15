@@ -1,0 +1,10 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "input": "(function() { ... })()",
+  "result": "__FF_RDP_JSON__{\"scrolled\":true,\"selector\":\"h2.section-title\",\"viewport\":{\"x\":0,\"y\":200,\"width\":1280,\"height\":720},\"target\":{\"selector\":\"h2.section-title\",\"rect\":{\"top\":10,\"left\":0,\"width\":800,\"height\":40,\"bottom\":50,\"right\":800}},\"atEnd\":false}",
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183977.373,
+  "timestamp": 1775437183980.721,
+  "type": "evaluationResult"
+}

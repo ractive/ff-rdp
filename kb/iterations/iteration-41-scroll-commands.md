@@ -2,9 +2,15 @@
 title: "Iteration 41: Scroll Commands"
 date: 2026-04-09
 type: iteration
-status: planned
+status: completed
 branch: iter-41/scroll-commands
-tags: [iteration, feature, scroll, interaction, dogfooding]
+tags:
+  - iteration
+  - feature
+  - scroll
+  - interaction
+  - dogfooding
+completed: 2026-04-16
 ---
 
 # Iteration 41: Scroll Commands
@@ -77,32 +83,32 @@ All scroll subcommands return consistent JSON:
 ## Tasks
 
 ### Core Implementation
-- [ ] Add `Scroll` command enum with subcommands in `args.rs`
-- [ ] Create `crates/ff-rdp-cli/src/commands/scroll.rs` with JS IIFE templates
-- [ ] Wire up dispatch in `dispatch.rs`
-- [ ] Implement `scroll to` with `--block` and `--smooth` flags
-- [ ] Implement `scroll by` with `--dy`, `--dx`, `--page-down`, `--page-up`
-- [ ] Implement `scroll container` with `--dy`, `--dx`, `--to-end`, `--to-start`
-- [ ] Implement `scroll until` with polling loop and `--timeout`/`--direction`
-- [ ] Implement `scroll text` with TreeWalker approach
+- [x] Add `Scroll` command enum with subcommands in `args.rs`
+- [x] Create `crates/ff-rdp-cli/src/commands/scroll.rs` with JS IIFE templates
+- [x] Wire up dispatch in `dispatch.rs`
+- [x] Implement `scroll to` with `--block` and `--smooth` flags
+- [x] Implement `scroll by` with `--dy`, `--dx`, `--page-down`, `--page-up`
+- [x] Implement `scroll container` with `--dy`, `--dx`, `--to-end`, `--to-start`
+- [x] Implement `scroll until` with polling loop and `--timeout`/`--direction`
+- [x] Implement `scroll text` with TreeWalker approach
 
 ### Polish
-- [ ] Add `scroll` section to `recipes.rs`
-- [ ] Add `scroll` commands to `llm_help.rs`
-- [ ] `--format text` for all subcommands
+- [x] Add `scroll` section to `recipes.rs`
+- [x] Add `scroll` commands to `llm_help.rs`
+- [x] `--format text` for all subcommands
 
 ### Tests
-- [ ] Mock server e2e tests for each subcommand
-- [ ] Live Firefox fixture recording for scroll commands
-- [ ] Test `scroll container` with overflow:auto div
-- [ ] Test `scroll until` with lazy-loaded content simulation
+- [x] Mock server e2e tests for each subcommand
+- [x] Live Firefox fixture recording for scroll commands
+- [x] Test `scroll container` with overflow:auto div
+- [x] Test `scroll until` with lazy-loaded content simulation
 
 ### Acceptance Criteria
-- [ ] `scroll to` brings element into viewport with correct `--block` positioning
-- [ ] `scroll by --page-down` scrolls ~85% of viewport height
-- [ ] `scroll container` works on overflow:auto/scroll elements (not just viewport)
-- [ ] `scroll until` polls and scrolls until selector appears or times out
-- [ ] `scroll text` finds text across element boundaries
-- [ ] All subcommands return consistent JSON with viewport/target info
-- [ ] `--format text` produces readable one-liner summaries
-- [ ] `recipes` and `llm-help` updated
+- [x] `scroll to` brings element into viewport with correct `--block` positioning
+- [x] `scroll by --page-down` scrolls ~85% of viewport height
+- [x] `scroll container` works on overflow:auto/scroll elements (not just viewport)
+- [x] `scroll until` polls and scrolls until selector appears or times out
+- [x] `scroll text` finds text across element boundaries
+- [x] All subcommands return consistent JSON with viewport/target info
+- [x] `--format text` produces readable one-liner summaries
+- [x] `recipes` and `llm-help` updated

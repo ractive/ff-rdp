@@ -2641,3 +2641,123 @@ fn record_console_follow_cross_connection() {
     save_core_fixture("console_follow_cross_connection.json", &event);
     save_cli_fixture("console_follow_cross_connection.json", &event);
 }
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_scroll_to() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+    navigate_to_example_com(transport);
+    let console = get_console_actor(transport);
+
+    // Inject a tall page so scrolling is meaningful
+    let _ = record_eval(
+        transport,
+        &console,
+        "(function() { \
+            document.body.style.height = '5000px'; \
+            var target = document.createElement('h2'); \
+            target.className = 'scroll-target'; \
+            target.textContent = 'Scroll Target'; \
+            target.style.marginTop = '2000px'; \
+            document.body.appendChild(target); \
+            return 'injected'; \
+        })()",
+        None,
+        None,
+    );
+
+    let js = "(function() { \
+        var el = document.querySelector('.scroll-target'); \
+        if (!el) throw new Error('Element not found: .scroll-target'); \
+        el.scrollIntoView({block: 'center', behavior: 'auto'}); \
+        var r = el.getBoundingClientRect(); \
+        var atEnd = (window.scrollY + window.innerHeight) >= (document.documentElement.scrollHeight - 1); \
+        return '__FF_RDP_JSON__' + JSON.stringify({ \
+            scrolled: true, \
+            selector: '.scroll-target', \
+            viewport: {x: window.scrollX, y: window.scrollY, width: window.innerWidth, height: window.innerHeight}, \
+            target: {selector: '.scroll-target', rect: {top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.bottom, right: r.right}}, \
+            atEnd: atEnd \
+        }); \
+    })()";
+
+    let (_imm, result) = record_eval(
+        transport,
+        &console,
+        js,
+        None,
+        Some("eval_result_scroll_to.json"),
+    );
+
+    assert!(
+        result["result"].is_string(),
+        "scroll to result should be a string (sentinel-prefixed JSON)"
+    );
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_scroll_container() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+    navigate_to_example_com(transport);
+    let console = get_console_actor(transport);
+
+    // Inject an overflow:auto container with content taller than the container
+    let _ = record_eval(
+        transport,
+        &console,
+        "(function() { \
+            var container = document.createElement('div'); \
+            container.className = 'scroll-container'; \
+            container.style.height = '200px'; \
+            container.style.overflow = 'auto'; \
+            var inner = document.createElement('div'); \
+            inner.style.height = '1000px'; \
+            inner.textContent = 'Scrollable content'; \
+            container.appendChild(inner); \
+            document.body.appendChild(container); \
+            return 'injected'; \
+        })()",
+        None,
+        None,
+    );
+
+    let js = "(function() { \
+        var el = document.querySelector('.scroll-container'); \
+        if (!el) throw new Error('Element not found: .scroll-container'); \
+        var before = {scrollTop: el.scrollTop, scrollLeft: el.scrollLeft}; \
+        el.scrollTop += 300; \
+        var after = {scrollTop: el.scrollTop, scrollLeft: el.scrollLeft}; \
+        var atEnd = (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 1); \
+        return '__FF_RDP_JSON__' + JSON.stringify({ \
+            scrolled: true, \
+            selector: '.scroll-container', \
+            before: before, \
+            after: after, \
+            scrollHeight: el.scrollHeight, \
+            clientHeight: el.clientHeight, \
+            atEnd: atEnd \
+        }); \
+    })()";
+
+    let (_imm, result) = record_eval(
+        transport,
+        &console,
+        js,
+        None,
+        Some("eval_result_scroll_container.json"),
+    );
+
+    assert!(
+        result["result"].is_string(),
+        "scroll container result should be a string (sentinel-prefixed JSON)"
+    );
+}

@@ -102,6 +102,26 @@ GENERAL
   Extract specific fields:
     ff-rdp perf --jq '[.results[] | {{url, duration_ms}}]'
 
+SCROLLING
+  Scroll element into viewport:
+    ff-rdp scroll to ".listing:nth-child(5)"
+    ff-rdp scroll to ".listing:nth-child(5)" --block center
+
+  Scroll viewport:
+    ff-rdp scroll by --page-down
+    ff-rdp scroll by --dy 600 --smooth
+
+  Scroll overflow container (Chrome MCP can't do this):
+    ff-rdp scroll container ".sidebar" --dy 300
+    ff-rdp scroll container ".feed" --to-end
+
+  Scroll until element visible (lazy-loaded content):
+    ff-rdp scroll until ".load-more-sentinel"
+    ff-rdp scroll until ".item:nth-child(50)" --timeout 10000
+
+  Find text and scroll to it:
+    ff-rdp scroll text "Contact Us"
+
 INTERACTION WORKFLOWS
   Fill and submit a form:
     ff-rdp click "input[name=email]"

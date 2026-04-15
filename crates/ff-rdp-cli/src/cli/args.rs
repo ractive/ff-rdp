@@ -380,6 +380,19 @@ Output: {\"results\": {\"tag\": \"HTML\", \"children\": [...], ...}, \"total\": 
         #[arg(long, group = "style_mode")]
         layout: bool,
     },
+    /// Scroll the page or a specific element
+    #[command(long_about = "Scroll the page or a specific element.
+
+Subcommands:
+  scroll to <SELECTOR>       Scroll element into viewport
+  scroll by                  Scroll viewport by pixels or a page
+  scroll container <SEL>     Scroll an overflow container
+  scroll until <SELECTOR>    Scroll until element is visible
+  scroll text <TEXT>         Find text and scroll to it")]
+    Scroll {
+        #[command(subcommand)]
+        scroll_command: ScrollCommand,
+    },
     /// Launch Firefox with remote debugging enabled
     Launch {
         /// Run Firefox in headless mode
@@ -429,6 +442,91 @@ pub enum A11yCommand {
         /// Only show elements that fail AA contrast requirements
         #[arg(long)]
         fail_only: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ScrollCommand {
+    /// Scroll an element into the viewport using scrollIntoView
+    #[command(long_about = "Scroll an element into the viewport.
+Output: {\"results\": {\"scrolled\": true, \"selector\": \"...\", \"viewport\": {...}, \"target\": {...}, \"atEnd\": bool}, \"total\": 1, \"meta\": {...}}")]
+    To {
+        /// CSS selector of the element to scroll into view
+        selector: String,
+        /// Block alignment: top, center, bottom, nearest [default: top]
+        #[arg(long, default_value = "top")]
+        block: String,
+        /// Use smooth scrolling behavior (default is instant)
+        #[arg(long)]
+        smooth: bool,
+    },
+    /// Scroll the viewport by a number of pixels or by a page
+    #[command(long_about = "Scroll the viewport by pixels or by a full page.
+  --page-down and --page-up scroll by 85% of the viewport height.
+  --page-down and --page-up are mutually exclusive with --dy and with each other.
+Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\": N, \"atEnd\": bool}, \"total\": 1, \"meta\": {...}}")]
+    By {
+        /// Horizontal scroll delta in pixels
+        #[arg(long, default_value_t = 0)]
+        dx: i64,
+        /// Vertical scroll delta in pixels (mutually exclusive with --page-down/--page-up)
+        #[arg(long, conflicts_with_all = ["page_down", "page_up"])]
+        dy: Option<i64>,
+        /// Scroll down by 85% of the viewport height (mutually exclusive with --dy/--page-up)
+        #[arg(long, conflicts_with_all = ["dy", "page_up"])]
+        page_down: bool,
+        /// Scroll up by 85% of the viewport height (mutually exclusive with --dy/--page-down)
+        #[arg(long, conflicts_with_all = ["dy", "page_down"])]
+        page_up: bool,
+        /// Use smooth scrolling behavior
+        #[arg(long)]
+        smooth: bool,
+    },
+    /// Scroll an overflow container element directly
+    #[command(
+        long_about = "Scroll an overflow container element (scrollTop/scrollLeft).
+  --to-end scrolls to the bottom; --to-start scrolls to the top.
+Output: {\"results\": {\"scrolled\": true, \"selector\": \"...\", \"before\": {...}, \"after\": {...}, \"scrollHeight\": N, \"clientHeight\": N, \"atEnd\": bool}, \"total\": 1, \"meta\": {...}}"
+    )]
+    Container {
+        /// CSS selector of the overflow container
+        selector: String,
+        /// Horizontal scroll delta in pixels
+        #[arg(long, default_value_t = 0)]
+        dx: i64,
+        /// Vertical scroll delta in pixels
+        #[arg(long, default_value_t = 0)]
+        dy: i64,
+        /// Scroll to the end (bottom/right) of the container
+        #[arg(long, conflicts_with = "to_start")]
+        to_end: bool,
+        /// Scroll to the start (top/left) of the container
+        #[arg(long, conflicts_with = "to_end")]
+        to_start: bool,
+    },
+    /// Scroll until an element is visible in the viewport (polls up to --timeout)
+    #[command(long_about = "Scroll until an element is visible in the viewport.
+  Polls every 200ms, scrolling by 80% of the viewport height each step.
+Output: {\"results\": {\"found\": true, \"selector\": \"...\", \"elapsed_ms\": N, \"scrolls\": N, \"viewport\": {...}, \"target\": {...}}, \"total\": 1, \"meta\": {...}}")]
+    Until {
+        /// CSS selector of the element to scroll to
+        selector: String,
+        /// Scroll direction: up or down [default: down]
+        #[arg(long, default_value = "down")]
+        direction: String,
+        /// Timeout in milliseconds before giving up [default: 10000]
+        #[arg(long, default_value_t = 10000)]
+        timeout: u64,
+    },
+    /// Find text on the page and scroll to it using TreeWalker
+    #[command(
+        long_about = "Find a text string on the page and scroll its container element into view.
+  Uses TreeWalker + NodeFilter.SHOW_TEXT to find the first matching text node (case-sensitive).
+Output: {\"results\": {\"scrolled\": true, \"text\": \"...\", \"viewport\": {...}, \"target\": {\"tag\": \"...\", \"rect\": {...}}}, \"total\": 1, \"meta\": {...}}"
+    )]
+    Text {
+        /// Text to search for (case-sensitive substring match)
+        text: String,
     },
 }
 
