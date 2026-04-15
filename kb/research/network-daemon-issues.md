@@ -8,7 +8,7 @@ status: resolved
 
 # Network Commands Daemon Mode Issues
 
-Research findings for [[iteration-37-network-daemon-fix]].
+Research findings for [[iterations/iteration-37-network-daemon-fix]].
 
 ## Bug 1: `network --limit` Performance API Fallback Timeout
 

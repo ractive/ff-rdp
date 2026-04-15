@@ -1,9 +1,15 @@
 ---
 title: "Iteration 35: Fix Screenshot Command (Firefox 149 Timeout)"
 type: iteration
-status: done
+status: completed
 date: 2026-04-08
-tags: [iteration, bugfix, screenshot, firefox-149, protocol, research]
+tags:
+  - iteration
+  - bugfix
+  - screenshot
+  - firefox-149
+  - protocol
+  - research
 branch: iter-35/screenshot-fix
 ---
 

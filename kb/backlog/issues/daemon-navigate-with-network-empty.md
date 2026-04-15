@@ -1,10 +1,14 @@
 ---
-title: "navigate --with-network returns empty through daemon"
+title: navigate --with-network returns empty through daemon
 type: bug
-status: open
+status: resolved
 priority: high
 discovered: 2026-04-07
-tags: [daemon, network, navigate, dogfooding]
+tags:
+  - daemon
+  - network
+  - navigate
+  - dogfooding
 ---
 
 # navigate --with-network returns empty through daemon

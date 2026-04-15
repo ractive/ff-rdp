@@ -1,10 +1,13 @@
 ---
-title: "jq error messages dump internal Rust debug format"
+title: jq error messages dump internal Rust debug format
 type: bug
-status: open
+status: resolved
 priority: high
 discovered: 2026-04-07
-tags: [jq, ux, dogfooding]
+tags:
+  - jq
+  - ux
+  - dogfooding
 ---
 
 # jq error messages dump internal Rust debug format

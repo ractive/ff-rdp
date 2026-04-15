@@ -1,10 +1,13 @@
 ---
-title: "WCAG color contrast ratio checking"
+title: WCAG color contrast ratio checking
 type: feature
-status: open
+status: resolved
 priority: medium
 discovered: 2026-04-07
-tags: [accessibility, a11y, wcag, contrast]
+tags:
+  - accessibility
+  - wcag
+  - contrast
 ---
 
 # WCAG color contrast ratio checking

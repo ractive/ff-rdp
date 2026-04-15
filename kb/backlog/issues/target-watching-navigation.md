@@ -1,10 +1,14 @@
 ---
-title: "Target watching for seamless navigation handling"
+title: Target watching for seamless navigation handling
 type: feature
-status: open
+status: resolved
 priority: medium
 discovered: 2026-04-07
-tags: [watcher, target, navigation, protocol]
+tags:
+  - watcher
+  - target
+  - protocol
+  - navigate
 ---
 
 # Target watching for seamless navigation handling

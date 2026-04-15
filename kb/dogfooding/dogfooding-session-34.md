@@ -8,7 +8,7 @@ status: completed
 
 # Dogfooding Session 34: Pre-implementation LLM Ergonomics
 
-Pre-implementation dogfooding for [[iteration-39-llm-ergonomics]]. Goal: identify pain points
+Pre-implementation dogfooding for [[iterations/iteration-39-llm-ergonomics]]. Goal: identify pain points
 where better help text, hints, or recipes would save an LLM user a round-trip.
 
 ## Methodology

@@ -1,10 +1,14 @@
 ---
-title: "Real-time console monitoring via watcher resource subscription"
+title: Real-time console monitoring via watcher resource subscription
 type: feature
-status: open
+status: resolved
 priority: medium
 discovered: 2026-04-07
-tags: [console, watcher, streaming, protocol]
+tags:
+  - console
+  - watcher
+  - streaming
+  - protocol
 ---
 
 # Real-time console monitoring via watcher resource subscription

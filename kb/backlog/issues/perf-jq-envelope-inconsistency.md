@@ -1,10 +1,13 @@
 ---
-title: "perf --type resource --jq applies filter to array, not envelope"
+title: perf --type resource --jq applies filter to array, not envelope
 type: bug
-status: open
+status: resolved
 priority: medium
 discovered: 2026-04-07
-tags: [perf, jq, dogfooding]
+tags:
+  - jq
+  - dogfooding
+  - performance
 ---
 
 # perf --type resource --jq applies filter to array, not envelope

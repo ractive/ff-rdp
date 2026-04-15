@@ -19,10 +19,10 @@ Fix the daemon's event forwarding so all commands work identically with and with
 
 - [x] Fix `navigate --with-network` returning empty through daemon: investigate
   why watcher events don't arrive in `drain_network_from_daemon` during navigation
-  → [[daemon-navigate-with-network-empty]]
+  → [[backlog/issues/daemon-navigate-with-network-empty]]
 - [x] Redesign daemon event forwarding: stream watcher events to the requesting
   client in real-time instead of buffering for post-hoc drain
-  → [[daemon-realtime-watcher-events]]
+  → [[backlog/issues/daemon-realtime-watcher-events]]
 - [x] Ensure parity: run the full e2e test suite with and without daemon,
   both must produce identical results
 

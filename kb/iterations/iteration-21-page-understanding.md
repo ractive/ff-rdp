@@ -27,16 +27,16 @@ about precisely, reducing reliance on expensive/imprecise vision inference.
 
 - [x] `ff-rdp screenshot --base64` — return screenshot as base64 in JSON output
   instead of saving to file. Essential for AI agents to "see" the page.
-  → [[screenshot-inline-data]]
+  → [[backlog/issues/screenshot-inline-data]]
 - [x] `ff-rdp snapshot` — combined page structure dump optimized for LLM consumption:
   DOM tree with semantic roles, key attributes, interactive elements, text content.
   Supports `--depth N` and `--max-chars N` with truncation markers
   (`"[... 42 more children]"`). This is ff-rdp's answer to Chrome MCP's `read_page`.
-  → [[page-snapshot-command]]
+  → [[backlog/issues/page-snapshot-command]]
 - [x] `ff-rdp geometry <selector> [<selector>...]` — bounding rects, positions,
   z-index, visibility, overflow, with automatic overlap detection between elements.
   Via eval using `getBoundingClientRect()` + `getComputedStyle()`.
-  → [[element-geometry-command]]
+  → [[backlog/issues/element-geometry-command]]
 
 ## Test Fixtures
 

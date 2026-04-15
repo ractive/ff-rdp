@@ -1,9 +1,14 @@
 ---
-title: "Gradle Daemon Architecture Reference"
+title: Gradle Daemon Architecture Reference
 type: research
 date: 2026-04-06
-status: complete
-tags: [research, gradle, daemon, architecture, reference]
+status: completed
+tags:
+  - research
+  - gradle
+  - daemon
+  - architecture
+  - reference
 ---
 
 # Gradle Daemon Architecture

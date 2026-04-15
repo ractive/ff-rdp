@@ -1,10 +1,13 @@
 ---
 title: "screenshot: return inline base64 data for AI agent consumption"
 type: feature
-status: open
+status: resolved
 priority: high
 discovered: 2026-04-07
-tags: [screenshot, ai-agent, ux]
+tags:
+  - screenshot
+  - ai-agent
+  - ux
 ---
 
 # screenshot: return inline base64 data for AI agent consumption

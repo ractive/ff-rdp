@@ -1,6 +1,6 @@
 ---
 title: "Iteration 18: Dogfooding Fixes"
-status: in-progress
+status: completed
 date: 2026-04-07
 tags:
   - bugfix

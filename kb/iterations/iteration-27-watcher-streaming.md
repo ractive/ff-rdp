@@ -23,14 +23,14 @@ discovery: `firefox -no-remote -profile /tmp/ff-rdp-test-profile --start-debugge
 ## Tasks
 
 - [x] Implement `watchResources(["console-message"])` for real-time console output
-  → [[console-message-watching]]
+  → [[backlog/issues/console-message-watching]]
 - [x] Add `ff-rdp console --follow` to tail console messages live
 - [x] Implement `watchTargets("frame")` for seamless navigation target tracking
-  → [[target-watching-navigation]]
+  → [[backlog/issues/target-watching-navigation]]
 - [x] Add `--follow` flag to `ff-rdp network` for live network event streaming
 - [x] Improve RDP error protocol handling: distinguish unknownActor, wrongState,
   threadWouldRun and provide actionable error messages
-  → [[structured-error-protocol]]
+  → [[backlog/issues/structured-error-protocol]]
 - [x] Daemon compatibility: decide whether `--follow` commands bypass the daemon
   (hold own connection) or stream through it. Test both paths.
 

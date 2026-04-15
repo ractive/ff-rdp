@@ -1,10 +1,14 @@
 ---
 title: "page-snapshot: combined structural dump for AI agent page understanding"
 type: feature
-status: open
+status: resolved
 priority: high
 discovered: 2026-04-07
-tags: [dom, accessibility, ai-agent, snapshot]
+tags:
+  - dom
+  - accessibility
+  - ai-agent
+  - snapshot
 ---
 
 # page-snapshot: combined structural dump for AI agent page understanding

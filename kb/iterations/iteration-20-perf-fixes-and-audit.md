@@ -5,10 +5,10 @@ status: completed
 date: 2026-04-07
 tags:
   - iteration
-  - perf
   - jq
   - bugfix
   - audit
+  - performance
 branch: iter-20/perf-fixes-and-audit
 ---
 
@@ -21,31 +21,31 @@ command on top. Natural progression: fix the foundation, then build the summary.
 
 - [x] Fix jq error messages: catch jaq runtime errors and format as readable
   messages instead of dumping internal Rust debug representation
-  → [[jq-error-messages-unreadable]]
+  → [[backlog/issues/jq-error-messages-unreadable]]
 - [x] Fix `perf --type resource --jq` envelope: apply jq filter to the full
   `{meta, results, total}` envelope, consistent with other perf subcommands
-  → [[perf-jq-envelope-inconsistency]]
+  → [[backlog/issues/perf-jq-envelope-inconsistency]]
 - [x] Fix `perf vitals` FCP/LCP null: fall back to `performance.getEntriesByType('paint')`
   when PerformanceObserver returns empty for paint entries
-  → [[perf-vitals-fcp-lcp-null]]
+  → [[backlog/issues/perf-vitals-fcp-lcp-null]]
 - [x] Add `from_cache` boolean to `perf --type resource` entries when
   `transfer_size == 0 && decoded_size > 0`
-  → [[perf-resource-cache-indicator]]
+  → [[backlog/issues/perf-resource-cache-indicator]]
 
 ## Part B: Resource Enrichment
 
 - [x] Add `resource_type` field to `perf --type resource` entries, derived from
   URL extension with content-type fallback (js, css, image, font, document, xhr, other)
-  → [[perf-resource-type-classification]]
+  → [[backlog/issues/perf-resource-type-classification]]
 - [x] Add `third_party` boolean to `perf --type resource` entries by comparing
   resource domain against the navigation document's domain
-  → [[perf-third-party-detection]]
+  → [[backlog/issues/perf-third-party-detection]]
 
 ## Part C: Audit Command
 
 - [x] Add `ff-rdp dom stats` command: node count, document size, inline script
   count, render-blocking resources, images without lazy loading
-  → [[dom-stats-command]]
+  → [[backlog/issues/dom-stats-command]]
 - [x] Implement `ff-rdp perf audit` combining: navigation timing, web vitals,
   resource breakdown by type/domain, third-party weight, top-N slowest resources,
   DOM stats — single structured JSON output

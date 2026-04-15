@@ -1,10 +1,15 @@
 ---
-title: "Native DOM/CSS inspection via Inspector, Walker, and PageStyle actors"
+title: Native DOM/CSS inspection via Inspector, Walker, and PageStyle actors
 type: feature
-status: open
+status: resolved
 priority: high
 discovered: 2026-04-07
-tags: [dom, css, protocol, inspector, layout]
+tags:
+  - dom
+  - css
+  - protocol
+  - inspector
+  - layout
 ---
 
 # Native DOM/CSS inspection via Inspector, Walker, and PageStyle actors

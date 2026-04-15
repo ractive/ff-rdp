@@ -104,6 +104,6 @@ Commands should bypass the daemon unless they **specifically benefit from event 
 
 ## Related
 
-- [[iteration-13-connection-daemon]] — original daemon implementation
-- [[iteration-14-security-code-review]] — prior security review
-- [[iteration-38-daemon-client-timeout]] — screenshot bypass daemon + client timeout improvements
+- [[iterations/iteration-13-connection-daemon]] — original daemon implementation
+- [[iterations/iteration-14-security-code-review]] — prior security review
+- [[iterations/iteration-38-daemon-client-timeout]] — screenshot bypass daemon + client timeout improvements

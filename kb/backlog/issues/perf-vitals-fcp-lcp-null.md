@@ -1,10 +1,13 @@
 ---
 title: "perf vitals: FCP and LCP null in non-headless Firefox"
 type: bug
-status: open
+status: resolved
 priority: medium
 discovered: 2026-04-07
-tags: [perf, vitals, dogfooding]
+tags:
+  - vitals
+  - dogfooding
+  - performance
 ---
 
 # perf vitals: FCP and LCP null in non-headless Firefox

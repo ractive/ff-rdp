@@ -1,10 +1,13 @@
 ---
 title: "Add DOM stats: node count, document size, render-blocking resources"
 type: feature
-status: open
+status: resolved
 priority: low
 discovered: 2026-04-07
-tags: [dom, perf, dogfooding]
+tags:
+  - dom
+  - dogfooding
+  - performance
 ---
 
 # Add DOM stats: node count, document size, render-blocking resources

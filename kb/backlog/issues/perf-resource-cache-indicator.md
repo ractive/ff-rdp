@@ -1,10 +1,14 @@
 ---
 title: "perf resource: transfer_size 0 for cached resources is confusing"
 type: feature
-status: open
+status: resolved
 priority: low
 discovered: 2026-04-07
-tags: [perf, resource, ux, dogfooding]
+tags:
+  - resource
+  - ux
+  - dogfooding
+  - performance
 ---
 
 # perf resource: transfer_size 0 for cached resources is confusing

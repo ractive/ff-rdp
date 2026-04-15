@@ -1,9 +1,15 @@
 ---
 title: W3C Performance API & Core Web Vitals Research
-status: complete
+status: completed
 date: 2026-04-06
-tags: [performance, cwv, web-vitals, lighthouse, api-design]
-related: [[firefox-rdp-protocol]]
+tags:
+  - performance
+  - cwv
+  - web-vitals
+  - lighthouse
+  - api-design
+related:
+  - - firefox-rdp-protocol
 ---
 
 # W3C Performance API & Core Web Vitals

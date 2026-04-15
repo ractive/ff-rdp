@@ -1,8 +1,13 @@
 ---
 title: "Dogfooding Session 31: Post Iteration 32 Fixes"
 date: 2026-04-08
-tags: [dogfooding, testing, ux, regression, daemon]
-status: complete
+tags:
+  - dogfooding
+  - testing
+  - ux
+  - regression
+  - daemon
+status: completed
 firefox_version: "149.0"
 tool_version: ff-rdp 0.1.0
 ---

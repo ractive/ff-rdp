@@ -1,10 +1,13 @@
 ---
-title: "Daemon should forward watcher events in real-time"
+title: Daemon should forward watcher events in real-time
 type: improvement
-status: open
+status: resolved
 priority: medium
 discovered: 2026-04-07
-tags: [daemon, watcher, architecture]
+tags:
+  - daemon
+  - watcher
+  - architecture
 ---
 
 # Daemon should forward watcher events in real-time
@@ -21,4 +24,4 @@ so that events generated during a navigation are captured in the same response.
 
 ## Related
 
-- [[daemon-navigate-with-network-empty]]
+- [[backlog/issues/daemon-navigate-with-network-empty]]

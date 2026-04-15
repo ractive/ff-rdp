@@ -1,10 +1,14 @@
 ---
 title: "perf resource: add resource_type field derived from content-type"
 type: feature
-status: open
+status: resolved
 priority: medium
 discovered: 2026-04-07
-tags: [perf, resource, ux, dogfooding]
+tags:
+  - resource
+  - ux
+  - dogfooding
+  - performance
 ---
 
 # perf resource: add resource_type field derived from content-type

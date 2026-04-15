@@ -27,10 +27,10 @@ discovery: `firefox -no-remote -profile /tmp/ff-rdp-test-profile --start-debugge
 - [x] Implement StorageActor discovery via watcher or target actor
 - [x] Implement `listStores` / `getStoreObjects` protocol for cookies
 - [x] Migrate `ff-rdp cookies` to use StorageActor, exposing httpOnly/secure/sameSite flags
-  → [[storage-actor-httponly-cookies]]
+  → [[backlog/issues/storage-actor-httponly-cookies]]
 - [x] Add `network` command fallback to Performance API `getEntriesByType('resource')`
   when watcher returns no events (page already loaded)
-  → [[network-empty-for-loaded-pages]]
+  → [[backlog/issues/network-empty-for-loaded-pages]]
 - [ ] Optional: StorageActor for localStorage/sessionStorage
   (skipped — Firefox RDP does not expose local-storage/session-storage via watchResources; JS eval remains the correct approach)
 

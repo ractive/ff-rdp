@@ -1,10 +1,14 @@
 ---
 title: "Output size control: --limit, --sort, --fields, --summary for LLM-friendly responses"
 type: feature
-status: open
+status: resolved
 priority: high
 discovered: 2026-04-07
-tags: [output, ux, ai-agent, architecture]
+tags:
+  - output
+  - ux
+  - ai-agent
+  - architecture
 ---
 
 # Output size control: --limit, --sort, --fields, --summary for LLM-friendly responses

@@ -19,10 +19,10 @@ Automated cross-viewport testing and multi-page performance comparison.
 
 - [x] `ff-rdp responsive <selectors> --widths 320,768,1024,1440` — resize viewport,
   collect geometry + key computed styles at each breakpoint, restore original size
-  → [[responsive-snapshot]]
+  → [[backlog/issues/responsive-snapshot]]
 - [x] `ff-rdp perf compare <url1> <url2> [...]` — navigate each URL sequentially,
   collect timing/vitals/resource stats, return comparison table
-  → [[perf-compare-pages]]
+  → [[backlog/issues/perf-compare-pages]]
 - [x] `--format text` output mode with human-readable tables for all commands
 - [x] `--label` flag for perf compare to name each page in output
 

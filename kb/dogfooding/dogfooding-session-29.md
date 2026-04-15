@@ -1,8 +1,12 @@
 ---
 title: "Dogfooding Session 29: Real-World Testing on comparis.ch"
 date: 2026-04-08
-tags: [dogfooding, testing, ux, bugs]
-status: complete
+tags:
+  - dogfooding
+  - testing
+  - ux
+  - bugs
+status: completed
 firefox_version: "149.0"
 tool_version: ff-rdp 0.1.0
 ---

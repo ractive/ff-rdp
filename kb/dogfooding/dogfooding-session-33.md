@@ -1,5 +1,5 @@
 ---
-title: "Dogfooding Session 33"
+title: Dogfooding Session 33
 type: dogfooding
 date: 2026-04-08
 firefox_version: 149
@@ -7,8 +7,12 @@ mode: daemon
 port: 6000
 site: comparis.ch
 binary: ./target/release/ff-rdp
-status: complete
-tags: [dogfooding, testing, regression, daemon]
+status: completed
+tags:
+  - dogfooding
+  - testing
+  - regression
+  - daemon
 ---
 
 # Dogfooding Session 33

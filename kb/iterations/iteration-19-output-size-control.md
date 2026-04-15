@@ -19,7 +19,7 @@ every subsequent iteration must follow these patterns.
 
 ## Design
 
-→ [[output-size-control]]
+→ [[backlog/issues/output-size-control]]
 
 ## Tasks
 

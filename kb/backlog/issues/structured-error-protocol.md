@@ -1,10 +1,13 @@
 ---
-title: "Improve RDP error protocol handling"
+title: Improve RDP error protocol handling
 type: feature
-status: open
+status: resolved
 priority: low
 discovered: 2026-04-07
-tags: [protocol, errors, robustness]
+tags:
+  - protocol
+  - errors
+  - robustness
 ---
 
 # Improve RDP error protocol handling

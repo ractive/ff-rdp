@@ -6,7 +6,6 @@ date: 2026-04-07
 tags:
   - iteration
   - accessibility
-  - a11y
   - wcag
   - protocol
 branch: iter-22/accessibility
@@ -33,10 +32,10 @@ discovery: `firefox -no-remote -profile /tmp/ff-rdp-test-profile --start-debugge
 - [x] `ff-rdp a11y --selector ".main"` — subtree rooted at a DOM element
 - [x] `ff-rdp a11y --interactive` — filter to only interactive elements
   (buttons, links, inputs, selects)
-  → [[accessibility-tree-command]]
+  → [[backlog/issues/accessibility-tree-command]]
 - [x] `ff-rdp a11y contrast` — WCAG color contrast ratio checking for all
   text elements, with AA/AAA pass/fail per element
-  → [[wcag-contrast-checking]]
+  → [[backlog/issues/wcag-contrast-checking]]
 - [x] Daemon compatibility: ensure AccessibilityActor works through daemon,
   handle `unknownActor` errors after navigation (re-discover actor and retry)
 

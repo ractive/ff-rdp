@@ -1,10 +1,14 @@
 ---
 title: "Element geometry: bounding rects, overlap detection, positions"
 type: feature
-status: open
+status: resolved
 priority: high
 discovered: 2026-04-07
-tags: [dom, layout, geometry, ai-agent]
+tags:
+  - dom
+  - layout
+  - geometry
+  - ai-agent
 ---
 
 # Element geometry: bounding rects, overlap detection, positions

@@ -1,10 +1,14 @@
 ---
 title: "Responsive testing: collect layout data at multiple viewport widths"
 type: feature
-status: open
+status: resolved
 priority: medium
 discovered: 2026-04-07
-tags: [responsive, layout, viewport, ai-agent]
+tags:
+  - responsive
+  - layout
+  - viewport
+  - ai-agent
 ---
 
 # Responsive testing: collect layout data at multiple viewport widths

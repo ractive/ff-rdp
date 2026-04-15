@@ -1,10 +1,14 @@
 ---
 title: "perf resource: add third-party detection"
 type: feature
-status: open
+status: resolved
 priority: medium
 discovered: 2026-04-07
-tags: [perf, resource, third-party, dogfooding]
+tags:
+  - resource
+  - third-party
+  - dogfooding
+  - performance
 ---
 
 # perf resource: add third-party detection

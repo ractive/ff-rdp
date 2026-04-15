@@ -1,10 +1,13 @@
 ---
-title: "Accessibility tree command via AccessibilityActor"
+title: Accessibility tree command via AccessibilityActor
 type: feature
-status: open
+status: resolved
 priority: high
 discovered: 2026-04-07
-tags: [accessibility, a11y, protocol, ai-agent]
+tags:
+  - accessibility
+  - protocol
+  - ai-agent
 ---
 
 # Accessibility tree command via AccessibilityActor

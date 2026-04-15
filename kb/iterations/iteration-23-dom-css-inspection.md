@@ -42,7 +42,7 @@ discovery: `firefox -no-remote -profile /tmp/ff-rdp-test-profile --start-debugge
 - [x] Add `ff-rdp dom tree <selector> --depth N` — structured DOM subtree
   via WalkerActor instead of eval. Include `--max-chars N` cap with truncation
   markers (`"[... 42 more children]"`) per the output size control pattern.
-  → [[native-dom-css-actors]]
+  → [[backlog/issues/native-dom-css-actors]]
 - [x] Daemon compatibility: ensure Inspector/Walker/PageStyle actors work through
   daemon, handle `unknownActor` errors after navigation (stale actor re-discovery)
 

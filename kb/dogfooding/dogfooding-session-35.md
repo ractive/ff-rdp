@@ -8,8 +8,8 @@ status: completed
 
 # Dogfooding Session 35: Post-implementation LLM Ergonomics
 
-Post-implementation verification for [[iteration-39-llm-ergonomics]]. Re-checking the 16 issues
-identified in [[dogfooding-session-34]].
+Post-implementation verification for [[iterations/iteration-39-llm-ergonomics]]. Re-checking the 16 issues
+identified in [[dogfooding/dogfooding-session-34]].
 
 ## Verification Results
 

@@ -1,8 +1,12 @@
 ---
-title: "comparis.ch Website Analysis"
+title: comparis.ch Website Analysis
 date: 2026-04-08
-tags: [dogfooding, performance, accessibility, analysis]
-status: complete
+tags:
+  - dogfooding
+  - performance
+  - accessibility
+  - analysis
+status: completed
 site: comparis.ch
 tool_version: ff-rdp 0.1.0
 firefox_version: "149.0"

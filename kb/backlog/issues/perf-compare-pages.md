@@ -1,10 +1,13 @@
 ---
 title: "perf compare: side-by-side page performance comparison"
 type: feature
-status: open
+status: resolved
 priority: low
 discovered: 2026-04-07
-tags: [perf, comparison, dogfooding]
+tags:
+  - comparison
+  - dogfooding
+  - performance
 ---
 
 # perf compare: side-by-side page performance comparison

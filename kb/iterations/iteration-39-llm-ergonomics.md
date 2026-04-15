@@ -26,7 +26,7 @@ Before writing code, do a focused dogfooding session as an LLM user:
 - [x] Note every time you have to guess a flag, re-run a command, or read source code to understand output
 - [x] Record specific instances where a hint, better help text, or recipe would have saved a round-trip
 
-Save findings in [[dogfooding-session-34]].
+Save findings in [[dogfooding/dogfooding-session-34]].
 
 ## Part A: Help Text Improvements [0/5]
 
@@ -85,7 +85,7 @@ Save findings in [[dogfooding-session-34]].
 - [x] Re-run the same tasks from the pre-implementation session
 - [x] Verify hints appear when expected and are helpful
 - [x] Verify help text answers questions without needing to read source
-- [x] Save findings in [[dogfooding-session-35]]
+- [x] Save findings in [[dogfooding/dogfooding-session-35]]
 
 ## Test Fixtures
 

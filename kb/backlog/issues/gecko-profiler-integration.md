@@ -1,10 +1,13 @@
 ---
-title: "Gecko Profiler integration via PerfActor"
+title: Gecko Profiler integration via PerfActor
 type: feature
 status: open
 priority: low
 discovered: 2026-04-07
-tags: [profiler, perf, protocol]
+tags:
+  - profiler
+  - protocol
+  - performance
 ---
 
 # Gecko Profiler integration via PerfActor
