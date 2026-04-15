@@ -1,9 +1,8 @@
 use std::time::{Duration, Instant};
 
-use ff_rdp_core::{ActorId, WebConsoleActor};
 use serde_json::json;
 
-use crate::cli::args::Cli;
+use crate::cli::args::{Cli, ScrollBlock};
 use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
@@ -11,28 +10,41 @@ use crate::output_pipeline::OutputPipeline;
 use super::connect_tab::connect_and_get_target;
 use super::js_helpers::{JSON_SENTINEL, escape_selector, eval_or_bail, resolve_result};
 
+/// Serialize a user-supplied string as a JS string literal (double-quoted,
+/// with all special characters escaped). Used to embed the *original* value in
+/// JSON output (as opposed to the single-quote-escaped form produced by
+/// `escape_selector`, which is only safe for `document.querySelector('…')`).
+fn js_string_literal(s: &str) -> String {
+    // serde_json::to_string on a &str is infallible; a double-quoted JSON
+    // string is also a valid JS string literal.
+    serde_json::to_string(s)
+        .unwrap_or_else(|e| unreachable!("serde_json::to_string(&str) is infallible: {e}"))
+}
+
 // ---------------------------------------------------------------------------
 // scroll to <selector>
 // ---------------------------------------------------------------------------
 
-pub fn run_to(cli: &Cli, selector: &str, block: &str, smooth: bool) -> Result<(), AppError> {
+pub fn run_to(cli: &Cli, selector: &str, block: ScrollBlock, smooth: bool) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
     let escaped = escape_selector(selector);
+    let selector_lit = js_string_literal(selector);
+    let block_spec = block.as_spec();
     let behavior = if smooth { "smooth" } else { "auto" };
     let js = format!(
         r"(function() {{
   var el = document.querySelector('{escaped}');
   if (!el) throw new Error('Element not found: {escaped} — use ff-rdp dom SELECTOR --count to verify the selector matches');
-  el.scrollIntoView({{block: '{block}', behavior: '{behavior}'}});
+  el.scrollIntoView({{block: '{block_spec}', behavior: '{behavior}'}});
   var r = el.getBoundingClientRect();
   var atEnd = (window.scrollY + window.innerHeight) >= (document.documentElement.scrollHeight - 1);
   return '{JSON_SENTINEL}' + JSON.stringify({{
     scrolled: true,
-    selector: '{escaped}',
+    selector: {selector_lit},
     viewport: {{x: window.scrollX, y: window.scrollY, width: window.innerWidth, height: window.innerHeight}},
-    target: {{selector: '{escaped}', rect: {{top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.bottom, right: r.right}}}},
+    target: {{selector: {selector_lit}, rect: {{top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.bottom, right: r.right}}}},
     atEnd: atEnd
   }});
 }})()"
@@ -124,6 +136,7 @@ pub fn run_container(
     let console_actor = ctx.target.console_actor.clone();
 
     let escaped = escape_selector(selector);
+    let selector_lit = js_string_literal(selector);
     let scroll_logic = if to_end {
         "el.scrollTop = el.scrollHeight; el.scrollLeft = el.scrollWidth;".to_owned()
     } else if to_start {
@@ -142,7 +155,7 @@ pub fn run_container(
   var atEnd = (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 1);
   return '{JSON_SENTINEL}' + JSON.stringify({{
     scrolled: true,
-    selector: '{escaped}',
+    selector: {selector_lit},
     before: before,
     after: after,
     scrollHeight: el.scrollHeight,
@@ -184,6 +197,7 @@ pub fn run_until(
     let console_actor = ctx.target.console_actor.clone();
 
     let escaped = escape_selector(selector);
+    let selector_lit = js_string_literal(selector);
     let sign = if direction == "up" { "-" } else { "" };
 
     // JS to check if element is in viewport
@@ -208,13 +222,13 @@ pub fn run_until(
     let result_js = format!(
         r"(function() {{
   var el = document.querySelector('{escaped}');
-  if (!el) return '{JSON_SENTINEL}' + JSON.stringify({{found: false, selector: '{escaped}'}});
+  if (!el) return '{JSON_SENTINEL}' + JSON.stringify({{found: false, selector: {selector_lit}}});
   var r = el.getBoundingClientRect();
   return '{JSON_SENTINEL}' + JSON.stringify({{
     found: true,
-    selector: '{escaped}',
+    selector: {selector_lit},
     viewport: {{x: window.scrollX, y: window.scrollY, width: window.innerWidth, height: window.innerHeight}},
-    target: {{selector: '{escaped}', rect: {{top: r.top, left: r.left, width: r.width, height: r.height}}}}
+    target: {{selector: {selector_lit}, rect: {{top: r.top, left: r.left, width: r.width, height: r.height}}}}
   }});
 }})()"
     );
@@ -349,30 +363,35 @@ pub fn run_text(cli: &Cli, text: &str) -> Result<(), AppError> {
         .map_err(AppError::from)
 }
 
-// ---------------------------------------------------------------------------
-// Helper: resolve a poll-loop JS check result to bool
-// ---------------------------------------------------------------------------
-
-fn _poll_check(
-    ctx: &mut super::connect_tab::ConnectedTab,
-    console_actor: &ActorId,
-    js: &str,
-) -> Result<bool, AppError> {
-    let result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, js)
-        .map_err(AppError::from)?;
-
-    if let Some(ref exc) = result.exception {
-        let msg = exc.message.as_deref().unwrap_or("poll check exception");
-        eprintln!("error: {msg}");
-        return Err(AppError::Exit(1));
-    }
-
-    Ok(is_truthy_grip(&result.result))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scroll_block_maps_user_friendly_aliases_to_spec_values() {
+        assert_eq!(ScrollBlock::Top.as_spec(), "start");
+        assert_eq!(ScrollBlock::Bottom.as_spec(), "end");
+        assert_eq!(ScrollBlock::Start.as_spec(), "start");
+        assert_eq!(ScrollBlock::End.as_spec(), "end");
+        assert_eq!(ScrollBlock::Center.as_spec(), "center");
+        assert_eq!(ScrollBlock::Nearest.as_spec(), "nearest");
+    }
+
+    #[test]
+    fn js_string_literal_preserves_original_selector_with_quotes() {
+        // Original selector with a single quote should be emitted as a
+        // double-quoted JS literal with the quote unescaped.
+        assert_eq!(
+            js_string_literal("div[data-name='test']"),
+            r#""div[data-name='test']""#
+        );
+    }
+
+    #[test]
+    fn js_string_literal_escapes_special_chars() {
+        assert_eq!(js_string_literal("a\nb"), r#""a\nb""#);
+        assert_eq!(js_string_literal(r#"a"b"#), r#""a\"b""#);
+    }
 
     #[test]
     fn run_to_js_contains_sentinel_and_scroll_into_view() {

@@ -235,7 +235,7 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 selector,
                 block,
                 smooth,
-            } => commands::scroll::run_to(cli, selector, block, *smooth),
+            } => commands::scroll::run_to(cli, selector, *block, *smooth),
             ScrollCommand::By {
                 dx,
                 dy,

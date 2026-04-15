@@ -1,4 +1,4 @@
-use clap::{ArgGroup, Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(name = "ff-rdp", about = "Firefox Remote Debugging Protocol CLI")]
@@ -445,6 +445,32 @@ pub enum A11yCommand {
     },
 }
 
+/// Block-alignment values accepted by `scroll to --block`.
+///
+/// The CSS spec only defines `start`, `center`, `end`, `nearest`, so we map
+/// the user-friendly aliases `top` → `start` and `bottom` → `end`.
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum ScrollBlock {
+    Top,
+    Start,
+    Center,
+    Bottom,
+    End,
+    Nearest,
+}
+
+impl ScrollBlock {
+    /// Return the CSSOM spec value for `scrollIntoView({block})`.
+    pub fn as_spec(self) -> &'static str {
+        match self {
+            ScrollBlock::Top | ScrollBlock::Start => "start",
+            ScrollBlock::Center => "center",
+            ScrollBlock::Bottom | ScrollBlock::End => "end",
+            ScrollBlock::Nearest => "nearest",
+        }
+    }
+}
+
 #[derive(Subcommand)]
 pub enum ScrollCommand {
     /// Scroll an element into the viewport using scrollIntoView
@@ -453,9 +479,9 @@ Output: {\"results\": {\"scrolled\": true, \"selector\": \"...\", \"viewport\": 
     To {
         /// CSS selector of the element to scroll into view
         selector: String,
-        /// Block alignment: top, center, bottom, nearest [default: top]
-        #[arg(long, default_value = "top")]
-        block: String,
+        /// Block alignment [default: top]. Aliases: top=start, bottom=end
+        #[arg(long, value_enum, default_value_t = ScrollBlock::Top)]
+        block: ScrollBlock,
         /// Use smooth scrolling behavior (default is instant)
         #[arg(long)]
         smooth: bool,
@@ -497,11 +523,11 @@ Output: {\"results\": {\"scrolled\": true, \"selector\": \"...\", \"before\": {.
         /// Vertical scroll delta in pixels
         #[arg(long, default_value_t = 0)]
         dy: i64,
-        /// Scroll to the end (bottom/right) of the container
-        #[arg(long, conflicts_with = "to_start")]
+        /// Scroll to the end (bottom/right) of the container (ignores --dx/--dy)
+        #[arg(long, conflicts_with_all = ["to_start", "dx", "dy"])]
         to_end: bool,
-        /// Scroll to the start (top/left) of the container
-        #[arg(long, conflicts_with = "to_end")]
+        /// Scroll to the start (top/left) of the container (ignores --dx/--dy)
+        #[arg(long, conflicts_with_all = ["to_end", "dx", "dy"])]
         to_start: bool,
     },
     /// Scroll until an element is visible in the viewport (polls up to --timeout)
