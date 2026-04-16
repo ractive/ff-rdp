@@ -2,45 +2,45 @@
   "evals": [
     {
       "name": "wohnungsdirekt-fixture",
-      "url": "http://localhost:8787",
-      "setup": "cd tests/fixtures/wohnungsdirekt && python3 -m http.server 8787 &",
+      "url": "http://127.0.0.1:8787",
+      "setup": "(cd tests/fixtures/wohnungsdirekt && python3 -m http.server --bind 127.0.0.1 8787 &) && sleep 1 && ff-rdp navigate 'http://127.0.0.1:8787' --wait-timeout 10000",
       "assertions": [
         {"category": "seo", "check": "missing_title", "desc": "No <title> tag detected", "command": "ff-rdp dom 'head title' --jq '.total'", "expected": "^0$"},
         {"category": "seo", "check": "missing_description", "desc": "No meta description detected", "command": "ff-rdp dom 'head meta[name=description]' --jq '.total'", "expected": "^0$"},
-        {"category": "seo", "check": "duplicate_h1", "desc": "Multiple h1 tags detected", "command": "ff-rdp eval 'document.querySelectorAll(\"h1\").length'", "expected": "2"},
+        {"category": "seo", "check": "duplicate_h1", "desc": "Multiple h1 tags detected", "command": "ff-rdp eval 'document.querySelectorAll(\"h1\").length'", "expected": "^2$"},
         {"category": "seo", "check": "noindex_robots", "desc": "noindex robots directive detected", "command": "ff-rdp dom 'meta[name=robots]' --attrs --jq '.results[0].content'", "expected": "noindex"},
         {"category": "seo", "check": "no_canonical", "desc": "No canonical URL detected", "command": "ff-rdp dom 'link[rel=canonical]' --jq '.total'", "expected": "^0$"},
         {"category": "seo", "check": "no_og_tags", "desc": "No Open Graph tags detected", "command": "ff-rdp dom 'meta[property^=\"og:\"]' --jq '.total'", "expected": "^0$"},
-        {"category": "seo", "check": "no_jsonld", "desc": "No JSON-LD structured data detected", "command": "ff-rdp eval '!!document.querySelector(\"script[type=\\\"application/ld+json\\\"]\")'", "expected": "false"},
-        {"category": "a11y", "check": "missing_alt", "desc": "3 images without alt text", "command": "ff-rdp eval 'document.querySelectorAll(\"img:not([alt])\").length'", "expected": "3"},
-        {"category": "a11y", "check": "contrast_failures", "desc": "Contrast failures found", "command": "ff-rdp a11y contrast --fail-only --jq '.total'", "expected": "[1-9]"},
+        {"category": "seo", "check": "no_jsonld", "desc": "No JSON-LD structured data detected", "command": "ff-rdp eval '!!document.querySelector(\"script[type=\\\"application/ld+json\\\"]\")'", "expected": "^false$"},
+        {"category": "a11y", "check": "missing_alt", "desc": "3 images without alt text", "command": "ff-rdp eval 'document.querySelectorAll(\"img:not([alt])\").length'", "expected": "^3$"},
+        {"category": "a11y", "check": "contrast_failures", "desc": "Contrast failures found", "command": "ff-rdp a11y contrast --fail-only --jq '.total'", "expected": "^[1-9][0-9]*$"},
         {"category": "a11y", "check": "no_skip_nav", "desc": "No skip navigation link", "command": "ff-rdp dom 'a[href=\"#main-content\"]' --jq '.total'", "expected": "^0$"},
-        {"category": "a11y", "check": "bad_tabindex", "desc": "Positive tabindex on decorative element", "command": "ff-rdp dom '[tabindex]:not([tabindex=\"0\"]):not([tabindex=\"-1\"])' --jq '.total'", "expected": "[1-9]"},
-        {"category": "a11y", "check": "unsafe_blank", "desc": "target=_blank without rel=noopener", "command": "ff-rdp dom 'a[target=_blank]:not([rel*=noopener])' --jq '.total'", "expected": "[1-9]"},
+        {"category": "a11y", "check": "bad_tabindex", "desc": "Positive tabindex on decorative element", "command": "ff-rdp dom '[tabindex]:not([tabindex=\"0\"]):not([tabindex=\"-1\"])' --jq '.total'", "expected": "^[1-9][0-9]*$"},
+        {"category": "a11y", "check": "unsafe_blank", "desc": "target=_blank without rel=noopener", "command": "ff-rdp dom 'a[target=_blank]:not([rel*=noopener])' --jq '.total'", "expected": "^[1-9][0-9]*$"},
         {"category": "perf", "check": "no_viewport", "desc": "No viewport meta tag", "command": "ff-rdp dom 'meta[name=viewport]' --jq '.total'", "expected": "^0$"},
-        {"category": "perf", "check": "render_blocking_script", "desc": "Render-blocking script in head", "command": "ff-rdp dom 'head script[src]:not([defer]):not([async])' --jq '.total'", "expected": "[1-9]"},
-        {"category": "perf", "check": "bmp_image", "desc": "BMP image detected", "command": "ff-rdp dom 'img[src$=\".bmp\"]' --jq '.total'", "expected": "[1-9]"},
-        {"category": "perf", "check": "dom_node_count", "desc": "800+ DOM nodes", "command": "ff-rdp dom stats --jq '.results.node_count'", "expected": "[89][0-9]{2,}"},
+        {"category": "perf", "check": "render_blocking_script", "desc": "Render-blocking script in head", "command": "ff-rdp dom 'head script[src]:not([defer]):not([async])' --jq '.total'", "expected": "^[1-9][0-9]*$"},
+        {"category": "perf", "check": "bmp_image", "desc": "BMP image detected", "command": "ff-rdp dom 'img[src$=\".bmp\"]' --jq '.total'", "expected": "^[1-9][0-9]*$"},
+        {"category": "perf", "check": "dom_node_count", "desc": "800+ DOM nodes", "command": "ff-rdp dom stats --jq '.results.node_count'", "expected": "^([89][0-9]{2}|[1-9][0-9]{3,})$"},
         {"category": "structure", "check": "no_lang", "desc": "No lang attribute on html", "command": "ff-rdp eval 'document.documentElement.lang'", "expected": "^\"\"$"},
         {"category": "structure", "check": "console_errors", "desc": "ReferenceError in console", "command": "ff-rdp console --level error --jq '.results[0].message'", "expected": "ReferenceError|not defined"},
-        {"category": "structure", "check": "inline_styles", "desc": "50+ inline style attributes", "command": "ff-rdp eval 'document.querySelectorAll(\"[style]\").length'", "expected": "[5-9][0-9]|[1-9][0-9]{2}"},
-        {"category": "security", "check": "insecure_cookie", "desc": "Cookie without Secure flag", "command": "ff-rdp cookies --jq '[.results[] | select(.secure == false)] | length'", "expected": "[1-9]"},
-        {"category": "ux", "check": "wide_table", "desc": "Fixed-width table overflows mobile", "command": "ff-rdp responsive '.property-table' --widths 375 --jq '.results.breakpoints[0].elements[0].rect.width'", "expected": "[12][0-9]{3}"}
+        {"category": "structure", "check": "inline_styles", "desc": "50+ inline style attributes", "command": "ff-rdp eval 'document.querySelectorAll(\"[style]\").length'", "expected": "^([5-9][0-9]|[1-9][0-9]{2,})$"},
+        {"category": "security", "check": "insecure_cookie", "desc": "Cookie without Secure flag", "command": "ff-rdp cookies --jq '[.results[] | select(.secure == false)] | length'", "expected": "^[1-9][0-9]*$"},
+        {"category": "ux", "check": "wide_table", "desc": "Fixed-width table overflows mobile", "command": "ff-rdp responsive '.property-table' --widths 375 --jq '.results.breakpoints[0].elements[0].rect.width'", "expected": "^[12][0-9]{3}$"}
       ]
     },
     {
       "name": "comparis-search-results",
-      "url": "https://www.comparis.ch/immobilien/result/list?requestobject=%7B%22DealType%22%3A10%2C%22SiteId%22%3A0%2C%22RootPropertyTypes%22%3A%5B1%5D%2C%22PropertyTypes%22%3A%5B%5D%2C%22RoomsFrom%22%3Anull%2C%22RoomsTo%22%3Anull%2C%22FloorSearchType%22%3A0%2C%22LivingSpaceFrom%22%3Anull%2C%22LivingSpaceTo%22%3Anull%2C%22PriceFrom%22%3Anull%2C%22PriceTo%22%3Anull%2C%22ComparisPointsMin%22%3A0%2C%22AdAgeMax%22%3A0%2C%22AdAgeInHoursMax%22%3Anull%2C%22Keyword%22%3A%22%22%2C%22WithImagesOnly%22%3Anull%2C%22WithPointsOnly%22%3Anull%2C%22Radius%22%3Anull%2C%22MinAvailableDate%22%3A%221753-01-01%22%2C%22MinChangeDate%22%3A%221753-01-01%22%2C%22LocationSearchString%22%3A%22Z%C3%BCrich%22%2C%22Sort%22%3A5%2C%22HasBalcony%22%3Afalse%2C%22HasTerrace%22%3Afalse%2C%22HasFireplace%22%3Afalse%2C%22HasDishwasher%22%3Afalse%2C%22HasWashingMachine%22%3Afalse%2C%22HasLift%22%3Afalse%2C%22HasParking%22%3Afalse%2C%22PetsAllowed%22%3Afalse%2C%22MinersiepieCertified%22%3Afalse%2C%22WheelchairAccessible%22%3Afalse%2C%22LowerLeftLatitude%22%3Anull%2C%22LowerLeftLongitude%22%3Anull%2C%22UpperRightLatitude%22%3Anull%2C%22UpperRightLongitude%22%3Anull%7D&page=1",
+      "url": "https://www.comparis.ch/immobilien/result/list?requestobject=%7B%22DealType%22%3A10%7D",
       "setup": "ff-rdp navigate 'https://www.comparis.ch/immobilien/result/list?requestobject=%7B%22DealType%22%3A10%7D' --wait-timeout 15000",
       "assertions": [
-        {"category": "perf", "check": "ttfb_measured", "desc": "TTFB value is a positive number", "command": "ff-rdp perf vitals --jq '.results.ttfb_ms'", "expected": "[1-9]"},
-        {"category": "perf", "check": "fcp_measured", "desc": "FCP value is a positive number", "command": "ff-rdp perf vitals --jq '.results.fcp_ms'", "expected": "[1-9]"},
-        {"category": "perf", "check": "cls_measured", "desc": "CLS value is a number >= 0", "command": "ff-rdp perf vitals --jq '.results.cls'", "expected": "[0-9]"},
-        {"category": "a11y", "check": "contrast_checked", "desc": "Contrast check returns results", "command": "ff-rdp a11y contrast --jq '.total'", "expected": "[0-9]"},
-        {"category": "seo", "check": "title_found", "desc": "Page title extracted", "command": "ff-rdp dom 'head title' --text --jq '.total'", "expected": "[1-9]"},
-        {"category": "seo", "check": "meta_description_found", "desc": "Meta description extracted", "command": "ff-rdp dom 'head meta[name=description]' --jq '.total'", "expected": "[1-9]"},
-        {"category": "structure", "check": "dom_stats_returned", "desc": "DOM stats available", "command": "ff-rdp dom stats --jq '.results.node_count'", "expected": "[1-9]"},
-        {"category": "security", "check": "cookies_listed", "desc": "Cookies enumerated", "command": "ff-rdp cookies --jq '.total'", "expected": "[0-9]"}
+        {"category": "perf", "check": "ttfb_measured", "desc": "TTFB value is a positive number", "command": "ff-rdp perf vitals --jq '.results.ttfb_ms'", "expected": "^[1-9][0-9]*$"},
+        {"category": "perf", "check": "fcp_measured", "desc": "FCP value is a positive number", "command": "ff-rdp perf vitals --jq '.results.fcp_ms'", "expected": "^[1-9][0-9]*$"},
+        {"category": "perf", "check": "cls_measured", "desc": "CLS value is a number >= 0", "command": "ff-rdp perf vitals --jq '.results.cls'", "expected": "^[0-9]"},
+        {"category": "a11y", "check": "contrast_checked", "desc": "Contrast check returns results", "command": "ff-rdp a11y contrast --jq '.total'", "expected": "^[0-9]+$"},
+        {"category": "seo", "check": "title_found", "desc": "Page title extracted", "command": "ff-rdp dom 'head title' --text --jq '.total'", "expected": "^[1-9][0-9]*$"},
+        {"category": "seo", "check": "meta_description_found", "desc": "Meta description extracted", "command": "ff-rdp dom 'head meta[name=description]' --jq '.total'", "expected": "^[1-9][0-9]*$"},
+        {"category": "structure", "check": "dom_stats_returned", "desc": "DOM stats available", "command": "ff-rdp dom stats --jq '.results.node_count'", "expected": "^[1-9][0-9]*$"},
+        {"category": "security", "check": "cookies_listed", "desc": "Cookies enumerated", "command": "ff-rdp cookies --jq '.total'", "expected": "^[0-9]+$"}
       ]
     },
     {
@@ -48,9 +48,9 @@
       "url": "https://en.wikipedia.org/wiki/Zurich",
       "setup": "ff-rdp navigate 'https://en.wikipedia.org/wiki/Zurich' --wait-text 'Zurich'",
       "assertions": [
-        {"category": "a11y", "check": "heading_hierarchy", "desc": "Heading levels are sequential", "command": "ff-rdp eval 'Array.from(document.querySelectorAll(\"h1,h2,h3\")).slice(0,5).map(h=>h.tagName).join(\",\")'", "expected": "H1"},
-        {"category": "seo", "check": "structured_data", "desc": "JSON-LD structured data present", "command": "ff-rdp eval '!!document.querySelector(\"script[type=\\\"application/ld+json\\\"]\")'", "expected": "true"},
-        {"category": "structure", "check": "semantic_html", "desc": "Article/section/nav tags used", "command": "ff-rdp eval 'document.querySelectorAll(\"article, section, nav\").length'", "expected": "[1-9]"}
+        {"category": "a11y", "check": "heading_hierarchy", "desc": "First headings start with H1 then H2", "command": "ff-rdp eval 'Array.from(document.querySelectorAll(\"h1,h2,h3\")).slice(0,5).map(h=>h.tagName).join(\",\")'", "expected": "^\"H1,H2"},
+        {"category": "seo", "check": "structured_data", "desc": "JSON-LD structured data present", "command": "ff-rdp eval '!!document.querySelector(\"script[type=\\\"application/ld+json\\\"]\")'", "expected": "^true$"},
+        {"category": "structure", "check": "semantic_html", "desc": "Article/section/nav tags used", "command": "ff-rdp eval 'document.querySelectorAll(\"article, section, nav\").length'", "expected": "^[1-9][0-9]*$"}
       ]
     },
     {
@@ -58,9 +58,9 @@
       "url": "https://github.com/nickel-org/nickel.rs",
       "setup": "ff-rdp navigate 'https://github.com/nickel-org/nickel.rs' --wait-text 'nickel'",
       "assertions": [
-        {"category": "perf", "check": "resources_counted", "desc": "Resource count available", "command": "ff-rdp perf summary --jq '.results.total_resources'", "expected": "[1-9]"},
+        {"category": "perf", "check": "resources_counted", "desc": "Resource count available", "command": "ff-rdp perf summary --jq '.results.total_resources'", "expected": "^[1-9][0-9]*$"},
         {"category": "security", "check": "https_confirmed", "desc": "Served over HTTPS", "command": "ff-rdp eval 'location.protocol'", "expected": "https"},
-        {"category": "seo", "check": "og_tags", "desc": "Open Graph tags present", "command": "ff-rdp dom 'meta[property^=\"og:\"]' --jq '.total'", "expected": "[1-9]"}
+        {"category": "seo", "check": "og_tags", "desc": "Open Graph tags present", "command": "ff-rdp dom 'meta[property^=\"og:\"]' --jq '.total'", "expected": "^[1-9][0-9]*$"}
       ]
     }
   ]

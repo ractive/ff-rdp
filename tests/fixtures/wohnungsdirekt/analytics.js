@@ -4,7 +4,8 @@ document.cookie = 'wd_session=abc123; path=/; SameSite=Lax';
 // Issue #25: Cookie without HttpOnly flag
 // Note: HttpOnly cannot be set via JavaScript at all — this is inherent.
 // The cookie below is missing both Secure and HttpOnly.
-document.cookie = 'wd_tracking=xyz789; path=/; SameSite=None';
+// SameSite=Lax (not None) so modern browsers accept the cookie without Secure.
+document.cookie = 'wd_tracking=xyz789; path=/; SameSite=Lax';
 
 // Issue #31: Mixed content — HTTP image on potentially HTTPS page
 (function () {

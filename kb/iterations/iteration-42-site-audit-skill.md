@@ -300,10 +300,10 @@ The eval measures:
 
 ### Eval Suite
 - [x] Create `.claude/skills/site-audit/evals/evals.json` with WohnungsDirekt + 3 real sites
-- [x] Create eval runner script in `.claude/skills/site-audit/scripts/run_evals.sh`
+- [x] Create eval runner script in `.claude/skills/site-audit/evals/scripts/run_evals.sh`
 - [x] Define assertions: detection rate, fix rate, regression rate, token cost
 - [x] Add timing measurement per command
-- [x] Create comparison mode: ff-rdp vs Chrome MCP on same sites
+- [ ] Create comparison mode: ff-rdp vs Chrome MCP on same sites (deferred — `--compare-chrome-mcp` is a stub that exits non-zero; see iteration 43+)
 
 ### Acceptance Criteria
 - [x] Skill triggers on "analyze this website", "/site-audit", "check performance"

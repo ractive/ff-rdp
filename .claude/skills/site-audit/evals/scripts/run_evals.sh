@@ -4,18 +4,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 EVALS_DIR="$(dirname "$SCRIPT_DIR")"
 EVALS_FILE="$EVALS_DIR/evals.json"
-RESULTS_DIR="$EVALS_DIR"
+# Default to the evals/results directory inside the repo (gitignored);
+# override with RESULTS_DIR env var to send results elsewhere (e.g. a temp dir).
+RESULTS_DIR="${RESULTS_DIR:-$EVALS_DIR/results}"
+mkdir -p "$RESULTS_DIR"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 RESULTS_FILE="$RESULTS_DIR/results-${TIMESTAMP}.json"
 
 # Parse arguments
 EVAL_NAME="${1:-}"
-COMPARE_MODE=false
 
 if [ "$EVAL_NAME" = "--compare-chrome-mcp" ]; then
-  echo "Chrome MCP comparison mode: Not implemented"
-  echo "This is a stub for future iteration. Run without --compare-chrome-mcp for ff-rdp evals."
-  exit 0
+  echo "ERROR: Chrome MCP comparison mode is not implemented" >&2
+  echo "This flag is a stub for a future iteration. Run without --compare-chrome-mcp for ff-rdp evals." >&2
+  exit 2
 fi
 
 # Check dependencies
@@ -26,6 +28,15 @@ if [ ! -f "$EVALS_FILE" ]; then
   echo "ERROR: evals.json not found at $EVALS_FILE"
   exit 1
 fi
+
+# Track background PIDs started by setup commands so we can clean them up.
+SETUP_PIDS=()
+cleanup() {
+  for pid in "${SETUP_PIDS[@]:-}"; do
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+  done
+}
+trap cleanup EXIT
 
 # Read eval names
 EVAL_NAMES=$(jq -r '.evals[].name' "$EVALS_FILE")
@@ -56,13 +67,27 @@ echo ""
 for EVAL in $EVAL_NAMES; do
   echo "--- $EVAL ---"
 
-  EVAL_INDEX=$(jq -r --arg name "$EVAL" '.evals | to_entries[] | select(.value.name == $name) | .key' "$EVALS_FILE")
   EVAL_URL=$(jq -r --arg name "$EVAL" '.evals[] | select(.name == $name) | .url' "$EVALS_FILE")
+  EVAL_SETUP=$(jq -r --arg name "$EVAL" '.evals[] | select(.name == $name) | .setup // ""' "$EVALS_FILE")
   ASSERTION_COUNT=$(jq -r --arg name "$EVAL" '.evals[] | select(.name == $name) | .assertions | length' "$EVALS_FILE")
 
   echo "URL: $EVAL_URL"
   echo "Assertions: $ASSERTION_COUNT"
   echo ""
+
+  # Run setup command if present — it's expected to start any local server
+  # and/or navigate to the target URL.
+  if [ -n "$EVAL_SETUP" ] && [ "$EVAL_SETUP" != "null" ]; then
+    echo "Running setup: $EVAL_SETUP"
+    # Run setup in a subshell so a backgrounded process (e.g. http.server &)
+    # stays alive for assertions but we still capture its PID for cleanup.
+    bash -c "$EVAL_SETUP" &
+    SETUP_PID=$!
+    SETUP_PIDS+=("$SETUP_PID")
+    # Wait briefly for servers to start / navigate to complete.
+    sleep 2
+    echo ""
+  fi
 
   EVAL_PASS=0
   EVAL_FAIL=0

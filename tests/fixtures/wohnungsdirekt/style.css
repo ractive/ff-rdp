@@ -1,7 +1,10 @@
-/* Issue #27: font-display: block causes FOIT */
+/* Issue #27: font-display: block causes FOIT.
+   Detection is via CSS rule introspection (see issues.json #27), not actual
+   font loading. Use a local() fallback so there is no 404 for a missing
+   font file — the fixture stays self-contained. */
 @font-face {
   font-family: 'WohnungsDirekt Sans';
-  src: url('fonts/wd-sans.woff2') format('woff2');
+  src: local('Arial');
   font-display: block;
   font-weight: 400;
 }

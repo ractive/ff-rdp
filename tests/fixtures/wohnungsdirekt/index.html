@@ -155,12 +155,12 @@
     <!-- Issue #7 (2 of 3): img without alt -->
     <img src="floor-plan.jpg" style="width:200px;height:150px;object-fit:cover;">
     <!-- Issue #7 (3 of 3): img without alt, Issue #11: no loading="lazy" on below-fold image -->
-    <img src="http://placehold.co/200x150/3498db/ffffff?text=Wohnzimmer" style="width:200px;height:150px;">
+    <img src="floor-plan.jpg" style="width:200px;height:150px;">
     <!-- This image has alt and is fine -->
-    <img src="http://placehold.co/200x150/2ecc71/ffffff?text=Küche" alt="Küche" style="width:200px;height:150px;">
-    <!-- Issue #31: Mixed content — HTTP image (only triggers over HTTPS) -->
-    <img src="http://placehold.co/200x150/e74c3c/ffffff?text=Balkon" alt="Balkon mit Seeblick" style="width:200px;height:150px;">
-    <img src="http://placehold.co/200x150/9b59b6/ffffff?text=Bad" alt="Badezimmer" style="width:200px;height:150px;">
+    <img src="floor-plan.jpg" alt="Küche" style="width:200px;height:150px;">
+    <!-- Issue #31: Mixed content test is in analytics.js (HTTP tracking pixel) — gallery images are served locally to keep the fixture self-contained. -->
+    <img src="floor-plan.jpg" alt="Balkon mit Seeblick" style="width:200px;height:150px;">
+    <img src="floor-plan.jpg" alt="Badezimmer" style="width:200px;height:150px;">
   </div>
 
   <!-- Issue #15: Custom div-based dropdown with no ARIA -->
