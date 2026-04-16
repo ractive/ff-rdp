@@ -2,9 +2,17 @@
 title: "Iteration 43: Pre-Release DX Fixes"
 date: 2026-04-13
 type: iteration
-status: planned
+status: completed
 branch: iter-43/dx-fixes
-tags: [iteration, dx, eval, screenshot, console, navigate, reload, computed]
+tags:
+  - iteration
+  - dx
+  - eval
+  - screenshot
+  - console
+  - navigate
+  - reload
+  - computed
 ---
 
 # Iteration 43: Pre-Release DX Fixes

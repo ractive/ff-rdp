@@ -2,9 +2,37 @@
 
 A fast Rust CLI for the Firefox Remote Debugging Protocol. Communicates directly over TCP with Firefox's built-in debugger for minimal latency.
 
-## Status
+## Installation
 
-**Early development** — all planned commands working: `tabs`, `navigate`, `eval`, `dom`, `page-text`, `console`, `network`, `perf`, `click`, `type`, `wait`, `cookies`, `storage`, `screenshot`, `launch`, `inspect`, `sources`, `reload`, `back`, `forward`, `computed`, `scroll`, `responsive`, `a11y`, `geometry`, `snapshot`, `styles`.
+### Homebrew (macOS & Linux)
+
+```sh
+brew tap ractive/tap
+brew install ractive/tap/ff-rdp
+```
+
+### Scoop (Windows)
+
+```powershell
+scoop bucket add ff-rdp https://github.com/ractive/scoop-ff-rdp
+scoop install ff-rdp
+```
+
+### winget (Windows)
+
+```powershell
+winget install ractive.ff-rdp
+```
+
+### Cargo (from crates.io)
+
+```sh
+cargo install ff-rdp-cli
+```
+
+### Manual download
+
+Download pre-built binaries from the [GitHub Releases](https://github.com/ractive/ff-rdp/releases) page. Binaries are available for Linux (x86_64, ARM64, glibc and musl), macOS (Apple Silicon), and Windows (x86_64, ARM64).
 
 ## Requirements
 
@@ -14,13 +42,11 @@ A fast Rust CLI for the Firefox Remote Debugging Protocol. Communicates directly
   ```
 - Rust toolchain (for building from source)
 
-## Building
+## Build
 
-```bash
+```sh
 cargo build --release
 ```
-
-The binary is at `target/release/ff-rdp`.
 
 ## Usage
 
@@ -292,6 +318,14 @@ ff-rdp has the same power as Firefox DevTools — it can read httpOnly cookies, 
 
 - **ff-rdp-core** — Protocol library: blocking TCP transport, length-prefixed JSON framing, typed errors
 - **ff-rdp-cli** — CLI binary: clap args, jq output pipeline, command dispatch, daemon proxy
+
+## Releasing
+
+1. Bump the version in `Cargo.toml`
+2. Commit: `git commit -am "Bump version to X.Y.Z"`
+3. Create a GitHub release with tag `vX.Y.Z` (must match `Cargo.toml`)
+
+The [release workflow](.github/workflows/release.yml) automatically builds binaries for all platforms, publishes to crates.io, and updates Homebrew/Scoop/winget.
 
 ## License
 

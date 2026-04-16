@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../../README.md"
+keywords = ["firefox", "rdp", "devtools", "remote-debugging"]
+categories = ["network-programming"]
 description = "Core library for Firefox Remote Debugging Protocol over TCP"
 
 [dependencies]
