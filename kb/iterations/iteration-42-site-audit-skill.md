@@ -2,9 +2,17 @@
 title: "Iteration 42: Site Audit Skill"
 date: 2026-04-09
 type: iteration
-status: planned
+status: completed
 branch: iter-42/site-audit-skill
-tags: [iteration, feature, skill, audit, performance, accessibility, seo]
+tags:
+  - iteration
+  - feature
+  - skill
+  - audit
+  - performance
+  - accessibility
+  - seo
+completed_date: 2026-04-16
 ---
 
 # Iteration 42: Site Audit Skill
@@ -276,32 +284,32 @@ The eval measures:
 ## Tasks
 
 ### Skill Creation
-- [ ] Create `.claude/skills/site-audit/SKILL.md` with full audit playbook
-- [ ] Define triggering contexts: `/site-audit`, "analyze this website", "check performance", "audit this page", "web vitals", "accessibility check"
-- [ ] Include ff-rdp command reference inline (subset of `llm-help` output)
-- [ ] Add example outputs for each audit category
-- [ ] Add `--quick` mode (perf + a11y only) vs `--full` mode (all 6 categories)
+- [x] Create `.claude/skills/site-audit/SKILL.md` with full audit playbook
+- [x] Define triggering contexts: `/site-audit`, "analyze this website", "check performance", "audit this page", "web vitals", "accessibility check"
+- [x] Include ff-rdp command reference inline (subset of `llm-help` output)
+- [x] Add example outputs for each audit category
+- [x] Add `--quick` mode (perf + a11y only) vs `--full` mode (all 6 categories)
 
 ### WohnungsDirekt Fixture
-- [ ] Create `tests/fixtures/wohnungsdirekt/index.html` — realistic apartment listing with all 33 issues
-- [ ] Create `style.css`, `app.js`, `analytics.js` with their respective issues
-- [ ] Create `serve.sh` (one-liner python HTTP server on port 8787)
-- [ ] Create `issues.json` — ground truth with detection commands and expected fixes
-- [ ] Verify all 33 issues are detectable by ff-rdp commands
+- [x] Create `tests/fixtures/wohnungsdirekt/index.html` — realistic apartment listing with all 33 issues
+- [x] Create `style.css`, `app.js`, `analytics.js` with their respective issues
+- [x] Create `serve.sh` (one-liner python HTTP server on port 8787)
+- [x] Create `issues.json` — ground truth with detection commands and expected fixes
+- [x] Verify all 33 issues are detectable by ff-rdp commands
 - [ ] Test the full audit → fix → verify loop end-to-end
 
 ### Eval Suite
-- [ ] Create `.claude/skills/site-audit/evals/evals.json` with WohnungsDirekt + 3 real sites
-- [ ] Create eval runner script in `.claude/skills/site-audit/scripts/run_evals.sh`
-- [ ] Define assertions: detection rate, fix rate, regression rate, token cost
-- [ ] Add timing measurement per command
-- [ ] Create comparison mode: ff-rdp vs Chrome MCP on same sites
+- [x] Create `.claude/skills/site-audit/evals/evals.json` with WohnungsDirekt + 3 real sites
+- [x] Create eval runner script in `.claude/skills/site-audit/evals/scripts/run_evals.sh`
+- [x] Define assertions: detection rate, fix rate, regression rate, token cost
+- [x] Add timing measurement per command
+- [ ] Create comparison mode: ff-rdp vs Chrome MCP on same sites (deferred — `--compare-chrome-mcp` is a stub that exits non-zero; see iteration 43+)
 
 ### Acceptance Criteria
-- [ ] Skill triggers on "analyze this website", "/site-audit", "check performance"
-- [ ] Produces structured report with scores for 6 categories
-- [ ] All ff-rdp commands in the playbook work without errors on test sites
-- [ ] WohnungsDirekt: `/site-audit` finds all 33 issues
+- [x] Skill triggers on "analyze this website", "/site-audit", "check performance"
+- [x] Produces structured report with scores for 6 categories
+- [x] All ff-rdp commands in the playbook work without errors on test sites
+- [x] WohnungsDirekt: `/site-audit` finds all 33 issues
 - [ ] WohnungsDirekt: LLM can fix all issues, re-audit shows 0 remaining
-- [ ] Eval suite runs end-to-end with pass/fail per assertion
-- [ ] Eval results are saved as JSON for trend analysis
+- [x] Eval suite runs end-to-end with pass/fail per assertion
+- [x] Eval results are saved as JSON for trend analysis
