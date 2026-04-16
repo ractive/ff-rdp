@@ -47,6 +47,9 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
         }
     };
 
+    // Track pre-filter count for summary.
+    let raw_total = messages.len();
+
     // Apply filters.
     let regex = pattern
         .map(|p| {
@@ -73,6 +76,13 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
             true
         })
         .collect();
+
+    // Compute per-level counts over the filtered set (before --limit truncation).
+    let mut by_level: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for msg in &filtered {
+        *by_level.entry(msg.level.clone()).or_insert(0) += 1;
+    }
+    let matched = filtered.len();
 
     // Convert to JSON output.
     let mut results: Vec<serde_json::Value> = filtered
@@ -111,6 +121,23 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     let meta = json!({"host": cli.host, "port": cli.port});
     let mut envelope =
         output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
+
+    // Insert summary: pre-filter total, post-filter matched, shown after --limit,
+    // and per-level counts over the filtered (but not truncated) set.
+    if let Some(obj) = envelope.as_object_mut() {
+        let by_level_json: serde_json::Map<String, serde_json::Value> =
+            by_level.into_iter().map(|(k, v)| (k, json!(v))).collect();
+        obj.insert(
+            "summary".to_string(),
+            json!({
+                "total": raw_total,
+                "matched": matched,
+                "shown": shown,
+                "by_level": by_level_json,
+            }),
+        );
+    }
+
     if total == 0
         && let Some(obj) = envelope.as_object_mut()
     {

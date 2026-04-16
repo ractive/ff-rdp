@@ -281,6 +281,142 @@ fn console_handles_page_error_messages() {
 }
 
 // ---------------------------------------------------------------------------
+// summary field
+// ---------------------------------------------------------------------------
+
+fn large_console_server() -> MockRdpServer {
+    MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on(
+            "startListeners",
+            load_fixture("start_listeners_response.json"),
+        )
+        .on(
+            "getCachedMessages",
+            load_fixture("get_cached_messages_large_response.json"),
+        )
+}
+
+#[test]
+fn console_summary_present_in_output() {
+    let server = console_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.push("console".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let summary = &json["summary"];
+    assert!(!summary.is_null(), "summary field must be present");
+    assert_eq!(summary["total"], 3, "total = raw message count");
+    assert_eq!(
+        summary["matched"], 3,
+        "matched = after filter, before limit"
+    );
+    assert_eq!(summary["shown"], 3, "shown = actual results length");
+    let by_level = summary["by_level"].as_object().unwrap();
+    assert_eq!(by_level["log"], 1);
+    assert_eq!(by_level["warn"], 1);
+    assert_eq!(by_level["error"], 1);
+}
+
+#[test]
+fn console_limit_10_summary_reflects_true_total() {
+    let server = large_console_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["--limit".to_owned(), "10".to_owned(), "console".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    // --limit 10 should only show 10 results.
+    let results = json["results"].as_array().unwrap();
+    assert_eq!(
+        results.len(),
+        10,
+        "results.length must be 10 with --limit 10"
+    );
+
+    // summary.total reflects the raw fixture count (110), not the truncated count.
+    let summary = &json["summary"];
+    assert_eq!(
+        summary["total"], 110,
+        "summary.total must reflect all 110 messages in the fixture"
+    );
+    assert_eq!(summary["matched"], 110, "matched = all 110 (no filter)");
+    assert_eq!(summary["shown"], 10, "shown = 10 after --limit");
+}
+
+#[test]
+fn console_summary_matched_reflects_filter_count() {
+    // With --level error only 22 of 110 messages match (110/5 = 22 error messages).
+    let server = large_console_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "console".to_owned(),
+        "--level".to_owned(),
+        "error".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(output.status.success());
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let summary = &json["summary"];
+    assert_eq!(
+        summary["total"], 110,
+        "total is always the raw pre-filter count"
+    );
+    assert_eq!(
+        summary["matched"], 22,
+        "matched reflects count after --level filter"
+    );
+    assert_eq!(
+        summary["shown"], 22,
+        "all 22 matched fit within default limit"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // --limit flag truncates results
 // ---------------------------------------------------------------------------
 

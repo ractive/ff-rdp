@@ -4,7 +4,7 @@ A fast Rust CLI for the Firefox Remote Debugging Protocol. Communicates directly
 
 ## Status
 
-**Early development** — all planned commands working: `tabs`, `navigate`, `eval`, `dom`, `page-text`, `console`, `network`, `perf`, `click`, `type`, `wait`, `cookies`, `storage`, `screenshot`, `launch`, `inspect`, `sources`, `reload`, `back`, `forward`.
+**Early development** — all planned commands working: `tabs`, `navigate`, `eval`, `dom`, `page-text`, `console`, `network`, `perf`, `click`, `type`, `wait`, `cookies`, `storage`, `screenshot`, `launch`, `inspect`, `sources`, `reload`, `back`, `forward`, `computed`, `scroll`, `responsive`, `a11y`, `geometry`, `snapshot`, `styles`.
 
 ## Requirements
 
@@ -30,10 +30,11 @@ ff-rdp [OPTIONS] <COMMAND>
 Commands:
   tabs        List open browser tabs
   navigate    Navigate to a URL (with --with-network for traffic capture)
-  eval        Evaluate JavaScript in the target tab
+  eval        Evaluate JavaScript (positional, --file <PATH>, or --stdin)
   dom         Query DOM elements by CSS selector (--outer-html, --inner-html, --text, --attrs)
   page-text   Extract visible page text (document.body.innerText)
-  console     Read console messages (with --level and --pattern filters)
+  computed    Get computed CSS styles for elements (--prop <NAME>, --all)
+  console     Read console messages (--level, --pattern; output includes summary with totals)
   network     Show network requests (with --filter, --method filters)
   perf        Query Performance API entries and Core Web Vitals
   click       Click an element matching a CSS selector
@@ -41,13 +42,19 @@ Commands:
   wait        Wait for a condition to become true (polls every 100ms)
   cookies     List cookies via StorageActor (includes httpOnly, secure, sameSite)
   storage     Read web storage (localStorage or sessionStorage)
-  screenshot  Capture a screenshot (requires Firefox drawWindow support)
+  screenshot  Capture a screenshot (--full-page, --viewport-height N, --base64)
   inspect     Inspect a remote JavaScript object by its grip actor ID
   sources     List JavaScript/WASM sources loaded on the page
   launch      Launch Firefox with remote debugging enabled
-  reload      Reload the page
+  reload      Reload the page (--wait-idle blocks until network is idle)
   back        Go back in history
   forward     Go forward in history
+  scroll      Scroll the page or an element (to/by/container/until/text)
+  responsive  Test layout across viewport widths
+  a11y        Inspect accessibility tree and check WCAG contrast
+  geometry    Get element bounding rects, visibility, overlap detection
+  snapshot    Dump structured page snapshot for LLM consumption
+  styles      Inspect CSS applied rules or box model layout
 
 Options:
   --host <HOST>              Firefox debug server host [default: localhost]
@@ -73,6 +80,12 @@ ff-rdp navigate https://example.com
 # Evaluate JavaScript and extract the result
 ff-rdp eval 'document.title' --jq '.results'
 
+# Eval from a file (avoids shell quoting issues with ?. or template literals)
+ff-rdp eval --file script.js
+
+# Eval from stdin
+echo 'document.querySelectorAll("a").length' | ff-rdp eval --stdin
+
 # Target a specific tab by URL substring
 ff-rdp eval 'location.href' --tab example.com
 
@@ -91,11 +104,14 @@ ff-rdp page-text
 # Count characters in page text
 ff-rdp page-text --jq '.results | length'
 
-# Read console messages (errors only)
+# Read console messages (errors only); output includes summary.total, summary.shown, summary.by_level
 ff-rdp console --level error
 
-# Filter console messages by pattern
-ff-rdp console --pattern "TypeError"
+# Filter console messages by pattern; limit to 20 results
+ff-rdp console --pattern "TypeError" --limit 20
+
+# Check how many messages matched vs how many were shown
+ff-rdp console --limit 10 --jq '.summary'
 
 # Show network requests
 ff-rdp network
@@ -171,6 +187,21 @@ ff-rdp storage session --key "token"
 # Capture a screenshot (saves PNG)
 ff-rdp screenshot --output page.png
 
+# Full-page screenshot (captures entire scrollable document)
+ff-rdp screenshot --full-page --output full.png
+
+# Screenshot at explicit height
+ff-rdp screenshot --viewport-height 2000 --output tall.png
+
+# Get computed color for an element
+ff-rdp computed h1 --prop color
+
+# Get all non-default computed styles for a selector
+ff-rdp computed .card
+
+# Get the full resolved style object
+ff-rdp computed button --all
+
 # Launch Firefox with debugging enabled
 ff-rdp launch
 
@@ -199,6 +230,10 @@ ff-rdp sources --pattern "cdn\.example\.com"
 ff-rdp reload
 ff-rdp back
 ff-rdp forward
+
+# Reload and wait until network is idle (replaces sleep)
+ff-rdp reload --wait-idle
+ff-rdp reload --wait-idle --idle-ms 1000 --reload-timeout 30000
 ```
 
 ## Daemon Mode

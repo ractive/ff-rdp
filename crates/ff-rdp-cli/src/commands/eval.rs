@@ -1,3 +1,6 @@
+use std::io::Read;
+
+use anyhow::Context as _;
 use ff_rdp_core::{Grip, ObjectActor, WebConsoleActor};
 use serde_json::json;
 
@@ -8,7 +11,55 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
 
-pub fn run(cli: &Cli, script: &str) -> Result<(), AppError> {
+/// Load the JavaScript source from exactly one of the three input modes.
+///
+/// The clap `ArgGroup` constraint guarantees that exactly one of `script`,
+/// `file`, or `stdin` is non-empty; this helper defensively errors if that
+/// invariant is ever violated.
+pub(crate) fn load_script(
+    script: Option<&str>,
+    file: Option<&str>,
+    use_stdin: bool,
+) -> Result<String, AppError> {
+    let sources =
+        usize::from(script.is_some()) + usize::from(file.is_some()) + usize::from(use_stdin);
+    if sources == 0 {
+        return Err(AppError::User(
+            "eval requires a script (positional), --file <PATH>, or --stdin".to_owned(),
+        ));
+    }
+    if sources > 1 {
+        return Err(AppError::User(
+            "eval accepts only one of: positional <SCRIPT>, --file, --stdin".to_owned(),
+        ));
+    }
+
+    if let Some(s) = script {
+        return Ok(s.to_owned());
+    }
+    if let Some(path) = file {
+        return std::fs::read_to_string(path).map_err(|e| {
+            AppError::User(format!("eval: could not read script file '{path}': {e}"))
+        });
+    }
+    // stdin branch.
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .context("eval: failed to read script from stdin")
+        .map_err(AppError::from)?;
+    Ok(buf)
+}
+
+pub fn run(
+    cli: &Cli,
+    script: Option<&str>,
+    file: Option<&str>,
+    use_stdin: bool,
+) -> Result<(), AppError> {
+    let script = load_script(script, file, use_stdin)?;
+    let script = script.as_str();
+
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
@@ -56,4 +107,47 @@ pub fn run(cli: &Cli, script: &str) -> Result<(), AppError> {
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_script_positional_passthrough() {
+        let s = load_script(Some("document.title"), None, false).unwrap();
+        assert_eq!(s, "document.title");
+    }
+
+    #[test]
+    fn load_script_from_file() {
+        let tmp = std::env::temp_dir().join(format!(
+            "ff_rdp_eval_{}.js",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&tmp, "1 + 2").unwrap();
+        let s = load_script(None, Some(tmp.to_str().unwrap()), false).unwrap();
+        assert_eq!(s, "1 + 2");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn load_script_missing_file_is_user_error() {
+        let err = load_script(None, Some("/nonexistent/path/xyz.js"), false).unwrap_err();
+        // Any AppError variant is fine as long as the message is helpful.
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("could not read script file") || msg.contains("xyz.js"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_script_no_source_errors() {
+        let err = load_script(None, None, false).unwrap_err();
+        assert!(matches!(err, AppError::User(_)));
+    }
 }

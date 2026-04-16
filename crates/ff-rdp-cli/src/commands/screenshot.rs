@@ -13,28 +13,71 @@ use crate::output_pipeline::OutputPipeline;
 use super::connect_tab::connect_direct;
 use super::js_helpers::eval_or_bail;
 
-/// JavaScript injected into the page to capture a screenshot.
+/// Build the JavaScript injected into the page to capture a screenshot.
 ///
 /// Uses `CanvasRenderingContext2D.drawWindow`, a Firefox-specific privileged
-/// API that renders the current viewport into an offscreen canvas.  Returns a
-/// `data:image/png;base64,...` string on success, or `null` when `drawWindow`
-/// is not available (removed in some Firefox configurations).
-const SCREENSHOT_JS: &str = r"(function() {
-  var w = window.innerWidth || document.documentElement.clientWidth || 800;
-  var h = window.innerHeight || document.documentElement.clientHeight || 600;
-  var canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
-  var ctx = canvas.getContext('2d');
-  if (!ctx || typeof ctx.drawWindow !== 'function') { return null; }
-  ctx.drawWindow(window, 0, 0, w, h, 'rgb(255,255,255)');
-  return canvas.toDataURL('image/png');
-})()";
+/// API that renders a region starting at `(0, 0)` into an offscreen canvas.
+/// Returns a `data:image/png;base64,...` string on success, or `null` when
+/// `drawWindow` is not available (removed in some Firefox configurations).
+///
+/// `height_override` selects the capture height:
+/// - `None` (viewport, default): `window.innerHeight`.
+/// - `Some(HeightOverride::FullPage)`: `document.scrollingElement.scrollHeight`.
+/// - `Some(HeightOverride::Explicit(n))`: the literal value `n`.
+fn build_screenshot_js(height_override: Option<HeightOverride>) -> String {
+    let height_expr = match height_override {
+        None => "window.innerHeight || document.documentElement.clientHeight || 600".to_owned(),
+        Some(HeightOverride::FullPage) => {
+            // Take the max of scrollHeight candidates — different browsers
+            // populate different properties.
+            "Math.max(\
+              document.documentElement.scrollHeight,\
+              document.body ? document.body.scrollHeight : 0,\
+              (document.scrollingElement && document.scrollingElement.scrollHeight) || 0,\
+              window.innerHeight || 0\
+            )"
+            .to_owned()
+        }
+        Some(HeightOverride::Explicit(n)) => n.to_string(),
+    };
+    format!(
+        "(function() {{\n  var w = window.innerWidth || document.documentElement.clientWidth || 800;\n  var h = {height_expr};\n  var canvas = document.createElement('canvas');\n  canvas.width = w;\n  canvas.height = h;\n  var ctx = canvas.getContext('2d');\n  if (!ctx || typeof ctx.drawWindow !== 'function') {{ return null; }}\n  ctx.drawWindow(window, 0, 0, w, h, 'rgb(255,255,255)');\n  return canvas.toDataURL('image/png');\n}})()"
+    )
+}
+
+/// Height mode selected by the user.
+#[derive(Copy, Clone, Debug)]
+enum HeightOverride {
+    FullPage,
+    Explicit(u32),
+}
+
+/// Options accepted by [`run`].
+pub(crate) struct ScreenshotOpts<'a> {
+    pub(crate) output_path: Option<&'a str>,
+    pub(crate) base64_mode: bool,
+    pub(crate) full_page: bool,
+    pub(crate) viewport_height: Option<u32>,
+}
 
 /// Data URL prefix returned by `canvas.toDataURL('image/png')`.
 const PNG_DATA_URL_PREFIX: &str = "data:image/png;base64,";
 
-pub fn run(cli: &Cli, output_path: Option<&str>, base64_mode: bool) -> Result<(), AppError> {
+pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
+    let height_override = match (opts.full_page, opts.viewport_height) {
+        (true, Some(_)) => {
+            return Err(AppError::User(
+                "screenshot: --full-page and --viewport-height are mutually exclusive".to_owned(),
+            ));
+        }
+        (true, None) => Some(HeightOverride::FullPage),
+        (false, Some(n)) => Some(HeightOverride::Explicit(n)),
+        (false, None) => None,
+    };
+    let output_path = opts.output_path;
+    let base64_mode = opts.base64_mode;
+    let screenshot_js = build_screenshot_js(height_override);
+    let screenshot_js = screenshot_js.as_str();
     // Screenshot always connects directly to Firefox, bypassing the daemon.
     // The daemon's watcher subscription interferes with the two-step screenshot
     // protocol, causing Firefox-side timeouts.
@@ -44,7 +87,7 @@ pub fn run(cli: &Cli, output_path: Option<&str>, base64_mode: bool) -> Result<()
     let eval_result = eval_or_bail(
         &mut ctx,
         &console_actor,
-        SCREENSHOT_JS,
+        screenshot_js,
         "screenshot JS threw an exception",
     )?;
 
@@ -308,5 +351,28 @@ mod tests {
     fn strip_data_url_prefix_mismatch() {
         let url = "data:image/jpeg;base64,abc";
         assert!(url.strip_prefix(PNG_DATA_URL_PREFIX).is_none());
+    }
+
+    #[test]
+    fn build_js_default_uses_inner_height() {
+        let js = build_screenshot_js(None);
+        assert!(js.contains("window.innerHeight"));
+        assert!(!js.contains("scrollHeight"));
+    }
+
+    #[test]
+    fn build_js_full_page_uses_scroll_height() {
+        let js = build_screenshot_js(Some(HeightOverride::FullPage));
+        assert!(js.contains("scrollHeight"));
+        assert!(js.contains("scrollingElement"));
+    }
+
+    #[test]
+    fn build_js_explicit_height_inlines_value() {
+        let js = build_screenshot_js(Some(HeightOverride::Explicit(4321)));
+        assert!(
+            js.contains("var h = 4321;"),
+            "expected explicit height to be inlined, got: {js}"
+        );
     }
 }
