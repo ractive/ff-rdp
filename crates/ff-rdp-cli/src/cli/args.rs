@@ -1,7 +1,11 @@
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "ff-rdp", about = "Firefox Remote Debugging Protocol CLI")]
+#[command(
+    name = "ff-rdp",
+    about = "Firefox Remote Debugging Protocol CLI",
+    version
+)]
 pub struct Cli {
     /// Firefox debug server host
     #[arg(long, default_value = "localhost", global = true)]
