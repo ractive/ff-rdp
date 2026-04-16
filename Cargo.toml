@@ -5,9 +5,15 @@ default-members = ["crates/ff-rdp-cli"]
 
 [workspace.package]
 version = "0.1.0"
+authors = ["James Bergamin"]
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ractive/ff-rdp"
+homepage = "https://github.com/ractive/ff-rdp"
+readme = "README.md"
+keywords = ["firefox", "rdp", "devtools", "remote-debugging"]
+categories = ["command-line-utilities", "development-tools"]
+description = "CLI for Firefox Remote Debugging Protocol"
 
 [workspace.dependencies]
 # Internal crates

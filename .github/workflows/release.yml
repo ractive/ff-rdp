@@ -15,12 +15,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
       - name: Verify tag matches Cargo.toml version
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          if [ "$TAG" != "$CARGO_VERSION" ]; then
-            echo "::error::Tag v$TAG does not match Cargo.toml version $CARGO_VERSION"
+          TAG="${{ github.event.release.tag_name }}"
+          CARGO_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "ff-rdp-cli") | .version')
+          TAG_VERSION="${TAG#v}"
+          echo "Git tag version:   $TAG_VERSION"
+          echo "Cargo.toml version: $CARGO_VERSION"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "ERROR: tag '$TAG' does not match Cargo.toml version '$CARGO_VERSION'"
             exit 1
           fi
 
@@ -28,10 +34,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
-      - name: Run cargo deny
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install security tools
+        uses: taiki-e/install-action@a1df9120380005ebdc788c62449b841b205541dd # v2
+        with:
+          tool: cargo-audit,cargo-deny
+
+      - name: Audit dependencies for known vulnerabilities
+        run: cargo audit
+
+      - name: Check licenses, advisories, bans, and sources
         run: cargo deny check
 
   build:
@@ -42,101 +58,377 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            archive: tar.gz
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            archive: tar.gz
             cross: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            archive: tar.gz
             cross: true
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
-            archive: tar.gz
             cross: true
           - target: aarch64-apple-darwin
             os: macos-latest
-            archive: tar.gz
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            archive: zip
           - target: aarch64-pc-windows-msvc
             os: windows-latest
-            archive: zip
+            skip_tests: true
+
     runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
           targets: ${{ matrix.target }}
 
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
       - name: Install cross
         if: matrix.cross
-        run: cargo install cross --locked
+        uses: taiki-e/install-action@a1df9120380005ebdc788c62449b841b205541dd # v2
+        with:
+          tool: cross
 
-      - name: Build
-        run: |
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} -p ff-rdp-cli
-          else
-            cargo build --release --target ${{ matrix.target }} -p ff-rdp-cli
-          fi
-        shell: bash
+      - name: Build release
+        run: ${{ matrix.cross && 'cross' || 'cargo' }} build --release --target ${{ matrix.target }}
+
+      - name: Run tests
+        if: "!matrix.skip_tests"
+        run: ${{ matrix.cross && 'cross' || 'cargo' }} test --workspace --target ${{ matrix.target }}
+
+      - name: Verify CLI runs
+        if: "!matrix.cross && !matrix.skip_tests"
+        run: cargo run --release --target ${{ matrix.target }} -p ff-rdp-cli -- --help
 
       - name: Package (Unix)
-        if: matrix.archive == 'tar.gz'
+        if: runner.os != 'Windows'
         run: |
-          BINARY="target/${{ matrix.target }}/release/ff-rdp"
-          ARCHIVE="ff-rdp-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
-          tar czf "$ARCHIVE" -C "$(dirname "$BINARY")" "$(basename "$BINARY")"
-          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../ff-rdp-${{ matrix.target }}.tar.gz ff-rdp
+          cd ../../..
 
       - name: Package (Windows)
-        if: matrix.archive == 'zip'
-        shell: pwsh
+        if: runner.os == 'Windows'
         run: |
-          $binary = "target/${{ matrix.target }}/release/ff-rdp.exe"
-          $archive = "ff-rdp-${{ github.ref_name }}-${{ matrix.target }}.zip"
-          Compress-Archive -Path $binary -DestinationPath $archive
-          "ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
+          cd target/${{ matrix.target }}/release
+          7z a ../../../ff-rdp-${{ matrix.target }}.zip ff-rdp.exe
+          cd ../../..
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ff-rdp-${{ matrix.target }}
-          path: ${{ env.ARCHIVE }}
+          path: ff-rdp-${{ matrix.target }}.*
 
   release:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
       - name: Download all artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Generate checksums
+      - name: Generate SHA256SUMS
         run: |
           cd artifacts
-          sha256sum ff-rdp-* > SHA256SUMS
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
 
-      - name: Upload to release
-        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
-        with:
-          files: |
-            artifacts/ff-rdp-*
-            artifacts/SHA256SUMS
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" artifacts/*
+
+  crates-io:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Verify CARGO_TOKEN is set
+        env:
+          CARGO_TOKEN: ${{ secrets.CARGO_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "${CARGO_TOKEN}" ]; then
+            echo "ERROR: CARGO_TOKEN secret is not set"
+            exit 1
+          fi
+
+      - name: Publish ff-rdp-core to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
+        run: |
+          output=$(cargo publish --package ff-rdp-core --locked 2>&1) && exit 0
+          if echo "$output" | grep -q 'already uploaded'; then
+            echo "ff-rdp-core already published, skipping."
+          else
+            echo "$output" >&2
+            exit 1
+          fi
+
+      - name: Publish ff-rdp-cli to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
+        run: |
+          set -euo pipefail
+          max_attempts=10
+          delay=15
+          for attempt in $(seq 1 "$max_attempts"); do
+            echo "Publishing ff-rdp-cli (attempt $attempt/$max_attempts)..."
+            if output=$(cargo publish --package ff-rdp-cli --locked 2>&1); then
+              echo "$output"
+              echo "ff-rdp-cli published successfully."
+              exit 0
+            fi
+            echo "$output"
+            if echo "$output" | grep -qiE 'failed to select a version|no matching package named|depends on'; then
+              if [ "$attempt" -eq "$max_attempts" ]; then
+                echo "ERROR: giving up after $max_attempts attempts" >&2
+                exit 1
+              fi
+              echo "Index not yet updated, waiting ${delay}s..."
+              sleep "$delay"
+              delay=$((delay * 2))
+            else
+              echo "ERROR: cargo publish failed with a non-index error" >&2
+              exit 1
+            fi
+          done
 
   homebrew:
     needs: release
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Download SHA256SUMS from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${{ github.event.release.tag_name }}" \
+            --pattern "SHA256SUMS" --dir .
+
       - name: Update Homebrew formula
-        uses: dawidd6/action-homebrew-bump-formula@8d494330bce4434918392df134ad3db1167904db # v4
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${HOMEBREW_TAP_TOKEN}" ]; then
+            echo "ERROR: HOMEBREW_TAP_TOKEN secret is not set"
+            exit 1
+          fi
+
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+
+          get_sha() {
+            awk -v file="$1" '$2 == file {print $1}' SHA256SUMS
+          }
+
+          SHA_MACOS_ARM64=$(get_sha "ff-rdp-aarch64-apple-darwin.tar.gz")
+          SHA_LINUX_ARM64=$(get_sha "ff-rdp-aarch64-unknown-linux-gnu.tar.gz")
+          SHA_LINUX_X86=$(get_sha "ff-rdp-x86_64-unknown-linux-gnu.tar.gz")
+
+          for var in SHA_MACOS_ARM64 SHA_LINUX_ARM64 SHA_LINUX_X86; do
+            if [ -z "${!var}" ]; then
+              echo "ERROR: missing SHA256 checksum for $var"
+              exit 1
+            fi
+          done
+
+          cat > formula.rb <<FORMULA
+          # typed: false
+          # frozen_string_literal: true
+
+          # Homebrew formula for ff-rdp — a CLI for Firefox Remote Debugging Protocol.
+          # Auto-updated by the release workflow in ractive/ff-rdp.
+          class FfRdp < Formula
+            desc "CLI for Firefox Remote Debugging Protocol"
+            homepage "https://github.com/ractive/ff-rdp"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/ractive/ff-rdp/releases/download/v#{version}/ff-rdp-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_MACOS_ARM64}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/ractive/ff-rdp/releases/download/v#{version}/ff-rdp-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LINUX_ARM64}"
+              end
+
+              on_intel do
+                url "https://github.com/ractive/ff-rdp/releases/download/v#{version}/ff-rdp-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LINUX_X86}"
+              end
+            end
+
+            def install
+              bin.install "ff-rdp"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/ff-rdp --version")
+            end
+          end
+          FORMULA
+
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' formula.rb
+
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ractive/homebrew-tap.git" tap
+          cp formula.rb tap/Formula/ff-rdp.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/ff-rdp.rb
+          if git diff --cached --quiet; then
+            echo "Formula unchanged, skipping commit"
+          else
+            git commit -m "Update ff-rdp to ${VERSION}"
+            git push
+          fi
+
+  scoop:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Download SHA256SUMS from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${{ github.event.release.tag_name }}" \
+            --pattern "SHA256SUMS" --dir .
+
+      - name: Update Scoop manifest
+        shell: bash
+        env:
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SCOOP_BUCKET_TOKEN}" ]; then
+            echo "ERROR: SCOOP_BUCKET_TOKEN secret is not set"
+            exit 1
+          fi
+
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+
+          get_sha() {
+            awk -v file="$1" '$2 == file {print $1}' SHA256SUMS
+          }
+
+          SHA_WIN_X64=$(get_sha "ff-rdp-x86_64-pc-windows-msvc\\.zip")
+          SHA_WIN_ARM64=$(get_sha "ff-rdp-aarch64-pc-windows-msvc\\.zip")
+
+          for var in SHA_WIN_X64 SHA_WIN_ARM64; do
+            if [ -z "${!var}" ]; then
+              echo "ERROR: missing SHA256 checksum for $var"
+              exit 1
+            fi
+          done
+
+          RELEASE_URL="https://github.com/ractive/ff-rdp/releases/download"
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg sha_x64 "$SHA_WIN_X64" \
+            --arg sha_arm64 "$SHA_WIN_ARM64" \
+            --arg release_url "$RELEASE_URL" \
+            '{
+              version: $version,
+              description: "CLI for Firefox Remote Debugging Protocol",
+              homepage: "https://github.com/ractive/ff-rdp",
+              license: "MIT",
+              architecture: {
+                "64bit": {
+                  url: "\($release_url)/v\($version)/ff-rdp-x86_64-pc-windows-msvc\\.zip",
+                  hash: $sha_x64
+                },
+                arm64: {
+                  url: "\($release_url)/v\($version)/ff-rdp-aarch64-pc-windows-msvc\\.zip",
+                  hash: $sha_arm64
+                }
+              },
+              bin: "ff-rdp.exe",
+              checkver: "github",
+              autoupdate: {
+                architecture: {
+                  "64bit": {
+                    url: "\($release_url)/v$version/ff-rdp-x86_64-pc-windows-msvc\\.zip",
+                    hash: {
+                      url: "\($release_url)/v$version/SHA256SUMS",
+                      regex: "([a-fA-F0-9]+)\\s+ff-rdp-x86_64-pc-windows-msvc\\.zip"
+                    }
+                  },
+                  arm64: {
+                    url: "\($release_url)/v$version/ff-rdp-aarch64-pc-windows-msvc\\.zip",
+                    hash: {
+                      url: "\($release_url)/v$version/SHA256SUMS",
+                      regex: "([a-fA-F0-9]+)\\s+ff-rdp-aarch64-pc-windows-msvc\\.zip"
+                    }
+                  }
+                }
+              }
+            }' > ff-rdp.json
+
+          cat ff-rdp.json
+
+          git clone "https://x-access-token:${SCOOP_BUCKET_TOKEN}@github.com/ractive/scoop-ff-rdp.git" scoop-repo
+          cp ff-rdp.json scoop-repo/bucket/ff-rdp.json
+          cd scoop-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bucket/ff-rdp.json
+          if git diff --cached --quiet; then
+            echo "Manifest unchanged, skipping commit"
+          else
+            git commit -m "Update ff-rdp to ${VERSION}"
+            git push
+          fi
+
+  winget:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify WINGET_TOKEN is set
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "${WINGET_TOKEN}" ]; then
+            echo "ERROR: WINGET_TOKEN secret is not set"
+            exit 1
+          fi
+
+      - name: Sync winget-pkgs fork
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: gh repo sync ractive/winget-pkgs
+
+      - name: Submit to winget-pkgs
+        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
         with:
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          tap: ractive/homebrew-tap
-          formula: ff-rdp
-          tag: ${{ github.ref_name }}
+          identifier: ractive.ff-rdp
+          installers-regex: 'ff-rdp-.*-pc-windows-msvc\.zip$'
+          token: ${{ secrets.WINGET_TOKEN }}
