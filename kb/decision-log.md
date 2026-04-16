@@ -153,3 +153,13 @@ status: active
 7. **Tree output**: Tree-producing commands (snapshot, a11y, dom tree) use `--depth N` and `--max-chars N` for size control, with consistent truncation markers. (Design only — implemented in iterations 22-24.)
 
 **Applies to**: All current and future list/tree-returning commands.
+
+## 2026-04-16: WohnungsDirekt Fixture as Built-in Eval
+
+**Context**: Iteration 42 introduced the `/site-audit` skill and needed a reproducible test target.
+
+**Decision**: Include a deliberately broken apartment listing page (`tests/fixtures/wohnungsdirekt/`) in the repository with 33 planted issues as a built-in eval fixture.
+
+**Why**: A controlled fixture with known ground truth (issues.json) enables deterministic evaluation of the skill's detection capabilities. Real websites change unpredictably, making them unsuitable as regression baselines. The fixture also serves as a demo for the audit-fix-verify loop — the skill's killer workflow. The 33 issues span 6 categories (perf, a11y, SEO, security, structure, UX) at 3 difficulty levels.
+
+**Trade-off**: Maintaining a ~600-line HTML fixture adds repository weight. Acceptable because the fixture is small, static, and doubles as documentation of what the audit can detect.

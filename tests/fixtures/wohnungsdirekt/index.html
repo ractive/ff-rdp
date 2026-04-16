@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<!-- Issue #4: No lang attribute on <html> -->
+<!-- Issue #1: No <title> tag -->
+<!-- Issue #12: No <meta name="viewport"> -->
+<!-- Issue #2: No <meta name="description"> -->
+<!-- Issue #19: No <link rel="canonical"> -->
+<!-- Issue #20: No og: meta tags -->
+<!-- Issue #29: noindex robots directive -->
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="robots" content="noindex">
+  <link rel="stylesheet" href="style.css">
+  <!-- Issue #10: Render-blocking sync script in <head> -->
+  <script src="app.js"></script>
+</head>
+<body>
+
+<!-- Issue #5: All-div layout — no <main>, <nav>, <article>, <section> -->
+<!-- Issue #9: No skip navigation link (<a href="#main-content">) -->
+
+<!-- Header -->
+<div class="header-bar" style="display:flex;justify-content:space-between;align-items:center;">
+  <!-- Issue #3: Two <h1> tags on the page (this is the first one) -->
+  <h1 class="logo" style="margin:0;">WohnungsDirekt.ch</h1>
+  <div style="display:flex;gap:10px;align-items:center;">
+    <div style="color:#ecf0f1;">Mieten</div>
+    <div style="color:#ecf0f1;">Kaufen</div>
+    <div style="color:#ecf0f1;">Inserieren</div>
+    <!-- Issue #18: target="_blank" without rel="noopener" -->
+    <a href="https://help.wohnungsdirekt.ch" target="_blank" style="color:#ecf0f1;">Hilfe</a>
+  </div>
+</div>
+
+<!-- Navigation -->
+<div style="background:#34495e;padding:8px 20px;">
+  <div style="display:flex;gap:15px;">
+    <a href="/" style="color:#ecf0f1;text-decoration:none;">Startseite</a>
+    <a href="/suche" style="color:#ecf0f1;text-decoration:none;">Suche</a>
+    <a href="/merkliste" style="color:#ecf0f1;text-decoration:none;">Merkliste</a>
+    <a href="/konto" style="color:#ecf0f1;text-decoration:none;">Mein Konto</a>
+  </div>
+</div>
+
+<!-- Breadcrumbs -->
+<div style="padding:10px 20px;font-size:13px;background:#fff;border-bottom:1px solid #eee;">
+  <span style="color:#666;">Startseite</span> &gt;
+  <span style="color:#666;">Zürich</span> &gt;
+  <span style="color:#666;">Seefeld</span> &gt;
+  <span style="color:#333;">3.5-Zimmer-Wohnung</span>
+</div>
+
+<!-- Hero Image -->
+<div class="hero-section">
+  <!-- Issue #7 (1 of 3): img without alt, Issue #21: BMP image format, Issue #22: no width/height (CLS) -->
+  <img src="hero.bmp">
+</div>
+
+<!-- Issue #3: Second <h1> tag (duplicate) -->
+<!-- Issue #8: Broken heading hierarchy: h1 -> h4 -> h2 -> h6 -->
+<div class="listing-content">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;">
+    <div>
+      <h1 style="font-size:28px;color:#2c3e50;margin-bottom:5px;">3.5-Zimmer-Wohnung in Zürich Seefeld</h1>
+      <!-- Issue #8: h4 after h1 (skip h2, h3) -->
+      <h4 style="font-weight:normal;color:#666;margin-bottom:10px;">Seefeldstrasse 123, 8008 Zürich</h4>
+    </div>
+    <div class="price-tag" style="margin-top:5px;">CHF 2'850 / Monat</div>
+  </div>
+
+  <!-- Issue #8: h2 after h4 (wrong hierarchy) -->
+  <h2 style="margin-top:20px;font-size:22px;border-bottom:2px solid #2c3e50;padding-bottom:5px;">Objektbeschreibung</h2>
+  <div style="background:#fff;padding:15px;border:1px solid #ddd;border-radius:4px;margin-top:10px;">
+    <!-- Issue #14: Low contrast text applied -->
+    <p class="low-contrast" style="margin-bottom:10px;">
+      Diese wunderschöne 3.5-Zimmer-Wohnung befindet sich im begehrten Zürcher Seefeld-Quartier,
+      nur wenige Gehminuten vom Zürichsee entfernt. Die Wohnung wurde 2019 komplett renoviert und
+      verfügt über hochwertige Materialien und moderne Ausstattung.
+    </p>
+    <p style="margin-bottom:10px;color:#333;">
+      Die lichtdurchflutete Wohnung bietet einen offenen Wohn-/Essbereich mit Zugang zum Balkon
+      mit Seeblick, eine moderne Einbauküche mit Geschirrspüler und Induktionsherd, ein geräumiges
+      Schlafzimmer, ein Arbeitszimmer/Kinderzimmer sowie ein stilvolles Badezimmer mit Regendusche.
+    </p>
+    <p class="low-contrast" style="margin-bottom:10px;">
+      Die Wohnung liegt im 3. OG eines gepflegten Mehrfamilienhauses mit Lift. Zum Haus gehören
+      ein Waschraum im UG sowie ein privater Kellerabteil. Ein Parkplatz in der Tiefgarage kann
+      für CHF 250/Monat dazu gemietet werden.
+    </p>
+  </div>
+
+  <!-- Key facts -->
+  <div class="detail-grid" style="margin-top:20px;">
+    <div class="detail-card" style="background:#fff;">
+      <div class="detail-card-title" style="border-bottom:2px solid #2c3e50;">Eckdaten</div>
+      <div style="display:flex;flex-wrap:wrap;gap:5px;">
+        <div style="flex:1 1 45%;padding:5px 0;border-bottom:1px solid #eee;">
+          <div style="font-size:12px;color:#999;">Zimmer</div>
+          <div style="font-weight:bold;">3.5</div>
+        </div>
+        <div style="flex:1 1 45%;padding:5px 0;border-bottom:1px solid #eee;">
+          <div style="font-size:12px;color:#999;">Wohnfläche</div>
+          <div style="font-weight:bold;">92 m²</div>
+        </div>
+        <div style="flex:1 1 45%;padding:5px 0;border-bottom:1px solid #eee;">
+          <div style="font-size:12px;color:#999;">Etage</div>
+          <div style="font-weight:bold;">3. OG</div>
+        </div>
+        <div style="flex:1 1 45%;padding:5px 0;border-bottom:1px solid #eee;">
+          <div style="font-size:12px;color:#999;">Baujahr</div>
+          <div style="font-weight:bold;">1965 (renoviert 2019)</div>
+        </div>
+        <div style="flex:1 1 45%;padding:5px 0;border-bottom:1px solid #eee;">
+          <div style="font-size:12px;color:#999;">Verfügbar ab</div>
+          <div style="font-weight:bold;">01.06.2026</div>
+        </div>
+        <div style="flex:1 1 45%;padding:5px 0;border-bottom:1px solid #eee;">
+          <div style="font-size:12px;color:#999;">Nebenkosten</div>
+          <div style="font-weight:bold;">CHF 280 / Monat</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="detail-card" style="background:#fff;">
+      <div class="detail-card-title" style="border-bottom:2px solid #2c3e50;">Lage</div>
+      <div style="padding:5px 0;">
+        <p style="margin-bottom:8px;color:#333;">Das Seefeld ist eines der beliebtesten Quartiere Zürichs.
+        Zahlreiche Restaurants, Cafés und Boutiquen befinden sich in unmittelbarer Nähe.</p>
+        <div style="margin-top:10px;">
+          <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eee;">
+            <span style="color:#666;">Zürichsee</span>
+            <span style="font-weight:bold;">3 Min. zu Fuss</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eee;">
+            <span style="color:#666;">Tram-Haltestelle</span>
+            <span style="font-weight:bold;">2 Min.</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eee;">
+            <span style="color:#666;">Bahnhof Stadelhofen</span>
+            <span style="font-weight:bold;">8 Min.</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eee;">
+            <span style="color:#666;">Einkaufsmöglichkeiten</span>
+            <span style="font-weight:bold;">5 Min.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Gallery with images missing alt -->
+  <!-- Issue #8 continued: h6 after h2 (broken hierarchy) -->
+  <h6 style="margin-top:25px;font-size:18px;">Bildergalerie</h6>
+  <div class="gallery-grid" style="margin-top:10px;">
+    <!-- Issue #7 (2 of 3): img without alt -->
+    <img src="floor-plan.jpg" style="width:200px;height:150px;object-fit:cover;">
+    <!-- Issue #7 (3 of 3): img without alt, Issue #11: no loading="lazy" on below-fold image -->
+    <img src="http://placehold.co/200x150/3498db/ffffff?text=Wohnzimmer" style="width:200px;height:150px;">
+    <!-- This image has alt and is fine -->
+    <img src="http://placehold.co/200x150/2ecc71/ffffff?text=Küche" alt="Küche" style="width:200px;height:150px;">
+    <!-- Issue #31: Mixed content — HTTP image (only triggers over HTTPS) -->
+    <img src="http://placehold.co/200x150/e74c3c/ffffff?text=Balkon" alt="Balkon mit Seeblick" style="width:200px;height:150px;">
+    <img src="http://placehold.co/200x150/9b59b6/ffffff?text=Bad" alt="Badezimmer" style="width:200px;height:150px;">
+  </div>
+
+  <!-- Issue #15: Custom div-based dropdown with no ARIA -->
+  <div style="margin-top:25px;">
+    <h2 style="font-size:20px;margin-bottom:10px;">Stockwerk wählen</h2>
+    <div class="custom-dropdown" onclick="this.classList.toggle('open')">
+      <span>Bitte wählen...</span>
+      <div class="dropdown-options">
+        <div>Erdgeschoss</div>
+        <div>1. OG</div>
+        <div>2. OG</div>
+        <div>3. OG</div>
+        <div>4. OG</div>
+        <div>Dachgeschoss</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Contact form -->
+  <!-- Issue #16: Form inputs without <label> -->
+  <div style="margin-top:30px;">
+    <h2 style="font-size:22px;border-bottom:2px solid #2c3e50;padding-bottom:5px;">Kontakt aufnehmen</h2>
+    <div class="contact-form" style="background:#fff;padding:20px;border:1px solid #ddd;border-radius:4px;margin-top:10px;">
+      <p style="margin-bottom:15px;color:#666;">Interessiert? Füllen Sie das Formular aus und wir melden uns bei Ihnen.</p>
+      <!-- Issue #16: inputs without label -->
+      <input type="text" name="name" placeholder="Vor- und Nachname" style="margin-bottom:10px;">
+      <input type="email" name="email" placeholder="E-Mail-Adresse" style="margin-bottom:10px;">
+      <input type="tel" name="phone" placeholder="Telefonnummer" style="margin-bottom:10px;">
+      <textarea name="message" rows="4" placeholder="Ihre Nachricht" style="margin-bottom:10px;"></textarea>
+      <!-- Issue #17: tabindex="1" on decorative span -->
+      <span tabindex="1" style="display:inline-block;margin-bottom:10px;font-size:12px;color:#999;">* Pflichtfelder</span>
+      <button type="submit" style="background:#2c3e50;color:#fff;padding:10px 25px;border:none;cursor:pointer;">Anfrage senden</button>
+    </div>
+  </div>
+
+  <!-- Issue #33: Fixed-width table causing horizontal overflow -->
+  <div style="margin-top:30px;">
+    <h2 style="font-size:22px;border-bottom:2px solid #2c3e50;padding-bottom:5px;">Kostenübersicht</h2>
+    <div style="margin-top:10px;">
+      <table class="property-table">
+        <thead>
+          <tr>
+            <th style="width:250px;">Position</th>
+            <th style="width:200px;">Monatlich</th>
+            <th style="width:200px;">Jährlich</th>
+            <th style="width:300px;">Bemerkungen</th>
+            <th style="width:250px;">Zahlungsart</th>
+            <th style="width:200px;">Fällig am</th>
+            <th style="width:300px;">Zusatzinformationen</th>
+            <th style="width:300px;">Vertragsbedingungen</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="font-weight:bold;">Nettomiete</td>
+            <td>CHF 2'850</td>
+            <td>CHF 34'200</td>
+            <td>Indexiert an Landesindex der Konsumentenpreise</td>
+            <td>Dauerauftrag / LSV</td>
+            <td>1. des Monats</td>
+            <td>Anpassung gemäss Referenzzinssatz möglich</td>
+            <td>Mindestmietdauer 1 Jahr</td>
+          </tr>
+          <tr>
+            <td style="font-weight:bold;">Nebenkosten (Akonto)</td>
+            <td>CHF 280</td>
+            <td>CHF 3'360</td>
+            <td>Heizung, Warmwasser, Hauswart, Lift, Allgemeinstrom</td>
+            <td>Inkl. in Mietzahlung</td>
+            <td>1. des Monats</td>
+            <td>Jährliche Abrechnung mit Nachzahlung/Rückerstattung</td>
+            <td>Anpassung bei Kostenänderung vorbehalten</td>
+          </tr>
+          <tr>
+            <td style="font-weight:bold;">Tiefgarage (optional)</td>
+            <td>CHF 250</td>
+            <td>CHF 3'000</td>
+            <td>Separater Vertrag, Einstellhallenplatz Nr. 42</td>
+            <td>Separater Dauerauftrag</td>
+            <td>1. des Monats</td>
+            <td>Elektroladestation in Planung</td>
+            <td>Monatlich kündbar nach Erstjahr</td>
+          </tr>
+          <tr>
+            <td style="font-weight:bold;">Kaution</td>
+            <td>—</td>
+            <td>CHF 8'550</td>
+            <td>3 Monatsmieten auf Sperrkonto</td>
+            <td>Bankgarantie / Kautionskonto</td>
+            <td>Vor Mietantritt</td>
+            <td>SwissCaution als Alternative möglich</td>
+            <td>Rückerstattung nach Abnahmeprotokoll</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Issue #30: No JSON-LD structured data -->
+
+  <!-- Amenity list — generates many DOM nodes (Issue #28: 800+ DOM nodes) -->
+  <div style="margin-top:30px;">
+    <h2 style="font-size:22px;border-bottom:2px solid #2c3e50;padding-bottom:5px;">Ausstattung & Merkmale</h2>
+    <ul class="amenity-list" style="margin-top:10px;padding:0 20px;">
+      <li style="padding:2px 0;">Balkon mit Seeblick</li>
+      <li style="padding:2px 0;">Einbauküche mit Induktionsherd</li>
+      <li style="padding:2px 0;">Geschirrspüler Miele</li>
+      <li style="padding:2px 0;">Backofen mit Dampffunktion</li>
+      <li style="padding:2px 0;">Kühl-/Gefrierkombination</li>
+      <li style="padding:2px 0;">Granitabdeckung Küche</li>
+      <li style="padding:2px 0;">Regendusche im Bad</li>
+      <li style="padding:2px 0;">Badewanne freistehend</li>
+      <li style="padding:2px 0;">Doppellavabo</li>
+      <li style="padding:2px 0;">Handtuchheizkörper</li>
+      <li style="padding:2px 0;">Bodenheizung in allen Räumen</li>
+      <li style="padding:2px 0;">Echtholzparkett Eiche</li>
+      <li style="padding:2px 0;">Minergie-Standard</li>
+      <li style="padding:2px 0;">Schallschutzfenster</li>
+      <li style="padding:2px 0;">Elektrische Storen</li>
+      <li style="padding:2px 0;">Gegensprechanlage mit Video</li>
+      <li style="padding:2px 0;">Lift vorhanden</li>
+      <li style="padding:2px 0;">Waschmaschine im UG</li>
+      <li style="padding:2px 0;">Tumbler im UG</li>
+      <li style="padding:2px 0;">Trocknungsraum</li>
+      <li style="padding:2px 0;">Kellerabteil privat</li>
+      <li style="padding:2px 0;">Veloabstellplatz</li>
+      <li style="padding:2px 0;">Kinderwagen-Raum</li>
+      <li style="padding:2px 0;">Gemeinschaftsgarten</li>
+      <li style="padding:2px 0;">Briefkastenanlage</li>
+      <li style="padding:2px 0;">Glasfaseranschluss (FTTH)</li>
+      <li style="padding:2px 0;">Kabelfernsehen</li>
+      <li style="padding:2px 0;">Haustiere auf Anfrage</li>
+      <li style="padding:2px 0;">Nichtraucher-Wohnung</li>
+      <li style="padding:2px 0;">Rollstuhlgängiger Zugang</li>
+      <li style="padding:2px 0;">Niedrige Türschwellen</li>
+      <li style="padding:2px 0;">Breite Türrahmen (90cm)</li>
+      <li style="padding:2px 0;">Notrufsystem optional</li>
+      <li style="padding:2px 0;">Concierge-Service (Mo-Fr)</li>
+      <li style="padding:2px 0;">Paketannahme</li>
+      <li style="padding:2px 0;">Gästeparkplätze</li>
+      <li style="padding:2px 0;">Grillplatz im Garten</li>
+      <li style="padding:2px 0;">Spielplatz für Kinder</li>
+      <li style="padding:2px 0;">Gemeinschaftsraum mietbar</li>
+      <li style="padding:2px 0;">Sauna im UG</li>
+      <li style="padding:2px 0;">Dampfbad</li>
+      <li style="padding:2px 0;">Fitnessraum</li>
+      <li style="padding:2px 0;">Gemeinschafts-Bibliothek</li>
+      <li style="padding:2px 0;">Dachterrasse (gemeinschaftlich)</li>
+      <li style="padding:2px 0;">Solarpanels auf dem Dach</li>
+      <li style="padding:2px 0;">Regenwasser-Sammelsystem</li>
+      <li style="padding:2px 0;">EV-Ladestation (Tiefgarage)</li>
+      <li style="padding:2px 0;">Sicherheitskameras im Eingangsbereich</li>
+      <li style="padding:2px 0;">Automatische Beleuchtung Treppenhaus</li>
+      <li style="padding:2px 0;">Energieeffiziente LED-Beleuchtung</li>
+      <li style="padding:2px 0;">Wärmepumpe</li>
+      <li style="padding:2px 0;">Kontrollierte Wohnungslüftung</li>
+      <li style="padding:2px 0;">Dreifachverglasung</li>
+      <li style="padding:2px 0;">Einbruchsichere Türen</li>
+      <li style="padding:2px 0;">Feuerlöscher auf jedem Stockwerk</li>
+      <li style="padding:2px 0;">Rauchmelder in jedem Zimmer</li>
+      <li style="padding:2px 0;">Notbeleuchtung</li>
+      <li style="padding:2px 0;">Erdbebensicher gebaut</li>
+      <li style="padding:2px 0;">Barrierefreier Zugang (Rampen)</li>
+      <li style="padding:2px 0;">Kindersicherer Balkon</li>
+      <li style="padding:2px 0;">Schallisolierte Wände</li>
+      <li style="padding:2px 0;">Einbauschränke im Schlafzimmer</li>
+      <li style="padding:2px 0;">Garderobe im Eingang</li>
+      <li style="padding:2px 0;">Abstellraum in der Wohnung</li>
+      <li style="padding:2px 0;">Wasserenthärtungsanlage</li>
+      <li style="padding:2px 0;">Hochwertiger Plattenboden im Bad</li>
+      <li style="padding:2px 0;">Unterlagsboden mit Trittschalldämmung</li>
+      <li style="padding:2px 0;">Elektrische Jalousien</li>
+      <li style="padding:2px 0;">Markise auf dem Balkon</li>
+      <li style="padding:2px 0;">Briefkasten mit Paketfach</li>
+      <li style="padding:2px 0;">Gegensprechanlage mit Kamera</li>
+      <li style="padding:2px 0;">Smart-Home-Ready Verkabelung</li>
+      <li style="padding:2px 0;">USB-Steckdosen in der Küche</li>
+      <li style="padding:2px 0;">Starkstromanschluss für Herd</li>
+      <li style="padding:2px 0;">Geschirrwaschmaschine A+++</li>
+      <li style="padding:2px 0;">Kühlschrank mit Gefrierfach</li>
+      <li style="padding:2px 0;">Steamer/Dampfgarer</li>
+      <li style="padding:2px 0;">Dunstabzugshaube</li>
+      <li style="padding:2px 0;">Kochinsel</li>
+      <li style="padding:2px 0;">Einbauspüle Franke</li>
+      <li style="padding:2px 0;">Armatur Hansgrohe</li>
+      <li style="padding:2px 0;">Mischbatterie Bad Grohe</li>
+      <li style="padding:2px 0;">WC wandhängend Geberit</li>
+      <li style="padding:2px 0;">Handbrause und Kopfbrause</li>
+      <li style="padding:2px 0;">Spiegelschrank beleuchtet</li>
+      <li style="padding:2px 0;">Waschbecken Keramik Laufen</li>
+      <li style="padding:2px 0;">Fensterbänke Naturstein</li>
+      <li style="padding:2px 0;">Türgriffe Edelstahl matt</li>
+      <li style="padding:2px 0;">Steckdosen mit Kinderschutz</li>
+      <li style="padding:2px 0;">TV-Anschluss in jedem Zimmer</li>
+      <li style="padding:2px 0;">Netzwerkanschluss (RJ45) im Büro</li>
+      <li style="padding:2px 0;">Waschmaschinenschluss in Wohnung</li>
+      <li style="padding:2px 0;">Trockner-Anschluss vorhanden</li>
+      <li style="padding:2px 0;">Abfallsystem 3-fach Küche</li>
+      <li style="padding:2px 0;">Recycling-Station im Haus</li>
+      <li style="padding:2px 0;">Velowerkstatt im UG</li>
+      <li style="padding:2px 0;">Skiraum im Keller</li>
+      <li style="padding:2px 0;">Hobbyraum mietbar</li>
+      <li style="padding:2px 0;">Gemeinschafts-Waschküche 2x</li>
+      <li style="padding:2px 0;">Trocknungsraum belüftet</li>
+      <li style="padding:2px 0;">Estrich-Abteil privat</li>
+      <li style="padding:2px 0;">Keller-Abteil abschliessbar</li>
+      <li style="padding:2px 0;">Gartensitzplatz (EG-Wohnungen)</li>
+      <li style="padding:2px 0;">Pergola im Garten</li>
+      <li style="padding:2px 0;">Brunnen im Innenhof</li>
+      <li style="padding:2px 0;">Sitzbank-Bereich aussen</li>
+      <li style="padding:2px 0;">Blumenbeete gepflegt</li>
+      <li style="padding:2px 0;">Automatische Bewässerung</li>
+      <li style="padding:2px 0;">Müllcontainer-Anlage</li>
+      <li style="padding:2px 0;">Tiefgarage beheizt</li>
+      <li style="padding:2px 0;">Motorrad-Stellplatz verfügbar</li>
+      <li style="padding:2px 0;">Kinderwagen-Abstellplatz</li>
+      <li style="padding:2px 0;">Rollstuhlgerechter Lift</li>
+      <li style="padding:2px 0;">Blindenleitsystem im EG</li>
+      <li style="padding:2px 0;">Höranlage im Gemeinschaftsraum</li>
+      <li style="padding:2px 0;">Defibrilator im Eingang</li>
+      <li style="padding:2px 0;">Erste-Hilfe-Kasten</li>
+      <li style="padding:2px 0;">Fluchtweg markiert</li>
+      <li style="padding:2px 0;">Brandmeldeanlage</li>
+      <li style="padding:2px 0;">Sprinkleranlage Tiefgarage</li>
+    </ul>
+  </div>
+
+  <!-- Bewertungen / Reviews section — adds many DOM nodes to reach 800+ -->
+  <div style="margin-top:30px;">
+    <h2 style="font-size:22px;border-bottom:2px solid #2c3e50;padding-bottom:5px;">Bewertungen ehemaliger Mieter</h2>
+    <div style="margin-top:10px;">
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Anna M.</div><div class="comment-text" style="font-size:13px;color:#555;">Wunderschöne Wohnung mit tollem Seeblick. Die Lage ist unschlagbar.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Thomas K.</div><div class="comment-text" style="font-size:13px;color:#555;">Sehr gepflegtes Haus, freundliche Nachbarn. Einzig der Strassenverkehr ist etwas laut.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Sandra L.</div><div class="comment-text" style="font-size:13px;color:#555;">Die Küche ist ein Traum! Renovierung sehr hochwertig ausgeführt.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Marco B.</div><div class="comment-text" style="font-size:13px;color:#555;">Gute ÖV-Anbindung. Der Hauswart ist sehr hilfsbereit und reaktionsschnell.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Lisa W.</div><div class="comment-text" style="font-size:13px;color:#555;">Perfekte Wohnung für Paare. Das Badezimmer ist modern und geräumig.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Peter H.</div><div class="comment-text" style="font-size:13px;color:#555;">Minergie-Standard merkbar — tiefe Heizkosten im Winter. Sehr zufrieden.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Julia F.</div><div class="comment-text" style="font-size:13px;color:#555;">Der Balkon ist gross genug für einen Esstisch. Abendessen mit Seeblick!</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Reto S.</div><div class="comment-text" style="font-size:13px;color:#555;">Parkplatz in der Tiefgarage ist Gold wert in diesem Quartier.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Elena R.</div><div class="comment-text" style="font-size:13px;color:#555;">Die Schallschutzfenster sind hervorragend. Trotz Stadtlage sehr ruhig.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Daniel P.</div><div class="comment-text" style="font-size:13px;color:#555;">Alles wie im Inserat beschrieben. Faire Verwaltung, unkomplizierter Mietvertrag.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Claudia N.</div><div class="comment-text" style="font-size:13px;color:#555;">Gute Einkaufsmöglichkeiten in der Nähe. Coop und Migros zu Fuss erreichbar.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Stefan G.</div><div class="comment-text" style="font-size:13px;color:#555;">Waschküche im Keller gut organisiert mit Online-Buchungssystem.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Monika A.</div><div class="comment-text" style="font-size:13px;color:#555;">Der Gemeinschaftsgarten ist eine Oase mitten in der Stadt. Sehr gepflegt.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Andreas T.</div><div class="comment-text" style="font-size:13px;color:#555;">Glasfaseranschluss top! Arbeite von zu Hause, brauche schnelles Internet.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Nicole D.</div><div class="comment-text" style="font-size:13px;color:#555;">Kinder lieben den Spielplatz. Familienfreundliches Umfeld trotz Stadtlage.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Markus V.</div><div class="comment-text" style="font-size:13px;color:#555;">Sauna im Keller ist ein nettes Extra. Besonders im Winter geschätzt.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Sabine E.</div><div class="comment-text" style="font-size:13px;color:#555;">Concierge nimmt zuverlässig Pakete an. Sehr praktisch bei Online-Bestellungen.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Christian J.</div><div class="comment-text" style="font-size:13px;color:#555;">Die elektrischen Storen sind ein Segen im Sommer. Gute Verdunkelung möglich.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Barbara U.</div><div class="comment-text" style="font-size:13px;color:#555;">Bodenheizung im ganzen Haus — keine kalten Füsse mehr! Sehr angenehm.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Patrick Z.</div><div class="comment-text" style="font-size:13px;color:#555;">Veloraum im Keller ist grosszügig. Platz für mehrere Fahrräder pro Wohnung.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Franziska I.</div><div class="comment-text" style="font-size:13px;color:#555;">Wohnung hat viel natürliches Licht. Grosse Fenster nach Südwesten.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Michael O.</div><div class="comment-text" style="font-size:13px;color:#555;">Echtholzparkett in allen Zimmern — warm und gemütlich. Gute Akustik.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Kathrin C.</div><div class="comment-text" style="font-size:13px;color:#555;">Ideale Lage für Jogging am See. Morgens eine Runde um die Blatterwiese.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Urs Q.</div><div class="comment-text" style="font-size:13px;color:#555;">Verwaltung reagiert schnell auf Anfragen. Professioneller Umgang bei Reparaturen.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Simone X.</div><div class="comment-text" style="font-size:13px;color:#555;">Guter Grundriss — kein verschwendeter Platz. Jeder Quadratmeter wird genutzt.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Roland Y.</div><div class="comment-text" style="font-size:13px;color:#555;">Keller ist trocken und gut belüftet. Perfekt für Weinlagerung.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Beatrice O.</div><div class="comment-text" style="font-size:13px;color:#555;">Ruhige Mitbewohner. Hausordnung wird von allen respektiert.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Tobias L.</div><div class="comment-text" style="font-size:13px;color:#555;">Würde die Wohnung jederzeit weiterempfehlen. Preis-Leistung stimmt.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Irene K.</div><div class="comment-text" style="font-size:13px;color:#555;">Gegensprechanlage mit Video gibt ein sicheres Gefühl. Gute Haustechnik.</div></div>
+      <div class="comment-item" style="background:#fff;border:1px solid #eee;padding:10px;margin-bottom:5px;"><div class="comment-author" style="font-weight:bold;font-size:13px;">Lukas M.</div><div class="comment-text" style="font-size:13px;color:#555;">Gästeparkplätze sind praktisch wenn Besuch kommt. Reservierung per App.</div></div>
+    </div>
+  </div>
+
+  <!-- Nearby listings — more DOM nodes to pad count -->
+  <div style="margin-top:30px;">
+    <h2 style="font-size:22px;border-bottom:2px solid #2c3e50;padding-bottom:5px;">Ähnliche Objekte in der Nähe</h2>
+    <div style="display:flex;flex-wrap:wrap;gap:15px;margin-top:10px;">
+      <div style="flex:1 1 220px;background:#fff;border:1px solid #ddd;border-radius:4px;padding:12px;">
+        <div style="font-weight:bold;font-size:14px;margin-bottom:5px;">2.5-Zi an der Bellerivestrasse</div>
+        <div style="color:#666;font-size:13px;margin-bottom:3px;">72 m² · 2. OG · CHF 2'200/Mt.</div>
+        <div style="font-size:12px;color:#999;">Verfügbar ab 01.07.2026</div>
+      </div>
+      <div style="flex:1 1 220px;background:#fff;border:1px solid #ddd;border-radius:4px;padding:12px;">
+        <div style="font-weight:bold;font-size:14px;margin-bottom:5px;">4.5-Zi Attika Seefeld</div>
+        <div style="color:#666;font-size:13px;margin-bottom:3px;">118 m² · 5. OG · CHF 4'500/Mt.</div>
+        <div style="font-size:12px;color:#999;">Verfügbar ab 01.08.2026</div>
+      </div>
+      <div style="flex:1 1 220px;background:#fff;border:1px solid #ddd;border-radius:4px;padding:12px;">
+        <div style="font-weight:bold;font-size:14px;margin-bottom:5px;">3-Zi Altbau Kreuzstrasse</div>
+        <div style="color:#666;font-size:13px;margin-bottom:3px;">85 m² · 1. OG · CHF 2'600/Mt.</div>
+        <div style="font-size:12px;color:#999;">Verfügbar sofort</div>
+      </div>
+      <div style="flex:1 1 220px;background:#fff;border:1px solid #ddd;border-radius:4px;padding:12px;">
+        <div style="font-weight:bold;font-size:14px;margin-bottom:5px;">Studio Feldeggstrasse</div>
+        <div style="color:#666;font-size:13px;margin-bottom:3px;">38 m² · EG · CHF 1'450/Mt.</div>
+        <div style="font-size:12px;color:#999;">Verfügbar ab 01.05.2026</div>
+      </div>
+      <div style="flex:1 1 220px;background:#fff;border:1px solid #ddd;border-radius:4px;padding:12px;">
+        <div style="font-weight:bold;font-size:14px;margin-bottom:5px;">3.5-Zi Mühlebachstrasse</div>
+        <div style="color:#666;font-size:13px;margin-bottom:3px;">89 m² · 4. OG · CHF 2'950/Mt.</div>
+        <div style="font-size:12px;color:#999;">Verfügbar ab 01.09.2026</div>
+      </div>
+      <div style="flex:1 1 220px;background:#fff;border:1px solid #ddd;border-radius:4px;padding:12px;">
+        <div style="font-weight:bold;font-size:14px;margin-bottom:5px;">2-Zi Hottingerstrasse</div>
+        <div style="color:#666;font-size:13px;margin-bottom:3px;">55 m² · 3. OG · CHF 1'800/Mt.</div>
+        <div style="font-size:12px;color:#999;">Verfügbar ab 01.06.2026</div>
+      </div>
+      <div style="flex:1 1 220px;background:#fff;border:1px solid #ddd;border-radius:4px;padding:12px;">
+        <div style="font-weight:bold;font-size:14px;margin-bottom:5px;">4-Zi Seefeldquai</div>
+        <div style="color:#666;font-size:13px;margin-bottom:3px;">105 m² · 3. OG · CHF 3'800/Mt.</div>
+        <div style="font-size:12px;color:#999;">Verfügbar ab 01.10.2026</div>
+      </div>
+      <div style="flex:1 1 220px;background:#fff;border:1px solid #ddd;border-radius:4px;padding:12px;">
+        <div style="font-weight:bold;font-size:14px;margin-bottom:5px;">1.5-Zi Dufourstrasse</div>
+        <div style="color:#666;font-size:13px;margin-bottom:3px;">42 m² · 2. OG · CHF 1'550/Mt.</div>
+        <div style="font-size:12px;color:#999;">Verfügbar sofort</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Additional nested content to push DOM node count past 800 -->
+  <div style="margin-top:30px;">
+    <h2 style="font-size:22px;border-bottom:2px solid #2c3e50;padding-bottom:5px;">Häufig gestellte Fragen</h2>
+    <div style="margin-top:10px;">
+      <div style="background:#fff;border:1px solid #ddd;margin-bottom:8px;border-radius:4px;">
+        <div style="padding:12px;font-weight:bold;cursor:pointer;border-bottom:1px solid #eee;">Wie hoch ist die Kaution?</div>
+        <div style="padding:12px;color:#555;">Die Kaution beträgt 3 Monatsmieten (CHF 8'550) und wird auf einem Sperrkonto bei einer Schweizer Bank hinterlegt. Alternativ akzeptieren wir auch SwissCaution als Mietkautionsversicherung.</div>
+      </div>
+      <div style="background:#fff;border:1px solid #ddd;margin-bottom:8px;border-radius:4px;">
+        <div style="padding:12px;font-weight:bold;cursor:pointer;border-bottom:1px solid #eee;">Sind Haustiere erlaubt?</div>
+        <div style="padding:12px;color:#555;">Haustiere sind auf Anfrage erlaubt. Bitte besprechen Sie dies direkt mit der Verwaltung. Kleine Haustiere wie Katzen werden in der Regel bewilligt.</div>
+      </div>
+      <div style="background:#fff;border:1px solid #ddd;margin-bottom:8px;border-radius:4px;">
+        <div style="padding:12px;font-weight:bold;cursor:pointer;border-bottom:1px solid #eee;">Wann kann ich die Wohnung besichtigen?</div>
+        <div style="padding:12px;color:#555;">Besichtigungen finden jeweils dienstags und donnerstags zwischen 17:00 und 19:00 Uhr statt. Individuelle Termine sind ebenfalls möglich — nutzen Sie das Kontaktformular oben.</div>
+      </div>
+      <div style="background:#fff;border:1px solid #ddd;margin-bottom:8px;border-radius:4px;">
+        <div style="padding:12px;font-weight:bold;cursor:pointer;border-bottom:1px solid #eee;">Wie ist die Internetverbindung?</div>
+        <div style="padding:12px;color:#555;">Das Haus verfügt über einen Glasfaseranschluss (FTTH) von Swisscom. Geschwindigkeiten bis 10 Gbit/s sind möglich. Die monatlichen Kosten für Internet sind nicht in den Nebenkosten enthalten.</div>
+      </div>
+      <div style="background:#fff;border:1px solid #ddd;margin-bottom:8px;border-radius:4px;">
+        <div style="padding:12px;font-weight:bold;cursor:pointer;border-bottom:1px solid #eee;">Gibt es einen Lift?</div>
+        <div style="padding:12px;color:#555;">Ja, das Haus verfügt über einen Personenlift, der alle Stockwerke einschliesslich Keller und Tiefgarage bedient.</div>
+      </div>
+      <div style="background:#fff;border:1px solid #ddd;margin-bottom:8px;border-radius:4px;">
+        <div style="padding:12px;font-weight:bold;cursor:pointer;border-bottom:1px solid #eee;">Was beinhalten die Nebenkosten?</div>
+        <div style="padding:12px;color:#555;">Die Nebenkosten (CHF 280/Mt. als Akonto) umfassen Heizung, Warmwasser, Hauswartung, Liftbetrieb, Allgemeinstrom, Gebäudeversicherung und Kehrichtentsorgung. Eine jährliche Abrechnung erfolgt jeweils im März.</div>
+      </div>
+      <div style="background:#fff;border:1px solid #ddd;margin-bottom:8px;border-radius:4px;">
+        <div style="padding:12px;font-weight:bold;cursor:pointer;border-bottom:1px solid #eee;">Kann der Mietvertrag verlängert werden?</div>
+        <div style="padding:12px;color:#555;">Der Mietvertrag ist unbefristet mit einer Mindestlaufzeit von 12 Monaten. Danach gilt eine Kündigungsfrist von 3 Monaten auf die offiziellen Kündigungstermine (31.3., 30.6., 30.9.).</div>
+      </div>
+      <div style="background:#fff;border:1px solid #ddd;margin-bottom:8px;border-radius:4px;">
+        <div style="padding:12px;font-weight:bold;cursor:pointer;border-bottom:1px solid #eee;">Wie gross ist der Balkon?</div>
+        <div style="padding:12px;color:#555;">Der Balkon hat eine Fläche von ca. 8 m² und ist nach Südwesten ausgerichtet. Er bietet Platz für einen kleinen Esstisch mit 4 Stühlen und bietet einen herrlichen Blick auf den Zürichsee und die Alpen.</div>
+      </div>
+      <div style="background:#fff;border:1px solid #ddd;margin-bottom:8px;border-radius:4px;">
+        <div style="padding:12px;font-weight:bold;cursor:pointer;border-bottom:1px solid #eee;">Gibt es Lärmbelastung?</div>
+        <div style="padding:12px;color:#555;">Die Seefeldstrasse hat moderaten Verkehr. Dank der Schallschutzfenster (Lärmschutzklasse 4) ist es in der Wohnung ruhig. Die Schlafzimmer liegen zur ruhigen Hofseite hin.</div>
+      </div>
+      <div style="background:#fff;border:1px solid #ddd;margin-bottom:8px;border-radius:4px;">
+        <div style="padding:12px;font-weight:bold;cursor:pointer;border-bottom:1px solid #eee;">Welche Schulen sind in der Nähe?</div>
+        <div style="padding:12px;color:#555;">Die Primarschule Seefeld liegt 5 Gehminuten entfernt. Das Gymnasium Rämibühl ist mit dem Tram in 10 Minuten erreichbar. Verschiedene Kindergärten befinden sich im Quartier.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Even more nested divs for DOM node count -->
+  <div style="margin-top:30px;">
+    <h2 style="font-size:22px;border-bottom:2px solid #2c3e50;padding-bottom:5px;">Quartier-Infrastruktur</h2>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;">
+      <div style="flex:1 1 180px;background:#fff;border:1px solid #ddd;padding:10px;border-radius:4px;"><div style="font-weight:bold;font-size:13px;margin-bottom:3px;">Einkaufen</div><div style="font-size:12px;color:#666;">Coop (3 Min.) · Migros (5 Min.) · Denner (7 Min.) · Alnatura (4 Min.)</div></div>
+      <div style="flex:1 1 180px;background:#fff;border:1px solid #ddd;padding:10px;border-radius:4px;"><div style="font-weight:bold;font-size:13px;margin-bottom:3px;">Gastronomie</div><div style="font-size:12px;color:#666;">Restaurant Seefeld (1 Min.) · Café Henrici (3 Min.) · Pizzeria da Luigi (2 Min.)</div></div>
+      <div style="flex:1 1 180px;background:#fff;border:1px solid #ddd;padding:10px;border-radius:4px;"><div style="font-weight:bold;font-size:13px;margin-bottom:3px;">Gesundheit</div><div style="font-size:12px;color:#666;">Permanence Seefeld (5 Min.) · Apotheke (2 Min.) · Zahnarzt (4 Min.)</div></div>
+      <div style="flex:1 1 180px;background:#fff;border:1px solid #ddd;padding:10px;border-radius:4px;"><div style="font-weight:bold;font-size:13px;margin-bottom:3px;">Sport & Freizeit</div><div style="font-size:12px;color:#666;">Strandbad Tiefenbrunnen (8 Min.) · Fitnesscenter (3 Min.) · Yoga Studio (5 Min.)</div></div>
+      <div style="flex:1 1 180px;background:#fff;border:1px solid #ddd;padding:10px;border-radius:4px;"><div style="font-weight:bold;font-size:13px;margin-bottom:3px;">Kultur</div><div style="font-size:12px;color:#666;">Opernhaus (10 Min.) · Kunsthaus (12 Min.) · Kino Corso (8 Min.)</div></div>
+      <div style="flex:1 1 180px;background:#fff;border:1px solid #ddd;padding:10px;border-radius:4px;"><div style="font-weight:bold;font-size:13px;margin-bottom:3px;">ÖV</div><div style="font-size:12px;color:#666;">Tram 2/4 (2 Min.) · Bus 33 (3 Min.) · S-Bahn Stadelhofen (8 Min.)</div></div>
+      <div style="flex:1 1 180px;background:#fff;border:1px solid #ddd;padding:10px;border-radius:4px;"><div style="font-weight:bold;font-size:13px;margin-bottom:3px;">Banken</div><div style="font-size:12px;color:#666;">UBS (3 Min.) · Credit Suisse (5 Min.) · PostFinance (4 Min.) · Raiffeisen (6 Min.)</div></div>
+      <div style="flex:1 1 180px;background:#fff;border:1px solid #ddd;padding:10px;border-radius:4px;"><div style="font-weight:bold;font-size:13px;margin-bottom:3px;">Parks</div><div style="font-size:12px;color:#666;">Blatterwiese (5 Min.) · Chinagarten (7 Min.) · Zürichhorn (10 Min.)</div></div>
+    </div>
+  </div>
+
+</div>
+
+  <!-- More nested content for DOM node count -->
+  <div style="margin-top:30px;">
+    <h2 style="font-size:22px;border-bottom:2px solid #2c3e50;padding-bottom:5px;">Umgebungsbewertungen</h2>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;">
+      <div style="flex:1 1 150px;background:#fff;border:1px solid #eee;padding:8px;border-radius:3px;"><div style="font-weight:bold;font-size:12px;">Ruhe</div><div style="font-size:11px;color:#666;">Bewertung: 8/10</div><div style="height:4px;background:#eee;border-radius:2px;"><div style="height:4px;width:80%;background:#27ae60;border-radius:2px;"></div></div></div>
+      <div style="flex:1 1 150px;background:#fff;border:1px solid #eee;padding:8px;border-radius:3px;"><div style="font-weight:bold;font-size:12px;">Sicherheit</div><div style="font-size:11px;color:#666;">Bewertung: 9/10</div><div style="height:4px;background:#eee;border-radius:2px;"><div style="height:4px;width:90%;background:#27ae60;border-radius:2px;"></div></div></div>
+      <div style="flex:1 1 150px;background:#fff;border:1px solid #eee;padding:8px;border-radius:3px;"><div style="font-weight:bold;font-size:12px;">ÖV-Anbindung</div><div style="font-size:11px;color:#666;">Bewertung: 10/10</div><div style="height:4px;background:#eee;border-radius:2px;"><div style="height:4px;width:100%;background:#27ae60;border-radius:2px;"></div></div></div>
+      <div style="flex:1 1 150px;background:#fff;border:1px solid #eee;padding:8px;border-radius:3px;"><div style="font-weight:bold;font-size:12px;">Einkaufen</div><div style="font-size:11px;color:#666;">Bewertung: 9/10</div><div style="height:4px;background:#eee;border-radius:2px;"><div style="height:4px;width:90%;background:#27ae60;border-radius:2px;"></div></div></div>
+      <div style="flex:1 1 150px;background:#fff;border:1px solid #eee;padding:8px;border-radius:3px;"><div style="font-weight:bold;font-size:12px;">Gastronomie</div><div style="font-size:11px;color:#666;">Bewertung: 9/10</div><div style="height:4px;background:#eee;border-radius:2px;"><div style="height:4px;width:90%;background:#27ae60;border-radius:2px;"></div></div></div>
+      <div style="flex:1 1 150px;background:#fff;border:1px solid #eee;padding:8px;border-radius:3px;"><div style="font-weight:bold;font-size:12px;">Schulen</div><div style="font-size:11px;color:#666;">Bewertung: 8/10</div><div style="height:4px;background:#eee;border-radius:2px;"><div style="height:4px;width:80%;background:#27ae60;border-radius:2px;"></div></div></div>
+      <div style="flex:1 1 150px;background:#fff;border:1px solid #eee;padding:8px;border-radius:3px;"><div style="font-weight:bold;font-size:12px;">Naherholung</div><div style="font-size:11px;color:#666;">Bewertung: 10/10</div><div style="height:4px;background:#eee;border-radius:2px;"><div style="height:4px;width:100%;background:#27ae60;border-radius:2px;"></div></div></div>
+      <div style="flex:1 1 150px;background:#fff;border:1px solid #eee;padding:8px;border-radius:3px;"><div style="font-weight:bold;font-size:12px;">Parkplätze</div><div style="font-size:11px;color:#666;">Bewertung: 6/10</div><div style="height:4px;background:#eee;border-radius:2px;"><div style="height:4px;width:60%;background:#f39c12;border-radius:2px;"></div></div></div>
+      <div style="flex:1 1 150px;background:#fff;border:1px solid #eee;padding:8px;border-radius:3px;"><div style="font-weight:bold;font-size:12px;">Nachtleben</div><div style="font-size:11px;color:#666;">Bewertung: 7/10</div><div style="height:4px;background:#eee;border-radius:2px;"><div style="height:4px;width:70%;background:#27ae60;border-radius:2px;"></div></div></div>
+      <div style="flex:1 1 150px;background:#fff;border:1px solid #eee;padding:8px;border-radius:3px;"><div style="font-weight:bold;font-size:12px;">Kinderfreundlich</div><div style="font-size:11px;color:#666;">Bewertung: 8/10</div><div style="height:4px;background:#eee;border-radius:2px;"><div style="height:4px;width:80%;background:#27ae60;border-radius:2px;"></div></div></div>
+      <div style="flex:1 1 150px;background:#fff;border:1px solid #eee;padding:8px;border-radius:3px;"><div style="font-weight:bold;font-size:12px;">Sauberkeit</div><div style="font-size:11px;color:#666;">Bewertung: 9/10</div><div style="height:4px;background:#eee;border-radius:2px;"><div style="height:4px;width:90%;background:#27ae60;border-radius:2px;"></div></div></div>
+      <div style="flex:1 1 150px;background:#fff;border:1px solid #eee;padding:8px;border-radius:3px;"><div style="font-weight:bold;font-size:12px;">Hundefreundlich</div><div style="font-size:11px;color:#666;">Bewertung: 7/10</div><div style="height:4px;background:#eee;border-radius:2px;"><div style="height:4px;width:70%;background:#27ae60;border-radius:2px;"></div></div></div>
+    </div>
+  </div>
+
+  <!-- Zeitstrahl / Timeline for more nodes -->
+  <div style="margin-top:30px;">
+    <h2 style="font-size:22px;border-bottom:2px solid #2c3e50;padding-bottom:5px;">Gebäudegeschichte</h2>
+    <div style="margin-top:10px;">
+      <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px;"><div style="min-width:80px;font-weight:bold;color:#2c3e50;">1965</div><div style="flex:1;padding:8px;background:#fff;border:1px solid #eee;border-radius:3px;"><div style="font-weight:bold;font-size:13px;">Erbaut</div><div style="font-size:12px;color:#666;">Mehrfamilienhaus mit 12 Wohnungen, Architekten Müller & Partner</div></div></div>
+      <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px;"><div style="min-width:80px;font-weight:bold;color:#2c3e50;">1985</div><div style="flex:1;padding:8px;background:#fff;border:1px solid #eee;border-radius:3px;"><div style="font-weight:bold;font-size:13px;">Sanierung Fassade</div><div style="font-size:12px;color:#666;">Neue Aussenisolation und Fenster, energetische Verbesserung</div></div></div>
+      <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px;"><div style="min-width:80px;font-weight:bold;color:#2c3e50;">1998</div><div style="flex:1;padding:8px;background:#fff;border:1px solid #eee;border-radius:3px;"><div style="font-weight:bold;font-size:13px;">Lifteinbau</div><div style="font-size:12px;color:#666;">Personenlift nachgerüstet, barrierefreier Zugang geschaffen</div></div></div>
+      <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px;"><div style="min-width:80px;font-weight:bold;color:#2c3e50;">2010</div><div style="flex:1;padding:8px;background:#fff;border:1px solid #eee;border-radius:3px;"><div style="font-weight:bold;font-size:13px;">Heizungserneuerung</div><div style="font-size:12px;color:#666;">Umstellung von Öl auf Wärmepumpe, Minergie-Zertifizierung angestrebt</div></div></div>
+      <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px;"><div style="min-width:80px;font-weight:bold;color:#2c3e50;">2019</div><div style="flex:1;padding:8px;background:#fff;border:1px solid #eee;border-radius:3px;"><div style="font-weight:bold;font-size:13px;">Komplettrenovierung</div><div style="font-size:12px;color:#666;">Wohnungen komplett erneuert: neue Böden, Küchen, Bäder. Minergie-Standard erreicht.</div></div></div>
+      <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px;"><div style="min-width:80px;font-weight:bold;color:#2c3e50;">2023</div><div style="flex:1;padding:8px;background:#fff;border:1px solid #eee;border-radius:3px;"><div style="font-weight:bold;font-size:13px;">Solarpanels</div><div style="font-size:12px;color:#666;">Photovoltaik-Anlage auf dem Dach installiert, Eigenverbrauchsgemeinschaft (ZEV)</div></div></div>
+      <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px;"><div style="min-width:80px;font-weight:bold;color:#2c3e50;">2025</div><div style="flex:1;padding:8px;background:#fff;border:1px solid #eee;border-radius:3px;"><div style="font-weight:bold;font-size:13px;">EV-Ladestation</div><div style="font-size:12px;color:#666;">Elektro-Ladestationen in der Tiefgarage installiert, 4 Ladepunkte</div></div></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Footer -->
+<!-- Issue #23: tiny click targets with font-size:12px -->
+<div class="footer-bar">
+  <div style="margin-bottom:15px;">
+    <div style="font-weight:bold;font-size:16px;margin-bottom:10px;">WohnungsDirekt.ch</div>
+    <div style="font-size:13px;color:#bdc3c7;">Die Schweizer Immobilienplattform seit 2015</div>
+  </div>
+  <ul class="footer-links">
+    <li><a href="/impressum" class="tiny-link">Impressum</a></li>
+    <li><a href="/datenschutz" class="tiny-link">Datenschutz</a></li>
+    <li><a href="/agb" class="tiny-link">AGB</a></li>
+    <li><a href="/kontakt" class="tiny-link">Kontakt</a></li>
+    <li><a href="/ueber-uns" class="tiny-link">Über uns</a></li>
+    <li><a href="/partner" class="tiny-link">Partner</a></li>
+    <li><a href="/presse" class="tiny-link">Presse</a></li>
+    <li><a href="/karriere" class="tiny-link">Karriere</a></li>
+    <li><a href="/blog" class="tiny-link">Blog</a></li>
+    <li><a href="/hilfe" class="tiny-link">Hilfe</a></li>
+    <li><a href="/sitemap" class="tiny-link">Sitemap</a></li>
+    <li><a href="/barrierefreiheit" class="tiny-link">Barrierefreiheit</a></li>
+  </ul>
+  <div style="margin-top:15px;font-size:11px;color:#7f8c8d;">&copy; 2026 WohnungsDirekt AG · Zürich · Schweiz</div>
+</div>
+
+<script src="analytics.js"></script>
+
+</body>
+</html>
