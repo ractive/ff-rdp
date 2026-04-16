@@ -63,18 +63,22 @@ fn build_js(selector: &str, prop: Option<&str>, include_all: bool) -> String {
     out.push({selector: sel, index: i, computed: obj});"
     } else {
         r"
-    var ref = document.createElement(el.tagName);
-    document.body.appendChild(ref);
-    var rcs = getComputedStyle(ref);
+    var container = document.body || document.documentElement;
+    var refEl = document.createElement(el.tagName);
+    var rcs = null;
+    if (container) {
+      container.appendChild(refEl);
+      rcs = getComputedStyle(refEl);
+    }
     var obj = {};
     for (var j = 0; j < cs.length; j++) {
       var name = cs[j];
       var v = cs.getPropertyValue(name);
-      if (rcs.getPropertyValue(name) !== v) {
+      if (!rcs || rcs.getPropertyValue(name) !== v) {
         obj[name] = v;
       }
     }
-    ref.remove();
+    if (container) { refEl.remove(); }
     out.push({selector: sel, index: i, computed: obj});"
     };
 
@@ -149,21 +153,25 @@ pub fn run(
     // match we collapse to a scalar string for the most common case
     // (`ff-rdp computed h1 --prop color` → "rgb(0,0,0)"); multi-match returns
     // an array of {selector, index, value}.
+    let total = entries.len();
+
     let results = if prop.is_some() {
         if entries.len() == 1 {
-            entries[0].get("value").cloned().unwrap_or(Value::Null)
+            entries
+                .into_iter()
+                .next()
+                .and_then(|mut e| e.as_object_mut().and_then(|o| o.remove("value")))
+                .unwrap_or(Value::Null)
         } else {
-            Value::Array(entries.clone())
+            Value::Array(entries)
         }
     } else if entries.len() == 1 {
         // Single match → unwrap to {selector, index, computed} so the common
         // case does not need `.results[0]` indexing.
-        entries[0].clone()
+        entries.into_iter().next().unwrap_or(Value::Null)
     } else {
-        Value::Array(entries.clone())
+        Value::Array(entries)
     };
-
-    let total = entries.len();
     let meta = json!({
         "host": cli.host,
         "port": cli.port,

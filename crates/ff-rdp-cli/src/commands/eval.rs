@@ -38,9 +38,9 @@ pub(crate) fn load_script(
         return Ok(s.to_owned());
     }
     if let Some(path) = file {
-        return std::fs::read_to_string(path)
-            .with_context(|| format!("eval: could not read script file '{path}'"))
-            .map_err(AppError::from);
+        return std::fs::read_to_string(path).map_err(|e| {
+            AppError::User(format!("eval: could not read script file '{path}': {e}"))
+        });
     }
     // stdin branch.
     let mut buf = String::new();
@@ -148,6 +148,6 @@ mod tests {
     #[test]
     fn load_script_no_source_errors() {
         let err = load_script(None, None, false).unwrap_err();
-        matches!(err, AppError::User(_));
+        assert!(matches!(err, AppError::User(_)));
     }
 }

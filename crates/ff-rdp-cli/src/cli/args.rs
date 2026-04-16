@@ -349,12 +349,12 @@ Output: {\"results\": [{\"name\": \"...\", \"value\": \"...\", \"domain\": \"...
     #[command(long_about = "Reload the page.
 
 With --wait-idle, the command blocks after reload until network activity has been
-idle for --idle-ms (default 500) or the --timeout expires (default 10000).
+idle for --idle-ms (default 500) or the --reload-timeout expires (default 10000).
 
 Examples:
   ff-rdp reload
   ff-rdp reload --wait-idle
-  ff-rdp reload --wait-idle --idle-ms 1000 --timeout 30000
+  ff-rdp reload --wait-idle --idle-ms 1000 --reload-timeout 30000
 
 Output (plain):    {\"results\": {\"action\": \"reload\"}, \"total\": 1, \"meta\": {...}}
 Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requests_observed\": M}, \"total\": 1, \"meta\": {...}}")]
@@ -363,10 +363,10 @@ Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requ
         #[arg(long)]
         wait_idle: bool,
         /// Milliseconds of network inactivity that counts as idle (--wait-idle only)
-        #[arg(long, default_value_t = 500)]
+        #[arg(long, default_value_t = 500, requires = "wait_idle")]
         idle_ms: u64,
         /// Maximum total milliseconds to wait for idle (--wait-idle only)
-        #[arg(long, default_value_t = 10000)]
+        #[arg(long, default_value_t = 10000, requires = "wait_idle")]
         reload_timeout: u64,
     },
     /// Go back in history

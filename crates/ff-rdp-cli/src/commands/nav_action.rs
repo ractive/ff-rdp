@@ -105,9 +105,10 @@ pub fn run_reload_wait_idle(cli: &Cli, idle_ms: u64, timeout_ms: u64) -> Result<
             break;
         }
 
-        // Check idle threshold: if we've had at least one request and the last
-        // event was more than idle_ms ago, declare idle.
-        if requests_observed > 0 && last_event_at.elapsed() >= idle_threshold {
+        // Check idle threshold: if the last event (or start) was more than
+        // idle_ms ago, declare idle.  This handles both the common case (real
+        // requests observed) and zero-traffic pages (fully cached).
+        if last_event_at.elapsed() >= idle_threshold {
             break;
         }
 
@@ -123,7 +124,7 @@ pub fn run_reload_wait_idle(cli: &Cli, idle_ms: u64, timeout_ms: u64) -> Result<
                     let count = msg
                         .get("array")
                         .and_then(serde_json::Value::as_array)
-                        .map_or(1, |arr| {
+                        .map_or(0, |arr| {
                             arr.iter()
                                 .filter_map(|pair| pair.as_array())
                                 .filter_map(|p| p.get(1))
@@ -132,7 +133,9 @@ pub fn run_reload_wait_idle(cli: &Cli, idle_ms: u64, timeout_ms: u64) -> Result<
                                 .sum::<usize>()
                         }) as u64;
                     requests_observed += count;
-                    last_event_at = Instant::now();
+                    if count > 0 {
+                        last_event_at = Instant::now();
+                    }
                 }
                 // Non-network messages (e.g. the reload ack) are harmlessly ignored.
             }

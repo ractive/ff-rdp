@@ -53,11 +53,11 @@ enum HeightOverride {
 }
 
 /// Options accepted by [`run`].
-pub struct ScreenshotOpts<'a> {
-    pub output_path: Option<&'a str>,
-    pub base64_mode: bool,
-    pub full_page: bool,
-    pub viewport_height: Option<u32>,
+pub(crate) struct ScreenshotOpts<'a> {
+    pub(crate) output_path: Option<&'a str>,
+    pub(crate) base64_mode: bool,
+    pub(crate) full_page: bool,
+    pub(crate) viewport_height: Option<u32>,
 }
 
 /// Data URL prefix returned by `canvas.toDataURL('image/png')`.

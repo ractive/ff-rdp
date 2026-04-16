@@ -657,6 +657,7 @@ fn screenshot_viewport_height_flag_accepted() {
         "expected success, stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(out_path.exists(), "PNG file should have been written");
 
     let _ = std::fs::remove_dir_all(&out_dir);
 }
