@@ -1,5 +1,6 @@
 mod support;
 
+use serde_json::json;
 use support::{MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> std::path::PathBuf {
@@ -49,6 +50,160 @@ fn reload_outputs_json_envelope() {
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
     assert_eq!(json["results"]["action"], "reload");
+}
+
+// ---------------------------------------------------------------------------
+// reload --wait-idle
+// ---------------------------------------------------------------------------
+
+/// Build a mock server that:
+/// 1. Responds to listTabs, getTarget, getWatcher, watchResources
+/// 2. After watchResources, pushes a network event batch (simulating page reload traffic)
+/// 3. Closes the connection after sending followups so the idle loop gets EOF
+///    and returns cleanly (simulates the "idle" condition).
+fn reload_wait_idle_server(network_events: Vec<serde_json::Value>) -> MockRdpServer {
+    MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on_with_followups(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
+            network_events,
+        )
+        // No reload handler needed — the raw reload send gets an "unknownMethod"
+        // error back from the mock, which is harmlessly ignored by the idle loop.
+        .on(
+            "unwatchResources",
+            load_fixture("unwatch_resources_response.json"),
+        )
+        .close_after_followups()
+}
+
+#[test]
+fn reload_wait_idle_observes_network_events() {
+    let network_event = json!({
+        "type": "resources-available-array",
+        "from": "server1.conn0.watcher4",
+        "array": [
+            ["network-event", [
+                {
+                    "resourceType": "network-event",
+                    "actor": "server1.conn0.netActor1",
+                    "startedDateTime": "2026-01-01T00:00:00.000Z",
+                    "url": "https://example.com/style.css",
+                    "method": "GET",
+                    "isXHR": false,
+                    "cause": {"type": "stylesheet"},
+                    "fromCache": false,
+                    "private": false
+                },
+                {
+                    "resourceType": "network-event",
+                    "actor": "server1.conn0.netActor2",
+                    "startedDateTime": "2026-01-01T00:00:00.010Z",
+                    "url": "https://example.com/app.js",
+                    "method": "GET",
+                    "isXHR": false,
+                    "cause": {"type": "script"},
+                    "fromCache": false,
+                    "private": false
+                }
+            ]]
+        ]
+    });
+
+    let server = reload_wait_idle_server(vec![network_event]);
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "reload".to_owned(),
+        "--wait-idle".to_owned(),
+        "--idle-ms".to_owned(),
+        "500".to_owned(),
+        "--reload-timeout".to_owned(),
+        "5000".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().expect("server thread panicked");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    assert_eq!(json["results"]["reloaded"], true);
+    // Should have observed 2 network resources from the batch.
+    assert_eq!(
+        json["results"]["requests_observed"], 2,
+        "should count 2 network events from the batch"
+    );
+    // idle_at_ms is present (may be 0 if connection closed immediately)
+    assert!(
+        !json["results"]["idle_at_ms"].is_null(),
+        "idle_at_ms must be present in output"
+    );
+}
+
+#[test]
+fn reload_wait_idle_no_traffic_returns_idle_quickly() {
+    // With no network events, the loop should break quickly on idle_ms expiry
+    // after the connection closes (EOF from the mock server's close_after_followups
+    // fires immediately since watchResources has no followups = no followup close).
+    // To get an immediate close with no followups, we use a simple server that
+    // closes on the reload request by not registering a reload handler and letting
+    // the mock error reply be the "last" thing before EOF from the client closing.
+    // Easiest: use on_with_followups with an empty vec and close_after_followups.
+    // But close_after_followups only fires when has_followups is true.
+    // So: use a single dummy empty followup batch to trigger close.
+    let empty_batch = json!({
+        "type": "resources-available-array",
+        "from": "server1.conn0.watcher4",
+        "array": [["network-event", []]]
+    });
+
+    let server = reload_wait_idle_server(vec![empty_batch]);
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "reload".to_owned(),
+        "--wait-idle".to_owned(),
+        "--idle-ms".to_owned(),
+        "100".to_owned(),
+        "--reload-timeout".to_owned(),
+        "5000".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().expect("server thread panicked");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    assert_eq!(json["results"]["reloaded"], true);
+    assert_eq!(json["results"]["requests_observed"], 0);
 }
 
 #[test]

@@ -60,8 +60,22 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 commands::navigate::run(cli, url, &wait_opts)
             }
         }
-        Command::Eval { script } => commands::eval::run(cli, script),
-        Command::Reload => commands::nav_action::run(cli, NavAction::Reload),
+        Command::Eval {
+            script,
+            file,
+            stdin,
+        } => commands::eval::run(cli, script.as_deref(), file.as_deref(), *stdin),
+        Command::Reload {
+            wait_idle,
+            idle_ms,
+            reload_timeout,
+        } => {
+            if *wait_idle {
+                commands::nav_action::run_reload_wait_idle(cli, *idle_ms, *reload_timeout)
+            } else {
+                commands::nav_action::run(cli, NavAction::Reload)
+            }
+        }
         Command::Back => commands::nav_action::run(cli, NavAction::Back),
         Command::Forward => commands::nav_action::run(cli, NavAction::Forward),
         Command::PageText => commands::page_text::run(cli),
@@ -187,9 +201,20 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         Command::Sources { filter, pattern } => {
             commands::sources::run(cli, filter.as_deref(), pattern.as_deref())
         }
-        Command::Screenshot { output, base64 } => {
-            commands::screenshot::run(cli, output.as_deref(), *base64)
-        }
+        Command::Screenshot {
+            output,
+            base64,
+            full_page,
+            viewport_height,
+        } => commands::screenshot::run(
+            cli,
+            &commands::screenshot::ScreenshotOpts {
+                output_path: output.as_deref(),
+                base64_mode: *base64,
+                full_page: *full_page,
+                viewport_height: *viewport_height,
+            },
+        ),
         Command::Launch {
             headless,
             profile,
@@ -204,6 +229,11 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             *debug_port,
             *auto_consent,
         ),
+        Command::Computed {
+            selector,
+            prop,
+            all,
+        } => commands::computed::run(cli, selector, prop.as_deref(), *all),
         Command::Styles {
             selector,
             applied,

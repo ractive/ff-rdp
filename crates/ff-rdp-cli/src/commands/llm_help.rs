@@ -57,9 +57,18 @@ ff-rdp navigate https://example.com --wait-text "Welcome"
 
 ### eval <SCRIPT>
 Evaluate JavaScript in the target tab.
+Three input modes (exactly one required):
+  Positional:  ff-rdp eval 'document.title'
+  From file:   ff-rdp eval --file script.js
+  From stdin:  echo 'document.title' | ff-rdp eval --stdin
+Use --file or --stdin to avoid shell quoting issues with ?., template literals, or multi-line scripts.
+  --file <PATH>          Read JavaScript from a file
+  --stdin                Read JavaScript from stdin until EOF
 ```
 ff-rdp eval "document.title"
 ff-rdp eval "document.querySelectorAll('a').length"
+ff-rdp eval --file script.js
+echo 'document.body?.dataset.theme' | ff-rdp eval --stdin
 ```
 
 ### page-text
@@ -100,6 +109,18 @@ ff-rdp dom tree ".content" --max-chars 10000
 ff-rdp dom tree --jq '.results.children | map(.nodeName)'
 ```
 
+### computed <SELECTOR>
+Quick wrapper around getComputedStyle() for CSS debugging.
+Returns non-default computed style properties for every element matching the selector.
+  --prop <NAME>          Return a single property value (e.g. "color", "display")
+  --all                  Include every resolved property, not just non-default values
+```
+ff-rdp computed h1
+ff-rdp computed h1 --prop color
+ff-rdp computed .card --all
+ff-rdp computed .card --jq '.results[].computed.display'
+```
+
 ### styles <SELECTOR>
 Inspect CSS styles for an element matching a CSS selector.
 Default: computed styles as JSON array of {name, value, priority}.
@@ -116,12 +137,16 @@ ff-rdp styles "h1" --layout --jq '.results.margin'
 
 ### console
 Read console messages.
+Output always includes a "summary" field: {total, matched, shown, by_level}.
+"total" is the raw message count before any filter; "matched" is after filter but before --limit;
+"shown" is actual results length. Use this to distinguish "no errors" from "filter was too narrow".
   --level <LEVEL>        Filter by log level (error, warn, info, log, debug)
   --pattern <REGEX>      Filter by message content (regex)
   --follow               Stream console messages in real time (NDJSON, Ctrl-C to stop)
 ```
 ff-rdp console --level error
 ff-rdp console --pattern "API"
+ff-rdp console --limit 10 --jq '.summary'
 ff-rdp console --follow
 ff-rdp console --follow --level warn
 ```
@@ -167,9 +192,13 @@ ff-rdp perf compare https://a.example https://b.example --label "Site A,Site B"
 Capture a screenshot.
   -o, --output <PATH>    Output file path
   --base64               Return screenshot as base64 PNG in JSON output (no file saved)
+  --full-page            Capture entire scrollable page (document.scrollingElement.scrollHeight)
+  --viewport-height <PX> Capture at explicit pixel height (alternative to --full-page)
 ```
 ff-rdp screenshot -o page.png
 ff-rdp screenshot --base64
+ff-rdp screenshot --full-page -o full.png
+ff-rdp screenshot --viewport-height 2000 -o tall.png
 ```
 
 ### snapshot
@@ -268,8 +297,14 @@ ff-rdp storage session --key "token"
 
 ### reload
 Reload the current page.
+  --wait-idle            Block until network is idle after reload (replaces sleep)
+  --idle-ms <MS>         Milliseconds of inactivity that counts as idle [default: 500]
+  --reload-timeout <MS>  Maximum total wait time [default: 10000]
+Output with --wait-idle: {"results": {"reloaded": true, "idle_at_ms": N, "requests_observed": M}, ...}
 ```
 ff-rdp reload
+ff-rdp reload --wait-idle
+ff-rdp reload --wait-idle --idle-ms 1000 --reload-timeout 30000
 ```
 
 ### back
@@ -386,7 +421,7 @@ Use `--format text` for human-readable table output (mutually exclusive with --j
 {"results": [{"url": "...", "method": "GET", "status": 200, "duration_ms": 150}], "total": 42, "meta": {...}}
 
 ### console output
-{"results": [{"level": "error", "message": "...", "source": "...", "line": 42, "timestamp": 1700000000}], "total": 5, "meta": {...}}
+{"results": [{"level": "error", "message": "...", "source": "...", "line": 42, "timestamp": 1700000000}], "total": 5, "summary": {"total": 5, "matched": 5, "shown": 5, "by_level": {"error": 2, "warn": 3}}, "meta": {...}}
 
 ### dom output
 {"results": ["<h1>Hello</h1>"], "total": 1, "meta": {...}}
@@ -461,6 +496,7 @@ mod tests {
             "dom",
             "dom stats",
             "dom tree",
+            "computed",
             "styles",
             "console",
             "network",

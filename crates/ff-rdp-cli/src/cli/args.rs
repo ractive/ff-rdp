@@ -85,9 +85,16 @@ Output: {\"results\": [{\"url\": \"...\", \"title\": \"...\", \"actor\": \"...\"
     /// Navigate to a URL
     #[command(long_about = "Navigate to a URL.
 
+The URL is a positional argument (not a flag). There is no --url option.
+
+Examples:
+  ff-rdp navigate https://example.com
+  ff-rdp navigate https://example.com --with-network
+  ff-rdp navigate https://example.com --wait-text \"Welcome\"
+
 Output: {\"results\": {\"url\": \"...\", \"title\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
     Navigate {
-        /// The URL to navigate to
+        /// The URL to navigate to (positional, not a flag)
         url: String,
         /// Also capture network requests made during navigation
         #[arg(long)]
@@ -109,10 +116,31 @@ Output: {\"results\": {\"url\": \"...\", \"title\": \"...\"}, \"total\": 1, \"me
     /// Evaluate JavaScript in the target tab
     #[command(long_about = "Evaluate JavaScript in the target tab.
 
+Three input modes (exactly one required):
+  Positional:  ff-rdp eval 'document.title'
+  From file:   ff-rdp eval --file script.js
+  From stdin:  echo 'document.title' | ff-rdp eval --stdin
+
+Prefer --file or --stdin for scripts that contain shell metacharacters,
+optional chaining (?.), template literals, or multi-line statements — shell
+quoting can mangle them and produce a SyntaxError at column 1.
+
 Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}")]
+    #[command(group(
+        ArgGroup::new("eval_source")
+            .required(true)
+            .multiple(false)
+            .args(["script", "file", "stdin"])
+    ))]
     Eval {
-        /// JavaScript expression to evaluate
-        script: String,
+        /// JavaScript expression to evaluate (positional)
+        script: Option<String>,
+        /// Read JavaScript source from a file
+        #[arg(long, value_name = "PATH")]
+        file: Option<String>,
+        /// Read JavaScript source from stdin until EOF
+        #[arg(long)]
+        stdin: bool,
     },
     /// Extract visible page text (document.body.innerText)
     PageText,
@@ -147,7 +175,10 @@ With --count: {\"results\": {\"count\": N}, \"total\": 1, \"meta\": {...}}")]
     #[command(long_about = "Read console messages.
 
 Default: 50 messages, sorted by timestamp (newest first).
-Output: {\"results\": [{\"level\": \"...\", \"message\": \"...\", \"source\": \"...\", \"line\": N, \"timestamp\": N}], \"total\": N, \"meta\": {...}}")]
+Output always includes a `summary` field with totals and per-level counts so
+callers can tell at a glance whether the filter caught what they expected.
+
+Output: {\"results\": [{\"level\": \"...\", \"message\": \"...\", \"source\": \"...\", \"line\": N, \"timestamp\": N}], \"summary\": {\"total\": N, \"shown\": Z, \"by_level\": {...}, \"matched\": M}, \"total\": N, \"meta\": {...}}")]
     Console {
         /// Filter by log level (error, warn, info, log, debug)
         #[arg(long)]
@@ -224,7 +255,12 @@ Output: {\"results\": [{\"url\": \"...\", \"duration_ms\": N, \"transfer_size\":
     /// Capture a screenshot
     #[command(long_about = "Capture a screenshot.
 
-Output: {\"results\": {\"file\": \"...\", \"width\": N, \"height\": N}, \"total\": 1, \"meta\": {...}}
+By default the screenshot is captured at the current viewport size.
+Use --full-page to capture the entire scrollable document (up to
+document.scrollingElement.scrollHeight) or --viewport-height N for an
+explicit override.
+
+Output: {\"results\": {\"path\": \"...\", \"width\": N, \"height\": N}, \"total\": 1, \"meta\": {...}}
 With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
     Screenshot {
         /// Output file path
@@ -233,6 +269,12 @@ With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...
         /// Return the screenshot as base64 PNG data in JSON output instead of saving to a file
         #[arg(long, conflicts_with = "output")]
         base64: bool,
+        /// Capture the entire scrollable page (document.scrollingElement.scrollHeight)
+        #[arg(long, conflicts_with = "viewport_height")]
+        full_page: bool,
+        /// Capture at this explicit height (pixels) instead of the viewport height
+        #[arg(long, value_name = "PX", conflicts_with = "full_page")]
+        viewport_height: Option<u32>,
     },
     /// Click an element matching a CSS selector
     Click {
@@ -304,7 +346,29 @@ Output: {\"results\": [{\"name\": \"...\", \"value\": \"...\", \"domain\": \"...
         interactive: bool,
     },
     /// Reload the page
-    Reload,
+    #[command(long_about = "Reload the page.
+
+With --wait-idle, the command blocks after reload until network activity has been
+idle for --idle-ms (default 500) or the --timeout expires (default 10000).
+
+Examples:
+  ff-rdp reload
+  ff-rdp reload --wait-idle
+  ff-rdp reload --wait-idle --idle-ms 1000 --timeout 30000
+
+Output (plain):    {\"results\": {\"action\": \"reload\"}, \"total\": 1, \"meta\": {...}}
+Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requests_observed\": M}, \"total\": 1, \"meta\": {...}}")]
+    Reload {
+        /// Block until network is idle after reload
+        #[arg(long)]
+        wait_idle: bool,
+        /// Milliseconds of network inactivity that counts as idle (--wait-idle only)
+        #[arg(long, default_value_t = 500)]
+        idle_ms: u64,
+        /// Maximum total milliseconds to wait for idle (--wait-idle only)
+        #[arg(long, default_value_t = 10000)]
+        reload_timeout: u64,
+    },
     /// Go back in history
     Back,
     /// Go forward in history
@@ -368,6 +432,32 @@ Output: {\"results\": {\"tag\": \"HTML\", \"children\": [...], ...}, \"total\": 
         /// Comma-separated viewport widths in pixels
         #[arg(long, value_delimiter = ',', default_value = "320,768,1024,1440")]
         widths: Vec<u32>,
+    },
+    /// Quick wrapper around getComputedStyle for CSS debugging
+    #[command(
+        long_about = "Quick wrapper around getComputedStyle() for CSS debugging.
+
+Returns non-default computed style properties for every element matching the
+selector. Multi-match behaviour mirrors `dom`: one entry per matching element,
+each with {selector, index, computed: {...}}.
+
+  ff-rdp computed h1
+  ff-rdp computed h1 --prop color
+  ff-rdp computed .card --all
+
+Output (multi-match): {\"results\": [{\"selector\": \"...\", \"index\": 0, \"computed\": {...}}], \"total\": N, \"meta\": {...}}
+Output (--prop): single string value per match
+Output (--all): full resolved-style object per match (dumps every property)"
+    )]
+    Computed {
+        /// CSS selector to match elements
+        selector: String,
+        /// Return only a single property value (e.g. \"color\", \"display\")
+        #[arg(long, value_name = "NAME")]
+        prop: Option<String>,
+        /// Include every resolved property, not just non-default values
+        #[arg(long, conflicts_with = "prop")]
+        all: bool,
     },
     /// Inspect CSS styles for an element matching a CSS selector
     Styles {

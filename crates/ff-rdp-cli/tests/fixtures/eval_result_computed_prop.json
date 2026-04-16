@@ -1,0 +1,10 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "input": "(function() { ... })()",
+  "result": "__FF_RDP_JSON__[{\"selector\":\"h1\",\"index\":0,\"value\":\"rgb(10, 20, 30)\"}]",
+  "resultID": "1775437183977.373-0",
+  "startTime": 1775437183977.373,
+  "timestamp": 1775437183980.721,
+  "type": "evaluationResult"
+}

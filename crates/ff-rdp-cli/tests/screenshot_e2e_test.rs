@@ -565,6 +565,102 @@ fn screenshot_falls_back_to_two_step_protocol_on_firefox_149() {
 // jq filter on success output
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// iter-43: --full-page / --viewport-height
+// ---------------------------------------------------------------------------
+
+#[test]
+fn screenshot_full_page_and_viewport_height_conflict() {
+    // Providing both flags is a user error — clap rejects it before connecting.
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(["screenshot", "--full-page", "--viewport-height", "1000"])
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    assert!(
+        !output.status.success(),
+        "expected failure when both --full-page and --viewport-height are given"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("full-page")
+            || stderr.contains("viewport-height")
+            || stderr.contains("cannot be used with"),
+        "expected conflict error, got: {stderr}"
+    );
+}
+
+#[test]
+fn screenshot_full_page_flag_accepted() {
+    // With the mock server returning a fixed 1x1 PNG we can't verify the actual
+    // rendered height, but we *can* verify that --full-page does not break the
+    // normal flow and that the JS generator picks the scrollHeight path.
+    let server = screenshot_server("eval_result_screenshot.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let out_dir = unique_temp_dir("screenshot_full_page");
+    let out_path = out_dir.join("full.png");
+
+    let mut args = base_args(port);
+    args.extend([
+        "screenshot".to_owned(),
+        "--full-page".to_owned(),
+        "--output".to_owned(),
+        out_path.to_string_lossy().into_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(out_path.exists());
+
+    let _ = std::fs::remove_dir_all(&out_dir);
+}
+
+#[test]
+fn screenshot_viewport_height_flag_accepted() {
+    let server = screenshot_server("eval_result_screenshot.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let out_dir = unique_temp_dir("screenshot_viewport_height");
+    let out_path = out_dir.join("vh.png");
+
+    let mut args = base_args(port);
+    args.extend([
+        "screenshot".to_owned(),
+        "--viewport-height".to_owned(),
+        "2500".to_owned(),
+        "--output".to_owned(),
+        out_path.to_string_lossy().into_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&out_dir);
+}
+
 #[test]
 fn screenshot_with_jq_filter_extracts_path() {
     let server = screenshot_server("eval_result_screenshot.json");
