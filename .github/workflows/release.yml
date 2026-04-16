@@ -338,8 +338,8 @@ jobs:
             awk -v file="$1" '$2 == file {print $1}' SHA256SUMS
           }
 
-          SHA_WIN_X64=$(get_sha "ff-rdp-x86_64-pc-windows-msvc\\.zip")
-          SHA_WIN_ARM64=$(get_sha "ff-rdp-aarch64-pc-windows-msvc\\.zip")
+          SHA_WIN_X64=$(get_sha "ff-rdp-x86_64-pc-windows-msvc.zip")
+          SHA_WIN_ARM64=$(get_sha "ff-rdp-aarch64-pc-windows-msvc.zip")
 
           for var in SHA_WIN_X64 SHA_WIN_ARM64; do
             if [ -z "${!var}" ]; then
@@ -362,11 +362,11 @@ jobs:
               license: "MIT",
               architecture: {
                 "64bit": {
-                  url: "\($release_url)/v\($version)/ff-rdp-x86_64-pc-windows-msvc\\.zip",
+                  url: "\($release_url)/v\($version)/ff-rdp-x86_64-pc-windows-msvc.zip",
                   hash: $sha_x64
                 },
                 arm64: {
-                  url: "\($release_url)/v\($version)/ff-rdp-aarch64-pc-windows-msvc\\.zip",
+                  url: "\($release_url)/v\($version)/ff-rdp-aarch64-pc-windows-msvc.zip",
                   hash: $sha_arm64
                 }
               },
@@ -375,14 +375,14 @@ jobs:
               autoupdate: {
                 architecture: {
                   "64bit": {
-                    url: "\($release_url)/v$version/ff-rdp-x86_64-pc-windows-msvc\\.zip",
+                    url: "\($release_url)/v$version/ff-rdp-x86_64-pc-windows-msvc.zip",
                     hash: {
                       url: "\($release_url)/v$version/SHA256SUMS",
                       regex: "([a-fA-F0-9]+)\\s+ff-rdp-x86_64-pc-windows-msvc\\.zip"
                     }
                   },
                   arm64: {
-                    url: "\($release_url)/v$version/ff-rdp-aarch64-pc-windows-msvc\\.zip",
+                    url: "\($release_url)/v$version/ff-rdp-aarch64-pc-windows-msvc.zip",
                     hash: {
                       url: "\($release_url)/v$version/SHA256SUMS",
                       regex: "([a-fA-F0-9]+)\\s+ff-rdp-aarch64-pc-windows-msvc\\.zip"
