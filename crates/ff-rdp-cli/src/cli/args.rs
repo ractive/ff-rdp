@@ -486,7 +486,7 @@ Output (--all): full resolved-style object per match (dumps every property)"
         #[arg(long, group = "style_mode")]
         layout: bool,
         /// Comma-separated list of CSS property names to include (computed mode only)
-        #[arg(long, value_delimiter = ',')]
+        #[arg(long, value_delimiter = ',', conflicts_with_all = ["applied", "layout"])]
         properties: Option<Vec<String>>,
     },
     /// Scroll the page or a specific element

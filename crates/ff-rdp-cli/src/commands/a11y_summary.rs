@@ -90,7 +90,7 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
 
     // Apply --limit to interactive elements if set.
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
-    let mut output_results = results.clone();
+    let mut output_results = results;
 
     if let Some(Value::Array(arr)) = output_results.get_mut("interactive") {
         let orig_len = arr.len();
@@ -187,7 +187,7 @@ fn render_summary_text(results: &Value) {
             .unwrap_or(0);
             println!(
                 "  ... and {} more (use --all for complete list)",
-                total - interactive.len()
+                total.saturating_sub(interactive.len())
             );
         }
     }

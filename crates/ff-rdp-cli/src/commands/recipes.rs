@@ -34,7 +34,7 @@ DOM
 
   Get text and attributes together (useful for AI agents):
     ff-rdp dom "a[href]" --text-attrs
-    ff-rdp dom "input" --text-attrs --jq '[.results[] | {{text: .textContent, href: .attrs.href}}]'
+    ff-rdp dom "input" --text-attrs --jq '[(.results | if type == "array" then .[] else . end) | {{text: .textContent, href: .attrs.href}}]'
 
 NETWORK
   NOTE: `network` defaults to summary mode (.results is an object with totals).
