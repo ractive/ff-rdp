@@ -160,7 +160,7 @@ impl MockRdpServer {
             .write_all(encode_frame(&greeting_json).as_bytes())
             .expect("greeting write");
 
-        loop {
+        'conn: loop {
             // Read the next request. EOF / connection reset is a clean client disconnect.
             let request = match recv_from(&mut reader) {
                 Ok(v) => v,
@@ -221,7 +221,7 @@ impl MockRdpServer {
                     .write_all(encode_frame(&followup_json).as_bytes())
                     .is_err()
                 {
-                    break;
+                    break 'conn;
                 }
             }
 

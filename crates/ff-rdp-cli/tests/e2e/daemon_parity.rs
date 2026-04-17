@@ -297,8 +297,7 @@ fn daemon_network_shows_summary() {
         args.push("network".to_owned());
 
         let output = Command::new(ff_rdp_bin())
-            .env("HOME", home.path())
-            .env("USERPROFILE", home.path())
+            .env("FF_RDP_HOME", home.path())
             .args(&args)
             .output()
             .expect("failed to spawn ff-rdp");

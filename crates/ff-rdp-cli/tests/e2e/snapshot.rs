@@ -74,7 +74,7 @@ fn snapshot_returns_dom_tree() {
 }
 
 // ---------------------------------------------------------------------------
-// Snapshot with --depth 2 shows truncation markers
+// Snapshot with --depth 1 shows truncation markers
 // ---------------------------------------------------------------------------
 
 #[test]
