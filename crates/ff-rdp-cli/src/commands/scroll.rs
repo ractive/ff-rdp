@@ -129,11 +129,7 @@ pub fn run_top(cli: &Cli) -> Result<(), AppError> {
 }
 
 pub fn run_bottom(cli: &Cli) -> Result<(), AppError> {
-    run_scroll_absolute(
-        cli,
-        "document.documentElement.scrollHeight",
-        "scroll bottom failed",
-    )
+    run_scroll_absolute(cli, "root.scrollHeight", "scroll bottom failed")
 }
 
 /// Shared implementation for `scroll top` and `scroll bottom`.
@@ -146,12 +142,13 @@ fn run_scroll_absolute(cli: &Cli, y_expr: &str, error_label: &str) -> Result<(),
 
     let js = format!(
         r"(function() {{
+  var root = document.scrollingElement || document.documentElement || document.body;
   window.scrollTo(0, {y_expr});
-  var atEnd = (window.scrollY + window.innerHeight) >= (document.documentElement.scrollHeight - 1);
+  var atEnd = (root.scrollTop + window.innerHeight) >= (root.scrollHeight - 1);
   return '{JSON_SENTINEL}' + JSON.stringify({{
     scrolled: true,
-    viewport: {{x: window.scrollX, y: window.scrollY, width: window.innerWidth, height: window.innerHeight}},
-    scrollHeight: document.documentElement.scrollHeight,
+    viewport: {{x: root.scrollLeft, y: root.scrollTop, width: window.innerWidth, height: window.innerHeight}},
+    scrollHeight: root.scrollHeight,
     atEnd: atEnd
   }});
 }})()"
@@ -608,14 +605,19 @@ mod tests {
 
     #[test]
     fn run_bottom_js_scrolls_to_scroll_height() {
-        // Verify the JS emitted by run_bottom uses scrollTo(0, scrollHeight)
+        // Verify the JS emitted by run_bottom uses scrollingElement fallback
+        // and scrollTo(0, root.scrollHeight).
         let js = format!(
             r"(function() {{
-  window.scrollTo(0, document.documentElement.scrollHeight);
+  var root = document.scrollingElement || document.documentElement || document.body;
+  window.scrollTo(0, root.scrollHeight);
   return '{JSON_SENTINEL}' + JSON.stringify({{scrolled: true}});
 }})()"
         );
-        assert!(js.contains("scrollTo(0, document.documentElement.scrollHeight)"));
+        assert!(
+            js.contains("document.scrollingElement || document.documentElement || document.body")
+        );
+        assert!(js.contains("scrollTo(0, root.scrollHeight)"));
         assert!(js.contains(JSON_SENTINEL));
     }
 }

@@ -149,9 +149,11 @@ pub fn run_reload_wait_idle(cli: &Cli, idle_ms: u64, timeout_ms: u64) -> Result<
                                 .sum::<usize>()
                         }) as u64;
                     requests_observed += count;
-                    if count > 0 {
-                        last_event_at = Some(Instant::now());
-                    }
+                    // Always arm the idle timer when a watcher batch arrives,
+                    // even if it contains zero resources.  Otherwise fully-
+                    // cached pages (no network traffic) never become "idle"
+                    // and block until the total timeout.
+                    last_event_at = Some(Instant::now());
                 }
                 // Non-network messages (e.g. the reload ack) are harmlessly ignored.
             }
