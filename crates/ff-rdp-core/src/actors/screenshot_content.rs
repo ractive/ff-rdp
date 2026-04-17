@@ -28,9 +28,10 @@ impl ScreenshotContentActor {
     pub fn capture(
         transport: &mut RdpTransport,
         actor: &str,
+        full_page: bool,
     ) -> Result<ScreenshotCapture, ProtocolError> {
         let params = json!({
-            "fullPage": false,
+            "fullPage": full_page,
             "ratio": 1.0,
         });
 
@@ -297,6 +298,64 @@ mod tests {
         assert!(
             prep.rect.is_none(),
             "rect should be None when field is absent"
+        );
+    }
+
+    // --- capture fullPage parameter ---
+
+    /// Helper: invoke `ScreenshotContentActor::capture` with a minimal mock server
+    /// and return the request that was received by the server side.
+    fn capture_request(full_page: bool) -> serde_json::Value {
+        use std::io::{BufReader, Write as _};
+        use std::net::{TcpListener, TcpStream};
+
+        use crate::transport::{RdpTransport, encode_frame, recv_from};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+
+        let t = std::thread::spawn(move || {
+            let mut reader = BufReader::new(&server);
+            let req = recv_from(&mut reader).unwrap();
+            // Reply with a minimal capture response so the call succeeds.
+            let reply = serde_json::json!({
+                "from": "actor1",
+                "data": "data:image/png;base64,abc"
+            });
+            let frame = encode_frame(&serde_json::to_string(&reply).unwrap());
+            (&server).write_all(frame.as_bytes()).unwrap();
+            req
+        });
+
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        let mut transport = RdpTransport::from_parts(reader, writer);
+
+        ScreenshotContentActor::capture(&mut transport, "actor1", full_page).unwrap();
+        t.join().unwrap()
+    }
+
+    #[test]
+    fn capture_sends_full_page_false_by_default() {
+        let req = capture_request(false);
+        // The first method tried is "captureScreenshot" — verify fullPage=false.
+        assert_eq!(
+            req["fullPage"],
+            serde_json::json!(false),
+            "capture with full_page=false should send fullPage: false"
+        );
+    }
+
+    #[test]
+    fn capture_sends_full_page_true_when_requested() {
+        let req = capture_request(true);
+        assert_eq!(
+            req["fullPage"],
+            serde_json::json!(true),
+            "capture with full_page=true should send fullPage: true"
         );
     }
 }

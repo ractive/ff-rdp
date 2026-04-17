@@ -97,7 +97,21 @@ pub fn run_reload_wait_idle(cli: &Cli, idle_ms: u64, timeout_ms: u64) -> Result<
     let idle_threshold = Duration::from_millis(idle_ms);
 
     let mut requests_observed: u64 = 0;
-    let mut last_event_at = Instant::now();
+    // `last_event_at` is None until the first network event arrives.
+    //
+    // # Timing fix
+    //
+    // Previously this was initialised to `Instant::now()` (before the reload
+    // fires), which caused the idle check to trigger immediately if no events
+    // arrived within `idle_ms` of the *watch subscription* — well before the
+    // reloaded page had time to generate any requests.  Pages that take longer
+    // than `idle_ms` to produce their first network event would therefore always
+    // report 0 requests.
+    //
+    // The idle threshold should only apply *after the first event is seen*:
+    //   - Before any event: only the total timeout governs termination.
+    //   - After the first event: terminate when no new event arrives for idle_ms.
+    let mut last_event_at: Option<Instant> = None;
 
     loop {
         // Check total timeout first.
@@ -105,10 +119,12 @@ pub fn run_reload_wait_idle(cli: &Cli, idle_ms: u64, timeout_ms: u64) -> Result<
             break;
         }
 
-        // Check idle threshold: if the last event (or start) was more than
-        // idle_ms ago, declare idle.  This handles both the common case (real
-        // requests observed) and zero-traffic pages (fully cached).
-        if last_event_at.elapsed() >= idle_threshold {
+        // Check idle threshold only after at least one network event has been
+        // received.  Before that, the reload may still be in-flight (DNS,
+        // TCP handshake, page teardown) and we must not declare idle too early.
+        if let Some(t) = last_event_at
+            && t.elapsed() >= idle_threshold
+        {
             break;
         }
 
@@ -134,7 +150,7 @@ pub fn run_reload_wait_idle(cli: &Cli, idle_ms: u64, timeout_ms: u64) -> Result<
                         }) as u64;
                     requests_observed += count;
                     if count > 0 {
-                        last_event_at = Instant::now();
+                        last_event_at = Some(Instant::now());
                     }
                 }
                 // Non-network messages (e.g. the reload ack) are harmlessly ignored.

@@ -158,15 +158,14 @@ fn reload_wait_idle_observes_network_events() {
 
 #[test]
 fn reload_wait_idle_no_traffic_returns_idle_quickly() {
-    // With no network events, the loop should break quickly on idle_ms expiry
-    // after the connection closes (EOF from the mock server's close_after_followups
-    // fires immediately since watchResources has no followups = no followup close).
-    // To get an immediate close with no followups, we use a simple server that
-    // closes on the reload request by not registering a reload handler and letting
-    // the mock error reply be the "last" thing before EOF from the client closing.
-    // Easiest: use on_with_followups with an empty vec and close_after_followups.
-    // But close_after_followups only fires when has_followups is true.
-    // So: use a single dummy empty followup batch to trigger close.
+    // With no network events the loop exits when the mock server closes the
+    // connection (EOF path in the idle-drain loop).  Since `last_event_at` is
+    // only set once a non-empty network-event batch arrives, the total timeout
+    // would govern on a live server with zero traffic — but in the mock the
+    // connection closes after the followup batch is delivered, which triggers
+    // the EOF break and returns before any timeout fires.
+    // We use a single dummy empty followup batch to trigger the
+    // close_after_followups behaviour.
     let empty_batch = json!({
         "type": "resources-available-array",
         "from": "server1.conn0.watcher4",

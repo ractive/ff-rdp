@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use crate::cli::args::Cli;
 use crate::error::AppError;
 use crate::output;
+use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_direct};
@@ -56,8 +57,8 @@ pub fn run(
     };
 
     // Strip internal actor IDs from output (not useful to end users).
-    let mut results = serde_json::to_value(&tree).map_err(|e| AppError::Internal(e.into()))?;
-    strip_actor_ids(&mut results);
+    let mut tree_value = serde_json::to_value(&tree).map_err(|e| AppError::Internal(e.into()))?;
+    strip_actor_ids(&mut tree_value);
 
     let mut meta = json!({
         "host": cli.host,
@@ -70,11 +71,67 @@ pub fn run(
         m.insert("fallback_method".to_string(), json!("js-eval"));
     }
 
-    let envelope = output::envelope(&results, 1, &meta);
+    // When --limit / --all is set, flatten the tree into a list of nodes and
+    // apply the limit.  Without a limit flag the output remains a single tree
+    // object (the historical default behaviour).
+    let controls = OutputControls::from_cli(cli, SortDir::Asc);
+    let envelope = if cli.limit.is_some() || cli.all {
+        let mut flat = Vec::new();
+        flatten_tree(&tree_value, &mut flat);
+        let (limited, total, truncated) = controls.apply_limit(flat, None);
+        let shown = limited.len();
+        output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta)
+    } else {
+        output::envelope(&tree_value, 1, &meta)
+    };
+
+    // Text short-circuit: render an indented accessibility tree instead of JSON.
+    // When --limit / --all is active we fall through to the pipeline which will
+    // render the flat list as a table via the generic text renderer.
+    if cli.format == "text" && cli.jq.is_none() && cli.limit.is_none() && !cli.all {
+        render_a11y_text(&tree_value, 0);
+        return Ok(());
+    }
 
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
+}
+
+/// Render an accessibility tree node (and its children) as an indented text tree.
+///
+/// Each node is printed as `<role> "<name>" [<value>] (<description>)` with
+/// any optional fields omitted when absent.  Children are indented by two
+/// spaces per depth level.
+fn render_a11y_text(node: &Value, depth: usize) {
+    use std::fmt::Write as _;
+    let indent = "  ".repeat(depth);
+    let role = node.get("role").and_then(Value::as_str).unwrap_or("?");
+    let name = node.get("name").and_then(Value::as_str);
+    let value = node.get("value").and_then(Value::as_str);
+    let description = node.get("description").and_then(Value::as_str);
+
+    let mut line = format!("{indent}{role}");
+    if let Some(n) = name {
+        let _ = write!(line, " \"{n}\"");
+    }
+    if let Some(v) = value {
+        let _ = write!(line, " [{v}]");
+    }
+    if let Some(d) = description {
+        let _ = write!(line, " ({d})");
+    }
+    println!("{line}");
+
+    if let Some(truncated) = node.get("truncated").and_then(Value::as_str) {
+        println!("{indent}  ... {truncated}");
+    }
+
+    if let Some(children) = node.get("children").and_then(Value::as_array) {
+        for child in children {
+            render_a11y_text(child, depth + 1);
+        }
+    }
 }
 
 /// Attempt native RDP accessibility protocol, falling back to JS eval on
@@ -232,6 +289,30 @@ fn map_a11y_error(err: ff_rdp_core::ProtocolError, cli: &Cli) -> AppError {
             ))
         }
         _ => AppError::from(err),
+    }
+}
+
+/// Flatten a nested accessibility tree into a pre-order list of nodes.
+///
+/// Each node (a JSON object) is appended to `out` with its `children` field
+/// removed so that each entry is self-contained.  Children are visited
+/// recursively in document order (pre-order depth-first).
+fn flatten_tree(node: &Value, out: &mut Vec<Value>) {
+    if let Value::Object(map) = node {
+        // Clone without children for the flat entry.
+        let mut entry = serde_json::Map::new();
+        for (k, v) in map {
+            if k != "children" {
+                entry.insert(k.clone(), v.clone());
+            }
+        }
+        out.push(Value::Object(entry));
+
+        if let Some(Value::Array(children)) = map.get("children") {
+            for child in children {
+                flatten_tree(child, out);
+            }
+        }
     }
 }
 
@@ -427,6 +508,56 @@ mod tests {
     }
 
     #[test]
+    fn flatten_tree_single_node() {
+        let node = json!({"role": "button", "name": "OK"});
+        let mut out = Vec::new();
+        flatten_tree(&node, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"], "button");
+        assert_eq!(out[0]["name"], "OK");
+    }
+
+    #[test]
+    fn flatten_tree_nested_children_preorder() {
+        let node = json!({
+            "role": "document",
+            "children": [
+                {
+                    "role": "list",
+                    "children": [
+                        {"role": "listitem", "name": "A"},
+                        {"role": "listitem", "name": "B"},
+                    ]
+                },
+                {"role": "button", "name": "Submit"},
+            ]
+        });
+        let mut out = Vec::new();
+        flatten_tree(&node, &mut out);
+        // Pre-order: document, list, listitem A, listitem B, button
+        assert_eq!(out.len(), 5);
+        assert_eq!(out[0]["role"], "document");
+        assert_eq!(out[1]["role"], "list");
+        assert_eq!(out[2]["role"], "listitem");
+        assert_eq!(out[2]["name"], "A");
+        assert_eq!(out[3]["role"], "listitem");
+        assert_eq!(out[3]["name"], "B");
+        assert_eq!(out[4]["role"], "button");
+    }
+
+    #[test]
+    fn flatten_tree_removes_children_from_entries() {
+        let node = json!({
+            "role": "list",
+            "children": [{"role": "listitem", "name": "X"}]
+        });
+        let mut out = Vec::new();
+        flatten_tree(&node, &mut out);
+        // The flat entry for "list" must not carry children.
+        assert!(out[0].get("children").is_none());
+    }
+
+    #[test]
     fn strip_actor_ids_removes_actor_field() {
         let mut val = json!({
             "actor": "conn1/accessibility1",
@@ -439,5 +570,36 @@ mod tests {
         assert!(val.get("actor").is_none());
         assert!(val["children"][0].get("actor").is_none());
         assert_eq!(val["children"][0]["role"], "button");
+    }
+
+    // ── render_a11y_text ─────────────────────────────────────────────────────
+
+    #[test]
+    fn render_a11y_text_does_not_panic_with_minimal_node() {
+        let node = json!({"role": "button", "name": "OK"});
+        render_a11y_text(&node, 0);
+    }
+
+    #[test]
+    fn render_a11y_text_does_not_panic_with_nested_tree() {
+        let node = json!({
+            "role": "document",
+            "children": [
+                {
+                    "role": "list",
+                    "children": [
+                        {"role": "listitem", "name": "First"},
+                        {"role": "listitem", "name": "Second", "value": "2", "description": "item two"},
+                    ]
+                },
+                {"role": "button", "name": "Submit", "truncated": "3 children not shown"},
+            ]
+        });
+        render_a11y_text(&node, 0);
+    }
+
+    #[test]
+    fn render_a11y_text_does_not_panic_with_empty_object() {
+        render_a11y_text(&json!({}), 0);
     }
 }

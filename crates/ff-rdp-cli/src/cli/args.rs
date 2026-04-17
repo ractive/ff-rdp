@@ -480,6 +480,8 @@ Output (--all): full resolved-style object per match (dumps every property)"
 Subcommands:
   scroll to <SELECTOR>       Scroll element into viewport
   scroll by                  Scroll viewport by pixels or a page
+  scroll top                 Scroll to the very top of the page
+  scroll bottom              Scroll to the very bottom of the page
   scroll container <SEL>     Scroll an overflow container
   scroll until <SELECTOR>    Scroll until element is visible
   scroll text <TEXT>         Find text and scroll to it")]
@@ -581,10 +583,14 @@ Output: {\"results\": {\"scrolled\": true, \"selector\": \"...\", \"viewport\": 
         smooth: bool,
     },
     /// Scroll the viewport by a number of pixels or by a page
-    #[command(long_about = "Scroll the viewport by pixels or by a full page.
+    #[command(
+        long_about = "Scroll the viewport by pixels or by a full page.
   --page-down and --page-up scroll by 85% of the viewport height.
   --page-down and --page-up are mutually exclusive with --dy and with each other.
-Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\": N, \"atEnd\": bool}, \"total\": 1, \"meta\": {...}}")]
+  Negative values for --dy/--dx are accepted (use 'scroll by --dy -500' or '--dy=-500').
+Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\": N, \"atEnd\": bool}, \"total\": 1, \"meta\": {...}}",
+        allow_negative_numbers = true
+    )]
     By {
         /// Horizontal scroll delta in pixels
         #[arg(long, default_value_t = 0)]
@@ -602,6 +608,16 @@ Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\"
         #[arg(long)]
         smooth: bool,
     },
+    /// Scroll to the very top of the page (equivalent to scroll by --dy -99999999)
+    #[command(long_about = "Scroll to the very top of the page.
+  Uses window.scrollTo(0, 0) for an instant jump to the top.
+Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\": N, \"atEnd\": bool}, \"total\": 1, \"meta\": {...}}")]
+    Top,
+    /// Scroll to the very bottom of the page (equivalent to scroll by --dy 99999999)
+    #[command(long_about = "Scroll to the very bottom of the page.
+  Uses window.scrollTo(0, document.documentElement.scrollHeight) for an instant jump to the bottom.
+Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\": N, \"atEnd\": bool}, \"total\": 1, \"meta\": {...}}")]
+    Bottom,
     /// Scroll an overflow container element directly
     #[command(
         long_about = "Scroll an overflow container element (scrollTop/scrollLeft).

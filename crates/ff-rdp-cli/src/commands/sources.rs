@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use crate::cli::args::Cli;
 use crate::error::AppError;
 use crate::output;
+use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_direct;
@@ -110,14 +111,17 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
         })
         .collect();
 
-    let total = results.len();
-    let result_json = json!(results);
+    // Apply --limit / --all output controls (no default limit for sources).
+    let controls = OutputControls::from_cli(cli, SortDir::Asc);
+    let (limited, total, truncated) = controls.apply_limit(results, None);
+    let shown = limited.len();
+    let result_json = json!(limited);
     let mut meta = json!({"host": cli.host, "port": cli.port});
     if used_js_fallback && let Some(m) = meta.as_object_mut() {
         m.insert("fallback".to_string(), json!(true));
         m.insert("fallback_method".to_string(), json!("js-eval"));
     }
-    let envelope = output::envelope(&result_json, total, &meta);
+    let envelope = output::envelope_with_truncation(&result_json, shown, total, truncated, &meta);
 
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
