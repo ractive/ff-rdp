@@ -244,23 +244,41 @@ pub(crate) fn build_command(
         cmd.arg("--profile").arg(&tmp);
         Some(tmp)
     } else {
-        None
+        // No explicit profile — auto-create a temporary profile with devtools
+        // prefs so the debugger server actually starts.  Without this,
+        // `launch` with a fresh default profile ignores --start-debugger-server
+        // because devtools.debugger.remote-enabled defaults to false.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros())
+            .unwrap_or(0);
+        let tmp =
+            std::env::temp_dir().join(format!("ff-rdp-profile-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&tmp).map_err(|e| {
+            AppError::User(format!(
+                "failed to create temporary profile directory {}: {e}",
+                tmp.display()
+            ))
+        })?;
+        std::fs::write(tmp.join("user.js"), USER_JS).map_err(|e| {
+            AppError::User(format!(
+                "failed to write user.js to temporary profile {}: {e}",
+                tmp.display()
+            ))
+        })?;
+        cmd.arg("--profile").arg(&tmp);
+        Some(tmp)
     };
 
     // Install Consent-O-Matic if requested. Requires a profile directory so
     // Firefox can pick up the extension on next startup.
     if auto_consent {
-        match &profile_path {
-            Some(p) => {
-                // Prevent Firefox from auto-disabling the sideloaded extension.
-                ensure_extension_autoinstall(p)?;
-                super::auto_consent::install(p)?;
-            }
-            None => {
-                return Err(AppError::User(
-                    "--auto-consent requires --profile or --temp-profile".to_owned(),
-                ));
-            }
+        // profile_path is always Some at this point (either explicit, temp, or
+        // the auto-created profile from the else branch above).
+        if let Some(p) = &profile_path {
+            // Prevent Firefox from auto-disabling the sideloaded extension.
+            ensure_extension_autoinstall(p)?;
+            super::auto_consent::install(p)?;
         }
     }
 
@@ -386,13 +404,16 @@ pub fn run(
                 )));
             }
 
+            // `temp_profile` is true when the caller requested --temp-profile
+            // OR when we auto-created one because no profile flag was given.
+            let effective_temp_profile = temp_profile || profile.is_none();
             let result = json!({
                 "pid": pid,
                 "host": host,
                 "port": port,
                 "headless": headless,
                 "profile": profile_path.as_ref().map(|p| p.to_string_lossy().as_ref().to_owned()),
-                "temp_profile": temp_profile,
+                "temp_profile": effective_temp_profile,
                 "auto_consent": auto_consent,
             });
             let meta = json!({
@@ -480,7 +501,38 @@ mod tests {
             args.iter().any(|a| a == "-no-remote"),
             "expected -no-remote in args: {args:?}"
         );
-        assert!(profile.is_none());
+        // With no profile flags, an auto-created temp profile is returned.
+        let profile = profile.expect("auto-created temp profile should be returned");
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn build_command_no_profile_auto_creates_temp_profile() {
+        let tmp = fake_firefox();
+        let (cmd, profile_path) = build_command(&tmp, 6000, false, None, false, false).unwrap();
+        let args = command_args(&cmd);
+        cleanup_fake_firefox(&tmp);
+        let profile = profile_path.expect("auto-created temp profile should be returned");
+        assert!(
+            profile.exists(),
+            "auto-created profile directory should exist: {}",
+            profile.display()
+        );
+        let user_js = profile.join("user.js");
+        assert!(
+            user_js.exists(),
+            "user.js should exist in auto-created profile"
+        );
+        let contents = std::fs::read_to_string(&user_js).unwrap();
+        assert!(
+            contents.contains("devtools.debugger.remote-enabled"),
+            "devtools prefs should be present in auto-created profile"
+        );
+        assert!(
+            args.iter().any(|a| a == "--profile"),
+            "should pass --profile to Firefox: {args:?}"
+        );
+        let _ = std::fs::remove_dir_all(&profile);
     }
 
     #[test]
@@ -588,11 +640,23 @@ mod tests {
     }
 
     #[test]
-    fn build_command_auto_consent_requires_profile() {
+    fn build_command_auto_consent_uses_auto_created_profile() {
+        // auto_consent no longer requires an explicit profile flag: when neither
+        // --profile nor --temp-profile is given, build_command auto-creates a
+        // temp profile that Consent-O-Matic can be installed into.
+        // The extension download may fail in CI (no network), so we accept both
+        // Ok and a User-level error; we just verify it is not an Internal error.
         let tmp = fake_firefox();
         let result = build_command(&tmp, 6000, false, None, false, true);
         cleanup_fake_firefox(&tmp);
-        assert!(result.is_err(), "auto_consent without profile should fail");
+        match result {
+            Ok((_, profile_path)) => {
+                let profile = profile_path.expect("auto-created profile should be returned");
+                let _ = std::fs::remove_dir_all(&profile);
+            }
+            Err(AppError::User(_)) => { /* expected in offline/CI */ }
+            Err(e) => panic!("unexpected error type: {e:?}"),
+        }
     }
 
     #[test]
