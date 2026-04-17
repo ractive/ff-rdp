@@ -100,7 +100,7 @@ First dogfooding on sbb.ch (Swiss Federal Railways). Focused on new features fro
 
 ## Summary
 
-- **24 commands tested**, 22 clean passes, 1 high-severity bug (`screenshot --full-page`), 5 minor issues
+- **29 commands tested**, 29 PASS (some with caveats), 1 high-severity bug (`screenshot --full-page`), 6 lower-severity issues (2 medium, 3 low, 1 info)
 - **Cookies regression fixed** — the session 32 TypeError is gone thanks to daemon bypass
 - **New features (scroll, eval --file/--stdin, computed) work well** — but `screenshot --full-page` is broken
 - Key takeaway: The CLI is maturing nicely for real-world use. The scroll + eval --stdin combination is powerful. Fix `--full-page` before release.

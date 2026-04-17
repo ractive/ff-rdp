@@ -316,6 +316,29 @@ fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::args::{Cli, Command};
+    use clap::Parser as _;
+
+    // ── clap parse tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn clap_screenshot_full_page_flag_parsed() {
+        let cli = Cli::try_parse_from(["ff-rdp", "screenshot", "--full-page"])
+            .expect("should parse --full-page");
+        let Command::Screenshot { full_page, .. } = cli.command else {
+            panic!("expected Screenshot command");
+        };
+        assert!(full_page, "--full-page flag must be set");
+    }
+
+    #[test]
+    fn clap_a11y_limit_and_format_text_parsed() {
+        let cli = Cli::try_parse_from(["ff-rdp", "a11y", "--limit", "5", "--format", "text"])
+            .expect("should parse a11y --limit 5 --format text");
+        assert_eq!(cli.limit, Some(5));
+        assert_eq!(cli.format, "text");
+        assert!(matches!(cli.command, Command::A11y { .. }));
+    }
 
     #[test]
     fn png_dimensions_minimal_png() {

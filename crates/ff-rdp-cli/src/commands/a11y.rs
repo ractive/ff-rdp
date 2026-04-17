@@ -76,9 +76,13 @@ pub fn run(
     // object (the historical default behaviour).
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
     let envelope = if cli.limit.is_some() || cli.all {
+        // Pass the limit so flatten_tree can stop early instead of cloning all nodes.
+        let early_stop = if controls.all { None } else { controls.limit };
         let mut flat = Vec::new();
-        flatten_tree(&tree_value, &mut flat);
+        flatten_tree(&tree_value, &mut flat, early_stop);
+        controls.apply_sort(&mut flat);
         let (limited, total, truncated) = controls.apply_limit(flat, None);
+        let limited = controls.apply_fields(limited);
         let shown = limited.len();
         output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta)
     } else {
@@ -297,7 +301,15 @@ fn map_a11y_error(err: ff_rdp_core::ProtocolError, cli: &Cli) -> AppError {
 /// Each node (a JSON object) is appended to `out` with its `children` field
 /// removed so that each entry is self-contained.  Children are visited
 /// recursively in document order (pre-order depth-first).
-fn flatten_tree(node: &Value, out: &mut Vec<Value>) {
+///
+/// `max` is an optional early-stop limit: recursion halts once
+/// `out.len() >= max`, avoiding unnecessary clones when `--limit N` is set.
+fn flatten_tree(node: &Value, out: &mut Vec<Value>, max: Option<usize>) {
+    if let Some(limit) = max
+        && out.len() >= limit
+    {
+        return;
+    }
     if let Value::Object(map) = node {
         // Clone without children for the flat entry.
         let mut entry = serde_json::Map::new();
@@ -310,7 +322,12 @@ fn flatten_tree(node: &Value, out: &mut Vec<Value>) {
 
         if let Some(Value::Array(children)) = map.get("children") {
             for child in children {
-                flatten_tree(child, out);
+                flatten_tree(child, out, max);
+                if let Some(limit) = max
+                    && out.len() >= limit
+                {
+                    break;
+                }
             }
         }
     }
@@ -511,7 +528,7 @@ mod tests {
     fn flatten_tree_single_node() {
         let node = json!({"role": "button", "name": "OK"});
         let mut out = Vec::new();
-        flatten_tree(&node, &mut out);
+        flatten_tree(&node, &mut out, None);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["role"], "button");
         assert_eq!(out[0]["name"], "OK");
@@ -533,7 +550,7 @@ mod tests {
             ]
         });
         let mut out = Vec::new();
-        flatten_tree(&node, &mut out);
+        flatten_tree(&node, &mut out, None);
         // Pre-order: document, list, listitem A, listitem B, button
         assert_eq!(out.len(), 5);
         assert_eq!(out[0]["role"], "document");
@@ -552,9 +569,36 @@ mod tests {
             "children": [{"role": "listitem", "name": "X"}]
         });
         let mut out = Vec::new();
-        flatten_tree(&node, &mut out);
+        flatten_tree(&node, &mut out, None);
         // The flat entry for "list" must not carry children.
         assert!(out[0].get("children").is_none());
+    }
+
+    #[test]
+    fn flatten_tree_early_exit_with_max() {
+        let node = json!({
+            "role": "document",
+            "children": [
+                {"role": "heading", "name": "A"},
+                {"role": "heading", "name": "B"},
+                {"role": "heading", "name": "C"},
+            ]
+        });
+        let mut out = Vec::new();
+        // max=2: should stop after document + first heading
+        flatten_tree(&node, &mut out, Some(2));
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["role"], "document");
+        assert_eq!(out[1]["role"], "heading");
+        assert_eq!(out[1]["name"], "A");
+    }
+
+    #[test]
+    fn flatten_tree_max_zero_produces_empty() {
+        let node = json!({"role": "button", "name": "OK"});
+        let mut out = Vec::new();
+        flatten_tree(&node, &mut out, Some(0));
+        assert!(out.is_empty());
     }
 
     #[test]
