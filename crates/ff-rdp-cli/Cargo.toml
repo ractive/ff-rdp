@@ -36,6 +36,10 @@ libc = { workspace = true }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
 
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+
 [dev-dependencies]
 ff-rdp-core = { workspace = true }
 serde_json = { workspace = true }

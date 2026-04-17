@@ -2,9 +2,13 @@
 title: "Iteration 46: E2E Test Binary Consolidation"
 type: iteration
 date: 2026-04-17
-status: planned
+status: completed
 branch: iter-46/e2e-test-consolidation
-tags: [iteration, testing, build-performance, dx]
+tags:
+  - iteration
+  - testing
+  - build-performance
+  - dx
 ---
 
 # Iteration 46: E2E Test Binary Consolidation
@@ -17,28 +21,28 @@ Each `tests/*_e2e_test.rs` file compiles and links as its own binary against the
 
 ## Tasks
 
-### 1. Consolidate e2e test files into single binary [0/5]
+### 1. Consolidate e2e test files into single binary [5/5]
 
-- [ ] Create `tests/e2e/` directory
-- [ ] Move `tests/*_e2e_test.rs` → `tests/e2e/*.rs` (strip `_e2e_test` suffix)
-- [ ] Move `tests/common/` → `tests/e2e/common/`
-- [ ] Create `tests/e2e/mod.rs` with `mod` declarations for all test modules
-- [ ] Add `[[test]]` entry in `crates/ff-rdp-cli/Cargo.toml` pointing to `tests/e2e/mod.rs`
+- [x] Create `tests/e2e/` directory
+- [x] Move `tests/*_e2e_test.rs` → `tests/e2e/*.rs` (strip `_e2e_test` suffix)
+- [x] Move `tests/support/` → `tests/e2e/support/`
+- [x] Create `tests/e2e/main.rs` with `mod` declarations for all test modules
+- [x] Add `[[test]]` entry in `crates/ff-rdp-cli/Cargo.toml` pointing to `tests/e2e/main.rs`
 
-### 2. Fix imports [0/2]
+### 2. Fix imports [2/2]
 
-- [ ] Update `use common::` → `use super::common::` in all moved test files
-- [ ] Fix any other path-dependent imports (fixtures, etc.)
+- [x] Update `use support::` → `use super::support::` in all moved test files
+- [x] Remove `mod support;` from each test file (now declared once in main.rs)
 
-### 3. Validate [0/3]
+### 3. Validate [3/3]
 
-- [ ] All tests pass: `cargo test --workspace -q`
-- [ ] Clean build is measurably faster
-- [ ] Incremental rebuild stays fast
+- [x] All tests pass: `cargo test --workspace -q`
+- [x] Clean build is measurably faster
+- [x] Incremental rebuild stays fast
 
 ## Acceptance Criteria
 
-- [ ] Single e2e test binary instead of 29 separate ones
-- [ ] All existing tests pass unchanged
-- [ ] Clean `cargo test --workspace -q` is noticeably faster (target: <40s)
-- [ ] All quality gates pass: `cargo fmt`, `cargo clippy`, `cargo test --workspace -q`
+- [x] Single e2e test binary instead of 29 separate ones
+- [x] All existing tests pass unchanged
+- [x] Clean `cargo test --workspace -q` is noticeably faster (target: <40s)
+- [x] All quality gates pass: `cargo fmt`, `cargo clippy`, `cargo test --workspace -q`
