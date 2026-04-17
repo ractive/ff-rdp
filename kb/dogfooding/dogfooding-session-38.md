@@ -24,7 +24,7 @@ The installed `ff-rdp` binary at `~/.cargo/bin/ff-rdp` was dated April 13 — be
 ## Critical Finding: `ff-rdp launch` Ignores Remote Debug Prefs
 
 `ff-rdp launch --headless --port 6000` fails to connect because Firefox's remote debugging prefs aren't set in a fresh profile. Manual workaround was to create a `user.js` with:
-```
+```js
 user_pref("devtools.debugger.remote-enabled", true);
 user_pref("devtools.debugger.prompt-connection", false);
 user_pref("devtools.chrome.enabled", true);

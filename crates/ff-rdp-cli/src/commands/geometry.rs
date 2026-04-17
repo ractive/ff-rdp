@@ -93,10 +93,14 @@ pub fn run(cli: &Cli, selectors: &[String], visible_only: bool) -> Result<(), Ap
 
     let geometry = resolve_result(&mut ctx, &eval_result.result)?;
 
-    // If the result is null (e.g. no elements matched) return an empty envelope.
+    // If the result is null (e.g. no elements matched) return an empty result.
     if geometry.is_null() {
-        let meta = json!({"host": cli.host, "port": cli.port, "selectors": selectors});
         let empty = json!({"elements": [], "overlaps": [], "viewport": null});
+        if cli.format == "text" && cli.jq.is_none() {
+            render_geometry_text(&empty);
+            return Ok(());
+        }
+        let meta = json!({"host": cli.host, "port": cli.port, "selectors": selectors});
         let envelope = output::envelope(&empty, 0, &meta);
         return OutputPipeline::from_cli(cli)?
             .finalize(&envelope)

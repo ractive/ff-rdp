@@ -121,8 +121,9 @@ fn render_dom_node(node: &Value, depth: usize) {
                         name,
                         "id" | "class" | "href" | "src" | "type" | "name" | "role" | "aria-label"
                     ) {
-                        let val = if value.len() > 40 {
-                            format!("{}...", &value[..37])
+                        let val = if value.chars().count() > 40 {
+                            let truncated: String = value.chars().take(37).collect();
+                            format!("{truncated}...")
                         } else {
                             value.to_string()
                         };
@@ -135,7 +136,7 @@ fn render_dom_node(node: &Value, depth: usize) {
                 let _ = write!(line, " ({truncated})");
             }
 
-            println!("{line}");
+            println!("{line}>");
 
             if let Some(children) = node.get("children").and_then(Value::as_array) {
                 for child in children {
