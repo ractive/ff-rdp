@@ -22,7 +22,7 @@ Your goal is to produce idiomatic, safe, maintainable, and efficient Rust code a
 6. Run and address:
    - cargo fmt
    - cargo clippy --all-targets --all-features
-   - cargo test
+   - cargo test -q
 
 ---
 

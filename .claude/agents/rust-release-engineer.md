@@ -63,7 +63,7 @@ GitHub Actions standards:
 
 Rust build standards:
 - Respect Cargo workspace boundaries and feature flags
-- Run cargo fmt --check, cargo clippy --all-targets --all-features, and cargo test where feasible
+- Run cargo fmt --check, cargo clippy --all-targets --all-features, and cargo test -q where feasible
 - Choose native build vs cross-compilation intentionally
 - Prefer reproducible release commands
 - Be explicit about target triples and artifact names
