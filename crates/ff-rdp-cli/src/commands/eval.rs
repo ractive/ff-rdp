@@ -56,9 +56,20 @@ pub fn run(
     script: Option<&str>,
     file: Option<&str>,
     use_stdin: bool,
+    stringify: bool,
 ) -> Result<(), AppError> {
     let script = load_script(script, file, use_stdin)?;
-    let script = script.as_str();
+
+    // When --stringify is set, wrap the expression so we get actual data instead of actor grips.
+    let script_owned;
+    let script = if stringify {
+        script_owned = format!(
+            "(function() {{ try {{ return JSON.stringify({script}); }} catch(e) {{ if (e instanceof TypeError && e.message.includes('circular')) return '{{\"error\":\"circular reference detected\"}}'; throw e; }} }})()"
+        );
+        script_owned.as_str()
+    } else {
+        script.as_str()
+    };
 
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
@@ -149,5 +160,57 @@ mod tests {
     fn load_script_no_source_errors() {
         let err = load_script(None, None, false).unwrap_err();
         assert!(matches!(err, AppError::User(_)));
+    }
+
+    // ---------------------------------------------------------------------------
+    // --stringify wrapping tests
+    // ---------------------------------------------------------------------------
+
+    /// Helper: simulate what run() does with the stringify flag, without connecting
+    /// to Firefox — just test the script transformation logic.
+    fn apply_stringify(expr: &str, stringify: bool) -> String {
+        let script = expr.to_owned();
+        if stringify {
+            format!(
+                "(function() {{ try {{ return JSON.stringify({script}); }} catch(e) {{ if (e instanceof TypeError && e.message.includes('circular')) return '{{\"error\":\"circular reference detected\"}}'; throw e; }} }})()"
+            )
+        } else {
+            script
+        }
+    }
+
+    #[test]
+    fn stringify_false_leaves_script_unchanged() {
+        let expr = "document.querySelectorAll('a')";
+        let result = apply_stringify(expr, false);
+        assert_eq!(result, expr);
+    }
+
+    #[test]
+    fn stringify_true_wraps_in_json_stringify() {
+        let expr = "document.querySelectorAll('a')";
+        let result = apply_stringify(expr, true);
+        assert!(
+            result.contains("JSON.stringify("),
+            "should wrap in JSON.stringify: {result}"
+        );
+        assert!(
+            result.contains(expr),
+            "original expression should be present: {result}"
+        );
+    }
+
+    #[test]
+    fn stringify_wraps_in_iife_with_circular_guard() {
+        let expr = "window.location";
+        let result = apply_stringify(expr, true);
+        assert!(
+            result.starts_with("(function()"),
+            "should be an IIFE: {result}"
+        );
+        assert!(
+            result.contains("circular"),
+            "should guard against circular refs: {result}"
+        );
     }
 }

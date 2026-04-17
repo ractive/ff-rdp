@@ -1,0 +1,7 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "result": "[{\"href\":\"https://example.com\",\"text\":\"Example\"}]",
+  "resultID": "1775437183977.373-0",
+  "type": "evaluationResult"
+}
