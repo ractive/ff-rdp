@@ -413,8 +413,10 @@ Output: {\"results\": {\"tag\": \"HTML\", \"children\": [...], ...}, \"total\": 
     #[command(name = "_daemon", hide = true)]
     Daemon,
     /// Show curated jq one-liners and recipes for common tasks
+    #[command(help_template = "{about-with-newline}\n{usage-heading} {usage}\n")]
     Recipes,
     /// Dump complete CLI reference in compact LLM-friendly format (all commands, flags, examples)
+    #[command(help_template = "{about-with-newline}\n{usage-heading} {usage}\n")]
     LlmHelp,
     /// Get element geometry: bounding rects, position, z-index, visibility, overflow,
     /// with automatic overlap detection between elements

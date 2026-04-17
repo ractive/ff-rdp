@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use ff_rdp_core::WebConsoleActor;
 use serde_json::{Value, json};
 
@@ -104,6 +102,17 @@ const SET_VIEWPORT_CSS_JS: &str = "(function(){
   document.body.style.setProperty('max-width', w + 'px', 'important');
 })()";
 
+/// JS snippet that waits for layout to stabilize after a viewport resize.
+///
+/// Uses `requestAnimationFrame` + `setTimeout(0)` to ensure at least one
+/// layout/paint cycle has completed before resolving.  A fixed `sleep` is
+/// unreliable on complex pages (e.g. MDN Web Docs) where layout hasn't
+/// finished when `getBoundingClientRect` is called, producing wildly wrong
+/// values such as `rect.y: -117096.5`.
+const WAIT_LAYOUT_STABLE_JS: &str = "new Promise(function(resolve) {
+  requestAnimationFrame(function() { setTimeout(resolve, 0); });
+})";
+
 /// JS snippet that removes the inline styles applied by `SET_VIEWPORT_CSS_JS`,
 /// restoring the original layout.
 const RESTORE_VIEWPORT_CSS_JS: &str = "(function(){
@@ -204,8 +213,28 @@ pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppErr
             }
         }
 
-        // Allow the browser layout to reflow after the style change.
-        std::thread::sleep(Duration::from_millis(50));
+        // Wait for layout to stabilize after the CSS width change.
+        // A fixed sleep is unreliable on complex pages; requestAnimationFrame
+        // + setTimeout(0) ensures at least one paint cycle has completed.
+        match WebConsoleActor::evaluate_js_async(
+            ctx.transport_mut(),
+            &console_actor,
+            WAIT_LAYOUT_STABLE_JS,
+        )
+        .map_err(AppError::from)
+        {
+            Err(e) => {
+                loop_error = Some(e);
+                break 'bp;
+            }
+            Ok(r) => {
+                if let Some(ref exc) = r.exception {
+                    let msg = exc.message.as_deref().unwrap_or("layout wait failed");
+                    loop_error = Some(AppError::User(format!("layout wait at {width}: {msg}")));
+                    break 'bp;
+                }
+            }
+        }
 
         // Collect geometry at this simulated viewport width.
         let geo_result =
@@ -458,6 +487,12 @@ mod tests {
         assert!(RESTORE_VIEWPORT_CSS_JS.contains("removeProperty('width')"));
         assert!(RESTORE_VIEWPORT_CSS_JS.contains("removeProperty('max-width')"));
         assert!(RESTORE_VIEWPORT_CSS_JS.contains("removeProperty('overflow-x')"));
+    }
+
+    #[test]
+    fn wait_layout_stable_js_returns_promise() {
+        assert!(WAIT_LAYOUT_STABLE_JS.contains("Promise"));
+        assert!(WAIT_LAYOUT_STABLE_JS.contains("requestAnimationFrame"));
     }
 
     #[test]

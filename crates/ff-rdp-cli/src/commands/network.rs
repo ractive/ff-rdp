@@ -175,6 +175,13 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
     // Summary mode (default).
     // The non-timed drain_network_events() stops on idle, so timeout is never reached.
     let summary = build_network_summary(&results, false);
+
+    // Text short-circuit for summary mode.
+    if cli.format == "text" && cli.jq.is_none() {
+        render_network_summary_text(&summary);
+        return Ok(());
+    }
+
     let mut envelope = output::envelope(&summary, results.len(), &meta);
     if let Some(hint) = empty_hint
         && let Some(obj) = envelope.as_object_mut()
@@ -184,6 +191,64 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
+}
+
+/// Render network summary as human-readable text.
+fn render_network_summary_text(summary: &Value) {
+    let total_requests = summary
+        .get("total_requests")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let total_bytes = summary
+        .get("total_transfer_bytes")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+
+    println!("=== Network Summary ===");
+    println!("  Total requests:    {total_requests}");
+    println!("  Total transferred: {total_bytes:.0} bytes");
+
+    if let Some(by_cause) = summary.get("by_cause_type").and_then(Value::as_object)
+        && !by_cause.is_empty()
+    {
+        println!();
+        println!("=== Requests by Cause Type ===");
+        let max_len = by_cause.keys().map(String::len).max().unwrap_or(4);
+        for (cause, count) in by_cause {
+            let n = count.as_u64().unwrap_or(0);
+            println!("  {cause:<max_len$}  {n:>4}");
+        }
+    }
+
+    if let Some(slowest) = summary.get("slowest").and_then(Value::as_array)
+        && !slowest.is_empty()
+    {
+        println!();
+        println!("=== Slowest Requests ===");
+        for (i, entry) in slowest.iter().enumerate() {
+            let url = entry.get("url").and_then(Value::as_str).unwrap_or("?");
+            let dur = entry
+                .get("duration_ms")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let status = entry.get("status").and_then(Value::as_u64).unwrap_or(0);
+            let size = entry
+                .get("transfer_size")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            println!("  {}. {url}  ({dur:.0}ms, {status}, {size:.0}b)", i + 1);
+        }
+    }
+
+    if summary
+        .get("timeout_reached")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && let Some(hint) = summary.get("hint").and_then(Value::as_str)
+    {
+        println!();
+        println!("{hint}");
+    }
 }
 
 /// Build a summary view of network requests.
@@ -449,6 +514,31 @@ fn network_follow_loop(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn render_network_summary_text_does_not_panic_empty() {
+        render_network_summary_text(&json!({
+            "total_requests": 0,
+            "total_transfer_bytes": 0.0,
+            "by_cause_type": {},
+            "slowest": [],
+            "timeout_reached": false,
+        }));
+    }
+
+    #[test]
+    fn render_network_summary_text_does_not_panic_full() {
+        let data = json!({
+            "total_requests": 3,
+            "total_transfer_bytes": 1600.0,
+            "by_cause_type": {"script": 2, "img": 1},
+            "slowest": [
+                {"url": "https://example.com/big.js", "duration_ms": 200.0, "status": 200, "transfer_size": 1000.0},
+            ],
+            "timeout_reached": false,
+        });
+        render_network_summary_text(&data);
+    }
 
     #[test]
     fn build_network_summary_empty() {

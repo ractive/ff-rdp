@@ -18,7 +18,7 @@ fn base_args(port: u16) -> Vec<String> {
 ///
 /// The server handles:
 /// - `evaluateJSAsync` with a sequence: GET_VIEWPORT (once) + per-width
-///   pairs of (set-css, geometry) + restore-css (once).
+///   triples of (set-css, wait-layout, geometry) + restore-css (once).
 ///
 /// All viewport simulation is now done via `evaluateJSAsync` (CSS inline
 /// style manipulation), so no `setViewportSize` actor call is needed.
@@ -37,10 +37,11 @@ fn responsive_server(
 ///   1. GET_VIEWPORT        (1×)  → eval_result_responsive_viewport.json
 ///   2. Per width (N×):
 ///      a. SET_VIEWPORT_CSS → eval_result_responsive_undefined.json
-///      b. geometry IIFE    → eval_result_responsive_geometry.json
+///      b. WAIT_LAYOUT      → eval_result_responsive_undefined.json
+///      c. geometry IIFE    → eval_result_responsive_geometry.json
 ///   3. RESTORE_VIEWPORT_CSS (1×) → eval_result_responsive_undefined.json
 ///
-/// Total: 1 + 2×N + 1 calls.
+/// Total: 1 + 3×N + 1 calls.
 fn build_eval_sequence(width_count: usize) -> Vec<(serde_json::Value, Vec<serde_json::Value>)> {
     let immediate = load_fixture("eval_immediate_response.json");
     let viewport = load_fixture("eval_result_responsive_viewport.json");
@@ -52,9 +53,10 @@ fn build_eval_sequence(width_count: usize) -> Vec<(serde_json::Value, Vec<serde_
     // Step 1: get current viewport
     seq.push((immediate.clone(), vec![viewport]));
 
-    // Step 2: for each width — set CSS, then collect geometry
+    // Step 2: for each width — set CSS, wait for layout, then collect geometry
     for _ in 0..width_count {
         seq.push((immediate.clone(), vec![undefined.clone()])); // SET_VIEWPORT_CSS_JS
+        seq.push((immediate.clone(), vec![undefined.clone()])); // WAIT_LAYOUT_STABLE_JS
         seq.push((immediate.clone(), vec![geometry.clone()])); // geometry IIFE
     }
 

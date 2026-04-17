@@ -152,11 +152,119 @@ pub fn run(cli: &Cli, selectors: &[String], visible_only: bool) -> Result<(), Ap
 
     let meta = json!({"host": cli.host, "port": cli.port, "selectors": selectors});
 
+    // Text short-circuit: render a human-readable table instead of JSON.
+    if cli.format == "text" && cli.jq.is_none() {
+        render_geometry_text(&results);
+        return Ok(());
+    }
+
     let envelope = output::envelope_with_truncation(&results, shown, total, truncated, &meta);
 
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
+}
+
+/// Render geometry results as human-readable text to stdout.
+fn render_geometry_text(results: &Value) {
+    // Viewport
+    if let Some(vp) = results.get("viewport") {
+        let w = vp.get("width").and_then(Value::as_u64).unwrap_or(0);
+        let h = vp.get("height").and_then(Value::as_u64).unwrap_or(0);
+        println!("Viewport: {w}x{h}");
+        println!();
+    }
+
+    let elements = match results.get("elements").and_then(Value::as_array) {
+        Some(e) if !e.is_empty() => e,
+        _ => {
+            println!("(no elements)");
+            return;
+        }
+    };
+
+    // Compute column widths for selector and tag
+    let sel_width = elements
+        .iter()
+        .filter_map(|e| e.get("selector").and_then(Value::as_str))
+        .map(str::len)
+        .max()
+        .unwrap_or(8)
+        .max(8);
+    let tag_width = elements
+        .iter()
+        .filter_map(|e| e.get("tag").and_then(Value::as_str))
+        .map(str::len)
+        .max()
+        .unwrap_or(3)
+        .max(3);
+
+    println!(
+        "{:<sel_width$}  {:<tag_width$}  {:>8}  {:>8}  {:>8}  {:>8}  {:>7}  {:>11}",
+        "selector", "tag", "x", "y", "width", "height", "visible", "in_viewport"
+    );
+    println!(
+        "{}  {}  {}  {}  {}  {}  {}  {}",
+        "-".repeat(sel_width),
+        "-".repeat(tag_width),
+        "-".repeat(8),
+        "-".repeat(8),
+        "-".repeat(8),
+        "-".repeat(8),
+        "-".repeat(7),
+        "-".repeat(11)
+    );
+
+    for el in elements {
+        let selector = el.get("selector").and_then(Value::as_str).unwrap_or("?");
+        let tag = el.get("tag").and_then(Value::as_str).unwrap_or("?");
+        let rect = el.get("rect");
+        let x = rect
+            .and_then(|r| r.get("x"))
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let y = rect
+            .and_then(|r| r.get("y"))
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let w = rect
+            .and_then(|r| r.get("width"))
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let h = rect
+            .and_then(|r| r.get("height"))
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let visible = el
+            .get("visible")
+            .and_then(Value::as_bool)
+            .map_or("?", |b| if b { "yes" } else { "no" });
+        let in_vp = el
+            .get("in_viewport")
+            .and_then(Value::as_bool)
+            .map_or("?", |b| if b { "yes" } else { "no" });
+
+        println!(
+            "{selector:<sel_width$}  {tag:<tag_width$}  {x:>8.1}  {y:>8.1}  {w:>8.1}  {h:>8.1}  {visible:>7}  {in_vp:>11}"
+        );
+    }
+
+    // Overlaps
+    if let Some(overlaps) = results.get("overlaps").and_then(Value::as_array)
+        && !overlaps.is_empty()
+    {
+        println!();
+        println!("Overlaps:");
+        for pair in overlaps {
+            if let Some(arr) = pair.as_array()
+                && arr.len() == 2
+            {
+                let a = arr[0].as_str().unwrap_or("?");
+                let b = arr[1].as_str().unwrap_or("?");
+                println!("  {a} <-> {b}");
+            }
+        }
+    }
 }
 
 /// Build the JS IIFE by serializing selectors as a JSON array and substituting
@@ -175,6 +283,39 @@ fn build_js(selectors: &[String], visible_only: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn render_geometry_text_does_not_panic_with_full_data() {
+        let data = json!({
+            "elements": [
+                {"selector": "h1", "tag": "h1", "rect": {"x": 0.0, "y": 10.0, "width": 400.0, "height": 40.0}, "visible": true, "in_viewport": true},
+                {"selector": "p", "tag": "p", "rect": {"x": 0.0, "y": 60.0, "width": 400.0, "height": 20.0}, "visible": true, "in_viewport": true},
+            ],
+            "overlaps": [],
+            "viewport": {"width": 1024, "height": 768},
+        });
+        render_geometry_text(&data);
+    }
+
+    #[test]
+    fn render_geometry_text_does_not_panic_with_empty_elements() {
+        let data =
+            json!({"elements": [], "overlaps": [], "viewport": {"width": 1024, "height": 768}});
+        render_geometry_text(&data);
+    }
+
+    #[test]
+    fn render_geometry_text_with_overlaps() {
+        let data = json!({
+            "elements": [
+                {"selector": ".a", "tag": "div", "rect": {"x": 0.0, "y": 0.0, "width": 100.0, "height": 100.0}, "visible": true, "in_viewport": true},
+            ],
+            "overlaps": [[".a[0]", ".b[0]"]],
+            "viewport": {"width": 1024, "height": 768},
+        });
+        render_geometry_text(&data);
+    }
 
     #[test]
     fn build_js_inserts_selectors() {
