@@ -8,13 +8,11 @@
 /// touches `~/.ff-rdp/daemon.json`.  Tests are still serialized via a
 /// process-wide mutex because the mock server binds a port and the daemon
 /// is a child process.
-mod support;
-
 use std::process::{Child, Command};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use support::{MockRdpServer, load_fixture};
+use super::support::{MockRdpServer, load_fixture};
 
 // Serialize all daemon tests to avoid port/process conflicts.
 fn daemon_test_mutex() -> &'static Mutex<()> {

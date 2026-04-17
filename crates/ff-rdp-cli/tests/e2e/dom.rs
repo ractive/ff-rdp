@@ -1,6 +1,4 @@
-mod support;
-
-use support::{MockRdpServer, load_fixture};
+use super::support::{MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))

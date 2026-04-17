@@ -1,6 +1,4 @@
-mod support;
-
-use support::{MockRdpServer, load_fixture};
+use super::support::{MockRdpServer, load_fixture};
 
 // ---------------------------------------------------------------------------
 // Helpers

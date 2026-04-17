@@ -1,9 +1,7 @@
-mod support;
-
 use std::path::PathBuf;
 
+use super::support::{MockRdpServer, load_fixture};
 use base64::Engine as _;
-use support::{MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))

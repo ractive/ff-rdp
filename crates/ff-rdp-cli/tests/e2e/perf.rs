@@ -1,6 +1,4 @@
-mod support;
-
-use support::{MockRdpServer, load_fixture};
+use super::support::{MockRdpServer, load_fixture};
 
 /// Full JSON produced by the mock substring actor for the long-string resource test.
 const LONGSTRING_PERF_JSON: &str = r#"{"entries":[{"name":"https://example.com/app.js","initiatorType":"script","duration":42.5,"transferSize":12345,"encodedBodySize":12000,"decodedBodySize":36000,"startTime":100.0,"responseEnd":142.5,"nextHopProtocol":"h2"}],"hostname":"example.com"}"#;
