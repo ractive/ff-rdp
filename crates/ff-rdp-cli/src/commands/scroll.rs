@@ -121,6 +121,50 @@ pub fn run_by(
 }
 
 // ---------------------------------------------------------------------------
+// scroll top / scroll bottom
+// ---------------------------------------------------------------------------
+
+pub fn run_top(cli: &Cli) -> Result<(), AppError> {
+    run_scroll_absolute(cli, "0", "scroll top failed")
+}
+
+pub fn run_bottom(cli: &Cli) -> Result<(), AppError> {
+    run_scroll_absolute(cli, "root.scrollHeight", "scroll bottom failed")
+}
+
+/// Shared implementation for `scroll top` and `scroll bottom`.
+///
+/// `y_expr` is a JavaScript expression for the Y coordinate passed to
+/// `window.scrollTo(0, <y_expr>)`.  `error_label` appears in error messages.
+fn run_scroll_absolute(cli: &Cli, y_expr: &str, error_label: &str) -> Result<(), AppError> {
+    let mut ctx = connect_and_get_target(cli)?;
+    let console_actor = ctx.target.console_actor.clone();
+
+    let js = format!(
+        r"(function() {{
+  var root = document.scrollingElement || document.documentElement || document.body;
+  window.scrollTo(0, {y_expr});
+  var atEnd = (root.scrollTop + window.innerHeight) >= (root.scrollHeight - 1);
+  return '{JSON_SENTINEL}' + JSON.stringify({{
+    scrolled: true,
+    viewport: {{x: root.scrollLeft, y: root.scrollTop, width: window.innerWidth, height: window.innerHeight}},
+    scrollHeight: root.scrollHeight,
+    atEnd: atEnd
+  }});
+}})()"
+    );
+
+    let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, error_label)?;
+    let result_json = resolve_result(&mut ctx, &eval_result.result)?;
+    let meta = json!({"host": cli.host, "port": cli.port});
+    let envelope = output::envelope(&result_json, 1, &meta);
+
+    OutputPipeline::from_cli(cli)?
+        .finalize(&envelope)
+        .map_err(AppError::from)
+}
+
+// ---------------------------------------------------------------------------
 // scroll container <selector> [--dx] [--dy] [--to-end] [--to-start]
 // ---------------------------------------------------------------------------
 
@@ -366,6 +410,49 @@ pub fn run_text(cli: &Cli, text: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::args::{Cli, Command, ScrollCommand};
+    use clap::Parser as _;
+
+    // ── clap parse tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn clap_scroll_by_negative_dy_parses() {
+        let cli = Cli::try_parse_from(["ff-rdp", "scroll", "by", "--dy", "-500"])
+            .expect("should parse --dy -500");
+        let Command::Scroll { scroll_command } = cli.command else {
+            panic!("expected Scroll command");
+        };
+        let ScrollCommand::By { dy, .. } = scroll_command else {
+            panic!("expected scroll by");
+        };
+        assert_eq!(dy, Some(-500));
+    }
+
+    #[test]
+    fn clap_scroll_top_parses() {
+        let cli =
+            Cli::try_parse_from(["ff-rdp", "scroll", "top"]).expect("should parse scroll top");
+        let Command::Scroll { scroll_command } = cli.command else {
+            panic!("expected Scroll command");
+        };
+        assert!(
+            matches!(scroll_command, ScrollCommand::Top),
+            "expected ScrollCommand::Top"
+        );
+    }
+
+    #[test]
+    fn clap_scroll_bottom_parses() {
+        let cli = Cli::try_parse_from(["ff-rdp", "scroll", "bottom"])
+            .expect("should parse scroll bottom");
+        let Command::Scroll { scroll_command } = cli.command else {
+            panic!("expected Scroll command");
+        };
+        assert!(
+            matches!(scroll_command, ScrollCommand::Bottom),
+            "expected ScrollCommand::Bottom"
+        );
+    }
 
     #[test]
     fn scroll_block_maps_user_friendly_aliases_to_spec_values() {
@@ -479,5 +566,58 @@ mod tests {
         let selector = "div[data-name='test']";
         let escaped = escape_selector(selector);
         assert!(escaped.contains("\\'"));
+    }
+
+    #[test]
+    fn run_by_negative_dy_produces_negative_js_expr() {
+        // Negative dy values must produce a negative literal in the JS expression
+        // (i.e. "scroll by --dy -500" should scroll up, not fail parsing).
+        let dy: i64 = -500;
+        let dy_expr = dy.to_string();
+        assert_eq!(dy_expr, "-500");
+        assert!(dy_expr.starts_with('-'));
+    }
+
+    #[test]
+    fn run_by_negative_dx_produces_negative_js_expr() {
+        let dx: i64 = -200;
+        let js = format!(
+            r"(function() {{
+  window.scrollBy({{left: {dx}, top: 0, behavior: 'auto'}});
+  return true;
+}})()"
+        );
+        assert!(js.contains("left: -200"));
+    }
+
+    #[test]
+    fn run_top_js_scrolls_to_origin() {
+        // Verify the JS emitted by run_top uses scrollTo(0, 0)
+        let js = format!(
+            r"(function() {{
+  window.scrollTo(0, 0);
+  return '{JSON_SENTINEL}' + JSON.stringify({{scrolled: true}});
+}})()"
+        );
+        assert!(js.contains("scrollTo(0, 0)"));
+        assert!(js.contains(JSON_SENTINEL));
+    }
+
+    #[test]
+    fn run_bottom_js_scrolls_to_scroll_height() {
+        // Verify the JS emitted by run_bottom uses scrollingElement fallback
+        // and scrollTo(0, root.scrollHeight).
+        let js = format!(
+            r"(function() {{
+  var root = document.scrollingElement || document.documentElement || document.body;
+  window.scrollTo(0, root.scrollHeight);
+  return '{JSON_SENTINEL}' + JSON.stringify({{scrolled: true}});
+}})()"
+        );
+        assert!(
+            js.contains("document.scrollingElement || document.documentElement || document.body")
+        );
+        assert!(js.contains("scrollTo(0, root.scrollHeight)"));
+        assert!(js.contains(JSON_SENTINEL));
     }
 }

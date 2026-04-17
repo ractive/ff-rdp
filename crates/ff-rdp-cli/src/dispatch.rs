@@ -286,6 +286,8 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 timeout,
             } => commands::scroll::run_until(cli, selector, direction, *timeout),
             ScrollCommand::Text { text } => commands::scroll::run_text(cli, text),
+            ScrollCommand::Top => commands::scroll::run_top(cli),
+            ScrollCommand::Bottom => commands::scroll::run_bottom(cli),
         },
         Command::Daemon => {
             server::run_daemon(&cli.host, cli.port, cli.daemon_timeout).map_err(AppError::Internal)

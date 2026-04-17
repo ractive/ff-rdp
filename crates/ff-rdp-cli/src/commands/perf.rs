@@ -654,12 +654,96 @@ pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
         "domains": domain_list,
     });
 
+    // Text short-circuit: render a human-readable summary table instead of JSON.
+    if cli.format == "text" && cli.jq.is_none() {
+        render_summary_text(&results);
+        return Ok(());
+    }
+
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&results, 1, &meta);
 
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
+}
+
+/// Render a `perf summary` result as human-readable text to stdout.
+fn render_summary_text(results: &Value) {
+    let total_resources = results
+        .get("total_resources")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let total_transfer = results
+        .get("total_transfer_size")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+
+    println!("=== Resource Summary ===");
+    println!("  Total requests:    {total_resources}");
+    println!("  Total transferred: {total_transfer:.0} bytes");
+
+    if let Some(by_type) = results.get("requests_by_type").and_then(Value::as_object) {
+        println!();
+        println!("=== Requests by Type ===");
+        let max_type_len = by_type.keys().map(String::len).max().unwrap_or(4);
+        for (rtype, count) in by_type {
+            let n = count.as_u64().unwrap_or(0);
+            println!("  {rtype:<max_type_len$}  {n:>4}");
+        }
+    }
+
+    if let Some(domains) = results.get("domains").and_then(Value::as_array)
+        && !domains.is_empty()
+    {
+        println!();
+        println!("=== Domains (by transfer size) ===");
+        let max_domain_len = domains
+            .iter()
+            .filter_map(|d| d.get("domain").and_then(Value::as_str))
+            .map(str::len)
+            .max()
+            .unwrap_or(6)
+            .max(6);
+        println!(
+            "  {:<max_domain_len$}  {:>8}  {:>14}",
+            "domain", "requests", "transfer_bytes"
+        );
+        println!(
+            "  {}  {}  {}",
+            "-".repeat(max_domain_len),
+            "-".repeat(8),
+            "-".repeat(14)
+        );
+        for d in domains {
+            let domain = d.get("domain").and_then(Value::as_str).unwrap_or("?");
+            let req = d.get("requests").and_then(Value::as_u64).unwrap_or(0);
+            let size = d
+                .get("transfer_size")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            println!("  {domain:<max_domain_len$}  {req:>8}  {size:>14.0}");
+        }
+    }
+
+    if let Some(slowest) = results.get("slowest_resources").and_then(Value::as_array)
+        && !slowest.is_empty()
+    {
+        println!();
+        println!("=== Top 5 Slowest Resources ===");
+        for (i, entry) in slowest.iter().enumerate() {
+            let url = entry.get("url").and_then(Value::as_str).unwrap_or("?");
+            let dur = entry
+                .get("duration_ms")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let size = entry
+                .get("transfer_size")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            println!("  {}. {url}  ({dur:.0}ms, {size:.0}b)", i + 1);
+        }
+    }
 }
 
 /// Collect all performance data into a single structured audit report.
@@ -1553,5 +1637,30 @@ mod tests {
         assert!(approx_eq(round2(100.0), 100.0));
         // Zero stays zero
         assert!(approx_eq(round2(0.0), 0.0));
+    }
+
+    // ── render_summary_text ──────────────────────────────────────────────────
+
+    #[test]
+    fn render_summary_text_does_not_panic_with_empty_data() {
+        // Should complete without panicking when all fields are absent.
+        render_summary_text(&serde_json::Value::Object(serde_json::Map::new()));
+    }
+
+    #[test]
+    fn render_summary_text_does_not_panic_with_full_data() {
+        let data = json!({
+            "total_resources": 10,
+            "total_transfer_size": 12345.0,
+            "requests_by_type": {"js": 4, "css": 2, "image": 4},
+            "domains": [
+                {"domain": "example.com", "requests": 8, "transfer_size": 10000.0},
+                {"domain": "cdn.example.com", "requests": 2, "transfer_size": 2345.0},
+            ],
+            "slowest_resources": [
+                {"url": "https://example.com/app.js", "duration_ms": 300.0, "transfer_size": 50000.0},
+            ],
+        });
+        render_summary_text(&data);
     }
 }

@@ -28,7 +28,7 @@ It must be compatible with Windows, Linux and macOS.
 Before committing or creating a PR, run **in this order** and fix all issues:
 1. `cargo fmt`
 2. `cargo clippy --workspace --all-targets -- -D warnings`
-3. `cargo test --workspace`
+3. `cargo test --workspace -q`
 
 Never skip a step. Never commit code that fails any of these.
 Do *not* merge with "--squash".

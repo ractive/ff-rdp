@@ -2,7 +2,7 @@
 title: "Iteration 44: First Public Release (v0.1.0)"
 date: 2026-04-13
 type: iteration
-status: in-progress
+status: completed
 branch: iter-44/public-release
 tags:
   - iteration

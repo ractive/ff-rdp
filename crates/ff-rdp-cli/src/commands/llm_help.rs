@@ -351,15 +351,30 @@ ff-rdp scroll to "footer" --smooth
 #### scroll by
 Scroll the viewport by pixels or by a page.
   --dx <PX>              Horizontal delta in pixels [default: 0]
-  --dy <PX>              Vertical delta in pixels (mutually exclusive with --page-down/--page-up)
+  --dy <PX>              Vertical delta in pixels (mutually exclusive with --page-down/--page-up); negative values scroll up
   --page-down            Scroll down by 85% of viewport height
   --page-up              Scroll up by 85% of viewport height
   --smooth               Use smooth scrolling
+Note: negative values work without equals syntax: `scroll by --dy -500` is valid.
 ```
 ff-rdp scroll by --page-down
 ff-rdp scroll by --page-up
 ff-rdp scroll by --dy 600 --smooth
+ff-rdp scroll by --dy -300
 ff-rdp scroll by --dx 200
+ff-rdp scroll by --dx -100
+```
+
+#### scroll top
+Scroll instantly to the very top of the page (window.scrollTo(0, 0)).
+```
+ff-rdp scroll top
+```
+
+#### scroll bottom
+Scroll instantly to the very bottom of the page (window.scrollTo(0, scrollHeight)).
+```
+ff-rdp scroll bottom
 ```
 
 #### scroll container <SELECTOR>
@@ -526,6 +541,8 @@ mod tests {
             "a11y contrast",
             "scroll to",
             "scroll by",
+            "scroll top",
+            "scroll bottom",
             "scroll container",
             "scroll until",
             "scroll text",

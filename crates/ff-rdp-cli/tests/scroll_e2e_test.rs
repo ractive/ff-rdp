@@ -238,6 +238,75 @@ fn scroll_container_returns_before_after_at_end() {
 }
 
 // ---------------------------------------------------------------------------
+// scroll top / scroll bottom
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scroll_top_returns_scrolled_json_at_origin() {
+    let server = scroll_server("eval_result_scroll_top.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["scroll".to_owned(), "top".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    assert_eq!(json["results"]["scrolled"], true);
+    assert!(json["results"]["viewport"].is_object());
+    // scroll top sets Y to 0
+    assert_eq!(json["results"]["viewport"]["y"], 0);
+    assert!(json["results"]["scrollHeight"].is_number());
+    assert!(json["results"]["atEnd"].is_boolean());
+}
+
+#[test]
+fn scroll_bottom_returns_scrolled_json_at_end() {
+    let server = scroll_server("eval_result_scroll_bottom.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["scroll".to_owned(), "bottom".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    assert_eq!(json["results"]["scrolled"], true);
+    assert!(json["results"]["viewport"].is_object());
+    assert!(json["results"]["scrollHeight"].is_number());
+    // scroll bottom sets atEnd to true
+    assert_eq!(json["results"]["atEnd"], true);
+}
+
+// ---------------------------------------------------------------------------
 // scroll until
 // ---------------------------------------------------------------------------
 

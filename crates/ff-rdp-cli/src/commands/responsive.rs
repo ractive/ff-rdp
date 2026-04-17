@@ -275,11 +275,103 @@ pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppErr
         "widths": widths,
     });
 
+    // Text short-circuit: render a human-readable breakpoint table instead of JSON.
+    if cli.format == "text" && cli.jq.is_none() {
+        render_responsive_text(&results);
+        return Ok(());
+    }
+
     let envelope = output::envelope(&results, breakpoint_count, &meta);
 
     OutputPipeline::from_cli(cli)?
         .finalize(&envelope)
         .map_err(AppError::from)
+}
+
+/// Render `responsive` results as human-readable text to stdout.
+///
+/// Prints a section per breakpoint width showing the viewport dimensions and
+/// a table of element geometry (selector, tag, width, height, visible, in_viewport).
+fn render_responsive_text(results: &Value) {
+    let Some(breakpoints) = results.get("breakpoints").and_then(Value::as_array) else {
+        return;
+    };
+
+    for bp in breakpoints {
+        let width = bp.get("width").and_then(Value::as_u64).unwrap_or(0);
+        let vp_w = bp
+            .get("viewport")
+            .and_then(|v| v.get("width"))
+            .and_then(Value::as_u64)
+            .unwrap_or(width);
+        let vp_h = bp
+            .get("viewport")
+            .and_then(|v| v.get("height"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+
+        println!("=== Breakpoint {width}px (viewport {vp_w}x{vp_h}) ===");
+
+        let elements = match bp.get("elements").and_then(Value::as_array) {
+            Some(e) if !e.is_empty() => e,
+            _ => {
+                println!("  (no elements)");
+                println!();
+                continue;
+            }
+        };
+
+        // Compute column widths for: selector, tag, w, h, visible, in_vp
+        let sel_width = elements
+            .iter()
+            .filter_map(|e| e.get("selector").and_then(Value::as_str))
+            .map(str::len)
+            .max()
+            .unwrap_or(8)
+            .max(8);
+
+        println!(
+            "  {:<sel_width$}  {:>5}  {:>8}  {:>8}  {:>7}  {:>10}",
+            "selector", "tag", "width", "height", "visible", "in_viewport"
+        );
+        println!(
+            "  {}  {}  {}  {}  {}  {}",
+            "-".repeat(sel_width),
+            "-".repeat(5),
+            "-".repeat(8),
+            "-".repeat(8),
+            "-".repeat(7),
+            "-".repeat(10)
+        );
+
+        for el in elements {
+            let selector = el.get("selector").and_then(Value::as_str).unwrap_or("?");
+            let tag = el.get("tag").and_then(Value::as_str).unwrap_or("?");
+            let el_w = el
+                .get("rect")
+                .and_then(|r| r.get("width"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let el_h = el
+                .get("rect")
+                .and_then(|r| r.get("height"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let visible = el
+                .get("visible")
+                .and_then(Value::as_bool)
+                .map_or("?", |b| if b { "yes" } else { "no" });
+            let in_vp = el
+                .get("in_viewport")
+                .and_then(Value::as_bool)
+                .map_or("?", |b| if b { "yes" } else { "no" });
+
+            println!(
+                "  {selector:<sel_width$}  {tag:>5}  {el_w:>8.1}  {el_h:>8.1}  {visible:>7}  {in_vp:>10}"
+            );
+        }
+        println!();
+    }
 }
 
 #[cfg(test)]
@@ -374,5 +466,44 @@ mod tests {
         // constraint applied by SET_VIEWPORT_CSS_JS is reflected in `vw`.
         assert!(RESPONSIVE_JS_TEMPLATE.contains("documentElement.offsetWidth"));
         assert!(!RESPONSIVE_JS_TEMPLATE.starts_with("window.innerWidth"));
+    }
+
+    // ── render_responsive_text ───────────────────────────────────────────────
+
+    #[test]
+    fn render_responsive_text_does_not_panic_with_no_breakpoints() {
+        render_responsive_text(&serde_json::json!({"breakpoints": []}));
+    }
+
+    #[test]
+    fn render_responsive_text_does_not_panic_with_full_data() {
+        let data = serde_json::json!({
+            "breakpoints": [
+                {
+                    "width": 320,
+                    "viewport": {"width": 320, "height": 768},
+                    "elements": [
+                        {
+                            "selector": "h1",
+                            "tag": "h1",
+                            "rect": {"width": 300.0, "height": 40.0},
+                            "visible": true,
+                            "in_viewport": true,
+                        },
+                    ],
+                },
+                {
+                    "width": 1024,
+                    "viewport": {"width": 1024, "height": 768},
+                    "elements": [],
+                },
+            ],
+        });
+        render_responsive_text(&data);
+    }
+
+    #[test]
+    fn render_responsive_text_does_not_panic_with_missing_breakpoints_key() {
+        render_responsive_text(&serde_json::json!({}));
     }
 }

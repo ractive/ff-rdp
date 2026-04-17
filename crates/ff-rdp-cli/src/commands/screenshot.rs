@@ -108,11 +108,20 @@ pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
 
         if let Some(actor) = sc_actor {
             // Try legacy method first.
-            match ScreenshotContentActor::capture(ctx.transport_mut(), actor.as_ref()) {
+            match ScreenshotContentActor::capture(
+                ctx.transport_mut(),
+                actor.as_ref(),
+                height_override.is_some_and(|h| matches!(h, HeightOverride::FullPage)),
+            ) {
                 Ok(capture) => capture.data,
                 Err(legacy_err) if legacy_err.is_unrecognized_packet_type() => {
                     // Legacy method not available — try the Firefox 149+ two-step protocol.
-                    try_two_step_screenshot(&mut ctx, &actor, browsing_ctx_id)?
+                    try_two_step_screenshot(
+                        &mut ctx,
+                        &actor,
+                        browsing_ctx_id,
+                        height_override.is_some_and(|h| matches!(h, HeightOverride::FullPage)),
+                    )?
                 }
                 Err(e) => {
                     return Err(AppError::User(format!(
@@ -191,11 +200,15 @@ pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
 /// Step 1: `screenshotContentActor.prepareCapture` → viewport DPR/zoom/rect
 /// Step 2: `screenshotActor.capture` (root actor) → PNG data URL
 ///
+/// `full_page` is forwarded to both steps so Firefox captures the full scroll
+/// height rather than just the visible viewport.
+///
 /// Returns the `data:image/png;base64,...` string on success.
 fn try_two_step_screenshot(
     ctx: &mut super::connect_tab::ConnectedTab,
     sc_actor: &ff_rdp_core::ActorId,
     browsing_ctx_id: Option<u64>,
+    full_page: bool,
 ) -> Result<String, AppError> {
     let browsing_ctx_id = browsing_ctx_id.ok_or_else(|| {
         AppError::User(
@@ -208,7 +221,7 @@ fn try_two_step_screenshot(
 
     // Step 1: prepare — collect viewport DPR/zoom from the content process actor.
     let prep =
-        ScreenshotContentActor::prepare_capture(ctx.transport_mut(), sc_actor.as_ref(), false)
+        ScreenshotContentActor::prepare_capture(ctx.transport_mut(), sc_actor.as_ref(), full_page)
             .map_err(|e| {
                 AppError::User(format!(
                     "screenshot: screenshotContentActor.prepareCapture failed ({e})"
@@ -227,7 +240,7 @@ fn try_two_step_screenshot(
         ctx.transport_mut(),
         &screenshot_actor,
         browsing_ctx_id,
-        false,
+        full_page,
         &prep,
     )
     .map_err(|e| {
@@ -303,6 +316,29 @@ fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::args::{Cli, Command};
+    use clap::Parser as _;
+
+    // ── clap parse tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn clap_screenshot_full_page_flag_parsed() {
+        let cli = Cli::try_parse_from(["ff-rdp", "screenshot", "--full-page"])
+            .expect("should parse --full-page");
+        let Command::Screenshot { full_page, .. } = cli.command else {
+            panic!("expected Screenshot command");
+        };
+        assert!(full_page, "--full-page flag must be set");
+    }
+
+    #[test]
+    fn clap_a11y_limit_and_format_text_parsed() {
+        let cli = Cli::try_parse_from(["ff-rdp", "a11y", "--limit", "5", "--format", "text"])
+            .expect("should parse a11y --limit 5 --format text");
+        assert_eq!(cli.limit, Some(5));
+        assert_eq!(cli.format, "text");
+        assert!(matches!(cli.command, Command::A11y { .. }));
+    }
 
     #[test]
     fn png_dimensions_minimal_png() {
