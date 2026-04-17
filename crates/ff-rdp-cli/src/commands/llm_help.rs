@@ -34,6 +34,16 @@ Defaults: network (limit 20, sort duration_ms desc), console (limit 50,
 sort timestamp desc), dom (limit 20, document order), perf resource
 (limit 20, sort duration_ms desc). Use --all to get everything.
 
+## AI agent recommendations
+- Use `--format text` instead of JSON for 3-10x fewer tokens. Most commands render
+  human-readable tables that are compact and easy to parse.
+- Use `eval --stringify '<expr>'` to get actual values from eval instead of actor grip
+  metadata. Without --stringify, objects/arrays return Firefox internal IDs, not data.
+- Use `styles "sel" --properties color,display,font-size` instead of bare `styles "sel"`
+  which dumps all ~500 CSS properties (49KB+). Always specify the properties you need.
+- Use `a11y summary` for a flat list of landmarks, headings, and interactive elements
+  instead of the full tree (which can be 400+ lines).
+
 ## Commands
 
 ### tabs
@@ -64,11 +74,15 @@ Three input modes (exactly one required):
 Use --file or --stdin to avoid shell quoting issues with ?., template literals, or multi-line scripts.
   --file <PATH>          Read JavaScript from a file
   --stdin                Read JavaScript from stdin until EOF
+  --stringify            Wrap expression in JSON.stringify() to return actual data
+                         instead of actor grip metadata (recommended for objects/arrays)
 ```
 ff-rdp eval "document.title"
 ff-rdp eval "document.querySelectorAll('a').length"
 ff-rdp eval --file script.js
 echo 'document.body?.dataset.theme' | ff-rdp eval --stdin
+ff-rdp eval --stringify "document.querySelectorAll('a')"
+ff-rdp eval --stringify "Array.from(document.links, l => ({href: l.href, text: l.textContent}))"
 ```
 
 ### page-text
@@ -126,8 +140,13 @@ Inspect CSS styles for an element matching a CSS selector.
 Default: computed styles as JSON array of {name, value, priority}.
   --applied              Show applied CSS rules with source locations
   --layout               Show box model (margin/border/padding/content per side)
+  --properties <P1,P2>   Filter computed properties (e.g. --properties color,display,font-size)
+
+Note: computed mode without --properties returns ~500 CSS properties (49KB+).
+Always use --properties or --limit for AI agent workflows.
 ```
 ff-rdp styles "h1"
+ff-rdp styles "h1" --properties color,display,font-size
 ff-rdp styles "h1" --jq '.results[] | select(.name == "color")'
 ff-rdp styles "h1" --applied
 ff-rdp styles "h1" --applied --jq '.results[].selector'
@@ -235,6 +254,14 @@ ff-rdp a11y contrast
 ff-rdp a11y contrast --selector "h1,p,a"
 ff-rdp a11y contrast --fail-only
 ff-rdp a11y contrast --jq '.meta.summary'
+```
+
+### a11y summary
+Flat list of landmarks, headings, and interactive elements — much more compact
+than the full tree for page orientation and form discovery.
+```
+ff-rdp a11y summary
+ff-rdp a11y summary --format text
 ```
 
 ### geometry <SELECTOR>...
@@ -488,6 +515,13 @@ ff-rdp console --level error
 "##;
 
 pub fn run(cli: &Cli) -> Result<(), AppError> {
+    // When --format text is requested (and no jq filter), print the raw markdown
+    // directly without JSON wrapping.
+    if cli.format == "text" && cli.jq.is_none() {
+        println!("{}", LLM_REFERENCE.trim());
+        return Ok(());
+    }
+
     let results = json!(LLM_REFERENCE.trim());
     let meta = json!({"source": "static"});
     let envelope = output::envelope(&results, 1, &meta);
@@ -539,6 +573,7 @@ mod tests {
             "perf vitals",
             "perf summary",
             "a11y contrast",
+            "a11y summary",
             "scroll to",
             "scroll by",
             "scroll top",

@@ -257,6 +257,45 @@ fn dom_stats_returns_dom_statistics() {
 }
 
 // ---------------------------------------------------------------------------
+// --text-attrs mode
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dom_single_element_text_attrs() {
+    let server = dom_server("eval_result_dom_text_attrs.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["dom".to_owned(), "a".to_owned(), "--text-attrs".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    let results = &json["results"];
+    assert_eq!(results["textContent"], "More information...");
+    assert_eq!(
+        results["attrs"]["href"],
+        "https://www.iana.org/domains/example"
+    );
+    assert_eq!(results["attrs"]["class"], "link");
+    assert_eq!(json["total"], 1);
+}
+
+// ---------------------------------------------------------------------------
 // With --jq filter
 // ---------------------------------------------------------------------------
 

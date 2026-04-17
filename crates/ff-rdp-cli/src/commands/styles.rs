@@ -54,7 +54,7 @@ fn setup(cli: &Cli, selector: &str) -> Result<(ConnectedTab, ActorId, ActorId), 
 }
 
 /// Computed styles (default).
-pub fn run(cli: &Cli, selector: &str) -> Result<(), AppError> {
+pub fn run(cli: &Cli, selector: &str, properties: Option<&[String]>) -> Result<(), AppError> {
     let (mut ctx, page_style_actor, node_actor) = setup(cli, selector)?;
 
     let computed =
@@ -72,6 +72,15 @@ pub fn run(cli: &Cli, selector: &str) -> Result<(), AppError> {
             })
         })
         .collect();
+
+    // Filter by --properties if set.
+    if let Some(props) = properties {
+        items.retain(|item| {
+            item.get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| props.iter().any(|p| p == name))
+        });
+    }
 
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
 
@@ -236,5 +245,64 @@ mod tests {
         assert_eq!(item["name"], "color");
         assert_eq!(item["value"], "rgb(0, 0, 0)");
         assert_eq!(item["priority"], "");
+    }
+
+    // ---------------------------------------------------------------------------
+    // --properties filter tests
+    // ---------------------------------------------------------------------------
+
+    fn make_items() -> Vec<Value> {
+        vec![
+            json!({"name": "color", "value": "rgb(0,0,0)", "priority": ""}),
+            json!({"name": "display", "value": "block", "priority": ""}),
+            json!({"name": "font-size", "value": "16px", "priority": ""}),
+            json!({"name": "margin-top", "value": "0px", "priority": ""}),
+        ]
+    }
+
+    fn apply_properties_filter(mut items: Vec<Value>, props: Option<&[String]>) -> Vec<Value> {
+        if let Some(filter) = props {
+            items.retain(|item| {
+                item.get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| filter.iter().any(|p| p == name))
+            });
+        }
+        items
+    }
+
+    #[test]
+    fn properties_filter_none_returns_all() {
+        let items = make_items();
+        let result = apply_properties_filter(items, None);
+        assert_eq!(result.len(), 4);
+    }
+
+    #[test]
+    fn properties_filter_single_property() {
+        let items = make_items();
+        let props = vec!["color".to_string()];
+        let result = apply_properties_filter(items, Some(&props));
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["name"], "color");
+    }
+
+    #[test]
+    fn properties_filter_multiple_properties() {
+        let items = make_items();
+        let props = vec!["color".to_string(), "display".to_string()];
+        let result = apply_properties_filter(items, Some(&props));
+        assert_eq!(result.len(), 2);
+        let names: Vec<&str> = result.iter().filter_map(|i| i["name"].as_str()).collect();
+        assert!(names.contains(&"color"));
+        assert!(names.contains(&"display"));
+    }
+
+    #[test]
+    fn properties_filter_unknown_property_returns_empty() {
+        let items = make_items();
+        let props = vec!["nonexistent-prop".to_string()];
+        let result = apply_properties_filter(items, Some(&props));
+        assert!(result.is_empty());
     }
 }

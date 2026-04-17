@@ -1,5 +1,6 @@
 pub(crate) mod a11y;
 pub(crate) mod a11y_contrast;
+pub(crate) mod a11y_summary;
 pub(crate) mod auto_consent;
 pub(crate) mod click;
 pub(crate) mod computed;

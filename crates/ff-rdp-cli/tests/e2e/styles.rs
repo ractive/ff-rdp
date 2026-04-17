@@ -257,3 +257,57 @@ fn styles_with_jq_filter() {
         "first sorted property should be color"
     );
 }
+
+// ---------------------------------------------------------------------------
+// styles: --properties filter
+// ---------------------------------------------------------------------------
+
+#[test]
+fn styles_properties_filter_returns_only_requested() {
+    let server = styles_server("getComputed", "page_style_get_computed_response.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "styles".to_owned(),
+        "h1".to_owned(),
+        "--properties".to_owned(),
+        "color,display".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    let results = json["results"]
+        .as_array()
+        .expect("results should be an array");
+
+    // Only color and display should be present.
+    assert_eq!(results.len(), 2, "should have exactly 2 properties");
+
+    let names: Vec<&str> = results.iter().filter_map(|e| e["name"].as_str()).collect();
+    assert!(names.contains(&"color"), "should include color");
+    assert!(names.contains(&"display"), "should include display");
+    assert!(
+        !names.contains(&"font-size"),
+        "font-size should be filtered out"
+    );
+    assert!(
+        !names.contains(&"margin-top"),
+        "margin-top should be filtered out"
+    );
+}

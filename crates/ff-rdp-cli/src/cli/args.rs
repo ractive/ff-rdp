@@ -129,7 +129,11 @@ Prefer --file or --stdin for scripts that contain shell metacharacters,
 optional chaining (?.), template literals, or multi-line statements — shell
 quoting can mangle them and produce a SyntaxError at column 1.
 
-Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}")]
+Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}
+
+When the result is a non-primitive (object, array), Firefox returns actor grip
+metadata (actor IDs, class names) instead of the actual values. Use --stringify
+to wrap the expression in JSON.stringify() and get the real data back.")]
     #[command(group(
         ArgGroup::new("eval_source")
             .required(true)
@@ -145,6 +149,9 @@ Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}")]
         /// Read JavaScript source from stdin until EOF
         #[arg(long)]
         stdin: bool,
+        /// Wrap expression in JSON.stringify() to get actual values instead of actor grips
+        #[arg(long)]
+        stringify: bool,
     },
     /// Extract visible page text (document.body.innerText)
     PageText,
@@ -171,6 +178,9 @@ With --count: {\"results\": {\"count\": N}, \"total\": 1, \"meta\": {...}}")]
         /// Output element attributes as JSON objects
         #[arg(long, group = "output_mode")]
         attrs: bool,
+        /// Output both text content and attributes per element
+        #[arg(long, group = "output_mode")]
+        text_attrs: bool,
         /// Return only the count of matching elements
         #[arg(long, group = "output_mode")]
         count: bool,
@@ -475,6 +485,9 @@ Output (--all): full resolved-style object per match (dumps every property)"
         /// Show box model layout (margin/border/padding/content) instead of computed styles
         #[arg(long, group = "style_mode")]
         layout: bool,
+        /// Comma-separated list of CSS property names to include (computed mode only)
+        #[arg(long, value_delimiter = ',')]
+        properties: Option<Vec<String>>,
     },
     /// Scroll the page or a specific element
     #[command(long_about = "Scroll the page or a specific element.
@@ -541,6 +554,8 @@ pub enum A11yCommand {
         #[arg(long)]
         fail_only: bool,
     },
+    /// Flat summary: landmarks, headings, and interactive elements for quick page orientation
+    Summary,
 }
 
 /// Block-alignment values accepted by `scroll to --block`.

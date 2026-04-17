@@ -14,6 +14,18 @@ fn base_args(port: u16) -> Vec<String> {
     ]
 }
 
+/// Build a mock server for a11y summary (uses JS eval path).
+fn a11y_summary_server() -> MockRdpServer {
+    MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_a11y_summary.json"),
+        )
+}
+
 /// Build a mock server that handles the full a11y protocol sequence.
 ///
 /// Protocol flow:
@@ -325,4 +337,170 @@ fn a11y_contrast_with_jq_extracts_total() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "2", "fixture has 2 contrast checks");
+}
+
+// ---------------------------------------------------------------------------
+// a11y summary: JSON output
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a11y_summary_outputs_json_with_sections() {
+    let server = a11y_summary_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["a11y".to_owned(), "summary".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    // Results should have the three summary sections.
+    assert!(
+        json["results"]["landmarks"].is_array(),
+        "results must have landmarks array"
+    );
+    assert!(
+        json["results"]["headings"].is_array(),
+        "results must have headings array"
+    );
+    assert!(
+        json["results"]["interactive"].is_array(),
+        "results must have interactive array"
+    );
+
+    // Fixture has 2 landmarks.
+    assert_eq!(
+        json["results"]["landmarks"].as_array().unwrap().len(),
+        2,
+        "fixture has 2 landmarks"
+    );
+
+    // Fixture has 2 headings.
+    assert_eq!(
+        json["results"]["headings"].as_array().unwrap().len(),
+        2,
+        "fixture has 2 headings"
+    );
+
+    // Fixture has 3 interactive elements.
+    assert_eq!(
+        json["results"]["interactive"].as_array().unwrap().len(),
+        3,
+        "fixture has 3 interactive elements"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// a11y summary: --format text
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a11y_summary_text_format_renders_sections() {
+    let server = a11y_summary_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "--format".to_owned(),
+        "text".to_owned(),
+        "a11y".to_owned(),
+        "summary".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Text output should contain section headers and content.
+    assert!(
+        stdout.contains("LANDMARKS"),
+        "should contain LANDMARKS header"
+    );
+    assert!(
+        stdout.contains("HEADINGS"),
+        "should contain HEADINGS header"
+    );
+    assert!(
+        stdout.contains("INTERACTIVE"),
+        "should contain INTERACTIVE header"
+    );
+
+    // Fixture headings: h1 "Example Domain", h2 "More information".
+    assert!(
+        stdout.contains("h1 Example Domain"),
+        "should render h1 heading"
+    );
+
+    // Fixture has a link.
+    assert!(
+        stdout.contains("link") && stdout.contains("More information"),
+        "should render the link element"
+    );
+
+    // Must not be wrapped in JSON quotes (the old bug).
+    assert!(
+        !stdout.trim().starts_with('"'),
+        "text output must not be JSON-quoted"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// a11y summary: --jq filter
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a11y_summary_with_jq_extracts_headings() {
+    let server = a11y_summary_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "--jq".to_owned(),
+        ".results.headings | length".to_owned(),
+        "a11y".to_owned(),
+        "summary".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "2", "fixture has 2 headings");
 }

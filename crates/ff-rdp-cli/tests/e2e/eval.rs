@@ -331,3 +331,44 @@ fn eval_long_string_result() {
     assert_eq!(json["results"]["type"], "longString");
     assert_eq!(json["results"]["length"], 50000);
 }
+
+// ---------------------------------------------------------------------------
+// --stringify flag
+// ---------------------------------------------------------------------------
+
+#[test]
+fn eval_stringify_returns_json_string() {
+    let server = eval_server("eval_result_stringify.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "eval".to_owned(),
+        "--stringify".to_owned(),
+        "document.querySelectorAll('a')".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    // The mock returns a JSON string; results should be that string.
+    assert_eq!(
+        json["results"],
+        r#"[{"href":"https://example.com","text":"Example"}]"#
+    );
+    assert_eq!(json["total"], 1);
+}

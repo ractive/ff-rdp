@@ -1,0 +1,8 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "type": "evaluationResult",
+  "resultID": "1775437183977.373-0",
+  "hasException": false,
+  "result": "__FF_RDP_JSON__{\"landmarks\":[{\"role\":\"banner\",\"label\":\"\",\"tag\":\"header\"},{\"role\":\"main\",\"label\":\"\",\"tag\":\"main\"}],\"headings\":[{\"level\":1,\"text\":\"Example Domain\"},{\"level\":2,\"text\":\"More information\"}],\"interactive\":[{\"role\":\"link\",\"name\":\"More information...\",\"href\":\"https://www.iana.org/domains/reserved\"},{\"role\":\"button\",\"name\":\"Submit\"},{\"role\":\"input\",\"name\":\"Search\",\"type\":\"text\"}]}",
+  "timestamp": 1775437183980.721
+}

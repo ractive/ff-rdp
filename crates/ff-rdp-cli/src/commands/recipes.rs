@@ -32,9 +32,18 @@ DOM
   Find images without lazy loading:
     ff-rdp dom stats --jq '.results.images_without_lazy'
 
+  Get text and attributes together (useful for AI agents):
+    ff-rdp dom "a[href]" --text-attrs
+    ff-rdp dom "input" --text-attrs --jq '[.results[] | {{text: .textContent, href: .attrs.href}}]'
+
 NETWORK
+  NOTE: `network` defaults to summary mode (.results is an object with totals).
+  Use --detail when you need per-entry access via --jq (e.g., .results[]
+  iteration). Using --jq alone also switches to detail mode automatically, but
+  adding --detail makes the intent explicit and avoids confusion.
+
   Failed requests (status >= 400):
-    ff-rdp network --jq '[.results[] | select(.status >= 400) | {{url,status}}]'
+    ff-rdp network --detail --jq '[.results[] | select(.status >= 400) | {{url,status}}]'
 
   Total transfer by domain:
     ff-rdp perf --all --group-by domain --jq '.results'

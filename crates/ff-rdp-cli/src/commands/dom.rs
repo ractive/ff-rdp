@@ -16,6 +16,7 @@ pub enum OutputMode {
     InnerHtml,
     Text,
     Attrs,
+    TextAttrs,
 }
 
 pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> {
@@ -124,6 +125,21 @@ fn build_js(selector: &str, mode: OutputMode) -> String {
   if (els.length === 0) return null;
   if (els.length === 1) return '{JSON_SENTINEL}' + JSON.stringify(attrs(els[0]));
   return '{JSON_SENTINEL}' + JSON.stringify(Array.from(els, attrs));
+}})()"
+        ),
+        OutputMode::TextAttrs => format!(
+            r"(function() {{
+  function textAttrs(e) {{
+    var o = {{}};
+    for (var i = 0; i < e.attributes.length; i++) {{
+      o[e.attributes[i].name] = e.attributes[i].value;
+    }}
+    return {{textContent: e.textContent, attrs: o}};
+  }}
+  var els = document.querySelectorAll('{escaped}');
+  if (els.length === 0) return null;
+  if (els.length === 1) return '{JSON_SENTINEL}' + JSON.stringify(textAttrs(els[0]));
+  return '{JSON_SENTINEL}' + JSON.stringify(Array.from(els, textAttrs));
 }})()"
         ),
     }
@@ -262,5 +278,32 @@ mod tests {
         let js = format!("document.querySelectorAll('{escaped}').length");
         assert!(js.contains("querySelectorAll('script')"));
         assert!(js.contains(".length"));
+    }
+
+    #[test]
+    fn build_js_text_attrs() {
+        let js = build_js("a", OutputMode::TextAttrs);
+        assert!(js.contains("querySelectorAll('a')"));
+        assert!(js.contains("textContent"));
+        assert!(js.contains("attributes"));
+        assert!(js.contains("textAttrs"));
+        // Returns a JSON object with textContent and attrs fields
+        assert!(js.contains("\"attrs\"") || js.contains("attrs:"));
+        assert!(js.contains(JSON_SENTINEL));
+    }
+
+    #[test]
+    fn build_js_text_attrs_single_uses_sentinel() {
+        let js = build_js("h1", OutputMode::TextAttrs);
+        // Single-element path must also use the sentinel so resolve_result
+        // can parse it as JSON rather than treating it as a plain string.
+        assert!(js.contains(JSON_SENTINEL));
+        assert!(js.contains("textAttrs(els[0])"));
+    }
+
+    #[test]
+    fn build_js_text_attrs_multi_uses_array_from() {
+        let js = build_js("li", OutputMode::TextAttrs);
+        assert!(js.contains("Array.from(els, textAttrs)"));
     }
 }

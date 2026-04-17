@@ -64,7 +64,8 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             script,
             file,
             stdin,
-        } => commands::eval::run(cli, script.as_deref(), file.as_deref(), *stdin),
+            stringify,
+        } => commands::eval::run(cli, script.as_deref(), file.as_deref(), *stdin, *stringify),
         Command::Reload {
             wait_idle,
             idle_ms,
@@ -86,6 +87,7 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             inner_html,
             text,
             attrs,
+            text_attrs,
             count,
         } => match dom_command {
             Some(DomCommand::Stats) => commands::dom::run_stats(cli),
@@ -107,6 +109,8 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                         commands::dom::OutputMode::Text
                     } else if *attrs {
                         commands::dom::OutputMode::Attrs
+                    } else if *text_attrs {
+                        commands::dom::OutputMode::TextAttrs
                     } else {
                         commands::dom::OutputMode::OuterHtml
                     };
@@ -191,6 +195,7 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 selector: contrast_selector,
                 fail_only,
             }) => commands::a11y_contrast::run(cli, contrast_selector.as_deref(), *fail_only),
+            Some(A11yCommand::Summary) => commands::a11y_summary::run(cli),
             None => commands::a11y::run(cli, *depth, *max_chars, selector.as_deref(), *interactive),
         },
         Command::Cookies { name } => commands::cookies::run(cli, name.as_deref()),
@@ -238,13 +243,14 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             selector,
             applied,
             layout,
+            properties,
         } => {
             if *applied {
                 commands::styles::run_applied(cli, selector)
             } else if *layout {
                 commands::styles::run_layout(cli, selector)
             } else {
-                commands::styles::run(cli, selector)
+                commands::styles::run(cli, selector, properties.as_deref())
             }
         }
         Command::Geometry {
