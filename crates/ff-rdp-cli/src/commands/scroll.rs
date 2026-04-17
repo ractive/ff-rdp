@@ -38,18 +38,14 @@ pub fn run_to(cli: &Cli, selector: &str, block: ScrollBlock, smooth: bool) -> Re
   var el = document.querySelector('{escaped}');
   if (!el) throw new Error('Element not found: {escaped} — use ff-rdp dom SELECTOR --count to verify the selector matches');
   el.scrollIntoView({{block: '{block_spec}', behavior: '{behavior}'}});
-  return new Promise(function(resolve) {{
-    requestAnimationFrame(function() {{
-      var r = el.getBoundingClientRect();
-      var atEnd = (window.scrollY + window.innerHeight) >= (document.documentElement.scrollHeight - 1);
-      resolve('{JSON_SENTINEL}' + JSON.stringify({{
-        scrolled: true,
-        selector: {selector_lit},
-        viewport: {{x: window.scrollX, y: window.scrollY, width: window.innerWidth, height: window.innerHeight}},
-        target: {{selector: {selector_lit}, rect: {{top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.bottom, right: r.right}}}},
-        atEnd: atEnd
-      }}));
-    }});
+  var r = el.getBoundingClientRect();
+  var atEnd = (window.scrollY + window.innerHeight) >= (document.documentElement.scrollHeight - 1);
+  return '{JSON_SENTINEL}' + JSON.stringify({{
+    scrolled: true,
+    selector: {selector_lit},
+    viewport: {{x: window.scrollX, y: window.scrollY, width: window.innerWidth, height: window.innerHeight}},
+    target: {{selector: {selector_lit}, rect: {{top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.bottom, right: r.right}}}},
+    atEnd: atEnd
   }});
 }})()"
     );
@@ -104,16 +100,12 @@ pub fn run_by(
         r"(function() {{
   var topVal = {dy_expr};
   window.scrollBy({{left: {dx}, top: topVal, behavior: '{behavior}'}});
-  return new Promise(function(resolve) {{
-    requestAnimationFrame(function() {{
-      var atEnd = (window.scrollY + window.innerHeight) >= (document.documentElement.scrollHeight - 1);
-      resolve('{JSON_SENTINEL}' + JSON.stringify({{
-        scrolled: true,
-        viewport: {{x: window.scrollX, y: window.scrollY, width: window.innerWidth, height: window.innerHeight}},
-        scrollHeight: document.documentElement.scrollHeight,
-        atEnd: atEnd
-      }}));
-    }});
+  var atEnd = (window.scrollY + window.innerHeight) >= (document.documentElement.scrollHeight - 1);
+  return '{JSON_SENTINEL}' + JSON.stringify({{
+    scrolled: true,
+    viewport: {{x: window.scrollX, y: window.scrollY, width: window.innerWidth, height: window.innerHeight}},
+    scrollHeight: document.documentElement.scrollHeight,
+    atEnd: atEnd
   }});
 }})()"
     );
@@ -152,16 +144,12 @@ fn run_scroll_absolute(cli: &Cli, y_expr: &str, error_label: &str) -> Result<(),
         r"(function() {{
   var root = document.scrollingElement || document.documentElement || document.body;
   window.scrollTo(0, {y_expr});
-  return new Promise(function(resolve) {{
-    requestAnimationFrame(function() {{
-      var atEnd = (root.scrollTop + window.innerHeight) >= (root.scrollHeight - 1);
-      resolve('{JSON_SENTINEL}' + JSON.stringify({{
-        scrolled: true,
-        viewport: {{x: root.scrollLeft, y: root.scrollTop, width: window.innerWidth, height: window.innerHeight}},
-        scrollHeight: root.scrollHeight,
-        atEnd: atEnd
-      }}));
-    }});
+  var atEnd = (root.scrollTop + window.innerHeight) >= (root.scrollHeight - 1);
+  return '{JSON_SENTINEL}' + JSON.stringify({{
+    scrolled: true,
+    viewport: {{x: root.scrollLeft, y: root.scrollTop, width: window.innerWidth, height: window.innerHeight}},
+    scrollHeight: root.scrollHeight,
+    atEnd: atEnd
   }});
 }})()"
     );
@@ -207,20 +195,16 @@ pub fn run_container(
   if (!el) throw new Error('Element not found: {escaped} — use ff-rdp dom SELECTOR --count to verify the selector matches');
   var before = {{scrollTop: el.scrollTop, scrollLeft: el.scrollLeft}};
   {scroll_logic}
-  return new Promise(function(resolve) {{
-    requestAnimationFrame(function() {{
-      var after = {{scrollTop: el.scrollTop, scrollLeft: el.scrollLeft}};
-      var atEnd = (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 1);
-      resolve('{JSON_SENTINEL}' + JSON.stringify({{
-        scrolled: true,
-        selector: {selector_lit},
-        before: before,
-        after: after,
-        scrollHeight: el.scrollHeight,
-        clientHeight: el.clientHeight,
-        atEnd: atEnd
-      }}));
-    }});
+  var after = {{scrollTop: el.scrollTop, scrollLeft: el.scrollLeft}};
+  var atEnd = (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 1);
+  return '{JSON_SENTINEL}' + JSON.stringify({{
+    scrolled: true,
+    selector: {selector_lit},
+    before: before,
+    after: after,
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+    atEnd: atEnd
   }});
 }})()"
     );
