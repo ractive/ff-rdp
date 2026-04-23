@@ -2,6 +2,7 @@ use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
+use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
@@ -102,8 +103,10 @@ pub fn run(cli: &Cli, selectors: &[String], visible_only: bool) -> Result<(), Ap
         }
         let meta = json!({"host": cli.host, "port": cli.port, "selectors": selectors});
         let envelope = output::envelope(&empty, 0, &meta);
+        let first_sel = selectors.first().map_or("*", String::as_str);
+        let hint_ctx = HintContext::new(HintSource::Geometry).with_selector(first_sel);
         return OutputPipeline::from_cli(cli)?
-            .finalize(&envelope)
+            .finalize_with_hints(&envelope, Some(&hint_ctx))
             .map_err(AppError::from);
     }
 
@@ -164,8 +167,10 @@ pub fn run(cli: &Cli, selectors: &[String], visible_only: bool) -> Result<(), Ap
 
     let envelope = output::envelope_with_truncation(&results, shown, total, truncated, &meta);
 
+    let first_sel = selectors.first().map_or("*", String::as_str);
+    let hint_ctx = HintContext::new(HintSource::Geometry).with_selector(first_sel);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 

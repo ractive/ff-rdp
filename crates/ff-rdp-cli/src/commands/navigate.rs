@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
+use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
@@ -78,8 +79,9 @@ pub fn run(cli: &Cli, url: &str, wait_opts: &WaitAfterNav<'_>) -> Result<(), App
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&result, 1, &meta);
 
+    let hint_ctx = HintContext::new(HintSource::Navigate);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 
@@ -209,8 +211,9 @@ pub fn run_with_network(
         }
         let meta = json!({"host": cli.host, "port": cli.port});
         let envelope = output::envelope(&result, 1, &meta);
+        let hint_ctx = HintContext::new(HintSource::Navigate);
         return OutputPipeline::from_cli(cli)?
-            .finalize(&envelope)
+            .finalize_with_hints(&envelope, Some(&hint_ctx))
             .map_err(AppError::from);
     }
 
@@ -283,8 +286,9 @@ pub fn run_with_network(
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&result, 1, &meta);
 
+    let hint_ctx = HintContext::new(HintSource::Navigate);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 

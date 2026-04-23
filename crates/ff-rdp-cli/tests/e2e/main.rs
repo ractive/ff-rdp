@@ -11,6 +11,7 @@ mod dom;
 mod dom_tree;
 mod eval;
 mod geometry;
+mod hints;
 mod inspect;
 mod launch;
 mod nav_action;

@@ -3,6 +3,8 @@ use jaq_core::{Compiler, Ctx, Native, Vars, data};
 use jaq_json::Val;
 use serde_json::Value;
 
+use crate::hints::Hint;
+
 /// Type alias matching jaq-core 3.x idiom: a filter with no imported
 /// modules beyond the built-in function lookup table.
 type D = data::JustLut<Val>;
@@ -38,6 +40,20 @@ pub fn envelope_with_truncation(
         );
     }
     env
+}
+
+/// Inject contextual hints into a pre-built envelope.
+///
+/// Adds `"hints": [...]` as a top-level key. The array is always present
+/// (empty when no hints are provided).
+pub fn inject_hints(envelope: &mut Value, hints: &[Hint]) {
+    if let Some(obj) = envelope.as_object_mut() {
+        let hints_json: Vec<Value> = hints
+            .iter()
+            .map(|h| serde_json::to_value(h).unwrap_or(Value::Null))
+            .collect();
+        obj.insert("hints".to_string(), Value::Array(hints_json));
+    }
 }
 
 /// Compile and execute a jq filter on a JSON value.

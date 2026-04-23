@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
+use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
@@ -405,8 +406,9 @@ pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppE
     let envelope =
         output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
 
+    let hint_ctx = HintContext::new(HintSource::Perf);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 
@@ -543,8 +545,9 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&results, 1, &meta);
 
+    let hint_ctx = HintContext::new(HintSource::PerfVitals);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 
@@ -663,8 +666,9 @@ pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&results, 1, &meta);
 
+    let hint_ctx = HintContext::new(HintSource::PerfSummary);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 
@@ -1016,8 +1020,9 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&results, 1, &meta);
 
+    let hint_ctx = HintContext::new(HintSource::PerfAudit);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 
@@ -1209,8 +1214,9 @@ pub fn run_group_by_domain(
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&json!(results), total, &meta);
 
+    let hint_ctx = HintContext::new(HintSource::Perf);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 

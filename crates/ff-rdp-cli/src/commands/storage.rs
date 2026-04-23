@@ -3,6 +3,7 @@ use serde_json::json;
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
+use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
@@ -49,15 +50,19 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
             Grip::Null => {
                 // Key does not exist in storage — return null value with total=0.
                 let envelope = output::envelope(&json!({"key": k, "value": null}), 0, &meta);
+                let hint_ctx =
+                    HintContext::new(HintSource::Storage).with_storage_type(canonical_type);
                 OutputPipeline::from_cli(cli)?
-                    .finalize(&envelope)
+                    .finalize_with_hints(&envelope, Some(&hint_ctx))
                     .map_err(AppError::from)
             }
             grip => {
                 let value = resolve_string_grip(&mut ctx, grip)?;
                 let envelope = output::envelope(&json!({"key": k, "value": value}), 1, &meta);
+                let hint_ctx =
+                    HintContext::new(HintSource::Storage).with_storage_type(canonical_type);
                 OutputPipeline::from_cli(cli)?
-                    .finalize(&envelope)
+                    .finalize_with_hints(&envelope, Some(&hint_ctx))
                     .map_err(AppError::from)
             }
         }
@@ -90,8 +95,9 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
         let total = storage_map.as_object().map_or(0, serde_json::Map::len);
 
         let envelope = output::envelope(&storage_map, total, &meta);
+        let hint_ctx = HintContext::new(HintSource::Storage).with_storage_type(canonical_type);
         OutputPipeline::from_cli(cli)?
-            .finalize(&envelope)
+            .finalize_with_hints(&envelope, Some(&hint_ctx))
             .map_err(AppError::from)
     }
 }

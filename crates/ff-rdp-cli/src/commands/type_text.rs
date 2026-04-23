@@ -2,6 +2,7 @@ use serde_json::json;
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
+use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
@@ -37,7 +38,8 @@ pub fn run(cli: &Cli, selector: &str, text: &str, clear: bool) -> Result<(), App
     let meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
     let envelope = output::envelope(&result_json, 1, &meta);
 
+    let hint_ctx = HintContext::new(HintSource::TypeText).with_selector(selector);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }

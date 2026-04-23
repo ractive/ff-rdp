@@ -7,6 +7,7 @@ use serde_json::json;
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
+use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
@@ -190,8 +191,9 @@ pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&results, 1, &meta);
 
+    let hint_ctx = HintContext::new(HintSource::Screenshot);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 

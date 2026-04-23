@@ -5,6 +5,7 @@ mod commands;
 mod daemon;
 mod dispatch;
 mod error;
+mod hints;
 mod output;
 mod output_controls;
 mod output_pipeline;
