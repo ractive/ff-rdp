@@ -54,20 +54,79 @@ pub fn run(cli: &Cli, action: NavAction) -> Result<(), AppError> {
 ///
 /// ## Protocol flow
 ///
-/// 1. Get the WatcherActor for the target tab.
-/// 2. Subscribe to `"network-event"` resources.
-/// 3. Send the `reload` request without consuming its response so the watcher
-///    stream can deliver network events right from the start.
-/// 4. Loop collecting events with a short poll interval:
-///    - Track the time of the last received network event.
-///    - Return "idle" when no event has arrived in `idle_ms`.
-///    - Return "timeout" when the total wall-clock time exceeds `timeout_ms`.
-/// 5. Unwatch resources to clean up server-side state.
-/// 6. Emit `{reloaded: true, idle_at_ms: N, requests_observed: M}`.
+/// **Daemon mode** (default): uses the daemon's streaming API so network events
+/// are forwarded directly to this client instead of being buffered.
+///
+/// **Direct mode**: subscribes to the watcher's `"network-event"` resource type
+/// and drains events from the raw transport.
+///
+/// Both paths:
+/// 1. Set up network event capture.
+/// 2. Send the `reload` request.
+/// 3. Drain events until idle or timeout.
+/// 4. Emit `{reloaded: true, idle_at_ms: N, requests_observed: M}`.
 pub fn run_reload_wait_idle(cli: &Cli, idle_ms: u64, timeout_ms: u64) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
 
+    if ctx.via_daemon {
+        return run_reload_wait_idle_daemon(&mut ctx, cli, &target_actor, idle_ms, timeout_ms);
+    }
+
+    run_reload_wait_idle_direct(&mut ctx, cli, &target_actor, idle_ms, timeout_ms)
+}
+
+/// Reload + wait-idle through the daemon proxy.
+///
+/// The daemon intercepts watcher events and buffers them by default, so the
+/// direct `watch_resources` approach never delivers events to this client.
+/// Instead we use `start_daemon_stream` / `stop_daemon_stream_draining` to
+/// receive events in real-time (same pattern as `navigate --with-network`).
+fn run_reload_wait_idle_daemon(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    cli: &Cli,
+    target_actor: &ff_rdp_core::ActorId,
+    idle_ms: u64,
+    timeout_ms: u64,
+) -> Result<(), AppError> {
+    // Tell the daemon to stream network events directly to us.
+    crate::daemon::client::start_daemon_stream(ctx.transport_mut(), "network-event")
+        .map_err(AppError::from)?;
+
+    // Send reload without reading the ack — events will be streamed inline.
+    ctx.transport_mut()
+        .send(&json!({
+            "to": target_actor.as_ref(),
+            "type": "reload",
+        }))
+        .map_err(AppError::from)?;
+
+    let (requests_observed, idle_at_ms) =
+        drain_idle_events(ctx.transport_mut(), idle_ms, timeout_ms, cli.timeout)?;
+
+    // Stop streaming and collect any in-flight frames.
+    let inflight_count = match crate::daemon::client::stop_daemon_stream_draining(
+        ctx.transport_mut(),
+        "network-event",
+    ) {
+        Ok(frames) => count_network_events_in_frames(&frames),
+        Err(e) => {
+            eprintln!("warning: failed to stop daemon stream: {e:#}");
+            0
+        }
+    };
+
+    emit_reload_result(cli, requests_observed + inflight_count, idle_at_ms)
+}
+
+/// Reload + wait-idle with a direct Firefox connection (no daemon).
+fn run_reload_wait_idle_direct(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    cli: &Cli,
+    target_actor: &ff_rdp_core::ActorId,
+    idle_ms: u64,
+    timeout_ms: u64,
+) -> Result<(), AppError> {
     let tab_actor = ctx.target_tab_actor().clone();
     let watcher_actor =
         TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
@@ -76,8 +135,7 @@ pub fn run_reload_wait_idle(cli: &Cli, idle_ms: u64, timeout_ms: u64) -> Result<
     WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
         .map_err(AppError::from)?;
 
-    // Send reload without reading the ack — the ack and any early network events
-    // will be collected by the idle-drain loop below.
+    // Send reload without reading the ack.
     ctx.transport_mut()
         .send(&json!({
             "to": target_actor.as_ref(),
@@ -85,10 +143,27 @@ pub fn run_reload_wait_idle(cli: &Cli, idle_ms: u64, timeout_ms: u64) -> Result<
         }))
         .map_err(AppError::from)?;
 
-    // Idle-drain: collect network events until idle_ms passes with no new event
-    // OR timeout_ms of total wall-clock time elapses.
+    let (requests_observed, idle_at_ms) =
+        drain_idle_events(ctx.transport_mut(), idle_ms, timeout_ms, cli.timeout)?;
+
+    // Unwatch to clean up server-side state.
+    let _ =
+        WatcherActor::unwatch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"]);
+
+    emit_reload_result(cli, requests_observed, idle_at_ms)
+}
+
+/// Drain network events from `transport` until idle or timeout.
+///
+/// Returns `(requests_observed, idle_at_ms)`.
+fn drain_idle_events(
+    transport: &mut ff_rdp_core::RdpTransport,
+    idle_ms: u64,
+    timeout_ms: u64,
+    cli_timeout: u64,
+) -> Result<(u64, u64), AppError> {
     let poll_interval = Duration::from_millis(100);
-    ctx.transport_mut()
+    transport
         .set_read_timeout(Some(poll_interval))
         .map_err(AppError::from)?;
 
@@ -97,38 +172,20 @@ pub fn run_reload_wait_idle(cli: &Cli, idle_ms: u64, timeout_ms: u64) -> Result<
     let idle_threshold = Duration::from_millis(idle_ms);
 
     let mut requests_observed: u64 = 0;
-    // `last_event_at` is None until the first network event arrives.
-    //
-    // # Timing fix
-    //
-    // Previously this was initialised to `Instant::now()` (before the reload
-    // fires), which caused the idle check to trigger immediately if no events
-    // arrived within `idle_ms` of the *watch subscription* — well before the
-    // reloaded page had time to generate any requests.  Pages that take longer
-    // than `idle_ms` to produce their first network event would therefore always
-    // report 0 requests.
-    //
-    // The idle threshold should only apply *after the first event is seen*:
-    //   - Before any event: only the total timeout governs termination.
-    //   - After the first event: terminate when no new event arrives for idle_ms.
     let mut last_event_at: Option<Instant> = None;
 
     loop {
-        // Check total timeout first.
         if start.elapsed() >= total_deadline {
             break;
         }
 
-        // Check idle threshold only after at least one network event has been
-        // received.  Before that, the reload may still be in-flight (DNS,
-        // TCP handshake, page teardown) and we must not declare idle too early.
         if let Some(t) = last_event_at
             && t.elapsed() >= idle_threshold
         {
             break;
         }
 
-        match ctx.transport_mut().recv() {
+        match transport.recv() {
             Ok(msg) => {
                 let msg_type = msg
                     .get("type")
@@ -136,44 +193,20 @@ pub fn run_reload_wait_idle(cli: &Cli, idle_ms: u64, timeout_ms: u64) -> Result<
                     .unwrap_or_default();
                 if msg_type == "resources-available-array" || msg_type == "resources-updated-array"
                 {
-                    // Count each individual network resource in the batch.
-                    let count = msg
-                        .get("array")
-                        .and_then(serde_json::Value::as_array)
-                        .map_or(0, |arr| {
-                            arr.iter()
-                                .filter_map(|pair| pair.as_array())
-                                .filter_map(|p| p.get(1))
-                                .filter_map(serde_json::Value::as_array)
-                                .map(Vec::len)
-                                .sum::<usize>()
-                        }) as u64;
-                    requests_observed += count;
-                    // Always arm the idle timer when a watcher batch arrives,
-                    // even if it contains zero resources.  Otherwise fully-
-                    // cached pages (no network traffic) never become "idle"
-                    // and block until the total timeout.
+                    requests_observed += count_network_events(&msg);
                     last_event_at = Some(Instant::now());
                 }
-                // Non-network messages (e.g. the reload ack) are harmlessly ignored.
             }
-            Err(ProtocolError::Timeout) => {
-                // Poll interval expired with no message.
-                // The idle/total checks at the top of the loop will handle termination.
-            }
+            Err(ProtocolError::Timeout) => {}
             Err(ProtocolError::RecvFailed(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof
                     || e.kind() == std::io::ErrorKind::ConnectionReset
                     || e.kind() == std::io::ErrorKind::BrokenPipe =>
             {
-                // Connection closed — treat as idle.
                 break;
             }
             Err(e) => {
-                // Restore timeout before returning the error.
-                let _ = ctx
-                    .transport_mut()
-                    .set_read_timeout(Some(Duration::from_millis(cli.timeout)));
+                let _ = transport.set_read_timeout(Some(Duration::from_millis(cli_timeout)));
                 return Err(AppError::from(e));
             }
         }
@@ -182,14 +215,31 @@ pub fn run_reload_wait_idle(cli: &Cli, idle_ms: u64, timeout_ms: u64) -> Result<
     let idle_at_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     // Restore original connection timeout.
-    let _ = ctx
-        .transport_mut()
-        .set_read_timeout(Some(Duration::from_millis(cli.timeout)));
+    let _ = transport.set_read_timeout(Some(Duration::from_millis(cli_timeout)));
 
-    // Unwatch to clean up server-side state.
-    let _ =
-        WatcherActor::unwatch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"]);
+    Ok((requests_observed, idle_at_ms))
+}
 
+/// Count individual network resources in a watcher batch message.
+fn count_network_events(msg: &serde_json::Value) -> u64 {
+    msg.get("array")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, |arr| {
+            arr.iter()
+                .filter_map(|pair| pair.as_array())
+                .filter_map(|p| p.get(1))
+                .filter_map(serde_json::Value::as_array)
+                .map(Vec::len)
+                .sum::<usize>()
+        }) as u64
+}
+
+/// Count network events across multiple collected frames.
+fn count_network_events_in_frames(frames: &[serde_json::Value]) -> u64 {
+    frames.iter().map(count_network_events).sum()
+}
+
+fn emit_reload_result(cli: &Cli, requests_observed: u64, idle_at_ms: u64) -> Result<(), AppError> {
     let result = json!({
         "reloaded": true,
         "idle_at_ms": idle_at_ms,

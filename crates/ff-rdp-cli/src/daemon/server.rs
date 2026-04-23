@@ -564,7 +564,7 @@ fn handle_client(
     firefox_writer: &Arc<Mutex<TcpStream>>,
 ) -> Result<()> {
     stream
-        .set_read_timeout(Some(Duration::from_millis(30_000)))
+        .set_read_timeout(Some(Duration::from_secs(30)))
         .context("setting client read timeout")?;
     // Best-effort: disable Nagle for lower latency.
     let _ = stream.set_nodelay(true);
