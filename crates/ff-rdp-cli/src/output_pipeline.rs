@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 use crate::error::AppError;
+use crate::hints::{Hint, HintContext, generate_hints};
 use crate::output;
 
 /// Output format selection.
@@ -10,9 +11,19 @@ pub enum OutputFormat {
     Text,
 }
 
+/// Whether contextual hints should be generated and included in output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HintsMode {
+    /// Generate and display hints.
+    On,
+    /// Suppress hints entirely (not generated, not in output).
+    Off,
+}
+
 pub struct OutputPipeline {
     jq_filter: Option<String>,
     format: OutputFormat,
+    hints_mode: HintsMode,
 }
 
 impl OutputPipeline {
@@ -21,6 +32,7 @@ impl OutputPipeline {
         Self {
             jq_filter,
             format: OutputFormat::Json,
+            hints_mode: HintsMode::Off,
         }
     }
 
@@ -44,38 +56,80 @@ impl OutputPipeline {
                 "--format text and --jq are mutually exclusive".to_string(),
             ));
         }
+
+        // Hints default: on for text, off for json.
+        // --jq always suppresses hints (pipeline needs clean data).
+        // Explicit --hints / --no-hints override the default.
+        let hints_mode = if cli.no_hints || cli.jq.is_some() {
+            HintsMode::Off
+        } else if cli.hints {
+            HintsMode::On
+        } else {
+            // Default based on format
+            match format {
+                OutputFormat::Text => HintsMode::On,
+                OutputFormat::Json => HintsMode::Off,
+            }
+        };
+
         Ok(Self {
             jq_filter: cli.jq.clone(),
             format,
+            hints_mode,
         })
     }
 
     /// Apply the pipeline to a JSON envelope and print to stdout.
     ///
-    /// If a jq filter is set, apply it to the full `{results, total, meta}`
-    /// envelope so that users can access any envelope field (`.results`,
-    /// `.total`, `.meta`, `.truncated`).  Use `.results[].url` to drill
-    /// into array results or `.results.lcp_ms` for object results.
+    /// If a `HintContext` is provided and hints are enabled, generates
+    /// contextual hints and injects them into the envelope.
+    ///
+    /// If a jq filter is set, apply it to the full envelope so that users
+    /// can access any field (`.results`, `.total`, `.meta`).
     /// Otherwise pretty-print the envelope as-is (JSON) or render a
     /// human-readable table (text).
-    pub fn finalize(&self, envelope: &Value) -> anyhow::Result<()> {
+    pub fn finalize_with_hints(
+        &self,
+        envelope: &Value,
+        hint_ctx: Option<&HintContext>,
+    ) -> anyhow::Result<()> {
+        let mut envelope = envelope.clone();
+
+        // Generate and inject hints only when enabled.
+        let hints = if self.hints_mode == HintsMode::On {
+            let h = hint_ctx.map(generate_hints).unwrap_or_default();
+            output::inject_hints(&mut envelope, &h)?;
+            h
+        } else {
+            vec![]
+        };
+
         match &self.jq_filter {
             Some(filter) => {
-                let output = output::apply_jq_filter(envelope, filter)?;
+                let output = output::apply_jq_filter(&envelope, filter)?;
                 for value in output {
                     println!("{}", serde_json::to_string(&value)?);
                 }
             }
             None => match self.format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(envelope)?);
+                    println!("{}", serde_json::to_string_pretty(&envelope)?);
                 }
                 OutputFormat::Text => {
-                    render_text(envelope);
+                    render_text(&envelope);
+                    render_hints(&hints);
                 }
             },
         }
         Ok(())
+    }
+
+    /// Apply the pipeline to a JSON envelope and print to stdout.
+    ///
+    /// Convenience wrapper that calls [`finalize_with_hints`](Self::finalize_with_hints)
+    /// without a hint context. Hints will be an empty array.
+    pub fn finalize(&self, envelope: &Value) -> anyhow::Result<()> {
+        self.finalize_with_hints(envelope, None::<&HintContext>)
     }
 }
 
@@ -117,6 +171,17 @@ fn render_text(envelope: &Value) {
             println!();
             println!("Showing {shown} of {total} results");
         }
+    }
+}
+
+/// Render contextual hints as `-> cmd  # description` lines.
+fn render_hints(hints: &[Hint]) {
+    if hints.is_empty() {
+        return;
+    }
+    println!();
+    for hint in hints {
+        println!("  -> {}  # {}", hint.cmd, hint.description);
     }
 }
 
@@ -215,6 +280,7 @@ mod tests {
         let pipeline = OutputPipeline {
             jq_filter: None,
             format: OutputFormat::Text,
+            hints_mode: HintsMode::Off,
         };
         // Should not panic; spot-check via render_table directly.
         let rows = vec![
@@ -244,6 +310,7 @@ mod tests {
         let pipeline = OutputPipeline {
             jq_filter: None,
             format: OutputFormat::Text,
+            hints_mode: HintsMode::Off,
         };
         let envelope = json!({
             "results": {"ttfb_ms": 42.5, "fcp_ms": 150.0, "lcp_ms": 300.0},
@@ -262,6 +329,7 @@ mod tests {
         let pipeline = OutputPipeline {
             jq_filter: None,
             format: OutputFormat::Text,
+            hints_mode: HintsMode::Off,
         };
         let envelope = json!({
             "results": [{"url": "https://a.com"}],

@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
+use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
@@ -103,8 +104,9 @@ pub fn run(cli: &Cli, selector: &str, properties: Option<&[String]>) -> Result<(
 
     let envelope = output::envelope_with_truncation(&results, shown, total, truncated, &meta);
 
+    let hint_ctx = HintContext::new(HintSource::Styles).with_selector(selector);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 
@@ -146,8 +148,9 @@ pub fn run_applied(cli: &Cli, selector: &str) -> Result<(), AppError> {
 
     let envelope = output::envelope_with_truncation(&results, shown, total, truncated, &meta);
 
+    let hint_ctx = HintContext::new(HintSource::Styles).with_selector(selector);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 
@@ -168,8 +171,9 @@ pub fn run_layout(cli: &Cli, selector: &str) -> Result<(), AppError> {
 
     let envelope = output::envelope(&results, 1, &meta);
 
+    let hint_ctx = HintContext::new(HintSource::Styles).with_selector(selector);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 

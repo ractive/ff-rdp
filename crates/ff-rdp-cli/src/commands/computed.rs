@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
+use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
@@ -179,8 +180,9 @@ pub fn run(
     });
     let envelope = output::envelope(&results, total, &meta);
 
+    let hint_ctx = HintContext::new(HintSource::Computed).with_selector(selector);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 

@@ -68,6 +68,7 @@ AI AGENT TIPS:
   - Use a11y summary for a flat list instead of the full tree (can be 400+ lines)
   - Use snapshot --depth 3 for a quick page overview
   - Use dom \"sel\" --text-attrs to get both text content and attributes together
+  - Follow the contextual hints (-> lines) for suggested next commands
 
 COOKBOOK:
   # Launch Firefox (safe alongside your normal browser)
@@ -136,6 +137,9 @@ OUTPUT FORMAT:
   Use --jq to filter the envelope: --jq '.results[0]', --jq '.total'
   Use --format text for human-readable tables (mutually exclusive with --jq)
   Use --detail for per-entry output on list commands (default is summary view)
+  Contextual hints suggest follow-up commands: \"hints\": [...] in JSON, -> lines in text
+  Hints default: on for --format text, off for JSON. Override: --hints / --no-hints
+  --jq always suppresses hints (pipeline needs clean data)
 
 TROUBLESHOOTING:
   Zero results:
@@ -233,6 +237,14 @@ pub struct Cli {
     /// Output format: "json" (default) or "text" for human-readable tables
     #[arg(long, default_value = "json", global = true)]
     pub format: String,
+
+    /// Show contextual hints suggesting follow-up commands (default: on for text, off for json)
+    #[arg(long, global = true, conflicts_with = "no_hints")]
+    pub hints: bool,
+
+    /// Suppress contextual hints
+    #[arg(long, global = true, conflicts_with = "hints")]
+    pub no_hints: bool,
 
     #[command(subcommand)]
     pub command: Command,

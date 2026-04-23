@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
+use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
@@ -41,8 +42,9 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> 
         let limited = controls.apply_fields(limited);
         let envelope =
             output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
+        let hint_ctx = HintContext::new(HintSource::Dom).with_selector(selector);
         return OutputPipeline::from_cli(cli)?
-            .finalize(&envelope)
+            .finalize_with_hints(&envelope, Some(&hint_ctx))
             .map_err(AppError::from);
     }
 
@@ -53,8 +55,9 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> 
 
     let envelope = output::envelope(&results, total, &meta);
 
+    let hint_ctx = HintContext::new(HintSource::Dom).with_selector(selector);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 
@@ -76,8 +79,9 @@ pub fn run_count(cli: &Cli, selector: &str) -> Result<(), AppError> {
     let meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
     let envelope = output::envelope(&results, usize::try_from(count).unwrap_or(0), &meta);
 
+    let hint_ctx = HintContext::new(HintSource::Dom).with_selector(selector);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 
@@ -215,8 +219,9 @@ pub fn run_stats(cli: &Cli) -> Result<(), AppError> {
     let meta = json!({"host": cli.host, "port": cli.port});
     let envelope = output::envelope(&stats, 1, &meta);
 
+    let hint_ctx = HintContext::new(HintSource::DomStats);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 

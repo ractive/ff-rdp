@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
+use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
@@ -122,6 +123,9 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     let mut envelope =
         output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
 
+    // Capture error count before consuming by_level.
+    let error_count = by_level.get("error").copied().unwrap_or(0);
+
     // Insert summary: pre-filter total, post-filter matched, shown after --limit,
     // and per-level counts over the filtered (but not truncated) set.
     if let Some(obj) = envelope.as_object_mut() {
@@ -150,8 +154,9 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
         );
     }
 
+    let hint_ctx = HintContext::new(HintSource::Console).with_has_errors(error_count > 0);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 

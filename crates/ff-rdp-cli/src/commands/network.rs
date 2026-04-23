@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
+use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
@@ -167,8 +168,9 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
         {
             obj.insert("hint".to_string(), hint);
         }
+        let hint_ctx = HintContext::new(HintSource::Network).with_detail(cli.detail);
         return OutputPipeline::from_cli(cli)?
-            .finalize(&envelope)
+            .finalize_with_hints(&envelope, Some(&hint_ctx))
             .map_err(AppError::from);
     }
 
@@ -188,8 +190,9 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
     {
         obj.insert("hint".to_string(), hint);
     }
+    let hint_ctx = HintContext::new(HintSource::Network).with_detail(cli.detail);
     OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }
 
