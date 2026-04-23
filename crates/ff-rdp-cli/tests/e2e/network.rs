@@ -552,9 +552,7 @@ fn network_follow_streams_request_and_response_events() {
 
     // There should also be "response" events in the output.
     let has_response = lines.iter().any(|line| {
-        serde_json::from_str::<serde_json::Value>(line)
-            .map(|v| v["event"] == "response")
-            .unwrap_or(false)
+        serde_json::from_str::<serde_json::Value>(line).is_ok_and(|v| v["event"] == "response")
     });
     assert!(has_response, "expected at least one response event");
 }

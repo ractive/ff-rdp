@@ -225,8 +225,7 @@ pub(crate) fn build_command(
     } else if temp_profile {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_micros())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_micros());
         let tmp =
             std::env::temp_dir().join(format!("ff-rdp-profile-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&tmp).map_err(|e| {
@@ -250,8 +249,7 @@ pub(crate) fn build_command(
         // because devtools.debugger.remote-enabled defaults to false.
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_micros())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_micros());
         let tmp =
             std::env::temp_dir().join(format!("ff-rdp-profile-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&tmp).map_err(|e| {
