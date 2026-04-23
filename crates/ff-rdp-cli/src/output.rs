@@ -1,3 +1,4 @@
+use anyhow::Context as _;
 use jaq_core::load::{Arena, File, Loader};
 use jaq_core::{Compiler, Ctx, Native, Vars, data};
 use jaq_json::Val;
@@ -44,16 +45,17 @@ pub fn envelope_with_truncation(
 
 /// Inject contextual hints into a pre-built envelope.
 ///
-/// Adds `"hints": [...]` as a top-level key. The array is always present
-/// (empty when no hints are provided).
-pub fn inject_hints(envelope: &mut Value, hints: &[Hint]) {
+/// Adds `"hints": [...]` as a top-level key. Returns an error if any hint
+/// fails to serialize.
+pub fn inject_hints(envelope: &mut Value, hints: &[Hint]) -> anyhow::Result<()> {
     if let Some(obj) = envelope.as_object_mut() {
         let hints_json: Vec<Value> = hints
             .iter()
-            .map(|h| serde_json::to_value(h).unwrap_or(Value::Null))
-            .collect();
+            .map(|h| serde_json::to_value(h).context("failed to serialize hint"))
+            .collect::<anyhow::Result<_>>()?;
         obj.insert("hints".to_string(), Value::Array(hints_json));
     }
+    Ok(())
 }
 
 /// Compile and execute a jq filter on a JSON value.

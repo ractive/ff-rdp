@@ -85,7 +85,7 @@ impl OutputPipeline {
     /// contextual hints and injects them into the envelope.
     ///
     /// If a jq filter is set, apply it to the full envelope so that users
-    /// can access any field (`.results`, `.total`, `.meta`, `.hints`).
+    /// can access any field (`.results`, `.total`, `.meta`).
     /// Otherwise pretty-print the envelope as-is (JSON) or render a
     /// human-readable table (text).
     pub fn finalize_with_hints(
@@ -95,13 +95,14 @@ impl OutputPipeline {
     ) -> anyhow::Result<()> {
         let mut envelope = envelope.clone();
 
-        // Generate and inject hints when enabled.
+        // Generate and inject hints only when enabled.
         let hints = if self.hints_mode == HintsMode::On {
-            hint_ctx.map(generate_hints).unwrap_or_default()
+            let h = hint_ctx.map(generate_hints).unwrap_or_default();
+            output::inject_hints(&mut envelope, &h)?;
+            h
         } else {
             vec![]
         };
-        output::inject_hints(&mut envelope, &hints);
 
         match &self.jq_filter {
             Some(filter) => {

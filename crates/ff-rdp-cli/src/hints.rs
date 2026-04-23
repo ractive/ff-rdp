@@ -13,9 +13,9 @@ pub const MAX_HINTS: usize = 5;
 #[derive(Debug, Clone, Serialize)]
 pub struct Hint {
     /// Human-readable description of what the command does.
-    pub description: String,
+    pub(crate) description: String,
     /// The full ff-rdp command to run (copy-pasteable).
-    pub cmd: String,
+    pub(crate) cmd: String,
 }
 
 impl Hint {
@@ -70,20 +70,17 @@ pub enum HintSource {
 /// Commands populate the relevant fields; [`generate_hints`] uses them to
 /// build contextual suggestions.
 pub struct HintContext {
-    pub source: HintSource,
+    pub(crate) source: HintSource,
     /// CSS selector used by the command (`dom`, `click`, `styles`, etc.).
-    pub selector: Option<String>,
-    /// URL that was navigated to or is relevant.
-    #[allow(dead_code)]
-    pub url: Option<String>,
+    pub(crate) selector: Option<String>,
     /// Whether the command output contained errors (e.g., console errors).
-    pub has_errors: bool,
+    pub(crate) has_errors: bool,
     /// Whether `--detail` mode was used.
-    pub detail: bool,
+    pub(crate) detail: bool,
     /// Whether `--fail-only` was used (a11y contrast).
-    pub fail_only: bool,
+    pub(crate) fail_only: bool,
     /// Specific storage type used (e.g., `"local"`, `"session"`).
-    pub storage_type: Option<String>,
+    pub(crate) storage_type: Option<String>,
 }
 
 impl HintContext {
@@ -91,7 +88,6 @@ impl HintContext {
         Self {
             source,
             selector: None,
-            url: None,
             has_errors: false,
             detail: false,
             fail_only: false,
@@ -101,12 +97,6 @@ impl HintContext {
 
     pub fn with_selector(mut self, sel: impl Into<String>) -> Self {
         self.selector = Some(sel.into());
-        self
-    }
-
-    #[allow(dead_code)]
-    pub fn with_url(mut self, url: impl Into<String>) -> Self {
-        self.url = Some(url.into());
         self
     }
 
@@ -175,6 +165,11 @@ pub fn generate_hints(ctx: &HintContext) -> Vec<Hint> {
 // Private hint generators — one per command
 // ---------------------------------------------------------------------------
 
+/// Escape a CSS selector for use in double-quoted shell arguments.
+fn shell_escape_selector(sel: &str) -> String {
+    sel.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn hints_launch(_ctx: &HintContext) -> Vec<Hint> {
     vec![
         Hint::new("List open tabs", "ff-rdp tabs"),
@@ -230,15 +225,21 @@ fn hints_dom(ctx: &HintContext) -> Vec<Hint> {
     vec![
         Hint::new(
             format!("Click on \"{sel}\""),
-            format!(r#"ff-rdp click "{sel}""#),
+            format!(r#"ff-rdp click "{}""#, shell_escape_selector(sel)),
         ),
         Hint::new(
             format!("Inspect styles of \"{sel}\""),
-            format!(r#"ff-rdp styles "{sel}" --properties color,display"#),
+            format!(
+                r#"ff-rdp styles "{}" --properties color,display"#,
+                shell_escape_selector(sel)
+            ),
         ),
         Hint::new(
             format!("Get computed color for \"{sel}\""),
-            format!(r#"ff-rdp computed "{sel}" --prop color"#),
+            format!(
+                r#"ff-rdp computed "{}" --prop color"#,
+                shell_escape_selector(sel)
+            ),
         ),
     ]
 }
@@ -262,7 +263,7 @@ fn hints_click(ctx: &HintContext) -> Vec<Hint> {
     vec![
         Hint::new(
             format!("Wait for \"{sel}\" to appear"),
-            format!(r#"ff-rdp wait --selector "{sel}""#),
+            format!(r#"ff-rdp wait --selector "{}""#, shell_escape_selector(sel)),
         ),
         Hint::new(
             "Take a screenshot after clicking",
@@ -271,11 +272,10 @@ fn hints_click(ctx: &HintContext) -> Vec<Hint> {
     ]
 }
 
-fn hints_type_text(ctx: &HintContext) -> Vec<Hint> {
-    let sel = ctx.selector.as_deref().unwrap_or("selector");
+fn hints_type_text(_ctx: &HintContext) -> Vec<Hint> {
     vec![
         Hint::new(
-            format!("Submit form from \"{sel}\""),
+            "Submit form after typing",
             r#"ff-rdp click "button[type=submit]""#,
         ),
         Hint::new("Wait for confirmation text", r#"ff-rdp wait --text "...""#),
@@ -402,7 +402,7 @@ fn hints_a11y_summary(_ctx: &HintContext) -> Vec<Hint> {
             "Run interactive accessibility check",
             "ff-rdp a11y --interactive",
         ),
-        Hint::new("Check colour contrast", "ff-rdp a11y contrast"),
+        Hint::new("Check color contrast", "ff-rdp a11y contrast"),
     ]
 }
 
@@ -411,15 +411,21 @@ fn hints_styles(ctx: &HintContext) -> Vec<Hint> {
     vec![
         Hint::new(
             format!("Get computed color for \"{sel}\""),
-            format!(r#"ff-rdp computed "{sel}" --prop color"#),
+            format!(
+                r#"ff-rdp computed "{}" --prop color"#,
+                shell_escape_selector(sel)
+            ),
         ),
         Hint::new(
             format!("Show applied styles for \"{sel}\""),
-            format!(r#"ff-rdp styles "{sel}" --applied"#),
+            format!(
+                r#"ff-rdp styles "{}" --applied"#,
+                shell_escape_selector(sel)
+            ),
         ),
         Hint::new(
             format!("Show layout styles for \"{sel}\""),
-            format!(r#"ff-rdp styles "{sel}" --layout"#),
+            format!(r#"ff-rdp styles "{}" --layout"#, shell_escape_selector(sel)),
         ),
     ]
 }
@@ -429,11 +435,14 @@ fn hints_computed(ctx: &HintContext) -> Vec<Hint> {
     vec![
         Hint::new(
             format!("Show applied styles for \"{sel}\""),
-            format!(r#"ff-rdp styles "{sel}" --applied"#),
+            format!(
+                r#"ff-rdp styles "{}" --applied"#,
+                shell_escape_selector(sel)
+            ),
         ),
         Hint::new(
             format!("Get box geometry for \"{sel}\""),
-            format!(r#"ff-rdp geometry "{sel}""#),
+            format!(r#"ff-rdp geometry "{}""#, shell_escape_selector(sel)),
         ),
     ]
 }
@@ -442,7 +451,7 @@ fn hints_geometry(ctx: &HintContext) -> Vec<Hint> {
     let sel = ctx.selector.as_deref().unwrap_or("selector");
     vec![Hint::new(
         format!("Test responsive layout for \"{sel}\""),
-        format!(r#"ff-rdp responsive "{sel}""#),
+        format!(r#"ff-rdp responsive "{}""#, shell_escape_selector(sel)),
     )]
 }
 

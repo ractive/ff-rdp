@@ -22,8 +22,8 @@ fn base_args(port: u16) -> Vec<String> {
 // JSON mode hint tests
 // ---------------------------------------------------------------------------
 
-/// In default JSON mode, the envelope must include a `"hints"` key containing
-/// an empty array — hints are off by default for JSON output.
+/// In default JSON mode, the envelope must NOT include a `"hints"` key —
+/// hints are off by default for JSON output.
 #[test]
 fn json_output_has_hints_key() {
     let fixture = load_fixture("list_tabs_response.json");
@@ -52,14 +52,8 @@ fn json_output_has_hints_key() {
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
     assert!(
-        json.get("hints").is_some(),
-        "envelope must contain a 'hints' key; got: {json}"
-    );
-
-    let hints = json["hints"].as_array().expect("'hints' must be an array");
-    assert!(
-        hints.is_empty(),
-        "hints must be empty by default in JSON mode; got: {hints:?}"
+        json.get("hints").is_none(),
+        "envelope must not contain 'hints' key when hints are off; got: {json}"
     );
 }
 
