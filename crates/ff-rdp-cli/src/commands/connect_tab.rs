@@ -57,7 +57,8 @@ fn connect_to_firefox(
     RdpConnection::connect(host, port, Duration::from_millis(cli.timeout)).map_err(|e| match e {
         ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout if !via_daemon => {
             AppError::User(format!(
-                "could not connect to Firefox at {}:{} — is Firefox running with --start-debugger-server {}?",
+                "could not connect to Firefox at {}:{} — is Firefox running with --start-debugger-server {}?\n\
+                 Hint: run 'ff-rdp launch' to start Firefox with debugging enabled (safe alongside your normal browser)",
                 cli.host, cli.port, cli.port
             ))
         }

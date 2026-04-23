@@ -1,9 +1,168 @@
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 
+const AFTER_LONG_HELP: &str = "\
+COMMAND REFERENCE:
+  Launch & connect:
+    ff-rdp launch [--headless] [--profile PATH | --temp-profile] [--auto-consent] [--port PORT]
+    ff-rdp tabs
+
+  Navigate & wait:
+    ff-rdp navigate <URL> [--with-network] [--wait-text T | --wait-selector S] [--wait-timeout MS]
+    ff-rdp reload [--wait-idle [--idle-ms MS] [--reload-timeout MS]]
+    ff-rdp back | forward
+    ff-rdp wait --selector S | --text T | --eval JS [--wait-timeout MS]
+
+  Page content:
+    ff-rdp eval <SCRIPT> | --file PATH | --stdin [--stringify]
+    ff-rdp page-text
+    ff-rdp dom <SEL> [--text | --attrs | --text-attrs | --inner-html | --count]
+    ff-rdp dom stats
+    ff-rdp dom tree [SEL] [--depth N] [--max-chars N]
+    ff-rdp snapshot [--depth N] [--max-chars N]
+
+  Interaction:
+    ff-rdp click <SEL>
+    ff-rdp type <SEL> <TEXT> [--clear]
+
+  Scrolling:
+    ff-rdp scroll to <SEL> [--block top|center|bottom] [--smooth]
+    ff-rdp scroll by [--dy PX | --page-down | --page-up] [--dx PX] [--smooth]
+    ff-rdp scroll top | bottom
+    ff-rdp scroll container <SEL> [--dy PX] [--to-end | --to-start]
+    ff-rdp scroll until <SEL> [--direction up|down] [--timeout MS]
+    ff-rdp scroll text <TEXT>
+
+  CSS & styles:
+    ff-rdp computed <SEL> [--prop NAME | --all]
+    ff-rdp styles <SEL> [--properties P1,P2 | --applied | --layout]
+    ff-rdp geometry <SEL>... [--visible-only]
+    ff-rdp responsive <SEL>... [--widths W1,W2,...]
+
+  Accessibility:
+    ff-rdp a11y [--depth N] [--selector SEL] [--interactive]
+    ff-rdp a11y contrast [--selector SEL] [--fail-only]
+    ff-rdp a11y summary
+
+  Performance:
+    ff-rdp perf [--type TYPE] [--filter URL] [--group-by domain]
+    ff-rdp perf vitals | summary | audit
+    ff-rdp perf compare <URL>... [--label L1,L2,...]
+
+  Monitoring:
+    ff-rdp console [--level LEVEL] [--pattern REGEX] [--follow]
+    ff-rdp network [--filter URL] [--method M] [--follow]
+
+  Storage:
+    ff-rdp cookies [--name NAME]
+    ff-rdp storage local|session [--key KEY]
+
+  Screenshot & debug:
+    ff-rdp screenshot [-o PATH | --base64] [--full-page | --viewport-height PX]
+    ff-rdp inspect <ACTOR_ID> [--depth N]
+    ff-rdp sources [--filter URL | --pattern REGEX]
+
+AI AGENT TIPS:
+  - Use --format text instead of JSON for 3-10x fewer tokens
+  - Use eval --stringify '<expr>' to get actual values instead of actor grip metadata
+  - Use styles --properties color,display,font-size (bare styles dumps ~500 properties)
+  - Use a11y summary for a flat list instead of the full tree (can be 400+ lines)
+  - Use snapshot --depth 3 for a quick page overview
+  - Use dom \"sel\" --text-attrs to get both text content and attributes together
+
+COOKBOOK:
+  # Launch Firefox (safe alongside your normal browser)
+  ff-rdp launch
+  ff-rdp launch --headless
+  ff-rdp launch --headless --auto-consent
+
+  # Navigate and verify
+  ff-rdp navigate https://example.com --wait-text \"Welcome\"
+  ff-rdp eval \"document.title\"
+  ff-rdp dom \"h1\" --text
+
+  # Fill and submit a form
+  ff-rdp type \"input[name=email]\" \"user@example.com\" --clear
+  ff-rdp type \"input[name=password]\" \"secret\" --clear
+  ff-rdp click \"button[type=submit]\"
+  ff-rdp wait --text \"Dashboard\" --wait-timeout 10000
+
+  # Full page audit
+  ff-rdp navigate https://example.com --with-network
+  ff-rdp perf audit
+  ff-rdp a11y contrast --fail-only
+  ff-rdp network --detail --limit 10
+  ff-rdp screenshot -o audit.png
+
+  # Performance
+  ff-rdp perf vitals --jq '.results.lcp_ms'
+  ff-rdp perf --all --jq '[.results | sort_by(-.duration_ms) | limit(5;.) | {url,duration_ms}]'
+  ff-rdp perf compare https://a.example https://b.example --label \"Before,After\"
+
+  # Network debugging
+  ff-rdp network --detail --jq '[.results[] | select(.status >= 400) | {url,status}]'
+  ff-rdp network --follow --filter \".js\"
+
+  # Console monitoring
+  ff-rdp console --level error --jq '.results[].message'
+  ff-rdp console --follow --level error
+
+  # Scrolling (overflow containers, lazy-loaded content)
+  ff-rdp scroll by --page-down
+  ff-rdp scroll container \".sidebar\" --to-end
+  ff-rdp scroll until \".load-more-sentinel\" --timeout 10000
+  ff-rdp scroll text \"Contact Us\"
+
+  # Accessibility
+  ff-rdp a11y summary --format text
+  ff-rdp a11y contrast --fail-only
+  ff-rdp a11y --interactive --jq '[.. | select(.role? == \"link\") | .name]'
+
+  # DOM and CSS inspection
+  ff-rdp dom \"a[href]\" --text-attrs
+  ff-rdp dom stats --jq '.results.node_count'
+  ff-rdp computed h1 --prop color
+  ff-rdp styles \"h1\" --properties color,display,font-size
+  ff-rdp geometry \".modal\" \".overlay\" --jq '.results.overlaps'
+
+  # Responsive testing
+  ff-rdp responsive \"h1\" \"nav\" \".sidebar\" --widths 320,768,1440
+
+  # Screenshot for AI vision
+  ff-rdp screenshot --base64
+
+OUTPUT FORMAT:
+  All commands return JSON: {\"results\": ..., \"total\": N, \"meta\": {...}}
+  Truncated output adds: {\"truncated\": true, \"hint\": \"showing 20 of 84, use --all\"}
+  Use --jq to filter the envelope: --jq '.results[0]', --jq '.total'
+  Use --format text for human-readable tables (mutually exclusive with --jq)
+  Use --detail for per-entry output on list commands (default is summary view)
+
+TROUBLESHOOTING:
+  Zero results:
+    network returns 0 -> page loaded before connection; use navigate --with-network
+    console returns 0 -> use --follow to stream, or eval 'console.log(\"test\")'
+    cookies returns 0 -> consent banner may be blocking; use launch --auto-consent
+
+  Connection errors:
+    \"could not connect\" -> run ff-rdp launch first (safe alongside normal browser)
+    Timeout -> increase --timeout or check --port matches the launched instance";
+
 #[derive(Parser)]
 #[command(
     name = "ff-rdp",
-    about = "Firefox Remote Debugging Protocol CLI",
+    about = "Firefox Remote Debugging Protocol CLI\n\nQuick start:  ff-rdp launch          # start Firefox with debugging enabled\n              ff-rdp navigate <URL>   # open a page",
+    long_about = "Firefox Remote Debugging Protocol CLI
+
+Quick start:
+  ff-rdp launch                   Launch a new Firefox instance with remote debugging
+  ff-rdp launch --headless        Launch headless (no visible window)
+  ff-rdp navigate https://example.com
+
+'ff-rdp launch' starts a separate Firefox process that won't interfere with
+any already-running Firefox windows — it uses a temporary profile and
+the -no-remote flag automatically.",
+    after_help = "Tip: Run 'ff-rdp launch' first to start Firefox with remote debugging.\n     It won't affect any existing Firefox windows — safe to run alongside\n     your normal browser.",
+    after_long_help = AFTER_LONG_HELP,
     version
 )]
 pub struct Cli {
@@ -422,12 +581,6 @@ Output: {\"results\": {\"tag\": \"HTML\", \"children\": [...], ...}, \"total\": 
     /// Internal: run as background daemon (not for direct use)
     #[command(name = "_daemon", hide = true)]
     Daemon,
-    /// Show curated jq one-liners and recipes for common tasks
-    #[command(help_template = "{about-with-newline}\n{usage-heading} {usage}\n")]
-    Recipes,
-    /// Dump complete CLI reference in compact LLM-friendly format (all commands, flags, examples)
-    #[command(help_template = "{about-with-newline}\n{usage-heading} {usage}\n")]
-    LlmHelp,
     /// Get element geometry: bounding rects, position, z-index, visibility, overflow,
     /// with automatic overlap detection between elements
     Geometry {
@@ -505,6 +658,26 @@ Subcommands:
         scroll_command: ScrollCommand,
     },
     /// Launch Firefox with remote debugging enabled
+    #[command(
+        long_about = "Launch a new Firefox instance with remote debugging enabled.
+
+This is safe to run while your normal Firefox browser is open — it always
+uses the -no-remote flag and a separate profile, so the new instance is
+fully independent and won't interfere with existing windows.
+
+By default a temporary profile is created with the necessary devtools prefs
+enabled. Use --profile to reuse an existing profile, or --temp-profile to
+make the temporary profile explicit.
+
+Examples:
+  ff-rdp launch                      # launch with temp profile on port 6000
+  ff-rdp launch --headless           # headless mode (no visible window)
+  ff-rdp launch --port 9222          # use a different debug port
+  ff-rdp launch --auto-consent       # auto-dismiss cookie banners
+  ff-rdp launch --profile ~/my-prof  # reuse an existing profile
+
+Output: {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\"}"
+    )]
     Launch {
         /// Run Firefox in headless mode
         #[arg(long)]

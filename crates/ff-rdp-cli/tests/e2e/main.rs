@@ -24,7 +24,6 @@ mod screenshot;
 mod scroll;
 mod snapshot;
 mod sources;
-mod static_commands;
 mod storage;
 mod styles;
 mod tabs;

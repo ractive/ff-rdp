@@ -261,11 +261,6 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             commands::responsive::run(cli, selectors, widths)
         }
         Command::Snapshot { depth, max_chars } => commands::snapshot::run(cli, *depth, *max_chars),
-        Command::Recipes => {
-            commands::recipes::run();
-            Ok(())
-        }
-        Command::LlmHelp => commands::llm_help::run(cli),
         Command::Scroll { scroll_command } => match scroll_command {
             ScrollCommand::To {
                 selector,
