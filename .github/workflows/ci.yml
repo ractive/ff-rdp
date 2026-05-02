@@ -38,6 +38,14 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo test --workspace
+      - name: Allow test binary through Windows Firewall
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-NetFirewallRule -DisplayName "ff-rdp-e2e" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 1024-65535 -ErrorAction SilentlyContinue
+
+      - name: Run tests
+        timeout-minutes: 10
+        run: cargo test --workspace
       - name: Verify CLI runs
         run: cargo run -p ff-rdp-cli -- --help
