@@ -411,6 +411,10 @@ jobs:
   winget:
     needs: release
     runs-on: ubuntu-latest
+    # winget-releaser can only update existing packages — the first version
+    # must be submitted manually via PR to microsoft/winget-pkgs.
+    # This job is non-blocking so it doesn't fail the release.
+    continue-on-error: true
     steps:
       - name: Verify WINGET_TOKEN is set
         env:
