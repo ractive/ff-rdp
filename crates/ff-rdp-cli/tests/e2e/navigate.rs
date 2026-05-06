@@ -255,3 +255,72 @@ fn navigate_with_network_empty_when_no_events() {
 
     assert_eq!(json["total"], 1);
 }
+
+// ---------------------------------------------------------------------------
+// --wait-text tests (regression: re-resolve console actor after navigation)
+// ---------------------------------------------------------------------------
+
+/// Regression test for iter-53 task 1.
+///
+/// On the very first `navigate --wait-text` after a fresh launch the previous
+/// implementation reused the console actor from the pre-navigate `getTarget`,
+/// which Firefox invalidates when navigation tears down the docshell.  The
+/// fix re-resolves the target after navigation so wait-text uses a fresh
+/// console actor.  The mock here records every `getTarget` call and asserts
+/// the second one (post-navigate) is observed.
+#[test]
+fn navigate_wait_text_reresolves_console_actor_after_navigate() {
+    use std::sync::atomic::Ordering;
+
+    let mut server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("navigateTo", load_fixture("navigate_response.json"))
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_wait_true.json"),
+        );
+    let get_target_calls = server.call_counter("getTarget");
+
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "navigate".to_owned(),
+        "https://example.com".to_owned(),
+        "--wait-text".to_owned(),
+        "Success".to_owned(),
+        "--wait-timeout".to_owned(),
+        "5000".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    assert_eq!(json["results"]["navigated"], "https://example.com");
+    assert_eq!(json["results"]["wait"]["waited"], true);
+
+    // The crucial assertion: getTarget must be called at least twice — once
+    // before navigation (in connect_and_get_target) and once after (in
+    // wait_after_navigate). If the fix regresses to caching the pre-navigate
+    // console actor, this counter stays at 1.
+    assert!(
+        get_target_calls.load(Ordering::SeqCst) >= 2,
+        "expected getTarget to be re-resolved after navigation; got {} calls",
+        get_target_calls.load(Ordering::SeqCst)
+    );
+}

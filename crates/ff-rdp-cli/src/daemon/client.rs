@@ -17,7 +17,13 @@ pub(crate) enum ConnectionTarget {
     /// Connect via daemon at this port on localhost.
     Daemon { port: u16 },
     /// Connect directly to Firefox.
-    Direct,
+    ///
+    /// `deferred_warning` carries a daemon-startup diagnostic that should be
+    /// printed *only if* the direct fallback also fails.  When the direct
+    /// connection succeeds the warning is dropped — its message
+    /// (`daemon started but registry not found`, etc.) is benign noise on the
+    /// happy path and pushed users to read `daemon.log` for nothing.
+    Direct { deferred_warning: Option<String> },
 }
 
 /// Find a running daemon whose registry entry matches the given Firefox host/port.
@@ -68,7 +74,9 @@ pub(crate) fn resolve_connection_target(
     no_daemon: bool,
 ) -> ConnectionTarget {
     if no_daemon {
-        return ConnectionTarget::Direct;
+        return ConnectionTarget::Direct {
+            deferred_warning: None,
+        };
     }
 
     // 1. Try to find an already-running daemon.
@@ -80,11 +88,12 @@ pub(crate) fn resolve_connection_target(
         }
         Ok(None) => {} // not running — fall through to spawn
         Err(e) => {
-            eprintln!(
-                "warning: failed to check daemon status: {e:#}{}",
-                log_path_hint()
-            );
-            return ConnectionTarget::Direct;
+            return ConnectionTarget::Direct {
+                deferred_warning: Some(format!(
+                    "warning: failed to check daemon status: {e:#}{}",
+                    log_path_hint()
+                )),
+            };
         }
     }
 
@@ -93,8 +102,11 @@ pub(crate) fn resolve_connection_target(
     let exe_path = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("warning: cannot determine executable path: {e}, connecting directly");
-            return ConnectionTarget::Direct;
+            return ConnectionTarget::Direct {
+                deferred_warning: Some(format!(
+                    "warning: cannot determine executable path: {e}, connecting directly"
+                )),
+            };
         }
     };
 
@@ -102,11 +114,12 @@ pub(crate) fn resolve_connection_target(
     if let Err(e) =
         process::spawn_daemon(&exe_path, firefox_host, firefox_port, daemon_timeout_secs)
     {
-        eprintln!(
-            "warning: failed to start daemon: {e:#}, connecting directly{}",
-            log_path_hint()
-        );
-        return ConnectionTarget::Direct;
+        return ConnectionTarget::Direct {
+            deferred_warning: Some(format!(
+                "warning: failed to start daemon: {e:#}, connecting directly{}",
+                log_path_hint()
+            )),
+        };
     }
 
     // 4. Wait for the daemon to write its registry entry.
@@ -114,13 +127,15 @@ pub(crate) fn resolve_connection_target(
         Ok(info) => ConnectionTarget::Daemon {
             port: info.proxy_port,
         },
-        Err(e) => {
-            eprintln!(
+        Err(e) => ConnectionTarget::Direct {
+            // Deferred so it is silent on the happy path: in the common case
+            // the registry-write race resolves before we'd care, the direct
+            // connection succeeds, and the warning is dropped.
+            deferred_warning: Some(format!(
                 "warning: daemon started but registry not found: {e:#}, connecting directly{}",
                 log_path_hint()
-            );
-            ConnectionTarget::Direct
-        }
+            )),
+        },
     }
 }
 
@@ -273,6 +288,16 @@ mod tests {
     #[test]
     fn no_daemon_flag_always_returns_direct() {
         let target = resolve_connection_target("localhost", 6000, 300, true);
-        assert!(matches!(target, ConnectionTarget::Direct));
+        // --no-daemon should never carry a deferred warning — there is no
+        // daemon-startup attempt to report on.
+        match target {
+            ConnectionTarget::Direct { deferred_warning } => {
+                assert!(
+                    deferred_warning.is_none(),
+                    "no-daemon path should not carry a deferred warning, got: {deferred_warning:?}"
+                );
+            }
+            ConnectionTarget::Daemon { .. } => panic!("--no-daemon must never resolve to Daemon"),
+        }
     }
 }

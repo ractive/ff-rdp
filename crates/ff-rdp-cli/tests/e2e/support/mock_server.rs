@@ -1,6 +1,7 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufReader, Write};
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ff_rdp_core::transport::{encode_frame, recv_from};
@@ -46,6 +47,8 @@ pub struct MockRdpServer {
     /// messages for a handler that has followups.  Used to test streaming
     /// commands that loop until the server closes the connection.
     close_after_followups: bool,
+    /// Per-method invocation counters, exposed via [`MockRdpServer::call_counter`].
+    call_counters: HashMap<String, Arc<AtomicUsize>>,
 }
 
 impl MockRdpServer {
@@ -61,7 +64,23 @@ impl MockRdpServer {
             }),
             handlers: Vec::new(),
             close_after_followups: false,
+            call_counters: HashMap::new(),
         }
+    }
+
+    /// Return (creating if necessary) an `Arc<AtomicUsize>` that the server
+    /// will increment for every request whose `"type"` matches `method`.
+    ///
+    /// This lets a test assert that a particular RDP method was invoked the
+    /// expected number of times — e.g. that `getTarget` is called twice
+    /// during a `navigate --wait-text` flow (once before navigation, once
+    /// after to refresh the console actor).
+    pub fn call_counter(&mut self, method: &str) -> Arc<AtomicUsize> {
+        Arc::clone(
+            self.call_counters
+                .entry(method.to_owned())
+                .or_insert_with(|| Arc::new(AtomicUsize::new(0))),
+        )
     }
 
     /// When set, the server closes the connection immediately after sending all
@@ -178,6 +197,11 @@ impl MockRdpServer {
                 .get("type")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+
+            // Increment any registered call counter for this method.
+            if let Some(counter) = self.call_counters.get(method) {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
 
             let handler = self.handlers.iter().find(|(m, _)| m == method);
 

@@ -560,6 +560,145 @@ fn screenshot_falls_back_to_two_step_protocol_on_firefox_149() {
 }
 
 // ---------------------------------------------------------------------------
+// iter-53: graceful version-mismatch error when the screenshot actor module
+// cannot be loaded (Firefox-internal "Unable to load actor module" failure).
+//
+// Regression: previously the raw Firefox stack trace bubbled out, telling
+// users to "relaunch with --headless" — incorrect for this failure mode.  The
+// fix surfaces a clean one-liner that names `doctor`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn screenshot_module_load_failure_surfaces_clean_version_mismatch_message() {
+    // Firefox's actual error shape for the missing screenshot ESM:
+    //   error="unknownError" message="Error occurred while creating actor' …
+    //   Error: Unable to load actor module 'devtools/server/actors/screenshot' …"
+    let module_load_err = serde_json::json!({
+        "from": "server1.conn0.child2/screenshotContentActor15",
+        "error": "unknownError",
+        "message": "Error occurred while creating actor' server1.conn0.child2/screenshotContentActor15: \
+                    Error: Unable to load actor module 'devtools/server/actors/screenshot' \
+                    ChromeUtils.importESModule: global option is required in DevTools distinct global"
+    });
+
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_screenshot_null.json"),
+        )
+        // Legacy single-step capture fails with the module-load error.
+        .on("captureScreenshot", module_load_err);
+
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.push("screenshot".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit when screenshot actor module fails to load"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("screenshot actor unavailable on Firefox"),
+        "stderr should include the version-mismatch one-liner: {stderr}"
+    );
+    assert!(
+        stderr.contains("ff-rdp doctor"),
+        "stderr should reference `ff-rdp doctor`: {stderr}"
+    );
+    // Importantly: the misleading "headless" hint must NOT be emitted for
+    // this failure mode — that hint is for genuinely-headless capture
+    // failures, not for the missing-actor-module case.
+    assert!(
+        !stderr.contains("headless"),
+        "stderr must not nudge users to --headless on a module-load failure: {stderr}"
+    );
+    // The raw Firefox stack trace must not be echoed — that's exactly the
+    // noise we're filtering out.
+    assert!(
+        !stderr.contains("Unable to load actor module"),
+        "stderr must not echo the raw Firefox stack: {stderr}"
+    );
+}
+
+#[test]
+fn screenshot_module_load_failure_in_two_step_protocol_surfaces_clean_message() {
+    // Same failure, but raised by the Firefox-149+ two-step path's
+    // `prepareCapture` step.  We force the legacy `captureScreenshot` to
+    // return `unrecognizedPacketType` so the CLI advances to the two-step
+    // path, then `prepareCapture` returns the module-load error.
+    let unrecognized_err = serde_json::json!({
+        "from": "server1.conn0.child2/screenshotContentActor15",
+        "error": "unrecognizedPacketType",
+        "message": "Actor does not recognize the packet type 'captureScreenshot'"
+    });
+
+    let module_load_err = serde_json::json!({
+        "from": "server1.conn0.child2/screenshotContentActor15",
+        "error": "unknownError",
+        "message": "Error occurred while creating actor' …: Error: Unable to load actor module 'devtools/server/actors/screenshot'"
+    });
+
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_screenshot_null.json"),
+        )
+        // ScreenshotContentActor::capture tries each name in
+        // CAPTURE_METHODS = [captureScreenshot, screenshot, capture] in turn,
+        // advancing on `unrecognizedPacketType`.  Wire each one to the same
+        // unrecognized error so the CLI falls through to the two-step path.
+        .on("captureScreenshot", unrecognized_err.clone())
+        .on("screenshot", unrecognized_err.clone())
+        .on("capture", unrecognized_err)
+        .on("prepareCapture", module_load_err);
+
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.push("screenshot".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit when prepareCapture fails with module-load error"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("screenshot actor unavailable on Firefox"),
+        "stderr should include the version-mismatch one-liner: {stderr}"
+    );
+    assert!(
+        stderr.contains("ff-rdp doctor"),
+        "stderr should reference `ff-rdp doctor`: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // jq filter on success output
 // ---------------------------------------------------------------------------
 

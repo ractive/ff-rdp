@@ -375,7 +375,17 @@ fn wait_after_navigate(
         return Ok(None);
     };
 
-    let console_actor = ctx.target.console_actor.clone();
+    // Re-resolve the target after navigation. The console actor cached during
+    // the initial `connect_and_get_target` is bound to the docshell that
+    // existed *before* navigation; once navigation tears that docshell down,
+    // any `evaluateJSAsync` against the old console actor fails with
+    // `noSuchActor`. Calling `getTarget` again on the tab descriptor returns a
+    // fresh set of actors bound to the new docshell.
+    let tab_actor = ctx.target_tab_actor().clone();
+    let refreshed =
+        TabActor::get_target(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+    let console_actor = refreshed.console_actor;
+
     let condition = describe_wait_condition(opts);
     let timeout_msg = format!(
         "navigate wait timed out after {}ms — condition not met: {condition}; increase with --wait-timeout",
