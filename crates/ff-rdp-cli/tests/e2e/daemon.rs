@@ -142,6 +142,113 @@ fn daemon_subcommand_is_recognised_and_fails_gracefully_without_firefox() {
 // --help output
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Deferred-warning behaviour (iter-53 task 2)
+//
+// When the daemon path fails (e.g. corrupt registry, daemon spawn failure,
+// timeout waiting for registry) the CLI falls back to a direct connection.
+// The diagnostic message is deferred — printed only if the direct fallback
+// also fails — so the happy path is silent.  Below tests both branches.
+// ---------------------------------------------------------------------------
+
+/// Plant a corrupt `daemon.json` in `<home>/.ff-rdp/` so `find_running_daemon`
+/// returns Err on every invocation, which exercises the deferred-warning
+/// branch in `resolve_connection_target`.
+fn plant_corrupt_registry(home_dir: &std::path::Path) {
+    let dir = home_dir.join(".ff-rdp");
+    std::fs::create_dir_all(&dir).expect("create .ff-rdp");
+    std::fs::write(dir.join("daemon.json"), b"not valid json").expect("write corrupt registry");
+}
+
+#[test]
+fn registry_not_found_warning_silent_when_direct_fallback_succeeds() {
+    let home = tempfile::tempdir().expect("tempdir");
+    plant_corrupt_registry(home.path());
+
+    // Use the `eval` command (rather than `tabs`) because it goes through
+    // `connect_and_get_target`, which is the path that decides whether to
+    // print the deferred warning.  `tabs` connects directly and never sees
+    // the daemon resolver.
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_ready_state_complete.json"),
+        );
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .env("FF_RDP_HOME", home.path())
+        .args([
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "eval",
+            "document.readyState",
+        ])
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().expect("mock server thread panicked");
+
+    assert!(
+        output.status.success(),
+        "expected success when direct fallback works; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("warning:"),
+        "happy path must be silent (no daemon warnings on stderr); got: {stderr}"
+    );
+}
+
+#[test]
+fn registry_not_found_warning_visible_when_direct_fallback_also_fails() {
+    let home = tempfile::tempdir().expect("tempdir");
+    plant_corrupt_registry(home.path());
+
+    // Bind and immediately drop so nothing is listening on this port.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    drop(listener);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .env("FF_RDP_HOME", home.path())
+        .args([
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--timeout",
+            "500",
+            "eval",
+            "1",
+        ])
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    assert!(
+        !output.status.success(),
+        "expected failure when both daemon and direct paths break"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("warning:"),
+        "broken path must surface the deferred daemon warning; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("could not connect to Firefox"),
+        "broken path must also report the direct connection failure; got: {stderr}"
+    );
+}
+
 /// The global help text must advertise both `--no-daemon` and
 /// `--daemon-timeout` so users can discover them without reading the source.
 #[test]

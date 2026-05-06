@@ -34,7 +34,10 @@ pub fn remember_version(version: Option<u32>) {
     *guard = version;
 }
 
-fn remembered_version() -> Option<u32> {
+/// Return the Firefox major version observed at the most recent handshake,
+/// if any.  Used by error-path code that needs to mention the version in a
+/// user-facing message (e.g. screenshot version-mismatch hint).
+pub fn remembered_version() -> Option<u32> {
     let lock = REMEMBERED_VERSION.get_or_init(|| std::sync::Mutex::new(None));
     let guard = lock
         .lock()

@@ -2,7 +2,10 @@ use std::path::PathBuf;
 
 use anyhow::Context as _;
 use base64::Engine as _;
-use ff_rdp_core::{Grip, LongStringActor, ScreenshotActor, ScreenshotContentActor};
+use ff_rdp_core::{
+    COMPATIBLE_FIREFOX_MIN, Grip, LongStringActor, ProtocolError, ScreenshotActor,
+    ScreenshotContentActor,
+};
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -64,6 +67,39 @@ pub(crate) struct ScreenshotOpts<'a> {
 /// Data URL prefix returned by `canvas.toDataURL('image/png')`.
 const PNG_DATA_URL_PREFIX: &str = "data:image/png;base64,";
 
+/// Detect the Firefox-internal "Unable to load actor module" failure that
+/// indicates a screenshot actor cannot be instantiated on this build.
+///
+/// Firefox surfaces this as an `unknownError` with a message similar to:
+/// `Error occurred while creating actor' .../screenshotActor: Error: Unable
+/// to load actor module 'devtools/server/actors/screenshot' …`.
+///
+/// The marker substring is stable across Firefox versions; matching on it
+/// lets us distinguish a missing-module situation (where a clean
+/// version-mismatch hint is the right UX) from genuine capture failures
+/// (e.g. headless missing, large pages OOM-ing) where we need the raw error.
+fn is_actor_module_load_failure(err: &ProtocolError) -> bool {
+    // Display includes both the Firefox `error` code and the `message` text.
+    err.to_string().contains("Unable to load actor module")
+}
+
+/// Build the canonical user-facing message for a missing screenshot actor.
+///
+/// Centralised so the legacy and Firefox 149+ paths produce identical wording,
+/// and so the e2e test can match the exact phrasing.  The message names
+/// `doctor` per the iter-53 contract and includes the observed Firefox
+/// version when known so users can compare against the supported floor.
+fn version_mismatch_message() -> String {
+    let observed = match crate::connection_meta::remembered_version() {
+        Some(v) => format!("{v}"),
+        None => "unknown".to_owned(),
+    };
+    format!(
+        "screenshot actor unavailable on Firefox {observed}; minimum supported version: {COMPATIBLE_FIREFOX_MIN}. \
+         hint: upgrade Firefox or run `ff-rdp doctor` for the full compatibility report."
+    )
+}
+
 pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
     let height_override = match (opts.full_page, opts.viewport_height) {
         (true, Some(_)) => {
@@ -123,6 +159,15 @@ pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
                         browsing_ctx_id,
                         height_override.is_some_and(|h| matches!(h, HeightOverride::FullPage)),
                     )?
+                }
+                Err(e) if is_actor_module_load_failure(&e) => {
+                    // Screenshot actor module cannot be loaded on this Firefox
+                    // build — surface a clean version-mismatch message rather
+                    // than the raw Firefox stack trace.
+                    return Err(AppError::User(format!(
+                        "screenshot: {}",
+                        version_mismatch_message()
+                    )));
                 }
                 Err(e) => {
                     return Err(AppError::User(format!(
@@ -226,9 +271,13 @@ fn try_two_step_screenshot(
     let prep =
         ScreenshotContentActor::prepare_capture(ctx.transport_mut(), sc_actor.as_ref(), full_page)
             .map_err(|e| {
-                AppError::User(format!(
-                    "screenshot: screenshotContentActor.prepareCapture failed ({e})"
-                ))
+                if is_actor_module_load_failure(&e) {
+                    AppError::User(format!("screenshot: {}", version_mismatch_message()))
+                } else {
+                    AppError::User(format!(
+                        "screenshot: screenshotContentActor.prepareCapture failed ({e})"
+                    ))
+                }
             })?;
 
     // Step 2: capture — call the root-level screenshotActor.
@@ -247,10 +296,19 @@ fn try_two_step_screenshot(
         &prep,
     )
     .map_err(|e| {
-        AppError::User(format!(
-            "screenshot: screenshotActor.capture failed ({e}) — \
-             screenshots require headless mode; relaunch with: ff-rdp launch --headless"
-        ))
+        if is_actor_module_load_failure(&e) {
+            // The root screenshot actor module failed to load on this build
+            // (the failure mode users hit on certain Firefox channels: the
+            // ESM import requires a `global` option that is not present in
+            // the DevTools distinct global).  Skip the headless hint and
+            // surface a clean version-mismatch message.
+            AppError::User(format!("screenshot: {}", version_mismatch_message()))
+        } else {
+            AppError::User(format!(
+                "screenshot: screenshotActor.capture failed ({e}) — \
+                 screenshots require headless mode; relaunch with: ff-rdp launch --headless"
+            ))
+        }
     })?;
 
     Ok(data)
@@ -404,6 +462,46 @@ mod tests {
         let js = build_screenshot_js(Some(HeightOverride::FullPage));
         assert!(js.contains("scrollHeight"));
         assert!(js.contains("scrollingElement"));
+    }
+
+    #[test]
+    fn is_actor_module_load_failure_matches_real_firefox_message() {
+        use ff_rdp_core::{ActorErrorKind, ProtocolError};
+        let err = ProtocolError::ActorError {
+            actor: "server1.conn5.screenshotActor9".to_owned(),
+            kind: ActorErrorKind::Other("unknownError".to_owned()),
+            error: "unknownError".to_owned(),
+            message: "Error occurred while creating actor' \
+                      server1.conn5.screenshotActor9: \
+                      Error: Unable to load actor module 'devtools/server/actors/screenshot' \
+                      ChromeUtils.importESModule: global option is required"
+                .to_owned(),
+        };
+        assert!(
+            is_actor_module_load_failure(&err),
+            "should match the real-world failure shape"
+        );
+    }
+
+    #[test]
+    fn is_actor_module_load_failure_rejects_unrelated_actor_error() {
+        use ff_rdp_core::{ActorErrorKind, ProtocolError};
+        let err = ProtocolError::ActorError {
+            actor: "server1.conn0.child2/screenshotContentActor15".to_owned(),
+            kind: ActorErrorKind::Other("unknownError".to_owned()),
+            error: "unknownError".to_owned(),
+            message: "out of memory".to_owned(),
+        };
+        assert!(
+            !is_actor_module_load_failure(&err),
+            "unrelated errors must not match the module-load detector"
+        );
+    }
+
+    #[test]
+    fn is_actor_module_load_failure_rejects_timeout() {
+        let err = ff_rdp_core::ProtocolError::Timeout;
+        assert!(!is_actor_module_load_failure(&err));
     }
 
     #[test]

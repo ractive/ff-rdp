@@ -26,12 +26,22 @@ pub struct ConnectedTab {
 pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
     let target = resolve_connection_target(&cli.host, cli.port, cli.daemon_timeout, cli.no_daemon);
 
-    let (connect_host, connect_port, via_daemon) = match target {
-        ConnectionTarget::Daemon { port } => ("127.0.0.1".to_owned(), port, true),
-        ConnectionTarget::Direct => (cli.host.clone(), cli.port, false),
+    let (connect_host, connect_port, via_daemon, deferred_warning) = match target {
+        ConnectionTarget::Daemon { port } => ("127.0.0.1".to_owned(), port, true, None),
+        ConnectionTarget::Direct { deferred_warning } => {
+            (cli.host.clone(), cli.port, false, deferred_warning)
+        }
     };
 
-    let connection = connect_to_firefox(&connect_host, connect_port, cli, via_daemon)?;
+    let connection = connect_to_firefox(&connect_host, connect_port, cli, via_daemon)
+        .inspect_err(|_| {
+            // The direct fallback failed too — surface the original
+            // daemon-side warning alongside the connection error so the user
+            // sees the full picture.
+            if let Some(w) = &deferred_warning {
+                eprintln!("{w}");
+            }
+        })?;
 
     handshake_and_resolve_tab(connection, cli, via_daemon)
 }
