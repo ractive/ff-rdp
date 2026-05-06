@@ -21,9 +21,9 @@ pub fn run(cli: &Cli, selector: &str, text: &str, clear: bool) -> Result<(), App
     // React/Vue/Svelte track input values via a hidden tracker on the element
     // (see React's input-value-tracking module).  Setting `el.value = ...`
     // directly bypasses the framework setter, so the change is silently
-    // discarded.  We invoke the native prototype setter (cached at
-    // module-eval time below) to invalidate the tracker, then dispatch the
-    // synthetic `input`/`change` events the framework listeners expect.
+    // discarded.  We look up the native prototype setter on each invocation
+    // and call it to invalidate the tracker, then dispatch the synthetic
+    // `input`/`change` events the framework listeners expect.
     let js = format!(
         r#"(function() {{
   "use strict";

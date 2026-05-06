@@ -1,4 +1,4 @@
-use clap::{CommandFactory, Parser};
+use clap::Parser;
 
 mod cli;
 mod commands;
@@ -22,15 +22,34 @@ use error::AppError;
 /// checks whether the first non-flag token is `type`. Used purely to attach a
 /// command-specific hint to clap's generic "unexpected argument" error.
 fn is_type_invocation(args: &[String]) -> bool {
+    // Allowlist of value-taking global flags defined on `Cli`. All other
+    // globals are booleans (`--no-daemon`, `--all`, etc.) and do not consume
+    // the next argv token. Keep in sync with `Cli` in `cli/args.rs`.
+    const VALUE_GLOBALS: &[&str] = &[
+        "--host",
+        "--port",
+        "--tab",
+        "--tab-id",
+        "--jq",
+        "--timeout",
+        "--daemon-timeout",
+        "--limit",
+        "--sort",
+        "--fields",
+        "--format",
+    ];
+
     let mut iter = args.iter().skip(1); // skip program name
     while let Some(a) = iter.next() {
         if a == "--" {
             break;
         }
-        if a.starts_with("--") {
-            // Skip global flags that take a value (--host, --port, --timeout, etc.).
-            // A trailing `=` form is self-contained.
-            if !a.contains('=') {
+        if let Some(stripped) = a.strip_prefix("--") {
+            // `--flag=value` is self-contained.
+            if stripped.contains('=') {
+                continue;
+            }
+            if VALUE_GLOBALS.contains(&a.as_str()) {
                 let _ = iter.next();
             }
             continue;
@@ -67,7 +86,6 @@ fn main() {
                 );
             }
             // Match clap's exit behavior.
-            let _ = Cli::command(); // ensure command builder linkage; no-op semantically
             if is_help_or_version {
                 std::process::exit(0);
             } else {
@@ -139,5 +157,34 @@ mod main_tests {
             .map(ToString::to_string)
             .collect();
         assert!(!is_type_invocation(&args));
+    }
+
+    // Boolean global flags (`--no-daemon`, `--all`, etc.) must NOT consume the
+    // following token; otherwise the heuristic swallows `type` and the hint
+    // never fires.
+    #[test]
+    fn detects_type_after_boolean_global_flag() {
+        let args: Vec<String> = ["ff-rdp", "--no-daemon", "type", "--bogus"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(is_type_invocation(&args));
+    }
+
+    #[test]
+    fn detects_type_after_mixed_globals() {
+        let args: Vec<String> = [
+            "ff-rdp",
+            "--no-daemon",
+            "--port",
+            "6000",
+            "--detail",
+            "type",
+            "--bogus",
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        assert!(is_type_invocation(&args));
     }
 }
