@@ -2,8 +2,14 @@
 title: "Iteration 44: GitHub Manual Setup Guide"
 date: 2026-04-13
 type: guide
-status: planned
-tags: [release, github, secrets, setup, manual, iteration-44]
+status: completed
+tags:
+  - release
+  - github
+  - secrets
+  - setup
+  - manual
+  - iteration-44
 ---
 
 # GitHub Manual Setup Guide — v0.1.0 Release

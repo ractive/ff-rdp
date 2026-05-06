@@ -1,6 +1,6 @@
 ---
 paths:
-  - "kb/**"
+  - "./**"
 ---
 Prefer `hyalo` CLI for operations on files in this directory:
 - **Search/filter**: `hyalo find --property status=planned --tag iteration --format text`
@@ -9,6 +9,7 @@ Prefer `hyalo` CLI for operations on files in this directory:
 - **Read frontmatter/metadata**: `hyalo find --file <path>`, `hyalo properties`, `hyalo tags`
 - **Read content/sections**: `hyalo read <path>` or `hyalo read <path> --section "Heading"`
 - **Mutate frontmatter**: `hyalo set`, `hyalo remove`, `hyalo append`
+- **Auto-link**: `hyalo links auto --first-only --exclude-target-glob 'templates/*' --apply`
 - **Move/rename**: `hyalo mv` (rewrites links across the vault)
 
 Fall back to Edit for body prose changes, Write for new files, and Read when

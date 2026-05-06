@@ -47,17 +47,17 @@ hyalo create-index
 hyalo views set stale-in-progress --property status=in-progress --fields tasks
 hyalo views set missing-status --property '!status'
 hyalo views set missing-type --property '!type'
-hyalo views set orphans --fields backlinks
+hyalo views set orphans --orphan --fields backlinks
 hyalo views set completed-with-todos --property status=completed --task todo --fields tasks
 ```
 
 The snapshot index captures every file's metadata in a binary file (`.hyalo-index`).
-All read-only queries in Phase 2 and Phase 3 should use `--index .hyalo-index` to
+All read-only queries in Phase 2 and Phase 3 should use `--index` to
 avoid repeated disk scans. For complex reshaping, combine hyalo filtering with `--jq`.
 
 Also grab the tag vocabulary for inconsistency detection:
 ```bash
-hyalo tags summary --format text --index .hyalo-index
+hyalo tags summary --format text --index
 ```
 
 ## Phase 2 — Gather recent signal
@@ -78,7 +78,7 @@ git log --oneline --since="4 weeks ago" -- "*.rs" | head -30
 
 Extract non-completed iterations and their branches from the index:
 ```bash
-hyalo find --property type=iteration --index .hyalo-index --jq '.results | map(select(.properties.status != "completed" and .properties.status != "superseded" and .properties.status != "wont-do")) | map({file, branch: .properties.branch, status: .properties.status})'
+hyalo find --property type=iteration --index --jq '.results | map(select(.properties.status != "completed" and .properties.status != "superseded" and .properties.status != "wont-do")) | map({file, branch: .properties.branch, status: .properties.status})'
 ```
 
 For each non-completed iteration that has a branch, check if that branch was merged:
@@ -110,13 +110,13 @@ Look for:
 ### Recent KB changes
 
 ```bash
-git log --oneline --since="4 weeks ago" -- "kb/" | head -20
-git log --diff-filter=A --name-only --since="4 weeks ago" -- "kb/"
+git log --oneline --since="4 weeks ago" -- "./" | head -20
+git log --diff-filter=A --name-only --since="4 weeks ago" -- "./"
 ```
 
 ## Phase 3 — Detect structural issues
 
-All queries below use `--index .hyalo-index` — no additional disk scans needed.
+All queries below use `--index` — no additional disk scans needed.
 
 ### Schema & lint
 Check if type schemas are defined, and run lint to detect frontmatter violations:
@@ -125,7 +125,7 @@ Check if type schemas are defined, and run lint to detect frontmatter violations
 hyalo types list --format text
 
 # Run lint to detect schema violations (missing required, wrong type, bad enum, etc.)
-hyalo lint --format text --index .hyalo-index
+hyalo lint --format text --index
 ```
 
 If `hyalo types list` returns zero types but files have a `type` property, propose
@@ -136,17 +136,22 @@ report the suggestion in Phase 5.
 
 If lint reports fixable violations, note the counts for Phase 4.
 
+Lint also validates `[views.*]` in `.hyalo.toml`. A view whose only narrowing key is
+`fields` (display columns, not a filter) is surfaced as a warning — suggest adding an
+explicit filter like `orphan = true`, `dead_end = true`, or `tag = [...]` when you see
+one in Phase 5.
+
 ### Broken links
 ```bash
 # Dry-run shows broken links with proposed fixes and confidence scores
-hyalo links fix --index .hyalo-index --format text
+hyalo links fix --index --format text
 ```
 This categorizes links as **fixable** (fuzzy match found) vs **unfixable** (no match).
 Note the counts for the health dashboard. Actual fixes happen in Phase 4.
 
 ### Orphan files
 ```bash
-hyalo find --view orphans --index .hyalo-index --jq '.results | map(select(.backlinks | length == 0)) | map(.file)'
+hyalo find --view orphans --index --jq '.results | map(select(.backlinks | length == 0)) | map(.file)'
 ```
 Not all orphans are problems. Expect these to be legitimately orphaned:
 - Top-level files (SEED.md, project-pitch.md, decision-log.md)
@@ -157,7 +162,7 @@ Focus on **actionable orphans**: active/planned items that should be cross-refer
 
 ### Dead-end files
 ```bash
-hyalo find --dead-end --index .hyalo-index --jq '.results | map(.file)'
+hyalo find --dead-end --index --jq '.results | map(.file)'
 ```
 Dead-end files have inbound links but no outbound links — often stubs or leaf nodes
 that could benefit from cross-references. Not always a problem, but worth reviewing.
@@ -165,19 +170,19 @@ that could benefit from cross-references. Not always a problem, but worth review
 ### Stale statuses
 ```bash
 # In-progress items — should any be completed?
-hyalo find --view stale-in-progress --index .hyalo-index --jq '.results | map({file, date: .properties.date, branch: .properties.branch})'
+hyalo find --view stale-in-progress --index --jq '.results | map({file, date: .properties.date, branch: .properties.branch})'
 
 # Planned items where all tasks are done
-hyalo find --property status=planned --index .hyalo-index --jq '.results | map(select((.tasks | length > 0) and ([.tasks[] | select(.status != "x")] | length) == 0)) | map(.file)'
+hyalo find --property status=planned --index --jq '.results | map(select((.tasks | length > 0) and ([.tasks[] | select(.status != "x")] | length) == 0)) | map(.file)'
 
 # In-progress items sorted by date (oldest first — possibly stale)
-hyalo find --view stale-in-progress --index .hyalo-index --jq '.results | map(select(.properties.date != null)) | sort_by(.properties.date) | map({file, date: .properties.date})'
+hyalo find --view stale-in-progress --index --jq '.results | map(select(.properties.date != null)) | sort_by(.properties.date) | map({file, date: .properties.date})'
 ```
 Cross-reference with git merges from Phase 2. If the branch was merged, update status.
 
 ### Stale backlog items
 ```bash
-hyalo find --property status=planned --property type=backlog --index .hyalo-index --jq '.results | map({file, title: .properties.title})'
+hyalo find --property status=planned --property type=backlog --index --jq '.results | map({file, title: .properties.title})'
 ```
 Compare each planned backlog item against merged iterations and recent git history.
 If the feature clearly shipped (in a different iteration or under a different name),
@@ -185,8 +190,8 @@ flag it.
 
 ### Missing metadata
 ```bash
-hyalo find --view missing-status --index .hyalo-index --jq '.results | map(.file)'
-hyalo find --view missing-type --index .hyalo-index --jq '.results | map(.file)'
+hyalo find --view missing-status --index --jq '.results | map(.file)'
+hyalo find --view missing-type --index --jq '.results | map(.file)'
 ```
 
 ### Tag inconsistencies
@@ -198,7 +203,7 @@ more files.
 ### Task completion vs status mismatch
 ```bash
 # Completed items with unchecked tasks — systemic or one-off?
-hyalo find --view completed-with-todos --index .hyalo-index --jq '.results | map({file, open: ([.tasks[] | select(.status != "x")] | length), total: (.tasks | length)})'
+hyalo find --view completed-with-todos --index --jq '.results | map({file, open: ([.tasks[] | select(.status != "x")] | length), total: (.tasks | length)})'
 ```
 If many completed items have unchecked tasks, this is a workflow pattern — note it once
 in the report rather than listing every file.
@@ -208,7 +213,7 @@ in the report rather than listing every file.
 Fix what you can. Be conservative — prefer fixing metadata over deleting files. For
 each change, note what you did and why.
 
-**Keep using `--index .hyalo-index`** for all mutations — hyalo now patches the index
+**Keep using `--index`** for all mutations — hyalo now patches the index
 in-place after each file write, so it stays current for subsequent queries. No need to
 drop the index before making changes. Only drop it at the very end (Phase 5).
 
@@ -216,10 +221,10 @@ drop the index before making changes. Only drop it at the very end (Phase 5).
 If lint reported fixable violations in Phase 3, auto-fix them:
 ```bash
 # Preview what will be fixed
-hyalo lint --fix --dry-run --format text --index .hyalo-index
+hyalo lint --fix --dry-run --format text --index
 
 # Apply fixes (inserts defaults, corrects enum typos, normalizes dates, infers types)
-hyalo lint --fix --format text --index .hyalo-index
+hyalo lint --fix --format text --index
 ```
 
 Review the dry-run output first. Unfixable violations (e.g. missing required properties
@@ -231,10 +236,10 @@ correct target (handles moves to `done/`, case changes, extension mismatches, et
 
 ```bash
 # Preview what will be fixed
-hyalo links fix --format text --index .hyalo-index
+hyalo links fix --format text --index
 
 # Apply fixes
-hyalo links fix --apply --format text --index .hyalo-index
+hyalo links fix --apply --format text --index
 ```
 
 Review the dry-run output first. For any links it can't resolve (reported as unfixable),
@@ -243,12 +248,12 @@ leave them and report them in Phase 5.
 ### Update stale statuses
 If an iteration's branch was merged:
 ```bash
-hyalo set <path> --property status=completed --index .hyalo-index
+hyalo set <path> --property status=completed --index
 ```
 
 If a backlog item's feature clearly shipped:
 ```bash
-hyalo set <path> --property status=completed --index .hyalo-index
+hyalo set <path> --property status=completed --index
 ```
 
 Only update when the evidence is clear. When uncertain, flag it in the report.
@@ -256,13 +261,13 @@ Only update when the evidence is clear. When uncertain, flag it in the report.
 ### Archive completed items
 If completed items are in a top-level directory and a `done/` subfolder exists:
 ```bash
-hyalo mv <old-path> --to <done-subdir/filename> --dry-run --index .hyalo-index
+hyalo mv <old-path> --to <done-subdir/filename> --dry-run --index
 ```
 Review the dry-run output. If correct, execute without `--dry-run`.
 
 ### Normalize tags
 ```bash
-hyalo tags rename --from <variant> --to <canonical> --index .hyalo-index
+hyalo tags rename --from <variant> --to <canonical> --index
 ```
 
 ### Add missing cross-references
@@ -303,6 +308,6 @@ normalized, files moved.
   wikilink text in prose, adding cross-reference lines).
 - **Batch similar findings**: if 15 completed items have unchecked tasks, say that once
   with the count. The report should be scannable in 30 seconds.
-- **Minimize disk scans**: use `--index .hyalo-index` for all queries and mutations.
+- **Minimize disk scans**: use `--index` for all queries and mutations.
   Mutations automatically patch the index in-place — no need to drop and recreate.
   Only drop the index at the very end when the session is complete.

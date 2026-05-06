@@ -48,8 +48,11 @@ hyalo find "rust OR golang -obsolete"    # Mixed: either rust or golang, not obs
 
 For literal pattern matching (not stemmed), use regex: `hyalo find -e "exact_string"`.
 
-Language support: `--language french` selects the French stemmer. Per-file override via
-frontmatter `language: french`. Config default via `[search] language = "french"` in `.hyalo.toml`.
+Stemmer language: `--stemmer french` (or the older `--language french`) selects the French
+Snowball stemmer for BM25 tokenization. Accepts full names (english, german, french, …) or
+ISO 639-1 codes (en, de, fr, …). This is *not* markdown code-block language filtering.
+Per-file override via frontmatter `language: french`. Config default via
+`[search] language = "french"` in `.hyalo.toml`.
 
 Property filters support: `K=V` (eq), `K!=V` (neq), `K>=V`/`K<=V`/`K>V`/`K<V` (comparison),
 `K` (existence), `!K` (absence — files missing the property), `K~=pattern` or `K~=/pattern/flags`
@@ -86,7 +89,7 @@ hyalo find --sort backlinks_count --reverse        # most-linked files first
 ```
 
 The `--fields` flag controls which data is returned. Available fields: `properties`,
-`properties-typed`, `tags`, `sections`, `tasks`, `links`, `backlinks`, `title`. Default fields are
+`properties-typed`, `tags`, `sections` (alias: `outline`), `tasks`, `links`, `backlinks`, `title`. Default fields are
 `properties`, `tags`, `sections`, `links`. Opt-in fields: `tasks`, `properties-typed`,
 `backlinks`, `title`. Use `--fields all` or `--fields tasks` to include them. `properties-typed`
 returns a `[{name, type, value}]` array instead of a `{key: value}` map; `backlinks` requires
@@ -165,6 +168,11 @@ hyalo mv backlog/my-item.md --to backlog/done/my-item.md
 hyalo mv old-path.md --to new-path.md --dry-run
 ```
 
+`hyalo mv` rewrites relative `.md` paths only. It leaves untouched: site-absolute links
+(`/docs/...`, handled separately via site prefix), URL-scheme links (`http://`, `mailto:`),
+fragment-only links (`#section`), and bare non-`.md` wiki tokens. File permissions (e.g.
+`0644`) are preserved through all atomic rewrites.
+
 ## Absolute link resolution (site prefix)
 
 Documentation sites often use root-absolute links like `/docs/guides/setup.md`. Hyalo resolves
@@ -216,11 +224,12 @@ Start with `hyalo summary --format text` to orient yourself in a new directory.
 - **properties rename** — bulk rename a property key across files (`--from old --to new`)
 - **tags summary** — list tags with counts
 - **tags rename** — bulk rename a tag across files (`--from old --to new`)
-- **set** — create/overwrite frontmatter properties, add tags (supports `--where-property`/`--where-tag` for conditional bulk updates; `--property 'K=[a,b,c]'` creates YAML sequences; file arg is positional or `--file`, repeatable)
+- **set** — create/overwrite frontmatter properties, add tags (supports `--where-property`/`--where-tag` for conditional bulk updates, which default to all `**/*.md` when no `--file`/`--glob` is given; `--property 'K=[a,b,c]'` creates YAML sequences; `--property 'K=[[foo/bar]]'` stores a literal wikilink string; `--validate` rejects values that would fail schema lint; file arg is positional or `--file`, repeatable)
 - **remove** — delete properties or tags
-- **append** — add to list properties
-- **task** — read, toggle, or set status on checkboxes (supports `--line 5,7`, `--section "Tasks"`, `--all`)
+- **append** — add to list properties (supports `--validate`; note: tags are not appendable; use `set --tag` instead)
+- **task** — read, toggle, or set status on checkboxes (supports `--line 5,7`, `--section "Tasks"`, `--all`; `--dry-run` to preview toggles)
 - **mv** — move/rename a file and rewrite all inbound links across the vault (`--dry-run` to preview)
+- **links fix** — detect broken wikilinks/markdown links and auto-repair (dry-run by default; `--apply` to write). Also detects case mismatches when `[links] case_insensitive` is enabled (default `"auto"` on macOS/Windows)
 - **backlinks** — reverse link lookup: lists all files that link to a given file
 - **create-index** — build a snapshot index for faster repeated read-only queries
 - **drop-index** — delete a snapshot index file created with create-index
@@ -242,12 +251,27 @@ hyalo lint iterations/iteration-42-feature.md
 # Lint with a glob
 hyalo lint --glob "iterations/*.md"
 
+# Lint only files matching a named type's filename template
+hyalo lint --type iteration
+
 # JSON output
 hyalo lint --format json
 
 # Limit output to first N files with violations
 hyalo lint --limit 10
+
+# Auto-fix: defaults, enum typos, date format, type inference, comma-joined tags
+hyalo lint --fix --dry-run
+hyalo lint --fix
 ```
+
+Lint also warns about comma-joined tags (e.g. `tags: ["cli,ux"]` instead of two list
+items); `--fix` splits them into proper list entries automatically.
+
+Lint additionally validates saved views in `.hyalo.toml`: if a `[views.*]` entry only
+sets `fields` (which controls output columns, not which files match), lint flags it so
+you can add a real filter like `orphan = true` or `tag = [...]` (saved views
+store tags under the `tag` key).
 
 Exit codes: 0 = clean, 1 = errors found, 2 = internal error.
 
@@ -277,6 +301,15 @@ Property types: `string` (optional `pattern` regex), `date` (YYYY-MM-DD), `numbe
 When no `[schema]` block exists, lint exits 0 with zero violations (backwards compatible).
 
 `hyalo summary` includes a `schema` field with error/warning counts when a schema is configured.
+
+**Validate on write:** `hyalo set` and `hyalo append` accept `--validate` to reject values
+that would fail lint. Enable globally via `[schema] validate_on_write = true` in `.hyalo.toml`.
+
+**Ignore known-bad files:** add `[lint] ignore = ["legacy/known-bad.md", "vendor/**/*.md"]`
+to `.hyalo.toml` to skip listed files during `hyalo lint` (plain strings match literally;
+glob meta-characters use `--glob` semantics). Read-only commands still warn on parse errors.
+
+`hyalo lint --count` returns just the number of files with violations.
 
 ## Types — manage type schemas
 
@@ -312,6 +345,8 @@ hyalo views list --format text
 ```bash
 hyalo views set stale-iterations --property type=iteration --property status=in-progress
 hyalo views set perf-research "performance" --tag research   # BM25 pattern + filter
+hyalo views set orphans --orphan                             # files with no inbound/outbound links
+hyalo views set dead-ends --dead-end                         # files with inbound but no outbound links
 hyalo find --view stale-iterations                    # reuse later
 hyalo find --view stale-iterations --limit 5          # compose with overrides
 ```
@@ -337,8 +372,10 @@ If you just need a quick readable overview, use `--format text` (without `--jq`)
 
 Use `hyalo backlinks <path>` to find all files that link to a given file (reverse link
 lookup). This builds an in-memory link graph by scanning all `.md` files in the directory,
-detecting both `[[wikilinks]]` and `[markdown](links)`. The file can be passed positionally
-or with `--file`.
+detecting both `[[wikilinks]]` and `[markdown](links)` in body content *and* in
+list-valued frontmatter properties (default: `related`, `depends-on`, `supersedes`,
+`superseded-by` — configurable via `[links] frontmatter_properties = [...]` in `.hyalo.toml`).
+The file can be passed positionally or with `--file`.
 
 ```bash
 # Which files reference iteration-37?
