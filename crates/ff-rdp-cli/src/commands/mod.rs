@@ -7,6 +7,7 @@ pub(crate) mod computed;
 pub(crate) mod connect_tab;
 pub(crate) mod console;
 pub(crate) mod cookies;
+pub(crate) mod doctor;
 pub(crate) mod dom;
 pub(crate) mod dom_tree;
 pub(crate) mod eval;

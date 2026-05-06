@@ -35,7 +35,8 @@ pub fn run(cli: &Cli, selector: &str, text: &str, clear: bool) -> Result<(), App
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "type failed")?;
 
     let result_json = resolve_result(&mut ctx, &eval_result.result)?;
-    let meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
+    let mut meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
     let envelope = output::envelope(&result_json, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::TypeText).with_selector(selector);

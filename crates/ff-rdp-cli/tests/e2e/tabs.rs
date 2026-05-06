@@ -66,6 +66,18 @@ fn tabs_outputs_json_envelope() {
         "results must contain 2 tabs"
     );
     assert!(json["meta"].is_object(), "meta must be present");
+    assert!(
+        json["meta"]["connection"].is_object(),
+        "meta.connection must be present; got: {json}"
+    );
+    assert_eq!(
+        json["meta"]["connection"]["host"], "127.0.0.1",
+        "meta.connection.host must be populated"
+    );
+    assert!(
+        json["meta"]["connection"]["port"].is_number(),
+        "meta.connection.port must be a number"
+    );
 }
 
 /// `--jq '.results[0].url'` must extract the first tab's URL as a JSON string.
@@ -168,6 +180,10 @@ fn tabs_connection_refused_shows_helpful_error() {
     assert!(
         stderr.contains("is Firefox running"),
         "stderr must mention whether Firefox is running; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("ff-rdp doctor"),
+        "stderr must reference `ff-rdp doctor`; got: {stderr}"
     );
 }
 

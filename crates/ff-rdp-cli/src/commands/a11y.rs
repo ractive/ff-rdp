@@ -67,6 +67,7 @@ pub fn run(
         "depth": depth,
         "max_chars": max_chars,
     });
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
     if used_js_fallback && let Some(m) = meta.as_object_mut() {
         m.insert("fallback".to_string(), json!(true));
         m.insert("fallback_method".to_string(), json!("js-eval"));

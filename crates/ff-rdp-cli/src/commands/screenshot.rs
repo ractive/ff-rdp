@@ -188,7 +188,8 @@ pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
         })
     };
 
-    let meta = json!({"host": cli.host, "port": cli.port});
+    let mut meta = json!({"host": cli.host, "port": cli.port});
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
     let envelope = output::envelope(&results, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Screenshot);

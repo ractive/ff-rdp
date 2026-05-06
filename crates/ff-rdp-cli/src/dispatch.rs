@@ -293,5 +293,6 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         Command::Daemon => {
             server::run_daemon(&cli.host, cli.port, cli.daemon_timeout).map_err(AppError::Internal)
         }
+        Command::Doctor => commands::doctor::run(cli),
     }
 }

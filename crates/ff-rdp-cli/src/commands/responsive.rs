@@ -298,12 +298,13 @@ pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppErr
         "original_viewport": original_viewport,
     });
 
-    let meta = json!({
+    let mut meta = json!({
         "host": cli.host,
         "port": cli.port,
         "selectors": selectors,
         "widths": widths,
     });
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
 
     // Text short-circuit: render a human-readable breakpoint table instead of JSON.
     if cli.format == "text" && cli.jq.is_none() {

@@ -96,11 +96,12 @@ pub fn run(cli: &Cli, selector: &str, properties: Option<&[String]>) -> Result<(
     let shown = items.len();
     let results = Value::Array(items);
 
-    let meta = json!({
+    let mut meta = json!({
         "host": cli.host,
         "port": cli.port,
         "selector": selector,
     });
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
 
     let envelope = output::envelope_with_truncation(&results, shown, total, truncated, &meta);
 
@@ -140,11 +141,12 @@ pub fn run_applied(cli: &Cli, selector: &str) -> Result<(), AppError> {
     let shown = items.len();
     let results = Value::Array(items);
 
-    let meta = json!({
+    let mut meta = json!({
         "host": cli.host,
         "port": cli.port,
         "selector": selector,
     });
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
 
     let envelope = output::envelope_with_truncation(&results, shown, total, truncated, &meta);
 
@@ -163,11 +165,12 @@ pub fn run_layout(cli: &Cli, selector: &str) -> Result<(), AppError> {
 
     let results = serde_json::to_value(&layout).map_err(|e| AppError::Internal(e.into()))?;
 
-    let meta = json!({
+    let mut meta = json!({
         "host": cli.host,
         "port": cli.port,
         "selector": selector,
     });
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
 
     let envelope = output::envelope(&results, 1, &meta);
 

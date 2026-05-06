@@ -172,6 +172,7 @@ fn shell_escape_selector(sel: &str) -> String {
 
 fn hints_launch(_ctx: &HintContext) -> Vec<Hint> {
     vec![
+        Hint::new("Verify the connection is healthy", "ff-rdp doctor"),
         Hint::new("List open tabs", "ff-rdp tabs"),
         Hint::new("Navigate to a URL", "ff-rdp navigate <URL>"),
     ]

@@ -92,7 +92,9 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "snapshot evaluation failed")?;
 
     let results = resolve_result(&mut ctx, &eval_result.result)?;
-    let meta = json!({"host": cli.host, "port": cli.port, "depth": depth, "max_chars": max_chars});
+    let mut meta =
+        json!({"host": cli.host, "port": cli.port, "depth": depth, "max_chars": max_chars});
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
 
     let total = match &results {
         Value::Null => 0,

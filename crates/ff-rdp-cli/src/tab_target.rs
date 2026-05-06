@@ -1,6 +1,7 @@
 use ff_rdp_core::TabInfo;
 
 use crate::error::AppError;
+use crate::port_owner;
 
 /// Resolve a `--tab` / `--tab-id` flag pair to a single [`TabInfo`] reference.
 ///
@@ -9,15 +10,37 @@ use crate::error::AppError;
 /// 2. `tab` as a 1-based integer index into `tabs`.
 /// 3. `tab` as a case-insensitive URL substring.
 /// 4. Neither flag — first selected tab, falling back to `tabs[0]`.
+///
+/// Use [`resolve_tab_with_context`] when you can supply the connected host
+/// and port — the resulting "no tabs" error will then surface the connected
+/// PID and point users at `ff-rdp doctor`.
+#[cfg(test)]
 pub fn resolve_tab<'a>(
     tabs: &'a [TabInfo],
     tab: Option<&str>,
     tab_id: Option<&str>,
 ) -> Result<&'a TabInfo, AppError> {
+    resolve_tab_with_context(tabs, tab, tab_id, "localhost", 0)
+}
+
+/// Like [`resolve_tab`] but the no-tabs error mentions the connected target.
+///
+/// When the listener is reachable but exposes zero tabs, the error reports
+/// the connected PID, port uptime, and points at `ff-rdp doctor` so the
+/// user can drill in. When the port is dark, the error suggests `launch`
+/// — this is the "no Firefox connected" branch from the spec.
+pub fn resolve_tab_with_context<'a>(
+    tabs: &'a [TabInfo],
+    tab: Option<&str>,
+    tab_id: Option<&str>,
+    host: &str,
+    port: u16,
+) -> Result<&'a TabInfo, AppError> {
     if let Some(id) = tab_id {
         return tabs.iter().find(|t| t.actor.as_ref() == id).ok_or_else(|| {
             AppError::User(format!(
-                "no tab with actor ID '{id}'; use `ff-rdp tabs` to list available tabs"
+                "no tab with actor ID '{id}'; use `ff-rdp tabs` to list available tabs.\n\
+                 hint: run `ff-rdp doctor` if the actor ID was issued by a stale connection."
             ))
         });
     }
@@ -27,12 +50,11 @@ pub fn resolve_tab<'a>(
         if let Ok(n) = selector.parse::<usize>() {
             let count = tabs.len();
             return if count == 0 {
-                Err(AppError::User(
-                    "no tabs available — use `ff-rdp launch --headless --temp-profile` to start Firefox, then `ff-rdp tabs`".to_owned(),
-                ))
+                Err(AppError::User(no_tabs_message(host, port)))
             } else if n == 0 || n > count {
                 Err(AppError::User(format!(
-                    "tab index {n} out of range (1–{count} tabs available); use `ff-rdp tabs` to list available tabs"
+                    "tab index {n} out of range (1–{count} tabs available); use `ff-rdp tabs` to list available tabs.\n\
+                     hint: run `ff-rdp doctor` if the tab list looks wrong."
                 )))
             } else {
                 Ok(&tabs[n - 1])
@@ -44,17 +66,83 @@ pub fn resolve_tab<'a>(
         return tabs
             .iter()
             .find(|t| t.url.to_lowercase().contains(&lower))
-            .ok_or_else(|| AppError::User(format!("no tab matching URL pattern '{selector}'; use `ff-rdp tabs` to list available tabs")));
+            .ok_or_else(|| {
+                AppError::User(format!(
+                    "no tab matching URL pattern '{selector}'; use `ff-rdp tabs` to list available tabs.\n\
+                     hint: run `ff-rdp doctor` if the tab list looks wrong."
+                ))
+            });
     }
 
     // No flag — prefer the selected tab, then the first tab.
     if tabs.is_empty() {
-        return Err(AppError::User(
-            "no tabs available — is a page open in Firefox? Use `ff-rdp launch --headless --temp-profile` to start one".to_owned(),
-        ));
+        return Err(AppError::User(no_tabs_message(host, port)));
     }
 
     Ok(tabs.iter().find(|t| t.selected).unwrap_or(&tabs[0]))
+}
+
+/// Compose the "no tabs" error, branching on the apparent root cause:
+///
+/// * Listener is dark → suggest `launch` and `doctor`.
+/// * Listener is up but exposes zero tabs → surface the connected PID/uptime
+///   and point at `--temp-profile` plus `doctor`.
+fn no_tabs_message(host: &str, port: u16) -> String {
+    if port == 0 {
+        // Backwards-compatible default for callers that don't supply context.
+        return "no tabs available — is a page open in Firefox? Use `ff-rdp launch --headless --temp-profile` to start one.\n\
+                hint: run `ff-rdp doctor` for a full diagnostic."
+            .to_owned();
+    }
+
+    // Local OS port probes only make sense for loopback hosts; on remote
+    // targets, fall through to the generic "connected but empty" message.
+    if !crate::connection_meta::is_loopback(host) {
+        return format!(
+            "no tabs available — connected {host}:{port} exposes 0 debuggable tabs. \
+             Open a tab in Firefox or relaunch with `ff-rdp launch --temp-profile` for a clean session.\n\
+             hint: run `ff-rdp doctor` for a full diagnostic."
+        );
+    }
+
+    let in_use = port_owner::is_port_in_use(port);
+    if !in_use {
+        return format!(
+            "no tabs available — nothing is listening on {host}:{port}. \
+             Use `ff-rdp launch --headless --temp-profile` to start Firefox.\n\
+             hint: run `ff-rdp doctor` for a full diagnostic."
+        );
+    }
+    let owner = port_owner::find_listener(port).ok().flatten();
+    let detail = match owner {
+        Some(o) if !o.process_name.is_empty() => {
+            let uptime = match o.uptime_s {
+                Some(s) => format!(" (uptime {})", format_uptime_short(s)),
+                None => String::new(),
+            };
+            format!(" ({} PID {}){}", o.process_name, o.pid, uptime)
+        }
+        Some(o) => format!(" (PID {})", o.pid),
+        None => String::new(),
+    };
+    format!(
+        "no tabs available — connected Firefox{detail} exposes 0 debuggable tabs. \
+         Open a tab manually or relaunch with `ff-rdp launch --temp-profile` for a clean session.\n\
+         hint: run `ff-rdp doctor` to see why this connection has no tabs."
+    )
+}
+
+pub(crate) fn format_uptime_short(secs: u64) -> String {
+    let days = secs / 86400;
+    let hours = (secs % 86400) / 3600;
+    let mins = (secs % 3600) / 60;
+    if days > 0 {
+        format!("{days}d{hours}h")
+    } else if hours > 0 {
+        format!("{hours}h{mins}m")
+    } else {
+        format!("{mins}m")
+    }
 }
 
 #[cfg(test)]
@@ -204,5 +292,22 @@ mod tests {
         // --tab 1 would give tab1, but --tab-id for tab3 should win
         let result = resolve_tab(&ts, Some("1"), Some("server1.conn0.tab3")).unwrap();
         assert_eq!(result.actor.as_ref(), "server1.conn0.tab3");
+    }
+
+    // --- format_uptime_short ---
+
+    #[test]
+    fn format_uptime_short_handles_minutes() {
+        assert_eq!(format_uptime_short(120), "2m");
+    }
+
+    #[test]
+    fn format_uptime_short_handles_hours() {
+        assert_eq!(format_uptime_short(3700), "1h1m");
+    }
+
+    #[test]
+    fn format_uptime_short_handles_days() {
+        assert_eq!(format_uptime_short(90_000), "1d1h");
     }
 }
