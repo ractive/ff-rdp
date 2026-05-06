@@ -144,8 +144,18 @@ fn find_listener_windows(port: u16) -> Result<Option<PortOwner>, String> {
                 return None;
             }
             let s = String::from_utf8_lossy(&o.stdout).into_owned();
-            // CSV first column, strip quotes.
-            let first = s.lines().next()?.split(',').next()?.trim();
+            // tasklist emits "INFO: No tasks are running..." (and similar) when
+            // the process exited between netstat and tasklist; ignore non-CSV
+            // lines so process_name falls back to empty.
+            let first = s
+                .lines()
+                .find(|line| !line.trim().is_empty() && !line.trim_start().starts_with("INFO:"))?
+                .split(',')
+                .next()?
+                .trim();
+            if !first.starts_with('"') {
+                return None;
+            }
             let stripped = first.trim_matches('"');
             if stripped.is_empty() {
                 None

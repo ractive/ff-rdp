@@ -12,11 +12,13 @@ use ff_rdp_core::{
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
+use crate::connection_meta::is_loopback;
 use crate::daemon::{client::find_running_daemon, registry};
 use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 use crate::port_owner::{self, PortOwner};
+use crate::tab_target::format_uptime_short as format_uptime;
 
 /// Probe outcome with a one-line, copy-pasteable hint.
 #[derive(Debug, Clone)]
@@ -59,13 +61,27 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     // 1. Daemon registry
     probes.push(probe_daemon(host, port));
 
-    // 2. Port owner — looked up before the handshake attempt so we can report
-    //    PID/uptime even when the listener is not Firefox.
-    let owner = port_owner::find_listener(port).ok().flatten();
-    let port_in_use = owner.is_some() || port_owner::is_port_in_use(port);
-    probes.push(probe_port_owner(port, port_in_use, owner.as_ref()));
+    // 2. Port owner — local OS query, only meaningful for loopback hosts.
+    //    Looked up before the handshake attempt so we can report PID/uptime
+    //    even when the listener is not Firefox.
+    let local = is_loopback(host);
+    let owner = if local {
+        port_owner::find_listener(port).ok().flatten()
+    } else {
+        None
+    };
+    let port_in_use = if local {
+        owner.is_some() || port_owner::is_port_in_use(port)
+    } else {
+        // Non-loopback: skip the local probe and attempt the handshake
+        // unconditionally — that's the authoritative reachability test.
+        true
+    };
+    probes.push(probe_port_owner(port, port_in_use, owner.as_ref(), local));
 
-    // Skip the remaining probes when the port is dark; nothing to handshake with.
+    // Skip the remaining probes when the port is dark on loopback; otherwise
+    // attempt the handshake — for remote hosts that's the only reachability
+    // signal we have.
     let mut firefox_version: Option<u32> = None;
     if port_in_use {
         match RdpConnection::connect(host, port, Duration::from_millis(cli.timeout)) {
@@ -189,7 +205,15 @@ fn probe_daemon(host: &str, port: u16) -> Probe {
     }
 }
 
-fn probe_port_owner(port: u16, in_use: bool, owner: Option<&PortOwner>) -> Probe {
+fn probe_port_owner(port: u16, in_use: bool, owner: Option<&PortOwner>, local: bool) -> Probe {
+    if !local {
+        return Probe {
+            name: "port_owner",
+            status: Status::Pass,
+            detail: format!("port {port} is on a non-loopback host; skipping local OS probe"),
+            hint: None,
+        };
+    }
     if !in_use {
         return Probe {
             name: "port_owner",
@@ -302,35 +326,9 @@ fn build_results_json(probes: &[Probe]) -> Value {
     Value::Array(arr)
 }
 
-fn format_uptime(secs: u64) -> String {
-    let days = secs / 86400;
-    let hours = (secs % 86400) / 3600;
-    let mins = (secs % 3600) / 60;
-    if days > 0 {
-        format!("{days}d{hours}h")
-    } else if hours > 0 {
-        format!("{hours}h{mins}m")
-    } else {
-        format!("{mins}m")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn format_uptime_handles_minutes() {
-        assert_eq!(format_uptime(120), "2m");
-    }
-    #[test]
-    fn format_uptime_handles_hours() {
-        assert_eq!(format_uptime(3700), "1h1m");
-    }
-    #[test]
-    fn format_uptime_handles_days() {
-        assert_eq!(format_uptime(90_000), "1d1h");
-    }
 
     #[test]
     fn probe_version_in_range_is_pass() {

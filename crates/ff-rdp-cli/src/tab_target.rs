@@ -95,6 +95,16 @@ fn no_tabs_message(host: &str, port: u16) -> String {
             .to_owned();
     }
 
+    // Local OS port probes only make sense for loopback hosts; on remote
+    // targets, fall through to the generic "connected but empty" message.
+    if !crate::connection_meta::is_loopback(host) {
+        return format!(
+            "no tabs available — connected {host}:{port} exposes 0 debuggable tabs. \
+             Open a tab in Firefox or relaunch with `ff-rdp launch --temp-profile` for a clean session.\n\
+             hint: run `ff-rdp doctor` for a full diagnostic."
+        );
+    }
+
     let in_use = port_owner::is_port_in_use(port);
     if !in_use {
         return format!(
@@ -107,7 +117,7 @@ fn no_tabs_message(host: &str, port: u16) -> String {
     let detail = match owner {
         Some(o) if !o.process_name.is_empty() => {
             let uptime = match o.uptime_s {
-                Some(s) => format!(" (uptime {})", crate::tab_target::format_uptime_short(s)),
+                Some(s) => format!(" (uptime {})", format_uptime_short(s)),
                 None => String::new(),
             };
             format!(" ({} PID {}){}", o.process_name, o.pid, uptime)
@@ -282,5 +292,22 @@ mod tests {
         // --tab 1 would give tab1, but --tab-id for tab3 should win
         let result = resolve_tab(&ts, Some("1"), Some("server1.conn0.tab3")).unwrap();
         assert_eq!(result.actor.as_ref(), "server1.conn0.tab3");
+    }
+
+    // --- format_uptime_short ---
+
+    #[test]
+    fn format_uptime_short_handles_minutes() {
+        assert_eq!(format_uptime_short(120), "2m");
+    }
+
+    #[test]
+    fn format_uptime_short_handles_hours() {
+        assert_eq!(format_uptime_short(3700), "1h1m");
+    }
+
+    #[test]
+    fn format_uptime_short_handles_days() {
+        assert_eq!(format_uptime_short(90_000), "1d1h");
     }
 }

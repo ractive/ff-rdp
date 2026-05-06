@@ -359,7 +359,11 @@ pub fn run(
     // at `doctor` for follow-up diagnosis.
     if port_owner::is_port_in_use(port) {
         let owner = port_owner::find_listener(port).ok().flatten();
-        let suggested = port.checked_add(10).unwrap_or(port);
+        // Suggest a nearby port that always differs from the conflicting one,
+        // even at the u16 upper bound where +10 would overflow.
+        let suggested = port
+            .checked_add(10)
+            .unwrap_or_else(|| port.saturating_sub(10));
         let detail = match &owner {
             Some(o) if !o.process_name.is_empty() => {
                 format!("by {} (PID {})", o.process_name, o.pid)

@@ -89,7 +89,7 @@ pub fn build(host: &str, port: u16, firefox_version: Option<u32>) -> Value {
     Value::Object(obj)
 }
 
-fn is_loopback(host: &str) -> bool {
+pub(crate) fn is_loopback(host: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 

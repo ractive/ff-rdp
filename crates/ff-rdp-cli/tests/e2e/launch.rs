@@ -74,7 +74,7 @@ fn launch_detects_port_collision() {
     );
 }
 
-/// `ff-rdp launch --help` must mention `ff-rdp doctor` somewhere in the
+/// `ff-rdp --help` (top-level) must mention `ff-rdp doctor` somewhere in the
 /// command reference so AI agents can discover it without grep-spelunking.
 #[test]
 fn help_mentions_doctor() {
