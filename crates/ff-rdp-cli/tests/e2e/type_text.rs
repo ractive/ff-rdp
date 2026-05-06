@@ -103,6 +103,167 @@ fn type_text_with_clear_flag() {
 // Error-path tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Flag-vs-positional ergonomics (iter-52)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn type_text_named_flags_work() {
+    let server = type_server("eval_result_type.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "type".to_owned(),
+        "--selector".to_owned(),
+        "input[name=email]".to_owned(),
+        "--text".to_owned(),
+        "test@example.com".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected --selector/--text form to succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    assert_eq!(json["results"]["typed"], true);
+    assert_eq!(json["meta"]["selector"], "input[name=email]");
+}
+
+#[test]
+fn type_text_named_with_clear_works() {
+    let server = type_server("eval_result_type.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "type".to_owned(),
+        "--selector".to_owned(),
+        "input[name=email]".to_owned(),
+        "--text".to_owned(),
+        "test@example.com".to_owned(),
+        "--clear".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected --selector/--text/--clear form to succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn type_text_conflict_positional_and_flag_selector_errors() {
+    // No server needed — the conflict is detected before connecting.
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args([
+            "type",
+            "input[name=email]",
+            "test@example.com",
+            "--selector",
+            "input[name=other]",
+        ])
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    assert!(
+        !output.status.success(),
+        "expected failure when both positional selector and --selector provided"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--selector") && stderr.contains("not both"),
+        "expected explicit conflict message, got: {stderr}"
+    );
+}
+
+#[test]
+fn type_text_conflict_positional_and_flag_text_errors() {
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args([
+            "type",
+            "input[name=email]",
+            "test@example.com",
+            "--text",
+            "other",
+        ])
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--text") && stderr.contains("not both"),
+        "expected explicit conflict message, got: {stderr}"
+    );
+}
+
+#[test]
+fn type_text_unknown_flag_emits_tailored_hint() {
+    // Generic clap error must be augmented with the type-specific hint.
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(["type", "--bogus-flag"])
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    assert!(!output.status.success(), "unknown flag should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("hint:") && stderr.contains("--selector/--text"),
+        "expected tailored hint after clap error, got: {stderr}"
+    );
+}
+
+// JS payload contains the framework-aware setter logic.  We can't drive a real
+// React tracker in a mock test, but we can assert the payload includes the
+// pieces that make framework support work.
+#[test]
+fn type_text_js_uses_native_prototype_setter() {
+    // The mock server captures requests in serve_one but doesn't expose them.
+    // Instead, verify the source: the type_text command file embeds the marker
+    // literals we depend on for framework compatibility.
+    let src = include_str!("../../src/commands/type_text.rs");
+    assert!(
+        src.contains("HTMLInputElement.prototype"),
+        "type JS should invoke native HTMLInputElement.prototype setter for React/Vue/Svelte trackers"
+    );
+    assert!(
+        src.contains("HTMLTextAreaElement.prototype"),
+        "type JS should also handle HTMLTextAreaElement"
+    );
+    assert!(
+        src.contains("HTMLSelectElement.prototype"),
+        "type JS should also handle HTMLSelectElement"
+    );
+    assert!(
+        src.contains("'input'") && src.contains("'change'"),
+        "type JS should dispatch input and change events"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Error-path tests
+// ---------------------------------------------------------------------------
+
 #[test]
 fn type_text_element_not_found_exits_nonzero() {
     let server = type_server("eval_result_element_not_found.json");
