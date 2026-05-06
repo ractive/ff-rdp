@@ -14,7 +14,7 @@ COMMAND REFERENCE:
     ff-rdp wait --selector S | --text T | --eval JS [--wait-timeout MS]
 
   Page content:
-    ff-rdp eval <SCRIPT> | --file PATH | --stdin [--stringify]
+    ff-rdp eval <SCRIPT> | --file PATH | --stdin [--stringify] [--no-isolate]
     ff-rdp page-text
     ff-rdp dom <SEL> [--text | --attrs | --text-attrs | --inner-html | --count]
     ff-rdp dom stats
@@ -23,7 +23,7 @@ COMMAND REFERENCE:
 
   Interaction:
     ff-rdp click <SEL>
-    ff-rdp type <SEL> <TEXT> [--clear]
+    ff-rdp type <SEL> <TEXT> [--clear]      # or: type --selector S --text T [--clear]
 
   Scrolling:
     ff-rdp scroll to <SEL> [--block top|center|bottom] [--smooth]
@@ -311,6 +311,15 @@ Prefer --file or --stdin for scripts that contain shell metacharacters,
 optional chaining (?.), template literals, or multi-line statements — shell
 quoting can mangle them and produce a SyntaxError at column 1.
 
+By default the script is wrapped in an isolated IIFE so `const`/`let`
+declarations don't leak across calls (Firefox's console actor shares scope
+across evaluations otherwise, so two consecutive `eval 'const x = 1; x'`
+calls would error with \"redeclaration of const x\"). Single expressions
+like `1 + 1` still return their value.
+
+Pass --no-isolate to opt out and share scope across calls — useful for
+incrementally building up helpers in an interactive debugging session.
+
 Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}
 
 When the result is a non-primitive (object, array), Firefox returns actor grip
@@ -334,6 +343,10 @@ to wrap the expression in JSON.stringify() and get the real data back.")]
         /// Wrap expression in JSON.stringify() to get actual values instead of actor grips
         #[arg(long)]
         stringify: bool,
+        /// Share scope across eval calls (skip the default IIFE isolation wrapping).
+        /// Useful when incrementally building up helpers across an interactive session.
+        #[arg(long)]
+        no_isolate: bool,
     },
     /// Extract visible page text (document.body.innerText)
     PageText,
@@ -478,11 +491,30 @@ With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...
         selector: String,
     },
     /// Type text into an input element matching a CSS selector
+    #[command(long_about = "Type text into an input element matching a CSS selector.
+
+Selector and text can be supplied positionally or via flags:
+  ff-rdp type 'input[name=email]' 'user@example.com'
+  ff-rdp type --selector 'input[name=email]' --text 'user@example.com'
+
+Both forms work identically; mixing positional and flag for the same value errors.
+
+The value is set via the native HTMLInputElement/HTMLTextAreaElement/HTMLSelectElement
+prototype setter so React/Vue/Svelte value trackers are invalidated, and `input`
+and `change` events are dispatched after the assignment.
+
+Output: {\"results\": {\"typed\": true, \"tag\": \"INPUT\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
     Type {
-        /// CSS selector of the input element
-        selector: String,
-        /// Text to type into the element
-        text: String,
+        /// CSS selector of the input element (positional, or use --selector)
+        selector_pos: Option<String>,
+        /// Text to type into the element (positional, or use --text)
+        text_pos: Option<String>,
+        /// CSS selector of the input element (flag form)
+        #[arg(long = "selector", value_name = "SELECTOR")]
+        selector_flag: Option<String>,
+        /// Text to type into the element (flag form)
+        #[arg(long = "text", value_name = "TEXT")]
+        text_flag: Option<String>,
         /// Clear the element's current value before typing
         #[arg(long)]
         clear: bool,

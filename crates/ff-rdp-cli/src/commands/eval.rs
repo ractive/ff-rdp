@@ -52,31 +52,61 @@ pub(crate) fn load_script(
     Ok(buf)
 }
 
+/// Build the final JS source from the user's script plus the `--stringify` and
+/// `--no-isolate` flags.
+///
+/// # Isolation (default)
+///
+/// Firefox's console actor shares its global scope across evaluations, so two
+/// consecutive `eval 'const x = 1; x'` calls fail with "redeclaration of const
+/// x". We wrap the user code in `(function() { "use strict"; return eval(<src>);
+/// })()` — a strict-mode IIFE. Direct `eval` inside a strict function uses its
+/// own variable environment for `const`/`let`/`var` declarations, so they don't
+/// leak across calls. `eval` returns the completion value of its last
+/// statement, so single expressions like `1 + 1` still return `2`.
+///
+/// # Stringify
+///
+/// `--stringify` wraps the expression in `JSON.stringify(...)` so the user gets
+/// real values instead of Firefox grip metadata. When combined with isolation,
+/// we evaluate the user code first (so declarations stay scoped), then pass the
+/// returned value through `JSON.stringify`.
+pub(crate) fn build_script(user_script: &str, stringify: bool, isolate: bool) -> String {
+    // JSON-encode the user source so it survives as a JS string literal.
+    let encoded = serde_json::to_string(user_script).unwrap_or_else(|e| {
+        // serde_json::to_string is infallible for &str — defensive fallback.
+        unreachable!("serde_json::to_string(&str) is infallible: {e}")
+    });
+
+    match (isolate, stringify) {
+        (false, false) => user_script.to_owned(),
+        (false, true) => format!(
+            "(function() {{ try {{ return JSON.stringify({user_script}); }} catch(e) {{ if (e instanceof TypeError && e.message.includes('circular')) return '{{\"error\":\"circular reference detected\"}}'; throw e; }} }})()"
+        ),
+        (true, false) => format!("(function() {{ \"use strict\"; return eval({encoded}); }})()"),
+        (true, true) => format!(
+            "(function() {{ \"use strict\"; try {{ return JSON.stringify(eval({encoded})); }} catch(e) {{ if (e instanceof TypeError && e.message.includes('circular')) return '{{\"error\":\"circular reference detected\"}}'; throw e; }} }})()"
+        ),
+    }
+}
+
 pub fn run(
     cli: &Cli,
     script: Option<&str>,
     file: Option<&str>,
     use_stdin: bool,
     stringify: bool,
+    no_isolate: bool,
 ) -> Result<(), AppError> {
     let script = load_script(script, file, use_stdin)?;
-
-    // When --stringify is set, wrap the expression so we get actual data instead of actor grips.
-    let script_owned;
-    let script = if stringify {
-        script_owned = format!(
-            "(function() {{ try {{ return JSON.stringify({script}); }} catch(e) {{ if (e instanceof TypeError && e.message.includes('circular')) return '{{\"error\":\"circular reference detected\"}}'; throw e; }} }})()"
-        );
-        script_owned.as_str()
-    } else {
-        script.as_str()
-    };
+    let isolate = !no_isolate;
+    let final_script = build_script(&script, stringify, isolate);
 
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
     let eval_result =
-        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, script)
+        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &final_script)
             .map_err(AppError::from)?;
 
     // If an exception occurred, print it to stderr and exit non-zero.
@@ -166,54 +196,59 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // --stringify wrapping tests
+    // build_script wrapping tests
     // ---------------------------------------------------------------------------
 
-    /// Helper: simulate what run() does with the stringify flag, without connecting
-    /// to Firefox — just test the script transformation logic.
-    fn apply_stringify(expr: &str, stringify: bool) -> String {
-        let script = expr.to_owned();
-        if stringify {
-            format!(
-                "(function() {{ try {{ return JSON.stringify({script}); }} catch(e) {{ if (e instanceof TypeError && e.message.includes('circular')) return '{{\"error\":\"circular reference detected\"}}'; throw e; }} }})()"
-            )
-        } else {
-            script
-        }
+    #[test]
+    fn build_script_no_isolate_no_stringify_passthrough() {
+        let s = build_script("document.title", false, false);
+        assert_eq!(s, "document.title");
     }
 
     #[test]
-    fn stringify_false_leaves_script_unchanged() {
-        let expr = "document.querySelectorAll('a')";
-        let result = apply_stringify(expr, false);
-        assert_eq!(result, expr);
+    fn build_script_stringify_only_wraps_in_json_stringify() {
+        let s = build_script("document.querySelectorAll('a')", true, false);
+        assert!(s.contains("JSON.stringify("));
+        assert!(s.contains("document.querySelectorAll('a')"));
+        assert!(s.contains("circular"));
+        // Must NOT use eval(...) when isolate is off.
+        assert!(!s.contains("eval("));
     }
 
     #[test]
-    fn stringify_true_wraps_in_json_stringify() {
-        let expr = "document.querySelectorAll('a')";
-        let result = apply_stringify(expr, true);
-        assert!(
-            result.contains("JSON.stringify("),
-            "should wrap in JSON.stringify: {result}"
-        );
-        assert!(
-            result.contains(expr),
-            "original expression should be present: {result}"
-        );
+    fn build_script_isolate_only_wraps_in_strict_eval_iife() {
+        let s = build_script("const x = 1; x", false, true);
+        assert!(s.starts_with("(function()"));
+        assert!(s.contains("\"use strict\""));
+        assert!(s.contains("return eval("));
+        // The encoded source should appear as a JSON-encoded string literal.
+        assert!(s.contains(r#""const x = 1; x""#));
     }
 
     #[test]
-    fn stringify_wraps_in_iife_with_circular_guard() {
-        let expr = "window.location";
-        let result = apply_stringify(expr, true);
-        assert!(
-            result.starts_with("(function()"),
-            "should be an IIFE: {result}"
-        );
-        assert!(
-            result.contains("circular"),
-            "should guard against circular refs: {result}"
-        );
+    fn build_script_isolate_preserves_single_expression() {
+        // Single expression must still be returnable through eval().
+        let s = build_script("1 + 1", false, true);
+        assert!(s.contains("return eval("));
+        assert!(s.contains(r#""1 + 1""#));
+    }
+
+    #[test]
+    fn build_script_isolate_and_stringify_combine() {
+        let s = build_script("document.querySelectorAll('a')", true, true);
+        assert!(s.contains("\"use strict\""));
+        assert!(s.contains("JSON.stringify(eval("));
+        assert!(s.contains("circular"));
+    }
+
+    #[test]
+    fn build_script_handles_special_chars() {
+        // Quotes, backslashes, newlines must be JSON-encoded safely.
+        let s = build_script("'a' + \"b\" + `c\nd`", false, true);
+        // The encoded string must not break the surrounding template.
+        assert!(s.starts_with("(function()"));
+        assert!(s.ends_with(")()"));
+        // Encoded string should contain the escaped newline.
+        assert!(s.contains(r"\n"));
     }
 }

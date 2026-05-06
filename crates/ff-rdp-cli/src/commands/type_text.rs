@@ -14,22 +14,38 @@ pub fn run(cli: &Cli, selector: &str, text: &str, clear: bool) -> Result<(), App
     let console_actor = ctx.target.console_actor.clone();
 
     let escaped_sel = escape_selector(selector);
-    // Escape the text value using JSON encoding so special chars are safe in JS strings.
     let escaped_text_json = serde_json::to_string(text)
         .map_err(|e| AppError::from(anyhow::anyhow!("failed to encode text argument: {e}")))?;
-    // escaped_text_json is already a JSON string literal (with quotes), use it directly.
-    let clear_stmt = if clear { "el.value = '';" } else { "" };
+    let clear_flag_js = if clear { "true" } else { "false" };
 
+    // React/Vue/Svelte track input values via a hidden tracker on the element
+    // (see React's input-value-tracking module).  Setting `el.value = ...`
+    // directly bypasses the framework setter, so the change is silently
+    // discarded.  We look up the native prototype setter on each invocation
+    // and call it to invalidate the tracker, then dispatch the synthetic
+    // `input`/`change` events the framework listeners expect.
     let js = format!(
-        r"(function() {{
+        r#"(function() {{
+  "use strict";
   var el = document.querySelector('{escaped_sel}');
   if (!el) throw new Error('Element not found: {escaped_sel} — use ff-rdp dom SELECTOR --count to verify the selector matches');
-  {clear_stmt}
-  el.value = {escaped_text_json};
+  var setter = null;
+  if (window.HTMLInputElement && el instanceof window.HTMLInputElement) {{
+    setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  }} else if (window.HTMLTextAreaElement && el instanceof window.HTMLTextAreaElement) {{
+    setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+  }} else if (window.HTMLSelectElement && el instanceof window.HTMLSelectElement) {{
+    setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+  }}
+  function applyValue(v) {{
+    if (setter) {{ setter.call(el, v); }} else {{ el.value = v; }}
+  }}
+  if ({clear_flag_js}) {{ applyValue(''); }}
+  applyValue({escaped_text_json});
   el.dispatchEvent(new Event('input', {{bubbles: true}}));
   el.dispatchEvent(new Event('change', {{bubbles: true}}));
   return '{JSON_SENTINEL}' + JSON.stringify({{typed: true, tag: el.tagName, value: el.value}});
-}})()"
+}})()"#
     );
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "type failed")?;

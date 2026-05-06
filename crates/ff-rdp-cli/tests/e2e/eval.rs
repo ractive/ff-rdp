@@ -333,6 +333,63 @@ fn eval_long_string_result() {
 }
 
 // ---------------------------------------------------------------------------
+// --no-isolate flag (iter-52)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn eval_no_isolate_flag_is_accepted() {
+    // --no-isolate opts out of the default IIFE wrapping; the result fixture
+    // is the same — we just verify the flag parses and the command succeeds.
+    let server = eval_server("eval_result_string.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "eval".to_owned(),
+        "--no-isolate".to_owned(),
+        "document.title".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+    assert!(
+        output.status.success(),
+        "expected success with --no-isolate, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn eval_default_isolation_succeeds_with_const_declaration() {
+    // The default IIFE wrapping must not break expression evaluation; the
+    // mock returns the configured fixture regardless of script contents,
+    // so this asserts the wrapping doesn't trip the CLI's own logic.
+    let server = eval_server("eval_result_number.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["eval".to_owned(), "const x = 1; x".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+    assert!(
+        output.status.success(),
+        "default isolate must accept `const x = 1; x`, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// ---------------------------------------------------------------------------
 // --stringify flag
 // ---------------------------------------------------------------------------
 

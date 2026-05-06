@@ -65,7 +65,15 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             file,
             stdin,
             stringify,
-        } => commands::eval::run(cli, script.as_deref(), file.as_deref(), *stdin, *stringify),
+            no_isolate,
+        } => commands::eval::run(
+            cli,
+            script.as_deref(),
+            file.as_deref(),
+            *stdin,
+            *stringify,
+            *no_isolate,
+        ),
         Command::Reload {
             wait_idle,
             idle_ms,
@@ -166,10 +174,42 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         },
         Command::Click { selector } => commands::click::run(cli, selector),
         Command::Type {
-            selector,
-            text,
+            selector_pos,
+            text_pos,
+            selector_flag,
+            text_flag,
             clear,
-        } => commands::type_text::run(cli, selector, text, *clear),
+        } => {
+            let selector = match (selector_pos.as_deref(), selector_flag.as_deref()) {
+                (Some(_), Some(_)) => {
+                    return Err(AppError::User(
+                        "pass selector either positionally or via --selector, not both".to_owned(),
+                    ));
+                }
+                (Some(s), None) | (None, Some(s)) => s,
+                (None, None) => {
+                    return Err(AppError::User(
+                        "type requires a selector — pass it positionally (\"ff-rdp type '<sel>' '<text>'\") or with --selector"
+                            .to_owned(),
+                    ));
+                }
+            };
+            let text = match (text_pos.as_deref(), text_flag.as_deref()) {
+                (Some(_), Some(_)) => {
+                    return Err(AppError::User(
+                        "pass text either positionally or via --text, not both".to_owned(),
+                    ));
+                }
+                (Some(t), None) | (None, Some(t)) => t,
+                (None, None) => {
+                    return Err(AppError::User(
+                        "type requires text — pass it positionally (\"ff-rdp type '<sel>' '<text>'\") or with --text"
+                            .to_owned(),
+                    ));
+                }
+            };
+            commands::type_text::run(cli, selector, text, *clear)
+        }
         Command::Wait {
             selector,
             text,
