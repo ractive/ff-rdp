@@ -348,7 +348,8 @@ pub fn run(cli: &Cli, urls: &[String], labels: Option<&[String]>) -> Result<(), 
     }
 
     let total = results.len();
-    let meta = json!({"host": cli.host, "port": cli.port});
+    let mut meta = json!({"host": cli.host, "port": cli.port});
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
     let envelope = output::envelope(&Value::Array(results), total, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Perf);

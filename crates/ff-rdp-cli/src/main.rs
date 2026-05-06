@@ -2,6 +2,7 @@ use clap::Parser;
 
 mod cli;
 mod commands;
+mod connection_meta;
 mod daemon;
 mod dispatch;
 mod error;
@@ -9,6 +10,7 @@ mod hints;
 mod output;
 mod output_controls;
 mod output_pipeline;
+mod port_owner;
 mod tab_target;
 
 use cli::Cli;

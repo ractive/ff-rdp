@@ -25,11 +25,12 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
     let mut ctx = connect_direct(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
-    let meta = json!({
+    let mut meta = json!({
         "host": cli.host,
         "port": cli.port,
         "storage_type": canonical_type,
     });
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
 
     if let Some(k) = key {
         // Single-key lookup: embed key as a JSON-encoded string literal to

@@ -42,7 +42,8 @@ pub fn run(cli: &Cli, action: NavAction) -> Result<(), AppError> {
     };
 
     let result = json!({"action": action_name});
-    let meta = json!({"host": cli.host, "port": cli.port});
+    let mut meta = json!({"host": cli.host, "port": cli.port});
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_source = match action {
@@ -252,7 +253,8 @@ fn emit_reload_result(cli: &Cli, requests_observed: u64, idle_at_ms: u64) -> Res
         "idle_at_ms": idle_at_ms,
         "requests_observed": requests_observed,
     });
-    let meta = json!({"host": cli.host, "port": cli.port});
+    let mut meta = json!({"host": cli.host, "port": cli.port});
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Reload);

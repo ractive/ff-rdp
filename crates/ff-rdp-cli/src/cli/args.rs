@@ -4,6 +4,7 @@ const AFTER_LONG_HELP: &str = "\
 COMMAND REFERENCE:
   Launch & connect:
     ff-rdp launch [--headless] [--profile PATH | --temp-profile] [--auto-consent] [--port PORT]
+    ff-rdp doctor                  # diagnose connection, port, tabs, version
     ff-rdp tabs
 
   Navigate & wait:
@@ -142,6 +143,16 @@ OUTPUT FORMAT:
   --jq always suppresses hints (pipeline needs clean data)
 
 TROUBLESHOOTING:
+  When stuck, run `ff-rdp doctor` first — it probes daemon, port owner,
+  RDP handshake, tab count, and Firefox version in one command.
+
+  Common failure modes:
+    \"port N is already in use\"      -> ff-rdp doctor   # who is on the port
+    \"no tabs available\"             -> ff-rdp doctor   # is Firefox even talking
+    \"could not connect to Firefox\"   -> ff-rdp doctor   # is the listener up
+    \"actor error from server1...\"    -> ff-rdp doctor   # stale connection?
+    Connection timeout / hang        -> ff-rdp doctor   # then increase --timeout
+
   Zero results:
     network returns 0 -> page loaded before connection; use navigate --with-network
     console returns 0 -> use --follow to stream, or eval 'console.log(\"test\")'
@@ -707,6 +718,22 @@ Output: {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profi
         #[arg(long)]
         auto_consent: bool,
     },
+    /// Diagnose the connection: daemon, port owner, RDP handshake, tabs, version
+    #[command(long_about = "Diagnose the ff-rdp connection top-to-bottom.
+
+Probes (in order):
+  1. Daemon registry — is a daemon running and reachable?
+  2. Port owner     — who is listening on --port (PID, process, uptime)?
+  3. RDP handshake  — can we receive a Firefox greeting?
+  4. Tabs           — how many tabs are exposed by the connected target?
+  5. Firefox version — within the tested compatibility range?
+
+Run this whenever a command fails with \"no tabs available\", a connection
+timeout, or any error you don't immediately understand. Exits 0 when every
+probe passes, 1 otherwise.
+
+Output: {\"results\": [{\"name\": \"...\", \"status\": \"pass|warn|fail\", \"detail\": \"...\", \"hint\": \"...\"}], \"total\": N, \"meta\": {...}}")]
+    Doctor,
 }
 
 #[derive(Subcommand)]

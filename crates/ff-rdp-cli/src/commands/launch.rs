@@ -10,6 +10,7 @@ use crate::error::AppError;
 use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
+use crate::port_owner;
 
 /// Locate the Firefox binary on the current platform.
 ///
@@ -352,6 +353,26 @@ pub fn run(
     let port = debug_port.unwrap_or(cli.port);
     let host = &cli.host;
 
+    // Detect port collision before spawning Firefox. A new --start-debugger-server
+    // <port> Firefox silently no-ops when the port is already held by another
+    // listener, so we surface the conflict ourselves with a hint that points
+    // at `doctor` for follow-up diagnosis.
+    if port_owner::is_port_in_use(port) {
+        let owner = port_owner::find_listener(port).ok().flatten();
+        let suggested = port.checked_add(10).unwrap_or(port);
+        let detail = match &owner {
+            Some(o) if !o.process_name.is_empty() => {
+                format!("by {} (PID {})", o.process_name, o.pid)
+            }
+            Some(o) => format!("by PID {}", o.pid),
+            None => "by another process".to_owned(),
+        };
+        return Err(AppError::User(format!(
+            "port {port} is already in use {detail}. \
+             hint: pass --port {suggested} to use a different port, run `ff-rdp doctor` for a full report, or stop the existing listener."
+        )));
+    }
+
     let firefox = find_firefox()?;
 
     let (mut cmd, profile_path) = build_command(
@@ -415,11 +436,12 @@ pub fn run(
                 "temp_profile": effective_temp_profile,
                 "auto_consent": auto_consent,
             });
-            let meta = json!({
+            let mut meta = json!({
                 "host": host,
                 "port": port,
                 "firefox": firefox.to_string_lossy().as_ref().to_owned(),
             });
+            crate::connection_meta::merge_into(&mut meta, host, port, None);
             let envelope = output::envelope(&result, 1, &meta);
             let hint_ctx = HintContext::new(HintSource::Launch);
             OutputPipeline::from_cli(cli)?

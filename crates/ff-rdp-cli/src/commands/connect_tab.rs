@@ -7,7 +7,6 @@ use ff_rdp_core::{
 use crate::cli::args::Cli;
 use crate::daemon::client::{ConnectionTarget, resolve_connection_target};
 use crate::error::AppError;
-use crate::tab_target::resolve_tab;
 
 /// Shared state after connecting to Firefox and resolving a tab target.
 pub struct ConnectedTab {
@@ -58,13 +57,14 @@ fn connect_to_firefox(
         ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout if !via_daemon => {
             AppError::User(format!(
                 "could not connect to Firefox at {}:{} — is Firefox running with --start-debugger-server {}?\n\
-                 Hint: run 'ff-rdp launch' to start Firefox with debugging enabled (safe alongside your normal browser)",
+                 hint: run `ff-rdp doctor` for a full diagnostic, or `ff-rdp launch` to start Firefox with debugging enabled.",
                 cli.host, cli.port, cli.port
             ))
         }
         ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout if via_daemon => {
             AppError::User(format!(
-                "could not connect to daemon on port {port} — try --no-daemon to connect directly to Firefox"
+                "could not connect to daemon on port {port} — try --no-daemon to connect directly to Firefox.\n\
+                 hint: run `ff-rdp doctor` to inspect daemon health."
             ))
         }
         other => AppError::from(other),
@@ -79,9 +79,17 @@ fn handshake_and_resolve_tab(
 ) -> Result<ConnectedTab, AppError> {
     connection.warn_if_version_unsupported();
 
+    crate::connection_meta::remember_version(connection.firefox_version());
+
     let tabs = RootActor::list_tabs(connection.transport_mut()).map_err(AppError::from)?;
 
-    let tab = resolve_tab(&tabs, cli.tab.as_deref(), cli.tab_id.as_deref())?;
+    let tab = crate::tab_target::resolve_tab_with_context(
+        &tabs,
+        cli.tab.as_deref(),
+        cli.tab_id.as_deref(),
+        &cli.host,
+        cli.port,
+    )?;
     let tab_actor = tab.actor.clone();
 
     let target_info =

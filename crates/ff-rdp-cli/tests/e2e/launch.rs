@@ -35,3 +35,57 @@ fn launch_help_exits_zero() {
         "help output should mention launch flags: {stdout}"
     );
 }
+
+/// `launch --port <busy>` must fail with a structured error that names
+/// `doctor`, instead of silently spawning a Firefox that no-ops because the
+/// port is taken.
+#[test]
+fn launch_detects_port_collision() {
+    // Bind to a port and hold it open for the duration of the test.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("local_addr").port();
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args([
+            "launch",
+            "--debug-port",
+            &port.to_string(),
+            "--temp-profile",
+        ])
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    drop(listener);
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit when port is in use; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("already in use"),
+        "stderr must mention 'already in use'; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("ff-rdp doctor") || stderr.contains("`ff-rdp doctor`"),
+        "stderr must reference `ff-rdp doctor`; got: {stderr}"
+    );
+}
+
+/// `ff-rdp launch --help` must mention `ff-rdp doctor` somewhere in the
+/// command reference so AI agents can discover it without grep-spelunking.
+#[test]
+fn help_mentions_doctor() {
+    let output = std::process::Command::new(ff_rdp_bin())
+        .arg("--help")
+        .output()
+        .expect("spawn");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("doctor"),
+        "top-level --help must mention `doctor`; got:\n{stdout}"
+    );
+}

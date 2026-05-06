@@ -34,6 +34,30 @@ cargo install ff-rdp-cli
 
 Download pre-built binaries from the [GitHub Releases](https://github.com/ractive/ff-rdp/releases) page. Binaries are available for Linux (x86_64, ARM64, glibc and musl), macOS (Apple Silicon), and Windows (x86_64, ARM64).
 
+## First contact (for AI agents)
+
+If anything goes wrong, run `ff-rdp doctor` first — it pinpoints connection,
+port, and version issues in one shot. The probes are:
+
+1. **Daemon registry** — is a daemon running and reachable?
+2. **Port owner** — who is listening on `--port` (PID, process, uptime)?
+3. **RDP handshake** — can we receive a Firefox greeting?
+4. **Tabs** — how many tabs are exposed by the connected target?
+5. **Firefox version compatibility** — within the tested range?
+
+A typical first-time session looks like:
+
+```bash
+ff-rdp launch --headless --temp-profile   # start a fresh Firefox
+ff-rdp doctor                             # confirm everything is healthy
+ff-rdp navigate https://example.com       # do work
+```
+
+When `ff-rdp launch` finds the requested port already in use it now fails
+loudly with the listener's PID and a hint pointing at `doctor`. Every
+known-failure-mode error in ff-rdp ends with a `hint:` line that names the
+next concrete command to run — connection-related ones name `doctor` first.
+
 ## Requirements
 
 - Firefox with remote debugging enabled:
@@ -72,6 +96,7 @@ Commands:
   inspect     Inspect a remote JavaScript object by its grip actor ID
   sources     List JavaScript/WASM sources loaded on the page
   launch      Launch Firefox with remote debugging enabled
+  doctor      Diagnose the connection (daemon, port, handshake, tabs, version)
   reload      Reload the page (--wait-idle blocks until network is idle)
   back        Go back in history
   forward     Go forward in history

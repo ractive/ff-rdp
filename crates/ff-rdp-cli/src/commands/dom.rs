@@ -29,7 +29,8 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "DOM query failed")?;
 
     let results = resolve_result(&mut ctx, &eval_result.result)?;
-    let meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
+    let mut meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
 
     // Apply output controls when results is an array (multi-element queries).
     // DOM results are in document order — no default sort applied.
@@ -76,7 +77,8 @@ pub fn run_count(cli: &Cli, selector: &str) -> Result<(), AppError> {
     };
 
     let results = json!({"selector": selector, "count": count});
-    let meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
+    let mut meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
     let envelope = output::envelope(&results, usize::try_from(count).unwrap_or(0), &meta);
 
     let hint_ctx = HintContext::new(HintSource::Dom).with_selector(selector);
@@ -216,7 +218,8 @@ pub fn run_stats(cli: &Cli) -> Result<(), AppError> {
     let stats: Value = serde_json::from_str(&json_str)
         .map_err(|e| AppError::from(anyhow::anyhow!("failed to parse DOM stats JSON: {e}")))?;
 
-    let meta = json!({"host": cli.host, "port": cli.port});
+    let mut meta = json!({"host": cli.host, "port": cli.port});
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
     let envelope = output::envelope(&stats, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::DomStats);

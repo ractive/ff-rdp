@@ -7,6 +7,7 @@ mod console;
 mod cookies;
 mod daemon;
 mod daemon_parity;
+mod doctor;
 mod dom;
 mod dom_tree;
 mod eval;

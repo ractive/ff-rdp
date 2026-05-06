@@ -101,7 +101,8 @@ pub fn run(cli: &Cli, selectors: &[String], visible_only: bool) -> Result<(), Ap
             render_geometry_text(&empty);
             return Ok(());
         }
-        let meta = json!({"host": cli.host, "port": cli.port, "selectors": selectors});
+        let mut meta = json!({"host": cli.host, "port": cli.port, "selectors": selectors});
+        crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
         let envelope = output::envelope(&empty, 0, &meta);
         let first_sel = selectors.first().map_or("*", String::as_str);
         let hint_ctx = HintContext::new(HintSource::Geometry).with_selector(first_sel);
@@ -157,7 +158,8 @@ pub fn run(cli: &Cli, selectors: &[String], visible_only: bool) -> Result<(), Ap
         "viewport": viewport,
     });
 
-    let meta = json!({"host": cli.host, "port": cli.port, "selectors": selectors});
+    let mut meta = json!({"host": cli.host, "port": cli.port, "selectors": selectors});
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
 
     // Text short-circuit: render a human-readable table instead of JSON.
     if cli.format == "text" && cli.jq.is_none() {

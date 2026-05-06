@@ -18,20 +18,22 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     .map_err(|e| match e {
         ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout => AppError::User(format!(
             "could not connect to Firefox at {}:{} — is Firefox running with --start-debugger-server {}?\n\
-             Hint: run 'ff-rdp launch' to start Firefox with debugging enabled (safe alongside your normal browser)",
+             hint: run `ff-rdp doctor` for a full diagnostic, or `ff-rdp launch` to start Firefox with debugging enabled.",
             cli.host, cli.port, cli.port
         )),
         other => AppError::from(other),
     })?;
 
     connection.warn_if_version_unsupported();
+    crate::connection_meta::remember_version(connection.firefox_version());
 
     let tabs = RootActor::list_tabs(connection.transport_mut()).map_err(AppError::from)?;
 
     let results_json: serde_json::Value = serde_json::to_value(&tabs)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("failed to serialize tabs: {e}")))?;
 
-    let meta = json!({"host": cli.host, "port": cli.port});
+    let mut meta = json!({"host": cli.host, "port": cli.port});
+    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
     let envelope = output::envelope(&results_json, tabs.len(), &meta);
 
     let hint_ctx = HintContext::new(HintSource::Tabs);
