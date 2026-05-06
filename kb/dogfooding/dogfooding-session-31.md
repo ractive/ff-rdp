@@ -10,6 +10,7 @@ tags:
 status: completed
 firefox_version: "149.0"
 tool_version: ff-rdp 0.1.0
+type: dogfooding
 ---
 
 # Dogfooding Session 31: ff-rdp on comparis.ch (Daemon Mode)

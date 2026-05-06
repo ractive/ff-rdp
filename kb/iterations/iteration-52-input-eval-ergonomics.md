@@ -2,7 +2,7 @@
 title: "Iteration 52: Input & Eval Ergonomics"
 type: iteration
 date: 2026-05-06
-status: complete
+status: completed
 branch: iter-52/input-eval-ergonomics
 tags:
   - iteration
@@ -16,7 +16,7 @@ tags:
 
 # Iteration 52: Input & Eval Ergonomics
 
-Second of three iterations addressing [[../dogfooding/dogfooding-session-40]]. Depends on [[iteration-51-onboarding-fixes]] landing first. Companion: [[iteration-53-stability-fixes]].
+Second of three iterations addressing [[dogfooding/dogfooding-session-40]]. Depends on [[iterations/iteration-51-onboarding-fixes]] landing first. Companion: [[iterations/iteration-53-stability-fixes]].
 
 Three surface-level papercuts that compound during interactive testing of modern web apps:
 

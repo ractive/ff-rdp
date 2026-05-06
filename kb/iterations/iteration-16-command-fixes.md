@@ -5,6 +5,7 @@ date: 2026-04-06
 tags:
   - iteration
   - bugfix
+type: iteration
 ---
 
 # Iteration 16: Command Fixes & jq

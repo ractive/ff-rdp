@@ -5,9 +5,9 @@ status: resolved
 priority: medium
 discovered: 2026-04-07
 tags:
-  - vitals
   - dogfooding
   - performance
+  - core-web-vitals
 ---
 
 # perf vitals: FCP and LCP null in non-headless Firefox

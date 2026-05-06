@@ -17,7 +17,7 @@ tags:
 
 # Iteration 51: Connection Diagnostics & Onboarding
 
-First of three iterations addressing [[../dogfooding/dogfooding-session-40]]. Focus: close the gap between "user runs first command" and "first successful page interaction." Companion iterations: [[iteration-52-input-eval-ergonomics]], [[iteration-53-stability-fixes]].
+First of three iterations addressing [[dogfooding/dogfooding-session-40]]. Focus: close the gap between "user runs first command" and "first successful page interaction." Companion iterations: [[iterations/iteration-52-input-eval-ergonomics]], [[iterations/iteration-53-stability-fixes]].
 
 The dogfooder spent ~10 minutes flailing because `launch` silently no-op'd against a port already held by a 13-day-old daily-driver Firefox, and every error pointed back at "run launch" — exactly what they had already done. This iteration fixes the diagnostic blind spot so the next first-time user (or AI agent) doesn't repeat it.
 

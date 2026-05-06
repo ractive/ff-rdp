@@ -6,6 +6,7 @@ tags:
   - iteration
   - bugfix
   - launch
+type: iteration
 ---
 
 # Iteration 15: Launch & Connection Reliability

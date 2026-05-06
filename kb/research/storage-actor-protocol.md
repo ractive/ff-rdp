@@ -1,7 +1,13 @@
 ---
 title: Firefox StorageActor Protocol Discovery
 date: 2026-04-06
-tags: [protocol, storage, cookies, firefox-rdp]
+tags:
+  - protocol
+  - storage
+  - cookies
+  - firefox-rdp
+type: research
+status: completed
 ---
 
 # Firefox StorageActor Protocol Discovery

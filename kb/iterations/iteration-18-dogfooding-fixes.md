@@ -6,6 +6,7 @@ tags:
   - bugfix
   - dogfooding
 branch: iter-18/dogfooding-fixes
+type: iteration
 ---
 
 # Iteration 18: Dogfooding Fixes

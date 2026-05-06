@@ -2,7 +2,7 @@
 title: "Iteration 53: Stability Fixes"
 type: iteration
 date: 2026-05-06
-status: complete
+status: completed
 branch: iter-53/stability-fixes
 tags:
   - iteration
@@ -15,7 +15,7 @@ tags:
 
 # Iteration 53: Stability Fixes
 
-Third of three iterations addressing [[../dogfooding/dogfooding-session-40]]. Depends on [[iteration-51-onboarding-fixes]] landing first (uses the `meta.connection` and Firefox-version probing introduced there). Companion: [[iteration-52-input-eval-ergonomics]].
+Third of three iterations addressing [[dogfooding/dogfooding-session-40]]. Depends on [[iterations/iteration-51-onboarding-fixes]] landing first (uses the `meta.connection` and Firefox-version probing introduced there). Companion: [[iterations/iteration-52-input-eval-ergonomics]].
 
 Three reliability bugs that are individually small but together make the CLI feel flaky on first contact:
 

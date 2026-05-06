@@ -4,12 +4,12 @@ status: completed
 date: 2026-04-06
 tags:
   - performance
-  - cwv
-  - web-vitals
   - lighthouse
   - api-design
+  - core-web-vitals
 related:
   - - firefox-rdp-protocol
+type: research
 ---
 
 # W3C Performance API & Core Web Vitals

@@ -5,10 +5,11 @@ tags:
   - dogfooding
   - testing
   - ux
-  - bugs
+  - bugfix
 status: completed
 firefox_version: "149.0"
 tool_version: ff-rdp 0.1.0
+type: dogfooding
 ---
 
 # Dogfooding Session 29: ff-rdp on comparis.ch

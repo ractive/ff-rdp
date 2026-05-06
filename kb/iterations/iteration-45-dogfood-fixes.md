@@ -10,8 +10,8 @@ tags:
   - screenshot
   - format
   - scroll
-  - a11y
   - sources
+  - accessibility
 ---
 
 # Iteration 45: Dogfooding Fixes

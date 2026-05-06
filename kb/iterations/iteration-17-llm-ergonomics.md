@@ -6,6 +6,7 @@ tags:
   - iteration
   - ux
   - llm
+type: iteration
 ---
 
 # Iteration 17: LLM Ergonomics & Convenience

@@ -6,6 +6,7 @@ tags:
   - research
   - skill-design
   - use-cases
+type: research
 ---
 
 # Website Analysis Use Cases for ff-rdp Skill Design

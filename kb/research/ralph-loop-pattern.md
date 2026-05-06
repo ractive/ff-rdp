@@ -1,8 +1,12 @@
 ---
 title: "Ralph Loop: Multi-Iteration Autonomous Orchestration"
 status: research
-tags: [automation, claude-code, workflow]
+tags:
+  - automation
+  - claude-code
+  - workflow
 date: 2026-04-06
+type: research
 ---
 
 # Ralph Loop Pattern

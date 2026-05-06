@@ -1,8 +1,13 @@
 ---
-title: "Screenshot Protocol Changes in Firefox 149"
+title: Screenshot Protocol Changes in Firefox 149
 type: research
-tags: [firefox, rdp, screenshot, protocol]
+tags:
+  - firefox
+  - rdp
+  - screenshot
+  - protocol
 date: 2026-04-08
+status: completed
 ---
 
 # Screenshot Protocol Changes in Firefox 149

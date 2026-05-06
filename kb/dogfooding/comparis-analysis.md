@@ -10,6 +10,7 @@ status: completed
 site: comparis.ch
 tool_version: ff-rdp 0.1.0
 firefox_version: "149.0"
+type: dogfooding
 ---
 
 # comparis.ch Website Analysis

@@ -7,6 +7,7 @@ tags:
   - iteration
   - cookies
   - storage-actor
+type: iteration
 ---
 
 # Iteration 11: Native Cookie Access via StorageActor
