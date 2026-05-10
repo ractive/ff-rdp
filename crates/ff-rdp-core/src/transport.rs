@@ -6,6 +6,14 @@ use serde_json::Value;
 
 use crate::error::ProtocolError;
 
+/// Maximum frame payload size accepted from a Firefox RDP peer.
+///
+/// 64 MiB comfortably exceeds the largest legitimate frame observed in the
+/// wild (full-page screenshot data URLs).  Frames declaring a larger length
+/// are rejected before any allocation is attempted — this prevents a
+/// malformed or malicious peer from causing an immediate OOM abort.
+pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
 /// Low-level transport for the Firefox Remote Debugging Protocol.
 ///
 /// Firefox uses a simple length-prefixed JSON framing over TCP:
@@ -211,6 +219,15 @@ pub fn recv_from(reader: &mut impl Read) -> Result<Value, ProtocolError> {
         .parse()
         .map_err(|e| ProtocolError::InvalidPacket(format!("length parse error: {e}")))?;
 
+    // Reject oversized frames before allocating.  A peer that announces more
+    // than MAX_FRAME_BYTES is either corrupted or malicious.
+    if length > MAX_FRAME_BYTES {
+        return Err(ProtocolError::FrameTooLarge {
+            declared: length,
+            max: MAX_FRAME_BYTES,
+        });
+    }
+
     let mut body = vec![0u8; length];
     reader.read_exact(&mut body).map_err(map_recv_io_error)?;
 
@@ -346,6 +363,30 @@ mod tests {
         assert!(
             matches!(err, ProtocolError::InvalidPacket(_)),
             "expected InvalidPacket, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn recv_rejects_frame_exceeding_max_size() {
+        // Declare a 100 MB frame (> MAX_FRAME_BYTES = 64 MiB).  No allocation
+        // should happen — the error must be returned before reading the body.
+        // We only send the length prefix followed by a colon; the cursor has
+        // no body bytes, so if recv_from tried to allocate and read we would
+        // get a RecvFailed instead of FrameTooLarge.
+        let declared = 100_000_000usize;
+        let prefix = format!("{declared}:");
+        let mut cursor = Cursor::new(prefix.into_bytes());
+
+        let err = recv_from(&mut cursor).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ProtocolError::FrameTooLarge {
+                    declared: 100_000_000,
+                    max: _
+                }
+            ),
+            "expected FrameTooLarge, got {err:?}"
         );
     }
 

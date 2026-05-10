@@ -1,15 +1,8 @@
 use serde_json::Value;
 
-use crate::actor::actor_request;
 use crate::actors::tab::TabInfo;
 use crate::error::ProtocolError;
 use crate::transport::RdpTransport;
-
-/// How long to wait before retrying a `listTabs` request that returned an
-/// incomplete response (no `tabs` field).  This can happen transiently in
-/// daemon mode immediately after a navigation, when the Firefox devtools
-/// protocol is still processing the page-unload internally.
-const LIST_TABS_RETRY_DELAY_MS: u64 = 150;
 
 /// Operations on the Firefox RDP root actor (fixed ID `"root"`).
 pub struct RootActor;
@@ -20,21 +13,43 @@ impl RootActor {
     /// Sends `listTabs` to the root actor and parses the response into typed
     /// [`TabInfo`] structs.
     ///
-    /// A single retry with a short delay is attempted if the first response is
-    /// missing the `tabs` field.  This guards against a transient race condition
-    /// observed in daemon mode immediately after a `navigate` command, where
-    /// Firefox occasionally returns an incomplete packet before the devtools
-    /// protocol has finished processing the navigation internally.
+    /// Firefox may interleave `tabListChanged` push events (which carry a
+    /// `type` field and no `tabs` field) between our `listTabs` request and
+    /// the actual reply.  We skip any packet from `"root"` that has a `type`
+    /// field — those are push events, not replies.  The first packet from
+    /// `"root"` without `type` is the authoritative listTabs reply.
     pub fn list_tabs(transport: &mut RdpTransport) -> Result<Vec<TabInfo>, ProtocolError> {
-        let mut response = actor_request(transport, "root", "listTabs", None)?;
+        use crate::error::ActorErrorKind;
+        use serde_json::json;
 
-        // Guard against a transient race where Firefox returns a response without
-        // the `tabs` field (observed after rapid navigate → eval sequences in daemon
-        // mode).  Retry once after a short pause before surfacing the error.
-        if response.get("tabs").is_none() {
-            std::thread::sleep(std::time::Duration::from_millis(LIST_TABS_RETRY_DELAY_MS));
-            response = actor_request(transport, "root", "listTabs", None)?;
-        }
+        let request = json!({"to": "root", "type": "listTabs"});
+        transport.send(&request)?;
+
+        // Read packets until we find the real listTabs reply: from root, no `type`.
+        let mut response = loop {
+            let msg = transport.recv()?;
+            let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
+            if from == "root" {
+                if msg.get("type").is_some() {
+                    // Push event (e.g. tabListChanged) — skip it.
+                    continue;
+                }
+                // Check for actor-level error response.
+                if let Some(error) = msg.get("error").and_then(Value::as_str) {
+                    return Err(ProtocolError::ActorError {
+                        actor: "root".to_owned(),
+                        kind: ActorErrorKind::from_code(error),
+                        error: error.to_owned(),
+                        message: msg
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned(),
+                    });
+                }
+                break msg;
+            }
+        };
 
         let tabs_value = response.get_mut("tabs").map(Value::take).ok_or_else(|| {
             ProtocolError::InvalidPacket("listTabs response missing 'tabs' field".into())
@@ -48,6 +63,7 @@ impl RootActor {
 
     /// Get root actor metadata (device, preferences, addons actor IDs).
     pub fn get_root(transport: &mut RdpTransport) -> Result<Value, ProtocolError> {
+        use crate::actor::actor_request;
         actor_request(transport, "root", "getRoot", None)
     }
 }
