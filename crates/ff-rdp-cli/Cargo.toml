@@ -27,6 +27,8 @@ dirs = { workspace = true }
 fs2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+getrandom = { workspace = true }
+tempfile = { workspace = true }
 url = { workspace = true }
 ureq = { workspace = true }
 

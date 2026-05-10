@@ -6,6 +6,25 @@ use anyhow::{Context, Result};
 use fs2::FileExt as _;
 use serde::{Deserialize, Serialize};
 
+/// Generate a 32-byte cryptographically-random token and return it as a
+/// 64-character lowercase hex string.
+pub(crate) fn generate_auth_token() -> Result<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|e| anyhow::anyhow!("generating random auth token: {e}"))?;
+    Ok(hex_encode(&bytes))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            use std::fmt::Write as _;
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonInfo {
     pub(crate) pid: u32,
@@ -14,6 +33,14 @@ pub struct DaemonInfo {
     pub(crate) firefox_port: u16,
     /// ISO 8601 timestamp of when the daemon was started.
     pub(crate) started_at: String,
+    /// 32-byte random auth token (hex-encoded, 64 chars).
+    ///
+    /// Every CLI client must send `{"auth": "<token>"}` as its first frame.
+    /// A mismatch causes the daemon to immediately close the connection.
+    /// Stored in `daemon.json` (already 0o600) so only the file owner can
+    /// connect — defeating DNS-rebinding attacks from browser tabs or
+    /// sandboxed processes that can reach localhost TCP but cannot read $HOME.
+    pub(crate) auth_token: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +224,7 @@ mod tests {
             firefox_host: "127.0.0.1".to_owned(),
             firefox_port: 6000,
             started_at: "2026-04-06T12:00:00Z".to_owned(),
+            auth_token: "a".repeat(64),
         }
     }
 
@@ -267,6 +295,7 @@ mod tests {
             firefox_host: "localhost".to_owned(),
             firefox_port: 6001,
             started_at: "2026-04-07T00:00:00Z".to_owned(),
+            auth_token: "b".repeat(64),
         };
         write_registry_in(dir.path(), &updated).expect("second write");
 
@@ -301,7 +330,7 @@ mod tests {
     #[test]
     fn read_invalid_port_zero_returns_error() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let json = r#"{"pid":1234,"proxy_port":0,"firefox_host":"127.0.0.1","firefox_port":6000,"started_at":"2026-04-09T00:00:00Z"}"#;
+        let json = r#"{"pid":1234,"proxy_port":0,"firefox_host":"127.0.0.1","firefox_port":6000,"started_at":"2026-04-09T00:00:00Z","auth_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
         fs::write(dir.path().join("daemon.json"), json).expect("write");
         let result = read_registry_in(dir.path());
         assert!(result.is_err(), "port 0 should fail validation");
@@ -310,7 +339,7 @@ mod tests {
     #[test]
     fn read_invalid_firefox_port_zero_returns_error() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let json = r#"{"pid":1234,"proxy_port":7000,"firefox_host":"127.0.0.1","firefox_port":0,"started_at":"2026-04-09T00:00:00Z"}"#;
+        let json = r#"{"pid":1234,"proxy_port":7000,"firefox_host":"127.0.0.1","firefox_port":0,"started_at":"2026-04-09T00:00:00Z","auth_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
         fs::write(dir.path().join("daemon.json"), json).expect("write");
         let result = read_registry_in(dir.path());
         assert!(result.is_err(), "firefox_port 0 should fail validation");
@@ -319,9 +348,42 @@ mod tests {
     #[test]
     fn read_invalid_pid_zero_returns_error() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let json = r#"{"pid":0,"proxy_port":7000,"firefox_host":"127.0.0.1","firefox_port":6000,"started_at":"2026-04-09T00:00:00Z"}"#;
+        let json = r#"{"pid":0,"proxy_port":7000,"firefox_host":"127.0.0.1","firefox_port":6000,"started_at":"2026-04-09T00:00:00Z","auth_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
         fs::write(dir.path().join("daemon.json"), json).expect("write");
         let result = read_registry_in(dir.path());
         assert!(result.is_err(), "pid 0 should fail validation");
+    }
+
+    #[test]
+    fn generate_auth_token_produces_64_hex_chars() {
+        let token = generate_auth_token().expect("token generation should succeed");
+        assert_eq!(token.len(), 64, "token must be 64 hex chars (32 bytes)");
+        assert!(
+            token.chars().all(|c| c.is_ascii_hexdigit()),
+            "token must be lowercase hex: {token:?}"
+        );
+    }
+
+    #[test]
+    fn generate_auth_token_is_not_all_zeros() {
+        // Statistically impossible (2^-256 probability) for a random token to
+        // be all zeros — this guards against a broken RNG returning zeroes.
+        let token = generate_auth_token().expect("token generation should succeed");
+        assert_ne!(token, "0".repeat(64), "token must not be all zeros");
+    }
+
+    #[test]
+    fn read_legacy_registry_without_auth_token_returns_error() {
+        // Old daemon.json files without auth_token must fail to parse,
+        // causing the client to fall back to spawning a new daemon that
+        // generates a token.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let json = r#"{"pid":1234,"proxy_port":7000,"firefox_host":"127.0.0.1","firefox_port":6000,"started_at":"2026-04-09T00:00:00Z"}"#;
+        fs::write(dir.path().join("daemon.json"), json).expect("write");
+        let result = read_registry_in(dir.path());
+        assert!(
+            result.is_err(),
+            "legacy registry without auth_token must fail to parse"
+        );
     }
 }

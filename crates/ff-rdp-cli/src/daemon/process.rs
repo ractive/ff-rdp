@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -57,6 +57,73 @@ pub fn is_process_alive(pid: u32) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Process signaling
+// ---------------------------------------------------------------------------
+
+/// Send SIGTERM (Unix) or TerminateProcess (Windows) to `pid`.
+///
+/// Errors are silently ignored — the caller checks PID liveness separately
+/// to decide whether the termination succeeded.
+pub fn kill_process(pid: u32) {
+    #[cfg(unix)]
+    {
+        // SAFETY: `kill(pid, SIGTERM)` sends a signal to another process.
+        // This is a well-defined POSIX operation with no memory-safety implications.
+        // The cast from u32 to pid_t is safe for any PID the OS hands us.
+        #[allow(clippy::cast_possible_wrap)]
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_TERMINATE, TerminateProcess,
+        };
+
+        // SAFETY: Standard Windows API call to open and terminate a process.
+        // The handle is closed immediately after use.
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if !handle.is_null() {
+                TerminateProcess(handle, 1);
+                CloseHandle(handle);
+            }
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Log file helpers
+// ---------------------------------------------------------------------------
+
+/// Open the daemon log file for appending.
+///
+/// On Unix the file is created with mode `0o600` so that log lines (which
+/// may contain URLs, cookies, or auth tokens) are not readable by other OS
+/// users on multi-user hosts.  On Windows the parent directory's ACL
+/// (inherited from `~/.ff-rdp` which is user-only) provides equivalent
+/// protection; no additional mode is set.
+fn open_log_file(path: &Path) -> Result<File> {
+    let mut opts = OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    opts.open(path)
+        .with_context(|| format!("opening daemon log file {}", path.display()))
+}
+
+// ---------------------------------------------------------------------------
 // Daemon spawning
 // ---------------------------------------------------------------------------
 
@@ -77,8 +144,11 @@ pub fn spawn_daemon(
     timeout_secs: u64,
 ) -> Result<()> {
     let log_path = registry::log_path()?;
-    let log_file = File::create(&log_path)
-        .with_context(|| format!("creating daemon log file {}", log_path.display()))?;
+    // Open the log with create+append so re-spawning the daemon appends rather
+    // than truncating.  On Unix we set 0o600 so URLs/tokens in log lines are
+    // not readable by other users.  On Windows, ACL inheritance from the
+    // parent directory (0o700 equivalent) is sufficient.
+    let log_file = open_log_file(&log_path)?;
     let stderr_file = log_file
         .try_clone()
         .context("cloning log file handle for stderr")?;

@@ -200,7 +200,7 @@ pub(crate) fn build_command(
     port: u16,
     headless: bool,
     profile: Option<&str>,
-    temp_profile: bool,
+    _temp_profile: bool,
     auto_consent: bool,
 ) -> Result<(std::process::Command, Option<PathBuf>), AppError> {
     let mut cmd = std::process::Command::new(firefox);
@@ -224,42 +224,26 @@ pub(crate) fn build_command(
         ensure_devtools_prefs(&path)?;
         cmd.arg("--profile").arg(&path);
         Some(path)
-    } else if temp_profile {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_micros());
-        let tmp =
-            std::env::temp_dir().join(format!("ff-rdp-profile-{}-{nonce}", std::process::id()));
-        std::fs::create_dir_all(&tmp).map_err(|e| {
-            AppError::User(format!(
-                "failed to create temporary profile directory {}: {e}",
-                tmp.display()
-            ))
-        })?;
-        std::fs::write(tmp.join("user.js"), USER_JS).map_err(|e| {
-            AppError::User(format!(
-                "failed to write user.js to temporary profile {}: {e}",
-                tmp.display()
-            ))
-        })?;
-        cmd.arg("--profile").arg(&tmp);
-        Some(tmp)
     } else {
-        // No explicit profile — auto-create a temporary profile with devtools
-        // prefs so the debugger server actually starts.  Without this,
-        // `launch` with a fresh default profile ignores --start-debugger-server
-        // because devtools.debugger.remote-enabled defaults to false.
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_micros());
-        let tmp =
-            std::env::temp_dir().join(format!("ff-rdp-profile-{}-{nonce}", std::process::id()));
-        std::fs::create_dir_all(&tmp).map_err(|e| {
-            AppError::User(format!(
-                "failed to create temporary profile directory {}: {e}",
-                tmp.display()
-            ))
-        })?;
+        // --temp-profile or no profile: create a fresh temporary profile with
+        // devtools prefs so the debugger server actually starts.
+        //
+        // We use tempfile::Builder with 16 random bytes so the directory name
+        // is unpredictable.  A predictable name like
+        // `/tmp/ff-rdp-profile-{pid}-{micros}` would allow a same-UID
+        // process to pre-create the directory and plant a malicious `user.js`
+        // symlink that rides our `fs::write` to overwrite arbitrary files.
+        //
+        // `into_path()` persists the directory so Firefox can read it; the
+        // existing cleanup path on process exit remains in effect.
+        let tmp = tempfile::Builder::new()
+            .prefix("ff-rdp-profile-")
+            .rand_bytes(16)
+            .tempdir_in(std::env::temp_dir())
+            .map_err(|e| {
+                AppError::User(format!("failed to create temporary profile directory: {e}"))
+            })?
+            .keep();
         std::fs::write(tmp.join("user.js"), USER_JS).map_err(|e| {
             AppError::User(format!(
                 "failed to write user.js to temporary profile {}: {e}",

@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::io::{BufReader, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,8 +8,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
-use ff_rdp_core::transport::{RdpTransport, encode_frame, recv_from};
-use ff_rdp_core::{ProtocolError, RootActor, TabActor, WatcherActor, WebConsoleActor};
+use ff_rdp_core::{
+    FramedReader, FramedWriter, ProtocolError, RdpTransport, RootActor, TabActor, WatcherActor,
+    WebConsoleActor,
+};
 
 use super::buffer::EventBuffer;
 use super::registry::{self, DaemonInfo};
@@ -23,8 +24,8 @@ const WATCHED_RESOURCE_TYPES: &[&str] = &["network-event", "console-message", "e
 struct StreamSubscriber {
     /// Unique client identity token (OS socket handle / file descriptor).
     id: RawHandle,
-    /// Write-half of the subscriber's TCP connection.
-    writer: TcpStream,
+    /// Write-half of the subscriber's TCP connection (typed, framing-aware).
+    writer: FramedWriter,
     /// Resource types this subscriber wants to receive.
     types: HashSet<String>,
 }
@@ -42,7 +43,7 @@ struct SharedState {
     /// The `RawHandle` is the identity of the *original* stream (not the
     /// `try_clone`d writer), so disconnect cleanup can reliably compare it
     /// against `client_id` which is taken from the original stream.
-    rpc_writer: Mutex<Option<(RawHandle, TcpStream)>>,
+    rpc_writer: Mutex<Option<(RawHandle, FramedWriter)>>,
     /// All currently-connected streaming subscribers.
     ///
     /// These are clients that have issued one or more `stream` daemon requests
@@ -61,6 +62,12 @@ struct SharedState {
     /// clients for the cookies or storage command) are forwarded to the RPC
     /// client instead, so that the protocol handshake completes correctly.
     watcher_actor: String,
+    /// 32-byte random auth token (hex-encoded, 64 chars).
+    ///
+    /// Every incoming client connection must present this token as its very
+    /// first frame: `{"auth": "<token>"}`.  A mismatch causes an immediate
+    /// close without forwarding any Firefox data, mitigating DNS-rebinding.
+    auth_token: String,
 }
 
 /// Main entry point for the daemon process.
@@ -110,6 +117,9 @@ pub(crate) fn run_daemon(
         .set_nonblocking(true)
         .context("setting listener non-blocking")?;
 
+    // Generate a random auth token for this daemon session.
+    let auth_token = registry::generate_auth_token().context("generating auth token")?;
+
     // Publish the port so CLI clients can find us.
     let info = DaemonInfo {
         pid: std::process::id(),
@@ -117,12 +127,13 @@ pub(crate) fn run_daemon(
         firefox_host: firefox_host.to_owned(),
         firefox_port,
         started_at: chrono::Utc::now().to_rfc3339(),
+        auth_token: auth_token.clone(),
     };
     registry::write_registry(&info).context("writing registry")?;
     eprintln!("daemon: listening on port {proxy_port}, PID {}", info.pid);
 
     // Split the transport so the reader and writer can live on separate threads.
-    let (firefox_reader, firefox_writer) = transport.into_parts();
+    let (firefox_reader, firefox_writer) = transport.split();
 
     let state = Arc::new(SharedState {
         buffer: Mutex::new(EventBuffer::new()),
@@ -133,6 +144,7 @@ pub(crate) fn run_daemon(
         last_activity: Mutex::new(Instant::now()),
         shutdown: AtomicBool::new(false),
         watcher_actor: watcher_actor.as_ref().to_owned(),
+        auth_token,
     });
 
     setup_signal_handler(&state);
@@ -200,14 +212,9 @@ fn setup_signal_handler(state: &Arc<SharedState>) {
 /// - All other messages (RDP request responses) are forwarded to the current
 ///   RPC client, if any.
 /// - A 1-second read timeout lets us check `state.shutdown` periodically.
-fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: BufReader<TcpStream>) {
+fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
     // Apply a short read timeout so we can check the shutdown flag.
-    // The timeout is set on the underlying stream; errors from it are
-    // converted to `ProtocolError::Timeout` by `recv_from`.
-    if let Err(e) = reader
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_secs(1)))
-    {
+    if let Err(e) = reader.set_read_timeout(Some(Duration::from_secs(1))) {
         eprintln!("daemon: could not set Firefox read timeout: {e}");
     }
 
@@ -216,7 +223,7 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: BufReader<TcpStream
             break;
         }
 
-        match recv_from(&mut reader) {
+        match reader.recv() {
             Ok(msg) => {
                 // unwrap: poisoned mutex means a thread panicked — the daemon
                 // is in an inconsistent state and crashing is the right action.
@@ -303,16 +310,13 @@ fn dispatch_console_push_event(state: &SharedState, msg: &Value) {
             return;
         }
     };
-    let frame = encode_frame(&json);
 
     // unwrap: poisoned mutex — daemon should crash.
     let mut subs = state.stream_subs.lock().unwrap();
     let mut dead: Vec<usize> = Vec::new();
 
     for (i, sub) in subs.iter_mut().enumerate() {
-        if sub.types.contains(target_resource_type)
-            && sub.writer.write_all(frame.as_bytes()).is_err()
-        {
+        if sub.types.contains(target_resource_type) && sub.writer.send_raw(&json).is_err() {
             dead.push(i);
         }
     }
@@ -356,7 +360,6 @@ fn dispatch_watcher_event(state: &SharedState, msg: &Value) {
             return;
         }
     };
-    let frame = encode_frame(&json);
 
     // Forward to each subscriber that wants at least one type in this event.
     // Collect indices of dead subscribers for removal after iteration.
@@ -364,7 +367,7 @@ fn dispatch_watcher_event(state: &SharedState, msg: &Value) {
     for (i, sub) in subs.iter_mut().enumerate() {
         let wants = event_types.iter().any(|t| sub.types.contains(*t));
         if wants {
-            if sub.writer.write_all(frame.as_bytes()).is_err() {
+            if sub.writer.send_raw(&json).is_err() {
                 dead.push(i);
             } else {
                 for t in &event_types {
@@ -402,7 +405,7 @@ fn dispatch_watcher_event(state: &SharedState, msg: &Value) {
 /// The lock is held for the entire write to prevent interleaved frames from
 /// the firefox-reader thread and the client-handler thread.
 /// On write error the writer is cleared (treated as disconnected).
-fn forward_to_rpc_client(rpc_writer: &Mutex<Option<(RawHandle, TcpStream)>>, msg: &Value) {
+fn forward_to_rpc_client(rpc_writer: &Mutex<Option<(RawHandle, FramedWriter)>>, msg: &Value) {
     // Serialise first — no lock needed.
     let json = match serde_json::to_string(msg) {
         Ok(s) => s,
@@ -411,14 +414,13 @@ fn forward_to_rpc_client(rpc_writer: &Mutex<Option<(RawHandle, TcpStream)>>, msg
             return;
         }
     };
-    let frame = encode_frame(&json);
 
     // unwrap: poisoned mutex means a thread panicked — daemon should crash.
     let mut guard = rpc_writer.lock().unwrap();
     let Some((_id, writer)) = guard.as_mut() else {
         return;
     };
-    if writer.write_all(frame.as_bytes()).is_err() {
+    if writer.send_raw(&json).is_err() {
         // Client disconnected while we were trying to write.
         *guard = None;
     }
@@ -502,7 +504,7 @@ fn buffer_watcher_event(buffer: &Mutex<EventBuffer>, msg: &Value) {
 fn accept_loop(
     state: &Arc<SharedState>,
     listener: &TcpListener,
-    firefox_writer: &Arc<Mutex<TcpStream>>,
+    firefox_writer: &Arc<Mutex<ff_rdp_core::FramedWriter>>,
     idle_timeout: Duration,
 ) -> Result<()> {
     loop {
@@ -561,7 +563,7 @@ fn accept_loop(
 fn handle_client(
     state: &Arc<SharedState>,
     stream: TcpStream,
-    firefox_writer: &Arc<Mutex<TcpStream>>,
+    firefox_writer: &Arc<Mutex<ff_rdp_core::FramedWriter>>,
 ) -> Result<()> {
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
@@ -569,24 +571,53 @@ fn handle_client(
     // Best-effort: disable Nagle for lower latency.
     let _ = stream.set_nodelay(true);
 
-    // Send the cached greeting so the client can identify the connected Firefox.
-    let greeting_json = serde_json::to_string(&state.greeting).context("serialising greeting")?;
-    let greeting_frame = encode_frame(&greeting_json);
+    // Auth handshake: the very first frame from the client must be
+    // `{"auth": "<token>"}`.  Any mismatch (wrong token, malformed frame,
+    // or timeout) causes an immediate close without leaking any Firefox data.
+    //
+    // A short timeout is applied for the auth read only so that probing
+    // connections (e.g. from port-scanners) don't hold a thread open forever.
+    let auth_stream = stream
+        .try_clone()
+        .context("cloning client stream for auth read")?;
+    auth_stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .context("setting auth read timeout")?;
+    let mut auth_reader = FramedReader::from_stream(auth_stream);
 
-    // Write the greeting before registering the client as the forwarding
-    // target — no concurrent writes are possible yet.
-    {
-        let mut writer = stream
-            .try_clone()
-            .context("cloning client stream for greeting")?;
-        writer
-            .write_all(greeting_frame.as_bytes())
-            .context("sending greeting to CLI client")?;
+    let auth_ok = match auth_reader.recv() {
+        Ok(msg) => msg.get("auth").and_then(Value::as_str) == Some(state.auth_token.as_str()),
+        Err(_) => false,
+    };
+
+    if !auth_ok {
+        eprintln!("daemon: client failed auth — closing connection");
+        // Stream is dropped here, closing the connection.
+        return Ok(());
     }
+
+    // Restore the normal per-operation read timeout after auth.
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .context("restoring client read timeout after auth")?;
 
     // Capture the client identity from the *original* stream before any
     // try_clone() calls — cloned streams get a different OS handle.
     let client_id = stream.as_raw_fd_or_handle();
+
+    // Send the cached greeting so the client can identify the connected Firefox.
+    // Write the greeting before registering the client as the forwarding
+    // target — no concurrent writes are possible yet.
+    {
+        let mut greeting_writer = FramedWriter::from_stream(
+            stream
+                .try_clone()
+                .context("cloning client stream for greeting")?,
+        );
+        greeting_writer
+            .send(&state.greeting)
+            .map_err(|e| anyhow::anyhow!("sending greeting to CLI client: {e}"))?;
+    }
 
     // Register this client as the current RPC forwarding target.
     // The previous RPC client (if any) is simply replaced.
@@ -599,22 +630,24 @@ fn handle_client(
     // run as the same local user on localhost) but can cause confusing
     // behaviour when running parallel CLI invocations through the daemon.
     // Workaround: use `--no-daemon` for parallel CLI usage.
-    let client_writer = stream
-        .try_clone()
-        .context("cloning client stream for RPC forwarding")?;
     {
+        let rpc_writer = FramedWriter::from_stream(
+            stream
+                .try_clone()
+                .context("cloning client stream for RPC forwarding")?,
+        );
         let mut guard = state.rpc_writer.lock().unwrap();
-        *guard = Some((client_id, client_writer));
+        *guard = Some((client_id, rpc_writer));
     }
 
-    let mut reader = BufReader::new(stream);
+    let mut reader = FramedReader::from_stream(stream);
 
     loop {
         if state.shutdown.load(Ordering::Relaxed) {
             break;
         }
 
-        match recv_from(&mut reader) {
+        match reader.recv() {
             Ok(msg) => {
                 *state.last_activity.lock().unwrap() = Instant::now();
 
@@ -623,26 +656,27 @@ fn handle_client(
                     // Provide a fresh writer clone for this client so that
                     // handle_daemon_message can register a StreamSubscriber
                     // that writes to the correct connection.
-                    let writer_for_sub = reader.get_ref().try_clone().ok();
+                    let writer_for_sub = reader
+                        .try_clone_stream()
+                        .ok()
+                        .map(FramedWriter::from_stream);
                     let response = handle_daemon_message(state, &msg, client_id, writer_for_sub);
                     let resp_json =
                         serde_json::to_string(&response).context("serialising daemon response")?;
-                    let frame = encode_frame(&resp_json);
                     // Write through the rpc_writer mutex to prevent interleaving
                     // with forward_to_rpc_client on the firefox-reader thread.
                     let mut guard = state.rpc_writer.lock().unwrap();
                     if let Some((_id, w)) = guard.as_mut() {
-                        w.write_all(frame.as_bytes())
-                            .context("sending daemon response to CLI client")?;
+                        w.send_raw(&resp_json).map_err(|e| {
+                            anyhow::anyhow!("sending daemon response to CLI client: {e}")
+                        })?;
                     }
                 } else {
                     // Forward to Firefox.
-                    let json = serde_json::to_string(&msg).context("serialising CLI message")?;
-                    let frame = encode_frame(&json);
                     firefox_writer
                         .lock()
                         .unwrap()
-                        .write_all(frame.as_bytes())
+                        .send(&msg)
                         .context("forwarding CLI message to Firefox")?;
                 }
             }
@@ -729,7 +763,7 @@ fn handle_daemon_message(
     state: &SharedState,
     msg: &Value,
     client_id: RawHandle,
-    client_writer: Option<TcpStream>,
+    client_writer: Option<FramedWriter>,
 ) -> Value {
     let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
 
@@ -823,6 +857,14 @@ fn handle_daemon_message(
                 "stream_subscriber_count": subscriber_count,
             })
         }
+        "shutdown" => {
+            // Set the shutdown flag so the accept loop and Firefox reader exit.
+            state.shutdown.store(true, Ordering::Relaxed);
+            json!({
+                "from": "daemon",
+                "shutdown": true,
+            })
+        }
         other => {
             json!({
                 "from": "daemon",
@@ -857,6 +899,7 @@ mod tests {
             last_activity: Mutex::new(Instant::now()),
             shutdown: AtomicBool::new(false),
             watcher_actor: String::new(),
+            auth_token: "test-token".to_owned(),
         }
     }
 
@@ -1347,7 +1390,7 @@ mod tests {
         // Register a stream subscriber for "console-message".
         state.stream_subs.lock().unwrap().push(StreamSubscriber {
             id: 1,
-            writer: server_side,
+            writer: FramedWriter::from_stream(server_side),
             types: {
                 let mut s = HashSet::new();
                 s.insert("console-message".to_owned());
@@ -1398,7 +1441,7 @@ mod tests {
         // Register a stream subscriber for "error-message".
         state.stream_subs.lock().unwrap().push(StreamSubscriber {
             id: 2,
-            writer: server_side,
+            writer: FramedWriter::from_stream(server_side),
             types: {
                 let mut s = HashSet::new();
                 s.insert("error-message".to_owned());
@@ -1447,7 +1490,7 @@ mod tests {
         // Register subscriber for "network-event" only — NOT console-message.
         state.stream_subs.lock().unwrap().push(StreamSubscriber {
             id: 3,
-            writer: server_side,
+            writer: FramedWriter::from_stream(server_side),
             types: {
                 let mut s = HashSet::new();
                 s.insert("network-event".to_owned());

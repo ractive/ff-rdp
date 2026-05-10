@@ -45,6 +45,25 @@ impl RdpConnection {
         })
     }
 
+    /// Wrap an already-authenticated transport as an [`RdpConnection`].
+    ///
+    /// Use this when the greeting has already been consumed as part of an
+    /// out-of-band auth handshake (e.g. when connecting through the daemon,
+    /// which sends the greeting only after the auth token is validated).
+    ///
+    /// The Firefox version and version-compatibility check are skipped since
+    /// there is no greeting to parse.
+    pub fn from_authenticated_transport(transport: RdpTransport) -> Self {
+        // Use a sensible default timeout. The transport already has the correct
+        // socket timeout set from the `connect_raw` call.
+        let timeout = std::time::Duration::from_secs(30);
+        Self {
+            transport,
+            timeout,
+            firefox_version: None,
+        }
+    }
+
     /// Returns a mutable reference to the underlying transport for actor
     /// request/response operations.
     pub fn transport_mut(&mut self) -> &mut RdpTransport {

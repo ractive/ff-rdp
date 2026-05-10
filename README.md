@@ -74,50 +74,11 @@ cargo build --release
 
 ## Usage
 
-```
-ff-rdp [OPTIONS] <COMMAND>
+Run `ff-rdp --help` for the full command surface and options.
 
-Commands:
-  tabs        List open browser tabs
-  navigate    Navigate to a URL (with --with-network for traffic capture)
-  eval        Evaluate JavaScript (positional, --file <PATH>, or --stdin)
-  dom         Query DOM elements by CSS selector (--outer-html, --inner-html, --text, --attrs)
-  page-text   Extract visible page text (document.body.innerText)
-  computed    Get computed CSS styles for elements (--prop <NAME>, --all)
-  console     Read console messages (--level, --pattern; output includes summary with totals)
-  network     Show network requests (with --filter, --method filters)
-  perf        Query Performance API entries and Core Web Vitals
-  click       Click an element matching a CSS selector
-  type        Type text into an input element matching a CSS selector
-  wait        Wait for a condition to become true (polls every 100ms)
-  cookies     List cookies via StorageActor (includes httpOnly, secure, sameSite)
-  storage     Read web storage (localStorage or sessionStorage)
-  screenshot  Capture a screenshot (--full-page, --viewport-height N, --base64)
-  inspect     Inspect a remote JavaScript object by its grip actor ID
-  sources     List JavaScript/WASM sources loaded on the page
-  launch      Launch Firefox with remote debugging enabled
-  doctor      Diagnose the connection (daemon, port, handshake, tabs, version)
-  reload      Reload the page (--wait-idle blocks until network is idle)
-  back        Go back in history
-  forward     Go forward in history
-  scroll      Scroll the page or an element (to/by/container/until/text)
-  responsive  Test layout across viewport widths
-  a11y        Inspect accessibility tree and check WCAG contrast
-  geometry    Get element bounding rects, visibility, overlap detection
-  snapshot    Dump structured page snapshot for LLM consumption
-  styles      Inspect CSS applied rules or box model layout
+Key global flags: `--host`, `--port`, `--tab`, `--jq`, `--timeout`, `--format text`, `--no-daemon`.
 
-Options:
-  --host <HOST>              Firefox debug server host [default: localhost]
-  --port <PORT>              Firefox debug server port [default: 6000]
-  --tab <TAB>                Target tab by index (1-based) or URL substring
-  --tab-id <TAB_ID>          Target tab by exact actor ID
-  --jq <JQ>                  jq filter expression applied to output
-  --timeout <TIMEOUT>        Operation timeout in milliseconds [default: 5000]
-  --no-daemon                Don't use or start a daemon (direct Firefox connection)
-  --daemon-timeout <SECS>    Daemon idle timeout in seconds [default: 300]
-  --allow-unsafe-urls        Allow javascript: and data: URLs in navigate
-```
+`--no-daemon`: connect directly to Firefox, bypassing the background daemon. The daemon (default) keeps a persistent Firefox connection and buffers events for streaming commands (`--follow`). Use `--no-daemon` for one-off commands or to debug daemon issues.
 
 All output is JSON with a standard envelope (`results`, `total`, `meta`). Use `--jq` to filter:
 
