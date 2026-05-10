@@ -46,9 +46,29 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
         let drain_result = drain_network_from_daemon(ctx.transport_mut());
         let _ = ctx.transport_mut().set_read_timeout(Some(restored_timeout));
         drain_result.map_err(|e| {
+            // Downcast through the anyhow chain to find a ProtocolError::Timeout
+            // or an io::Error with kind WouldBlock/TimedOut — both indicate the
+            // socket read deadline fired rather than a real protocol failure.
             if let AppError::Internal(ref inner) = e {
-                let msg = format!("{inner:#}");
-                if msg.contains("timed out") || msg.contains("WouldBlock") {
+                let mut is_timeout = false;
+                for cause in inner.chain() {
+                    if let Some(pe) = cause.downcast_ref::<ProtocolError>()
+                        && matches!(pe, ProtocolError::Timeout)
+                    {
+                        is_timeout = true;
+                        break;
+                    }
+                    if let Some(io_err) = cause.downcast_ref::<std::io::Error>()
+                        && matches!(
+                            io_err.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        )
+                    {
+                        is_timeout = true;
+                        break;
+                    }
+                }
+                if is_timeout {
                     return AppError::Timeout(format!(
                         "network drain timed out — try --timeout {drain_timeout_ms}"
                     ));

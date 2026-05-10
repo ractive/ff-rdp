@@ -70,7 +70,7 @@ Features not yet implemented. Items completed in past iterations are marked done
 - [ ] crates.io publication
 - [ ] Nix flake
 
-## Carryover from iter-54 / iter-55 (added 2026-05-10 after [[#ultrareview]])
+## Carryover from iter-54 / iter-55 (added 2026-05-10 after ultrareview)
 
 Items that didn't land in iter-54/55 and weren't yet scoped into a follow-up iteration. Keep here until promoted into a planned iteration.
 

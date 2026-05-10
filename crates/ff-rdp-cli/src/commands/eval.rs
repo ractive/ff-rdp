@@ -75,9 +75,10 @@ pub(crate) fn build_script(user_script: &str, stringify: bool, isolate: bool) ->
     // The stringify helper: if the value is already a string, return it as-is;
     // otherwise JSON.stringify it. This prevents double-encoding when the JS
     // expression already evaluates to a string (e.g. `document.title`).
-    // BigInt/Symbol cannot be JSON.stringify'd either, so we fall back to
-    // String() coercion for those — consistent with the pre-existing circular
-    // reference fallback that returns a plain string.
+    // Circular references throw a TypeError from JSON.stringify; we catch
+    // that specific case and return a marker JSON object so the eval still
+    // succeeds. All other thrown values (including BigInt's TypeError and
+    // Symbol's TypeError) propagate up as eval exceptions.
     const STRINGIFY_HELPER: &str = "(function(v){if(typeof v===\"string\")return v;try{return JSON.stringify(v);}catch(e){if(e instanceof TypeError&&e.message.includes(\"circular\"))return \"{\\\"error\\\":\\\"circular reference detected\\\"}\";throw e;}})";
 
     // JSON-encode the user source so it survives as a JS string literal.

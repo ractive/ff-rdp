@@ -136,8 +136,8 @@ pub(crate) fn build_geometry_js(selectors: &[String], visible_only: bool) -> Str
     });
     let visible_only_str = if visible_only { "true" } else { "false" };
     RESPONSIVE_JS_TEMPLATE
-        .replace("__SELECTORS__", &selectors_json)
         .replace("__VISIBLE_ONLY__", visible_only_str)
+        .replace("__SELECTORS__", &selectors_json)
 }
 
 /// Build a JS snippet that applies the CSS-based viewport simulation for the
