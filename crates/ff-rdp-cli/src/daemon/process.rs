@@ -119,8 +119,23 @@ fn open_log_file(path: &Path) -> Result<File> {
         use std::os::unix::fs::OpenOptionsExt as _;
         opts.mode(0o600);
     }
-    opts.open(path)
-        .with_context(|| format!("opening daemon log file {}", path.display()))
+    let file = opts
+        .open(path)
+        .with_context(|| format!("opening daemon log file {}", path.display()))?;
+    // `mode(0o600)` only takes effect on file creation. If the log already
+    // existed with broader permissions (e.g. from a daemon built before this
+    // change), force-tighten it now so log lines (URLs, cookies, auth tokens)
+    // remain unreadable to other OS users.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        // Best-effort: failure here doesn't block daemon start (e.g. on
+        // exotic filesystems that reject chmod), but on a normal POSIX
+        // setup it should succeed.
+        let _ = std::fs::set_permissions(path, perms);
+    }
+    Ok(file)
 }
 
 // ---------------------------------------------------------------------------

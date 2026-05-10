@@ -101,15 +101,18 @@ fn connect_to_firefox(
             .map_err(|e| AppError::Internal(anyhow::anyhow!("sending daemon auth frame: {e}")))?;
 
         // Read the greeting (daemon sends it after successful auth).
-        transport.recv().map_err(|e| {
+        let greeting = transport.recv().map_err(|e| {
             AppError::User(format!(
                 "daemon auth rejected or connection closed (wrong token?): {e}\n\
                  hint: stop the running daemon or use --no-daemon."
             ))
         })?;
 
-        // Now wrap in RdpConnection (which skips the greeting since we already read it).
-        return Ok(RdpConnection::from_authenticated_transport(transport));
+        // Now wrap in RdpConnection. We already consumed the greeting; pass it
+        // through so the Firefox version stays available for connection_meta.
+        return Ok(RdpConnection::from_authenticated_transport(
+            transport, &greeting,
+        ));
     }
 
     RdpConnection::connect(host, port, timeout).map_err(|e| match e {

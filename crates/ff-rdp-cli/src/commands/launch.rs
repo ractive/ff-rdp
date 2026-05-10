@@ -192,15 +192,15 @@ user_pref("devtools.chrome.enabled", true);
 /// `-no-remote` is always passed first so the new instance is fully
 /// independent of any already-running Firefox.
 ///
-/// For `temp_profile`, a new directory is created under the OS temp dir and
-/// a `user.js` is written into it to suppress first-run UI. The profile path
-/// is included in the returned value so callers can surface it.
+/// When `profile` is `None`, a fresh temp profile is created under the OS
+/// temp dir with a `user.js` that enables the remote debugger and suppresses
+/// first-run UI. The profile path is included in the returned value so
+/// callers can surface it.
 pub(crate) fn build_command(
     firefox: &Path,
     port: u16,
     headless: bool,
     profile: Option<&str>,
-    _temp_profile: bool,
     auto_consent: bool,
 ) -> Result<(std::process::Command, Option<PathBuf>), AppError> {
     let mut cmd = std::process::Command::new(firefox);
@@ -363,14 +363,7 @@ pub fn run(
 
     let firefox = find_firefox()?;
 
-    let (mut cmd, profile_path) = build_command(
-        &firefox,
-        port,
-        headless,
-        profile,
-        temp_profile,
-        auto_consent,
-    )?;
+    let (mut cmd, profile_path) = build_command(&firefox, port, headless, profile, auto_consent)?;
 
     let mut child = cmd.spawn().map_err(|e| {
         AppError::User(format!(
@@ -484,7 +477,7 @@ mod tests {
     #[test]
     fn build_command_always_includes_no_remote() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 6000, false, None, false, false).unwrap();
+        let (cmd, _) = build_command(&tmp, 6000, false, None, false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -496,7 +489,7 @@ mod tests {
     #[test]
     fn build_command_includes_debugger_server_port() {
         let tmp = fake_firefox();
-        let (cmd, profile) = build_command(&tmp, 6000, false, None, false, false).unwrap();
+        let (cmd, profile) = build_command(&tmp, 6000, false, None, false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -519,7 +512,7 @@ mod tests {
     #[test]
     fn build_command_no_profile_auto_creates_temp_profile() {
         let tmp = fake_firefox();
-        let (cmd, profile_path) = build_command(&tmp, 6000, false, None, false, false).unwrap();
+        let (cmd, profile_path) = build_command(&tmp, 6000, false, None, false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         let profile = profile_path.expect("auto-created temp profile should be returned");
@@ -548,7 +541,7 @@ mod tests {
     #[test]
     fn build_command_headless_flag() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 6000, true, None, false, false).unwrap();
+        let (cmd, _) = build_command(&tmp, 6000, true, None, false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -560,7 +553,7 @@ mod tests {
     #[test]
     fn build_command_no_headless_by_default() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 6000, false, None, false, false).unwrap();
+        let (cmd, _) = build_command(&tmp, 6000, false, None, false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -576,7 +569,7 @@ mod tests {
         std::fs::create_dir_all(&profile_dir).unwrap();
         let profile_str = profile_dir.to_str().unwrap();
         let (cmd, profile_path) =
-            build_command(&tmp, 6000, false, Some(profile_str), false, false).unwrap();
+            build_command(&tmp, 6000, false, Some(profile_str), false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         let _ = std::fs::remove_dir_all(&profile_dir);
@@ -593,7 +586,7 @@ mod tests {
     #[test]
     fn build_command_temp_profile_creates_dir_and_sets_profile_arg() {
         let tmp = fake_firefox();
-        let (cmd, profile_path) = build_command(&tmp, 6000, false, None, true, false).unwrap();
+        let (cmd, profile_path) = build_command(&tmp, 6000, false, None, false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -612,7 +605,7 @@ mod tests {
     #[test]
     fn build_command_temp_profile_writes_user_js() {
         let tmp = fake_firefox();
-        let (_, profile_path) = build_command(&tmp, 6000, false, None, true, false).unwrap();
+        let (_, profile_path) = build_command(&tmp, 6000, false, None, false).unwrap();
         cleanup_fake_firefox(&tmp);
         let profile = profile_path.expect("temp_profile should set a profile path");
         let user_js = profile.join("user.js");
@@ -640,7 +633,7 @@ mod tests {
     #[test]
     fn build_command_non_standard_port() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 9222, false, None, false, false).unwrap();
+        let (cmd, _) = build_command(&tmp, 9222, false, None, false).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -657,7 +650,7 @@ mod tests {
         // The extension download may fail in CI (no network), so we accept both
         // Ok and a User-level error; we just verify it is not an Internal error.
         let tmp = fake_firefox();
-        let result = build_command(&tmp, 6000, false, None, false, true);
+        let result = build_command(&tmp, 6000, false, None, true);
         cleanup_fake_firefox(&tmp);
         match result {
             Ok((_, profile_path)) => {
@@ -677,7 +670,7 @@ mod tests {
         // doesn't panic when given a temp profile. The download will fail in
         // offline test environments, so we just verify the error is reasonable
         // or it succeeds if network is available.
-        let result = build_command(&tmp, 6000, false, None, true, true);
+        let result = build_command(&tmp, 6000, false, None, true);
         cleanup_fake_firefox(&tmp);
         // Either succeeds (network available) or gives a user error (no network)
         match result {

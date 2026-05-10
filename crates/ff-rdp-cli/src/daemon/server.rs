@@ -1516,4 +1516,72 @@ mod tests {
             "network-event subscriber must not receive consoleAPICall"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // A1: Auth handshake — verifies wrong-token close, right-token greeting
+    // -----------------------------------------------------------------------
+
+    /// Helper: spin up `handle_client` against a dummy firefox_writer in a
+    /// thread, returning the client TCP stream the test can talk to.
+    fn spawn_handle_client_with_token(token: &str) -> TcpStream {
+        // Fresh state with a known auth token.
+        let mut state = test_state();
+        state.auth_token = token.to_owned();
+        let state = Arc::new(state);
+
+        // Dummy firefox_writer: any writes from handle_client to "Firefox"
+        // go into a loopback pair we never read.
+        let (ff_server, _ff_client) = loopback_pair();
+        let firefox_writer = Arc::new(Mutex::new(FramedWriter::from_stream(ff_server)));
+
+        // The pair we hand the daemon (server_side) and the test (client_side).
+        let (server_side, client_side) = loopback_pair();
+        std::thread::spawn(move || {
+            let _ = handle_client(&state, server_side, &firefox_writer);
+        });
+        client_side
+    }
+
+    #[test]
+    fn handle_client_rejects_wrong_auth_token() {
+        use std::io::{Read as _, Write as _};
+
+        let mut client = spawn_handle_client_with_token("correct-token");
+        // Send a wrong-token auth frame.
+        let frame = ff_rdp_core::transport::encode_frame(r#"{"auth":"wrong-token"}"#);
+        client.write_all(frame.as_bytes()).expect("write auth");
+
+        // Daemon must close immediately without sending any data.
+        let mut buf = [0u8; 64];
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set timeout");
+        let n = client.read(&mut buf).unwrap_or(0);
+        assert_eq!(
+            n, 0,
+            "daemon must not send any frames before closing on wrong auth, got {n} bytes"
+        );
+    }
+
+    #[test]
+    fn handle_client_accepts_correct_auth_token_and_sends_greeting() {
+        use std::io::Write as _;
+
+        let mut client = spawn_handle_client_with_token("correct-token");
+        // Send the right token.
+        let frame = ff_rdp_core::transport::encode_frame(r#"{"auth":"correct-token"}"#);
+        client.write_all(frame.as_bytes()).expect("write auth");
+
+        // Read the greeting frame the daemon sends after successful auth.
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set timeout");
+        let mut reader = ff_rdp_core::FramedReader::from_stream(client);
+        let greeting = reader.recv().expect("greeting after auth");
+        assert_eq!(
+            greeting.get("applicationType").and_then(Value::as_str),
+            Some("browser"),
+            "daemon must forward the cached Firefox greeting after auth"
+        );
+    }
 }

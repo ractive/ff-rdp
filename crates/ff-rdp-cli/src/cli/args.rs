@@ -689,7 +689,7 @@ Output: {\"results\": {\"tag\": \"HTML\", \"children\": [...], ...}, \"total\": 
 The daemon keeps a persistent Firefox connection and buffers events across
 commands. It starts automatically on the first command that needs it.
 
-Output (status): {\"results\": {\"running\": bool, \"pid\": N, \"port\": N, \"uptime_seconds\": N, \"connections\": N, \"firefox_connected\": bool}, \"total\": 1, \"meta\": {...}}
+Output (status): {\"results\": {\"running\": bool, \"pid\": N, \"port\": N, \"uptime_seconds\": N, \"connections\": N, \"buffer_sizes\": {...}}, \"total\": 1, \"meta\": {...}}
 Output (stop):   {\"results\": {\"stopped\": bool}, \"total\": 1, \"meta\": {...}}")]
     Daemon {
         #[command(subcommand)]
@@ -1012,7 +1012,7 @@ pub enum DaemonCommand {
 
 If no daemon is running, reports running=false.
 
-Output: {\"results\": {\"running\": bool, \"pid\": N, \"port\": N, \"uptime_seconds\": N, \"connections\": N, \"firefox_connected\": bool}, \"total\": 1, \"meta\": {...}}")]
+Output: {\"results\": {\"running\": bool, \"pid\": N, \"port\": N, \"uptime_seconds\": N, \"connections\": N, \"buffer_sizes\": {...}}, \"total\": 1, \"meta\": {...}}")]
     Status,
     /// Gracefully stop the running daemon
     #[command(long_about = "Gracefully stop the running daemon.

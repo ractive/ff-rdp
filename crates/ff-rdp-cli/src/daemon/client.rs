@@ -309,15 +309,22 @@ fn log_path_hint() -> String {
 
 /// Return `true` if `host:port` accepts a TCP connection within 100 ms.
 ///
-/// Used as a quick pre-spawn check: if Firefox's debug port is dark there is
-/// no point spawning a daemon (which would wait up to 5 s to time out).
+/// Resolves `host` via DNS (so `localhost` works) and tries each resolved
+/// address in turn. Used as a quick pre-spawn check: if Firefox's debug port
+/// is dark there is no point spawning a daemon (which would wait up to 5 s
+/// to time out).
 fn is_firefox_port_open(host: &str, port: u16) -> bool {
-    let addr_str = format!("{host}:{port}");
-    let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() else {
-        // Fallback: unresolved hostname — do not block, allow normal path.
+    use std::net::ToSocketAddrs;
+    let Ok(addrs) = (host, port).to_socket_addrs() else {
+        // Resolution failed — let the normal path surface the error.
         return true;
     };
-    TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok()
+    for addr in addrs {
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok() {
+            return true;
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -372,8 +379,15 @@ fn daemon_rpc(cli: &Cli, msg: &serde_json::Value) -> Result<Value, AppError> {
         .send(msg)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("sending daemon RPC: {e}")))?;
 
-    // Read the daemon's response, skipping any forwarded Firefox frames.
-    for _ in 0..64 {
+    // Read the daemon's response, skipping any forwarded Firefox push frames
+    // (consoleAPICall, network events, etc.) that may arrive in between.
+    //
+    // We use a deadline rather than a fixed frame cap because under heavy
+    // push traffic the response could legitimately arrive after many pushes.
+    // The socket already has `cli.timeout` set as its read timeout, so a
+    // genuinely-stuck daemon will still surface an error promptly.
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
         let response = reader
             .recv()
             .map_err(|e| AppError::Internal(anyhow::anyhow!("receiving daemon response: {e}")))?;
@@ -383,60 +397,62 @@ fn daemon_rpc(cli: &Cli, msg: &serde_json::Value) -> Result<Value, AppError> {
             }
             return Ok(response);
         }
+        // Otherwise it's a forwarded Firefox push frame — drop and keep reading.
     }
     Err(AppError::Internal(anyhow::anyhow!(
-        "did not receive daemon response within 64 frames"
+        "did not receive daemon response within {}ms",
+        timeout.as_millis()
     )))
 }
 
 /// `ff-rdp daemon status` — print daemon status as JSON.
 pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
-    let running;
     let result = match registry::read_registry()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
     {
-        None => {
-            running = false;
-            json!({
-                "running": false,
-                "pid": null,
-                "port": null,
-                "uptime_seconds": null,
-                "connections": null,
-                "firefox_connected": null,
-            })
-        }
+        None => json!({
+            "running": false,
+            "pid": null,
+            "port": null,
+            "uptime_seconds": null,
+            "connections": null,
+            "buffer_sizes": null,
+        }),
         Some(ref info) if !process::is_process_alive(info.pid) => {
             registry::remove_registry().ok();
-            running = false;
             json!({
                 "running": false,
                 "pid": null,
                 "port": null,
                 "uptime_seconds": null,
                 "connections": null,
-                "firefox_connected": null,
+                "buffer_sizes": null,
             })
         }
         Some(ref info) => {
-            running = true;
-            // Try to get live stats from the daemon.
-            let uptime_seconds = match daemon_rpc(cli, &json!({"to": "daemon", "type": "status"})) {
-                Ok(resp) => resp.get("uptime_secs").and_then(Value::as_u64),
-                Err(_) => None,
-            };
+            // Pull live stats from the daemon. If the RPC fails, surface
+            // whatever registry data we have with null stats so callers can
+            // still see the PID/port.
+            let (uptime_seconds, connections, buffer_sizes) =
+                match daemon_rpc(cli, &json!({"to": "daemon", "type": "status"})) {
+                    Ok(resp) => (
+                        resp.get("uptime_secs").and_then(Value::as_u64),
+                        resp.get("stream_subscriber_count").and_then(Value::as_u64),
+                        resp.get("buffer_sizes").cloned(),
+                    ),
+                    Err(_) => (None, None, None),
+                };
             json!({
                 "running": true,
                 "pid": info.pid,
                 "port": info.proxy_port,
                 "uptime_seconds": uptime_seconds,
-                "connections": null,
-                "firefox_connected": true,
+                "connections": connections,
+                "buffer_sizes": buffer_sizes,
             })
         }
     };
 
-    let _ = running; // used implicitly via result
     let meta = json!({
         "host": cli.host,
         "port": cli.port,

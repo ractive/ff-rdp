@@ -51,16 +51,18 @@ impl RdpConnection {
     /// out-of-band auth handshake (e.g. when connecting through the daemon,
     /// which sends the greeting only after the auth token is validated).
     ///
-    /// The Firefox version and version-compatibility check are skipped since
-    /// there is no greeting to parse.
-    pub fn from_authenticated_transport(transport: RdpTransport) -> Self {
+    /// `greeting` is the frame the daemon forwarded after auth. The Firefox
+    /// version is parsed from it so callers retain the same `firefox_version`
+    /// surface as the direct path.
+    pub fn from_authenticated_transport(transport: RdpTransport, greeting: &Value) -> Self {
         // Use a sensible default timeout. The transport already has the correct
         // socket timeout set from the `connect_raw` call.
         let timeout = std::time::Duration::from_secs(30);
+        let firefox_version = parse_firefox_version(greeting);
         Self {
             transport,
             timeout,
-            firefox_version: None,
+            firefox_version,
         }
     }
 
