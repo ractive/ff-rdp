@@ -13,7 +13,7 @@ pub use actors::dom_walker::{DomAttr, DomNode, DomWalkerActor};
 pub use actors::inspector::InspectorActor;
 pub use actors::network::{EventTimings, Header, NetworkEventActor, ResponseContent};
 pub use actors::object::{
-    ObjectActor, PropertyDescriptor, PrototypeAndProperties, descriptor_to_json,
+    ObjectActor, PropertyDescriptor, PrototypeAndProperties, ScopedGrip, descriptor_to_json,
 };
 pub use actors::page_style::{
     AppliedRule, BoxModelLayout, BoxSides, ComputedProperty, PageStyleActor, RuleProperty,

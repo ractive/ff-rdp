@@ -28,6 +28,17 @@ pub fn actor_request(
     // Read packets until we get one from the target actor, skipping
     // unsolicited events (e.g. tabNavigated, tabListChanged) that Firefox
     // may send between our request and the actual response.
+    //
+    // NOTE: We match only by `from == to` — NOT by requiring absence of a
+    // `type` field — because some Firefox actors return replies that include
+    // a `type` field (e.g. ThreadActor's `attach` returns `{"type":"paused"}`
+    // and WatcherActor's `watchResources` can be followed by push events that
+    // the mock server returns as the immediate reply fixture).  The new-protocol
+    // rule ("replies have no `type`") holds for the root and console actors but
+    // not for legacy thread-actor packets.
+    //
+    // For push-event–heavy actors (console, watcher) the individual call sites
+    // implement their own filtering on top of `actor_request`.
     let response = loop {
         let msg = transport.recv()?;
         let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();

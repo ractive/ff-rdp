@@ -37,6 +37,21 @@ pub struct PrototypeAndProperties {
 pub struct ObjectActor;
 
 impl ObjectActor {
+    /// Release the server-side object actor, freeing the associated memory.
+    ///
+    /// Firefox allocates a server-side actor for each object or long-string
+    /// grip returned by `evaluateJSAsync`.  In long-lived daemon connections
+    /// these actors accumulate and are never reclaimed.  Sending `release`
+    /// to the grip actor asks Firefox to destroy it.
+    ///
+    /// Note: the connection dropping (end of `--no-daemon` mode) also
+    /// releases all actors implicitly, so calling this is only necessary in
+    /// daemon mode.
+    pub fn release(transport: &mut RdpTransport, actor_id: &str) -> Result<(), ProtocolError> {
+        actor_request(transport, actor_id, "release", None)?;
+        Ok(())
+    }
+
     /// Fetch all properties and the prototype of an object grip.
     ///
     /// Sends `prototypeAndProperties` to the grip actor. Returns the parsed
@@ -69,6 +84,61 @@ impl ObjectActor {
             })
             .unwrap_or_default();
         Ok(names)
+    }
+}
+
+/// A grip that releases its server-side actor when explicitly consumed.
+///
+/// Firefox allocates server-side actors for `object` and `longString` grips
+/// returned by `evaluateJSAsync`.  In long-lived daemon connections these
+/// actors accumulate without bound.  `ScopedGrip` wraps a [`Grip`] and
+/// provides a [`release`](ScopedGrip::release) method that sends `release`
+/// to the grip actor, freeing the server-side resource.
+///
+/// Design note: `Drop` is intentionally *not* used for release because `Drop`
+/// cannot propagate errors.  Call [`release`](ScopedGrip::release) explicitly
+/// at the end of scope to get a `Result`.  If you drop a `ScopedGrip` without
+/// calling `release` (e.g. due to an early-return error), the actor leaks on
+/// the Firefox side until the connection closes — this is acceptable in
+/// `--no-daemon` mode where the connection tears down immediately anyway.
+#[derive(Debug)]
+pub struct ScopedGrip {
+    inner: Grip,
+}
+
+impl ScopedGrip {
+    /// Wrap a [`Grip`] in a scoped release wrapper.
+    pub fn new(grip: Grip) -> Self {
+        Self { inner: grip }
+    }
+
+    /// Access the inner grip.
+    pub fn grip(&self) -> &Grip {
+        &self.inner
+    }
+
+    /// Consume the wrapper and release the server-side actor.
+    ///
+    /// For `Grip::Object` variants, sends `release` to the grip actor so
+    /// Firefox can free the associated server-side memory immediately.
+    /// For all other variants (primitives, longStrings) this is effectively
+    /// a no-op — longString actors are reclaimed automatically by Firefox's
+    /// GC on the next cycle, so explicit release is not required.
+    ///
+    /// `unknownActor` errors from Firefox are silently swallowed; the actor
+    /// may already be gone if the tab was closed or the connection reset.
+    /// Other transport-level errors are returned to the caller.
+    ///
+    /// Returns the inner grip so the caller can still inspect it after release.
+    pub fn release(self, transport: &mut RdpTransport) -> Result<Grip, ProtocolError> {
+        if let Grip::Object { ref actor, .. } = self.inner {
+            let actor_id = actor.as_ref().to_owned();
+            match ObjectActor::release(transport, &actor_id) {
+                Ok(()) | Err(ProtocolError::ActorError { .. }) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(self.inner)
     }
 }
 

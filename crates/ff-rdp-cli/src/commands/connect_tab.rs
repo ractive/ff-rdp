@@ -33,8 +33,8 @@ pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
         }
     };
 
-    let connection = connect_to_firefox(&connect_host, connect_port, cli, via_daemon)
-        .inspect_err(|_| {
+    let connection =
+        connect_to_firefox(&connect_host, connect_port, cli, via_daemon).inspect_err(|_| {
             // The direct fallback failed too — surface the original
             // daemon-side warning alongside the connection error so the user
             // sees the full picture.

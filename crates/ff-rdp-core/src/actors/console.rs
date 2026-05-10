@@ -103,10 +103,15 @@ impl WebConsoleActor {
     /// from the immediate response, then reads messages until the matching
     /// `evaluationResult` event arrives.
     ///
-    /// In daemon mode, Firefox `consoleAPICall` and `pageError` push events are
-    /// forwarded from the daemon to the RPC client and arrive on the same
-    /// transport with `from` set to the console actor.  We skip those here so
-    /// they are not mistaken for the eval ack or the evaluation result.
+    /// Per the Firefox RDP protocol, replies have no `type` field while push
+    /// events (consoleAPICall, pageError, tabNavigated, …) always carry one.
+    /// The two loops below use this invariant to skip push events cleanly
+    /// without naming specific event types.
+    ///
+    /// Returns [`EvalError::NavigatedDuringEval`] immediately if a
+    /// `tabNavigated` or `willNavigate` event is received from the target
+    /// actor while waiting for the eval result — indicating the page navigated
+    /// away and the result will never arrive.
     pub fn evaluate_js_async(
         transport: &mut RdpTransport,
         console_actor: &ActorId,
@@ -120,18 +125,13 @@ impl WebConsoleActor {
         });
         transport.send(&request)?;
 
-        // Read packets until we get the ack from the console actor.
-        // Skip unsolicited push events (consoleAPICall, pageError) that the
-        // daemon forwards from Firefox — they share the same `from` field as
-        // real responses but are NOT replies to our eval request.
+        // Read packets until we get the direct reply from the console actor.
+        // The reply has no `type` field; push events (consoleAPICall, pageError,
+        // …) always do — skip them generically.
         let immediate = loop {
             let msg = transport.recv()?;
-            let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
-            if msg_type == "consoleAPICall" || msg_type == "pageError" {
-                continue;
-            }
             let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
-            if from == console_actor.as_ref() {
+            if from == console_actor.as_ref() && msg.get("type").is_none() {
                 // Check for actor-level error response.
                 if let Some(error) = msg.get("error").and_then(Value::as_str) {
                     return Err(ProtocolError::ActorError {
@@ -166,9 +166,10 @@ impl WebConsoleActor {
             let msg = transport.recv()?;
             let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
 
-            // Skip console push events forwarded by the daemon — same reason as above.
-            if msg_type == "consoleAPICall" || msg_type == "pageError" {
-                continue;
+            // Watch for navigation events that signal the eval result will never arrive.
+            // These are push events (they carry `type`) from the target actor.
+            if msg_type == "tabNavigated" || msg_type == "willNavigate" {
+                return Err(ProtocolError::EvalNavigatedDuringEval);
             }
 
             let msg_result_id = msg
@@ -180,8 +181,8 @@ impl WebConsoleActor {
                 return Ok(Self::parse_eval_result(&msg));
             }
 
-            // Other messages (e.g. tabNavigated events) are discarded while
-            // waiting for the eval result.
+            // All other push events (consoleAPICall, pageError, tabListChanged, …)
+            // are silently discarded while waiting for the eval result.
         }
     }
 
@@ -750,5 +751,131 @@ mod tests {
             "array": []
         });
         assert!(super::parse_console_notification(&msg).is_none());
+    }
+
+    // --- evaluate_js_async navigation-abort tests ---
+
+    use crate::transport::{RdpTransport, encode_frame, recv_from as transport_recv_from};
+    use std::io::{BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    fn make_transport_pair() -> (RdpTransport, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (server_stream, _) = listener.accept().unwrap();
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        let transport = RdpTransport::from_parts(reader, writer);
+        (transport, server_stream)
+    }
+
+    fn send_frame(stream: &TcpStream, msg: &serde_json::Value) {
+        let json = serde_json::to_string(msg).unwrap();
+        stream
+            .try_clone()
+            .unwrap()
+            .write_all(encode_frame(&json).as_bytes())
+            .unwrap();
+    }
+
+    #[test]
+    fn evaluate_js_async_aborts_on_tab_navigated() {
+        let (mut transport, server) = make_transport_pair();
+        let console_actor: ActorId = "server1.conn0.child2/consoleActor3".into();
+
+        // Server thread: read the eval request, send ack, then a tabNavigated event.
+        let actor_str = console_actor.as_ref().to_owned();
+        let srv = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            // Consume the evaluateJSAsync request.
+            let _req = transport_recv_from(&mut reader).unwrap();
+
+            // Send the ack (no `type` field — it's a direct reply).
+            let ack = json!({"from": &actor_str, "resultID": "test-result-id-1"});
+            send_frame(&server, &ack);
+
+            // Send a tabNavigated push event.
+            let nav =
+                json!({"from": &actor_str, "type": "tabNavigated", "url": "https://example.com/"});
+            send_frame(&server, &nav);
+        });
+
+        let err = WebConsoleActor::evaluate_js_async(&mut transport, &console_actor, "1 + 1")
+            .unwrap_err();
+
+        assert!(
+            matches!(err, crate::error::ProtocolError::EvalNavigatedDuringEval),
+            "expected EvalNavigatedDuringEval, got {err:?}"
+        );
+
+        srv.join().unwrap();
+    }
+
+    #[test]
+    fn evaluate_js_async_aborts_on_will_navigate() {
+        let (mut transport, server) = make_transport_pair();
+        let console_actor: ActorId = "server1.conn0.child2/consoleActor3".into();
+
+        let actor_str = console_actor.as_ref().to_owned();
+        let srv = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            let _req = transport_recv_from(&mut reader).unwrap();
+
+            let ack = json!({"from": &actor_str, "resultID": "test-result-id-2"});
+            send_frame(&server, &ack);
+
+            // willNavigate is also a navigation signal.
+            let nav = json!({"from": &actor_str, "type": "willNavigate", "url": "about:blank"});
+            send_frame(&server, &nav);
+        });
+
+        let err = WebConsoleActor::evaluate_js_async(&mut transport, &console_actor, "1 + 1")
+            .unwrap_err();
+
+        assert!(
+            matches!(err, crate::error::ProtocolError::EvalNavigatedDuringEval),
+            "expected EvalNavigatedDuringEval, got {err:?}"
+        );
+
+        srv.join().unwrap();
+    }
+
+    #[test]
+    fn evaluate_js_async_skips_push_events_before_result() {
+        let (mut transport, server) = make_transport_pair();
+        let console_actor: ActorId = "server1.conn0.child2/consoleActor3".into();
+
+        let actor_str = console_actor.as_ref().to_owned();
+        let srv = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            let _req = transport_recv_from(&mut reader).unwrap();
+
+            // Ack with no `type`.
+            let ack = json!({"from": &actor_str, "resultID": "test-result-id-3"});
+            send_frame(&server, &ack);
+
+            // Several push events that must be skipped.
+            let push1 = json!({"from": &actor_str, "type": "consoleAPICall", "message": {}});
+            send_frame(&server, &push1);
+            let push2 = json!({"from": &actor_str, "type": "pageError", "pageError": {}});
+            send_frame(&server, &push2);
+
+            // The actual eval result (has `type` — it's a server push, not a reply).
+            let result = json!({
+                "from": &actor_str,
+                "type": "evaluationResult",
+                "resultID": "test-result-id-3",
+                "result": 42,
+                "hasException": false
+            });
+            send_frame(&server, &result);
+        });
+
+        let eval_result =
+            WebConsoleActor::evaluate_js_async(&mut transport, &console_actor, "1 + 41").unwrap();
+
+        assert_eq!(eval_result.result, Grip::Value(json!(42)));
+        srv.join().unwrap();
     }
 }

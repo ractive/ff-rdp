@@ -60,6 +60,24 @@ pub enum ProtocolError {
     #[error("operation timed out")]
     Timeout,
 
+    /// The page navigated while waiting for a JavaScript evaluation result.
+    ///
+    /// Firefox sends `tabNavigated` or `willNavigate` push events when the
+    /// page URL changes mid-eval.  The `evaluationResult` will never arrive
+    /// in that case, so we surface this typed error immediately instead of
+    /// hanging until the socket read timeout fires.
+    #[error("page navigated during JS evaluation — result will not arrive")]
+    EvalNavigatedDuringEval,
+
+    /// Frame declared too large to be a valid Firefox RDP packet.
+    ///
+    /// Firefox frames are length-prefixed JSON.  A declared length exceeding
+    /// [`MAX_FRAME_BYTES`](crate::transport::MAX_FRAME_BYTES) is either a
+    /// malformed stream or a memory-exhaustion attempt and is rejected before
+    /// any allocation is made.
+    #[error("RDP frame too large: declared {declared} bytes, max {max} bytes")]
+    FrameTooLarge { declared: usize, max: usize },
+
     #[error("actor error from {actor}: {error} ({kind}) — {message}")]
     ActorError {
         actor: String,
