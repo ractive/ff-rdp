@@ -163,3 +163,33 @@ status: active
 **Why**: A controlled fixture with known ground truth (issues.json) enables deterministic evaluation of the skill's detection capabilities. Real websites change unpredictably, making them unsuitable as regression baselines. The fixture also serves as a demo for the audit-fix-verify loop — the skill's killer workflow. The 33 issues span 6 categories (perf, a11y, SEO, security, structure, UX) at 3 difficulty levels.
 
 **Trade-off**: Maintaining a ~600-line HTML fixture adds repository weight. Acceptable because the fixture is small, static, and doubles as documentation of what the audit can detect.
+
+## 2026-05-10: Daemon TCP Auth — Local Multi-User Threat Model
+
+**Context**: Iteration 55 introduced a 32-byte random auth token on the daemon's TCP listener. This documents the threat model and the before/after security posture.
+
+### Before (iter-54 and earlier)
+
+The daemon listened on a loopback TCP port without any authentication. Any local process that could connect to `127.0.0.1:<proxy_port>` could send arbitrary RDP commands — reading cookies, evaluating JavaScript, capturing screenshots — as long as it knew or guessed the port number. The port was written to `~/.ff-rdp/daemon.json` (mode 0o600), but the daemon itself didn't verify caller identity.
+
+**Affected threat actors**:
+- DNS-rebinding from a malicious page in any browser tab (browser can connect to `127.0.0.1:<port>` using `fetch()`)
+- A compromised npm postinstall script running as the same UID
+- A CI runner with shared UID that reuses a port already occupied by a previous job
+- A devcontainer or sidecar container that shares the host network namespace
+
+**Not in scope**: processes running as a different UID — they cannot read `~/.ff-rdp/daemon.json` (0o600).
+
+### After (iter-55)
+
+On daemon start, `daemon/registry.rs` generates a 32-byte token using `getrandom::getrandom()` (OS CSPRNG) and encodes it as 64 hex characters. The token is written into `~/.ff-rdp/daemon.json` (0o600).
+
+The first frame every new daemon client must send is `{"auth": "<hex-token>"}`. A wrong token or missing auth frame → socket closed immediately. No RDP frames are forwarded.
+
+The ff-rdp client reads the token from the registry and sends it before any other request.
+
+**Remaining gap**: A process that can read `~/.ff-rdp/daemon.json` can also steal the token. This is equivalent to full home-dir access and is out of scope for this mechanism. The goal is to defeat processes that can `connect()` to loopback but cannot read `$HOME` (DNS-rebinding, sandboxed apps, CI sidecars).
+
+**Why not Unix-domain sockets instead?** UDS provide the same protection (filesystem permissions) with no token overhead, but require platform branching and break the "same wire format everywhere" property. The token approach is ~50 LOC vs ~200 LOC for UDS/named pipes. Deferred to a later iteration if multi-user deployments become a real customer ask.
+
+**Applies to**: `daemon/server.rs` (listener), `daemon/client.rs` (auth handshake), `daemon/registry.rs` (token generation + storage).

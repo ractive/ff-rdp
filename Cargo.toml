@@ -34,6 +34,7 @@ dirs = "6"
 fs2 = "0.4"
 thiserror = "2"
 tempfile = "3"
+getrandom = "0.2"
 url = "2"
 ureq = "3"
 

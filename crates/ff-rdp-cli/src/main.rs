@@ -101,8 +101,10 @@ fn main() {
             std::process::exit(1);
         }
         Err(AppError::Internal(err)) => {
+            // Internal errors are unexpected runtime failures — exit 1.
+            // Exit 2 is reserved for usage/argument errors (clap parse failures).
             eprintln!("internal error: {err:#}");
-            std::process::exit(2);
+            std::process::exit(1);
         }
         Err(AppError::Exit(code)) => {
             std::process::exit(code);

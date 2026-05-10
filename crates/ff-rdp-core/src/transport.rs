@@ -110,17 +110,29 @@ impl RdpTransport {
     /// Build a transport from pre-existing reader/writer handles.
     ///
     /// Useful in tests where you already have a connected `TcpStream`.
-    pub fn from_parts(reader: BufReader<TcpStream>, writer: TcpStream) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_parts(reader: BufReader<TcpStream>, writer: TcpStream) -> Self {
         Self { reader, writer }
     }
 
     /// Decompose into the underlying reader/writer halves.
     ///
-    /// Use this when you need separate ownership of the read and write sides,
-    /// e.g. to hand them to different threads while sharing the same underlying
-    /// Firefox connection.
-    pub fn into_parts(self) -> (BufReader<TcpStream>, TcpStream) {
+    /// Called by [`split`](Self::split) to hand the halves to `FramedReader`/`FramedWriter`.
+    fn into_parts(self) -> (BufReader<TcpStream>, TcpStream) {
         (self.reader, self.writer)
+    }
+
+    /// Split the transport into typed framed halves.
+    ///
+    /// The returned [`FramedReader`] and [`FramedWriter`] share the same underlying
+    /// TCP connection. The read half is exclusive; the write half can be shared
+    /// via the calling thread. Both halves speak the Firefox RDP framing protocol.
+    ///
+    /// This is the preferred way for the daemon to split the connection so it
+    /// never needs to import raw `encode_frame`/`recv_from` from this crate.
+    pub fn split(self) -> (FramedReader, FramedWriter) {
+        let (reader, writer) = self.into_parts();
+        (FramedReader { reader }, FramedWriter { writer })
     }
 
     /// Override the socket read timeout.
@@ -165,6 +177,102 @@ impl RdpTransport {
     pub fn request(&mut self, message: &Value) -> Result<Value, ProtocolError> {
         self.send(message)?;
         self.recv()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Typed split halves
+// ---------------------------------------------------------------------------
+
+/// Read half of a split [`RdpTransport`].
+///
+/// Owned exclusively by the Firefox-reader thread in the daemon.
+pub struct FramedReader {
+    reader: BufReader<TcpStream>,
+}
+
+impl FramedReader {
+    /// Wrap a `TcpStream` in a `FramedReader` without going through [`RdpTransport`].
+    ///
+    /// Useful in the daemon where client TCP streams need to be read using the
+    /// typed framing API rather than the raw `recv_from` free function.
+    pub fn from_stream(stream: TcpStream) -> Self {
+        Self {
+            reader: BufReader::new(stream),
+        }
+    }
+
+    /// Receive a single length-prefixed JSON frame.
+    ///
+    /// Mirrors [`RdpTransport::recv`].
+    pub fn recv(&mut self) -> Result<Value, ProtocolError> {
+        recv_from(&mut self.reader)
+    }
+
+    /// Set the read timeout on the underlying socket.
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> Result<(), ProtocolError> {
+        self.reader
+            .get_ref()
+            .set_read_timeout(timeout)
+            .map_err(ProtocolError::ConnectionFailed)
+    }
+
+    /// Try to clone the underlying `TcpStream`.
+    ///
+    /// The clone shares the same underlying socket. Useful when the daemon
+    /// needs to hand a write clone to a `StreamSubscriber` while retaining the
+    /// read half for the client loop.
+    pub fn try_clone_stream(&self) -> std::io::Result<TcpStream> {
+        self.reader.get_ref().try_clone()
+    }
+}
+
+/// Write half of a split [`RdpTransport`].
+///
+/// Can be wrapped in `Arc<Mutex<_>>` for shared write access across threads.
+pub struct FramedWriter {
+    writer: TcpStream,
+}
+
+impl FramedWriter {
+    /// Wrap a `TcpStream` in a `FramedWriter` without going through [`RdpTransport`].
+    ///
+    /// Useful in the daemon where client TCP streams need to be written using the
+    /// typed framing API rather than the raw `encode_frame` free function.
+    pub fn from_stream(stream: TcpStream) -> Self {
+        Self { writer: stream }
+    }
+
+    /// Send a JSON value using Firefox RDP framing: `{len}:{json}`.
+    ///
+    /// Mirrors [`RdpTransport::send`].
+    pub fn send(&mut self, message: &Value) -> Result<(), ProtocolError> {
+        let json = serde_json::to_string(message)
+            .map_err(|e| ProtocolError::InvalidPacket(e.to_string()))?;
+        let frame = encode_frame(&json);
+        self.writer
+            .write_all(frame.as_bytes())
+            .map_err(map_send_io_error)
+    }
+
+    /// Send a pre-serialised JSON string as a Firefox RDP frame.
+    ///
+    /// Use this when you already have the JSON string and want to avoid a
+    /// redundant parse/serialise round-trip.
+    pub fn send_raw(&mut self, json: &str) -> Result<(), ProtocolError> {
+        let frame = encode_frame(json);
+        self.writer
+            .write_all(frame.as_bytes())
+            .map_err(map_send_io_error)
+    }
+
+    /// Try to clone the underlying `TcpStream`.
+    ///
+    /// The clone shares the same underlying socket; writes to either handle
+    /// go to the same peer.  Useful when a write half must be handed to a
+    /// subscriber without consuming the original.
+    pub fn try_clone_stream(&self) -> std::io::Result<TcpStream> {
+        self.writer.try_clone()
     }
 }
 

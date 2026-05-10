@@ -1,4 +1,6 @@
-use crate::cli::args::{A11yCommand, Cli, Command, DomCommand, PerfCommand, ScrollCommand};
+use crate::cli::args::{
+    A11yCommand, Cli, Command, DaemonCommand, DomCommand, PerfCommand, ScrollCommand,
+};
 use crate::commands;
 use crate::commands::nav_action::NavAction;
 use crate::daemon::server;
@@ -29,7 +31,7 @@ use crate::error::AppError;
 /// | `network --follow`        | Streams buffered network events     |
 /// | `navigate --with-network` | Captures network during navigation  |
 /// | `network` (no --follow)   | Drains buffered network events      |
-/// | `console` (no --follow)   | Drains buffered console events      |
+/// | `console` (no --follow)   | Calls `getCachedMessages` on the console actor — reads cached messages, not a daemon buffer |
 ///
 /// All other commands use `connect_and_get_target`, which routes through
 /// the daemon when available or falls back to direct connection.
@@ -330,9 +332,13 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             ScrollCommand::Top => commands::scroll::run_top(cli),
             ScrollCommand::Bottom => commands::scroll::run_bottom(cli),
         },
-        Command::Daemon => {
+        Command::DaemonInternal => {
             server::run_daemon(&cli.host, cli.port, cli.daemon_timeout).map_err(AppError::Internal)
         }
+        Command::Daemon { daemon_command } => match daemon_command {
+            DaemonCommand::Status => crate::daemon::client::run_daemon_status(cli),
+            DaemonCommand::Stop => crate::daemon::client::run_daemon_stop(cli),
+        },
         Command::Doctor => commands::doctor::run(cli),
     }
 }

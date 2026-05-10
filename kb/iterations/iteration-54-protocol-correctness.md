@@ -2,7 +2,7 @@
 title: "Iteration 54: Protocol Correctness & Robustness"
 type: iteration
 date: 2026-05-10
-status: done
+status: completed
 branch: iter-54/protocol-correctness
 tags:
   - iteration

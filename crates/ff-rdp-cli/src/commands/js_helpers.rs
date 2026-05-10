@@ -73,7 +73,7 @@ pub(crate) fn resolve_result(ctx: &mut ConnectedTab, grip: &Grip) -> Result<Valu
 /// U+2028, U+2029, etc.  After stripping the outer double-quotes we additionally
 /// escape single quotes (`'` → `\'`) since JSON encoding does not escape them but
 /// they would terminate our single-quoted JS literal.
-pub fn escape_selector(selector: &str) -> String {
+pub(crate) fn escape_selector(selector: &str) -> String {
     // serde_json::to_string is infallible for &str — the error branch is unreachable.
     let json_str = serde_json::to_string(selector)
         .unwrap_or_else(|e| unreachable!("serde_json::to_string(&str) is infallible: {e}"));

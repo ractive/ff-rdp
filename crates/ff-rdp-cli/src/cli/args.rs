@@ -1,6 +1,13 @@
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 
 const AFTER_LONG_HELP: &str = "\
+EXIT CODES:
+  0    Success
+  1    Runtime error (command failed, Firefox returned an error, etc.)
+  2    Usage error (bad arguments, unknown flag, etc.)
+  3    Connection failure (Firefox not running or unreachable)
+  124  Timeout (operation exceeded --timeout)
+
 COMMAND REFERENCE:
   Launch & connect:
     ff-rdp launch [--headless] [--profile PATH | --temp-profile] [--auto-consent] [--port PORT]
@@ -349,6 +356,9 @@ to wrap the expression in JSON.stringify() and get the real data back.")]
         no_isolate: bool,
     },
     /// Extract visible page text (document.body.innerText)
+    #[command(long_about = "Extract visible page text (document.body.innerText).
+
+Output: {\"results\": {\"text\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
     PageText,
     /// Query DOM elements by CSS selector
     #[command(long_about = "Query DOM elements by CSS selector.
@@ -486,6 +496,12 @@ With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...
         viewport_height: Option<u32>,
     },
     /// Click an element matching a CSS selector
+    #[command(long_about = "Click an element matching a CSS selector.
+
+Finds the first element matching the selector and dispatches mousedown,
+mouseup, and click events using the Firefox RDP DOMNode actor.
+
+Output: {\"results\": {\"clicked\": true, \"selector\": \"...\", \"tag\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
     Click {
         /// CSS selector of the element to click
         selector: String,
@@ -521,6 +537,11 @@ Output: {\"results\": {\"typed\": true, \"tag\": \"INPUT\", \"value\": \"...\"},
     },
     /// Wait for a condition to become true (polls every 100ms).
     /// Exactly one of --selector, --text, or --eval must be specified.
+    #[command(long_about = "Wait for a condition to become true (polls every 100ms).
+
+Exactly one of --selector, --text, or --eval must be specified.
+
+Output: {\"results\": {\"elapsed_ms\": N, \"condition\": \"selector|text|eval\"}, \"total\": 1, \"meta\": {...}}")]
     #[command(group(ArgGroup::new("condition").required(true).multiple(false)))]
     Wait {
         /// Wait until an element matching this CSS selector exists in the DOM
@@ -548,6 +569,10 @@ Output: {\"results\": [{\"name\": \"...\", \"value\": \"...\", \"domain\": \"...
         name: Option<String>,
     },
     /// Read web storage (localStorage or sessionStorage)
+    #[command(long_about = "Read web storage (localStorage or sessionStorage).
+
+Output: {\"results\": [{\"key\": \"...\", \"value\": \"...\"}], \"total\": N, \"meta\": {...}}
+With --key: {\"results\": {\"key\": \"...\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
     Storage {
         /// Storage type: "local" (or "localStorage") / "session" (or "sessionStorage")
         storage_type: String,
@@ -556,6 +581,11 @@ Output: {\"results\": [{\"name\": \"...\", \"value\": \"...\", \"domain\": \"...
         key: Option<String>,
     },
     /// Inspect accessibility tree and check WCAG compliance
+    #[command(long_about = "Inspect accessibility tree and check WCAG compliance.
+
+Output: {\"results\": {\"role\": \"...\", \"name\": \"...\", \"children\": [...]}, \"total\": 1, \"meta\": {...}}
+With a11y summary: {\"results\": [{\"role\": \"...\", \"name\": \"...\", \"level\": N}], \"total\": N, \"meta\": {...}}
+With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"passes_aa\": bool, ...}], \"total\": N, \"meta\": {...}}")]
     A11y {
         #[command(subcommand)]
         a11y_command: Option<A11yCommand>,
@@ -598,10 +628,23 @@ Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requ
         reload_timeout: u64,
     },
     /// Go back in history
+    #[command(long_about = "Navigate back in browser history.
+
+Output: {\"results\": {\"action\": \"back\"}, \"total\": 1, \"meta\": {...}}")]
     Back,
     /// Go forward in history
+    #[command(long_about = "Navigate forward in browser history.
+
+Output: {\"results\": {\"action\": \"forward\"}, \"total\": 1, \"meta\": {...}}")]
     Forward,
     /// Inspect a remote JavaScript object by its grip actor ID
+    #[command(long_about = "Inspect a remote JavaScript object by its grip actor ID.
+
+Actor IDs appear in eval results when the return value is a non-primitive
+(e.g. {\"type\": \"object\", \"actor\": \"server1.conn0.child0/obj12\", ...}).
+Use --depth to control how many levels of nested objects are resolved.
+
+Output: {\"results\": {\"actor\": \"...\", \"class\": \"...\", \"properties\": {...}}, \"total\": 1, \"meta\": {...}}")]
     Inspect {
         /// The actor ID of the object grip to inspect
         actor_id: String,
@@ -610,6 +653,9 @@ Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requ
         depth: u32,
     },
     /// List JavaScript/WASM sources loaded on the page
+    #[command(long_about = "List JavaScript/WASM sources loaded on the page.
+
+Output: {\"results\": [{\"url\": \"...\", \"source_map_url\": \"...\", \"is_wasm\": bool}], \"total\": N, \"meta\": {...}}")]
     Sources {
         /// Filter sources by URL substring
         #[arg(long)]
@@ -635,9 +681,29 @@ Output: {\"results\": {\"tag\": \"HTML\", \"children\": [...], ...}, \"total\": 
     },
     /// Internal: run as background daemon (not for direct use)
     #[command(name = "_daemon", hide = true)]
-    Daemon,
+    DaemonInternal,
+
+    /// Manage the background daemon process
+    #[command(long_about = "Manage the background daemon process.
+
+The daemon keeps a persistent Firefox connection and buffers events across
+commands. It starts automatically on the first command that needs it.
+
+Output (status): {\"results\": {\"running\": bool, \"pid\": N, \"port\": N, \"uptime_seconds\": N, \"connections\": N, \"buffer_sizes\": {...}}, \"total\": 1, \"meta\": {...}}
+Output (stop):   {\"results\": {\"stopped\": bool}, \"total\": 1, \"meta\": {...}}")]
+    Daemon {
+        #[command(subcommand)]
+        daemon_command: DaemonCommand,
+    },
     /// Get element geometry: bounding rects, position, z-index, visibility, overflow,
     /// with automatic overlap detection between elements
+    #[command(
+        long_about = "Get element geometry: bounding rects, position, z-index, visibility, overflow.
+
+Automatically detects overlaps between queried elements.
+
+Output: {\"results\": {\"elements\": [{\"selector\": \"...\", \"rect\": {...}, \"visible\": bool, \"z_index\": N}], \"overlaps\": [...]}, \"total\": 1, \"meta\": {...}}"
+    )]
     Geometry {
         /// One or more CSS selectors to query
         #[arg(required = true)]
@@ -649,6 +715,11 @@ Output: {\"results\": {\"tag\": \"HTML\", \"children\": [...], ...}, \"total\": 
     /// Test responsive layout across viewport widths: resize to each width,
     /// collect geometry + computed styles for the given selectors, then restore
     /// the original viewport size.  Returns results keyed by breakpoint width.
+    #[command(long_about = "Test responsive layout across viewport widths.
+
+Resizes to each width, collects geometry + computed styles, then restores the original viewport.
+
+Output: {\"results\": {\"320\": [{\"selector\": \"...\", \"rect\": {...}, \"computed\": {...}}], \"768\": [...]}, \"total\": N, \"meta\": {...}}")]
     Responsive {
         /// One or more CSS selectors to query at each breakpoint
         #[arg(required = true)]
@@ -684,6 +755,13 @@ Output (--all): full resolved-style object per match (dumps every property)"
         all: bool,
     },
     /// Inspect CSS styles for an element matching a CSS selector
+    #[command(
+        long_about = "Inspect CSS styles for an element matching a CSS selector.
+
+Output (computed):  {\"results\": [{\"selector\": \"...\", \"computed\": {\"color\": \"...\", ...}}], \"total\": N, \"meta\": {...}}
+Output (--applied): {\"results\": [{\"selector\": \"...\", \"rules\": [{\"selector\": \"...\", \"properties\": [...]}]}], \"total\": N, \"meta\": {...}}
+Output (--layout):  {\"results\": [{\"selector\": \"...\", \"box\": {\"margin\": {...}, \"border\": {...}, \"padding\": {...}, \"content\": {...}}}], \"total\": N, \"meta\": {...}}"
+    )]
     Styles {
         /// CSS selector to match the element
         selector: String,
@@ -731,7 +809,7 @@ Examples:
   ff-rdp launch --auto-consent       # auto-dismiss cookie banners
   ff-rdp launch --profile ~/my-prof  # reuse an existing profile
 
-Output: {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\"}"
+Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"temp_profile\": bool, \"auto_consent\": bool}, \"total\": 1, \"meta\": {...}}"
     )]
     Launch {
         /// Run Firefox in headless mode
@@ -925,6 +1003,25 @@ Output: {\"results\": {\"scrolled\": true, \"text\": \"...\", \"viewport\": {...
         /// Text to search for (case-sensitive substring match)
         text: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum DaemonCommand {
+    /// Print daemon status as JSON
+    #[command(long_about = "Print the current daemon status as JSON.
+
+If no daemon is running, reports running=false.
+
+Output: {\"results\": {\"running\": bool, \"pid\": N, \"port\": N, \"uptime_seconds\": N, \"connections\": N, \"buffer_sizes\": {...}}, \"total\": 1, \"meta\": {...}}")]
+    Status,
+    /// Gracefully stop the running daemon
+    #[command(long_about = "Gracefully stop the running daemon.
+
+Sends a shutdown RPC to the daemon. Falls back to SIGTERM if the RPC does
+not succeed within 2 seconds. Cleans up daemon.json on success.
+
+Output: {\"results\": {\"stopped\": bool}, \"total\": 1, \"meta\": {...}}")]
+    Stop,
 }
 
 #[derive(Subcommand)]

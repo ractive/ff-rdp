@@ -10,11 +10,11 @@ use std::time::Duration;
 /// A TCP port's listener, as observed at a single point in time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortOwner {
-    pub pid: u32,
-    pub process_name: String,
+    pub(crate) pid: u32,
+    pub(crate) process_name: String,
     /// Uptime of the listener process, when known. `None` when the OS query
     /// did not return start-time data.
-    pub uptime_s: Option<u64>,
+    pub(crate) uptime_s: Option<u64>,
 }
 
 /// Look up the process listening on `port` on the local machine.
