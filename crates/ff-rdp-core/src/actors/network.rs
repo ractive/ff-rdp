@@ -15,6 +15,7 @@ pub struct Header {
 
 /// Response content from a network event.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ResponseContent {
     /// MIME type of the response.
     pub mime_type: String,

@@ -108,10 +108,11 @@ impl WebConsoleActor {
     /// The two loops below use this invariant to skip push events cleanly
     /// without naming specific event types.
     ///
-    /// Returns [`EvalError::NavigatedDuringEval`] immediately if a
-    /// `tabNavigated` or `willNavigate` event is received from the target
-    /// actor while waiting for the eval result — indicating the page navigated
-    /// away and the result will never arrive.
+    /// Returns [`ProtocolError::EvalNavigatedDuringEval`] immediately if a
+    /// `tabNavigated` or `willNavigate` event is received from the evaluated
+    /// console actor while waiting for the eval result — indicating the page
+    /// navigated away and the result will never arrive.  Navigation events
+    /// originating from other actors on the same connection are ignored.
     pub fn evaluate_js_async(
         transport: &mut RdpTransport,
         console_actor: &ActorId,
@@ -164,11 +165,16 @@ impl WebConsoleActor {
         // this loop will eventually fail with a timeout error if Firefox stops responding.
         loop {
             let msg = transport.recv()?;
+            let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
             let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
 
             // Watch for navigation events that signal the eval result will never arrive.
-            // These are push events (they carry `type`) from the target actor.
-            if msg_type == "tabNavigated" || msg_type == "willNavigate" {
+            // Only abort when the event originates from the evaluated console actor —
+            // unrelated actors on the same connection may emit similar events for tabs
+            // we don't care about.
+            if from == console_actor.as_ref()
+                && (msg_type == "tabNavigated" || msg_type == "willNavigate")
+            {
                 return Err(ProtocolError::EvalNavigatedDuringEval);
             }
 

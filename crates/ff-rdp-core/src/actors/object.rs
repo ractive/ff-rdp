@@ -44,9 +44,9 @@ impl ObjectActor {
     /// these actors accumulate and are never reclaimed.  Sending `release`
     /// to the grip actor asks Firefox to destroy it.
     ///
-    /// Note: the connection dropping (end of `--no-daemon` mode) also
-    /// releases all actors implicitly, so calling this is only necessary in
-    /// daemon mode.
+    /// Note: closing the underlying RDP connection also releases all actors
+    /// implicitly, so calling this is only necessary on long-lived
+    /// connections that outlive a single command.
     pub fn release(transport: &mut RdpTransport, actor_id: &str) -> Result<(), ProtocolError> {
         actor_request(transport, actor_id, "release", None)?;
         Ok(())
@@ -99,8 +99,8 @@ impl ObjectActor {
 /// cannot propagate errors.  Call [`release`](ScopedGrip::release) explicitly
 /// at the end of scope to get a `Result`.  If you drop a `ScopedGrip` without
 /// calling `release` (e.g. due to an early-return error), the actor leaks on
-/// the Firefox side until the connection closes — this is acceptable in
-/// `--no-daemon` mode where the connection tears down immediately anyway.
+/// the Firefox side until the connection closes — this is acceptable for
+/// short-lived connections that tear down immediately after a single command.
 #[derive(Debug)]
 pub struct ScopedGrip {
     inner: Grip,
@@ -119,22 +119,26 @@ impl ScopedGrip {
 
     /// Consume the wrapper and release the server-side actor.
     ///
-    /// For `Grip::Object` variants, sends `release` to the grip actor so
-    /// Firefox can free the associated server-side memory immediately.
-    /// For all other variants (primitives, longStrings) this is effectively
-    /// a no-op — longString actors are reclaimed automatically by Firefox's
-    /// GC on the next cycle, so explicit release is not required.
+    /// For `Grip::Object` and `Grip::LongString` variants, sends `release` to
+    /// the grip actor so Firefox can free the associated server-side memory
+    /// immediately.  Primitive variants (`Null`, `Undefined`, `NaN`,
+    /// `Value(_)`, …) carry no actor and so are a no-op.
     ///
     /// `unknownActor` errors from Firefox are silently swallowed; the actor
     /// may already be gone if the tab was closed or the connection reset.
-    /// Other transport-level errors are returned to the caller.
+    /// Other actor errors and transport-level errors are returned to the
+    /// caller — silently swallowing them would mask real protocol failures.
     ///
     /// Returns the inner grip so the caller can still inspect it after release.
     pub fn release(self, transport: &mut RdpTransport) -> Result<Grip, ProtocolError> {
-        if let Grip::Object { ref actor, .. } = self.inner {
-            let actor_id = actor.as_ref().to_owned();
-            match ObjectActor::release(transport, &actor_id) {
-                Ok(()) | Err(ProtocolError::ActorError { .. }) => {}
+        let actor_id: Option<&str> = match &self.inner {
+            Grip::Object { actor, .. } | Grip::LongString { actor, .. } => Some(actor.as_ref()),
+            _ => None,
+        };
+        if let Some(id) = actor_id {
+            match ObjectActor::release(transport, id) {
+                Ok(()) => {}
+                Err(e) if e.is_unknown_actor() => {}
                 Err(e) => return Err(e),
             }
         }
