@@ -2,7 +2,7 @@
 title: "Iteration 56: Dogfooding Session 41 Fixes"
 type: iteration
 date: 2026-05-10
-status: in-progress
+status: completed
 branch: iter-56/dogfood-41-fixes
 tags:
   - iteration
