@@ -23,6 +23,7 @@ use super::js_helpers::resolve_result;
 /// always returns the physical viewport width and is unaffected by inline CSS.
 const RESPONSIVE_JS_TEMPLATE: &str = r"(function() {
   var selectors = __SELECTORS__;
+  var visibleOnly = __VISIBLE_ONLY__;
   var vw = document.documentElement.offsetWidth || window.innerWidth;
   var vh = window.innerHeight || document.documentElement.clientHeight;
   var elements = [];
@@ -47,6 +48,7 @@ const RESPONSIVE_JS_TEMPLATE: &str = r"(function() {
       var vis = r.width > 0 && r.height > 0 &&
         cs.visibility !== 'hidden' && cs.display !== 'none' &&
         parseFloat(cs.opacity) > 0;
+      if (visibleOnly && !vis) { continue; }
       var inVp = r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw;
       elements.push({
         selector: sel,
@@ -124,13 +126,18 @@ const RESTORE_VIEWPORT_CSS_JS: &str = "(function(){
 })()";
 
 /// Build the geometry IIFE by serializing selectors as a JSON array and
-/// substituting the `__SELECTORS__` placeholder.
-pub(crate) fn build_geometry_js(selectors: &[String]) -> String {
+/// substituting the `__SELECTORS__` and `__VISIBLE_ONLY__` placeholders.
+///
+/// `visible_only = true` means hidden/zero-sized elements are skipped (the default).
+pub(crate) fn build_geometry_js(selectors: &[String], visible_only: bool) -> String {
     // serde_json::to_string is infallible for Vec<String>
     let selectors_json = serde_json::to_string(selectors).unwrap_or_else(|e| {
         unreachable!("serde_json::to_string is infallible for Vec<String>: {e}")
     });
-    RESPONSIVE_JS_TEMPLATE.replace("__SELECTORS__", &selectors_json)
+    let visible_only_str = if visible_only { "true" } else { "false" };
+    RESPONSIVE_JS_TEMPLATE
+        .replace("__SELECTORS__", &selectors_json)
+        .replace("__VISIBLE_ONLY__", visible_only_str)
 }
 
 /// Build a JS snippet that applies the CSS-based viewport simulation for the
@@ -156,7 +163,12 @@ fn validate_widths(widths: &[u32]) -> Result<(), AppError> {
     Ok(())
 }
 
-pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppError> {
+pub fn run(
+    cli: &Cli,
+    selectors: &[String],
+    widths: &[u32],
+    include_hidden: bool,
+) -> Result<(), AppError> {
     validate_widths(widths)?;
 
     let mut ctx = connect_and_get_target(cli)?;
@@ -185,7 +197,7 @@ pub fn run(cli: &Cli, selectors: &[String], widths: &[u32]) -> Result<(), AppErr
         .map_err(|e| AppError::from(anyhow::anyhow!("failed to parse viewport JSON: {e}")))?;
 
     // --- Step 2: iterate over each breakpoint width -------------------------
-    let geom_js = build_geometry_js(selectors);
+    let geom_js = build_geometry_js(selectors, !include_hidden);
     let mut breakpoints: Vec<Value> = Vec::with_capacity(widths.len());
 
     // We always attempt to restore the page styles, even when an error occurs
@@ -413,21 +425,21 @@ mod tests {
     #[test]
     fn build_geometry_js_inserts_selectors() {
         let selectors = vec!["h1".to_owned(), "p".to_owned()];
-        let js = build_geometry_js(&selectors);
+        let js = build_geometry_js(&selectors, true);
         assert!(js.contains(r#"["h1","p"]"#));
         assert!(!js.contains("__SELECTORS__"));
     }
 
     #[test]
     fn build_geometry_js_contains_sentinel() {
-        let js = build_geometry_js(&["div".to_owned()]);
+        let js = build_geometry_js(&["div".to_owned()], true);
         assert!(js.contains(super::super::js_helpers::JSON_SENTINEL));
     }
 
     #[test]
     fn build_geometry_js_escapes_special_chars() {
         let selectors = vec!["[data-id=\"foo\"]".to_owned()];
-        let js = build_geometry_js(&selectors);
+        let js = build_geometry_js(&selectors, true);
         assert!(!js.contains("__SELECTORS__"));
         // The substituted value must be valid JSON
         let start = js.find("var selectors = ").expect("placeholder replaced") + 16;
@@ -461,12 +473,32 @@ mod tests {
 
     #[test]
     fn build_geometry_js_contains_responsive_properties() {
-        let js = build_geometry_js(&["div".to_owned()]);
+        let js = build_geometry_js(&["div".to_owned()], true);
         assert!(js.contains("getBoundingClientRect"));
         assert!(js.contains("getComputedStyle"));
         assert!(js.contains("flexDirection"));
         assert!(js.contains("gridTemplateColumns"));
         assert!(js.contains("fontSize"));
+    }
+
+    #[test]
+    fn build_geometry_js_visible_only_false_uses_false_literal() {
+        let js = build_geometry_js(&["div".to_owned()], false);
+        assert!(js.contains("var visibleOnly = false;"));
+        assert!(!js.contains("__VISIBLE_ONLY__"));
+    }
+
+    #[test]
+    fn build_geometry_js_visible_only_true_uses_true_literal() {
+        let js = build_geometry_js(&["div".to_owned()], true);
+        assert!(js.contains("var visibleOnly = true;"));
+        assert!(!js.contains("__VISIBLE_ONLY__"));
+    }
+
+    #[test]
+    fn build_geometry_js_visible_only_includes_filter_guard() {
+        let js = build_geometry_js(&["div".to_owned()], true);
+        assert!(js.contains("if (visibleOnly && !vis) { continue; }"));
     }
 
     #[test]

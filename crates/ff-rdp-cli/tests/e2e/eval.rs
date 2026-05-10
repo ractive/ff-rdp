@@ -393,6 +393,120 @@ fn eval_default_isolation_succeeds_with_const_declaration() {
 // --stringify flag
 // ---------------------------------------------------------------------------
 
+/// `eval --stringify "'foo'"` must return `"results": "foo"` — a plain string,
+/// not double-encoded as `"\"foo\""`.  The page-side helper skips JSON.stringify
+/// when the value is already a string.
+#[test]
+fn eval_stringify_string_no_double_encoding() {
+    let server = eval_server("eval_result_stringify_string.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "eval".to_owned(),
+        "--stringify".to_owned(),
+        "'foo'".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    // Must be the plain string, not a JSON-encoded string-within-a-string.
+    assert_eq!(
+        json["results"],
+        serde_json::Value::String("foo".to_owned()),
+        "string results must not be double-encoded; got: {}",
+        json["results"]
+    );
+}
+
+/// `eval --stringify "({a:1})"` must still return `"results": "{\"a\":1}"` —
+/// objects are passed through JSON.stringify as before.
+#[test]
+fn eval_stringify_object_still_stringified() {
+    let server = eval_server("eval_result_stringify.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "eval".to_owned(),
+        "--stringify".to_owned(),
+        "({a:1})".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    // The fixture encodes a NodeList-style array — still a JSON string.
+    let results = json["results"].as_str().expect("results must be a string");
+    // Verify it parses as JSON (it's a stringified object/array).
+    serde_json::from_str::<serde_json::Value>(results)
+        .expect("--stringify object result must be valid JSON");
+}
+
+/// `eval --stringify "42"` must return `"results": "42"` — numbers are
+/// JSON.stringify'd to their string representation.
+#[test]
+fn eval_stringify_number_becomes_string() {
+    let server = eval_server("eval_result_stringify_number.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["eval".to_owned(), "--stringify".to_owned(), "42".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    assert_eq!(
+        json["results"],
+        serde_json::Value::String("42".to_owned()),
+        "number result must be stringified to \"42\"; got: {}",
+        json["results"]
+    );
+}
+
 #[test]
 fn eval_stringify_returns_json_string() {
     let server = eval_server("eval_result_stringify.json");

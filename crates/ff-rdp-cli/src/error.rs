@@ -9,14 +9,18 @@ pub enum AppError {
     /// Exit with specific code (reserved for commands that need a precise exit code)
     #[allow(dead_code)]
     Exit(i32),
+    /// Connection failure (could not reach Firefox or daemon) — exit 3
+    Connection(String),
+    /// Operation timed out — exit 124
+    Timeout(String),
 }
 
 impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::User(msg) => write!(f, "{msg}"),
             Self::Internal(err) => write!(f, "{err:#}"),
             Self::Exit(code) => write!(f, "exit with code {code}"),
+            Self::User(msg) | Self::Connection(msg) | Self::Timeout(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -30,6 +34,12 @@ impl From<anyhow::Error> for AppError {
 impl From<ff_rdp_core::ProtocolError> for AppError {
     fn from(err: ff_rdp_core::ProtocolError) -> Self {
         match &err {
+            ff_rdp_core::ProtocolError::ConnectionFailed(_) => Self::Connection(format!(
+                "{err}\nhint: run `ff-rdp doctor` for a full diagnostic, or `ff-rdp launch` to start Firefox."
+            )),
+            ff_rdp_core::ProtocolError::Timeout => {
+                Self::Timeout(format!("{err} — try increasing --timeout"))
+            }
             ff_rdp_core::ProtocolError::ActorError { kind, .. } => match kind {
                 ff_rdp_core::ActorErrorKind::UnknownActor => Self::User(format!(
                     "{err} — the tab may have been closed or navigated away; try again.\n\

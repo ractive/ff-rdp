@@ -174,7 +174,7 @@ fn tabs_connection_refused_shows_helpful_error() {
         !output.status.success(),
         "expected failure, but the process succeeded"
     );
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(3));
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

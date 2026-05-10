@@ -84,10 +84,13 @@ const GEOMETRY_JS_TEMPLATE: &str = r"(function() {
   return '__FF_RDP_JSON__' + JSON.stringify({elements: elements, overlaps: overlaps, viewport: {width: vw, height: vh}});
 })()";
 
-pub fn run(cli: &Cli, selectors: &[String], visible_only: bool) -> Result<(), AppError> {
+pub fn run(cli: &Cli, selectors: &[String], include_hidden: bool) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
+    // By default we skip hidden/zero-sized elements (visible_only=true).
+    // --include-hidden opts out of that filter.
+    let visible_only = !include_hidden;
     let js = build_js(selectors, visible_only);
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "geometry evaluation failed")?;

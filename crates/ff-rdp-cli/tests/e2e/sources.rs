@@ -194,3 +194,108 @@ fn sources_handles_null_entries_in_response() {
     assert_eq!(results[0]["url"], "https://example.com/app.js");
     assert_eq!(results[1]["url"], "https://example.com/lib.js");
 }
+
+// ---------------------------------------------------------------------------
+// Fallback-path stderr gating tests
+//
+// When the thread actor returns `unrecognizedPacketType`, the command falls
+// back to the JS DOM/Performance API path.  The `debug:` message describing
+// the fallback must be suppressed by default and emitted only under --verbose.
+// ---------------------------------------------------------------------------
+
+/// Build a mock that returns `unrecognizedPacketType` for `sources` and then
+/// serves a successful JS eval fallback returning an empty sources array.
+fn fallback_server() -> MockRdpServer {
+    // The thread-actor sources request triggers the fallback.
+    let sources_error = serde_json::json!({
+        "from": "server1.conn0.child2/thread1",
+        "error": "unrecognizedPacketType",
+        "message": "sources"
+    });
+
+    // The JS fallback calls evaluateJSAsync on the console actor.
+    // The immediate response is an ack; the follow-up carries the result.
+    let eval_ack = serde_json::json!({
+        "from": "server1.conn0.child2/consoleActor3",
+        "resultID": "test-fallback-0"
+    });
+    let eval_result = serde_json::json!({
+        "from": "server1.conn0.child2/consoleActor3",
+        "type": "evaluationResult",
+        "resultID": "test-fallback-0",
+        "hasException": false,
+        "input": "",
+        "result": "__FF_RDP_JSON__[]",
+        "startTime": 0.0,
+        "timestamp": 1.0
+    });
+
+    MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("attach", load_fixture("thread_attach_response.json"))
+        .on("sources", sources_error)
+        .on("resume", load_fixture("thread_resume_response.json"))
+        .on("detach", load_fixture("thread_detach_response.json"))
+        .on_with_followup("evaluateJSAsync", eval_ack, eval_result)
+}
+
+/// Without `--verbose`, the fallback `debug:` message must not appear on stderr.
+#[test]
+fn sources_fallback_is_silent_by_default() {
+    let server = fallback_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.push("sources".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("debug:"),
+        "debug: message must be suppressed without --verbose, got: {stderr}"
+    );
+}
+
+/// With `--verbose`, the fallback `debug:` message must appear on stderr.
+#[test]
+fn sources_fallback_emits_debug_with_verbose() {
+    let server = fallback_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["--verbose".to_owned(), "sources".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("debug:"),
+        "--verbose must cause the debug: fallback message to appear on stderr"
+    );
+}

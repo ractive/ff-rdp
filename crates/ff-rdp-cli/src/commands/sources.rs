@@ -74,10 +74,12 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
             })
             .collect::<Vec<_>>(),
         Err(e) if should_use_js_fallback(&e) => {
-            eprintln!(
-                "debug: sources thread actor failed ({e}); \
-                 falling back to JS DOM/Performance API"
-            );
+            if cli.is_verbose() {
+                eprintln!(
+                    "debug: sources thread actor failed ({e}); \
+                     falling back to JS DOM/Performance API"
+                );
+            }
             used_js_fallback = true;
             list_sources_via_js(&mut ctx)?
         }

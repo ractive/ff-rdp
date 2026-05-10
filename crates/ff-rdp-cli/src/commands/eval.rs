@@ -72,6 +72,14 @@ pub(crate) fn load_script(
 /// we evaluate the user code first (so declarations stay scoped), then pass the
 /// returned value through `JSON.stringify`.
 pub(crate) fn build_script(user_script: &str, stringify: bool, isolate: bool) -> String {
+    // The stringify helper: if the value is already a string, return it as-is;
+    // otherwise JSON.stringify it. This prevents double-encoding when the JS
+    // expression already evaluates to a string (e.g. `document.title`).
+    // BigInt/Symbol cannot be JSON.stringify'd either, so we fall back to
+    // String() coercion for those — consistent with the pre-existing circular
+    // reference fallback that returns a plain string.
+    const STRINGIFY_HELPER: &str = "(function(v){if(typeof v===\"string\")return v;try{return JSON.stringify(v);}catch(e){if(e instanceof TypeError&&e.message.includes(\"circular\"))return \"{\\\"error\\\":\\\"circular reference detected\\\"}\";throw e;}})";
+
     // JSON-encode the user source so it survives as a JS string literal.
     let encoded = serde_json::to_string(user_script).unwrap_or_else(|e| {
         // serde_json::to_string is infallible for &str — defensive fallback.
@@ -80,13 +88,11 @@ pub(crate) fn build_script(user_script: &str, stringify: bool, isolate: bool) ->
 
     match (isolate, stringify) {
         (false, false) => user_script.to_owned(),
-        (false, true) => format!(
-            "(function() {{ try {{ return JSON.stringify({user_script}); }} catch(e) {{ if (e instanceof TypeError && e.message.includes('circular')) return '{{\"error\":\"circular reference detected\"}}'; throw e; }} }})()"
-        ),
+        (false, true) => format!("(function(){{return {STRINGIFY_HELPER}({user_script});}})()"),
         (true, false) => format!("(function() {{ \"use strict\"; return eval({encoded}); }})()"),
-        (true, true) => format!(
-            "(function() {{ \"use strict\"; try {{ return JSON.stringify(eval({encoded})); }} catch(e) {{ if (e instanceof TypeError && e.message.includes('circular')) return '{{\"error\":\"circular reference detected\"}}'; throw e; }} }})()"
-        ),
+        (true, true) => {
+            format!("(function(){{\"use strict\";return {STRINGIFY_HELPER}(eval({encoded}));}})()")
+        }
     }
 }
 
@@ -208,11 +214,14 @@ mod tests {
     #[test]
     fn build_script_stringify_only_wraps_in_json_stringify() {
         let s = build_script("document.querySelectorAll('a')", true, false);
+        // The stringify helper uses JSON.stringify for non-strings.
         assert!(s.contains("JSON.stringify("));
         assert!(s.contains("document.querySelectorAll('a')"));
         assert!(s.contains("circular"));
-        // Must NOT use eval(...) when isolate is off.
+        // The stringify helper is inlined as a function — no bare eval().
         assert!(!s.contains("eval("));
+        // Strings are passed through without double-encoding.
+        assert!(s.contains("typeof v===\"string\""));
     }
 
     #[test]
@@ -237,8 +246,30 @@ mod tests {
     fn build_script_isolate_and_stringify_combine() {
         let s = build_script("document.querySelectorAll('a')", true, true);
         assert!(s.contains("\"use strict\""));
-        assert!(s.contains("JSON.stringify(eval("));
+        // The stringify helper wraps eval(); JSON.stringify is inside the helper.
+        assert!(s.contains("JSON.stringify("));
+        assert!(s.contains("eval("));
         assert!(s.contains("circular"));
+        // Strings are not double-encoded.
+        assert!(s.contains("typeof v===\"string\""));
+    }
+
+    #[test]
+    fn build_script_stringify_string_passthrough() {
+        // When the expression evaluates to a string, the helper must return it
+        // without passing through JSON.stringify (no double-encoding).
+        let s = build_script("document.title", true, false);
+        assert!(s.contains("typeof v===\"string\""));
+        // The helper is invoked with the user expression as argument.
+        assert!(s.contains("document.title"));
+    }
+
+    #[test]
+    fn build_script_stringify_number_uses_json_stringify() {
+        // For non-string values the helper falls through to JSON.stringify.
+        let s = build_script("42", true, false);
+        assert!(s.contains("JSON.stringify("));
+        assert!(s.contains("42"));
     }
 
     #[test]

@@ -36,9 +36,11 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     ) {
         Ok(msgs) => msgs,
         Err(e) => {
-            eprintln!(
-                "debug: getCachedMessages(PageError+ConsoleAPI) failed ({e}), retrying with ConsoleAPI only"
-            );
+            if cli.is_verbose() {
+                eprintln!(
+                    "debug: getCachedMessages(PageError+ConsoleAPI) failed ({e}), retrying with ConsoleAPI only"
+                );
+            }
             WebConsoleActor::get_cached_messages(
                 ctx.transport_mut(),
                 &console_actor,

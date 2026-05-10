@@ -43,7 +43,7 @@ COMMAND REFERENCE:
   CSS & styles:
     ff-rdp computed <SEL> [--prop NAME | --all]
     ff-rdp styles <SEL> [--properties P1,P2 | --applied | --layout]
-    ff-rdp geometry <SEL>... [--visible-only]
+    ff-rdp geometry <SEL>... [--include-hidden]
     ff-rdp responsive <SEL>... [--widths W1,W2,...]
 
   Accessibility:
@@ -264,8 +264,23 @@ pub struct Cli {
     #[arg(long, global = true, conflicts_with = "hints")]
     pub no_hints: bool,
 
+    /// Print internal debug messages (fallback paths, protocol quirks) to stderr.
+    /// Also enabled when the RUST_LOG environment variable is set.
+    #[arg(long, global = true)]
+    pub verbose: bool,
+
     #[command(subcommand)]
     pub command: Command,
+}
+
+impl Cli {
+    /// Returns `true` when internal debug messages should be printed to stderr.
+    ///
+    /// Enabled by `--verbose` or by having `RUST_LOG` set (the latter implies
+    /// that the caller already opted into structured logging output).
+    pub fn is_verbose(&self) -> bool {
+        self.verbose || std::env::var("RUST_LOG").is_ok()
+    }
 }
 
 #[derive(Subcommand)]
@@ -358,7 +373,7 @@ to wrap the expression in JSON.stringify() and get the real data back.")]
     /// Extract visible page text (document.body.innerText)
     #[command(long_about = "Extract visible page text (document.body.innerText).
 
-Output: {\"results\": {\"text\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
+Output: {\"results\": \"<page text as a plain string>\", \"total\": 1, \"meta\": {...}}")]
     PageText,
     /// Query DOM elements by CSS selector
     #[command(long_about = "Query DOM elements by CSS selector.
@@ -501,7 +516,7 @@ With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...
 Finds the first element matching the selector and dispatches mousedown,
 mouseup, and click events using the Firefox RDP DOMNode actor.
 
-Output: {\"results\": {\"clicked\": true, \"selector\": \"...\", \"tag\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
+Output: {\"results\": {\"clicked\": true, \"tag\": \"...\", \"text\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
     Click {
         /// CSS selector of the element to click
         selector: String,
@@ -541,7 +556,7 @@ Output: {\"results\": {\"typed\": true, \"tag\": \"INPUT\", \"value\": \"...\"},
 
 Exactly one of --selector, --text, or --eval must be specified.
 
-Output: {\"results\": {\"elapsed_ms\": N, \"condition\": \"selector|text|eval\"}, \"total\": 1, \"meta\": {...}}")]
+Output: {\"results\": {\"matched\": true, \"elapsed_ms\": N, \"condition\": \"selector|text|eval\"}, \"total\": 1, \"meta\": {...}}")]
     #[command(group(ArgGroup::new("condition").required(true).multiple(false)))]
     Wait {
         /// Wait until an element matching this CSS selector exists in the DOM
@@ -644,7 +659,7 @@ Actor IDs appear in eval results when the return value is a non-primitive
 (e.g. {\"type\": \"object\", \"actor\": \"server1.conn0.child0/obj12\", ...}).
 Use --depth to control how many levels of nested objects are resolved.
 
-Output: {\"results\": {\"actor\": \"...\", \"class\": \"...\", \"properties\": {...}}, \"total\": 1, \"meta\": {...}}")]
+Output: {\"results\": {\"actor\": \"...\", \"prototype\": {...}, \"ownProperties\": {...}}, \"total\": 1, \"meta\": {...}}")]
     Inspect {
         /// The actor ID of the object grip to inspect
         actor_id: String,
@@ -655,7 +670,7 @@ Output: {\"results\": {\"actor\": \"...\", \"class\": \"...\", \"properties\": {
     /// List JavaScript/WASM sources loaded on the page
     #[command(long_about = "List JavaScript/WASM sources loaded on the page.
 
-Output: {\"results\": [{\"url\": \"...\", \"source_map_url\": \"...\", \"is_wasm\": bool}], \"total\": N, \"meta\": {...}}")]
+Output: {\"results\": [{\"url\": \"...\", \"actor\": \"...\", \"isBlackBoxed\": bool}], \"total\": N, \"meta\": {...}}")]
     Sources {
         /// Filter sources by URL substring
         #[arg(long)]
@@ -702,24 +717,35 @@ Output (stop):   {\"results\": {\"stopped\": bool}, \"total\": 1, \"meta\": {...
 
 Automatically detects overlaps between queried elements.
 
+By default, hidden and zero-sized elements are excluded from results (elements with
+display:none, visibility:hidden, opacity:0, or a zero bounding rect). Pass --include-hidden
+to receive those elements as well.
+
+NOTE: behavior change — prior versions included hidden elements by default and required
+--visible-only to filter them. Scripts relying on the old default must add --include-hidden.
+
 Output: {\"results\": {\"elements\": [{\"selector\": \"...\", \"rect\": {...}, \"visible\": bool, \"z_index\": N}], \"overlaps\": [...]}, \"total\": 1, \"meta\": {...}}"
     )]
     Geometry {
         /// One or more CSS selectors to query
         #[arg(required = true)]
         selectors: Vec<String>,
-        /// Exclude invisible elements (zero-size, display:none, visibility:hidden, opacity:0)
+        /// Include hidden elements (zero-size, display:none, visibility:hidden, opacity:0).
+        /// By default these are excluded.
         #[arg(long)]
-        visible_only: bool,
+        include_hidden: bool,
     },
     /// Test responsive layout across viewport widths: resize to each width,
     /// collect geometry + computed styles for the given selectors, then restore
     /// the original viewport size.  Returns results keyed by breakpoint width.
     #[command(long_about = "Test responsive layout across viewport widths.
 
-Resizes to each width, collects geometry + computed styles, then restores the original viewport.
+Resizes to each width, collects element geometry at each breakpoint, then restores the original viewport.
 
-Output: {\"results\": {\"320\": [{\"selector\": \"...\", \"rect\": {...}, \"computed\": {...}}], \"768\": [...]}, \"total\": N, \"meta\": {...}}")]
+By default, hidden and zero-sized elements are excluded from results at each breakpoint.
+Pass --include-hidden to receive those elements as well.
+
+Output: {\"results\": {\"breakpoints\": [{\"width\": 320, \"viewport\": {\"width\": N, \"height\": N}, \"elements\": [{\"selector\": \"...\", \"rect\": {...}, \"visible\": bool}]}, ...], \"original_viewport\": {\"width\": N, \"height\": N}}, \"total\": N, \"meta\": {...}}")]
     Responsive {
         /// One or more CSS selectors to query at each breakpoint
         #[arg(required = true)]
@@ -727,6 +753,10 @@ Output: {\"results\": {\"320\": [{\"selector\": \"...\", \"rect\": {...}, \"comp
         /// Comma-separated viewport widths in pixels
         #[arg(long, value_delimiter = ',', default_value = "320,768,1024,1440")]
         widths: Vec<u32>,
+        /// Include hidden elements (zero-size, display:none, visibility:hidden, opacity:0).
+        /// By default these are excluded.
+        #[arg(long)]
+        include_hidden: bool,
     },
     /// Quick wrapper around getComputedStyle for CSS debugging
     #[command(

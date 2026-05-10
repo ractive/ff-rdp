@@ -128,8 +128,7 @@ pub(crate) fn poll_js_condition(
 
         // Check timeout before sleeping to avoid an unnecessary extra poll interval.
         if started.elapsed() >= timeout {
-            eprintln!("error: {timeout_context}");
-            return Err(AppError::Exit(1));
+            return Err(AppError::Timeout(timeout_context.to_owned()));
         }
 
         std::thread::sleep(poll);

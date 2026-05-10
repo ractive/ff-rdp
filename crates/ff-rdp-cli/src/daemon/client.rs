@@ -353,7 +353,7 @@ fn daemon_rpc(cli: &Cli, msg: &serde_json::Value) -> Result<Value, AppError> {
 
     let timeout = Duration::from_millis(cli.timeout);
     let stream = TcpStream::connect_timeout(&addr, timeout)
-        .map_err(|e| AppError::User(format!("could not connect to daemon: {e}")))?;
+        .map_err(|e| AppError::Connection(format!("could not connect to daemon: {e}")))?;
     stream
         .set_read_timeout(Some(timeout))
         .map_err(|e| AppError::Internal(anyhow::anyhow!("setting read timeout: {e}")))?;

@@ -155,10 +155,12 @@ fn run_native_or_js_fallback(
     let walker = match AccessibilityActor::get_walker(ctx.transport_mut(), accessibility_actor) {
         Ok(w) => w,
         Err(e) if e.is_unrecognized_packet_type() => {
-            eprintln!(
-                "debug: accessibility getWalker unrecognized in this Firefox version; \
-                 falling back to JS eval"
-            );
+            if cli.is_verbose() {
+                eprintln!(
+                    "debug: accessibility getWalker unrecognized in this Firefox version; \
+                     falling back to JS eval"
+                );
+            }
             return run_selector_mode(ctx, "body", depth, max_chars).map(|t| (t, true));
         }
         Err(e) => return Err(map_a11y_error(e, cli)),
@@ -169,10 +171,12 @@ fn run_native_or_js_fallback(
         Ok(r) => r,
         Err(e) if e.is_unrecognized_packet_type() => {
             // Both getDocument and getRootNode failed — Firefox 149+ protocol change.
-            eprintln!(
-                "debug: accessibility walker root methods unrecognized in this Firefox \
-                 version (tried getDocument and getRootNode); falling back to JS eval"
-            );
+            if cli.is_verbose() {
+                eprintln!(
+                    "debug: accessibility walker root methods unrecognized in this Firefox \
+                     version (tried getDocument and getRootNode); falling back to JS eval"
+                );
+            }
             return run_selector_mode(ctx, "body", depth, max_chars).map(|t| (t, true));
         }
         Err(e) => return Err(map_a11y_error(e, cli)),

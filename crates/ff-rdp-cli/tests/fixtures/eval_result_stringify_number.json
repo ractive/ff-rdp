@@ -1,0 +1,7 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "hasException": false,
+  "result": "42",
+  "resultID": "1775437183977.373-0",
+  "type": "evaluationResult"
+}
