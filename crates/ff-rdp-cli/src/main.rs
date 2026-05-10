@@ -109,6 +109,16 @@ fn main() {
         Err(AppError::Exit(code)) => {
             std::process::exit(code);
         }
+        Err(AppError::Connection(msg)) => {
+            // Exit 3 — could not reach Firefox or daemon.
+            eprintln!("error: {msg}");
+            std::process::exit(3);
+        }
+        Err(AppError::Timeout(msg)) => {
+            // Exit 124 — operation exceeded its timeout (matches GNU timeout convention).
+            eprintln!("error: {msg}");
+            std::process::exit(124);
+        }
     }
 }
 

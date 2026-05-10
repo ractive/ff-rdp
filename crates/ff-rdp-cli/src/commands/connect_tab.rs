@@ -87,7 +87,7 @@ fn connect_to_firefox(
         let mut transport =
             RdpTransport::connect_raw(host, port, timeout).map_err(|e| match e {
                 ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout => {
-                    AppError::User(format!(
+                    AppError::Connection(format!(
                         "could not connect to daemon on port {port} — try --no-daemon to connect directly to Firefox.\n\
                          hint: run `ff-rdp doctor` to inspect daemon health."
                     ))
@@ -117,14 +117,14 @@ fn connect_to_firefox(
 
     RdpConnection::connect(host, port, timeout).map_err(|e| match e {
         ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout if !via_daemon => {
-            AppError::User(format!(
+            AppError::Connection(format!(
                 "could not connect to Firefox at {}:{} — is Firefox running with --start-debugger-server {}?\n\
                  hint: run `ff-rdp doctor` for a full diagnostic, or `ff-rdp launch` to start Firefox with debugging enabled.",
                 cli.host, cli.port, cli.port
             ))
         }
         ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout if via_daemon => {
-            AppError::User(format!(
+            AppError::Connection(format!(
                 "could not connect to daemon on port {port} — try --no-daemon to connect directly to Firefox.\n\
                  hint: run `ff-rdp doctor` to inspect daemon health."
             ))

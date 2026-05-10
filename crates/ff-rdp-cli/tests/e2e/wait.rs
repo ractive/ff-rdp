@@ -227,7 +227,7 @@ fn wait_timeout_exits_nonzero() {
         !output.status.success(),
         "expected failure when wait times out"
     );
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(124));
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

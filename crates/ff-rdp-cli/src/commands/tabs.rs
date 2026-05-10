@@ -16,7 +16,7 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
         Duration::from_millis(cli.timeout),
     )
     .map_err(|e| match e {
-        ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout => AppError::User(format!(
+        ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout => AppError::Connection(format!(
             "could not connect to Firefox at {}:{} — is Firefox running with --start-debugger-server {}?\n\
              hint: run `ff-rdp doctor` for a full diagnostic, or `ff-rdp launch` to start Firefox with debugging enabled.",
             cli.host, cli.port, cli.port

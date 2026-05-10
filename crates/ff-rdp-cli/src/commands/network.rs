@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::Write;
+use std::time::Duration;
 
 use ff_rdp_core::{
     NetworkResource, ProtocolError, RdpTransport, TabActor, WatcherActor,
@@ -20,14 +21,61 @@ use super::network_events::{
     performance_api_fallback,
 };
 
+/// Floor for the network-drain socket read timeout in daemon mode.
+///
+/// The global `--timeout` controls individual RDP read timeouts (connection
+/// quality); the drain floor is independent and gives slow pages enough time
+/// to deliver all buffered events before we give up.
+const DAEMON_DRAIN_FLOOR_MS: u64 = 15_000;
+
 pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let via_daemon = ctx.via_daemon;
 
+    let drain_timeout_ms = cli.timeout.max(DAEMON_DRAIN_FLOOR_MS);
+
     let (all_resources, all_updates) = if ctx.via_daemon {
         // The daemon has already subscribed to network-event resources and is
         // buffering them.  Drain the buffer without touching watcher state.
-        drain_network_from_daemon(ctx.transport_mut())?
+        //
+        // Temporarily raise the socket read timeout to the drain floor so slow
+        // pages don't cause a premature timeout on the drain RPC.
+        let restored_timeout = Duration::from_millis(cli.timeout);
+        let drain_timeout = Duration::from_millis(drain_timeout_ms);
+        let _ = ctx.transport_mut().set_read_timeout(Some(drain_timeout));
+        let drain_result = drain_network_from_daemon(ctx.transport_mut());
+        let _ = ctx.transport_mut().set_read_timeout(Some(restored_timeout));
+        drain_result.map_err(|e| {
+            // Downcast through the anyhow chain to find a ProtocolError::Timeout
+            // or an io::Error with kind WouldBlock/TimedOut — both indicate the
+            // socket read deadline fired rather than a real protocol failure.
+            if let AppError::Internal(ref inner) = e {
+                let mut is_timeout = false;
+                for cause in inner.chain() {
+                    if let Some(pe) = cause.downcast_ref::<ProtocolError>()
+                        && matches!(pe, ProtocolError::Timeout)
+                    {
+                        is_timeout = true;
+                        break;
+                    }
+                    if let Some(io_err) = cause.downcast_ref::<std::io::Error>()
+                        && matches!(
+                            io_err.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        )
+                    {
+                        is_timeout = true;
+                        break;
+                    }
+                }
+                if is_timeout {
+                    return AppError::Timeout(format!(
+                        "network drain timed out — try --timeout {drain_timeout_ms}"
+                    ));
+                }
+            }
+            e
+        })?
     } else {
         let tab_actor = ctx.target_tab_actor().clone();
 

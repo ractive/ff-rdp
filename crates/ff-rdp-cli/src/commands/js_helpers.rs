@@ -89,13 +89,14 @@ const POLL_INTERVAL_MS: u64 = 100;
 /// Poll a JS expression until it returns a truthy value or the timeout expires.
 ///
 /// Returns the elapsed time in milliseconds on success.  Returns
-/// `Err(AppError::Exit(1))` if a JS exception is thrown or the timeout expires.
+/// `Err(AppError::Exit(1))` if a JS exception is thrown, or
+/// `Err(AppError::Timeout(timeout_context))` if the timeout expires.
 ///
 /// A timeout of 0 means the condition is evaluated once; if falsy, a timeout
 /// error is returned immediately.
 ///
 /// - `error_context`: used as a fallback message when a JS exception has no message.
-/// - `timeout_context`: printed to stderr when the timeout expires.
+/// - `timeout_context`: carried inside the returned `AppError::Timeout` when the timeout expires.
 pub(crate) fn poll_js_condition(
     ctx: &mut ConnectedTab,
     console_actor: &ActorId,
@@ -128,8 +129,7 @@ pub(crate) fn poll_js_condition(
 
         // Check timeout before sleeping to avoid an unnecessary extra poll interval.
         if started.elapsed() >= timeout {
-            eprintln!("error: {timeout_context}");
-            return Err(AppError::Exit(1));
+            return Err(AppError::Timeout(timeout_context.to_owned()));
         }
 
         std::thread::sleep(poll);

@@ -69,3 +69,30 @@ Features not yet implemented. Items completed in past iterations are marked done
 - [ ] AUR package for Arch Linux
 - [ ] crates.io publication
 - [ ] Nix flake
+
+## Carryover from iter-54 / iter-55 (added 2026-05-10 after ultrareview)
+
+Items that didn't land in iter-54/55 and weren't yet scoped into a follow-up iteration. Keep here until promoted into a planned iteration.
+
+### Protocol-layer carryover (from iter-54 building blocks)
+
+- [ ] Wire `ScopedGrip` into daemon-mode `eval`/`inspect` call sites so server-side actors are released after each command. Leak-soak test: 1000 evals returning objects, assert bounded actor count.
+- [ ] Live-recorded e2e fixture for `evaluate_js_async` mid-eval navigation (script that triggers `location.href = ...`); assert `EvalNavigatedDuringEval` plus elapsed time below socket timeout.
+- [ ] Live-recorded e2e fixture for `getResponseContent` against a > 8 KiB response body; assert full text captured and `truncated == false` below the cap.
+- [ ] Drop legacy `WebConsoleActor::start_listeners(["PageError","ConsoleAPI"])` once a parallel-listen experiment confirms `WatcherActor.watchResources` delivers all messages. E2e test asserting no duplicate console messages on follow.
+- [ ] Re-evaluate `actor_request` adopting the canonical *reply has no `type`* filter, once the `ThreadActor` `attach` reply path (which currently uses `{"type":"paused"}`) is decoupled.
+
+### Deferred LOW items from the 2026-05-10 ultrareview
+
+- [ ] Feature-flag the Firefox-version checks rather than the FF 120–150 clamp (FF 84 descriptors, FF 116 resources-array, FF 149 two-step screenshot).
+- [ ] Document in `eval --help` that exception messages echo verbatim to stderr (user `throw new Error(document.cookie)` lands in shell history / CI logs).
+- [ ] Tighten protocol struct field visibility in `ff-rdp-core` (`TabInfo`, `TargetInfo`, `NetworkResource`, `EvalResult`, `ConsoleMessage`) — currently all-`pub`; consider `pub(crate)` + accessors.
+- [ ] Document `wait --eval` truthiness semantics and the timeout error shape in its `--help`.
+- [ ] Mention `--jq` / `--format text` mutual exclusion in each subcommand's `--help` (currently only at root).
+- [ ] Document ANSI color behavior on TTY vs pipe; expose `--no-color` if needed.
+- [ ] Reconcile `cli.timeout` and `cli.daemon_timeout` semantics; the daemon's 30 s server-side read cap is currently independent of both.
+
+### Deferred from iteration 56 (dogfood-41-fixes)
+
+- [ ] **Screenshot fallback on Firefox 150** (was iter-56 A3): iter-53 promised a DOM `canvas.drawWindow` fallback when `screenshotActor.capture` fails; on Firefox 150 the trigger condition doesn't match the actual error. Needs live recording on FF 150 to capture exact error shape, then either widen the trigger or wire a real fallback. Defer until a Firefox 150 instance is available for live e2e.
+- [ ] **`navigate --wait-text` first-call `noSuchActor`** (was iter-56 C1): iter-53 deferred resolution of console-actor; still reproduces intermittently on a fresh launch (one hit during dogfooding session 41 against `news.ycombinator.com`, retry succeeded). Needs a fresh-launch live recording loop to capture the failing transcript and confirm whether the stale actor is the console actor or the target actor.

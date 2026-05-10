@@ -297,11 +297,13 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         }
         Command::Geometry {
             selectors,
-            visible_only,
-        } => commands::geometry::run(cli, selectors, *visible_only),
-        Command::Responsive { selectors, widths } => {
-            commands::responsive::run(cli, selectors, widths)
-        }
+            include_hidden,
+        } => commands::geometry::run(cli, selectors, *include_hidden),
+        Command::Responsive {
+            selectors,
+            widths,
+            include_hidden,
+        } => commands::responsive::run(cli, selectors, widths, *include_hidden),
         Command::Snapshot { depth, max_chars } => commands::snapshot::run(cli, *depth, *max_chars),
         Command::Scroll { scroll_command } => match scroll_command {
             ScrollCommand::To {

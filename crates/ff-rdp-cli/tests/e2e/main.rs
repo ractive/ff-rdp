@@ -11,6 +11,7 @@ mod doctor;
 mod dom;
 mod dom_tree;
 mod eval;
+mod exit_codes;
 mod geometry;
 mod hints;
 mod inspect;
