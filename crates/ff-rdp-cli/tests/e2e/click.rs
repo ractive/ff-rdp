@@ -61,6 +61,74 @@ fn click_returns_confirmation_json() {
     assert_eq!(json["meta"]["selector"], "button.submit");
 }
 
+// A1: --selector flag is an alias for the positional selector argument.
+
+#[test]
+fn click_selector_flag_is_interchangeable_with_positional() {
+    let server = click_server("eval_result_click.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    // Use the --selector flag instead of a positional argument.
+    args.extend([
+        "click".to_owned(),
+        "--selector".to_owned(),
+        "button.submit".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "click --selector should succeed just like positional: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    assert_eq!(json["results"]["clicked"], true);
+    assert_eq!(json["meta"]["selector"], "button.submit");
+}
+
+#[test]
+fn click_both_positional_and_selector_flag_errors() {
+    // No mock server needed — the error is caught before connecting.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let mut args = base_args(port);
+    args.extend([
+        "click".to_owned(),
+        "button.submit".to_owned(),
+        "--selector".to_owned(),
+        "button.submit".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    assert!(
+        !output.status.success(),
+        "expected failure when both positional and --selector are given"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not both") || stderr.contains("one") || stderr.contains("selector"),
+        "stderr should explain the conflict: {stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Error-path tests
 // ---------------------------------------------------------------------------

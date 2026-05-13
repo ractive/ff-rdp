@@ -191,9 +191,12 @@ fn exit_124_wait_timeout() {
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // A2: selector-wait timeout now says "not found" instead of "timed out".
     assert!(
-        stderr.contains("timed out"),
-        "stderr must mention the timeout; got: {stderr}"
+        stderr.contains("never-appears")
+            || stderr.contains("not found")
+            || stderr.contains("timed out"),
+        "stderr must mention the timeout or selector; got: {stderr}"
     );
 }
 

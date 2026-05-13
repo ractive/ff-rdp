@@ -177,7 +177,7 @@ env var misconfigured. Check `NEXT_PUBLIC_*`, `VITE_*`, etc.
 `action` / SPA router intercepts.
 **Probe:**
 1. `console --level error` (before action)
-2. `click <selector> --wait-for-network ".*" --timeout 3000`
+2. `click <selector> --wait-for-network ".*" --network-timeout 3000`
 3. If no request matched: `eval 'getEventListeners?.(document.querySelector(SEL))'` (Firefox lacks `getEventListeners`; fall back to inspecting `onclick`/React fiber)
 **Conclude:** zero new network entries + zero new console errors →
 handler is a no-op. New console error → that's your bug.

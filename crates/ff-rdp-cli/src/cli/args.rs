@@ -29,7 +29,8 @@ COMMAND REFERENCE:
     ff-rdp snapshot [--depth N] [--max-chars N]
 
   Interaction:
-    ff-rdp click <SEL>
+    ff-rdp click <SEL>                      # or: click --selector S
+    ff-rdp click <SEL> --wait-for-network <pattern> [--network-timeout MS]
     ff-rdp type <SEL> <TEXT> [--clear]      # or: type --selector S --text T [--clear]
 
   Scrolling:
@@ -59,6 +60,7 @@ COMMAND REFERENCE:
   Monitoring:
     ff-rdp console [--level LEVEL] [--pattern REGEX] [--follow]
     ff-rdp network [--filter URL] [--method M] [--follow]
+    ff-rdp network --detail [--headers]    # include request+response headers per entry
 
   Storage:
     ff-rdp cookies [--name NAME]
@@ -93,6 +95,8 @@ COOKBOOK:
   ff-rdp type \"input[name=email]\" \"user@example.com\" --clear
   ff-rdp type \"input[name=password]\" \"secret\" --clear
   ff-rdp click \"button[type=submit]\"
+  ff-rdp click --selector \"button[type=submit]\"          # flag alias
+  ff-rdp click \"button[type=submit]\" --wait-for-network \"/api/login\"
   ff-rdp wait --text \"Dashboard\" --wait-timeout 10000
 
   # Full page audit
@@ -438,7 +442,8 @@ established are reliably captured. When no live network events are available
 (e.g. the page finished loading before ff-rdp connected), the command
 automatically falls back to the Performance API to retrieve historical
 resource timing data. Fallback entries have source=performance-api in the
-output metadata and lack HTTP status codes.
+output metadata and method=null/status=null (method and status are not
+available from the Performance API).
 
 Recommended workflows:
   - Daemon mode (default): run `ff-rdp` without --no-daemon so the daemon
@@ -449,9 +454,14 @@ Recommended workflows:
 The --filter and --method flags narrow results after capture; they do not
 affect which requests Firefox records.
 
+Field fidelity by source:
+  watcher:         method, status, content_type, duration_ms, size_bytes, transfer_size all available
+  performance-api: method=null, status=null; duration_ms, transfer_size available via Resource Timing API
+
 Default: 20 results, sorted by duration (slowest first).
 Output (summary mode): {\"results\": {\"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false}, \"total\": N, \"meta\": {...}}
-Output (--detail): {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"status\": 200, \"duration_ms\": N, ...}], \"total\": N, \"meta\": {...}}")]
+Output (--detail): {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"status\": 200, \"duration_ms\": N, ...}], \"total\": N, \"meta\": {...}}
+Output (--detail --headers): adds {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}} per entry.")]
     Network {
         /// Filter by URL pattern (substring match)
         #[arg(long)]
@@ -462,6 +472,11 @@ Output (--detail): {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"stat
         /// Stream network events in real time (Ctrl-C to stop)
         #[arg(long)]
         follow: bool,
+        /// Include request and response headers in --detail output.
+        /// Headers are fetched per-entry from the NetworkEventActor; not available
+        /// for performance-api fallback entries (source=performance-api).
+        #[arg(long)]
+        headers: bool,
     },
     /// Query browser Performance API entries and Core Web Vitals
     #[command(
@@ -513,13 +528,33 @@ With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...
     /// Click an element matching a CSS selector
     #[command(long_about = "Click an element matching a CSS selector.
 
-Finds the first element matching the selector and dispatches mousedown,
-mouseup, and click events using the Firefox RDP DOMNode actor.
+Finds the first element matching the selector and invokes its DOM
+`.click()` method via the Firefox RDP Console actor.  Synthetic mouse
+event sequences (mousedown/mouseup/pointer events) are not dispatched,
+so handlers that only listen for those will not be triggered — fall
+back to ff-rdp eval if you need a custom event sequence.
 
-Output: {\"results\": {\"clicked\": true, \"tag\": \"...\", \"text\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
+The selector can be supplied positionally or via --selector:
+  ff-rdp click 'button[type=submit]'
+  ff-rdp click --selector 'button[type=submit]'
+
+Both forms are interchangeable; supplying both at once is an error.
+
+Output: {\"results\": {\"clicked\": true, \"tag\": \"...\", \"text\": \"...\"}, \"total\": 1, \"meta\": {...}}
+With --wait-for-network: adds {\"network\": {\"url\": \"...\", \"method\": \"...\", \"status\": N, ...}} to results.")]
     Click {
-        /// CSS selector of the element to click
-        selector: String,
+        /// CSS selector of the element to click (positional, or use --selector)
+        selector_pos: Option<String>,
+        /// CSS selector of the element to click (flag form)
+        #[arg(long = "selector", value_name = "SELECTOR")]
+        selector_flag: Option<String>,
+        /// After clicking, wait for a network request whose URL contains this pattern.
+        /// Returns the matched request record in the output.
+        #[arg(long, value_name = "PATTERN")]
+        wait_for_network: Option<String>,
+        /// Timeout in milliseconds for --wait-for-network (default: global --timeout)
+        #[arg(long, value_name = "MS", requires = "wait_for_network")]
+        network_timeout: Option<u64>,
     },
     /// Type text into an input element matching a CSS selector
     #[command(long_about = "Type text into an input element matching a CSS selector.
@@ -775,8 +810,11 @@ Output (--prop): single string value per match
 Output (--all): full resolved-style object per match (dumps every property)"
     )]
     Computed {
-        /// CSS selector to match elements
-        selector: String,
+        /// CSS selector to match elements (positional, or use --selector)
+        selector_pos: Option<String>,
+        /// CSS selector to match elements (flag form)
+        #[arg(long = "selector", value_name = "SELECTOR")]
+        selector_flag: Option<String>,
         /// Return only a single property value (e.g. \"color\", \"display\")
         #[arg(long, value_name = "NAME")]
         prop: Option<String>,
@@ -793,8 +831,11 @@ Output (--applied): {\"results\": [{\"selector\": \"...\", \"rules\": [{\"select
 Output (--layout):  {\"results\": [{\"selector\": \"...\", \"box\": {\"margin\": {...}, \"border\": {...}, \"padding\": {...}, \"content\": {...}}}], \"total\": N, \"meta\": {...}}"
     )]
     Styles {
-        /// CSS selector to match the element
-        selector: String,
+        /// CSS selector to match the element (positional, or use --selector)
+        selector_pos: Option<String>,
+        /// CSS selector to match the element (flag form)
+        #[arg(long = "selector", value_name = "SELECTOR")]
+        selector_flag: Option<String>,
         /// Show applied CSS rules with source locations instead of computed styles
         #[arg(long, group = "style_mode")]
         applied: bool,
