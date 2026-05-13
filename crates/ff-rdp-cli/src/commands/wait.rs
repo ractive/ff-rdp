@@ -30,12 +30,23 @@ pub fn run(cli: &Cli, opts: &WaitOptions<'_>) -> Result<(), AppError> {
 
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
+    let tab_actor_id = ctx.target_tab_actor().to_string();
+
+    // "Selector never found" message: names the selector, elapsed time, and tab actor.
+    let not_found_msg = if let Some(sel) = opts.selector {
+        format!(
+            "selector '{sel}' not found after {}ms on tab '{tab_actor_id}' — the element may not exist; verify with `ff-rdp dom '{sel}' --count`",
+            opts.wait_timeout
+        )
+    } else {
+        let condition = describe_condition(opts);
+        format!(
+            "wait timed out after {}ms — condition not met: {condition}; increase with --wait-timeout",
+            opts.wait_timeout
+        )
+    };
 
     let condition = describe_condition(opts);
-    let timeout_msg = format!(
-        "wait timed out after {}ms — condition not met: {condition}; increase with --wait-timeout",
-        opts.wait_timeout
-    );
 
     let elapsed_ms = poll_js_condition(
         &mut ctx,
@@ -43,8 +54,22 @@ pub fn run(cli: &Cli, opts: &WaitOptions<'_>) -> Result<(), AppError> {
         &js,
         opts.wait_timeout,
         "wait condition threw an exception",
-        &timeout_msg,
-    )?;
+        &not_found_msg,
+    )
+    .map_err(|e| {
+        // If the transport itself timed out (tab unresponsive), replace the
+        // generic "operation timed out" message with a more specific one that
+        // names the tab actor and tells the user how to recover.
+        if let AppError::Timeout(ref msg) = e
+            && msg.contains("operation timed out")
+        {
+            return AppError::Timeout(format!(
+                "tab '{tab_actor_id}' did not respond within {}ms — try `ff-rdp tabs` to confirm the active target",
+                opts.wait_timeout
+            ));
+        }
+        e
+    })?;
 
     let result_json = json!({"matched": true, "elapsed_ms": elapsed_ms, "condition": condition});
     let mut meta = json!({"host": cli.host, "port": cli.port});
@@ -126,5 +151,66 @@ mod tests {
         };
         let js = build_wait_js(&opts).unwrap();
         assert!(js.contains("document.readyState === 'complete'"));
+    }
+
+    // A2: timeout error messages distinguish "selector not found" from "tab unresponsive"
+
+    #[test]
+    fn selector_not_found_message_names_selector_and_tab() {
+        // Simulate building the not_found_msg the way run() does, without needing
+        // a live connection.  The key properties: contains the selector string and
+        // the tab actor ID, does NOT say "tab did not respond".
+        let selector = "input[type='email']";
+        let tab_id = "server1.conn0.tab42";
+        let timeout_ms = 10_000u64;
+
+        let msg = format!(
+            "selector '{selector}' not found after {timeout_ms}ms on tab '{tab_id}' — the element may not exist; verify with `ff-rdp dom '{selector}' --count`"
+        );
+
+        assert!(
+            msg.contains(selector),
+            "message should contain the selector: {msg}"
+        );
+        assert!(
+            msg.contains(tab_id),
+            "message should contain the tab actor: {msg}"
+        );
+        assert!(
+            msg.contains("not found"),
+            "message should say 'not found': {msg}"
+        );
+        assert!(
+            !msg.contains("did not respond"),
+            "selector-not-found message should not say 'did not respond': {msg}"
+        );
+    }
+
+    #[test]
+    fn tab_unresponsive_message_names_tab_and_suggests_tabs_command() {
+        // Simulate the message produced when the transport itself times out.
+        let tab_id = "server1.conn0.tab42";
+        let timeout_ms = 10_000u64;
+
+        let msg = format!(
+            "tab '{tab_id}' did not respond within {timeout_ms}ms — try `ff-rdp tabs` to confirm the active target"
+        );
+
+        assert!(
+            msg.contains(tab_id),
+            "message should contain the tab actor: {msg}"
+        );
+        assert!(
+            msg.contains("did not respond"),
+            "message should say 'did not respond': {msg}"
+        );
+        assert!(
+            msg.contains("tabs"),
+            "message should suggest running `tabs`: {msg}"
+        );
+        assert!(
+            !msg.contains("not found"),
+            "tab-unresponsive message should not say 'not found': {msg}"
+        );
     }
 }

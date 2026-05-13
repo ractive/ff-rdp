@@ -205,7 +205,7 @@ pub(crate) fn map_perf_resource_to_network_entry(entry: &Value) -> Value {
         .map_or(Value::Null, |v| json!(v));
 
     json!({
-        "method": "GET",
+        "method": null,
         "url": url,
         "is_xhr": is_xhr,
         "cause_type": initiator_type,
@@ -215,6 +215,7 @@ pub(crate) fn map_perf_resource_to_network_entry(entry: &Value) -> Value {
         "transfer_size": transfer_size,
         "status": null,
         "source": "performance-api",
+        "note": "method/status not available from performance-api source",
     })
 }
 
@@ -286,38 +287,61 @@ pub(crate) fn build_network_entries(
 ) -> Vec<Value> {
     resources
         .iter()
+        .map(|res| build_single_entry(res, update_map))
+        .collect()
+}
+
+/// Like [`build_network_entries`] but includes `_resource_id` in each entry
+/// so callers can look up the corresponding [`NetworkEventActor`] for
+/// per-entry header fetching.  The field is an internal marker and must be
+/// stripped before emitting output to the user.
+pub(crate) fn build_network_entries_with_ids(
+    resources: &[NetworkResource],
+    update_map: &HashMap<u64, NetworkResourceUpdate>,
+) -> Vec<Value> {
+    resources
+        .iter()
         .map(|res| {
-            let update = update_map.get(&res.resource_id);
-            let mut entry = serde_json::json!({
-                "method": res.method,
-                "url": res.url,
-                "is_xhr": res.is_xhr,
-                "cause_type": res.cause_type,
-                "content_type": null,
-                "source": "watcher",
-            });
-            if let Some(u) = update {
-                if let Some(ref status) = u.status
-                    && let Ok(code) = status.parse::<u16>()
-                {
-                    entry["status"] = serde_json::json!(code);
-                }
-                if let Some(ref mime) = u.mime_type {
-                    entry["content_type"] = serde_json::json!(mime);
-                }
-                if let Some(total) = u.total_time {
-                    entry["duration_ms"] = serde_json::json!(total);
-                }
-                if let Some(size) = u.content_size {
-                    entry["size_bytes"] = serde_json::json!(size);
-                }
-                if let Some(transferred) = u.transferred_size {
-                    entry["transfer_size"] = serde_json::json!(transferred);
-                }
-            }
+            let mut entry = build_single_entry(res, update_map);
+            entry["_resource_id"] = serde_json::json!(res.resource_id);
             entry
         })
         .collect()
+}
+
+fn build_single_entry(
+    res: &NetworkResource,
+    update_map: &HashMap<u64, NetworkResourceUpdate>,
+) -> Value {
+    let update = update_map.get(&res.resource_id);
+    let mut entry = serde_json::json!({
+        "method": res.method,
+        "url": res.url,
+        "is_xhr": res.is_xhr,
+        "cause_type": res.cause_type,
+        "content_type": null,
+        "source": "watcher",
+    });
+    if let Some(u) = update {
+        if let Some(ref status) = u.status
+            && let Ok(code) = status.parse::<u16>()
+        {
+            entry["status"] = serde_json::json!(code);
+        }
+        if let Some(ref mime) = u.mime_type {
+            entry["content_type"] = serde_json::json!(mime);
+        }
+        if let Some(total) = u.total_time {
+            entry["duration_ms"] = serde_json::json!(total);
+        }
+        if let Some(size) = u.content_size {
+            entry["size_bytes"] = serde_json::json!(size);
+        }
+        if let Some(transferred) = u.transferred_size {
+            entry["transfer_size"] = serde_json::json!(transferred);
+        }
+    }
+    entry
 }
 
 #[cfg(test)]
@@ -334,7 +358,7 @@ mod tests {
             "transferSize": 2100,
         });
         let result = map_perf_resource_to_network_entry(&entry);
-        assert_eq!(result["method"], "GET");
+        assert_eq!(result["method"], Value::Null);
         assert_eq!(result["url"], "https://example.com/api/data");
         assert_eq!(result["is_xhr"], true);
         assert_eq!(result["cause_type"], "xmlhttprequest");
@@ -400,5 +424,77 @@ mod tests {
         let result = map_perf_resource_to_network_entry(&entry);
         assert_eq!(result["size_bytes"], Value::Null);
         assert_eq!(result["transfer_size"], Value::Null);
+    }
+
+    #[test]
+    fn build_network_entries_with_ids_includes_resource_id() {
+        use ff_rdp_core::{ActorId, NetworkResource, NetworkResourceUpdate};
+
+        let res = NetworkResource {
+            actor: ActorId::from("server1.conn0.netEvent1"),
+            method: "POST".to_string(),
+            url: "https://example.com/api".to_string(),
+            is_xhr: true,
+            cause_type: "fetch".to_string(),
+            started_date_time: "2026-01-01T00:00:00Z".to_string(),
+            timestamp: 0.0,
+            resource_id: 42,
+        };
+        let update = NetworkResourceUpdate {
+            resource_id: 42,
+            status: Some("200".to_string()),
+            total_time: Some(100),
+            ..Default::default()
+        };
+        let update_map = std::collections::HashMap::from([(42u64, update)]);
+        let entries = build_network_entries_with_ids(&[res], &update_map);
+        assert_eq!(entries.len(), 1);
+        // The _resource_id field must be present for header fetching.
+        assert_eq!(entries[0]["_resource_id"], 42u64);
+        // Regular fields are also present.
+        assert_eq!(entries[0]["method"], "POST");
+        assert_eq!(entries[0]["url"], "https://example.com/api");
+        assert_eq!(entries[0]["status"], 200);
+    }
+
+    #[test]
+    fn build_network_entries_without_ids_excludes_resource_id() {
+        use ff_rdp_core::{ActorId, NetworkResource};
+
+        let res = NetworkResource {
+            actor: ActorId::from("server1.conn0.netEvent2"),
+            method: "GET".to_string(),
+            url: "https://example.com/".to_string(),
+            is_xhr: false,
+            cause_type: "doc".to_string(),
+            started_date_time: "2026-01-01T00:00:00Z".to_string(),
+            timestamp: 0.0,
+            resource_id: 99,
+        };
+        let entries = build_network_entries(&[res], &std::collections::HashMap::new());
+        assert!(
+            entries[0].get("_resource_id").is_none(),
+            "build_network_entries must not include _resource_id"
+        );
+    }
+
+    #[test]
+    fn map_perf_resource_method_and_status_are_null_not_hardcoded() {
+        let entry = json!({
+            "name": "https://example.com/data.json",
+            "initiatorType": "fetch",
+            "duration": 30.0,
+        });
+        let result = map_perf_resource_to_network_entry(&entry);
+        // B1: method must be null, not "GET", for performance-api entries.
+        assert_eq!(result["method"], Value::Null);
+        assert_eq!(result["status"], Value::Null);
+        assert_eq!(result["source"], "performance-api");
+        // A per-record note must explain the missing fields.
+        let note = result["note"].as_str().expect("note should be a string");
+        assert!(
+            note.contains("method") && note.contains("status"),
+            "note should mention both method and status: {note:?}"
+        );
     }
 }

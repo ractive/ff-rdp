@@ -6,6 +6,26 @@ use crate::commands::nav_action::NavAction;
 use crate::daemon::server;
 use crate::error::AppError;
 
+/// Resolve a CSS selector from a positional arg or `--selector` flag.
+///
+/// Returns an error when both are supplied (ambiguous) or neither is supplied
+/// (required).  Used by commands that accept the selector either way.
+fn resolve_selector<'a>(
+    positional: Option<&'a str>,
+    flag: Option<&'a str>,
+    command: &str,
+) -> Result<&'a str, AppError> {
+    match (positional, flag) {
+        (Some(_), Some(_)) => Err(AppError::User(format!(
+            "pass selector either positionally or via --selector, not both (command: {command})"
+        ))),
+        (Some(s), None) | (None, Some(s)) => Ok(s),
+        (None, None) => Err(AppError::User(format!(
+            "{command} requires a CSS selector — pass it positionally or with --selector"
+        ))),
+    }
+}
+
 /// Dispatch a CLI command to its handler.
 ///
 /// # Connection routing
@@ -143,11 +163,12 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             filter,
             method,
             follow,
+            headers,
         } => {
             if *follow {
                 commands::network::run_follow(cli, filter.as_deref(), method.as_deref())
             } else {
-                commands::network::run(cli, filter.as_deref(), method.as_deref())
+                commands::network::run(cli, filter.as_deref(), method.as_deref(), *headers)
             }
         }
         Command::Perf {
@@ -174,7 +195,16 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 }
             }
         },
-        Command::Click { selector } => commands::click::run(cli, selector),
+        Command::Click {
+            selector_pos,
+            selector_flag,
+            wait_for_network,
+            network_timeout,
+        } => {
+            let selector =
+                resolve_selector(selector_pos.as_deref(), selector_flag.as_deref(), "click")?;
+            commands::click::run(cli, selector, wait_for_network.as_deref(), *network_timeout)
+        }
         Command::Type {
             selector_pos,
             text_pos,
@@ -277,16 +307,27 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             *auto_consent,
         ),
         Command::Computed {
-            selector,
+            selector_pos,
+            selector_flag,
             prop,
             all,
-        } => commands::computed::run(cli, selector, prop.as_deref(), *all),
+        } => {
+            let selector = resolve_selector(
+                selector_pos.as_deref(),
+                selector_flag.as_deref(),
+                "computed",
+            )?;
+            commands::computed::run(cli, selector, prop.as_deref(), *all)
+        }
         Command::Styles {
-            selector,
+            selector_pos,
+            selector_flag,
             applied,
             layout,
             properties,
         } => {
+            let selector =
+                resolve_selector(selector_pos.as_deref(), selector_flag.as_deref(), "styles")?;
             if *applied {
                 commands::styles::run_applied(cli, selector)
             } else if *layout {

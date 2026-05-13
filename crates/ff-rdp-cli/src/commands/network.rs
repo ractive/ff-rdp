@@ -3,7 +3,7 @@ use std::io::Write;
 use std::time::Duration;
 
 use ff_rdp_core::{
-    NetworkResource, ProtocolError, RdpTransport, TabActor, WatcherActor,
+    NetworkEventActor, NetworkResource, ProtocolError, RdpTransport, TabActor, WatcherActor,
     parse_network_resource_updates, parse_network_resources,
 };
 use serde_json::{Value, json};
@@ -17,7 +17,7 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::network_events::{
-    build_network_entries, drain_network_events, drain_network_from_daemon, merge_updates,
+    build_network_entries_with_ids, drain_network_events, drain_network_from_daemon, merge_updates,
     performance_api_fallback,
 };
 
@@ -28,7 +28,12 @@ use super::network_events::{
 /// to deliver all buffered events before we give up.
 const DAEMON_DRAIN_FLOOR_MS: u64 = 15_000;
 
-pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), AppError> {
+pub fn run(
+    cli: &Cli,
+    filter: Option<&str>,
+    method: Option<&str>,
+    headers: bool,
+) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let via_daemon = ctx.via_daemon;
 
@@ -107,31 +112,47 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
     // Merge updates into resources by resource_id.
     let update_map = merge_updates(all_updates);
 
-    // Build JSON output combining resource + update data.
-    let apply_filters = |entries: Vec<serde_json::Value>| -> Vec<serde_json::Value> {
-        entries
-            .into_iter()
-            .filter(|entry| {
-                if let Some(f) = filter {
-                    let url = entry["url"].as_str().unwrap_or_default();
-                    if !url.contains(f) {
-                        return false;
-                    }
-                }
-                if let Some(m) = method {
-                    let entry_method = entry["method"].as_str().unwrap_or_default();
-                    if !entry_method.eq_ignore_ascii_case(m) {
-                        return false;
-                    }
-                }
-                true
-            })
-            .collect()
-    };
+    // Build a map from resource_id → actor for header fetching (watcher entries only).
+    let actor_by_resource_id: HashMap<u64, ff_rdp_core::ActorId> = all_resources
+        .iter()
+        .map(|r| (r.resource_id, r.actor.clone()))
+        .collect();
 
-    let watcher_entries = build_network_entries(&all_resources, &update_map);
+    // Build JSON output combining resource + update data.
+    // Entries are annotated with `_resource_id` (stripped before final output)
+    // so that header fetching can look up the corresponding NetworkEventActor.
+    let apply_filters =
+        |entries: Vec<serde_json::Value>, with_resource_id: bool| -> Vec<serde_json::Value> {
+            entries
+                .into_iter()
+                .filter(|entry| {
+                    if let Some(f) = filter {
+                        let url = entry["url"].as_str().unwrap_or_default();
+                        if !url.contains(f) {
+                            return false;
+                        }
+                    }
+                    if let Some(m) = method {
+                        let entry_method = entry["method"].as_str().unwrap_or_default();
+                        if !entry_method.eq_ignore_ascii_case(m) {
+                            return false;
+                        }
+                    }
+                    true
+                })
+                .map(|mut entry| {
+                    if !with_resource_id {
+                        entry.as_object_mut().map(|o| o.remove("_resource_id"));
+                    }
+                    entry
+                })
+                .collect()
+        };
+
+    let watcher_entries = build_network_entries_with_ids(&all_resources, &update_map);
     let watcher_was_empty = watcher_entries.is_empty();
-    let filtered_watcher = apply_filters(watcher_entries);
+    // Keep resource IDs in watcher entries so detail+headers mode can fetch them.
+    let filtered_watcher = apply_filters(watcher_entries, true);
 
     // If the watcher returned nothing (page already loaded before subscribing),
     // try the Performance API as a fallback.  In daemon mode the watcher buffer
@@ -139,10 +160,12 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
     // API fallback applies equally in that case.
     let (results, used_perf_fallback) = if watcher_was_empty {
         let fallback = performance_api_fallback(&mut ctx);
-        let filtered_fallback = apply_filters(fallback);
+        let filtered_fallback = apply_filters(fallback, false);
         let used = !filtered_fallback.is_empty();
         (filtered_fallback, used)
     } else {
+        // filtered_watcher already has _resource_id present; keep it for the
+        // detail+headers path. It will be stripped before final output.
         (filtered_watcher, false)
     };
 
@@ -208,6 +231,51 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
         }
         let (limited, total, truncated) = controls.apply_limit(detail, Some(20));
         let shown = limited.len();
+
+        // Fetch request+response headers for each entry when --headers is set
+        // and the entry came from the watcher (has _resource_id).
+        let mut limited = limited;
+        if headers && !used_perf_fallback {
+            for entry in &mut limited {
+                if let Some(rid) = entry.get("_resource_id").and_then(Value::as_u64)
+                    && let Some(actor) = actor_by_resource_id.get(&rid)
+                {
+                    let req_hdrs =
+                        NetworkEventActor::get_request_headers(ctx.transport_mut(), actor)
+                            .ok()
+                            .map(|hs| {
+                                hs.into_iter()
+                                    .map(|h| json!({"name": h.name, "value": h.value}))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+
+                    let resp_hdrs =
+                        NetworkEventActor::get_response_headers(ctx.transport_mut(), actor)
+                            .ok()
+                            .map(|hs| {
+                                hs.into_iter()
+                                    .map(|h| json!({"name": h.name, "value": h.value}))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+
+                    entry["headers"] = json!({"request": req_hdrs, "response": resp_hdrs});
+                }
+                // Strip the internal marker regardless of whether headers were fetched.
+                if let Some(obj) = entry.as_object_mut() {
+                    obj.remove("_resource_id");
+                }
+            }
+        } else {
+            // No headers requested — just strip the internal marker.
+            for entry in &mut limited {
+                if let Some(obj) = entry.as_object_mut() {
+                    obj.remove("_resource_id");
+                }
+            }
+        }
+
         let limited = controls.apply_fields(limited);
         let mut envelope =
             output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
@@ -221,6 +289,17 @@ pub fn run(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), 
             .finalize_with_hints(&envelope, Some(&hint_ctx))
             .map_err(AppError::from);
     }
+
+    // Summary mode: strip _resource_id from entries before summarizing.
+    let results: Vec<_> = results
+        .into_iter()
+        .map(|mut e| {
+            if let Some(obj) = e.as_object_mut() {
+                obj.remove("_resource_id");
+            }
+            e
+        })
+        .collect();
 
     // Summary mode (default).
     // The non-timed drain_network_events() stops on idle, so timeout is never reached.
