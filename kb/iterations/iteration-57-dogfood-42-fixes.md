@@ -43,7 +43,7 @@ Themes:
 
 ### A. Selector ergonomics
 
-#### A1. Accept `--selector` on `click` as an alias for the positional arg [0/3]
+#### A1. Accept `--selector` on `click` as an alias for the positional arg [3/3]
 
 `wait --selector '…'` ✓, `type --selector '…'` ✓, `click --selector '…'`
 errors with `unexpected argument '--selector'`. The current error suggests
@@ -68,7 +68,7 @@ for an agent to remember.
   `click 'button[type=submit]'` exercise the same code path against a
   fixture page.
 
-#### A2. Improve `wait` failure messages to distinguish selector-not-found from tab-not-responsive [0/2]
+#### A2. Improve `wait` failure messages to distinguish selector-not-found from tab-not-responsive [2/2]
 
 `wait --selector 'input[type="email"]' --timeout 10` returned
 `internal error: operation timed out` on a page where `snapshot` and
@@ -87,7 +87,7 @@ hadn't attached its script context yet.
 
 ### B. Network observability
 
-#### B1. Performance-API fallback: don't claim `method: "GET"` when method is unknown [0/2]
+#### B1. Performance-API fallback: don't claim `method: "GET"` when method is unknown [2/2]
 
 When `network --filter X --detail` returns rows whose `source =
 "performance-api"`, the `method` field is hard-coded `"GET"` because the
@@ -102,7 +102,7 @@ line plus a doc nudge.
   fidelity table. Unit tests: `map_perf_resource_method_and_status_are_null_not_hardcoded`
   verifies null method + note field.
 
-#### B2. `network --detail --headers` surfaces request + response headers [0/3]
+#### B2. `network --detail --headers` surfaces request + response headers [3/3]
 
 To confirm `Set-Cookie` was absent in session 42, the user had to drop to
 `curl -i`. The network actor already exposes headers; the CLI summary
@@ -120,7 +120,7 @@ hides them.
   e2e against live fixture: deferred — Firefox not running during iteration;
   existing fixture-based tests cover the watcher path.
 
-#### B3. `click --wait-for-network <pattern>` composes click with network drain [0/3]
+#### B3. `click --wait-for-network <pattern>` composes click with network drain [3/3]
 
 `click submit; sleep 4; network --filter sign-in --detail` is the
 boilerplate for "submit a form, inspect the resulting request." Works,
@@ -142,7 +142,7 @@ but feels like every form-debugging session reinvents the same `sleep`.
 
 ### C. Process
 
-#### C1. Surface "try ff-rdp first" in the implementation-loop skills [0/2]
+#### C1. Surface "try ff-rdp first" in the implementation-loop skills [2/2]
 
 [[dogfooding/dogfooding-session-43]] documents an iteration that
 implemented §A items from a Notes.md trace + source diffing only — no live
