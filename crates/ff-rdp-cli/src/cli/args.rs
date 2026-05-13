@@ -528,8 +528,11 @@ With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...
     /// Click an element matching a CSS selector
     #[command(long_about = "Click an element matching a CSS selector.
 
-Finds the first element matching the selector and dispatches mousedown,
-mouseup, and click events using the Firefox RDP DOMNode actor.
+Finds the first element matching the selector and invokes its DOM
+`.click()` method via the Firefox RDP Console actor.  Synthetic mouse
+event sequences (mousedown/mouseup/pointer events) are not dispatched,
+so handlers that only listen for those will not be triggered — fall
+back to ff-rdp eval if you need a custom event sequence.
 
 The selector can be supplied positionally or via --selector:
   ff-rdp click 'button[type=submit]'

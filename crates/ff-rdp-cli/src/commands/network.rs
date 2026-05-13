@@ -194,7 +194,8 @@ pub fn run(
         || cli.sort.is_some()
         || cli.limit.is_some()
         || cli.all
-        || cli.fields.is_some();
+        || cli.fields.is_some()
+        || headers;
 
     let empty_hint = if results.is_empty() && watcher_was_empty {
         let hint = if via_daemon {

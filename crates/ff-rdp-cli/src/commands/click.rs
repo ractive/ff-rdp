@@ -1,5 +1,10 @@
 use std::time::{Duration, Instant};
 
+/// Per-recv polling interval used while waiting for a matching network request.
+/// Keeps the wall-clock deadline honored even when the transport's global
+/// read timeout is larger than `--network-timeout`.
+const POLL_INTERVAL: Duration = Duration::from_millis(200);
+
 use ff_rdp_core::{
     NetworkResource, NetworkResourceUpdate, ProtocolError, TabActor, WatcherActor,
     parse_network_resource_updates, parse_network_resources,
@@ -120,6 +125,27 @@ fn wait_for_matching_request_daemon(
     let mut pending: std::collections::HashMap<u64, NetworkResource> =
         std::collections::HashMap::new();
 
+    // Cap per-recv blocking via POLL_INTERVAL so the wall-clock deadline is
+    // honored even when the global transport read timeout is larger than the
+    // requested --network-timeout.  Restored to the global value before
+    // returning so subsequent transport reads behave normally.
+    let _ = ctx.transport_mut().set_read_timeout(Some(POLL_INTERVAL));
+
+    let outcome = run_wait_loop(ctx, pattern, timeout, started, timeout_ms, &mut pending);
+
+    let _ = ctx.transport_mut().set_read_timeout(None);
+
+    outcome
+}
+
+fn run_wait_loop(
+    ctx: &mut ConnectedTab,
+    pattern: &str,
+    timeout: Duration,
+    started: Instant,
+    timeout_ms: u64,
+    pending: &mut std::collections::HashMap<u64, NetworkResource>,
+) -> Result<Value, AppError> {
     loop {
         if started.elapsed() >= timeout {
             return Err(AppError::Timeout(format!(
