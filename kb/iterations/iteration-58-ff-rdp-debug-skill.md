@@ -2,7 +2,7 @@
 title: "Iteration 58: ff-rdp-debug Skill (v0)"
 type: iteration
 date: 2026-05-13
-status: in-progress
+status: completed
 branch: iter-58/ff-rdp-debug-skill
 depends_on:
   - iteration-57-dogfood-42-fixes
@@ -64,7 +64,7 @@ playbooks tighten when iter-57 lands.
 Mirror hyalo's `init --claude` surface for predictability. Single-binary
 install — no network, no clone.
 
-- [ ] Add `install-skill` subcommand in `crates/ff-rdp-cli/src/cli/args.rs`:
+- [x] Add `install-skill` subcommand in `crates/ff-rdp-cli/src/cli/args.rs`:
   ```
   ff-rdp install-skill --claude [--user | --project] [--force] [--dry-run] [--from-dir <path>]
   ff-rdp install-skill --claude --list
@@ -73,16 +73,16 @@ install — no network, no clone.
   Default scope: `--user` (the skill is most valuable *outside* the
   ff-rdp repo). `--project` resolves CWD to git root; refuses if not in a
   git repo unless `--force`.
-- [ ] Bake skill source into the binary via `include_dir!` (add
+- [x] Bake skill source into the binary via `include_dir!` (add
   `include_dir` crate). Source lives at
   `crates/ff-rdp-cli/skills/ff-rdp-debug/` in the repo so it's also
   reviewable as plain files. `--from-dir <path>` reads from disk instead
   — required for skill iteration without rebuilding.
-- [ ] Idempotency: every installed file gets a `# managed-by: ff-rdp
+- [x] Idempotency: every installed file gets a `# managed-by: ff-rdp
   v<VERSION>` header. Re-install with same version → no-op. Different
   version → overwrite. Missing header → refuse unless `--force`
   (protects user-edited files).
-- [ ] Tests:
+- [x] Tests:
   - e2e: `install-skill --claude --user --dry-run` lists files that
     *would* be written, exits 0 without touching disk.
   - e2e: install to a temp `HOME`, re-install, assert no spurious
@@ -95,10 +95,10 @@ install — no network, no clone.
 
 Future-proof for `site-audit`, `dogfood`, etc. without a second binary.
 
-- [ ] Internal skill registry: a `Vec<SkillDef>` enumerating embedded
+- [x] Internal skill registry: a `Vec<SkillDef>` enumerating embedded
   skills. v0 has one entry (`ff-rdp-debug`). Adding a second skill is
   a one-line registry append + an `include_dir!` macro.
-- [ ] `install-skill --claude` defaults to installing **all** registered
+- [x] `install-skill --claude` defaults to installing **all** registered
   skills. `install-skill --claude ff-rdp-debug` installs only the named
   one. Document both in `--help`.
 
@@ -251,13 +251,13 @@ evidence.
 
 ## Acceptance Criteria
 
-- [ ] `cargo fmt` / `cargo clippy --workspace --all-targets -- -D warnings`
+- [x] `cargo fmt` / `cargo clippy --workspace --all-targets -- -D warnings`
   / `cargo test --workspace -q` clean.
-- [ ] `ff-rdp install-skill --claude --user` installs `ff-rdp-debug` to
+- [x] `ff-rdp install-skill --claude --user` installs `ff-rdp-debug` to
   `~/.claude/skills/ff-rdp-debug/` idempotently.
-- [ ] `ff-rdp install-skill --claude --project` installs to
+- [x] `ff-rdp install-skill --claude --project` installs to
   `./.claude/skills/ff-rdp-debug/` when run inside a git repo.
-- [ ] `ff-rdp install-skill --claude --list` reports installed skills +
+- [x] `ff-rdp install-skill --claude --list` reports installed skills +
   versions.
 - [x] All 9 Tier 1 playbook files exist and are referenced from
   `SKILL.md` (10 with bonus A2).
