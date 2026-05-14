@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>C1 fixture — value-only mutation</title>
+</head>
+<body>
+<h1>Controlled-input imitation</h1>
+<input id="q" type="text" placeholder="type here">
+<p>Status: <span id="status">empty</span></p>
+<button id="submit" disabled>Submit</button>
+<script>
+// Only an "input" event listener flips the status — direct
+// .value mutation will NOT trigger this, matching React's pattern.
+const input = document.getElementById('q');
+const status = document.getElementById('status');
+const submit = document.getElementById('submit');
+input.addEventListener('input', () => {
+  status.textContent = input.value ? 'has-value' : 'empty';
+  submit.disabled = !input.value;
+});
+</script>
+</body>
+</html>

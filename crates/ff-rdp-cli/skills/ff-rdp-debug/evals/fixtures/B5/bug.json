@@ -1,0 +1,10 @@
+{
+  "symptom_hint": "Clicking the submit button does nothing — no network activity, no errors.",
+  "expected_diagnosis": "dom-event-handler",
+  "expected_evidence_commands": [
+    "ff-rdp console --level error --limit 20",
+    "ff-rdp click '#submit' --wait-for-network '.*' --network-timeout 3000",
+    "ff-rdp console --level error --limit 20"
+  ],
+  "must_not_conclude": ["A1", "C1", "C3"]
+}

@@ -71,6 +71,13 @@ COMMAND REFERENCE:
     ff-rdp inspect <ACTOR_ID> [--depth N]
     ff-rdp sources [--filter URL | --pattern REGEX]
 
+  Skills (Claude Code):
+    ff-rdp install-skill --claude [--user | --project] [<skill-name>]
+    ff-rdp install-skill --claude --dry-run
+    ff-rdp install-skill --claude --list
+    ff-rdp install-skill --claude --uninstall <name>
+    ff-rdp install-skill --claude --from-dir <path> [<name>]
+
 AI AGENT TIPS:
   - Use --format text instead of JSON for 3-10x fewer tokens
   - Use eval --stringify '<expr>' to get actual values instead of actor grip metadata
@@ -142,6 +149,12 @@ COOKBOOK:
 
   # Screenshot for AI vision
   ff-rdp screenshot --base64
+
+  # Install the ff-rdp-debug Claude Code skill
+  ff-rdp install-skill --claude
+  ff-rdp install-skill --claude --project
+  ff-rdp install-skill --claude --dry-run
+  ff-rdp install-skill --claude --list
 
 OUTPUT FORMAT:
   All commands return JSON: {\"results\": ..., \"total\": N, \"meta\": {...}}
@@ -899,6 +912,33 @@ Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\":
         #[arg(long)]
         auto_consent: bool,
     },
+    /// Install Claude Code skill files to the user or project filesystem
+    #[command(
+        name = "install-skill",
+        long_about = "Install bundled Claude Code skill files to the filesystem.
+
+ff-rdp ships with Claude Code skills (e.g. ff-rdp-debug) that can be installed
+into ~/.claude/skills/ (--user, default) or <git-root>/.claude/skills/ (--project).
+
+Every installed file gets a managed-by header so re-installs can detect versions
+and skip unchanged files. Files without that header are never overwritten unless
+--force is passed.
+
+Examples:
+  ff-rdp install-skill --claude                  # install all skills to ~/.claude/skills/
+  ff-rdp install-skill --claude ff-rdp-debug     # install one skill
+  ff-rdp install-skill --claude --project        # install into <git-root>/.claude/skills/
+  ff-rdp install-skill --claude --dry-run        # preview what would be written
+  ff-rdp install-skill --claude --list           # list skills and installed status
+  ff-rdp install-skill --claude --uninstall ff-rdp-debug
+  ff-rdp install-skill --claude --from-dir ./my-skill ff-rdp-debug  # install from disk
+
+Output (install):  {\"results\": [{\"skill\": \"...\", \"path\": \"...\", \"action\": \"written|skipped|would-write\"}], \"total\": N, \"meta\": {...}}
+Output (--list):   {\"results\": [{\"name\": \"...\", \"version\": \"...\", \"installed\": bool, \"installed_path\": \"...\"}], \"total\": N, \"meta\": {...}}
+Output (--uninstall): {\"results\": {\"uninstalled\": bool, \"path\": \"...\"}, \"total\": 1, \"meta\": {...}}"
+    )]
+    InstallSkill(InstallSkillArgs),
+
     /// Diagnose the connection: daemon, port owner, RDP handshake, tabs, version
     #[command(long_about = "Diagnose the ff-rdp connection top-to-bottom.
 
@@ -1110,4 +1150,75 @@ pub enum DomCommand {
         #[arg(long, default_value_t = 50000)]
         max_chars: u32,
     },
+}
+
+// ---------------------------------------------------------------------------
+// install-skill args
+// ---------------------------------------------------------------------------
+
+/// Target scope for skill installation.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SkillScope {
+    /// Install to $HOME/.claude/skills/ (default)
+    User,
+    /// Install to <git-root>/.claude/skills/
+    Project,
+}
+
+impl SkillScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Project => "project",
+        }
+    }
+}
+
+#[derive(clap::Args, Debug)]
+pub struct InstallSkillArgs {
+    /// Target the Claude Code agent runtime (required; forward-compat flag)
+    #[arg(long)]
+    pub claude: bool,
+
+    /// Install to $HOME/.claude/skills/ (default)
+    #[arg(long, conflicts_with = "project")]
+    pub user: bool,
+
+    /// Install to <git-root>/.claude/skills/
+    #[arg(long, conflicts_with = "user")]
+    pub project: bool,
+
+    /// Overwrite unmanaged files and bypass git-repo check for --project
+    #[arg(long)]
+    pub force: bool,
+
+    /// Preview files that would be written without touching disk
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Read skill source from a directory on disk instead of the embedded data
+    #[arg(long, value_name = "PATH")]
+    pub from_dir: Option<std::path::PathBuf>,
+
+    /// List registered skills and their installation status, then exit
+    #[arg(long, conflicts_with_all = ["uninstall", "dry_run"])]
+    pub list: bool,
+
+    /// Remove an installed skill by name
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["list", "dry_run"])]
+    pub uninstall: Option<String>,
+
+    /// Skill name to install; if omitted, all registered skills are installed
+    pub skill_name: Option<String>,
+}
+
+impl InstallSkillArgs {
+    /// Resolve the effective scope (user unless --project was explicitly passed).
+    pub fn effective_scope(&self) -> SkillScope {
+        if self.project {
+            SkillScope::Project
+        } else {
+            SkillScope::User
+        }
+    }
 }

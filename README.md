@@ -248,6 +248,26 @@ ff-rdp reload --wait-idle
 ff-rdp reload --wait-idle --idle-ms 1000 --reload-timeout 30000
 ```
 
+## Using ff-rdp from Claude Code
+
+ff-rdp ships a Claude Code skill, **`ff-rdp-debug`**, that turns
+ff-rdp into a symptom-routed debugger for web bugs. Install it once and
+it's available in any repo on your machine:
+
+```sh
+ff-rdp install-skill --claude
+# → installs the ff-rdp-debug skill to ~/.claude/skills/ff-rdp-debug/
+# Skill is then available in any repo on your machine.
+```
+
+Inside Claude Code, trigger it with `/ff-rdp-debug` or natural-language
+prompts like "debug this page", "login doesn't work", "why is X
+failing in the browser". The skill routes the symptom to one of 10
+deterministic playbooks (Set-Cookie strip, ChunkLoadError, React
+controlled-input, consent banner, …) and runs probe commands against a
+live Firefox tab. See `kb/skills/ff-rdp-debug.md` for the full skill
+guide.
+
 ## Daemon Mode
 
 By default, the first CLI invocation auto-starts a background daemon that holds a persistent Firefox RDP connection and buffers watcher events. Subsequent invocations connect through the daemon for faster execution and cross-command workflows.

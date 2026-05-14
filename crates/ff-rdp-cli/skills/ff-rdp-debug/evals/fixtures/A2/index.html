@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>A2 fixture — SameSite/Secure drop</title>
+</head>
+<body>
+<h1>SameSite drop demo</h1>
+<p id="status">checking...</p>
+<script>
+// Try to set Secure cookie over plain http — Firefox refuses to set it.
+document.cookie = "session=abc; Path=/; Secure; SameSite=None";
+// Also set a same-site Lax cookie for contrast (this one survives).
+document.cookie = "ui_pref=dark; Path=/; SameSite=Lax";
+
+fetch('/api/me.json', { credentials: 'include' })
+  .then(r => r.json())
+  .then(j => {
+    document.getElementById('status').textContent =
+      j.user ? 'authed' : 'not-authed';
+  });
+</script>
+</body>
+</html>

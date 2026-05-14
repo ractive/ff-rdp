@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>B5 fixture — request never fires</title>
+</head>
+<body>
+<h1>Submit form</h1>
+<form id="f" action="/api/submit">
+  <input name="x" value="1">
+  <button type="submit" id="submit"
+          onclick="event.preventDefault(); return false;">Send</button>
+</form>
+<p id="status">idle</p>
+<script>
+// No additional listener — the inline onclick is a no-op.
+</script>
+</body>
+</html>

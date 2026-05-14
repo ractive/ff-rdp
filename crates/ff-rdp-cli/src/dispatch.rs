@@ -383,5 +383,13 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             DaemonCommand::Stop => crate::daemon::client::run_daemon_stop(cli),
         },
         Command::Doctor => commands::doctor::run(cli),
+        Command::InstallSkill(args) => {
+            if !args.claude {
+                return Err(AppError::User(
+                    "--claude flag is required for install-skill (forward-compat; only Claude Code runtime is supported today)".to_string(),
+                ));
+            }
+            commands::install_skill::run(cli, args)
+        }
     }
 }
