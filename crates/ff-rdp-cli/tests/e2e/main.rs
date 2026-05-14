@@ -15,6 +15,7 @@ mod exit_codes;
 mod geometry;
 mod hints;
 mod inspect;
+mod install_skill;
 mod launch;
 mod nav_action;
 mod navigate;

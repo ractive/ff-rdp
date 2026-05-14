@@ -1,0 +1,9 @@
+{
+  "symptom_hint": "Page logs ChunkLoadError; /static/chunks/main.abc123.js returns 404.",
+  "expected_diagnosis": "stale-index-html-cache",
+  "expected_evidence_commands": [
+    "ff-rdp console --level error --filter 'ChunkLoadError|Loading chunk' --limit 5",
+    "ff-rdp network --filter '/static/|/chunks/' --detail --limit 30"
+  ],
+  "must_not_conclude": ["B5", "D2", "E3"]
+}

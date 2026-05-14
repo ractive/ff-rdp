@@ -12,6 +12,11 @@ tags:
 
 # `ff-rdp-debug` — Playbook Catalog (v0 draft)
 
+> User guide for the shipped skill: [[skills/ff-rdp-debug]].
+> This file is the **source of truth for playbook content** —
+> contributors should copy from here into
+> `crates/ff-rdp-cli/skills/ff-rdp-debug/playbooks/<id>.md`.
+
 Candidate playbooks for a `/ff-rdp-debug` Claude Code skill. Each playbook
 is a symptom-routed probe: 2–5 ff-rdp commands that converge on the
 failing layer, plus the evidence pattern that lets the agent conclude

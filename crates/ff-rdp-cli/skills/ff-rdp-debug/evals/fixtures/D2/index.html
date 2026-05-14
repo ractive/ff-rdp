@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>D2 fixture — JSON parse on HTML response</title>
+</head>
+<body>
+<h1>D2 fixture</h1>
+<p id="status">loading...</p>
+<script>
+// python -m http.server doesn't issue redirects, but it does serve
+// /api/data.html as text/html. We fetch it expecting JSON; .json()
+// throws SyntaxError "Unexpected token <".
+fetch('/api/data.html')
+  .then(r => r.json())  // <-- will throw
+  .then(j => {
+    document.getElementById('status').textContent = 'ok:' + JSON.stringify(j);
+  })
+  .catch(err => {
+    console.error('API parse failed:', err.message);
+    document.getElementById('status').textContent = 'parse-error';
+  });
+</script>
+</body>
+</html>

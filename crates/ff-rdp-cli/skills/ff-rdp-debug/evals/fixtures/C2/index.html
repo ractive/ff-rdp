@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>C2 fixture — custom dropdown</title>
+<style>
+  #portal { position: fixed; top: 60px; left: 10px; }
+  #portal[hidden] { display: none; }
+  .opt { padding: 4px 8px; background: #eee; cursor: pointer; }
+</style>
+</head>
+<body>
+<h1>Combobox</h1>
+<div id="cb" role="combobox" aria-haspopup="listbox" aria-expanded="false"
+     tabindex="0" style="border:1px solid #888;padding:4px;width:200px;">
+  (no selection)
+</div>
+<div id="portal" role="listbox" hidden></div>
+<p id="status">no-selection</p>
+<script>
+const cb = document.getElementById('cb');
+const portal = document.getElementById('portal');
+const status = document.getElementById('status');
+const items = ['Apple', 'Banana', 'Cherry'];
+
+cb.addEventListener('click', () => {
+  if (portal.hidden) {
+    portal.innerHTML = '';
+    for (const i of items) {
+      const d = document.createElement('div');
+      d.setAttribute('role', 'option');
+      d.setAttribute('aria-label', i);
+      d.className = 'opt';
+      d.textContent = i;
+      d.addEventListener('click', () => {
+        cb.textContent = i;
+        status.textContent = 'selected:' + i;
+        portal.hidden = true;
+        cb.setAttribute('aria-expanded', 'false');
+      });
+      portal.appendChild(d);
+    }
+    portal.hidden = false;
+    cb.setAttribute('aria-expanded', 'true');
+  } else {
+    portal.hidden = true;
+    cb.setAttribute('aria-expanded', 'false');
+  }
+});
+</script>
+</body>
+</html>

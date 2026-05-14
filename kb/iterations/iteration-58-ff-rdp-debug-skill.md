@@ -2,7 +2,7 @@
 title: "Iteration 58: ff-rdp-debug Skill (v0)"
 type: iteration
 date: 2026-05-13
-status: planned
+status: in-progress
 branch: iter-58/ff-rdp-debug-skill
 depends_on:
   - iteration-57-dogfood-42-fixes
@@ -59,7 +59,7 @@ playbooks tighten when iter-57 lands.
 
 ### A. Distribution: `ff-rdp install-skill`
 
-#### A1. New `install-skill` subcommand [0/4]
+#### A1. New `install-skill` subcommand [4/4]
 
 Mirror hyalo's `init --claude` surface for predictability. Single-binary
 install — no network, no clone.
@@ -91,7 +91,7 @@ install — no network, no clone.
   - e2e: `install-skill --claude --list` shows installed skill +
     version after install, empty after uninstall.
 
-#### A2. Registry for multiple skills [0/2]
+#### A2. Registry for multiple skills [2/2]
 
 Future-proof for `site-audit`, `dogfood`, etc. without a second binary.
 
@@ -104,34 +104,34 @@ Future-proof for `site-audit`, `dogfood`, etc. without a second binary.
 
 ### B. Skill scaffolding
 
-#### B1. `SKILL.md` frontmatter + symptom router [0/3]
+#### B1. `SKILL.md` frontmatter + symptom router [3/3]
 
 The skill's entry point: trigger phrases, top-level dispatch logic,
 playbook index.
 
-- [ ] Write `SKILL.md` with `user_invocable: true` frontmatter, trigger
+- [x] Write `SKILL.md` with `user_invocable: true` frontmatter, trigger
   phrases ("/ff-rdp-debug", "debug this page", "why is X failing in
   the browser", "form submit isn't working", "login doesn't work",
   "page is broken"). Phrasing pulled from
   [[skills/ff-rdp-debug-playbooks]] §A1–C3.
-- [ ] Symptom router: top of `SKILL.md` documents a deterministic
+- [x] Symptom router: top of `SKILL.md` documents a deterministic
   *keyword → playbook* map (e.g. "set-cookie / login / cookie /
   session" → A1+A2; "chunk / module / Loading chunk" → E1; "manifest
   / webmanifest" → E3). Multi-match → run the most-specific first,
   fall back to next. No match → run K0 (broad sweep) then prompt user
   for a more specific symptom.
-- [ ] Skill prelude commands: every invocation begins with `doctor`
+- [x] Skill prelude commands: every invocation begins with `doctor`
   (verify daemon up + Firefox connected) and `tabs` (pick the active
   target). If no tab matches the URL the user named, the skill
   launches headless Firefox automatically (`launch --headless`) — most
   users won't have an RDP-active Firefox already running.
 
-#### B2. Cross-cutting primitive: capture-diff [0/2]
+#### B2. Cross-cutting primitive: capture-diff [2/2]
 
 Several playbooks (auth, storage, consent) need before/after diffs of
 console + cookies + storage around a user action.
 
-- [ ] Document the pattern in `SKILL.md` as a reusable shape:
+- [x] Document the pattern in `SKILL.md` as a reusable shape:
   ```
   pre  := { console (last 20), cookies, localStorage keys, URL }
   act  := <single ff-rdp action>
@@ -140,30 +140,30 @@ console + cookies + storage around a user action.
   ```
   Not a new CLI surface — pure orchestration documented in prose so the
   agent can recreate it deterministically.
-- [ ] Reference the diff primitive from playbooks that use it (A1, A2,
+- [x] Reference the diff primitive from playbooks that use it (A1, A2,
   A3, C3, F1, F2). Each playbook says "use capture-diff around <action>"
   rather than re-spelling the sequence.
 
-#### B3. Cross-cutting primitive: early-exit hypothesis tree [0/2]
+#### B3. Cross-cutting primitive: early-exit hypothesis tree [2/2]
 
 Playbooks are not checklists. Each step has a "signal → conclude" rule;
 the skill *stops* on the first conclusive signal.
 
-- [ ] Document in `SKILL.md`: every probe step has either a *conclusive*
+- [x] Document in `SKILL.md`: every probe step has either a *conclusive*
   result (skill terminates with a diagnosis) or a *narrowing* result
   (skill proceeds to next step). The skill emits a structured "what we
   know / what we ruled out / next step" block between steps so the user
   can interrupt at any point.
-- [ ] Output shape: final diagnosis is a markdown block with **Layer**,
+- [x] Output shape: final diagnosis is a markdown block with **Layer**,
   **Evidence** (with command + key field from JSON), and **Next step**
   (a fix recommendation or "needs more info").
 
-#### B4. Skill output contract [0/2]
+#### B4. Skill output contract [2/2]
 
 Make the skill's output stable enough that ralph-loop / eval harnesses
 can grade it.
 
-- [ ] Final report shape (markdown):
+- [x] Final report shape (markdown):
   ```
   ## Diagnosis: <layer label>
   **Evidence:**
@@ -172,7 +172,7 @@ can grade it.
   **Ruled out:** <bullet list>
   **Recommended fix:** <one line, layer-specific>
   ```
-- [ ] On `K0` (unknown / inconclusive), output ends with a numbered list
+- [x] On `K0` (unknown / inconclusive), output ends with a numbered list
   of follow-up questions, not a diagnosis.
 
 ### C. Tier 1 playbooks (9)
@@ -182,25 +182,28 @@ Each playbook from [[skills/ff-rdp-debug-playbooks]] becomes a file in
 `SKILL.md`. Per-playbook tasks share the same shape; bundling as one
 checklist to avoid 9× ceremony.
 
-#### C1. Author Tier 1 playbook files [0/9]
+#### C1. Author Tier 1 playbook files [9/9]
+
+(Plus A2 — SameSite/Secure drop — shipped as a bonus 10th playbook;
+referenced from the symptom router alongside A1.)
 
 For each playbook, the file contains: symptom phrases (paraphrased
 list), failing-layer label, the probe command sequence with `signal →
 conclude` per step, red herrings, and a worked example pointing at the
 fixture.
 
-- [ ] A1 — Set-Cookie stripped at edge (`dog-42`)
-- [ ] B5 — Request never fires (`dog-42`, `synth-bug`)
-- [ ] C1 — React onChange not fired by value-only mutation (`dog-36`,
+- [x] A1 — Set-Cookie stripped at edge (`dog-42`)
+- [x] B5 — Request never fires (`dog-42`, `synth-bug`)
+- [x] C1 — React onChange not fired by value-only mutation (`dog-36`,
   `dog-42`)
-- [ ] C2 — Custom dropdown unclickable (`dog-36`)
-- [ ] C3 — Consent banner blocking interaction (`dog-29`)
-- [ ] D2 — Trailing-slash redirect → JSON parse error (`dog-43`)
-- [ ] E1 — ChunkLoadError after deploy (`dog-43`)
-- [ ] E3 — Manifest returns HTML (`dog-43`)
-- [ ] K0 — Fallback / unknown symptom broad sweep
+- [x] C2 — Custom dropdown unclickable (`dog-36`)
+- [x] C3 — Consent banner blocking interaction (`dog-29`)
+- [x] D2 — Trailing-slash redirect → JSON parse error (`dog-43`)
+- [x] E1 — ChunkLoadError after deploy (`dog-43`)
+- [x] E3 — Manifest returns HTML (`dog-43`)
+- [x] K0 — Fallback / unknown symptom broad sweep
 
-#### C2. Fixture pages for Tier 1 playbooks [0/9]
+#### C2. Fixture pages for Tier 1 playbooks [2/2]
 
 Static fixture sites under
 `crates/ff-rdp-cli/skills/ff-rdp-debug/evals/fixtures/<playbook-id>/`,
@@ -209,37 +212,40 @@ ground-truth declaration (per the eval scheme in
 [[skills/ff-rdp-debug-playbooks]] §Evaluation). Reused by C3 and any
 future Layer-2 harness.
 
-- [ ] Nine fixtures, one per Tier 1 playbook. Each is a
+- [x] Ten fixtures (one per Tier 1 playbook, including A2). Each is a
   `python3 -m http.server`-servable directory (no Node/Bun runtime,
   per project Rust-only policy).
-- [ ] `bug.json` per fixture: `{symptom_hint, expected_diagnosis,
+- [x] `bug.json` per fixture: `{symptom_hint, expected_diagnosis,
   expected_evidence_commands[], must_not_conclude[]}`.
 
-#### C3. Deterministic playbook runner + Layer-2 evals [0/3]
+#### C3. Deterministic playbook runner + Layer-2 evals [2/3]
 
 A test that exercises each playbook's command sequence against its
 fixture and asserts the JSON evidence matches `bug.json`. Doesn't
 involve an LLM — validates that the *commands* surface the right
 evidence.
 
-- [ ] `crates/ff-rdp-cli/tests/playbook_evals.rs` — for each fixture:
-  start the static server, launch headless Firefox, run the playbook's
-  probe sequence, assert that the documented "signal" field appears in
-  the captured JSON.
-- [ ] Mark `#[ignore]` (live Firefox required), document
+- [x] `crates/ff-rdp-cli/tests/playbook_evals.rs` — schema-validates
+  every fixture's `bug.json` (required keys, command shape) and verifies
+  fixture/playbook id alignment. Live-Firefox probing is stubbed as one
+  `#[ignore]`d test with a sketch of the intended flow and a TODO
+  pointing at the iter-58 follow-up.
+- [x] Mark live-probe test `#[ignore]`, document
   `cargo test -p ff-rdp-cli --test playbook_evals -- --ignored` in the
-  iteration kb file.
+  iteration kb file and in the test's module docs.
 - [ ] CI: don't gate on Layer-2 evals (flaky on headless Linux per
   [[testing_strategy]]); run nightly via a separate workflow.
+  *(Not yet implemented — the schema-validation tests are cheap enough
+  to run in the default suite; live probes remain ignored.)*
 
 ### D. Documentation
 
-#### D1. README + skill entry point [0/2]
+#### D1. README + skill entry point [2/2]
 
-- [ ] Top-level README section: "Using ff-rdp from Claude Code →
+- [x] Top-level README section: "Using ff-rdp from Claude Code →
   `ff-rdp install-skill --claude` → skill is available in any repo."
   One paragraph + one fenced example.
-- [ ] `kb/skills/ff-rdp-debug.md` (separate from the playbook catalog):
+- [x] `kb/skills/ff-rdp-debug.md` (separate from the playbook catalog):
   one-page user guide — trigger phrases, what playbooks exist, how to
   contribute a new one. Link from the playbook catalog.
 
@@ -253,11 +259,14 @@ evidence.
   `./.claude/skills/ff-rdp-debug/` when run inside a git repo.
 - [ ] `ff-rdp install-skill --claude --list` reports installed skills +
   versions.
-- [ ] All 9 Tier 1 playbook files exist and are referenced from
-  `SKILL.md`.
-- [ ] All 9 fixture pages exist with `bug.json` ground truth.
+- [x] All 9 Tier 1 playbook files exist and are referenced from
+  `SKILL.md` (10 with bonus A2).
+- [x] All 9 fixture pages exist with `bug.json` ground truth (10 with
+  bonus A2).
 - [ ] `cargo test -p ff-rdp-cli --test playbook_evals -- --ignored`
-  passes locally against a fresh headless Firefox.
+  passes locally against a fresh headless Firefox. *(Live probe test
+  is currently a stub with TODO; schema-validation portion passes in
+  the default suite. Follow-up iteration to wire up live Firefox.)*
 - [ ] After install, invoking `/ff-rdp-debug` against the
   Set-Cookie-strip fixture produces a diagnosis matching the fixture's
   `expected_diagnosis`.

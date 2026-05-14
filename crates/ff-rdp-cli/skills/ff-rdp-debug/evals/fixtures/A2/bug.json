@@ -1,0 +1,10 @@
+{
+  "symptom_hint": "Cookie set with Secure+SameSite=None over plain http is silently dropped by Firefox; the api still returns unauthenticated.",
+  "expected_diagnosis": "browser-cookie-policy",
+  "expected_evidence_commands": [
+    "ff-rdp cookies --jq '.results[] | {name, same_site, secure}'",
+    "ff-rdp network --filter '/api/me' --detail --headers --limit 3",
+    "ff-rdp eval 'document.cookie'"
+  ],
+  "must_not_conclude": ["A1", "B5", "D2"]
+}

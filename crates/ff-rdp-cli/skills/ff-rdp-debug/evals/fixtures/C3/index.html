@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>C3 fixture — consent overlay blocks click</title>
+<style>
+  #onetrust-banner {
+    position: fixed; inset: 0; z-index: 9999;
+    background: rgba(0,0,0,0.6); color: white;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column;
+  }
+  #cta { font-size: 20px; padding: 10px 20px; }
+</style>
+</head>
+<body>
+<h1>Main page</h1>
+<button id="cta">Click me</button>
+<p id="status">idle</p>
+
+<div id="onetrust-banner">
+  <p>This site uses cookies.</p>
+  <button id="onetrust-accept-btn-handler">Accept all</button>
+</div>
+
+<script>
+document.getElementById('cta').addEventListener('click', () => {
+  document.getElementById('status').textContent = 'clicked';
+});
+
+// Provide a OneTrust shim so the playbook's eval step can dismiss.
+window.OneTrust = {
+  AllowAll() {
+    document.getElementById('onetrust-banner').remove();
+  }
+};
+document.getElementById('onetrust-accept-btn-handler')
+  .addEventListener('click', () => window.OneTrust.AllowAll());
+</script>
+</body>
+</html>

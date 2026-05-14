@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>A1 fixture — Set-Cookie strip</title>
+</head>
+<body>
+<h1>Login</h1>
+<form id="f">
+  <input name="u" value="alice">
+  <input name="p" type="password" value="hunter2">
+  <button type="submit" id="submit">Sign in</button>
+</form>
+<p id="status">not-authed</p>
+<script>
+document.getElementById('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  // POST equivalent — python -m http.server only supports GET, so we just GET
+  // the static JSON and observe that no Set-Cookie header comes back.
+  const r = await fetch('/api/login.json', { credentials: 'include' });
+  const j = await r.json();
+  document.getElementById('status').textContent = j.ok ? 'login-claims-ok' : 'login-failed';
+});
+</script>
+</body>
+</html>

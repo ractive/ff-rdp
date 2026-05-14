@@ -1,0 +1,10 @@
+{
+  "symptom_hint": "Clicking the CTA button has no effect — consent overlay covers it.",
+  "expected_diagnosis": "consent-overlay",
+  "expected_evidence_commands": [
+    "ff-rdp eval '(()=>{const el=document.elementFromPoint(window.innerWidth/2,window.innerHeight/2);return {tag:el.tagName,id:el.id,cls:el.className}})()'",
+    "ff-rdp dom '[id*=\"onetrust\"]' --attrs --limit 3",
+    "ff-rdp eval 'window.OneTrust?.AllowAll?.()'"
+  ],
+  "must_not_conclude": ["B5", "C1", "C2"]
+}

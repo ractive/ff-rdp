@@ -1,0 +1,11 @@
+{
+  "symptom_hint": "ff-rdp type fills the input but the dependent UI (status span, submit button) doesn't react.",
+  "expected_diagnosis": "react-controlled-input",
+  "expected_evidence_commands": [
+    "ff-rdp type '#q' 'hello'",
+    "ff-rdp eval 'document.querySelector(\"#q\").value'",
+    "ff-rdp dom '#status' --text",
+    "ff-rdp dom '#submit' --attrs"
+  ],
+  "must_not_conclude": ["B5", "C2", "C3"]
+}

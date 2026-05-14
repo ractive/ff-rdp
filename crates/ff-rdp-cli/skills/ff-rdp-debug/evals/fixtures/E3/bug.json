@@ -1,0 +1,9 @@
+{
+  "symptom_hint": "Firefox logs Manifest parse error; /manifest.webmanifest returns HTML.",
+  "expected_diagnosis": "webmanifest-content-type",
+  "expected_evidence_commands": [
+    "ff-rdp console --filter 'Manifest|webmanifest' --limit 5",
+    "ff-rdp network --filter 'manifest' --detail --headers --limit 3"
+  ],
+  "must_not_conclude": ["E1", "D2", "B5"]
+}
