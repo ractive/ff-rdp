@@ -113,6 +113,35 @@ impl ProtocolError {
             }
         )
     }
+
+    /// Returns `true` if the error is transient and the operation can safely be
+    /// retried after a short backoff.
+    ///
+    /// Transient errors:
+    /// - `Timeout` — the socket read timed out; Firefox may respond on retry.
+    /// - `ConnectionClosed` (expressed as a recv/send I/O error) — the daemon or
+    ///   Firefox closed the connection mid-stream; a fresh connection may work.
+    /// - `ActorError { UnknownActor }` — the actor was garbage-collected (e.g.
+    ///   after a soft navigation); retrying after reconnect may resolve this.
+    ///
+    /// Terminal errors (retry would not help):
+    /// - `ActorError { UnrecognizedPacketType }` — method does not exist.
+    /// - `ActorError { WrongState | ThreadWouldRun }` — page or debugger state.
+    /// - `InvalidPacket` / `FrameTooLarge` — protocol mismatch.
+    /// - `ConnectionFailed` — Firefox is not listening; retry won't help until
+    ///   the user starts Firefox.
+    pub fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            Self::Timeout
+                | Self::RecvFailed(_)
+                | Self::SendFailed(_)
+                | Self::ActorError {
+                    kind: ActorErrorKind::UnknownActor,
+                    ..
+                }
+        )
+    }
 }
 
 #[cfg(test)]

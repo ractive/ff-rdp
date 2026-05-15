@@ -67,6 +67,9 @@ fn scroll_to_returns_scrolled_json() {
 
 #[test]
 fn scroll_to_element_not_found_exits_nonzero() {
+    // Use --no-wait to bypass auto-wait and test the immediate "not found" path.
+    // Auto-wait would turn this into a timeout (exit 124); --no-wait preserves
+    // the pre-iter-59 fire-and-forget behaviour that this test exercises.
     let server = scroll_server("eval_result_element_not_found.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
@@ -75,6 +78,7 @@ fn scroll_to_element_not_found_exits_nonzero() {
     args.extend([
         "scroll".to_owned(),
         "to".to_owned(),
+        "--no-wait".to_owned(),
         ".missing-element".to_owned(),
     ]);
 

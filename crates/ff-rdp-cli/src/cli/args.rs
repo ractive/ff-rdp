@@ -29,12 +29,13 @@ COMMAND REFERENCE:
     ff-rdp snapshot [--depth N] [--max-chars N]
 
   Interaction:
-    ff-rdp click <SEL>                      # or: click --selector S
+    ff-rdp click <SEL> [--dispatch pointer|legacy|click-only] [--no-wait] [--settle]
     ff-rdp click <SEL> --wait-for-network <pattern> [--network-timeout MS]
-    ff-rdp type <SEL> <TEXT> [--clear]      # or: type --selector S --text T [--clear]
+    ff-rdp click <SEL> --wait-for selector:<css> --wait-for text:<substr>
+    ff-rdp type <SEL> <TEXT> [--clear] [--no-wait] [--settle] [--wait-for ...]
 
   Scrolling:
-    ff-rdp scroll to <SEL> [--block top|center|bottom] [--smooth]
+    ff-rdp scroll to <SEL> [--block top|center|bottom] [--smooth] [--no-wait] [--settle]
     ff-rdp scroll by [--dy PX | --page-down | --page-up] [--dx PX] [--smooth]
     ff-rdp scroll top | bottom
     ff-rdp scroll container <SEL> [--dy PX] [--to-end | --to-start]
@@ -98,13 +99,14 @@ COOKBOOK:
   ff-rdp eval \"document.title\"
   ff-rdp dom \"h1\" --text
 
-  # Fill and submit a form
+  # Fill and submit a form (auto-wait + pointer events by default)
   ff-rdp type \"input[name=email]\" \"user@example.com\" --clear
   ff-rdp type \"input[name=password]\" \"secret\" --clear
-  ff-rdp click \"button[type=submit]\"
+  ff-rdp click \"button[type=submit]\" --wait-for text:Dashboard
   ff-rdp click --selector \"button[type=submit]\"          # flag alias
   ff-rdp click \"button[type=submit]\" --wait-for-network \"/api/login\"
-  ff-rdp wait --text \"Dashboard\" --wait-timeout 10000
+  ff-rdp click \"button[aria-haspopup]\" --dispatch pointer  # Radix/Headless-UI dropdowns
+  ff-rdp click \"button\" --no-wait                          # pre-iter-59 fire-and-forget
 
   # Full page audit
   ff-rdp navigate https://example.com --with-network
@@ -541,17 +543,21 @@ With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...
     /// Click an element matching a CSS selector
     #[command(long_about = "Click an element matching a CSS selector.
 
-Finds the first element matching the selector and invokes its DOM
-`.click()` method via the Firefox RDP Console actor.  Synthetic mouse
-event sequences (mousedown/mouseup/pointer events) are not dispatched,
-so handlers that only listen for those will not be triggered — fall
-back to ff-rdp eval if you need a custom event sequence.
+Auto-waits for the element to exist, be visible, and have a stable bounding rect
+before dispatching the full pointer-event sequence (pointerover, pointerenter,
+pointerdown, pointerup, click). This matches the behaviour expected by modern
+component libraries such as Radix UI and Headless UI.
 
 The selector can be supplied positionally or via --selector:
   ff-rdp click 'button[type=submit]'
   ff-rdp click --selector 'button[type=submit]'
 
 Both forms are interchangeable; supplying both at once is an error.
+
+Dispatch modes (--dispatch):
+  pointer     Full pointer+mouse event sequence (default — Radix/Headless-UI compatible)
+  legacy      Mouse-event sequence only (mouseover, mouseenter, mousedown, mouseup, click)
+  click-only  Synthetic .click() only (pre-iter-59 behaviour, fastest)
 
 Output: {\"results\": {\"clicked\": true, \"tag\": \"...\", \"text\": \"...\"}, \"total\": 1, \"meta\": {...}}
 With --wait-for-network: adds {\"network\": {\"url\": \"...\", \"method\": \"...\", \"status\": N, ...}} to results.")]
@@ -568,6 +574,24 @@ With --wait-for-network: adds {\"network\": {\"url\": \"...\", \"method\": \"...
         /// Timeout in milliseconds for --wait-for-network (default: global --timeout)
         #[arg(long, value_name = "MS", requires = "wait_for_network")]
         network_timeout: Option<u64>,
+        /// Skip auto-wait and click immediately (reverts to pre-iter-59 fire-and-forget)
+        #[arg(long)]
+        no_wait: bool,
+        /// Event dispatch mode: pointer (default), legacy (mouse events only), click-only
+        #[arg(long, default_value = "pointer", value_name = "MODE")]
+        dispatch: String,
+        /// Disable keyboard activation fallback (Enter key) for aria-haspopup/role=button elements
+        #[arg(long)]
+        no_keyboard_fallback: bool,
+        /// After clicking, wait for this condition. Repeatable. Forms: selector:<css>, text:<substr>, url:<regex>, gone:<css>
+        #[arg(long, value_name = "PREDICATE", action = clap::ArgAction::Append)]
+        wait_for: Vec<String>,
+        /// Timeout in milliseconds for --wait-for predicates (default: same as --timeout)
+        #[arg(long, value_name = "MS")]
+        wait_for_timeout: Option<u64>,
+        /// After clicking, wait for network and DOM to idle (no XHR/fetch for 500ms, no DOM mutations for 200ms)
+        #[arg(long)]
+        settle: bool,
     },
     /// Type text into an input element matching a CSS selector
     #[command(long_about = "Type text into an input element matching a CSS selector.
@@ -577,6 +601,9 @@ Selector and text can be supplied positionally or via flags:
   ff-rdp type --selector 'input[name=email]' --text 'user@example.com'
 
 Both forms work identically; mixing positional and flag for the same value errors.
+
+Auto-waits for the element to be focusable (exists, visible, not disabled, is an
+input/textarea/contenteditable) before typing. Use --no-wait to skip this.
 
 The value is set via the native HTMLInputElement/HTMLTextAreaElement/HTMLSelectElement
 prototype setter so React/Vue/Svelte value trackers are invalidated, and `input`
@@ -597,6 +624,18 @@ Output: {\"results\": {\"typed\": true, \"tag\": \"INPUT\", \"value\": \"...\"},
         /// Clear the element's current value before typing
         #[arg(long)]
         clear: bool,
+        /// Skip auto-wait and type immediately (reverts to pre-iter-59 fire-and-forget)
+        #[arg(long)]
+        no_wait: bool,
+        /// After typing, wait for this condition. Repeatable. Forms: selector:<css>, text:<substr>, url:<regex>, gone:<css>
+        #[arg(long, value_name = "PREDICATE", action = clap::ArgAction::Append)]
+        wait_for: Vec<String>,
+        /// Timeout in milliseconds for --wait-for predicates (default: same as --timeout)
+        #[arg(long, value_name = "MS")]
+        wait_for_timeout: Option<u64>,
+        /// After typing, wait for network and DOM to idle
+        #[arg(long)]
+        settle: bool,
     },
     /// Wait for a condition to become true (polls every 100ms).
     /// Exactly one of --selector, --text, or --eval must be specified.
@@ -1021,6 +1060,9 @@ impl ScrollBlock {
 pub enum ScrollCommand {
     /// Scroll an element into the viewport using scrollIntoView
     #[command(long_about = "Scroll an element into the viewport.
+
+Auto-waits for the element to exist and be visible before scrolling. Use --no-wait to skip.
+
 Output: {\"results\": {\"scrolled\": true, \"selector\": \"...\", \"viewport\": {...}, \"target\": {...}, \"atEnd\": bool}, \"total\": 1, \"meta\": {...}}")]
     To {
         /// CSS selector of the element to scroll into view
@@ -1031,6 +1073,18 @@ Output: {\"results\": {\"scrolled\": true, \"selector\": \"...\", \"viewport\": 
         /// Use smooth scrolling behavior (default is instant)
         #[arg(long)]
         smooth: bool,
+        /// Skip auto-wait and scroll immediately (reverts to pre-iter-59 fire-and-forget)
+        #[arg(long)]
+        no_wait: bool,
+        /// After scrolling, wait for this condition. Repeatable. Forms: selector:<css>, text:<substr>, url:<regex>, gone:<css>
+        #[arg(long, value_name = "PREDICATE", action = clap::ArgAction::Append)]
+        wait_for: Vec<String>,
+        /// Timeout in milliseconds for --wait-for predicates (default: same as --timeout)
+        #[arg(long, value_name = "MS")]
+        wait_for_timeout: Option<u64>,
+        /// After scrolling, wait for network and DOM to idle
+        #[arg(long)]
+        settle: bool,
     },
     /// Scroll the viewport by a number of pixels or by a page
     #[command(
