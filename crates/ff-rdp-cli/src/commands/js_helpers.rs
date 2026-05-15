@@ -111,8 +111,8 @@ pub(crate) fn build_autowait_js(escaped_selector: &str, for_input: bool) -> Stri
         r"
   if (el.disabled) throw new Error('element exists but is disabled');
   var tag = el.tagName.toLowerCase();
-  var isEditable = tag === 'input' || tag === 'textarea' || el.isContentEditable;
-  if (!isEditable) throw new Error('element exists but is not an input, textarea, or contenteditable');
+  var isEditable = tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
+  if (!isEditable) throw new Error('element exists but is not an input, textarea, select, or contenteditable');
   el.focus();"
     } else {
         ""
@@ -180,7 +180,7 @@ pub(crate) fn autowait_element(
     loop {
         if started.elapsed() >= timeout {
             return Err(AppError::Timeout(format!(
-                "selector '{selector}' not found or not ready after {timeout_ms}ms — element exists but not visible"
+                "selector '{selector}' not ready (not found / hidden / unstable) after {timeout_ms}ms"
             )));
         }
 
@@ -210,9 +210,16 @@ pub(crate) fn autowait_element(
     let mut last_rect: Option<String> = None;
 
     loop {
-        if started.elapsed() >= timeout || started.elapsed() >= stability_timeout {
-            // Stable-rect check timed out — treat as ready anyway (element existed).
-            break;
+        if started.elapsed() >= stability_timeout {
+            // Stability check timed out — the element rect never stopped changing.
+            return Err(AppError::Timeout(format!(
+                "selector '{selector}' rect did not stabilise after {timeout_ms}ms"
+            )));
+        }
+        if started.elapsed() >= timeout {
+            return Err(AppError::Timeout(format!(
+                "selector '{selector}' not ready (not found / hidden / unstable) after {timeout_ms}ms"
+            )));
         }
 
         let eval =
@@ -259,26 +266,24 @@ pub(crate) enum DispatchMode {
 /// element matched by `escaped_selector`, then returns a sentinel-prefixed JSON.
 ///
 /// The `entered` sentinel is set before the action so D2 can detect partial success.
-pub(crate) fn build_click_js(
-    escaped_selector: &str,
-    mode: DispatchMode,
-    keyboard_fallback: bool,
-) -> String {
+pub(crate) fn build_click_js(escaped_selector: &str, mode: DispatchMode) -> String {
     let event_dispatch: &str = match mode {
         DispatchMode::Pointer => {
             r"
   // Pointer event sequence (Radix / Headless-UI compatible).
-  var opts = {bubbles: true, cancelable: true, view: window, pointerType: 'mouse', isPrimary: true};
-  var mopts = {bubbles: true, cancelable: true, view: window};
+  var opts = {bubbles: true, cancelable: true, view: window, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1};
+  var mopts = {bubbles: true, cancelable: true, view: window, button: 0, buttons: 1};
+  var upOpts = {bubbles: true, cancelable: true, view: window, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 0};
+  var upMopts = {bubbles: true, cancelable: true, view: window, button: 0, buttons: 0};
   el.dispatchEvent(new PointerEvent('pointerover', opts));
   el.dispatchEvent(new PointerEvent('pointerenter', {...opts, bubbles: false}));
   el.dispatchEvent(new MouseEvent('mouseover', mopts));
   el.dispatchEvent(new MouseEvent('mouseenter', {...mopts, bubbles: false}));
   el.dispatchEvent(new PointerEvent('pointerdown', opts));
   el.dispatchEvent(new MouseEvent('mousedown', mopts));
-  el.dispatchEvent(new PointerEvent('pointerup', opts));
-  el.dispatchEvent(new MouseEvent('mouseup', mopts));
-  el.dispatchEvent(new MouseEvent('click', mopts));"
+  el.dispatchEvent(new PointerEvent('pointerup', upOpts));
+  el.dispatchEvent(new MouseEvent('mouseup', upMopts));
+  el.dispatchEvent(new MouseEvent('click', upMopts));"
         }
         DispatchMode::Legacy => {
             r"
@@ -292,25 +297,6 @@ pub(crate) fn build_click_js(
         DispatchMode::ClickOnly => "  el.click();",
     };
 
-    // Keyboard-activation fallback: if `aria-haspopup` or `role=button` and
-    // no state change was observed within 200 ms, fire Enter key events.
-    let kb_fallback = if keyboard_fallback {
-        r"
-  // Keyboard activation fallback (B2).
-  var needsKbCheck = el.hasAttribute('aria-haspopup') || el.getAttribute('role') === 'button';
-  if (needsKbCheck) {
-    var stateBefore = el.getAttribute('data-state') + '|' + el.getAttribute('aria-expanded');
-    var observed = false;
-    var obs = new MutationObserver(function() { observed = true; });
-    obs.observe(el, {attributes: true, subtree: true, childList: true});
-    // We rely on the 200ms sleep happening outside JS (poll loop).
-    // Store a marker for the outer poll to check.
-    el._ffrdpKbFallback = {stateBefore: stateBefore, obs: obs};
-  }"
-    } else {
-        ""
-    };
-
     format!(
         r"(function() {{
   var entered = false;
@@ -318,7 +304,6 @@ pub(crate) fn build_click_js(
   if (!el) throw new Error('Element not found: {escaped_selector} — use ff-rdp dom SELECTOR --count to verify the selector matches');
   entered = true;
   {event_dispatch}
-  {kb_fallback}
   return '{JSON_SENTINEL}' + JSON.stringify({{clicked: true, entered: entered, tag: el.tagName, text: (el.textContent || '').trim().substring(0, 100)}});
 }})()"
     )
@@ -428,9 +413,19 @@ pub(crate) fn wait_for_predicates(
         }
 
         let mut all_met = true;
-        for js in &js_exprs {
+        for (js, predicate) in js_exprs.iter().zip(predicates.iter()) {
             let eval = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, js)
                 .map_err(AppError::from)?;
+            if let Some(ref exc) = eval.exception {
+                let msg = exc
+                    .message
+                    .as_deref()
+                    .unwrap_or("wait-for predicate threw an exception");
+                return Err(AppError::User(format!(
+                    "wait-for predicate '{}' threw: {msg}",
+                    predicate.describe()
+                )));
+            }
             if !is_truthy(&eval.result) {
                 all_met = false;
                 break;
@@ -464,12 +459,14 @@ pub(crate) fn settle_page(
   try {
     if (window.__ffrdpSettleInit) return '__ok__';
     window.__ffrdpInflight = 0;
-    var origOpen = XMLHttpRequest.prototype.open;
+    window.__ffrdpLastInflightZero = Date.now();
     var origSend = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.send = function() {
       window.__ffrdpInflight++;
-      var self = this;
-      this.addEventListener('loadend', function() { window.__ffrdpInflight = Math.max(0, window.__ffrdpInflight - 1); });
+      this.addEventListener('loadend', function() {
+        window.__ffrdpInflight = Math.max(0, window.__ffrdpInflight - 1);
+        if (window.__ffrdpInflight === 0) { window.__ffrdpLastInflightZero = Date.now(); }
+      });
       origSend.apply(this, arguments);
     };
     var origFetch = window.fetch;
@@ -477,6 +474,7 @@ pub(crate) fn settle_page(
       window.__ffrdpInflight++;
       return origFetch.apply(this, arguments).finally(function() {
         window.__ffrdpInflight = Math.max(0, window.__ffrdpInflight - 1);
+        if (window.__ffrdpInflight === 0) { window.__ffrdpLastInflightZero = Date.now(); }
       });
     };
     window.__ffrdpLastMutation = Date.now();
@@ -501,23 +499,27 @@ pub(crate) fn settle_page(
         return Ok(SettleMethod::Sleep);
     }
 
-    // Poll for idle state: inflightCount == 0 for 500ms AND no mutation for 200ms.
+    // Poll for idle state: inflight == 0 for 500ms sustained AND no mutation for 200ms.
     let idle_check_js = r"(function() {
-  var inflightOk = (window.__ffrdpInflight || 0) === 0;
-  var domOk = (Date.now() - (window.__ffrdpLastMutation || 0)) >= 200;
-  return inflightOk && domOk;
+  var now = Date.now();
+  var inflight = (window.__ffrdpInflight || 0);
+  var networkIdle = inflight === 0 && (now - (window.__ffrdpLastInflightZero || 0)) >= 500;
+  var domOk = (now - (window.__ffrdpLastMutation || 0)) >= 200;
+  return networkIdle && domOk;
 })()";
 
-    let _ = poll_js_condition(
+    match poll_js_condition(
         ctx,
         console_actor,
         idle_check_js,
         timeout_ms,
         "settle check threw",
         &format!("page did not settle within {timeout_ms}ms"),
-    );
-
-    Ok(SettleMethod::NetworkIdle)
+    ) {
+        Ok(_) => Ok(SettleMethod::NetworkIdle),
+        Err(AppError::Timeout(_)) => Ok(SettleMethod::NetworkIdleTimeout),
+        Err(e) => Err(e),
+    }
 }
 
 /// How the settle completed.
@@ -525,8 +527,21 @@ pub(crate) fn settle_page(
 pub(crate) enum SettleMethod {
     /// Network idle + DOM idle (normal path).
     NetworkIdle,
+    /// Network/DOM idle injection succeeded but idle condition was not met within the timeout.
+    NetworkIdleTimeout,
     /// CSP blocked injection — fell back to a 1 s sleep.
     Sleep,
+}
+
+impl SettleMethod {
+    /// Serialised string used in JSON meta output.
+    pub(crate) fn as_meta_str(self) -> &'static str {
+        match self {
+            Self::NetworkIdle => "network_idle",
+            Self::NetworkIdleTimeout => "network_idle_timeout",
+            Self::Sleep => "sleep_fallback",
+        }
+    }
 }
 
 /// Poll a JS expression until it returns a truthy value or the timeout expires.

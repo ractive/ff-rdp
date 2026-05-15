@@ -8,7 +8,7 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
 use super::js_helpers::{
-    JSON_SENTINEL, SettleMethod, WaitForPredicate, autowait_element, escape_selector, eval_or_bail,
+    JSON_SENTINEL, WaitForPredicate, autowait_element, escape_selector, eval_or_bail,
     resolve_result, settle_page, wait_for_predicates,
 };
 
@@ -104,10 +104,7 @@ pub fn run(
 
     let mut meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
     if let Some(sm) = settle_method {
-        meta["settle_method"] = json!(match sm {
-            SettleMethod::NetworkIdle => "network_idle",
-            SettleMethod::Sleep => "network_idle_only",
-        });
+        meta["settle_method"] = json!(sm.as_meta_str());
     }
     crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
     let envelope = output::envelope(&result_json, 1, &meta);

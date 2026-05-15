@@ -104,9 +104,10 @@ fn connect_to_firefox(
         // If the daemon closes the connection here it rejected our auth token.
         // If it times out, the daemon is overloaded or the socket is stale.
         let greeting = transport.recv().map_err(|e| {
-            // Distinguish: a read timeout means the daemon isn't responding,
-            // not that the token was wrong (E1 — honest error messages).
-            if matches!(e, ff_rdp_core::ProtocolError::Timeout) {
+            // Distinguish: a read timeout (or transient I/O error) means the
+            // daemon isn't responding, not that the token was wrong
+            // (E1 — honest error messages).
+            if e.is_transient() {
                 AppError::Timeout(
                     "daemon did not respond within the timeout after auth — \
                      the daemon may be overloaded or the connection is stale.\n\

@@ -19,7 +19,7 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::js_helpers::{
-    DispatchMode, JSON_SENTINEL, SettleMethod, WaitForPredicate, autowait_element, build_click_js,
+    DispatchMode, JSON_SENTINEL, WaitForPredicate, autowait_element, build_click_js,
     escape_selector, eval_or_bail, resolve_result, settle_page, wait_for_predicates,
 };
 use super::network_events::build_network_entries;
@@ -32,8 +32,6 @@ pub struct ClickOptions<'a> {
     pub no_wait: bool,
     /// Event dispatch mode (pointer / legacy / click-only).
     pub dispatch: DispatchMode,
-    /// Whether to attempt keyboard activation fallback (--no-keyboard-fallback disables).
-    pub keyboard_fallback: bool,
     /// Post-action predicates (--wait-for).
     pub wait_for: &'a [String],
     /// Timeout for --wait-for predicates. `None` → same as `wait_timeout_ms`.
@@ -48,7 +46,6 @@ impl Default for ClickOptions<'_> {
             wait_timeout_ms: None,
             no_wait: false,
             dispatch: DispatchMode::Pointer,
-            keyboard_fallback: true,
             wait_for: &[],
             wait_for_timeout_ms: None,
             settle: false,
@@ -97,7 +94,7 @@ pub fn run(
     }
 
     // Perform the click using the chosen dispatch mode.
-    let click_json = do_click(&mut ctx, selector, opts.dispatch, opts.keyboard_fallback)?;
+    let click_json = do_click(&mut ctx, selector, opts.dispatch)?;
 
     // C2: --settle (network + DOM idle).
     let settle_method = if opts.settle {
@@ -149,10 +146,7 @@ pub fn run(
 
     let mut meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
     if let Some(sm) = settle_method {
-        meta["settle_method"] = json!(match sm {
-            SettleMethod::NetworkIdle => "network_idle",
-            SettleMethod::Sleep => "network_idle_only",
-        });
+        meta["settle_method"] = json!(sm.as_meta_str());
     }
     crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
     let envelope = output::envelope(&result, 1, &meta);
@@ -163,12 +157,7 @@ pub fn run(
         .map_err(AppError::from)
 }
 
-fn do_click(
-    ctx: &mut ConnectedTab,
-    selector: &str,
-    mode: DispatchMode,
-    keyboard_fallback: bool,
-) -> Result<Value, AppError> {
+fn do_click(ctx: &mut ConnectedTab, selector: &str, mode: DispatchMode) -> Result<Value, AppError> {
     let console_actor = ctx.target.console_actor.clone();
     let escaped = escape_selector(selector);
 
@@ -185,7 +174,7 @@ fn do_click(
 }})()"
         )
     } else {
-        build_click_js(&escaped, mode, keyboard_fallback)
+        build_click_js(&escaped, mode)
     };
 
     let eval_result = eval_or_bail(ctx, &console_actor, &js, "click failed")?;
@@ -301,7 +290,7 @@ mod tests {
     /// event sequence for Radix/Headless-UI compatibility.
     #[test]
     fn pointer_dispatch_js_contains_full_event_sequence() {
-        let js = build_click_js("button", DispatchMode::Pointer, false);
+        let js = build_click_js("button", DispatchMode::Pointer);
         // Must include all five semantic events.
         assert!(js.contains("pointerover"), "missing pointerover: {js}");
         assert!(js.contains("pointerenter"), "missing pointerenter: {js}");
@@ -315,8 +304,20 @@ mod tests {
     }
 
     #[test]
+    fn pointer_dispatch_js_includes_button_buttons_opts() {
+        let js = build_click_js("button", DispatchMode::Pointer);
+        // pointerdown/mousedown must have button:0, buttons:1.
+        assert!(
+            js.contains("buttons: 1"),
+            "missing buttons:1 for down: {js}"
+        );
+        // pointerup/mouseup/click must have button:0, buttons:0.
+        assert!(js.contains("buttons: 0"), "missing buttons:0 for up: {js}");
+    }
+
+    #[test]
     fn legacy_dispatch_js_uses_mouse_events_only() {
-        let js = build_click_js("button", DispatchMode::Legacy, false);
+        let js = build_click_js("button", DispatchMode::Legacy);
         assert!(js.contains("MouseEvent"), "missing MouseEvent: {js}");
         assert!(
             !js.contains("PointerEvent"),
@@ -341,23 +342,5 @@ mod tests {
         );
         assert!(js.contains("el.click()"));
         assert!(js.contains(JSON_SENTINEL));
-    }
-
-    #[test]
-    fn keyboard_fallback_js_checks_aria_haspopup() {
-        let js = build_click_js("button", DispatchMode::Pointer, true);
-        assert!(
-            js.contains("aria-haspopup"),
-            "keyboard fallback JS should check aria-haspopup: {js}"
-        );
-    }
-
-    #[test]
-    fn no_keyboard_fallback_js_skips_aria_check() {
-        let js = build_click_js("button", DispatchMode::Pointer, false);
-        assert!(
-            !js.contains("aria-haspopup"),
-            "keyboard fallback JS should not be present: {js}"
-        );
     }
 }

@@ -256,4 +256,93 @@ mod tests {
 
         assert!(!ProtocolError::Timeout.is_unrecognized_packet_type());
     }
+
+    // ── is_transient tests ──────────────────────────────────────────────────
+
+    fn io_err(kind: std::io::ErrorKind) -> std::io::Error {
+        std::io::Error::new(kind, "test io error")
+    }
+
+    #[test]
+    fn is_transient_timeout_is_true() {
+        assert!(ProtocolError::Timeout.is_transient());
+    }
+
+    #[test]
+    fn is_transient_recv_failed_io_timed_out_is_true() {
+        assert!(ProtocolError::RecvFailed(io_err(std::io::ErrorKind::TimedOut)).is_transient());
+    }
+
+    #[test]
+    fn is_transient_recv_failed_would_block_is_true() {
+        assert!(ProtocolError::RecvFailed(io_err(std::io::ErrorKind::WouldBlock)).is_transient());
+    }
+
+    #[test]
+    fn is_transient_recv_failed_connection_reset_is_true() {
+        // RecvFailed is transient regardless of the I/O kind — a new connection may work.
+        assert!(
+            ProtocolError::RecvFailed(io_err(std::io::ErrorKind::ConnectionReset)).is_transient()
+        );
+    }
+
+    #[test]
+    fn is_transient_send_failed_is_true() {
+        assert!(ProtocolError::SendFailed(io_err(std::io::ErrorKind::TimedOut)).is_transient());
+        assert!(ProtocolError::SendFailed(io_err(std::io::ErrorKind::BrokenPipe)).is_transient());
+    }
+
+    #[test]
+    fn is_transient_actor_error_unknown_actor_is_true() {
+        let err = ProtocolError::ActorError {
+            actor: "conn0/actor1".to_owned(),
+            kind: ActorErrorKind::UnknownActor,
+            error: "unknownActor".to_owned(),
+            message: String::new(),
+        };
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn is_transient_terminal_errors_are_false() {
+        // InvalidPacket is terminal.
+        assert!(!ProtocolError::InvalidPacket("bad".to_owned()).is_transient());
+
+        // FrameTooLarge is terminal.
+        assert!(
+            !ProtocolError::FrameTooLarge {
+                declared: 99_999_999,
+                max: 10_000_000
+            }
+            .is_transient()
+        );
+
+        // ConnectionFailed is terminal (Firefox isn't running).
+        assert!(
+            !ProtocolError::ConnectionFailed(io_err(std::io::ErrorKind::ConnectionRefused))
+                .is_transient()
+        );
+    }
+
+    #[test]
+    fn is_transient_actor_error_wrong_state_is_false() {
+        let err = ProtocolError::ActorError {
+            actor: "conn0/actor1".to_owned(),
+            kind: ActorErrorKind::WrongState,
+            error: "wrongState".to_owned(),
+            message: String::new(),
+        };
+        assert!(!err.is_transient());
+    }
+
+    #[test]
+    fn is_transient_actor_error_unrecognized_packet_type_is_false() {
+        let err = ProtocolError::ActorError {
+            actor: "conn0/actor1".to_owned(),
+            kind: ActorErrorKind::UnrecognizedPacketType,
+            error: "unrecognizedPacketType".to_owned(),
+            message: String::new(),
+        };
+        assert!(!err.is_transient());
+    }
 }

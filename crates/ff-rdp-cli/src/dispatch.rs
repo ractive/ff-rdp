@@ -215,7 +215,6 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             network_timeout,
             no_wait,
             dispatch,
-            no_keyboard_fallback,
             wait_for,
             wait_for_timeout,
             settle,
@@ -231,7 +230,6 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 &commands::click::ClickOptions {
                     no_wait: *no_wait,
                     dispatch: dispatch_mode,
-                    keyboard_fallback: !no_keyboard_fallback,
                     wait_for,
                     wait_for_timeout_ms: *wait_for_timeout,
                     settle: *settle,

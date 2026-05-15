@@ -580,9 +580,6 @@ With --wait-for-network: adds {\"network\": {\"url\": \"...\", \"method\": \"...
         /// Event dispatch mode: pointer (default), legacy (mouse events only), click-only
         #[arg(long, default_value = "pointer", value_name = "MODE")]
         dispatch: String,
-        /// Disable keyboard activation fallback (Enter key) for aria-haspopup/role=button elements
-        #[arg(long)]
-        no_keyboard_fallback: bool,
         /// After clicking, wait for this condition. Repeatable. Forms: selector:<css>, text:<substr>, url:<regex>, gone:<css>
         #[arg(long, value_name = "PREDICATE", action = clap::ArgAction::Append)]
         wait_for: Vec<String>,
