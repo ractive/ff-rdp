@@ -50,40 +50,40 @@ Themes:
 
 ## Tasks
 
-### A. Trim the response envelope
+### A. Trim the response envelope [4/4]
 
 #### A1. Drop `meta.connection` from default output
-- [ ] In `crates/ff-rdp-cli/src/output.rs` (or equivalent), only include
+- [x] In `crates/ff-rdp-cli/src/output.rs` (or equivalent), only include
   `meta.connection` when `--verbose` is set. Default response shape becomes
   `{results, total, meta?}` with `meta` omitted when empty.
-- [ ] Keep per-request `meta` fields that *vary*: `meta.elapsed_ms`,
+- [x] Keep per-request `meta` fields that *vary*: `meta.elapsed_ms`,
   `meta.tab`, `meta.warnings`, `meta.settle_method`.
 
 #### A2. Snapshot-test the new default shape
-- [ ] Add fixture-based snapshot tests for `tabs`, `click`, `dom`,
+- [x] Add fixture-based snapshot tests for `tabs`, `click`, `dom`,
   `console`, `network` confirming `meta.connection` is absent without
   `--verbose` and present with it.
 
 #### A3. `--verbose` global flag
-- [ ] Promote `--verbose` to a top-level flag (currently per-subcommand or
+- [x] Promote `--verbose` to a top-level flag (currently per-subcommand or
   absent). One flag, every command, restores the pre-iter-60 envelope.
 
-### B. ARIA-tree output for `dom` and `snapshot`
+### B. ARIA-tree output for `dom` and `snapshot` [4/4]
 
 #### B1. New default shape for `dom`
-- [ ] Each result entry becomes:
+- [x] Each result entry becomes:
   ```json
   {"ref":"e23","role":"button","name":"Sign out","level":3,
    "state":{"expanded":false,"disabled":false},
    "tag":"button","attrs":{"id":"radix-_R_x_","aria-haspopup":"menu"}}
   ```
-- [ ] `attrs` only includes the small set ff-rdp considers actionable
+- [x] `attrs` only includes the small set ff-rdp considers actionable
   (`id`, `name`, `type`, `href`, `aria-*`, `data-state`, `role`,
   `placeholder`, `value` for inputs). Everything else lives behind
   `--format html`.
 
 #### B2. New `snapshot` shape: ARIA tree
-- [ ] Replace the current `{tag, attrs, children}` recursive DOM dump with
+- [x] Replace the current `{tag, attrs, children}` recursive DOM dump with
   a YAML-ish tree pruned to the accessibility tree:
   ```yaml
   - main
@@ -92,67 +92,73 @@ Themes:
     - table
       - row "James Admin Test 1 …" [ref=e12]
   ```
-- [ ] JSON form is the structured equivalent (same data, machine-readable).
+- [x] JSON form is the structured equivalent (same data, machine-readable).
   Text form is a tree printed line-by-line with two-space indent.
-- [ ] Document the format in `kb/reference/page-snapshot-format.md`.
+- [x] Document the format in `kb/reference/page-snapshot-format.md`.
 
 #### B3. `--format html` keeps the old behaviour
-- [ ] Power users who actually want raw HTML strings (e.g. for HTML
-  diffing) opt in. Document in `--help` for both commands.
+- [x] Power users who actually want raw HTML strings (e.g. for HTML
+  diffing) opt in. Document in `--help` for both commands. (For
+  `snapshot`, `--format html` is currently a no-op — clarified in
+  [[output-formats]].)
 
-### C. Ref IDs as first-class selectors
+### C. Ref IDs as first-class selectors [4/4]
 
 #### C1. Ref allocation
-- [ ] In the daemon, maintain a monotonic counter per-tab. Each node
+- [x] In the daemon, maintain a monotonic counter per-tab. Each node
   returned by `dom`/`snapshot` is assigned `e<N>`. Mapping `ref → DOM
   path` (a JS expression like `document.querySelector(...)` or a
   generated unique selector) is stored in the daemon's per-tab session.
-- [ ] On `pageshow`/navigation, invalidate the map. Subsequent `--ref`
-  calls return a clear "ref expired (page navigated)" error.
+- [x] On `pageshow`/navigation, invalidate the map. Subsequent `--ref`
+  calls return a clear "ref expired (page navigated)" error. (Triggered
+  on `tabNavigated`, `willNavigate`, and `frameUpdate`; error wording
+  distinguishes likely-expired from never-registered.)
 
 #### C2. `--ref <id>` accepted everywhere CSS selectors are
-- [ ] Audit: `click`, `type`, `scroll`, `wait`, `dom`, `geometry`,
+- [x] Audit: `click`, `type`, `scroll`, `wait`, `dom`, `geometry`,
   `styles`, `computed`, `a11y`, `responsive`.
-- [ ] When `--ref` is provided, skip CSS parsing and resolve via the
+- [x] When `--ref` is provided, skip CSS parsing and resolve via the
   daemon's map directly. Mutual-exclusion with positional/`--selector`.
 
 #### C3. No-daemon mode
-- [ ] When running with `--no-daemon`, ref allocation is per-process and
+- [x] When running with `--no-daemon`, ref allocation is per-process and
   refs from one CLI invocation can't be used in the next. Document the
-  limitation; the agent path always uses the daemon anyway.
+  limitation; the agent path always uses the daemon anyway. (In
+  `--no-daemon`, `dom` strips the `ref` field entirely so callers don't
+  see handles they cannot use.)
 
-### D. Output-format discipline
+### D. Output-format discipline [2/2]
 
 #### D1. Document the three formats end-to-end
-- [ ] Add `kb/reference/output-formats.md` covering `json` (default,
+- [x] Add `kb/reference/output-formats.md` covering `json` (default,
   machine-readable, the contract), `text` (human-readable, lossy), and
   `html` (where applicable, raw passthrough). Note that `--jq` operates
   on the JSON form regardless of `--format`.
 
 #### D2. Allow `--jq` together with `--format text`
-- [ ] Today these error out as mutually exclusive (see session 44 issue
+- [x] Today these error out as mutually exclusive (see session 44 issue
   #7). New behaviour: jq runs first on the JSON, the result is then
   rendered as text if `--format text` is set. Matches the "filter, then
   make terse" intuition.
 
-## Acceptance Criteria
+## Acceptance Criteria [8/8]
 
-- [ ] Default `ff-rdp click '…'` response is ≤200 bytes for a successful
+- [x] Default `ff-rdp click '…'` response is ≤200 bytes for a successful
   click (measured against the existing happy-path test fixture). Current
   baseline is ~400 bytes.
-- [ ] `ff-rdp snapshot` on the admin dashboard fixture produces output
+- [x] `ff-rdp snapshot` on the admin dashboard fixture produces output
   ≤2 KB in ARIA-tree form (compared to ~30 KB current DOM dump).
-- [ ] An agent flow can: `snapshot` → pick a ref → `click --ref e23` → no
+- [x] An agent flow can: `snapshot` → pick a ref → `click --ref e23` → no
   intermediate "find the right selector" calls.
-- [ ] `--verbose` restores the pre-iter-60 envelope shape exactly, byte
+- [x] `--verbose` restores the pre-iter-60 envelope shape exactly, byte
   for byte for the fields it carries (regression-tested).
-- [ ] `dom --format html` reproduces the current shape (escape hatch
+- [x] `dom --format html` reproduces the current shape (escape hatch
   works).
-- [ ] `--jq '…' --format text` combination works and is documented.
-- [ ] All e2e tests updated to expect the new default shape; the diff is
+- [x] `--jq '…' --format text` combination works and is documented.
+- [x] All e2e tests updated to expect the new default shape; the diff is
   predominantly "remove `meta.connection`" plus a smaller set of `dom`
   shape updates.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings &&
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings &&
   cargo test --workspace -q` clean.
 
 ## Design Notes
