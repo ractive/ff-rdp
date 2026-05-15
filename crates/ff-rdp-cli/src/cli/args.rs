@@ -158,15 +158,22 @@ COOKBOOK:
   ff-rdp install-skill --claude --dry-run
   ff-rdp install-skill --claude --list
 
-OUTPUT FORMAT:
-  All commands return JSON: {\"results\": ..., \"total\": N, \"meta\": {...}}
+OUTPUT FORMAT (iter-60 compact defaults):
+  Default JSON: {\"results\": ..., \"total\": N}  (meta omitted when empty)
+  --verbose restores meta.connection (host, port, pid, uptime) to the envelope
   Truncated output adds: {\"truncated\": true, \"hint\": \"showing 20 of 84, use --all\"}
+  --format json  (default) machine-readable JSON — the stable API contract
+  --format text  human-readable tables and trees
+  --format html  raw HTML passthrough (dom and snapshot only — pre-iter-60 shape)
+  --jq can be combined with --format text: jq runs first, text rendering applies
   Use --jq to filter the envelope: --jq '.results[0]', --jq '.total'
-  Use --format text for human-readable tables (mutually exclusive with --jq)
   Use --detail for per-entry output on list commands (default is summary view)
   Contextual hints suggest follow-up commands: \"hints\": [...] in JSON, -> lines in text
   Hints default: on for --format text, off for JSON. Override: --hints / --no-hints
   --jq always suppresses hints (pipeline needs clean data)
+
+  dom default output: ARIA-tree JSON {ref, role, name, level, state, tag, attrs}
+  dom --format html: legacy raw HTML strings (escape hatch for HTML diffing)
 
 TROUBLESHOOTING:
   When stuck, run `ff-rdp doctor` first — it probes daemon, port owner,
@@ -283,7 +290,8 @@ pub struct Cli {
     #[arg(long, global = true, conflicts_with = "hints")]
     pub no_hints: bool,
 
-    /// Print internal debug messages (fallback paths, protocol quirks) to stderr.
+    /// Restore full meta.connection envelope (host, port, pid, uptime) in JSON output.
+    /// Also enables internal debug messages (fallback paths, protocol quirks) to stderr.
     /// Also enabled when the RUST_LOG environment variable is set.
     #[arg(long, global = true)]
     pub verbose: bool,
@@ -397,14 +405,21 @@ Output: {\"results\": \"<page text as a plain string>\", \"total\": 1, \"meta\":
     /// Query DOM elements by CSS selector
     #[command(long_about = "Query DOM elements by CSS selector.
 
-Output: {\"results\": [\"<html_string>\", ...], \"total\": N, \"meta\": {...}}
+Default output (ARIA-tree JSON): {\"results\": {\"ref\":\"e1\",\"role\":\"heading\",\"name\":\"...\",\"level\":1,\"tag\":\"h1\",\"attrs\":{...}}, \"total\": N}
+Each element has: ref (stable ID), role (ARIA semantic role), name (accessible name), tag, attrs (actionable only), state, level (headings).
+Use --format html for the legacy raw HTML string output.
 With --count: {\"results\": {\"count\": N}, \"total\": 1, \"meta\": {...}}")]
+    #[command(group(ArgGroup::new("dom_target").required(false).multiple(false).args(["selector", "ref_id"])))]
     Dom {
         #[command(subcommand)]
         dom_command: Option<DomCommand>,
 
         /// CSS selector to match elements
+        #[arg(group = "dom_target")]
         selector: Option<String>,
+        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+        #[arg(long = "ref", value_name = "REF_ID", group = "dom_target")]
+        ref_id: Option<String>,
         /// Output outer HTML (default)
         #[arg(long, group = "output_mode")]
         outer_html: bool,
@@ -554,6 +569,10 @@ The selector can be supplied positionally or via --selector:
 
 Both forms are interchangeable; supplying both at once is an error.
 
+Use --ref <id> to click an element by its ARIA-tree ref ID (e.g. 'e3' from a
+previous dom or snapshot call in the same daemon session).  Mutually exclusive
+with positional selector and --selector.  Not available with --no-daemon.
+
 Dispatch modes (--dispatch):
   pointer     Full pointer+mouse event sequence (default — Radix/Headless-UI compatible)
   legacy      Mouse-event sequence only (mouseover, mouseenter, mousedown, mouseup, click)
@@ -561,12 +580,17 @@ Dispatch modes (--dispatch):
 
 Output: {\"results\": {\"clicked\": true, \"tag\": \"...\", \"text\": \"...\"}, \"total\": 1, \"meta\": {...}}
 With --wait-for-network: adds {\"network\": {\"url\": \"...\", \"method\": \"...\", \"status\": N, ...}} to results.")]
+    #[command(group(ArgGroup::new("click_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
     Click {
         /// CSS selector of the element to click (positional, or use --selector)
+        #[arg(group = "click_target")]
         selector_pos: Option<String>,
         /// CSS selector of the element to click (flag form)
-        #[arg(long = "selector", value_name = "SELECTOR")]
+        #[arg(long = "selector", value_name = "SELECTOR", group = "click_target")]
         selector_flag: Option<String>,
+        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+        #[arg(long = "ref", value_name = "REF_ID", group = "click_target")]
+        ref_id: Option<String>,
         /// After clicking, wait for a network request whose URL contains this pattern.
         /// Returns the matched request record in the output.
         #[arg(long, value_name = "PATTERN")]
@@ -599,6 +623,9 @@ Selector and text can be supplied positionally or via flags:
 
 Both forms work identically; mixing positional and flag for the same value errors.
 
+Use --ref <id> to target an element by its ARIA-tree ref ID (daemon mode only).
+Mutually exclusive with positional selector and --selector.
+
 Auto-waits for the element to be focusable (exists, visible, not disabled, is an
 input/textarea/contenteditable) before typing. Use --no-wait to skip this.
 
@@ -607,17 +634,22 @@ prototype setter so React/Vue/Svelte value trackers are invalidated, and `input`
 and `change` events are dispatched after the assignment.
 
 Output: {\"results\": {\"typed\": true, \"tag\": \"INPUT\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
+    #[command(group(ArgGroup::new("type_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
     Type {
         /// CSS selector of the input element (positional, or use --selector)
+        #[arg(group = "type_target")]
         selector_pos: Option<String>,
         /// Text to type into the element (positional, or use --text)
         text_pos: Option<String>,
         /// CSS selector of the input element (flag form)
-        #[arg(long = "selector", value_name = "SELECTOR")]
+        #[arg(long = "selector", value_name = "SELECTOR", group = "type_target")]
         selector_flag: Option<String>,
         /// Text to type into the element (flag form)
         #[arg(long = "text", value_name = "TEXT")]
         text_flag: Option<String>,
+        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+        #[arg(long = "ref", value_name = "REF_ID", group = "type_target")]
+        ref_id: Option<String>,
         /// Clear the element's current value before typing
         #[arg(long)]
         clear: bool,
@@ -635,10 +667,13 @@ Output: {\"results\": {\"typed\": true, \"tag\": \"INPUT\", \"value\": \"...\"},
         settle: bool,
     },
     /// Wait for a condition to become true (polls every 100ms).
-    /// Exactly one of --selector, --text, or --eval must be specified.
+    /// Exactly one of --selector, --text, --eval, or --ref must be specified.
     #[command(long_about = "Wait for a condition to become true (polls every 100ms).
 
-Exactly one of --selector, --text, or --eval must be specified.
+Exactly one of --selector, --text, --eval, or --ref must be specified.
+
+Use --ref <id> to wait for an element identified by its ARIA-tree ref ID
+(daemon mode only). Equivalent to --selector but uses a stable ref handle.
 
 Output: {\"results\": {\"matched\": true, \"elapsed_ms\": N, \"condition\": \"selector|text|eval\"}, \"total\": 1, \"meta\": {...}}")]
     #[command(group(ArgGroup::new("condition").required(true).multiple(false)))]
@@ -652,6 +687,9 @@ Output: {\"results\": {\"matched\": true, \"elapsed_ms\": N, \"condition\": \"se
         /// Wait until this JavaScript expression returns a truthy value
         #[arg(long, group = "condition")]
         eval: Option<String>,
+        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+        #[arg(long = "ref", value_name = "REF_ID", group = "condition")]
+        ref_id: Option<String>,
         /// Timeout in milliseconds before giving up
         #[arg(long, default_value_t = 5000)]
         wait_timeout: u64,
@@ -685,6 +723,7 @@ With --key: {\"results\": {\"key\": \"...\", \"value\": \"...\"}, \"total\": 1, 
 Output: {\"results\": {\"role\": \"...\", \"name\": \"...\", \"children\": [...]}, \"total\": 1, \"meta\": {...}}
 With a11y summary: {\"results\": [{\"role\": \"...\", \"name\": \"...\", \"level\": N}], \"total\": N, \"meta\": {...}}
 With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"passes_aa\": bool, ...}], \"total\": N, \"meta\": {...}}")]
+    #[command(group(ArgGroup::new("a11y_target").required(false).multiple(false).args(["selector", "ref_id"])))]
     A11y {
         #[command(subcommand)]
         a11y_command: Option<A11yCommand>,
@@ -696,8 +735,11 @@ With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"passe
         #[arg(long, default_value_t = 50000)]
         max_chars: u32,
         /// CSS selector to root the tree at a specific element
-        #[arg(long)]
+        #[arg(long, group = "a11y_target")]
         selector: Option<String>,
+        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+        #[arg(long = "ref", value_name = "REF_ID", group = "a11y_target")]
+        ref_id: Option<String>,
         /// Only show interactive elements (buttons, links, inputs, etc.)
         #[arg(long)]
         interactive: bool,
@@ -810,10 +852,14 @@ NOTE: behavior change — prior versions included hidden elements by default and
 
 Output: {\"results\": {\"elements\": [{\"selector\": \"...\", \"rect\": {...}, \"visible\": bool, \"z_index\": N}], \"overlaps\": [...]}, \"total\": 1, \"meta\": {...}}"
     )]
+    #[command(group(ArgGroup::new("geo_target").required(true).multiple(false).args(["selectors", "ref_id"])))]
     Geometry {
         /// One or more CSS selectors to query
-        #[arg(required = true)]
+        #[arg(group = "geo_target")]
         selectors: Vec<String>,
+        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+        #[arg(long = "ref", value_name = "REF_ID", group = "geo_target")]
+        ref_id: Option<String>,
         /// Include hidden elements (zero-size, display:none, visibility:hidden, opacity:0).
         /// By default these are excluded.
         #[arg(long)]
@@ -830,10 +876,14 @@ By default, hidden and zero-sized elements are excluded from results at each bre
 Pass --include-hidden to receive those elements as well.
 
 Output: {\"results\": {\"breakpoints\": [{\"width\": 320, \"viewport\": {\"width\": N, \"height\": N}, \"elements\": [{\"selector\": \"...\", \"rect\": {...}, \"visible\": bool}]}, ...], \"original_viewport\": {\"width\": N, \"height\": N}}, \"total\": N, \"meta\": {...}}")]
+    #[command(group(ArgGroup::new("resp_target").required(true).multiple(false).args(["selectors", "ref_id"])))]
     Responsive {
         /// One or more CSS selectors to query at each breakpoint
-        #[arg(required = true)]
+        #[arg(group = "resp_target")]
         selectors: Vec<String>,
+        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+        #[arg(long = "ref", value_name = "REF_ID", group = "resp_target")]
+        ref_id: Option<String>,
         /// Comma-separated viewport widths in pixels
         #[arg(long, value_delimiter = ',', default_value = "320,768,1024,1440")]
         widths: Vec<u32>,
@@ -858,12 +908,17 @@ Output (multi-match): {\"results\": [{\"selector\": \"...\", \"index\": 0, \"com
 Output (--prop): single string value per match
 Output (--all): full resolved-style object per match (dumps every property)"
     )]
+    #[command(group(ArgGroup::new("computed_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
     Computed {
         /// CSS selector to match elements (positional, or use --selector)
+        #[arg(group = "computed_target")]
         selector_pos: Option<String>,
         /// CSS selector to match elements (flag form)
-        #[arg(long = "selector", value_name = "SELECTOR")]
+        #[arg(long = "selector", value_name = "SELECTOR", group = "computed_target")]
         selector_flag: Option<String>,
+        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+        #[arg(long = "ref", value_name = "REF_ID", group = "computed_target")]
+        ref_id: Option<String>,
         /// Return only a single property value (e.g. \"color\", \"display\")
         #[arg(long, value_name = "NAME")]
         prop: Option<String>,
@@ -879,12 +934,17 @@ Output (computed):  {\"results\": [{\"selector\": \"...\", \"computed\": {\"colo
 Output (--applied): {\"results\": [{\"selector\": \"...\", \"rules\": [{\"selector\": \"...\", \"properties\": [...]}]}], \"total\": N, \"meta\": {...}}
 Output (--layout):  {\"results\": [{\"selector\": \"...\", \"box\": {\"margin\": {...}, \"border\": {...}, \"padding\": {...}, \"content\": {...}}}], \"total\": N, \"meta\": {...}}"
     )]
+    #[command(group(ArgGroup::new("styles_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
     Styles {
         /// CSS selector to match the element (positional, or use --selector)
+        #[arg(group = "styles_target")]
         selector_pos: Option<String>,
         /// CSS selector to match the element (flag form)
-        #[arg(long = "selector", value_name = "SELECTOR")]
+        #[arg(long = "selector", value_name = "SELECTOR", group = "styles_target")]
         selector_flag: Option<String>,
+        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+        #[arg(long = "ref", value_name = "REF_ID", group = "styles_target")]
+        ref_id: Option<String>,
         /// Show applied CSS rules with source locations instead of computed styles
         #[arg(long, group = "style_mode")]
         applied: bool,
@@ -1061,9 +1121,14 @@ pub enum ScrollCommand {
 Auto-waits for the element to exist and be visible before scrolling. Use --no-wait to skip.
 
 Output: {\"results\": {\"scrolled\": true, \"selector\": \"...\", \"viewport\": {...}, \"target\": {...}, \"atEnd\": bool}, \"total\": 1, \"meta\": {...}}")]
+    #[command(group(ArgGroup::new("scroll_to_target").required(true).multiple(false).args(["selector", "ref_id"])))]
     To {
         /// CSS selector of the element to scroll into view
-        selector: String,
+        #[arg(group = "scroll_to_target")]
+        selector: Option<String>,
+        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+        #[arg(long = "ref", value_name = "REF_ID", group = "scroll_to_target")]
+        ref_id: Option<String>,
         /// Block alignment [default: top]. Aliases: top=start, bottom=end
         #[arg(long, value_enum, default_value_t = ScrollBlock::Top)]
         block: ScrollBlock,

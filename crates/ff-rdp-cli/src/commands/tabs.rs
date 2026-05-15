@@ -32,8 +32,14 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     let results_json: serde_json::Value = serde_json::to_value(&tabs)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("failed to serialize tabs: {e}")))?;
 
-    let mut meta = json!({"host": cli.host, "port": cli.port});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&results_json, tabs.len(), &meta);
 
     let hint_ctx = HintContext::new(HintSource::Tabs);

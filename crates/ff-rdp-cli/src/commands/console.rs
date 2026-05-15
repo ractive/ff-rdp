@@ -121,8 +121,14 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     let shown = limited.len();
     let limited = controls.apply_fields(limited);
 
-    let mut meta = json!({"host": cli.host, "port": cli.port});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let mut envelope =
         output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
 

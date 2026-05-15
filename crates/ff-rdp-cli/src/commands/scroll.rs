@@ -103,11 +103,17 @@ pub fn run_to(
         wait_for_predicates(&mut ctx, &console_actor, &predicates, wf_timeout)?;
     }
 
-    let mut meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
+    let mut meta = json!({"selector": selector});
     if let Some(sm) = settle_method {
         meta["settle_method"] = json!(sm.as_meta_str());
     }
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&result_json, 1, &meta);
 
     OutputPipeline::from_cli(cli)?
@@ -167,8 +173,14 @@ pub fn run_by(
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "scroll by failed")?;
     let result_json = resolve_result(&mut ctx, &eval_result.result)?;
-    let mut meta = json!({"host": cli.host, "port": cli.port});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&result_json, 1, &meta);
 
     OutputPipeline::from_cli(cli)?
@@ -212,8 +224,14 @@ fn run_scroll_absolute(cli: &Cli, y_expr: &str, error_label: &str) -> Result<(),
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, error_label)?;
     let result_json = resolve_result(&mut ctx, &eval_result.result)?;
-    let mut meta = json!({"host": cli.host, "port": cli.port});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&result_json, 1, &meta);
 
     OutputPipeline::from_cli(cli)?
@@ -268,8 +286,14 @@ pub fn run_container(
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "scroll container failed")?;
     let result_json = resolve_result(&mut ctx, &eval_result.result)?;
-    let mut meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({"selector": selector});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&result_json, 1, &meta);
 
     OutputPipeline::from_cli(cli)?
@@ -392,8 +416,14 @@ pub fn run_until(
         obj.insert("scrolls".to_owned(), json!(scrolls));
     }
 
-    let mut meta = json!({"host": cli.host, "port": cli.port, "selector": selector, "direction": direction, "timeout_ms": timeout_ms});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({"selector": selector, "direction": direction, "timeout_ms": timeout_ms});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&result_json, 1, &meta);
 
     OutputPipeline::from_cli(cli)?
@@ -458,8 +488,14 @@ pub fn run_text(cli: &Cli, text: &str) -> Result<(), AppError> {
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "scroll text failed")?;
     let result_json = resolve_result(&mut ctx, &eval_result.result)?;
-    let mut meta = json!({"host": cli.host, "port": cli.port, "text": text});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({"text": text});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&result_json, 1, &meta);
 
     OutputPipeline::from_cli(cli)?

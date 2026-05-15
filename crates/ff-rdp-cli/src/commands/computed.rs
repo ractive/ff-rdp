@@ -174,11 +174,15 @@ pub fn run(
         Value::Array(entries)
     };
     let mut meta = json!({
-        "host": cli.host,
-        "port": cli.port,
         "selector": selector,
     });
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&results, total, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Computed).with_selector(selector);

@@ -326,3 +326,92 @@ fn dom_with_jq_filter() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "\"Example Domain\"");
 }
+
+// ---------------------------------------------------------------------------
+// iter-60: --format html escape hatch
+// ---------------------------------------------------------------------------
+
+/// `--format html` must return the legacy raw HTML string shape (escape hatch
+/// for consumers that need HTML diffing or raw markup).
+#[test]
+fn dom_format_html_returns_raw_html_string() {
+    // The fixture returns a raw HTML string — same as the old default.
+    let server = dom_server("eval_result_dom_single.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "--format".to_owned(),
+        "html".to_owned(),
+        "dom".to_owned(),
+        "h1".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    // With --format html the mock returns a raw HTML string in results.
+    assert!(
+        json["results"].is_string(),
+        "expected string results with --format html; got: {json}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// iter-60: --jq + --format text combination (D2)
+// ---------------------------------------------------------------------------
+
+/// `--jq` combined with `--format text` must work: jq runs first on the JSON,
+/// the result is then rendered as human-readable text.
+#[test]
+fn dom_jq_with_format_text_renders_text() {
+    let server = dom_server("eval_result_dom_text.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "--format".to_owned(),
+        "text".to_owned(),
+        "dom".to_owned(),
+        "h1".to_owned(),
+        "--text".to_owned(),
+        "--jq".to_owned(),
+        ".results".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    // iter-60 D2: --jq + --format text is now allowed (was an error before).
+    assert!(
+        output.status.success(),
+        "--jq + --format text must succeed (iter-60 D2); stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Output must be non-empty (text rendering of the jq result).
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.trim().is_empty(),
+        "expected non-empty output from --jq + --format text"
+    );
+}

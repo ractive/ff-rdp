@@ -104,8 +104,14 @@ pub fn run(cli: &Cli, selectors: &[String], include_hidden: bool) -> Result<(), 
             render_geometry_text(&empty);
             return Ok(());
         }
-        let mut meta = json!({"host": cli.host, "port": cli.port, "selectors": selectors});
-        crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+        let mut meta = json!({"selectors": selectors});
+        crate::connection_meta::merge_into_if_verbose(
+            &mut meta,
+            &cli.host,
+            cli.port,
+            None,
+            cli.is_verbose(),
+        );
         let envelope = output::envelope(&empty, 0, &meta);
         let first_sel = selectors.first().map_or("*", String::as_str);
         let hint_ctx = HintContext::new(HintSource::Geometry).with_selector(first_sel);
@@ -161,8 +167,14 @@ pub fn run(cli: &Cli, selectors: &[String], include_hidden: bool) -> Result<(), 
         "viewport": viewport,
     });
 
-    let mut meta = json!({"host": cli.host, "port": cli.port, "selectors": selectors});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({"selectors": selectors});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
 
     // Text short-circuit: render a human-readable table instead of JSON.
     if cli.format == "text" && cli.jq.is_none() {

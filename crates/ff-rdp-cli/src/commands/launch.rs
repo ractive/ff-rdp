@@ -418,11 +418,15 @@ pub fn run(
                 "auto_consent": auto_consent,
             });
             let mut meta = json!({
-                "host": host,
-                "port": port,
                 "firefox": firefox.to_string_lossy().as_ref().to_owned(),
             });
-            crate::connection_meta::merge_into(&mut meta, host, port, None);
+            crate::connection_meta::merge_into_if_verbose(
+                &mut meta,
+                host,
+                port,
+                None,
+                cli.is_verbose(),
+            );
             let envelope = output::envelope(&result, 1, &meta);
             let hint_ctx = HintContext::new(HintSource::Launch);
             OutputPipeline::from_cli(cli)?

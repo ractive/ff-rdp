@@ -4,6 +4,7 @@ use crate::cli::args::{
 use crate::commands;
 use crate::commands::js_helpers::DispatchMode;
 use crate::commands::nav_action::NavAction;
+use crate::daemon::registry;
 use crate::daemon::server;
 use crate::error::AppError;
 
@@ -37,6 +38,105 @@ fn resolve_selector<'a>(
             "{command} requires a CSS selector — pass it positionally or with --selector"
         ))),
     }
+}
+
+/// Resolve a CSS selector from a positional/flag selector or a `--ref` ref ID.
+///
+/// When `ref_id` is `Some`, the ref is resolved via the daemon.  In
+/// `--no-daemon` mode, refs are not available across invocations (the daemon
+/// is the ref store), so we return a clear user error.
+///
+/// The returned `String` is owned because the ref resolver expression is heap-allocated.
+fn resolve_selector_or_ref(
+    positional: Option<&str>,
+    flag: Option<&str>,
+    ref_id: Option<&str>,
+    command: &str,
+    cli: &Cli,
+) -> Result<String, AppError> {
+    match ref_id {
+        Some(id) => {
+            if cli.no_daemon {
+                return Err(AppError::User(
+                    "--ref is not available with --no-daemon: ref IDs are stored by the daemon and are only valid within a single daemon session".to_string()
+                ));
+            }
+            resolve_ref_via_daemon(cli, id)
+        }
+        None => resolve_selector(positional, flag, command).map(str::to_owned),
+    }
+}
+
+/// Connect to the running daemon and resolve a ref ID to its JS resolver expression.
+///
+/// Returns `AppError::User` with a clear message when the ref has expired or
+/// when no daemon is running.
+fn resolve_ref_via_daemon(cli: &Cli, ref_id: &str) -> Result<String, AppError> {
+    use ff_rdp_core::{FramedReader, FramedWriter};
+    use serde_json::{Value, json};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let info = registry::read_registry()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
+        .ok_or_else(|| AppError::User(
+            format!("--ref {ref_id}: no daemon is running — start the daemon first or use a CSS selector instead")
+        ))?;
+
+    let timeout = Duration::from_millis(cli.timeout);
+    let addr = format!("127.0.0.1:{}", info.proxy_port)
+        .parse::<std::net::SocketAddr>()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("parsing daemon addr: {e}")))?;
+
+    let stream = TcpStream::connect_timeout(&addr, timeout).map_err(|e| {
+        AppError::Connection(format!(
+            "could not connect to daemon for ref resolution: {e}"
+        ))
+    })?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("setting read timeout: {e}")))?;
+
+    let mut writer = FramedWriter::from_stream(
+        stream
+            .try_clone()
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("cloning stream: {e}")))?,
+    );
+    writer
+        .send(&json!({"auth": info.auth_token}))
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("sending auth frame: {e}")))?;
+
+    let mut reader = FramedReader::from_stream(stream);
+    // Read and discard the greeting.
+    reader
+        .recv()
+        .map_err(|e| AppError::User(format!("daemon auth failed: {e}")))?;
+
+    // Send resolve-ref request and read responses until we get a daemon reply.
+    writer
+        .send(&json!({"to": "daemon", "type": "resolve-ref", "id": ref_id}))
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("sending resolve-ref: {e}")))?;
+
+    for _ in 0..64 {
+        let resp = reader.recv().map_err(|e| {
+            AppError::Internal(anyhow::anyhow!("receiving resolve-ref response: {e}"))
+        })?;
+        if resp.get("from").and_then(Value::as_str) == Some("daemon") {
+            if let Some(err) = resp.get("error").and_then(Value::as_str) {
+                return Err(AppError::User(err.to_owned()));
+            }
+            return resp
+                .get("resolver")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    AppError::Internal(anyhow::anyhow!("resolve-ref response missing 'resolver'"))
+                });
+        }
+    }
+    Err(AppError::Internal(anyhow::anyhow!(
+        "did not receive resolve-ref response within 64 frames"
+    )))
 }
 
 /// Dispatch a CLI command to its handler.
@@ -126,6 +226,7 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         Command::Dom {
             dom_command,
             selector,
+            ref_id,
             outer_html: _,
             inner_html,
             text,
@@ -140,7 +241,13 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 max_chars,
             }) => commands::dom_tree::run(cli, selector.as_deref(), *depth, *max_chars),
             None => {
-                let sel = selector.as_deref().ok_or_else(|| {
+                // --ref resolves to a querySelectorAll expression usable as a selector.
+                let resolved: Option<String> = if let Some(id) = ref_id.as_deref() {
+                    Some(resolve_ref_via_daemon(cli, id)?)
+                } else {
+                    None
+                };
+                let sel = resolved.as_deref().or(selector.as_deref()).ok_or_else(|| {
                     AppError::User("dom requires a CSS selector argument".to_string())
                 })?;
                 if *count {
@@ -155,7 +262,9 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                     } else if *text_attrs {
                         commands::dom::OutputMode::TextAttrs
                     } else {
-                        commands::dom::OutputMode::OuterHtml
+                        // Default: ARIA-tree JSON (iter-60+).
+                        // `--format html` switches to raw HTML in run().
+                        commands::dom::OutputMode::AriaTree
                     };
                     commands::dom::run(cli, sel, mode)
                 }
@@ -211,6 +320,7 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         Command::Click {
             selector_pos,
             selector_flag,
+            ref_id,
             wait_for_network,
             network_timeout,
             no_wait,
@@ -219,12 +329,17 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             wait_for_timeout,
             settle,
         } => {
-            let selector =
-                resolve_selector(selector_pos.as_deref(), selector_flag.as_deref(), "click")?;
+            let selector = resolve_selector_or_ref(
+                selector_pos.as_deref(),
+                selector_flag.as_deref(),
+                ref_id.as_deref(),
+                "click",
+                cli,
+            )?;
             let dispatch_mode = parse_dispatch_mode(dispatch)?;
             commands::click::run(
                 cli,
-                selector,
+                &selector,
                 wait_for_network.as_deref(),
                 *network_timeout,
                 &commands::click::ClickOptions {
@@ -242,26 +357,20 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             text_pos,
             selector_flag,
             text_flag,
+            ref_id,
             clear,
             no_wait,
             wait_for,
             wait_for_timeout,
             settle,
         } => {
-            let selector = match (selector_pos.as_deref(), selector_flag.as_deref()) {
-                (Some(_), Some(_)) => {
-                    return Err(AppError::User(
-                        "pass selector either positionally or via --selector, not both".to_owned(),
-                    ));
-                }
-                (Some(s), None) | (None, Some(s)) => s,
-                (None, None) => {
-                    return Err(AppError::User(
-                        "type requires a selector — pass it positionally (\"ff-rdp type '<sel>' '<text>'\") or with --selector"
-                            .to_owned(),
-                    ));
-                }
-            };
+            let selector = resolve_selector_or_ref(
+                selector_pos.as_deref(),
+                selector_flag.as_deref(),
+                ref_id.as_deref(),
+                "type",
+                cli,
+            )?;
             let text = match (text_pos.as_deref(), text_flag.as_deref()) {
                 (Some(_), Some(_)) => {
                     return Err(AppError::User(
@@ -278,7 +387,7 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             };
             commands::type_text::run(
                 cli,
-                selector,
+                &selector,
                 text,
                 *clear,
                 &commands::type_text::TypeOptions {
@@ -294,30 +403,53 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             selector,
             text,
             eval,
+            ref_id,
             wait_timeout,
-        } => commands::wait::run(
-            cli,
-            &commands::wait::WaitOptions {
-                selector: selector.as_deref(),
-                text: text.as_deref(),
-                eval: eval.as_deref(),
-                wait_timeout: *wait_timeout,
-            },
-        ),
+        } => {
+            // --ref resolves to a JS querySelectorAll expression; treat it as a --selector.
+            let resolved_selector: Option<String> = if let Some(id) = ref_id.as_deref() {
+                Some(
+                    resolve_ref_via_daemon(cli, id)
+                        .map_err(|e| AppError::User(format!("--ref: {e}")))?,
+                )
+            } else {
+                None
+            };
+            commands::wait::run(
+                cli,
+                &commands::wait::WaitOptions {
+                    selector: resolved_selector.as_deref().or(selector.as_deref()),
+                    text: text.as_deref(),
+                    eval: eval.as_deref(),
+                    wait_timeout: *wait_timeout,
+                },
+            )
+        }
         Command::A11y {
             a11y_command,
             depth,
             max_chars,
             selector,
+            ref_id,
             interactive,
-        } => match a11y_command {
-            Some(A11yCommand::Contrast {
-                selector: contrast_selector,
-                fail_only,
-            }) => commands::a11y_contrast::run(cli, contrast_selector.as_deref(), *fail_only),
-            Some(A11yCommand::Summary) => commands::a11y_summary::run(cli),
-            None => commands::a11y::run(cli, *depth, *max_chars, selector.as_deref(), *interactive),
-        },
+        } => {
+            let resolved_selector: Option<String> = if let Some(id) = ref_id.as_deref() {
+                Some(resolve_ref_via_daemon(cli, id)?)
+            } else {
+                None
+            };
+            let effective_selector = resolved_selector.as_deref().or(selector.as_deref());
+            match a11y_command {
+                Some(A11yCommand::Contrast {
+                    selector: contrast_selector,
+                    fail_only,
+                }) => commands::a11y_contrast::run(cli, contrast_selector.as_deref(), *fail_only),
+                Some(A11yCommand::Summary) => commands::a11y_summary::run(cli),
+                None => {
+                    commands::a11y::run(cli, *depth, *max_chars, effective_selector, *interactive)
+                }
+            }
+        }
         Command::Cookies { name } => commands::cookies::run(cli, name.as_deref()),
         Command::Storage { storage_type, key } => {
             commands::storage::run(cli, storage_type, key.as_deref())
@@ -357,65 +489,100 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
         Command::Computed {
             selector_pos,
             selector_flag,
+            ref_id,
             prop,
             all,
         } => {
-            let selector = resolve_selector(
+            let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
                 selector_flag.as_deref(),
+                ref_id.as_deref(),
                 "computed",
+                cli,
             )?;
-            commands::computed::run(cli, selector, prop.as_deref(), *all)
+            commands::computed::run(cli, &selector, prop.as_deref(), *all)
         }
         Command::Styles {
             selector_pos,
             selector_flag,
+            ref_id,
             applied,
             layout,
             properties,
         } => {
-            let selector =
-                resolve_selector(selector_pos.as_deref(), selector_flag.as_deref(), "styles")?;
+            let selector = resolve_selector_or_ref(
+                selector_pos.as_deref(),
+                selector_flag.as_deref(),
+                ref_id.as_deref(),
+                "styles",
+                cli,
+            )?;
             if *applied {
-                commands::styles::run_applied(cli, selector)
+                commands::styles::run_applied(cli, &selector)
             } else if *layout {
-                commands::styles::run_layout(cli, selector)
+                commands::styles::run_layout(cli, &selector)
             } else {
-                commands::styles::run(cli, selector, properties.as_deref())
+                commands::styles::run(cli, &selector, properties.as_deref())
             }
         }
         Command::Geometry {
             selectors,
+            ref_id,
             include_hidden,
-        } => commands::geometry::run(cli, selectors, *include_hidden),
+        } => {
+            if let Some(id) = ref_id.as_deref() {
+                let resolved = resolve_ref_via_daemon(cli, id)?;
+                commands::geometry::run(cli, &[resolved], *include_hidden)
+            } else {
+                commands::geometry::run(cli, selectors, *include_hidden)
+            }
+        }
         Command::Responsive {
             selectors,
+            ref_id,
             widths,
             include_hidden,
-        } => commands::responsive::run(cli, selectors, widths, *include_hidden),
+        } => {
+            if let Some(id) = ref_id.as_deref() {
+                let resolved = resolve_ref_via_daemon(cli, id)?;
+                commands::responsive::run(cli, &[resolved], widths, *include_hidden)
+            } else {
+                commands::responsive::run(cli, selectors, widths, *include_hidden)
+            }
+        }
         Command::Snapshot { depth, max_chars } => commands::snapshot::run(cli, *depth, *max_chars),
         Command::Scroll { scroll_command } => match scroll_command {
             ScrollCommand::To {
                 selector,
+                ref_id,
                 block,
                 smooth,
                 no_wait,
                 wait_for,
                 wait_for_timeout,
                 settle,
-            } => commands::scroll::run_to(
-                cli,
-                selector,
-                *block,
-                *smooth,
-                &commands::scroll::ScrollOptions {
-                    no_wait: *no_wait,
-                    wait_for,
-                    wait_for_timeout_ms: *wait_for_timeout,
-                    settle: *settle,
-                    ..Default::default()
-                },
-            ),
+            } => {
+                let resolved = resolve_selector_or_ref(
+                    selector.as_deref(),
+                    None,
+                    ref_id.as_deref(),
+                    "scroll to",
+                    cli,
+                )?;
+                commands::scroll::run_to(
+                    cli,
+                    &resolved,
+                    *block,
+                    *smooth,
+                    &commands::scroll::ScrollOptions {
+                        no_wait: *no_wait,
+                        wait_for,
+                        wait_for_timeout_ms: *wait_for_timeout,
+                        settle: *settle,
+                        ..Default::default()
+                    },
+                )
+            }
             ScrollCommand::By {
                 dx,
                 dy,

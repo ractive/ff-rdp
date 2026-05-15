@@ -2,7 +2,7 @@
 title: "Iteration 60: Compact responses and stable element refs"
 type: iteration
 date: 2026-05-15
-status: planned
+status: completed
 branch: iter-60/compact-responses-refs
 depends_on: [iteration-59-autowait-pointer-retry]
 tags:

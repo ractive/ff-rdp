@@ -122,7 +122,7 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
     let limited = controls.apply_fields(limited);
     let shown = limited.len();
     let result_json = json!(limited);
-    let mut meta = json!({"host": cli.host, "port": cli.port});
+    let mut meta = json!({});
     if used_js_fallback && let Some(m) = meta.as_object_mut() {
         m.insert("fallback".to_string(), json!(true));
         m.insert("fallback_method".to_string(), json!("js-eval"));

@@ -178,11 +178,18 @@ pub fn run(
         );
     }
 
-    let meta = if used_perf_fallback {
-        json!({"host": cli.host, "port": cli.port, "source": "performance-api"})
+    let mut meta = if used_perf_fallback {
+        json!({"source": "performance-api"})
     } else {
-        json!({"host": cli.host, "port": cli.port})
+        json!({})
     };
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
 
     // Decide whether to show summary or detail mode.
     // Detail mode is used when:
