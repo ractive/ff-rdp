@@ -29,7 +29,7 @@ pub enum OutputMode {
 
 /// JavaScript IIFE that extracts an ARIA-tree record for a single element.
 ///
-/// The ref ID is injected by the Rust caller as a counter (`__REF__`).
+/// The ref ID is injected by the Rust caller as a counter (`__REF_START__`).
 /// Actionable attributes only: id, name, type, href, aria-*, data-state, role,
 /// placeholder, value (for inputs).
 const ARIA_TREE_JS_TEMPLATE: &str = r"(function() {
@@ -126,20 +126,39 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> 
 
     let mut results = resolve_result(&mut ctx, &eval_result.result)?;
 
-    // In AriaTree + daemon mode: extract __resolver fields and register refs.
-    if ctx.via_daemon
-        && matches!(effective_mode, OutputMode::AriaTree)
-        && let Some(nav_gen) = ref_nav_gen
-    {
+    // In AriaTree mode: strip `__resolver` fields from output (implementation
+    // detail). When running via daemon with a successful alloc, also register
+    // each ref with the daemon so `--ref e<N>` resolves later. When no daemon
+    // is backing the refs (--no-daemon, or alloc failed), strip the `ref`
+    // field entirely so callers don't see ref handles they can't use.
+    let mut refs_registered = false;
+    if matches!(effective_mode, OutputMode::AriaTree) {
         let entries = extract_and_strip_resolvers(&mut results);
-        if !entries.is_empty() {
-            // Non-fatal: if registration fails (e.g. page navigated), output
-            // is still valid; --ref will simply return a "not found" error.
-            let _ = crate::daemon::client::register_refs(ctx.transport_mut(), nav_gen, &entries);
+        if let Some(nav_gen) = ref_nav_gen
+            && !entries.is_empty()
+        {
+            if crate::daemon::client::register_refs(ctx.transport_mut(), nav_gen, &entries).is_ok()
+            {
+                refs_registered = true;
+            } else {
+                // Registration failed (e.g. page navigated mid-call).
+                // Strip ref handles since they are guaranteed not to resolve.
+                strip_ref_field(&mut results);
+            }
+        } else if !ctx.via_daemon || ref_nav_gen.is_none() {
+            // No daemon backing — refs would be inert. Remove them.
+            strip_ref_field(&mut results);
         }
     }
 
     let mut meta = json!({"selector": selector});
+    if matches!(effective_mode, OutputMode::AriaTree)
+        && !refs_registered
+        && ctx.via_daemon
+        && let Some(obj) = meta.as_object_mut()
+    {
+        obj.insert("refs_registered".to_string(), json!(false));
+    }
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
@@ -206,6 +225,25 @@ fn extract_and_strip_resolvers(results: &mut Value) -> Vec<crate::daemon::client
     }
 
     entries
+}
+
+/// Remove the `ref` field from each ARIA-tree node.  Used when refs cannot be
+/// resolved later (no daemon, or registration failed) — emitting handles that
+/// don't work would mislead agent callers.
+fn strip_ref_field(results: &mut Value) {
+    match results {
+        Value::Object(map) => {
+            map.remove("ref");
+        }
+        Value::Array(arr) => {
+            for node in arr.iter_mut() {
+                if let Value::Object(map) = node {
+                    map.remove("ref");
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 pub fn run_count(cli: &Cli, selector: &str) -> Result<(), AppError> {

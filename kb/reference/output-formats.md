@@ -72,7 +72,7 @@ https://example.com/style.css GET     200     38
 
 ## --format html
 
-Raw HTML passthrough. Available only for `dom` and `snapshot`. Restores the pre-iter-60 shape where `results` contains raw HTML strings.
+Raw HTML passthrough. Available only for `dom`. Restores the pre-iter-60 shape where `results` contains raw HTML strings. (For `snapshot`, `--format html` is currently a no-op — see [[page-snapshot-format]].)
 
 Use this when you need to:
 - Diff raw HTML across page versions

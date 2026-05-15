@@ -69,13 +69,19 @@ fn resolve_selector_or_ref(
 
 /// Connect to the running daemon and resolve a ref ID to its JS resolver expression.
 ///
-/// Returns `AppError::User` with a clear message when the ref has expired or
-/// when no daemon is running.
+/// Returns `AppError::User` with a clear message when the ref has expired,
+/// when no daemon is running, or when `--no-daemon` was passed.
 fn resolve_ref_via_daemon(cli: &Cli, ref_id: &str) -> Result<String, AppError> {
     use ff_rdp_core::{FramedReader, FramedWriter};
     use serde_json::{Value, json};
     use std::net::TcpStream;
     use std::time::Duration;
+
+    if cli.no_daemon {
+        return Err(AppError::User(
+            "--ref is not available with --no-daemon: ref IDs are stored by the daemon and are only valid within a single daemon session".to_string()
+        ));
+    }
 
     let info = registry::read_registry()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?

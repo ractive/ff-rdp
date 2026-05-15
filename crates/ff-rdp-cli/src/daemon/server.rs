@@ -52,10 +52,11 @@ impl RefStore {
         start
     }
 
-    /// Register a batch of `(id, resolver)` pairs.
-    fn register(&mut self, entries: &[(String, String)]) {
+    /// Register a batch of `(id, resolver)` pairs.  Consumes the input so we
+    /// avoid cloning each string into the storage map.
+    fn register(&mut self, entries: Vec<(String, String)>) {
         for (id, resolver) in entries {
-            self.refs.insert(id.clone(), resolver.clone());
+            self.refs.insert(id, resolver);
         }
     }
 
@@ -363,15 +364,22 @@ fn is_console_push_event(msg: &Value) -> bool {
 
 /// Return `true` when `msg` signals a tab navigation that invalidates DOM refs.
 ///
-/// Firefox sends a `tabNavigated` reply on the tab actor when the browser
-/// navigates (initial load, link click, history push, reload, etc.).
-/// A `pageshow` type in a `resources-available-array` watcher event is a
-/// second signal.  Both indicate the DOM has been replaced and any `e<N>`
-/// refs allocated against the old page are stale.
+/// Firefox emits several distinct messages around a navigation:
+/// - `willNavigate` on the tab actor as the browser is about to commit a new
+///   document.  Earliest reliable signal.
+/// - `tabNavigated` on the tab actor once the new document has been
+///   committed.
+/// - `frameUpdate` for nested-frame navigations.
+///
+/// All three indicate the DOM has been replaced and any `e<N>` refs allocated
+/// against the old page are stale.  We over-invalidate rather than under-
+/// invalidate: an extra clear is harmless (the next allocation simply gets a
+/// fresh generation), whereas a missed signal could let stale refs resolve to
+/// the wrong element.
 fn is_navigation_event(msg: &Value) -> bool {
     matches!(
         msg.get("type").and_then(Value::as_str),
-        Some("tabNavigated")
+        Some("tabNavigated" | "willNavigate" | "frameUpdate")
     )
 }
 
@@ -989,9 +997,15 @@ fn handle_daemon_message(
             let Some(refs_arr) = msg.get("refs").and_then(Value::as_array) else {
                 return json!({
                     "from": "daemon",
-                    "error": "register-refs requires a non-empty refs array",
+                    "error": "register-refs requires a `refs` array field",
                 });
             };
+            if refs_arr.is_empty() {
+                return json!({
+                    "from": "daemon",
+                    "error": "register-refs requires a non-empty `refs` array",
+                });
+            }
 
             let entries: Vec<(String, String)> = refs_arr
                 .iter()
@@ -1003,7 +1017,7 @@ fn handle_daemon_message(
                 .collect();
 
             let registered = entries.len();
-            state.ref_store.lock().unwrap().register(&entries);
+            state.ref_store.lock().unwrap().register(entries);
 
             json!({
                 "from": "daemon",
@@ -1030,20 +1044,31 @@ fn handle_daemon_message(
             };
 
             let store = state.ref_store.lock().unwrap();
-            match store.resolve(id) {
-                Some(resolver) => json!({
+            if let Some(resolver) = store.resolve(id) {
+                json!({
                     "from": "daemon",
                     "id": id,
                     "resolver": resolver,
-                }),
-                None => {
-                    // Distinguish "was registered but page changed" from "never seen".
-                    // We don't track history so we report a clear expiry message.
-                    json!({
-                        "from": "daemon",
-                        "error": format!("ref {id} expired (page navigated)"),
-                    })
-                }
+                })
+            } else {
+                // We don't track allocation history once the store has been
+                // cleared, so we can't be sure whether `id` was ever valid.
+                // Use `next` as a coarse heuristic: an id of the form
+                // `e<N>` with N < next likely belonged to a prior page; any
+                // other shape is almost certainly user-typo / wrong session.
+                let likely_expired = id
+                    .strip_prefix('e')
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .is_some_and(|n| n > 0 && n < store.next);
+                let hint = if likely_expired {
+                    "possibly expired after navigation"
+                } else {
+                    "not registered in this daemon session"
+                };
+                json!({
+                    "from": "daemon",
+                    "error": format!("ref {id} not found ({hint})"),
+                })
             }
         }
 
@@ -1785,7 +1810,7 @@ mod tests {
     #[test]
     fn ref_store_register_and_resolve() {
         let mut store = RefStore::new();
-        store.register(&[
+        store.register(vec![
             (
                 "e1".to_owned(),
                 "document.querySelectorAll('button')[0]".to_owned(),
@@ -1810,7 +1835,7 @@ mod tests {
     fn ref_store_clear_removes_all_refs_and_resets_counter() {
         let mut store = RefStore::new();
         store.alloc(5);
-        store.register(&[("e1".to_owned(), "x".to_owned())]);
+        store.register(vec![("e1".to_owned(), "x".to_owned())]);
         store.clear();
         assert_eq!(store.resolve("e1"), None, "clear must remove refs");
         assert_eq!(store.alloc(1), 1, "counter must reset to 1 after clear");
@@ -1902,7 +1927,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_ref_unknown_id_returns_expiry_error() {
+    fn resolve_ref_unknown_id_returns_not_found_error() {
         let state = test_state();
         let resp = handle_daemon_message(
             &state,
@@ -1915,8 +1940,8 @@ mod tests {
             "unknown ref must produce an error"
         );
         assert!(
-            resp["error"].as_str().unwrap().contains("expired"),
-            "error must mention 'expired': {:?}",
+            resp["error"].as_str().unwrap().contains("not found"),
+            "error must mention 'not found': {:?}",
             resp["error"]
         );
     }
@@ -1954,11 +1979,10 @@ mod tests {
         let state = test_state();
 
         // Register a ref directly into the store.
-        state
-            .ref_store
-            .lock()
-            .unwrap()
-            .register(&[("e1".to_owned(), "document.querySelector('h1')".to_owned())]);
+        state.ref_store.lock().unwrap().register(vec![(
+            "e1".to_owned(),
+            "document.querySelector('h1')".to_owned(),
+        )]);
 
         // Simulate a tabNavigated event clearing refs.
         let nav_msg = json!({"type": "tabNavigated", "from": "server1.conn0.child0/tab0"});

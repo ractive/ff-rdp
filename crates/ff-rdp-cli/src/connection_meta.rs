@@ -102,7 +102,7 @@ pub(crate) fn is_loopback(host: &str) -> bool {
 /// before constructing the envelope so the resulting `meta` carries
 /// `host`, `port`, and `connection`.
 ///
-/// **Deprecated in favour of [`merge_into_verbose`].** This unconditional
+/// **Deprecated in favour of [`merge_into_if_verbose`].** This unconditional
 /// variant is kept for the `doctor` command which always wants connection info.
 pub fn merge_into(meta: &mut Value, host: &str, port: u16, firefox_version: Option<u32>) {
     if let Some(obj) = meta.as_object_mut() {
