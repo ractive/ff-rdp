@@ -7,11 +7,42 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
-use super::js_helpers::{JSON_SENTINEL, escape_selector, eval_or_bail, resolve_result};
+use super::js_helpers::{
+    JSON_SENTINEL, WaitForPredicate, autowait_element, escape_selector, eval_or_bail,
+    resolve_result, settle_page, wait_for_predicates,
+};
 
-pub fn run(cli: &Cli, selector: &str, text: &str, clear: bool) -> Result<(), AppError> {
+/// Options controlling auto-wait and post-action behaviour for `type`.
+#[derive(Default)]
+pub struct TypeOptions<'a> {
+    /// Auto-wait timeout in ms. `None` means use `cli.timeout`.
+    pub wait_timeout_ms: Option<u64>,
+    /// Skip auto-wait and type immediately (--no-wait).
+    pub no_wait: bool,
+    /// Post-action predicates (--wait-for).
+    pub wait_for: &'a [String],
+    /// Timeout for --wait-for predicates. `None` → same as `wait_timeout_ms`.
+    pub wait_for_timeout_ms: Option<u64>,
+    /// Whether to wait for page settle after typing (--settle).
+    pub settle: bool,
+}
+
+pub fn run(
+    cli: &Cli,
+    selector: &str,
+    text: &str,
+    clear: bool,
+    opts: &TypeOptions<'_>,
+) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
+
+    let wait_timeout_ms = opts.wait_timeout_ms.unwrap_or(cli.timeout);
+
+    // A2: Auto-wait for the element to be focusable (also calls .focus()).
+    if !opts.no_wait {
+        autowait_element(&mut ctx, &console_actor, selector, wait_timeout_ms, true)?;
+    }
 
     let escaped_sel = escape_selector(selector);
     let escaped_text_json = serde_json::to_string(text)
@@ -51,7 +82,30 @@ pub fn run(cli: &Cli, selector: &str, text: &str, clear: bool) -> Result<(), App
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "type failed")?;
 
     let result_json = resolve_result(&mut ctx, &eval_result.result)?;
+
+    // C2: --settle.
+    let settle_method = if opts.settle {
+        let sm = settle_page(&mut ctx, &console_actor, wait_timeout_ms)?;
+        Some(sm)
+    } else {
+        None
+    };
+
+    // C1: --wait-for predicates.
+    if !opts.wait_for.is_empty() {
+        let wf_timeout = opts.wait_for_timeout_ms.unwrap_or(wait_timeout_ms);
+        let predicates: Vec<WaitForPredicate<'_>> = opts
+            .wait_for
+            .iter()
+            .map(|s| WaitForPredicate::parse(s))
+            .collect::<Result<_, _>>()?;
+        wait_for_predicates(&mut ctx, &console_actor, &predicates, wf_timeout)?;
+    }
+
     let mut meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
+    if let Some(sm) = settle_method {
+        meta["settle_method"] = json!(sm.as_meta_str());
+    }
     crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
     let envelope = output::envelope(&result_json, 1, &meta);
 

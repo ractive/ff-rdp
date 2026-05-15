@@ -2,9 +2,22 @@ use crate::cli::args::{
     A11yCommand, Cli, Command, DaemonCommand, DomCommand, PerfCommand, ScrollCommand,
 };
 use crate::commands;
+use crate::commands::js_helpers::DispatchMode;
 use crate::commands::nav_action::NavAction;
 use crate::daemon::server;
 use crate::error::AppError;
+
+/// Parse a `--dispatch` flag value into a [`DispatchMode`].
+fn parse_dispatch_mode(s: &str) -> Result<DispatchMode, AppError> {
+    match s {
+        "pointer" => Ok(DispatchMode::Pointer),
+        "legacy" => Ok(DispatchMode::Legacy),
+        "click-only" => Ok(DispatchMode::ClickOnly),
+        other => Err(AppError::User(format!(
+            "--dispatch must be 'pointer', 'legacy', or 'click-only', got: {other:?}"
+        ))),
+    }
+}
 
 /// Resolve a CSS selector from a positional arg or `--selector` flag.
 ///
@@ -200,10 +213,29 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             selector_flag,
             wait_for_network,
             network_timeout,
+            no_wait,
+            dispatch,
+            wait_for,
+            wait_for_timeout,
+            settle,
         } => {
             let selector =
                 resolve_selector(selector_pos.as_deref(), selector_flag.as_deref(), "click")?;
-            commands::click::run(cli, selector, wait_for_network.as_deref(), *network_timeout)
+            let dispatch_mode = parse_dispatch_mode(dispatch)?;
+            commands::click::run(
+                cli,
+                selector,
+                wait_for_network.as_deref(),
+                *network_timeout,
+                &commands::click::ClickOptions {
+                    no_wait: *no_wait,
+                    dispatch: dispatch_mode,
+                    wait_for,
+                    wait_for_timeout_ms: *wait_for_timeout,
+                    settle: *settle,
+                    ..Default::default()
+                },
+            )
         }
         Command::Type {
             selector_pos,
@@ -211,6 +243,10 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             selector_flag,
             text_flag,
             clear,
+            no_wait,
+            wait_for,
+            wait_for_timeout,
+            settle,
         } => {
             let selector = match (selector_pos.as_deref(), selector_flag.as_deref()) {
                 (Some(_), Some(_)) => {
@@ -240,7 +276,19 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                     ));
                 }
             };
-            commands::type_text::run(cli, selector, text, *clear)
+            commands::type_text::run(
+                cli,
+                selector,
+                text,
+                *clear,
+                &commands::type_text::TypeOptions {
+                    no_wait: *no_wait,
+                    wait_for,
+                    wait_for_timeout_ms: *wait_for_timeout,
+                    settle: *settle,
+                    ..Default::default()
+                },
+            )
         }
         Command::Wait {
             selector,
@@ -351,7 +399,23 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 selector,
                 block,
                 smooth,
-            } => commands::scroll::run_to(cli, selector, *block, *smooth),
+                no_wait,
+                wait_for,
+                wait_for_timeout,
+                settle,
+            } => commands::scroll::run_to(
+                cli,
+                selector,
+                *block,
+                *smooth,
+                &commands::scroll::ScrollOptions {
+                    no_wait: *no_wait,
+                    wait_for,
+                    wait_for_timeout_ms: *wait_for_timeout,
+                    settle: *settle,
+                    ..Default::default()
+                },
+            ),
             ScrollCommand::By {
                 dx,
                 dy,

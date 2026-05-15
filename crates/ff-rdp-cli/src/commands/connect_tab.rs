@@ -101,11 +101,25 @@ fn connect_to_firefox(
             .map_err(|e| AppError::Internal(anyhow::anyhow!("sending daemon auth frame: {e}")))?;
 
         // Read the greeting (daemon sends it after successful auth).
+        // If the daemon closes the connection here it rejected our auth token.
+        // If it times out, the daemon is overloaded or the socket is stale.
         let greeting = transport.recv().map_err(|e| {
-            AppError::User(format!(
-                "daemon auth rejected or connection closed (wrong token?): {e}\n\
-                 hint: stop the running daemon or use --no-daemon."
-            ))
+            // Distinguish: a read timeout (or transient I/O error) means the
+            // daemon isn't responding, not that the token was wrong
+            // (E1 — honest error messages).
+            if e.is_transient() {
+                AppError::Timeout(
+                    "daemon did not respond within the timeout after auth — \
+                     the daemon may be overloaded or the connection is stale.\n\
+                     hint: run `ff-rdp daemon stop` then retry, or use --no-daemon."
+                        .to_string(),
+                )
+            } else {
+                AppError::User(format!(
+                    "daemon auth rejected (wrong token): {e}\n\
+                     hint: stop the running daemon (`ff-rdp daemon stop`) or use --no-daemon."
+                ))
+            }
         })?;
 
         // Now wrap in RdpConnection. We already consumed the greeting; pass it

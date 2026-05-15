@@ -86,6 +86,464 @@ pub(crate) fn escape_selector(selector: &str) -> String {
 
 const POLL_INTERVAL_MS: u64 = 100;
 
+// ---------------------------------------------------------------------------
+// Auto-wait helpers
+// ---------------------------------------------------------------------------
+
+/// Generate a JavaScript polling expression that resolves to a structured
+/// readiness result for the element matched by `escaped_selector`.
+///
+/// The expression evaluates to `null` when the element is not yet ready
+/// (caller should retry) or a JSON string (prefixed with `JSON_SENTINEL`)
+/// when ready or definitively failed.
+///
+/// Result shape (on success):
+/// ```json
+/// {"ready": true, "tag": "BUTTON", "text": "..."}
+/// ```
+/// Result shape (on transient-not-ready):
+/// Returns JS `null` so the caller retries.
+///
+/// Result shape (on JS exception / stable-rect check):
+/// Throws a JS `Error` whose `message` describes which sub-condition failed.
+pub(crate) fn build_autowait_js(escaped_selector: &str, for_input: bool) -> String {
+    let input_check = if for_input {
+        r"
+  if (el.disabled) throw new Error('element exists but is disabled');
+  var tag = el.tagName.toLowerCase();
+  var isEditable = tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
+  if (!isEditable) throw new Error('element exists but is not an input, textarea, select, or contenteditable');
+  el.focus();"
+    } else {
+        ""
+    };
+
+    format!(
+        r"(function() {{
+  var el = document.querySelector('{escaped_selector}');
+  if (!el) return null;
+
+  // Visibility check (display:none / visibility:hidden)
+  var style = window.getComputedStyle(el);
+  if (style.display === 'none') throw new Error('element exists but has display:none');
+  if (style.visibility === 'hidden') throw new Error('element exists but has visibility:hidden');
+  if (style.opacity === '0') return null; // transitioning in, retry
+
+  // Non-zero bounding rect
+  var r1 = el.getBoundingClientRect();
+  if (r1.width === 0 && r1.height === 0) return null; // not yet laid out, retry
+  {input_check}
+
+  return '{JSON_SENTINEL}' + JSON.stringify({{ready: true, tag: el.tagName, text: (el.textContent || '').trim().substring(0, 100)}});
+}})()"
+    )
+}
+
+/// Build a JS snippet that polls for rect stability (two consecutive reads within 50 ms
+/// must be identical). Returns the sentinel-prefixed JSON if stable, or `null` to retry.
+pub(crate) fn build_stability_check_js(escaped_selector: &str) -> String {
+    format!(
+        r"(function() {{
+  var el = document.querySelector('{escaped_selector}');
+  if (!el) return null;
+  var r = el.getBoundingClientRect();
+  return JSON.stringify([r.top, r.left, r.width, r.height]);
+}})()"
+    )
+}
+
+/// Auto-wait for an element to be ready (exist + visible + stable rect).
+///
+/// Default timeout: 5000 ms. Returns the sentinel-resolved JSON on success,
+/// or an error describing which sub-condition failed.
+///
+/// When `for_input` is `true`, also checks `disabled === false` and that the
+/// element is an input/textarea/contenteditable, and calls `.focus()`.
+pub(crate) fn autowait_element(
+    ctx: &mut ConnectedTab,
+    console_actor: &ActorId,
+    selector: &str,
+    timeout_ms: u64,
+    for_input: bool,
+) -> Result<Value, AppError> {
+    use std::time::{Duration, Instant};
+
+    let escaped = escape_selector(selector);
+    let readiness_js = build_autowait_js(&escaped, for_input);
+    let stability_js = build_stability_check_js(&escaped);
+
+    let timeout = Duration::from_millis(timeout_ms);
+    let poll = Duration::from_millis(POLL_INTERVAL_MS);
+    let started = Instant::now();
+
+    // Phase 1: wait for element to exist + be visible + have non-zero rect.
+    loop {
+        if started.elapsed() >= timeout {
+            return Err(AppError::Timeout(format!(
+                "selector '{selector}' not ready (not found / hidden / unstable) after {timeout_ms}ms"
+            )));
+        }
+
+        let eval =
+            WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &readiness_js)
+                .map_err(AppError::from)?;
+
+        if let Some(ref exc) = eval.exception {
+            let msg = exc
+                .message
+                .as_deref()
+                .unwrap_or("element readiness check failed");
+            return Err(AppError::Timeout(format!(
+                "selector '{selector}' not ready after {timeout_ms}ms: {msg}"
+            )));
+        }
+
+        if is_truthy(&eval.result) {
+            break; // visible + non-zero rect
+        }
+
+        std::thread::sleep(poll);
+    }
+
+    // Phase 2: wait for stable rect (two consecutive reads must match).
+    let stability_timeout = started.elapsed() + Duration::from_millis(500);
+    let mut last_rect: Option<String> = None;
+
+    loop {
+        if started.elapsed() >= stability_timeout {
+            // Stability check timed out — the element rect never stopped changing.
+            return Err(AppError::Timeout(format!(
+                "selector '{selector}' rect did not stabilise after {timeout_ms}ms"
+            )));
+        }
+        if started.elapsed() >= timeout {
+            return Err(AppError::Timeout(format!(
+                "selector '{selector}' not ready (not found / hidden / unstable) after {timeout_ms}ms"
+            )));
+        }
+
+        let eval =
+            WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &stability_js)
+                .map_err(AppError::from)?;
+
+        let current = match &eval.result {
+            Grip::Value(v) => v.as_str().map(std::borrow::ToOwned::to_owned),
+            _ => None,
+        };
+
+        if let Some(ref cur) = current {
+            if let Some(ref prev) = last_rect
+                && prev == cur
+            {
+                break; // stable
+            }
+            last_rect = current;
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    Ok(Value::Null) // caller will proceed with the action
+}
+
+// ---------------------------------------------------------------------------
+// Pointer-event dispatch
+// ---------------------------------------------------------------------------
+
+/// Dispatch mode for `click`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DispatchMode {
+    /// Full pointer-event sequence: pointerover, pointerenter, pointerdown,
+    /// pointerup, click (plus matching mouse events). This is the default.
+    Pointer,
+    /// Legacy mouse-event sequence: mouseover, mouseenter, mousedown, mouseup, click.
+    Legacy,
+    /// Only dispatch a synthetic `click` event (pre-iter-59 behaviour).
+    ClickOnly,
+}
+
+/// Build a JS expression that dispatches the appropriate event sequence on the
+/// element matched by `escaped_selector`, then returns a sentinel-prefixed JSON.
+///
+/// The `entered` sentinel is set before the action so D2 can detect partial success.
+pub(crate) fn build_click_js(escaped_selector: &str, mode: DispatchMode) -> String {
+    let event_dispatch: &str = match mode {
+        DispatchMode::Pointer => {
+            r"
+  // Pointer event sequence (Radix / Headless-UI compatible).
+  var opts = {bubbles: true, cancelable: true, view: window, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1};
+  var mopts = {bubbles: true, cancelable: true, view: window, button: 0, buttons: 1};
+  var upOpts = {bubbles: true, cancelable: true, view: window, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 0};
+  var upMopts = {bubbles: true, cancelable: true, view: window, button: 0, buttons: 0};
+  el.dispatchEvent(new PointerEvent('pointerover', opts));
+  el.dispatchEvent(new PointerEvent('pointerenter', {...opts, bubbles: false}));
+  el.dispatchEvent(new MouseEvent('mouseover', mopts));
+  el.dispatchEvent(new MouseEvent('mouseenter', {...mopts, bubbles: false}));
+  el.dispatchEvent(new PointerEvent('pointerdown', opts));
+  el.dispatchEvent(new MouseEvent('mousedown', mopts));
+  el.dispatchEvent(new PointerEvent('pointerup', upOpts));
+  el.dispatchEvent(new MouseEvent('mouseup', upMopts));
+  el.dispatchEvent(new MouseEvent('click', upMopts));"
+        }
+        DispatchMode::Legacy => {
+            r"
+  var mopts = {bubbles: true, cancelable: true, view: window};
+  el.dispatchEvent(new MouseEvent('mouseover', mopts));
+  el.dispatchEvent(new MouseEvent('mouseenter', {...mopts, bubbles: false}));
+  el.dispatchEvent(new MouseEvent('mousedown', mopts));
+  el.dispatchEvent(new MouseEvent('mouseup', mopts));
+  el.dispatchEvent(new MouseEvent('click', mopts));"
+        }
+        DispatchMode::ClickOnly => "  el.click();",
+    };
+
+    format!(
+        r"(function() {{
+  var entered = false;
+  var el = document.querySelector('{escaped_selector}');
+  if (!el) throw new Error('Element not found: {escaped_selector} — use ff-rdp dom SELECTOR --count to verify the selector matches');
+  entered = true;
+  {event_dispatch}
+  return '{JSON_SENTINEL}' + JSON.stringify({{clicked: true, entered: entered, tag: el.tagName, text: (el.textContent || '').trim().substring(0, 100)}});
+}})()"
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Wait-for predicate helpers
+// ---------------------------------------------------------------------------
+
+/// A single post-action wait predicate.
+#[derive(Debug, Clone)]
+pub(crate) enum WaitForPredicate<'a> {
+    /// `selector:<css>` — element must exist in the DOM.
+    Selector(&'a str),
+    /// `text:<substr>` — substring must appear in `document.body.innerText`.
+    Text(&'a str),
+    /// `url:<regex>` — current URL must match the regex.
+    Url(&'a str),
+    /// `gone:<css>` — element must NOT exist in the DOM.
+    Gone(&'a str),
+}
+
+impl<'a> WaitForPredicate<'a> {
+    /// Parse a `--wait-for` argument string into a [`WaitForPredicate`].
+    pub(crate) fn parse(s: &'a str) -> Result<Self, AppError> {
+        if let Some(rest) = s.strip_prefix("selector:") {
+            Ok(Self::Selector(rest))
+        } else if let Some(rest) = s.strip_prefix("text:") {
+            Ok(Self::Text(rest))
+        } else if let Some(rest) = s.strip_prefix("url:") {
+            Ok(Self::Url(rest))
+        } else if let Some(rest) = s.strip_prefix("gone:") {
+            Ok(Self::Gone(rest))
+        } else {
+            Err(AppError::User(format!(
+                "--wait-for predicate must start with 'selector:', 'text:', 'url:', or 'gone:' — got: {s:?}"
+            )))
+        }
+    }
+
+    /// Build a JavaScript expression that returns truthy when the predicate is satisfied.
+    pub(crate) fn to_js(&self) -> Result<String, AppError> {
+        Ok(match self {
+            Self::Selector(sel) => {
+                let esc = escape_selector(sel);
+                format!("document.querySelector('{esc}') !== null")
+            }
+            Self::Text(text) => {
+                let esc = serde_json::to_string(text).map_err(|e| {
+                    AppError::from(anyhow::anyhow!("failed to encode wait-for text: {e}"))
+                })?;
+                format!("(document.body && document.body.innerText.includes({esc}))")
+            }
+            Self::Url(pattern) => {
+                let esc = serde_json::to_string(pattern).map_err(|e| {
+                    AppError::from(anyhow::anyhow!("failed to encode wait-for url: {e}"))
+                })?;
+                format!("(new RegExp({esc}).test(window.location.href))")
+            }
+            Self::Gone(sel) => {
+                let esc = escape_selector(sel);
+                format!("document.querySelector('{esc}') === null")
+            }
+        })
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Self::Selector(s) => format!("selector:{s}"),
+            Self::Text(t) => format!("text:{t}"),
+            Self::Url(u) => format!("url:{u}"),
+            Self::Gone(s) => format!("gone:{s}"),
+        }
+    }
+}
+
+/// Poll all `predicates` until all are satisfied or `timeout_ms` elapses.
+pub(crate) fn wait_for_predicates(
+    ctx: &mut ConnectedTab,
+    console_actor: &ActorId,
+    predicates: &[WaitForPredicate<'_>],
+    timeout_ms: u64,
+) -> Result<(), AppError> {
+    use std::time::{Duration, Instant};
+
+    if predicates.is_empty() {
+        return Ok(());
+    }
+
+    let timeout = Duration::from_millis(timeout_ms);
+    let poll = Duration::from_millis(POLL_INTERVAL_MS);
+    let started = Instant::now();
+
+    // Build JS expressions once up front.
+    let js_exprs: Vec<String> = predicates
+        .iter()
+        .map(WaitForPredicate::to_js)
+        .collect::<Result<_, _>>()?;
+
+    loop {
+        if started.elapsed() >= timeout {
+            let unmet: Vec<String> = predicates.iter().map(WaitForPredicate::describe).collect();
+            return Err(AppError::Timeout(format!(
+                "wait-for predicates not satisfied after {timeout_ms}ms: {}",
+                unmet.join(", ")
+            )));
+        }
+
+        let mut all_met = true;
+        for (js, predicate) in js_exprs.iter().zip(predicates.iter()) {
+            let eval = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, js)
+                .map_err(AppError::from)?;
+            if let Some(ref exc) = eval.exception {
+                let msg = exc
+                    .message
+                    .as_deref()
+                    .unwrap_or("wait-for predicate threw an exception");
+                return Err(AppError::User(format!(
+                    "wait-for predicate '{}' threw: {msg}",
+                    predicate.describe()
+                )));
+            }
+            if !is_truthy(&eval.result) {
+                all_met = false;
+                break;
+            }
+        }
+
+        if all_met {
+            return Ok(());
+        }
+
+        std::thread::sleep(poll);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Settle helper (network + DOM idle)
+// ---------------------------------------------------------------------------
+
+/// Inject and wait for network+DOM settle: no XHR/fetch in flight for 500 ms AND
+/// no DOM mutations for 200 ms.
+///
+/// On CSP injection failure, falls back to a 1 s sleep and emits
+/// `meta.settle_method = "sleep"` via the returned string.
+pub(crate) fn settle_page(
+    ctx: &mut ConnectedTab,
+    console_actor: &ActorId,
+    timeout_ms: u64,
+) -> Result<SettleMethod, AppError> {
+    // Attempt to inject network monitoring + MutationObserver.
+    let inject_js = r"(function() {
+  try {
+    if (window.__ffrdpSettleInit) return '__ok__';
+    window.__ffrdpInflight = 0;
+    window.__ffrdpLastInflightZero = Date.now();
+    var origSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function() {
+      window.__ffrdpInflight++;
+      this.addEventListener('loadend', function() {
+        window.__ffrdpInflight = Math.max(0, window.__ffrdpInflight - 1);
+        if (window.__ffrdpInflight === 0) { window.__ffrdpLastInflightZero = Date.now(); }
+      });
+      origSend.apply(this, arguments);
+    };
+    var origFetch = window.fetch;
+    window.fetch = function() {
+      window.__ffrdpInflight++;
+      return origFetch.apply(this, arguments).finally(function() {
+        window.__ffrdpInflight = Math.max(0, window.__ffrdpInflight - 1);
+        if (window.__ffrdpInflight === 0) { window.__ffrdpLastInflightZero = Date.now(); }
+      });
+    };
+    window.__ffrdpLastMutation = Date.now();
+    window.__ffrdpMutObs = new MutationObserver(function() { window.__ffrdpLastMutation = Date.now(); });
+    window.__ffrdpMutObs.observe(document.documentElement, {childList: true, subtree: true, attributes: true});
+    window.__ffrdpSettleInit = true;
+    return '__ok__';
+  } catch(e) { return '__csp__'; }
+})()";
+
+    let eval = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, inject_js)
+        .map_err(AppError::from)?;
+
+    let inject_ok = match &eval.result {
+        Grip::Value(v) => v.as_str() == Some("__ok__"),
+        _ => false,
+    };
+
+    if !inject_ok {
+        // CSP blocked injection — fall back to 1 s sleep.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        return Ok(SettleMethod::Sleep);
+    }
+
+    // Poll for idle state: inflight == 0 for 500ms sustained AND no mutation for 200ms.
+    let idle_check_js = r"(function() {
+  var now = Date.now();
+  var inflight = (window.__ffrdpInflight || 0);
+  var networkIdle = inflight === 0 && (now - (window.__ffrdpLastInflightZero || 0)) >= 500;
+  var domOk = (now - (window.__ffrdpLastMutation || 0)) >= 200;
+  return networkIdle && domOk;
+})()";
+
+    match poll_js_condition(
+        ctx,
+        console_actor,
+        idle_check_js,
+        timeout_ms,
+        "settle check threw",
+        &format!("page did not settle within {timeout_ms}ms"),
+    ) {
+        Ok(_) => Ok(SettleMethod::NetworkIdle),
+        Err(AppError::Timeout(_)) => Ok(SettleMethod::NetworkIdleTimeout),
+        Err(e) => Err(e),
+    }
+}
+
+/// How the settle completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SettleMethod {
+    /// Network idle + DOM idle (normal path).
+    NetworkIdle,
+    /// Network/DOM idle injection succeeded but idle condition was not met within the timeout.
+    NetworkIdleTimeout,
+    /// CSP blocked injection — fell back to a 1 s sleep.
+    Sleep,
+}
+
+impl SettleMethod {
+    /// Serialised string used in JSON meta output.
+    pub(crate) fn as_meta_str(self) -> &'static str {
+        match self {
+            Self::NetworkIdle => "network_idle",
+            Self::NetworkIdleTimeout => "network_idle_timeout",
+            Self::Sleep => "sleep_fallback",
+        }
+    }
+}
+
 /// Poll a JS expression until it returns a truthy value or the timeout expires.
 ///
 /// Returns the elapsed time in milliseconds on success.  Returns

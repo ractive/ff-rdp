@@ -193,3 +193,15 @@ The ff-rdp client reads the token from the registry and sends it before any othe
 **Why not Unix-domain sockets instead?** UDS provide the same protection (filesystem permissions) with no token overhead, but require platform branching and break the "same wire format everywhere" property. The token approach is ~50 LOC vs ~200 LOC for UDS/named pipes. Deferred to a later iteration if multi-user deployments become a real customer ask.
 
 **Applies to**: `daemon/server.rs` (listener), `daemon/client.rs` (auth handshake), `daemon/registry.rs` (token generation + storage).
+
+## 2026-05-15: Pointer-only as default dispatch mode (iter-59)
+
+**Context**: Iteration 59 added a `--dispatch` flag with three modes: `pointer`, `legacy`, `click-only`. We had to choose a default.
+
+**Decision**: Default to `pointer` (full PointerEvent sequence: pointerover → pointerenter → pointerdown → pointerup → click, plus matching MouseEvents).
+
+**Why**: Radix UI, Headless UI, Floating UI, and most modern React component libraries listen for `pointerdown` to trigger open/close. The old `.click()` fallback missed these handlers in session 44, causing the logout button to silently fail. `pointer` is a strict superset of `legacy` and `click-only` — it fires every event the others fire, plus the pointer events. Cost is a handful of extra JS `dispatchEvent` calls per click, negligible compared to the round-trip to Firefox.
+
+**Trade-off**: Older pages that detect event type as `'pointer'` and treat it differently than `'mouse'` could behave unexpectedly. The `--dispatch legacy` and `--dispatch click-only` flags exist as escape hatches for those cases. In practice this is rare — most event handlers ignore `event.type` once dispatched.
+
+**Applies to**: `commands/click.rs`, `commands/js_helpers.rs` (`build_click_js`).

@@ -135,12 +135,19 @@ fn click_both_positional_and_selector_flag_errors() {
 
 #[test]
 fn click_element_not_found_exits_nonzero() {
+    // Use --no-wait to bypass auto-wait and test the immediate "not found" path.
+    // Auto-wait would turn this into a timeout (exit 124); --no-wait preserves
+    // the pre-iter-59 fire-and-forget behaviour that this test exercises.
     let server = click_server("eval_result_element_not_found.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
 
     let mut args = base_args(port);
-    args.extend(["click".to_owned(), "button.missing".to_owned()]);
+    args.extend([
+        "click".to_owned(),
+        "--no-wait".to_owned(),
+        "button.missing".to_owned(),
+    ]);
 
     let output = std::process::Command::new(ff_rdp_bin())
         .args(&args)
