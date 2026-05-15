@@ -2,7 +2,7 @@
 title: "Iteration 59: Auto-wait, pointer events, and retry in interaction primitives"
 type: iteration
 date: 2026-05-15
-status: in-progress
+status: completed
 branch: iter-59/autowait-pointer-retry
 depends_on: []
 tags:
@@ -92,10 +92,15 @@ Themes:
   (unit test added asserting pointer sequence is in JS; live fixture needs real Firefox)
 
 #### B2. Keyboard activation fallback
-- [x] If pointer events don't produce a visible state change within 200 ms
+- [ ] If pointer events don't produce a visible state change within 200 ms
   *and* the target has `aria-haspopup` or `role="button"`, retry with an
-  `Enter` keydown/keyup sequence. (JS scaffold injected; observer stored on element)
-- [x] Make this opt-out via `--no-keyboard-fallback`.
+  `Enter` keydown/keyup sequence.
+  (Initial scaffold was dead code — MutationObserver was installed but no
+  Rust-side follow-up consumed it. Removed during PR review; needs a real
+  implementation in a follow-up iteration.)
+- [ ] Make this opt-out via `--no-keyboard-fallback`.
+  (Flag removed alongside the dead JS; will be re-added when B2 is actually
+  implemented.)
 
 ### C. Settle conditions
 
@@ -112,14 +117,17 @@ Themes:
   `MutationObserver` registered via `eval`; falls back to a 1 s sleep on
   CSP-restricted sites where eval is blocked).
 - [x] CSP-blocked-fallback path must not silently degrade: emit
-  `meta.settle_method: "network_idle_only"` so the caller knows.
+  `meta.settle_method` so the caller knows. (Implemented as `"sleep_fallback"`
+  for the 1s sleep path and `"network_idle"`/`"network_idle_timeout"` for the
+  observer path — string renamed during PR review for accuracy.)
 
 ### D. Auto-retry on transient failures
 
 #### D1. Classify RDP errors as transient vs terminal
-- [x] Added `is_transient()` method to `ProtocolError` in `ff-rdp-core/src/error.rs`.
-  Tags: `Timeout`, `RecvFailed`, `SendFailed`, `ActorError{UnknownActor}` → transient.
-  All others → terminal. (Retry-on-transient in connection.rs is deferred — see notes)
+- [x] Added `is_transient()` method to `ProtocolError` in `ff-rdp-core/src/error.rs`,
+  with unit-test matrix. Tags: `Timeout`, `RecvFailed`, `SendFailed`,
+  `ActorError{UnknownActor}` → transient; all others → terminal. Wired into
+  `connect_tab.rs` daemon-greeting timeout classification (PR review fix).
 - [ ] On transient, retry once after 250 ms in connection.rs. (deferred — see below)
 
 #### D2. Don't retry an action that already partially succeeded
