@@ -54,7 +54,14 @@ pub fn run(cli: &Cli, name: Option<&str>) -> Result<(), AppError> {
     let result_json = json!(results);
 
     // If no cookies found, check for a consent banner that may be suppressing them.
-    let mut meta = json!({"host": cli.host, "port": cli.port});
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     if total == 0
         && let Some(note) = detect_consent_banner(&mut ctx)
         && let Some(m) = meta.as_object_mut()

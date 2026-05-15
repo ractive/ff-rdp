@@ -36,8 +36,14 @@ pub fn run(cli: &Cli, actor_id: &str, depth: u32) -> Result<(), AppError> {
             },
         )?;
 
-    let mut meta = json!({"host": cli.host, "port": cli.port, "actor": actor_id});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({"actor": actor_id});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&result, 1, &meta);
     let hint_ctx = HintContext::new(HintSource::Inspect);
     OutputPipeline::from_cli(cli)?

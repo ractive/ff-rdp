@@ -311,12 +311,16 @@ pub fn run(
     });
 
     let mut meta = json!({
-        "host": cli.host,
-        "port": cli.port,
         "selectors": selectors,
         "widths": widths,
     });
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
 
     // Text short-circuit: render a human-readable breakpoint table instead of JSON.
     if cli.format == "text" && cli.jq.is_none() {

@@ -294,6 +294,93 @@ fn recv_daemon_ack(transport: &mut RdpTransport, context: &str) -> Result<Vec<Va
     anyhow::bail!("did not receive daemon ack for {context} within 64 frames")
 }
 
+// ---------------------------------------------------------------------------
+// Ref-ID management (iter-60 Part C)
+// ---------------------------------------------------------------------------
+
+/// Ask the daemon to allocate `count` consecutive ref IDs.
+///
+/// Returns `(start, nav_generation)` — the caller must pass `nav_generation`
+/// back in the subsequent `register_refs` call so the daemon can detect
+/// stale registrations when a navigation races with the JS evaluation.
+pub(crate) fn alloc_refs(transport: &mut RdpTransport, count: u64) -> Result<(u64, u64)> {
+    let msg = json!({
+        "to": "daemon",
+        "type": "alloc-refs",
+        "count": count,
+    });
+    transport
+        .send(&msg)
+        .context("sending alloc-refs to daemon")?;
+
+    for _ in 0..64 {
+        let resp = transport.recv().context("receiving alloc-refs response")?;
+        if resp.get("from").and_then(Value::as_str) == Some("daemon") {
+            if let Some(err) = resp.get("error").and_then(Value::as_str) {
+                anyhow::bail!("daemon alloc-refs error: {err}");
+            }
+            let start = resp
+                .get("start")
+                .and_then(Value::as_u64)
+                .context("alloc-refs response missing 'start'")?;
+            let nav_gen = resp
+                .get("nav_generation")
+                .and_then(Value::as_u64)
+                .context("alloc-refs response missing 'nav_generation'")?;
+            return Ok((start, nav_gen));
+        }
+    }
+    anyhow::bail!("did not receive alloc-refs response within 64 frames")
+}
+
+/// A `(ref_id, resolver_expression)` pair to register with the daemon.
+pub(crate) struct RefEntry {
+    pub id: String,
+    pub resolver: String,
+}
+
+/// Register ref IDs with the daemon after an ARIA-tree evaluation.
+///
+/// `nav_generation` must be the value returned by the preceding `alloc_refs`
+/// call.  If the page navigated between alloc and register, the daemon will
+/// return a stale error — callers should surface a clear message to the user.
+pub(crate) fn register_refs(
+    transport: &mut RdpTransport,
+    nav_generation: u64,
+    entries: &[RefEntry],
+) -> Result<()> {
+    let refs_json: Vec<Value> = entries
+        .iter()
+        .map(|e| json!({"id": e.id, "resolver": e.resolver}))
+        .collect();
+
+    let msg = json!({
+        "to": "daemon",
+        "type": "register-refs",
+        "nav_generation": nav_generation,
+        "refs": refs_json,
+    });
+    transport
+        .send(&msg)
+        .context("sending register-refs to daemon")?;
+
+    for _ in 0..64 {
+        let resp = transport
+            .recv()
+            .context("receiving register-refs response")?;
+        if resp.get("from").and_then(Value::as_str) == Some("daemon") {
+            if let Some(err) = resp.get("error").and_then(Value::as_str) {
+                if resp.get("stale").and_then(Value::as_bool) == Some(true) {
+                    anyhow::bail!("ref registration skipped: page navigated during dom evaluation");
+                }
+                anyhow::bail!("daemon register-refs error: {err}");
+            }
+            return Ok(());
+        }
+    }
+    anyhow::bail!("did not receive register-refs response within 64 frames")
+}
+
 /// Format a hint pointing to the daemon log file, or an empty string if
 /// the path cannot be determined.
 fn log_path_hint() -> String {
@@ -453,10 +540,7 @@ pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
         }
     };
 
-    let meta = json!({
-        "host": cli.host,
-        "port": cli.port,
-    });
+    let meta = json!({});
     let envelope = output::envelope(&result, 1, &meta);
     Ok(OutputPipeline::from_cli(cli)?.finalize(&envelope)?)
 }
@@ -468,7 +552,7 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
     else {
         // No daemon running — report success (idempotent).
-        let meta = json!({"host": cli.host, "port": cli.port});
+        let meta = json!({});
         let envelope = output::envelope(
             &json!({"stopped": false, "reason": "not running"}),
             1,
@@ -479,7 +563,7 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
 
     if !process::is_process_alive(info.pid) {
         registry::remove_registry().ok();
-        let meta = json!({"host": cli.host, "port": cli.port});
+        let meta = json!({});
         let envelope = output::envelope(
             &json!({"stopped": true, "reason": "already dead"}),
             1,
@@ -515,7 +599,7 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
     registry::remove_registry().ok();
 
     let stopped = !process::is_process_alive(info.pid);
-    let meta = json!({"host": cli.host, "port": cli.port});
+    let meta = json!({});
     let envelope = output::envelope(&json!({"stopped": stopped}), 1, &meta);
     Ok(OutputPipeline::from_cli(cli)?.finalize(&envelope)?)
 }

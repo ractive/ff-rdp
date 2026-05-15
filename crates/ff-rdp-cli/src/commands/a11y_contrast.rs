@@ -60,11 +60,15 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
     let summary = result.get("summary").cloned().unwrap_or(json!({}));
 
     let mut meta = json!({
-        "host": cli.host,
-        "port": cli.port,
         "summary": summary,
     });
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
 
     // Apply output controls (sort, limit, fields).
     let controls = OutputControls::from_cli(cli, SortDir::Desc);

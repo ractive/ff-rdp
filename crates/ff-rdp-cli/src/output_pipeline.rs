@@ -9,6 +9,10 @@ use crate::output;
 pub enum OutputFormat {
     Json,
     Text,
+    /// Raw HTML passthrough — used by `dom` and `snapshot` to restore
+    /// the pre-iter-60 full HTML shape when the default ARIA-tree output
+    /// is not what the caller needs.
+    Html,
 }
 
 /// Whether contextual hints should be generated and included in output.
@@ -39,25 +43,23 @@ impl OutputPipeline {
     /// Build an `OutputPipeline` from global CLI flags.
     ///
     /// Returns `AppError::User` if:
-    /// - `--format` is not "json" or "text"
-    /// - `--format text` is combined with `--jq` (mutually exclusive)
+    /// - `--format` is not "json", "text", or "html"
+    ///
+    /// When `--jq` is combined with `--format text`, the jq filter runs first
+    /// on the JSON form, then the result is rendered as human-readable text.
     pub fn from_cli(cli: &crate::cli::args::Cli) -> Result<Self, AppError> {
         let format = match cli.format.as_str() {
             "json" => OutputFormat::Json,
             "text" => OutputFormat::Text,
+            "html" => OutputFormat::Html,
             other => {
                 return Err(AppError::User(format!(
-                    "invalid --format value '{other}': must be 'json' or 'text'"
+                    "invalid --format value '{other}': must be 'json', 'text', or 'html'"
                 )));
             }
         };
-        if format == OutputFormat::Text && cli.jq.is_some() {
-            return Err(AppError::User(
-                "--format text and --jq are mutually exclusive".to_string(),
-            ));
-        }
 
-        // Hints default: on for text, off for json.
+        // Hints default: on for text, off for json/html.
         // --jq always suppresses hints (pipeline needs clean data).
         // Explicit --hints / --no-hints override the default.
         let hints_mode = if cli.no_hints || cli.jq.is_some() {
@@ -68,7 +70,7 @@ impl OutputPipeline {
             // Default based on format
             match format {
                 OutputFormat::Text => HintsMode::On,
-                OutputFormat::Json => HintsMode::Off,
+                OutputFormat::Json | OutputFormat::Html => HintsMode::Off,
             }
         };
 
@@ -106,13 +108,31 @@ impl OutputPipeline {
 
         match &self.jq_filter {
             Some(filter) => {
-                let output = output::apply_jq_filter(&envelope, filter)?;
-                for value in output {
-                    println!("{}", serde_json::to_string(&value)?);
+                let filtered = output::apply_jq_filter(&envelope, filter)?;
+                match self.format {
+                    OutputFormat::Text => {
+                        // jq runs first, then text rendering applies to each
+                        // output value. This is the "filter, then make terse"
+                        // combination enabled by iter-60 (D2).
+                        for value in &filtered {
+                            let synthetic = serde_json::json!({
+                                "results": value,
+                                "total": 1,
+                            });
+                            render_text(&synthetic);
+                        }
+                        render_hints(&hints);
+                    }
+                    _ => {
+                        // Default: compact JSON line per jq output.
+                        for value in filtered {
+                            println!("{}", serde_json::to_string(&value)?);
+                        }
+                    }
                 }
             }
             None => match self.format {
-                OutputFormat::Json => {
+                OutputFormat::Json | OutputFormat::Html => {
                     println!("{}", serde_json::to_string_pretty(&envelope)?);
                 }
                 OutputFormat::Text => {
@@ -369,20 +389,31 @@ mod tests {
     }
 
     #[test]
-    fn from_cli_text_with_jq_is_error() {
-        // Simulate the mutual-exclusion check inline.
-        let format = OutputFormat::Text;
-        let jq: Option<String> = Some(".results".to_string());
-        let result: Result<(), AppError> = if format == OutputFormat::Text && jq.is_some() {
-            Err(AppError::User(
-                "--format text and --jq are mutually exclusive".to_string(),
-            ))
-        } else {
-            Ok(())
+    fn from_cli_invalid_format_html_variant_accepted() {
+        // "html" is now a valid format value (iter-60 D2 escape hatch).
+        let result: Result<OutputFormat, AppError> = match "html" {
+            "json" => Ok(OutputFormat::Json),
+            "text" => Ok(OutputFormat::Text),
+            "html" => Ok(OutputFormat::Html),
+            other => Err(AppError::User(format!(
+                "invalid --format value '{other}': must be 'json', 'text', or 'html'"
+            ))),
         };
-        assert!(result.is_err());
-        if let Err(AppError::User(msg)) = result {
-            assert!(msg.contains("mutually exclusive"));
-        }
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), OutputFormat::Html);
+    }
+
+    #[test]
+    fn jq_with_text_format_renders_text() {
+        // iter-60 D2: --jq + --format text is now allowed. The pipeline applies
+        // jq first, then renders the result as text.
+        let pipeline = OutputPipeline {
+            jq_filter: Some(".results".to_string()),
+            format: OutputFormat::Text,
+            hints_mode: HintsMode::Off,
+        };
+        let envelope = json!({"results": [{"url": "https://a.com"}], "total": 1});
+        // Should not error — jq+text combination is now valid.
+        assert!(pipeline.finalize(&envelope).is_ok());
     }
 }

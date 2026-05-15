@@ -62,12 +62,16 @@ pub fn run(
     strip_actor_ids(&mut tree_value);
 
     let mut meta = json!({
-        "host": cli.host,
-        "port": cli.port,
         "depth": depth,
         "max_chars": max_chars,
     });
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     if used_js_fallback && let Some(m) = meta.as_object_mut() {
         m.insert("fallback".to_string(), json!(true));
         m.insert("fallback_method".to_string(), json!("js-eval"));

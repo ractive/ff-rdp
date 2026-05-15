@@ -76,8 +76,14 @@ pub fn run(cli: &Cli, url: &str, wait_opts: &WaitAfterNav<'_>) -> Result<(), App
     {
         obj.insert("wait".to_string(), w);
     }
-    let mut meta = json!({"host": cli.host, "port": cli.port});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Navigate);
@@ -210,8 +216,14 @@ pub fn run_with_network(
         {
             obj.insert("wait".to_string(), w);
         }
-        let mut meta = json!({"host": cli.host, "port": cli.port});
-        crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+        let mut meta = json!({});
+        crate::connection_meta::merge_into_if_verbose(
+            &mut meta,
+            &cli.host,
+            cli.port,
+            None,
+            cli.is_verbose(),
+        );
         let envelope = output::envelope(&result, 1, &meta);
         let hint_ctx = HintContext::new(HintSource::Navigate);
         return OutputPipeline::from_cli(cli)?
@@ -285,8 +297,14 @@ pub fn run_with_network(
     {
         obj.insert("wait".to_string(), w);
     }
-    let mut meta = json!({"host": cli.host, "port": cli.port});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Navigate);

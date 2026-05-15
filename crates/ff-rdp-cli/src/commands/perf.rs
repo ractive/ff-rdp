@@ -402,8 +402,14 @@ pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppE
     let shown = limited.len();
     let limited = controls.apply_fields(limited);
 
-    let mut meta = json!({"host": cli.host, "port": cli.port});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope =
         output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
 
@@ -543,8 +549,14 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
     let results = controls.apply_fields_object(results);
 
-    let mut meta = json!({"host": cli.host, "port": cli.port});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&results, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::PerfVitals);
@@ -665,8 +677,14 @@ pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
         return Ok(());
     }
 
-    let mut meta = json!({"host": cli.host, "port": cli.port});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&results, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::PerfSummary);
@@ -1020,8 +1038,14 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
         return Ok(());
     }
 
-    let mut meta = json!({"host": cli.host, "port": cli.port});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&results, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::PerfAudit);
@@ -1215,8 +1239,14 @@ pub fn run_group_by_domain(
 
     let results = aggregate_by_domain(&mapped);
     let total = results.len();
-    let mut meta = json!({"host": cli.host, "port": cli.port});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&json!(results), total, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Perf);

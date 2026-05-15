@@ -46,22 +46,25 @@ pub fn run(cli: &Cli, selector: Option<&str>, depth: u32, max_chars: u32) -> Res
     let mut results = serde_json::to_value(&tree).map_err(|e| AppError::Internal(e.into()))?;
     strip_actor_ids(&mut results);
 
-    let meta = if let Some(sel) = selector {
+    let mut meta = if let Some(sel) = selector {
         json!({
-            "host": cli.host,
-            "port": cli.port,
             "depth": depth,
             "max_chars": max_chars,
             "selector": sel,
         })
     } else {
         json!({
-            "host": cli.host,
-            "port": cli.port,
             "depth": depth,
             "max_chars": max_chars,
         })
     };
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
 
     // Text short-circuit: render indented tree instead of JSON.
     if cli.format == "text" && cli.jq.is_none() {

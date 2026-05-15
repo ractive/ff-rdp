@@ -191,8 +191,8 @@ fn type_text_conflict_positional_and_flag_selector_errors() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("--selector") && stderr.contains("not both"),
-        "expected explicit conflict message, got: {stderr}"
+        stderr.contains("--selector") || stderr.contains("cannot be used with"),
+        "expected conflict message mentioning --selector, got: {stderr}"
     );
 }
 

@@ -72,8 +72,14 @@ pub fn run(cli: &Cli, opts: &WaitOptions<'_>) -> Result<(), AppError> {
     })?;
 
     let result_json = json!({"matched": true, "elapsed_ms": elapsed_ms, "condition": condition});
-    let mut meta = json!({"host": cli.host, "port": cli.port});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&result_json, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Wait);

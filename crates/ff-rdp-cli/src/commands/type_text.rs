@@ -102,11 +102,17 @@ pub fn run(
         wait_for_predicates(&mut ctx, &console_actor, &predicates, wf_timeout)?;
     }
 
-    let mut meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
+    let mut meta = json!({"selector": selector});
     if let Some(sm) = settle_method {
         meta["settle_method"] = json!(sm.as_meta_str());
     }
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&result_json, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::TypeText).with_selector(selector);

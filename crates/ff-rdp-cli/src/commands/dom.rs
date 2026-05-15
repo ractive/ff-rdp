@@ -13,24 +13,159 @@ use super::js_helpers::{JSON_SENTINEL, escape_selector, eval_or_bail, resolve_re
 
 #[derive(Debug, Clone, Copy)]
 pub enum OutputMode {
+    /// ARIA-tree JSON (default, iter-60+). Each node is `{ref,role,name,level,state,tag,attrs}`.
+    AriaTree,
+    /// Raw outer HTML strings (--format html escape hatch).
     OuterHtml,
+    /// Raw inner HTML strings (--format html + --inner-html).
     InnerHtml,
+    /// Text content only.
     Text,
+    /// Attributes only as JSON objects.
     Attrs,
+    /// Both text content and attributes per element.
     TextAttrs,
 }
+
+/// JavaScript IIFE that extracts an ARIA-tree record for a single element.
+///
+/// The ref ID is injected by the Rust caller as a counter (`__REF_START__`).
+/// Actionable attributes only: id, name, type, href, aria-*, data-state, role,
+/// placeholder, value (for inputs).
+const ARIA_TREE_JS_TEMPLATE: &str = r"(function() {
+  var ACTIONABLE_ATTRS = ['id','name','type','href','placeholder','value',
+    'aria-label','aria-expanded','aria-hidden','aria-haspopup','aria-selected',
+    'aria-checked','aria-disabled','aria-controls','aria-describedby',
+    'aria-labelledby','aria-live','aria-atomic','aria-busy','aria-current',
+    'aria-invalid','aria-multiline','aria-multiselectable','aria-orientation',
+    'aria-pressed','aria-readonly','aria-required','aria-sort','aria-valuemax',
+    'aria-valuemin','aria-valuenow','aria-valuetext','data-state','role'];
+  var SEMANTIC_ROLES = {NAV:'navigation',HEADER:'banner',FOOTER:'contentinfo',
+    MAIN:'main',ASIDE:'complementary',ARTICLE:'article',SECTION:'region',
+    FORM:'form',DIALOG:'dialog',SEARCH:'search',H1:'heading',H2:'heading',
+    H3:'heading',H4:'heading',H5:'heading',H6:'heading'};
+  var HEADING_LEVELS = {H1:1,H2:2,H3:3,H4:4,H5:5,H6:6};
+  var refCounter = __REF_START__;
+  var els = document.querySelectorAll('__SELECTOR__');
+  if (els.length === 0) return null;
+  var results = [];
+  for (var i = 0; i < els.length; i++) {
+    var el = els[i];
+    var tag = el.tagName;
+    var role = el.getAttribute('role') || SEMANTIC_ROLES[tag] || null;
+    var name = el.getAttribute('aria-label') ||
+               el.getAttribute('alt') ||
+               (el.textContent || '').trim().slice(0, 100) || null;
+    var level = HEADING_LEVELS[tag] || null;
+    var state = {};
+    var ariaExpanded = el.getAttribute('aria-expanded');
+    if (ariaExpanded !== null) state.expanded = ariaExpanded === 'true';
+    var ariaDisabled = el.getAttribute('aria-disabled');
+    if (ariaDisabled !== null) state.disabled = ariaDisabled === 'true';
+    var ariaSelected = el.getAttribute('aria-selected');
+    if (ariaSelected !== null) state.selected = ariaSelected === 'true';
+    var ariaChecked = el.getAttribute('aria-checked');
+    if (ariaChecked !== null) state.checked = ariaChecked === 'true';
+    var attrs = {};
+    for (var j = 0; j < ACTIONABLE_ATTRS.length; j++) {
+      var attrName = ACTIONABLE_ATTRS[j];
+      if (attrName === 'aria-expanded' || attrName === 'aria-disabled' ||
+          attrName === 'aria-selected' || attrName === 'aria-checked') continue;
+      var v = el.getAttribute(attrName);
+      if (v !== null && v !== '') attrs[attrName] = v;
+    }
+    var refId = 'e' + (refCounter + i);
+    var node = {'ref': refId, 'tag': tag.toLowerCase()};
+    if (role) node.role = role;
+    if (name) node.name = name;
+    if (level !== null) node.level = level;
+    if (Object.keys(state).length) node.state = state;
+    if (Object.keys(attrs).length) node.attrs = attrs;
+    // Resolver expression: re-selects this element by its querySelectorAll index.
+    node.__resolver = 'document.querySelectorAll(\'__SELECTOR__\')[' + i + ']';
+    results.push(node);
+  }
+  if (results.length === 1) return '__FF_RDP_JSON__' + JSON.stringify(results[0]);
+  return '__FF_RDP_JSON__' + JSON.stringify(results);
+})()";
 
 pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
-    let js = build_js(selector, mode);
+    // Determine effective output mode: --format html overrides to raw HTML.
+    let effective_mode = if cli.format == "html" {
+        match mode {
+            OutputMode::InnerHtml => OutputMode::InnerHtml,
+            _ => OutputMode::OuterHtml,
+        }
+    } else {
+        mode
+    };
+
+    // For AriaTree mode in daemon context, pre-allocate ref IDs so the JS
+    // uses stable, globally-unique handles across successive dom calls.
+    // In --no-daemon mode, the JS falls back to a fixed start of 1 (local
+    // to this invocation only — refs are not persisted between processes).
+    let (ref_start, ref_nav_gen) =
+        if ctx.via_daemon && matches!(effective_mode, OutputMode::AriaTree) {
+            // Estimate element count conservatively — alloc 256 slots.  The JS
+            // will only use as many as it finds; extra slots are wasted but that
+            // is harmless since the counter just advances past them.
+            match crate::daemon::client::alloc_refs(ctx.transport_mut(), 256) {
+                Ok((start, nav_gen)) => (start, Some(nav_gen)),
+                Err(_) => (1, None), // non-fatal: fall back to local counter
+            }
+        } else {
+            (1, None)
+        };
+
+    let js = build_js_with_ref_start(selector, effective_mode, ref_start);
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "DOM query failed")?;
 
-    let results = resolve_result(&mut ctx, &eval_result.result)?;
-    let mut meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut results = resolve_result(&mut ctx, &eval_result.result)?;
+
+    // In AriaTree mode: strip `__resolver` fields from output (implementation
+    // detail). When running via daemon with a successful alloc, also register
+    // each ref with the daemon so `--ref e<N>` resolves later. When no daemon
+    // is backing the refs (--no-daemon, or alloc failed), strip the `ref`
+    // field entirely so callers don't see ref handles they can't use.
+    let mut refs_registered = false;
+    if matches!(effective_mode, OutputMode::AriaTree) {
+        let entries = extract_and_strip_resolvers(&mut results);
+        if let Some(nav_gen) = ref_nav_gen
+            && !entries.is_empty()
+        {
+            if crate::daemon::client::register_refs(ctx.transport_mut(), nav_gen, &entries).is_ok()
+            {
+                refs_registered = true;
+            } else {
+                // Registration failed (e.g. page navigated mid-call).
+                // Strip ref handles since they are guaranteed not to resolve.
+                strip_ref_field(&mut results);
+            }
+        } else if !ctx.via_daemon || ref_nav_gen.is_none() {
+            // No daemon backing — refs would be inert. Remove them.
+            strip_ref_field(&mut results);
+        }
+    }
+
+    let mut meta = json!({"selector": selector});
+    if matches!(effective_mode, OutputMode::AriaTree)
+        && !refs_registered
+        && ctx.via_daemon
+        && let Some(obj) = meta.as_object_mut()
+    {
+        obj.insert("refs_registered".to_string(), json!(false));
+    }
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
 
     // Apply output controls when results is an array (multi-element queries).
     // DOM results are in document order — no default sort applied.
@@ -62,6 +197,55 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> 
         .map_err(AppError::from)
 }
 
+/// Extract `__resolver` fields from ARIA-tree results and return them as
+/// `RefEntry` pairs.  The `__resolver` field is removed from each node in
+/// place — it is an implementation detail and must not appear in output.
+fn extract_and_strip_resolvers(results: &mut Value) -> Vec<crate::daemon::client::RefEntry> {
+    let mut entries = Vec::new();
+
+    match results {
+        Value::Object(map) => {
+            if let (Some(Value::String(id)), Some(Value::String(resolver))) =
+                (map.get("ref").cloned(), map.remove("__resolver"))
+            {
+                entries.push(crate::daemon::client::RefEntry { id, resolver });
+            }
+        }
+        Value::Array(arr) => {
+            for node in arr.iter_mut() {
+                if let Value::Object(map) = node
+                    && let (Some(Value::String(id)), Some(Value::String(resolver))) =
+                        (map.get("ref").cloned(), map.remove("__resolver"))
+                {
+                    entries.push(crate::daemon::client::RefEntry { id, resolver });
+                }
+            }
+        }
+        _ => {}
+    }
+
+    entries
+}
+
+/// Remove the `ref` field from each ARIA-tree node.  Used when refs cannot be
+/// resolved later (no daemon, or registration failed) — emitting handles that
+/// don't work would mislead agent callers.
+fn strip_ref_field(results: &mut Value) {
+    match results {
+        Value::Object(map) => {
+            map.remove("ref");
+        }
+        Value::Array(arr) => {
+            for node in arr.iter_mut() {
+                if let Value::Object(map) = node {
+                    map.remove("ref");
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn run_count(cli: &Cli, selector: &str) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
@@ -77,8 +261,14 @@ pub fn run_count(cli: &Cli, selector: &str) -> Result<(), AppError> {
     };
 
     let results = json!({"selector": selector, "count": count});
-    let mut meta = json!({"host": cli.host, "port": cli.port, "selector": selector});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({"selector": selector});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&results, usize::try_from(count).unwrap_or(0), &meta);
 
     let hint_ctx = HintContext::new(HintSource::Dom).with_selector(selector);
@@ -87,13 +277,27 @@ pub fn run_count(cli: &Cli, selector: &str) -> Result<(), AppError> {
         .map_err(AppError::from)
 }
 
+/// Wrapper used in tests (ref start defaults to 1, matching --no-daemon behaviour).
+#[cfg(test)]
 fn build_js(selector: &str, mode: OutputMode) -> String {
+    build_js_with_ref_start(selector, mode, 1)
+}
+
+fn build_js_with_ref_start(selector: &str, mode: OutputMode, ref_start: u64) -> String {
     let escaped = escape_selector(selector);
 
     // Multi-element results and attrs are JSON.stringify'd with a sentinel
     // prefix so resolve_result can distinguish them from plain text that
     // happens to look like JSON.
     match mode {
+        OutputMode::AriaTree => {
+            // Replace the selector placeholder and inject the ref counter start.
+            // In daemon mode the caller passes a globally-unique start value
+            // from alloc_refs; in --no-daemon mode it defaults to 1.
+            ARIA_TREE_JS_TEMPLATE
+                .replace("__SELECTOR__", &escaped)
+                .replace("__REF_START__", &ref_start.to_string())
+        }
         OutputMode::OuterHtml => format!(
             r"(function() {{
   var els = document.querySelectorAll('{escaped}');
@@ -218,8 +422,14 @@ pub fn run_stats(cli: &Cli) -> Result<(), AppError> {
     let stats: Value = serde_json::from_str(&json_str)
         .map_err(|e| AppError::from(anyhow::anyhow!("failed to parse DOM stats JSON: {e}")))?;
 
-    let mut meta = json!({"host": cli.host, "port": cli.port});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&stats, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::DomStats);
@@ -313,5 +523,65 @@ mod tests {
     fn build_js_text_attrs_multi_uses_array_from() {
         let js = build_js("li", OutputMode::TextAttrs);
         assert!(js.contains("Array.from(els, textAttrs)"));
+    }
+
+    // ── iter-60 ARIA-tree mode ───────────────────────────────────────────────
+
+    #[test]
+    fn build_js_aria_tree_uses_sentinel() {
+        let js = build_js("button", OutputMode::AriaTree);
+        assert!(
+            js.contains(JSON_SENTINEL),
+            "ARIA-tree JS must include sentinel: {js}"
+        );
+    }
+
+    #[test]
+    fn build_js_aria_tree_contains_selector() {
+        let js = build_js("button.submit", OutputMode::AriaTree);
+        assert!(
+            js.contains("button.submit"),
+            "ARIA-tree JS must embed selector: {js}"
+        );
+    }
+
+    #[test]
+    fn build_js_aria_tree_includes_role_extraction() {
+        let js = build_js("h1", OutputMode::AriaTree);
+        assert!(js.contains("role"), "ARIA-tree JS must extract role: {js}");
+        assert!(js.contains("name"), "ARIA-tree JS must extract name: {js}");
+        assert!(
+            js.contains("level"),
+            "ARIA-tree JS must extract level: {js}"
+        );
+    }
+
+    #[test]
+    fn build_js_aria_tree_restricts_attrs() {
+        // ARIA-tree must only include actionable attributes.
+        let js = build_js("a", OutputMode::AriaTree);
+        assert!(
+            js.contains("aria-label"),
+            "ARIA-tree must include aria-label: {js}"
+        );
+        assert!(js.contains("href"), "ARIA-tree must include href: {js}");
+        // Must NOT dump all attributes (no looping over all attributes).
+        // The actionable list is explicit; classList/class is absent.
+        assert!(
+            !js.contains("e.attributes.length"),
+            "ARIA-tree must not dump all attributes: {js}"
+        );
+    }
+
+    #[test]
+    fn aria_tree_js_template_has_ref_placeholder() {
+        assert!(
+            ARIA_TREE_JS_TEMPLATE.contains("__REF_START__"),
+            "template must have ref start placeholder"
+        );
+        assert!(
+            ARIA_TREE_JS_TEMPLATE.contains("__SELECTOR__"),
+            "template must have selector placeholder"
+        );
     }
 }

@@ -103,8 +103,14 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
         }
     }
 
-    let mut meta = json!({"host": cli.host, "port": cli.port});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
     let envelope = output::envelope(&output_results, 1, &meta);
 
     // Custom text rendering for a11y summary.

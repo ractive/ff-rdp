@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,6 +18,61 @@ use super::registry::{self, DaemonInfo};
 
 /// Resource types the daemon subscribes to at startup.
 const WATCHED_RESOURCE_TYPES: &[&str] = &["network-event", "console-message", "error-message"];
+
+/// Per-tab ref store: maps stable `e<N>` handles to JS resolver expressions.
+///
+/// Refs are allocated by `register-refs` daemon messages (sent after an
+/// ARIA-tree `dom` or `snapshot` call) and looked up by `resolve-ref` (sent
+/// before any command that accepts `--ref <id>`).
+///
+/// The store is cleared on every navigation / `pageshow` event so that stale
+/// handles are never silently re-used.
+struct RefStore {
+    /// Monotonically-increasing counter.  Starts at 1; each `register-refs`
+    /// call receives the current value and advances it by the number of refs
+    /// registered so that successive calls produce globally-unique handles.
+    next: u64,
+    /// `"e<N>"` → JS resolution expression (e.g. `"document.querySelectorAll('button')[2]"`).
+    refs: HashMap<String, String>,
+}
+
+impl RefStore {
+    fn new() -> Self {
+        Self {
+            next: 1,
+            refs: HashMap::new(),
+        }
+    }
+
+    /// Allocate `count` consecutive ref IDs starting from `self.next`.
+    /// Returns the starting counter value (callers embed it into their JS).
+    fn alloc(&mut self, count: u64) -> u64 {
+        let start = self.next;
+        self.next = start.saturating_add(count);
+        start
+    }
+
+    /// Register a batch of `(id, resolver)` pairs.  Consumes the input so we
+    /// avoid cloning each string into the storage map.
+    fn register(&mut self, entries: Vec<(String, String)>) {
+        for (id, resolver) in entries {
+            self.refs.insert(id, resolver);
+        }
+    }
+
+    /// Look up a ref ID.  Returns the resolver expression or `None` when not
+    /// found (either never registered or cleared after navigation).
+    fn resolve(&self, id: &str) -> Option<&str> {
+        self.refs.get(id).map(String::as_str)
+    }
+
+    /// Remove all registered refs.  Called on page navigation.
+    fn clear(&mut self) {
+        self.refs.clear();
+        // Reset counter so IDs restart at e1 after each navigation.
+        self.next = 1;
+    }
+}
 
 /// A streaming subscriber: a connected CLI client that has requested one or
 /// more resource types to be forwarded in real time.
@@ -68,6 +123,18 @@ struct SharedState {
     /// first frame: `{"auth": "<token>"}`.  A mismatch causes an immediate
     /// close without forwarding any Firefox data, mitigating DNS-rebinding.
     auth_token: String,
+    /// Per-tab ref store: `e<N>` handles → JS resolver expressions.
+    ///
+    /// Cleared on navigation; guarded by a `Mutex` so the firefox-reader
+    /// thread (which clears on navigation) and client-handler threads
+    /// (which register/resolve) can both access it safely.
+    ref_store: Mutex<RefStore>,
+    /// Monotonically-increasing navigation generation counter.
+    ///
+    /// Incremented every time a navigation event is detected.  `register-refs`
+    /// stores the current value alongside each ref so `resolve-ref` can detect
+    /// whether the ref was registered for the current page load.
+    nav_generation: AtomicU64,
 }
 
 /// Main entry point for the daemon process.
@@ -145,6 +212,8 @@ pub(crate) fn run_daemon(
         shutdown: AtomicBool::new(false),
         watcher_actor: watcher_actor.as_ref().to_owned(),
         auth_token,
+        ref_store: Mutex::new(RefStore::new()),
+        nav_generation: AtomicU64::new(0),
     });
 
     setup_signal_handler(&state);
@@ -239,6 +308,11 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
                     dispatch_console_push_event(state, &msg);
                     forward_to_rpc_client(&state.rpc_writer, &msg);
                 } else {
+                    // Detect navigation events and clear the ref store.
+                    if is_navigation_event(&msg) {
+                        state.nav_generation.fetch_add(1, Ordering::Relaxed);
+                        state.ref_store.lock().unwrap().clear();
+                    }
                     forward_to_rpc_client(&state.rpc_writer, &msg);
                 }
             }
@@ -285,6 +359,27 @@ fn is_console_push_event(msg: &Value) -> bool {
     matches!(
         msg.get("type").and_then(Value::as_str),
         Some("consoleAPICall" | "pageError")
+    )
+}
+
+/// Return `true` when `msg` signals a tab navigation that invalidates DOM refs.
+///
+/// Firefox emits several distinct messages around a navigation:
+/// - `willNavigate` on the tab actor as the browser is about to commit a new
+///   document.  Earliest reliable signal.
+/// - `tabNavigated` on the tab actor once the new document has been
+///   committed.
+/// - `frameUpdate` for nested-frame navigations.
+///
+/// All three indicate the DOM has been replaced and any `e<N>` refs allocated
+/// against the old page are stale.  We over-invalidate rather than under-
+/// invalidate: an extra clear is harmless (the next allocation simply gets a
+/// fresh generation), whereas a missed signal could let stale refs resolve to
+/// the wrong element.
+fn is_navigation_event(msg: &Value) -> bool {
+    matches!(
+        msg.get("type").and_then(Value::as_str),
+        Some("tabNavigated" | "willNavigate" | "frameUpdate")
     )
 }
 
@@ -846,6 +941,137 @@ fn handle_daemon_message(
                 "resourceType": resource_type,
             })
         }
+        // ------------------------------------------------------------------
+        // Ref-ID management (iter-60 Part C)
+        // ------------------------------------------------------------------
+        "alloc-refs" => {
+            // Reserve `count` consecutive ref IDs and return the starting
+            // counter value.  The caller (ARIA-tree JS via `dom` or `snapshot`)
+            // uses the returned `start` to construct `e<start>`, `e<start+1>`,
+            // etc.  The caller must follow this immediately with `register-refs`
+            // once the evaluation completes.
+            //
+            // Request: { type: "alloc-refs", count: N }
+            // Response: { from: "daemon", start: N, nav_generation: N }
+            let count = msg
+                .get("count")
+                .and_then(Value::as_u64)
+                .filter(|&n| n > 0)
+                .unwrap_or(0);
+            if count == 0 {
+                return json!({
+                    "from": "daemon",
+                    "error": "alloc-refs requires count > 0",
+                });
+            }
+            let start = state.ref_store.lock().unwrap().alloc(count);
+            let nav_gen = state.nav_generation.load(Ordering::Relaxed);
+            json!({
+                "from": "daemon",
+                "start": start,
+                "nav_generation": nav_gen,
+            })
+        }
+
+        "register-refs" => {
+            // Register (id, resolver) pairs after an ARIA-tree evaluation.
+            //
+            // Request: {
+            //   type: "register-refs",
+            //   nav_generation: N,   ← must match current gen or refs are stale
+            //   refs: [{"id":"e1","resolver":"document.querySelectorAll('button')[0]"}, ...]
+            // }
+            // Response: { from: "daemon", registered: N }
+            //         | { from: "daemon", error: "...", stale: true }
+            let request_gen = msg.get("nav_generation").and_then(Value::as_u64);
+            let current_gen = state.nav_generation.load(Ordering::Relaxed);
+
+            if request_gen != Some(current_gen) {
+                return json!({
+                    "from": "daemon",
+                    "error": "register-refs: nav_generation mismatch — page navigated since alloc",
+                    "stale": true,
+                });
+            }
+
+            let Some(refs_arr) = msg.get("refs").and_then(Value::as_array) else {
+                return json!({
+                    "from": "daemon",
+                    "error": "register-refs requires a `refs` array field",
+                });
+            };
+            if refs_arr.is_empty() {
+                return json!({
+                    "from": "daemon",
+                    "error": "register-refs requires a non-empty `refs` array",
+                });
+            }
+
+            let entries: Vec<(String, String)> = refs_arr
+                .iter()
+                .filter_map(|entry| {
+                    let id = entry.get("id").and_then(Value::as_str)?.to_owned();
+                    let resolver = entry.get("resolver").and_then(Value::as_str)?.to_owned();
+                    Some((id, resolver))
+                })
+                .collect();
+
+            let registered = entries.len();
+            state.ref_store.lock().unwrap().register(entries);
+
+            json!({
+                "from": "daemon",
+                "registered": registered,
+            })
+        }
+
+        "resolve-ref" => {
+            // Look up a ref ID and return its JS resolver expression.
+            //
+            // Request: { type: "resolve-ref", id: "e<N>" }
+            // Response: { from: "daemon", id: "e<N>", resolver: "..." }
+            //         | { from: "daemon", error: "ref e<N> expired (page navigated)" }
+            //         | { from: "daemon", error: "ref e<N> not found" }
+            let Some(id) = msg
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            else {
+                return json!({
+                    "from": "daemon",
+                    "error": "resolve-ref requires a non-empty id field",
+                });
+            };
+
+            let store = state.ref_store.lock().unwrap();
+            if let Some(resolver) = store.resolve(id) {
+                json!({
+                    "from": "daemon",
+                    "id": id,
+                    "resolver": resolver,
+                })
+            } else {
+                // We don't track allocation history once the store has been
+                // cleared, so we can't be sure whether `id` was ever valid.
+                // Use `next` as a coarse heuristic: an id of the form
+                // `e<N>` with N < next likely belonged to a prior page; any
+                // other shape is almost certainly user-typo / wrong session.
+                let likely_expired = id
+                    .strip_prefix('e')
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .is_some_and(|n| n > 0 && n < store.next);
+                let hint = if likely_expired {
+                    "possibly expired after navigation"
+                } else {
+                    "not registered in this daemon session"
+                };
+                json!({
+                    "from": "daemon",
+                    "error": format!("ref {id} not found ({hint})"),
+                })
+            }
+        }
+
         "status" => {
             let uptime = state.start_time.elapsed().as_secs();
             let sizes = state.buffer.lock().unwrap().sizes();
@@ -900,6 +1126,8 @@ mod tests {
             shutdown: AtomicBool::new(false),
             watcher_actor: String::new(),
             auth_token: "test-token".to_owned(),
+            ref_store: Mutex::new(RefStore::new()),
+            nav_generation: AtomicU64::new(0),
         }
     }
 
@@ -1561,6 +1789,221 @@ mod tests {
             n, 0,
             "daemon must not send any frames before closing on wrong auth, got {n} bytes"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // RefStore unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ref_store_alloc_increments_counter() {
+        let mut store = RefStore::new();
+        assert_eq!(store.alloc(3), 1, "first alloc should start at 1");
+        assert_eq!(
+            store.alloc(2),
+            4,
+            "second alloc should start after first batch"
+        );
+        assert_eq!(store.alloc(1), 6, "third alloc should be contiguous");
+    }
+
+    #[test]
+    fn ref_store_register_and_resolve() {
+        let mut store = RefStore::new();
+        store.register(vec![
+            (
+                "e1".to_owned(),
+                "document.querySelectorAll('button')[0]".to_owned(),
+            ),
+            (
+                "e2".to_owned(),
+                "document.querySelectorAll('button')[1]".to_owned(),
+            ),
+        ]);
+        assert_eq!(
+            store.resolve("e1"),
+            Some("document.querySelectorAll('button')[0]")
+        );
+        assert_eq!(
+            store.resolve("e2"),
+            Some("document.querySelectorAll('button')[1]")
+        );
+        assert_eq!(store.resolve("e99"), None);
+    }
+
+    #[test]
+    fn ref_store_clear_removes_all_refs_and_resets_counter() {
+        let mut store = RefStore::new();
+        store.alloc(5);
+        store.register(vec![("e1".to_owned(), "x".to_owned())]);
+        store.clear();
+        assert_eq!(store.resolve("e1"), None, "clear must remove refs");
+        assert_eq!(store.alloc(1), 1, "counter must reset to 1 after clear");
+    }
+
+    // -----------------------------------------------------------------------
+    // handle_daemon_message — alloc-refs / register-refs / resolve-ref
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn alloc_refs_returns_start_and_nav_generation() {
+        let state = test_state();
+        let msg = json!({"to": "daemon", "type": "alloc-refs", "count": 3});
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
+        assert_eq!(resp["from"], "daemon");
+        assert_eq!(resp["start"], 1, "first alloc must start at 1");
+        assert_eq!(
+            resp["nav_generation"], 0,
+            "nav_generation must be 0 initially"
+        );
+    }
+
+    #[test]
+    fn alloc_refs_zero_count_returns_error() {
+        let state = test_state();
+        let msg = json!({"to": "daemon", "type": "alloc-refs", "count": 0});
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
+        assert!(
+            resp["error"].as_str().is_some(),
+            "count=0 must produce an error"
+        );
+    }
+
+    #[test]
+    fn alloc_refs_missing_count_returns_error() {
+        let state = test_state();
+        let msg = json!({"to": "daemon", "type": "alloc-refs"});
+        let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
+        assert!(
+            resp["error"].as_str().is_some(),
+            "missing count must produce an error"
+        );
+    }
+
+    #[test]
+    fn register_refs_and_resolve_ref_round_trip() {
+        let state = test_state();
+
+        // Alloc 2 refs first.
+        let alloc_resp = handle_daemon_message(
+            &state,
+            &json!({"to": "daemon", "type": "alloc-refs", "count": 2}),
+            TEST_CLIENT_ID,
+            None,
+        );
+        let nav_gen = alloc_resp["nav_generation"].as_u64().unwrap();
+
+        // Register them.
+        let reg_resp = handle_daemon_message(
+            &state,
+            &json!({
+                "to": "daemon",
+                "type": "register-refs",
+                "nav_generation": nav_gen,
+                "refs": [
+                    {"id": "e1", "resolver": "document.querySelectorAll('h1')[0]"},
+                    {"id": "e2", "resolver": "document.querySelectorAll('p')[0]"},
+                ]
+            }),
+            TEST_CLIENT_ID,
+            None,
+        );
+        assert_eq!(reg_resp["from"], "daemon");
+        assert_eq!(reg_resp["registered"], 2);
+
+        // Resolve e1.
+        let resolve_resp = handle_daemon_message(
+            &state,
+            &json!({"to": "daemon", "type": "resolve-ref", "id": "e1"}),
+            TEST_CLIENT_ID,
+            None,
+        );
+        assert_eq!(resolve_resp["from"], "daemon");
+        assert_eq!(resolve_resp["id"], "e1");
+        assert_eq!(
+            resolve_resp["resolver"],
+            "document.querySelectorAll('h1')[0]"
+        );
+    }
+
+    #[test]
+    fn resolve_ref_unknown_id_returns_not_found_error() {
+        let state = test_state();
+        let resp = handle_daemon_message(
+            &state,
+            &json!({"to": "daemon", "type": "resolve-ref", "id": "e99"}),
+            TEST_CLIENT_ID,
+            None,
+        );
+        assert!(
+            resp["error"].as_str().is_some(),
+            "unknown ref must produce an error"
+        );
+        assert!(
+            resp["error"].as_str().unwrap().contains("not found"),
+            "error must mention 'not found': {:?}",
+            resp["error"]
+        );
+    }
+
+    #[test]
+    fn register_refs_stale_nav_generation_returns_error() {
+        let state = test_state();
+        // Simulate a navigation having occurred (gen = 1).
+        state.nav_generation.store(1, Ordering::Relaxed);
+
+        // Try to register with the old generation (0).
+        let resp = handle_daemon_message(
+            &state,
+            &json!({
+                "to": "daemon",
+                "type": "register-refs",
+                "nav_generation": 0,
+                "refs": [{"id": "e1", "resolver": "x"}]
+            }),
+            TEST_CLIENT_ID,
+            None,
+        );
+        assert_eq!(
+            resp["stale"], true,
+            "stale nav_generation must set stale:true"
+        );
+        assert!(
+            resp["error"].as_str().is_some(),
+            "stale must produce an error"
+        );
+    }
+
+    #[test]
+    fn navigation_event_clears_refs_and_increments_generation() {
+        let state = test_state();
+
+        // Register a ref directly into the store.
+        state.ref_store.lock().unwrap().register(vec![(
+            "e1".to_owned(),
+            "document.querySelector('h1')".to_owned(),
+        )]);
+
+        // Simulate a tabNavigated event clearing refs.
+        let nav_msg = json!({"type": "tabNavigated", "from": "server1.conn0.child0/tab0"});
+        assert!(is_navigation_event(&nav_msg));
+
+        // Manually trigger what firefox_reader_loop does.
+        state.nav_generation.fetch_add(1, Ordering::Relaxed);
+        state.ref_store.lock().unwrap().clear();
+
+        // e1 must now be gone.
+        let resp = handle_daemon_message(
+            &state,
+            &json!({"to": "daemon", "type": "resolve-ref", "id": "e1"}),
+            TEST_CLIENT_ID,
+            None,
+        );
+        assert!(
+            resp["error"].as_str().is_some(),
+            "ref must be gone after navigation"
+        );
+        assert_eq!(state.nav_generation.load(Ordering::Relaxed), 1);
     }
 
     #[test]

@@ -101,9 +101,40 @@ pub(crate) fn is_loopback(host: &str) -> bool {
 /// Used by commands that build a custom meta object: they call this once
 /// before constructing the envelope so the resulting `meta` carries
 /// `host`, `port`, and `connection`.
+///
+/// **Deprecated in favour of [`merge_into_if_verbose`].** This unconditional
+/// variant is kept for the `doctor` command which always wants connection info.
 pub fn merge_into(meta: &mut Value, host: &str, port: u16, firefox_version: Option<u32>) {
     if let Some(obj) = meta.as_object_mut() {
         obj.insert("connection".to_string(), build(host, port, firefox_version));
+    }
+}
+
+/// Merge a connection block into `meta` **only** when `verbose` is true.
+///
+/// This is the standard call-site for all browser-touching commands: in
+/// default (non-verbose) mode the connection block is omitted to keep
+/// responses compact. Pass `--verbose` to restore it.
+pub fn merge_into_if_verbose(
+    meta: &mut Value,
+    host: &str,
+    port: u16,
+    firefox_version: Option<u32>,
+    verbose: bool,
+) {
+    if verbose {
+        merge_into(meta, host, port, firefox_version);
+    }
+}
+
+/// Omit `meta` from the envelope when it is empty or contains only null/empty
+/// fields.  Used by [`crate::output::envelope`] variants to suppress a bare
+/// `"meta": {}`.
+pub fn is_meta_empty(meta: &Value) -> bool {
+    match meta {
+        Value::Null => true,
+        Value::Object(map) => map.is_empty(),
+        _ => false,
     }
 }
 
@@ -136,5 +167,40 @@ mod tests {
         merge_into(&mut meta, "127.0.0.1", 6000, Some(149));
         assert!(meta["connection"].is_object());
         assert_eq!(meta["connection"]["firefox_version"], 149);
+    }
+
+    #[test]
+    fn merge_into_if_verbose_adds_connection_when_true() {
+        let mut meta = json!({});
+        merge_into_if_verbose(&mut meta, "127.0.0.1", 6000, None, true);
+        assert!(
+            meta.get("connection").is_some(),
+            "connection must be added when verbose=true"
+        );
+    }
+
+    #[test]
+    fn merge_into_if_verbose_omits_connection_when_false() {
+        let mut meta = json!({});
+        merge_into_if_verbose(&mut meta, "127.0.0.1", 6000, None, false);
+        assert!(
+            meta.get("connection").is_none(),
+            "connection must be absent when verbose=false"
+        );
+    }
+
+    #[test]
+    fn is_meta_empty_returns_true_for_empty_object() {
+        assert!(is_meta_empty(&json!({})));
+    }
+
+    #[test]
+    fn is_meta_empty_returns_true_for_null() {
+        assert!(is_meta_empty(&serde_json::Value::Null));
+    }
+
+    #[test]
+    fn is_meta_empty_returns_false_for_non_empty_object() {
+        assert!(!is_meta_empty(&json!({"selector": "h1"})));
     }
 }

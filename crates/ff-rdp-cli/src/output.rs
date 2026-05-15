@@ -11,6 +11,9 @@ use crate::hints::Hint;
 type D = data::JustLut<Val>;
 
 /// Build the standard JSON output envelope.
+///
+/// When `meta` is an empty object, the `"meta"` key is omitted from the
+/// envelope to keep default responses compact.
 pub fn envelope(results: &Value, total: usize, meta: &Value) -> Value {
     envelope_with_truncation(results, total, total, false, meta)
 }
@@ -19,6 +22,9 @@ pub fn envelope(results: &Value, total: usize, meta: &Value) -> Value {
 ///
 /// When `truncated` is true, a `"truncated": true` field and a human-readable
 /// `"hint"` field are included so callers know results were capped.
+///
+/// When `meta` is an empty object (`{}`), the `"meta"` key is omitted to keep
+/// the default compact output shape free of boilerplate.
 pub fn envelope_with_truncation(
     results: &Value,
     shown: usize,
@@ -26,11 +32,19 @@ pub fn envelope_with_truncation(
     truncated: bool,
     meta: &Value,
 ) -> Value {
-    let mut env = serde_json::json!({
-        "results": results,
-        "total": total,
-        "meta": meta,
-    });
+    let meta_empty = crate::connection_meta::is_meta_empty(meta);
+    let mut env = if meta_empty {
+        serde_json::json!({
+            "results": results,
+            "total": total,
+        })
+    } else {
+        serde_json::json!({
+            "results": results,
+            "total": total,
+            "meta": meta,
+        })
+    };
     if truncated && let Some(obj) = env.as_object_mut() {
         obj.insert("truncated".to_string(), Value::Bool(true));
         obj.insert(
@@ -154,6 +168,26 @@ mod tests {
         assert_eq!(env["results"], results);
         assert_eq!(env["meta"], meta);
         assert!(env.get("truncated").is_none());
+    }
+
+    #[test]
+    fn envelope_omits_meta_when_empty() {
+        // iter-60 Part A: empty meta is omitted to keep responses compact.
+        let results = json!(["a", "b"]);
+        let meta = json!({});
+        let env = envelope(&results, 2, &meta);
+        assert!(
+            env.get("meta").is_none(),
+            "meta must be omitted when empty; got: {env}"
+        );
+    }
+
+    #[test]
+    fn envelope_includes_meta_when_non_empty() {
+        let results = json!(["a", "b"]);
+        let meta = json!({"selector": "h1"});
+        let env = envelope(&results, 2, &meta);
+        assert!(env["meta"].is_object(), "non-empty meta must be included");
     }
 
     #[test]

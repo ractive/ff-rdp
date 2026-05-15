@@ -92,9 +92,14 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "snapshot evaluation failed")?;
 
     let results = resolve_result(&mut ctx, &eval_result.result)?;
-    let mut meta =
-        json!({"host": cli.host, "port": cli.port, "depth": depth, "max_chars": max_chars});
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    let mut meta = json!({"depth": depth, "max_chars": max_chars});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
 
     let total = match &results {
         Value::Null => 0,
@@ -103,6 +108,9 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
 
     let envelope = output::envelope(&results, total, &meta);
 
+    // Text-only short-circuit (no jq filter): render indented tree directly.
+    // When --jq is also set, fall through to the pipeline which applies jq
+    // first, then renders text (iter-60 D2 behaviour).
     if cli.format == "text" && cli.jq.is_none() {
         render_snapshot_text(&results);
         return Ok(());

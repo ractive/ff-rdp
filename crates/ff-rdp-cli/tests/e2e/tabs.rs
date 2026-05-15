@@ -30,7 +30,9 @@ fn base_args(port: u16) -> Vec<String> {
 // Happy-path tests
 // ---------------------------------------------------------------------------
 
-/// The CLI must emit a JSON envelope with `results` (array), `total`, and `meta`.
+/// The CLI must emit a compact JSON envelope: `results` (array) and `total`.
+/// In default (non-verbose) mode, `meta` is omitted when empty — connection
+/// info is not emitted per iter-60 Part A.
 #[test]
 fn tabs_outputs_json_envelope() {
     let list_tabs_response = load_fixture("list_tabs_response.json");
@@ -65,10 +67,44 @@ fn tabs_outputs_json_envelope() {
         2,
         "results must contain 2 tabs"
     );
-    assert!(json["meta"].is_object(), "meta must be present");
+    // Default: meta.connection is absent (iter-60 Part A — compact output).
+    assert!(
+        json.get("meta").and_then(|m| m.get("connection")).is_none(),
+        "meta.connection must be absent in default output; got: {json}"
+    );
+}
+
+/// With `--verbose`, `meta.connection` is restored to the pre-iter-60 shape.
+#[test]
+fn tabs_verbose_restores_connection_meta() {
+    let list_tabs_response = load_fixture("list_tabs_response.json");
+
+    let server = MockRdpServer::new().on("listTabs", list_tabs_response);
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["--verbose".to_owned(), "tabs".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
     assert!(
         json["meta"]["connection"].is_object(),
-        "meta.connection must be present; got: {json}"
+        "meta.connection must be present with --verbose; got: {json}"
     );
     assert_eq!(
         json["meta"]["connection"]["host"], "127.0.0.1",

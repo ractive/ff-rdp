@@ -97,11 +97,15 @@ pub fn run(cli: &Cli, selector: &str, properties: Option<&[String]>) -> Result<(
     let results = Value::Array(items);
 
     let mut meta = json!({
-        "host": cli.host,
-        "port": cli.port,
         "selector": selector,
     });
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
 
     let envelope = output::envelope_with_truncation(&results, shown, total, truncated, &meta);
 
@@ -142,11 +146,15 @@ pub fn run_applied(cli: &Cli, selector: &str) -> Result<(), AppError> {
     let results = Value::Array(items);
 
     let mut meta = json!({
-        "host": cli.host,
-        "port": cli.port,
         "selector": selector,
     });
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
 
     let envelope = output::envelope_with_truncation(&results, shown, total, truncated, &meta);
 
@@ -166,11 +174,15 @@ pub fn run_layout(cli: &Cli, selector: &str) -> Result<(), AppError> {
     let results = serde_json::to_value(&layout).map_err(|e| AppError::Internal(e.into()))?;
 
     let mut meta = json!({
-        "host": cli.host,
-        "port": cli.port,
         "selector": selector,
     });
-    crate::connection_meta::merge_into(&mut meta, &cli.host, cli.port, None);
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
 
     let envelope = output::envelope(&results, 1, &meta);
 
