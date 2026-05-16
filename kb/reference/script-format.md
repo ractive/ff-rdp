@@ -64,23 +64,67 @@ Output is **NDJSON** — one JSON line per step:
 
 ## Recording
 
+The recorder runs at the **CLI level** — no daemon changes required.
+When a recording is active, every successful recordable CLI invocation
+appends a step to the output file.  The file is a valid script that can
+be replayed immediately with `ff-rdp run`.
+
 ```sh
-ff-rdp record start session.json     # begin recording
-ff-rdp navigate https://example.com  # ...run commands...
-ff-rdp click "button[type=submit]"
+ff-rdp record start session.json     # begin recording to session.json
+ff-rdp navigate https://example.com  # appended as {"navigate": {...}}
+ff-rdp click "button[type=submit]"   # appended as {"click": {...}}
+ff-rdp type "#email" --text foo      # appended as {"type": {...}}
 ff-rdp record stop                   # finalise → prints the file path
-ff-rdp record status                 # check if recording is active
+ff-rdp record status                 # check whether a recording is active
 ```
 
-The recording file is a valid script that can be replayed with `ff-rdp run`.
+Recording state is stored in the XDG state directory
+(`~/.local/state/ff-rdp/recording.json` on Linux/macOS).  Only one
+active recording is permitted at a time; `record start` when already
+recording is an error.
+
+`ff-rdp run --record out.json <script.json>` is the alternative form:
+it re-runs an existing script *and* writes the executed steps to
+`out.json`.  Both forms produce the same output format.
+
+### Ref resolution at record time
+
+When a command uses `--ref e23` (an iter-60 runtime ref), the recorder
+resolves the ref to its underlying CSS selector at the moment of
+recording and emits `"selector": "<css>"` instead of `"ref": "e23"`.
+Refs are session-scoped and expire; embedding a raw ref in a replay
+script would silently break on the next session.
+
+If the ref cannot be resolved (daemon not running, ref expired), the
+step is skipped and a warning is printed to stderr.
+
+### Recordable vs. inspection-only commands
+
+Only commands that mutate browser state are recorded; read-only
+inspection commands produce no step in the recording.
+
+| Recordable | Inspection-only (not recorded) |
+|-----------|-------------------------------|
+| `navigate` | `tabs`, `dom`, `snapshot` |
+| `click` | `console`, `network` |
+| `type` | `page-text`, `cookies`, `storage` |
+| `wait` | `sources`, `geometry`, `styles`, `computed` |
+| `screenshot` | `responsive`, `a11y` |
+| `eval` | `doctor`, `daemon *` |
+| `scroll` | `launch`, `record *`, `inspect` |
+| `reload` | |
+| `back` | |
+| `forward` | |
 
 ## Variable substitution
 
-Syntax: `{{env.NAME}}`, `{{vars.NAME}}`, `{{steps[N].key}}`
+Syntax: `{{env.NAME}}`, `{{vars.NAME}}`, `{{steps[N].results.FIELD}}`
 
 - `env.NAME` — reads an environment variable.
 - `vars.NAME` — reads from the script's `vars:` section or `--vars` flags.
-- `steps[N].key` — reads a field from step N's result (1-based).
+- `steps[N].results.FIELD` — reads a field from step N's result object
+  (N is 1-based).  E.g. `{{steps[1].results.url}}` reads the `url` field
+  from the first step's result.
 
 Variables matching `*password*`, `*token*`, `*secret*` are redacted in
 step output unless `--show-secrets` is passed.

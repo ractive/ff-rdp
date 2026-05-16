@@ -211,6 +211,9 @@ four targeting fields. The script parser errors on >1 with a clear
 - [ ] The same flow, recorded via `ff-rdp record start session.json`
   followed by manual CLI commands then `record stop`, produces a script
   that replays to the same end state.
+  — **Unblocked by [[iteration-61b-recorder-cli-wiring]]** (recorder CLI
+  wiring was deferred; iter-61b connects `record_step_to_active` to the
+  dispatch path and adds the full round-trip e2e test as AC item A5.)
 - [ ] `--dry-run` on a script with `{{vars.X}}` and missing `X` errors
   out before executing any step, naming the missing variable.
 - [ ] Nested `run:` works with cycle detection — a self-referencing

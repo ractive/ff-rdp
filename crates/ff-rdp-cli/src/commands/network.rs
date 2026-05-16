@@ -464,7 +464,11 @@ pub fn build_network_summary(
 /// Return buffered network events as a JSON array.
 ///
 /// Used by the script runner's `assert_network` step.
-pub fn run_get_events(cli: &Cli) -> Result<Vec<serde_json::Value>, crate::error::AppError> {
+/// `drain_timeout_ms` controls how long to drain in direct mode (default: 500ms).
+pub fn run_get_events(
+    cli: &Cli,
+    drain_timeout_ms: Option<u64>,
+) -> Result<Vec<serde_json::Value>, crate::error::AppError> {
     use super::network_events::{build_network_entries, drain_network_from_daemon, merge_updates};
     use ff_rdp_core::{TabActor, WatcherActor};
     use std::time::Duration;
@@ -477,6 +481,7 @@ pub fn run_get_events(cli: &Cli) -> Result<Vec<serde_json::Value>, crate::error:
         build_network_entries(&resources, &update_map)
     } else {
         // Direct mode: subscribe, drain briefly, unsubscribe.
+        let drain_ms = drain_timeout_ms.unwrap_or(500);
         let tab_actor = ctx.target_tab_actor().clone();
         let watcher_actor = TabActor::get_watcher(ctx.transport_mut(), &tab_actor)
             .map_err(crate::error::AppError::from)?;
@@ -485,7 +490,7 @@ pub fn run_get_events(cli: &Cli) -> Result<Vec<serde_json::Value>, crate::error:
 
         let (resources, updates, _) = super::network_events::drain_network_events_timed(
             ctx.transport_mut(),
-            Duration::from_millis(500),
+            Duration::from_millis(drain_ms),
         )
         .map_err(crate::error::AppError::from)?;
 

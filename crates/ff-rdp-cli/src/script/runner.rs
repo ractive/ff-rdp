@@ -19,7 +19,7 @@ use crate::error::AppError;
 
 use super::format::{
     AssertNetworkStep, AssertNoConsoleErrorsStep, AssertTextStep, AssertUrlStep, EvalStep,
-    NavigateStep, RunStep, ScreenshotStep, Script, Step, TypeStep, WaitStep,
+    NavigateStep, RunStep, ScreenshotStep, Script, ScriptFormat, Step, TypeStep, WaitStep,
 };
 use super::recorder::FileRecorder;
 use super::vars::{VarContext, check_undefined_vars, is_secret_name, substitute};
@@ -40,6 +40,8 @@ pub struct RunOptions<'a> {
     pub show_secrets: bool,
     /// Optional recorder for `--record <output>` mode.
     pub recorder: Option<FileRecorder>,
+    /// Force a specific script format instead of detecting from file extension.
+    pub format_override: Option<ScriptFormat>,
 }
 
 impl Default for RunOptions<'_> {
@@ -50,6 +52,7 @@ impl Default for RunOptions<'_> {
             dry_run: false,
             show_secrets: false,
             recorder: None,
+            format_override: None,
         }
     }
 }
@@ -101,7 +104,9 @@ pub fn run_script_file(
         )));
     }
 
-    let fmt = super::format::ScriptFormat::from_path(&abs_path);
+    let fmt = opts
+        .format_override
+        .unwrap_or_else(|| super::format::ScriptFormat::from_path(&abs_path));
     let script = super::format::parse_script_file(&abs_path, Some(fmt))
         .map_err(|e| AppError::User(format!("script parse error: {e:#}")))?;
 
@@ -136,12 +141,15 @@ fn run_script(
     let total_start = Instant::now();
     let mut step_results: Vec<Value> = Vec::new();
     let mut failed = 0usize;
+    let mut executed = 0usize;
     let total = script.steps.len();
 
     for (idx, step) in script.steps.iter().enumerate() {
         let step_num = idx + 1;
         let verb = step.verb();
         let step_start = Instant::now();
+
+        executed += 1;
 
         // Resolve variable substitutions in the step (best-effort; errors are step failures).
         let resolved = match resolve_step_vars(step, vars, &step_results) {
@@ -187,7 +195,15 @@ fn run_script(
         }
 
         // Execute the step.
-        let exec_result = execute_step(&resolved, script_path, cli, opts, vars, call_stack);
+        let exec_result = execute_step(
+            &resolved,
+            script_path,
+            cli,
+            opts,
+            vars,
+            call_stack,
+            script.base_url.as_deref(),
+        );
 
         let elapsed = u64::try_from(step_start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
@@ -202,7 +218,8 @@ fn run_script(
                     "elapsed_ms": elapsed,
                 });
                 writeln!(out, "{line}").ok();
-                step_results.push(result_value);
+                // Wrap with `{"results": ...}` so `{{steps[N].results.X}}` resolves correctly.
+                step_results.push(json!({"results": result_value}));
             }
             Err(e) => {
                 let diagnostics = extract_diagnostics(&e);
@@ -236,12 +253,16 @@ fn run_script(
 
     let total_elapsed = u64::try_from(total_start.elapsed().as_millis()).unwrap_or(u64::MAX);
     let ok = failed == 0;
+    let succeeded = executed.saturating_sub(failed);
+    let skipped = total.saturating_sub(executed);
     let summary = json!({
         "summary": true,
         "ok": ok,
         "total": total,
+        "executed": executed,
+        "succeeded": succeeded,
         "failed": failed,
-        "passed": total - failed,
+        "skipped": skipped,
         "total_elapsed_ms": total_elapsed,
     });
     writeln!(out, "{summary}").ok();
@@ -256,10 +277,16 @@ fn run_dry(
     vars: &HashMap<String, String>,
     out: &mut impl std::io::Write,
 ) -> Result<(), AppError> {
-    // Check all vars referenced in the steps exist.
+    // Check all vars referenced in the steps exist, and check for deferred features.
     for (idx, step) in script.steps.iter().enumerate() {
         let step_num = idx + 1;
         check_step_vars_defined(step_num, step, vars)?;
+        if let Some(err) = deferred_iter62_check(step) {
+            return Err(AppError::User(format!(
+                "step {step_num} ({}): {err}",
+                step.verb()
+            )));
+        }
     }
 
     // Print the resolved steps.
@@ -461,15 +488,27 @@ fn resolve_step_vars(
             base64: s.base64,
             full_page: s.full_page,
         }),
-        // No template strings in these steps.
         Step::AssertNoConsoleErrors(s) => Step::AssertNoConsoleErrors(AssertNoConsoleErrorsStep {
-            ignore_patterns: s.ignore_patterns.clone(),
+            ignore_patterns: s
+                .ignore_patterns
+                .iter()
+                .map(|p| substitute(p, &ctx))
+                .collect::<anyhow::Result<_>>()?,
         }),
         Step::AssertNetwork(s) => Step::AssertNetwork(AssertNetworkStep {
-            url_contains: s.url_contains.clone(),
+            url_contains: s
+                .url_contains
+                .as_deref()
+                .map(|t| substitute(t, &ctx))
+                .transpose()?,
             status: s.status,
-            method: s.method.clone(),
+            method: s
+                .method
+                .as_deref()
+                .map(|t| substitute(t, &ctx))
+                .transpose()?,
             api_route: s.api_route.clone(),
+            timeout: s.timeout,
         }),
     })
 }
@@ -528,9 +567,10 @@ fn execute_step(
     opts: &mut RunOptions<'_>,
     vars: &HashMap<String, String>,
     call_stack: &[PathBuf],
+    base_url: Option<&str>,
 ) -> Result<Value, AppError> {
     match step {
-        Step::Navigate(s) => execute_navigate(s, cli),
+        Step::Navigate(s) => execute_navigate(s, cli, base_url),
         Step::Click(s) => execute_click(s, cli),
         Step::Type(s) => execute_type(s, cli, vars, opts.show_secrets),
         Step::Wait(s) => execute_wait(s, cli),
@@ -544,28 +584,54 @@ fn execute_step(
     }
 }
 
-fn execute_navigate(step: &NavigateStep, cli: &Cli) -> Result<Value, AppError> {
+fn execute_navigate(
+    step: &NavigateStep,
+    cli: &Cli,
+    base_url: Option<&str>,
+) -> Result<Value, AppError> {
     use crate::commands::navigate::{WaitAfterNav, run as nav_run};
+
+    // Resolve relative URLs against the script's base_url.
+    let effective_url = if let Some(base) = base_url
+        && !step.url.starts_with("http://")
+        && !step.url.starts_with("https://")
+        && !step.url.starts_with("//")
+    {
+        let base_trimmed = base.trim_end_matches('/');
+        let path = step.url.trim_start_matches('/');
+        format!("{base_trimmed}/{path}")
+    } else {
+        step.url.clone()
+    };
+
     let wait_opts = WaitAfterNav {
         wait_text: step.wait_text.as_deref(),
         wait_selector: step.wait_selector.as_deref(),
         wait_timeout: cli.timeout,
     };
-    // Run the command but capture what it would have printed via a side-channel.
-    // navigate::run() outputs to stdout; we need the URL for a result value.
-    // Use a fake capture: construct the result ourselves from what we know.
-    nav_run(cli, &step.url, &wait_opts)?;
-    Ok(json!({"navigated": step.url}))
+    nav_run(cli, &effective_url, &wait_opts)?;
+    Ok(json!({"navigated": effective_url}))
+}
+
+fn resolve_element_target_selector(
+    target: &super::format::ElementTarget,
+    cli: &Cli,
+    verb: &str,
+) -> Result<String, AppError> {
+    if let Some(sel) = &target.selector {
+        return Ok(sel.clone());
+    }
+    if let Some(ref_id) = &target.ref_id {
+        // Resolve the ref via the daemon, just like dispatch.rs does for --ref.
+        return crate::dispatch::resolve_ref_for_script(cli, ref_id, verb);
+    }
+    Err(AppError::User(format!("{verb}: no selector or ref")))
 }
 
 fn execute_click(step: &super::format::ElementStep, cli: &Cli) -> Result<Value, AppError> {
     use crate::commands::click::{ClickOptions, run as click_run};
-    let selector = step
-        .target
-        .selector
-        .as_deref()
-        .or(step.target.ref_id.as_deref())
-        .ok_or_else(|| AppError::User("click: no selector or ref".to_owned()))?;
+    let selector = resolve_element_target_selector(&step.target, cli, "click")?;
+    let selector = selector.as_str();
 
     let wait_for: Vec<String> = {
         let mut v = Vec::new();
@@ -598,12 +664,8 @@ fn execute_type(
     show_secrets: bool,
 ) -> Result<Value, AppError> {
     use crate::commands::type_text::{TypeOptions, run as type_run};
-    let selector = step
-        .target
-        .selector
-        .as_deref()
-        .or(step.target.ref_id.as_deref())
-        .ok_or_else(|| AppError::User("type: no selector or ref".to_owned()))?;
+    let selector = resolve_element_target_selector(&step.target, cli, "type")?;
+    let selector = selector.as_str();
 
     type_run(
         cli,
@@ -838,7 +900,7 @@ fn execute_assert_network(step: &AssertNetworkStep, cli: &Cli) -> Result<Value, 
         ));
     }
 
-    let events = run_get_events(cli)?;
+    let events = run_get_events(cli, step.timeout)?;
 
     let matched = events.iter().any(|e| {
         let url = e.get("url").and_then(Value::as_str).unwrap_or("");
@@ -940,7 +1002,8 @@ fn execute_run(
         bail_on_failure: opts.bail_on_failure,
         dry_run: opts.dry_run,
         show_secrets: opts.show_secrets,
-        recorder: None, // Recorder is not inherited by sub-scripts.
+        recorder: None,        // Recorder is not inherited by sub-scripts.
+        format_override: None, // Sub-scripts detect their own format from extension.
     };
 
     run_script_file(&sub_path, cli, &mut sub_opts, call_stack)?;

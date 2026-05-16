@@ -107,7 +107,7 @@ fn resolve_expr(expr: &str, ctx: &VarContext<'_>) -> anyhow::Result<String> {
     }
 
     bail!(
-        "unknown variable expression `{{{{{expr}}}}}` — supported: env.NAME, vars.NAME, steps[N].results.X"
+        "unknown variable expression `{{{{{expr}}}}}` — supported: env.NAME, vars.NAME, steps[N].results.FIELD"
     );
 }
 
@@ -121,6 +121,14 @@ pub fn redact_secrets(value: &Value, vars: &HashMap<String, String>, show_secret
     }
     redact_value(value, vars)
 }
+
+/// Minimum length for substring-based secret redaction.
+///
+/// Short values (e.g. "a") would aggressively wipe unrelated output via
+/// substring replacement, so we only do substring redaction when the value
+/// is long enough to be unambiguous.  Exact-match redaction (field-key
+/// based) is not length-gated.
+const MIN_SECRET_SUBSTRING_LEN: usize = 4;
 
 fn redact_value(value: &Value, secrets: &HashMap<String, String>) -> Value {
     match value {
@@ -140,9 +148,14 @@ fn redact_value(value: &Value, secrets: &HashMap<String, String>) -> Value {
         Value::Array(arr) => Value::Array(arr.iter().map(|v| redact_value(v, secrets)).collect()),
         Value::String(s) => {
             // Also redact literal secret values embedded in strings.
+            // Only apply substring replacement when the secret value is long enough
+            // to avoid false-positive matches.
             let mut out = s.clone();
             for (k, v) in secrets {
-                if is_secret_name(k) && !v.is_empty() && out.contains(v.as_str()) {
+                if is_secret_name(k)
+                    && v.len() >= MIN_SECRET_SUBSTRING_LEN
+                    && out.contains(v.as_str())
+                {
                     out = out.replace(v.as_str(), "[REDACTED]");
                 }
             }
@@ -213,9 +226,10 @@ mod tests {
     #[test]
     fn step_result_reference() {
         let vars = HashMap::new();
-        let results = vec![json!({"url": "https://example.com"})];
+        // step_results entries are wrapped as {"results": ...}
+        let results = vec![json!({"results": {"url": "https://example.com"}})];
         let ctx = ctx(&vars, &results);
-        let result = substitute("was: {{steps[1].url}}", &ctx).unwrap();
+        let result = substitute("was: {{steps[1].results.url}}", &ctx).unwrap();
         assert_eq!(result, "was: https://example.com");
     }
 

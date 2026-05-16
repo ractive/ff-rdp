@@ -2,7 +2,7 @@
 title: "Iteration 61b: Recorder CLI wiring + iter-61 review-feedback fixes"
 type: iteration
 date: 2026-05-16
-status: planned
+status: in-progress
 branch: iter-61b/recorder-cli-wiring
 depends_on: [iteration-61-script-runner-recorder]
 tags:
@@ -258,16 +258,17 @@ are not covered by themes A–D above. Grouped by severity.
 ### E. Documentation hygiene
 
 #### E1. Tick the iter-61 plan checkboxes that this iteration unblocks
-- [ ] In `kb/iterations/iteration-61-script-runner-recorder.md`, leave
-  the items this iteration closes as `- [ ]` if you prefer one-iteration-
-  one-tick discipline, or add a footnote pointing here. Update the
-  plan's `## Acceptance Criteria` section if AC #2 (record + replay
-  round-trip) is now passable.
+- [x] In `kb/iterations/iteration-61-script-runner-recorder.md`, left
+  items as `- [ ]` per one-iteration-one-tick discipline, but added a
+  footnote in AC #2 pointing here. Noted that the record+replay AC is
+  unblocked by iter-61b and needs A5 e2e test to close.
 
 #### E2. Reference doc update
-- [ ] `kb/reference/script-format.md`: add a "Recording" section
-  describing the daemon-aware CLI-level recording flow and the
-  recordable-vs-inspection split decided in A1.
+- [x] `kb/reference/script-format.md`: expanded the "Recording" section
+  to describe the daemon-aware CLI-level recording flow, ref resolution
+  at record time, and the recordable-vs-inspection split decided in A1.
+  Also corrected the variable substitution syntax to `{{steps[N].results.FIELD}}`
+  (per the F1 fix in this iteration).
 
 ## Acceptance Criteria
 

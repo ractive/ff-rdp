@@ -16,6 +16,7 @@ use serde_json::Value;
 
 /// A runnable ff-rdp script.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Script {
     /// JSON Schema discriminator. Must be the literal
     /// `"https://ff-rdp.dev/schemas/script/v1.json"` when present.
@@ -51,7 +52,7 @@ pub struct Script {
 
 /// A single script step.  Each step is one verb with its arguments.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Step {
     Navigate(NavigateStep),
     Click(ElementStep),
@@ -93,6 +94,7 @@ impl Step {
 ///
 /// Exactly one of the four fields must be set; the parser enforces this.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ElementTarget {
     /// Raw CSS selector.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -163,6 +165,7 @@ impl ElementTarget {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct NavigateStep {
     pub url: String,
     /// Optional: wait for this text to appear after navigation.
@@ -175,6 +178,7 @@ pub struct NavigateStep {
 
 /// Steps that target a single DOM element (click, wait).
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ElementStep {
     #[serde(flatten)]
     pub target: ElementTarget,
@@ -187,6 +191,7 @@ pub struct ElementStep {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TypeStep {
     #[serde(flatten)]
     pub target: ElementTarget,
@@ -201,6 +206,7 @@ pub struct TypeStep {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct WaitStep {
     /// Wait for a CSS selector to appear.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -217,6 +223,7 @@ pub struct WaitStep {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssertTextStep {
     /// CSS selector of the element to check.
     pub selector: String,
@@ -235,6 +242,7 @@ pub struct AssertTextStep {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssertUrlStep {
     /// Assert URL matches this regex.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -245,6 +253,7 @@ pub struct AssertUrlStep {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssertNoConsoleErrorsStep {
     /// Patterns (substrings or regex) to ignore in console errors.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -252,6 +261,7 @@ pub struct AssertNoConsoleErrorsStep {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssertNetworkStep {
     /// URL substring to match.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -265,6 +275,9 @@ pub struct AssertNetworkStep {
     /// Page-map API route ref (iter-62 deferred).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_route: Option<String>,
+    /// Drain timeout in ms for direct-mode event collection (default: 500).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
 }
 
 impl AssertNetworkStep {
@@ -281,6 +294,7 @@ impl AssertNetworkStep {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScreenshotStep {
     /// Path to save the screenshot.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -294,6 +308,7 @@ pub struct ScreenshotStep {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvalStep {
     /// JavaScript expression to evaluate.
     pub script: String,
@@ -303,6 +318,7 @@ pub struct EvalStep {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunStep {
     /// Path to the sub-script.
     pub path: String,
@@ -545,6 +561,51 @@ mod tests {
         assert_eq!(
             ScriptFormat::from_path(Path::new("test.txt")),
             ScriptFormat::Json
+        );
+    }
+
+    #[test]
+    fn deny_unknown_fields_navigate() {
+        let json = r#"{
+            "version": 1,
+            "steps": [
+                {"navigate": {"urll": "https://example.com"}}
+            ]
+        }"#;
+        let err = parse_script_str(json, ScriptFormat::Json).unwrap_err();
+        assert!(
+            full_err(&err).contains("urll") || full_err(&err).contains("unknown field"),
+            "expected unknown-field error, got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn deny_unknown_fields_click() {
+        let json = r#"{
+            "version": 1,
+            "steps": [
+                {"click": {"selector": "button", "typo_field": true}}
+            ]
+        }"#;
+        let err = parse_script_str(json, ScriptFormat::Json).unwrap_err();
+        assert!(
+            full_err(&err).contains("typo_field") || full_err(&err).contains("unknown field"),
+            "expected unknown-field error, got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn deny_unknown_fields_script_top_level() {
+        let json = r#"{
+            "version": 1,
+            "steps": [],
+            "unknown_top_level": true
+        }"#;
+        let err = parse_script_str(json, ScriptFormat::Json).unwrap_err();
+        assert!(
+            full_err(&err).contains("unknown_top_level")
+                || full_err(&err).contains("unknown field"),
+            "expected unknown-field error, got: {err:#}"
         );
     }
 

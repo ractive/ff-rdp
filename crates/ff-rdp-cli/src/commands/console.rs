@@ -186,19 +186,12 @@ pub fn run_get_errors(cli: &Cli) -> Result<Vec<serde_json::Value>, crate::error:
         eprintln!("debug: startListeners failed: {e}");
     }
 
-    let messages = match WebConsoleActor::get_cached_messages(
+    let messages = WebConsoleActor::get_cached_messages(
         ctx.transport_mut(),
         &console_actor,
         &["PageError", "ConsoleAPI"],
-    ) {
-        Ok(msgs) => msgs,
-        Err(_) => WebConsoleActor::get_cached_messages(
-            ctx.transport_mut(),
-            &console_actor,
-            &["ConsoleAPI"],
-        )
-        .map_err(crate::error::AppError::from)?,
-    };
+    )
+    .map_err(crate::error::AppError::from)?;
 
     let errors: Vec<serde_json::Value> = messages
         .into_iter()
