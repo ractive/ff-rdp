@@ -124,7 +124,7 @@ inspection commands produce no step in the recording.
 | `name` | string | Human-readable name |
 | `base_url` | string | Prefix for relative `navigate` URLs |
 | `vars` | object | Default variable values |
-| `default_timeout_ms` | number | Default timeout (ms) for steps that have a `timeout` field but don't set it explicitly.  Avoids repeating `"timeout": 10000` on every `assert_text` in a slow-loading script. |
+| `default_timeout_ms` | number | Default timeout (ms) applied to `wait`, `assert_text`, and `assert_network` steps that omit their own `timeout` field. Does **not** apply to per-action waits inside `click`/`type` (e.g. `wait_for_timeout_ms`). Falls back to the CLI `--timeout` value when this field is omitted. |
 | `metadata` | object | Opaque metadata (ignored by runner) |
 | `steps` | array | Steps to execute |
 
@@ -197,15 +197,18 @@ The runner detects cycles and errors out cleanly (no stack overflow).
 ## Assertions
 
 - `assert_text`: polls (with timeout) until the condition is met, using
-  iter-59 auto-wait semantics.  On failure, `diagnostics` field contains
-  the actual observed text.  Respects `default_timeout_ms` if no step-level
-  `timeout` is set.
+  iter-59 auto-wait semantics.  On failure the step's NDJSON line carries a
+  structured `diagnostics` object (since iter-61c) of the form
+  `{"actual_text": "<observed>"}` — earlier versions emitted a plain string.
+  Respects `default_timeout_ms` if no step-level `timeout` is set.
 - `assert_url`: fetches `window.location.href` and checks against
   `matches` (regex) or `equals` (exact string).
 - `assert_no_console_errors`: checks the console buffer for error-level
   messages; filterable via `ignore_patterns`.
 - `assert_network`: scans buffered network events for a matching entry.
-  Respects `default_timeout_ms` if no step-level `timeout` is set.
+  On failure the `diagnostics` object is `{"events_in_buffer": <N>}`
+  (since iter-61c).  Respects `default_timeout_ms` if no step-level
+  `timeout` is set.
 
 ## Password-shaped selectors
 

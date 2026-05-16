@@ -113,9 +113,17 @@ pub fn run(
     clear: bool,
     opts: &TypeOptions<'_>,
 ) -> Result<(), AppError> {
-    let result_json = run_core(cli, selector, text, clear, opts)?;
+    let mut result_json = run_core(cli, selector, text, clear, opts)?;
 
+    // Preserve the pre-iter-61c CLI output shape: `settle_method` belongs in
+    // `meta`, not in `results`.  The script runner reads it from `results`.
+    let settle_method = result_json
+        .as_object_mut()
+        .and_then(|o| o.remove("settle_method"));
     let mut meta = json!({"selector": selector});
+    if let Some(sm) = settle_method {
+        meta["settle_method"] = sm;
+    }
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,

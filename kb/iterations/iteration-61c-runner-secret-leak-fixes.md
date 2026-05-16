@@ -229,6 +229,37 @@ iteration.
   `default_timeout_ms` deliberately leaves `page_map` references still
   rejected at dry-run (iter-61b C1 behavior).
 
+## PR review pass (post-merge prep)
+
+Applied on the iter-61c branch after Copilot + CodeRabbit reviews:
+
+- Removed the duplicate "specify at least one of …" check in
+  `commands/wait.rs::run` (it was already enforced inside `run_core`).
+- Restored `settle_method` placement in the **direct** `click` and
+  `type` CLI output: it moves back into `meta` for the standalone
+  command, while the script runner still extracts it from
+  `run_core`'s `Result<Value>` and emits its own NDJSON shape. Avoids
+  a silent CLI output-contract change for jq consumers.
+- `dispatch.rs` `Command::Click → Step::Click`: now emits a stderr
+  warning when `--wait-for` predicates cannot round-trip into the
+  script schema (`url:`/`gone:`, or repeated `text:`/`selector:`).
+- `script.schema.json` `default_timeout_ms`: `minimum` raised from 0
+  to 1 with a clearer description (0 was ambiguous between "disabled"
+  and "instant timeout").
+- `kb/reference/script-format.md`: documented exactly which step
+  verbs honor `default_timeout_ms` (`wait`, `assert_text`,
+  `assert_network`) and noted that `diagnostics` is now a structured
+  object since iter-61c (`{"actual_text"}` / `{"events_in_buffer"}`).
+- Skipped (intentional): `is_password_selector` substring matching
+  (the explicit `secret: false` override is the documented escape
+  hatch); `collect_env_secrets` redaction map bloat (downstream
+  `redact_value` already filters by `is_secret_name`); flagging
+  unset `{{env.X}}` (best-effort by design — unset vars contribute
+  no value to redact); rejecting both `--vars-file` and `--env-file`
+  together (niche, deprecation warning already fires when env-file
+  wins); pretty-printer indent coupling (single call site, kept
+  simple).
+
 ## References
 
 - [[dogfooding-session-45]] — the bug report this iteration closes.

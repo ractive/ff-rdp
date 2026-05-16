@@ -182,14 +182,37 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         })),
         Command::Click { wait_for, .. } => {
             let sel = resolved_selector?;
-            // Extract the first `text:<value>` and `selector:<value>` predicates
-            // from `--wait-for` so they round-trip faithfully in recorded scripts.
+            // The `click` step in the script schema only supports `wait_for_text`
+            // and `wait_for_selector`.  Capture the first matching predicate of
+            // each kind, and warn about predicates that cannot round-trip
+            // (additional `text:`/`selector:` repeats, or `url:`/`gone:` —
+            // currently not representable in the script format).
             let wait_for_text = wait_for
                 .iter()
                 .find_map(|p| p.strip_prefix("text:").map(str::to_owned));
             let wait_for_selector = wait_for
                 .iter()
                 .find_map(|p| p.strip_prefix("selector:").map(str::to_owned));
+            let dropped: Vec<&str> = wait_for
+                .iter()
+                .enumerate()
+                .filter_map(|(i, p)| {
+                    let is_first_text = p.starts_with("text:")
+                        && wait_for.iter().position(|q| q.starts_with("text:")) == Some(i);
+                    let is_first_selector = p.starts_with("selector:")
+                        && wait_for.iter().position(|q| q.starts_with("selector:")) == Some(i);
+                    if is_first_text || is_first_selector {
+                        None
+                    } else {
+                        Some(p.as_str())
+                    }
+                })
+                .collect();
+            if !dropped.is_empty() {
+                eprintln!(
+                    "warning: recorder cannot represent these click predicates in the script format and dropped them: {dropped:?}"
+                );
+            }
             Some(Step::Click(ElementStep {
                 target: ElementTarget {
                     selector: Some(sel.to_owned()),
@@ -852,7 +875,12 @@ fn dispatch_inner(
                         continue;
                     }
                     if let Some((k, v)) = line.split_once('=') {
-                        // Push secret values into extra_vars so they are auto-redacted.
+                        // All key/value pairs from the vars-file are merged into
+                        // `extra_vars` (the same map populated by --vars flags).
+                        // `or_insert_with` makes CLI --vars values win over
+                        // vars-file values for the same key.  Secret-shaped
+                        // entries are then auto-redacted by the runner via
+                        // `is_secret_name`.
                         extra_vars
                             .entry(k.to_owned())
                             .or_insert_with(|| v.to_owned());

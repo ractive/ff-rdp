@@ -159,9 +159,18 @@ pub fn run(
     network_timeout: Option<u64>,
     opts: &ClickOptions<'_>,
 ) -> Result<(), AppError> {
-    let result = run_core(cli, selector, wait_for_network, network_timeout, opts)?;
+    let mut result = run_core(cli, selector, wait_for_network, network_timeout, opts)?;
 
+    // Preserve the pre-iter-61c CLI output shape: `settle_method` belongs in
+    // `meta`, not in `results`.  The script runner reads it from `results`
+    // (where `run_core` placed it) and re-emits it in its own NDJSON line.
+    let settle_method = result
+        .as_object_mut()
+        .and_then(|o| o.remove("settle_method"));
     let mut meta = json!({"selector": selector});
+    if let Some(sm) = settle_method {
+        meta["settle_method"] = sm;
+    }
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,

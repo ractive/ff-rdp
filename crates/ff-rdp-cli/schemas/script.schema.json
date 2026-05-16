@@ -31,8 +31,8 @@
     },
     "default_timeout_ms": {
       "type": "integer",
-      "minimum": 0,
-      "description": "Default timeout in milliseconds for steps that support timeout but do not set one explicitly (assert_text, wait, assert_network)."
+      "minimum": 1,
+      "description": "Default timeout in milliseconds for assert_text, wait, and assert_network steps that do not set their own `timeout`. Falls back to the CLI `--timeout` value when omitted. Must be at least 1; omit the field entirely to use the CLI default."
     },
     "metadata": {
       "description": "Optional opaque metadata (not interpreted by the runner)."
