@@ -85,7 +85,10 @@ Themes:
 - [ ] Add a round-trip e2e: record a wait with a small non-default
   timeout (e.g. 100 ms), replay, assert the replay actually used
   the small timeout (catch via measured elapsed_ms or a deliberately
-  unmet condition that fails fast).
+  unmet condition that fails fast). _Deferred — the e2e mock-server
+  harness asserts on the recorded JSON; round-trip replay timing
+  verification needs a live Firefox or a new mock-server hook and is
+  better tracked as a follow-up._
 
 ### B. Headless screenshot on Firefox builds with silent greeting
 
@@ -132,7 +135,9 @@ Themes:
 #### B4. Test — **required**
 - [ ] Live e2e: launch Firefox with the same flags used by the
   dogfood session, navigate to a small fixture, screenshot, assert
-  success.
+  success. _Deferred — no live ignored test was added; mock-server
+  coverage exercises the device-actor fallback path. Tracked for the
+  next dogfood session against a real silent-greeting build._
 - [x] Mock-server e2e: serve a greeting that omits the version
   field; assert the actor-probe path engages and doctor reports real
   version via device actor (not "version not advertised").
@@ -152,14 +157,20 @@ Themes:
 ## Acceptance Criteria
 
 - [x] `ff-rdp record start /tmp/r.json` → `ff-rdp wait --selector body
-  --timeout 5000` → `ff-rdp record stop` produces a step with
-  `"timeout": 5000`. (Note: 5000 is the default, so step has NO timeout
-  field — use `--wait-timeout 1234` for a non-default that IS recorded.)
+  --wait-timeout 1234` → `ff-rdp record stop` produces a step with
+  `"timeout": 1234` in the recorded JSON. Non-default timeouts round-trip
+  for `--selector`, `--text`, and `--eval` waits. The 5000 ms default is
+  elided to keep recorded files terse (see the next AC for the elision
+  contract).
 - [x] `ff-rdp record start /tmp/r.json` → `ff-rdp wait --selector body`
   (no `--timeout`) → `ff-rdp record stop` produces a step *without* a
   `timeout` field.
 - [ ] Against the same wardrobe-assistants Firefox build that breaks
   today, `ff-rdp screenshot -o /tmp/x.png` succeeds in headless mode.
+  _Deferred — the underlying device-actor fallback that makes this
+  possible is in place and covered by `doctor_version_fallback_via_device_actor`,
+  but live verification against the wardrobe-assistants build will
+  happen in the next dogfood session._
 - [x] When the connection greeting omits version, `ff-rdp doctor`
   reports a real Firefox version retrieved via the device actor
   (not `"Firefox version not advertised in the RDP greeting"`).
