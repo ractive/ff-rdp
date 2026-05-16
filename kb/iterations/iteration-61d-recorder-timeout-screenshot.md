@@ -2,9 +2,10 @@
 title: "Iteration 61d: recorder --timeout capture + headless screenshot + formatting nit"
 type: iteration
 date: 2026-05-16
-status: in_progress
+status: done
 branch: iter-61d/recorder-timeout-screenshot
-depends_on: [iteration-61c-runner-secret-leak-fixes]
+depends_on:
+  - iteration-61c-runner-secret-leak-fixes
 tags:
   - iteration
   - scripts
