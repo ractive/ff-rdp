@@ -43,19 +43,22 @@ The JSON Schema lives at
 
 ## Running scripts
 
+The example scripts in `examples/scripts/` reference `{{vars.fixture_url}}`,
+so pass it explicitly when copy-pasting:
+
 ```sh
-ff-rdp run login.json
-ff-rdp run login.yaml --vars email=me@example.com --vars password=secret
-ff-rdp run login.json --dry-run              # validate without executing
-ff-rdp run login.json --continue-on-failure  # don't stop at first failure
-ff-rdp run login.json --show-secrets         # include secret values in output
-ff-rdp run login.json --record session.json  # also write executed steps to file
+ff-rdp run login.json --vars fixture_url=https://example.com
+ff-rdp run login.yaml --vars fixture_url=https://example.com --vars email=me@example.com --vars password=secret
+ff-rdp run login.json --vars fixture_url=https://example.com --dry-run              # validate without executing
+ff-rdp run login.json --vars fixture_url=https://example.com --continue-on-failure  # don't stop at first failure
+ff-rdp run login.json --vars fixture_url=https://example.com --show-secrets         # include secret values in output
+ff-rdp run login.json --vars fixture_url=https://example.com --record session.json  # also write executed steps to file
 ```
 
 Output is **NDJSON** — one JSON line per step:
-```
+```json
 {"step":1,"verb":"navigate","ok":true,"results":{"navigated":"..."},"elapsed_ms":42}
-{"step":2,"verb":"assert_text","ok":true,...}
+{"step":2,"verb":"assert_text","ok":true,"results":{}}
 {"summary":true,"ok":true,"total":2,"failed":0,"passed":2,"total_elapsed_ms":55}
 ```
 

@@ -203,14 +203,12 @@ fn dry_run_with_vars_flag() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn self_referencing_run_step_errors_on_dry_run() {
+fn self_referencing_run_step_parses_and_dry_runs_cleanly() {
     // Create a temp script that runs itself.
     let tmp_dir = tempfile::tempdir().expect("tempdir");
     let path = tmp_dir.path().join("self.json");
-    let script = format!(
-        r#"{{"version":1,"steps":[{{"run":{{"path":"{}"}}}}]}}"#,
-        path.display()
-    );
+    let path_json = serde_json::to_string(&path).expect("path → JSON string");
+    let script = format!(r#"{{"version":1,"steps":[{{"run":{{"path":{path_json}}}}}]}}"#);
     std::fs::write(&path, &script).expect("write self-referencing script");
 
     let output = std::process::Command::new(ff_rdp_bin())
