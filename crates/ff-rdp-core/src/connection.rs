@@ -86,6 +86,14 @@ impl RdpConnection {
         self.firefox_version
     }
 
+    /// Override the stored Firefox version. Used when a fallback probe
+    /// (e.g. the device actor's `getDescription`) resolves a version that
+    /// the greeting did not advertise, so that subsequent calls to
+    /// [`Self::warn_if_version_unsupported`] see the resolved value.
+    pub fn set_firefox_version(&mut self, version: Option<u32>) {
+        self.firefox_version = version;
+    }
+
     /// Emit a warning to stderr when the Firefox version is outside the
     /// known-compatible range [`COMPATIBLE_FIREFOX_MIN`]–[`COMPATIBLE_FIREFOX_MAX`].
     ///

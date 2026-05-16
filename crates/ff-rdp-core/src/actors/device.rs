@@ -6,7 +6,7 @@
 //! fallback when the RDP greeting's `ua` field is absent (some Firefox builds
 //! omit it).
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::actor::actor_request;
 use crate::error::ProtocolError;
@@ -21,7 +21,38 @@ impl DeviceActor {
     /// Returns `None` when `getRoot` does not include a `deviceActor` field
     /// (pre-87 Firefox or stripped builds).
     pub fn get_actor_id(transport: &mut RdpTransport) -> Result<Option<String>, ProtocolError> {
-        let response = actor_request(transport, "root", "getRoot", None)?;
+        // Send `getRoot` directly so we can filter push events from the root
+        // actor (e.g. `tabListChanged` with a `type` field) without confusing
+        // them with the actual reply — the generic `actor_request` matches the
+        // first packet whose `from` equals `"root"`, which would happily
+        // accept a push event as the response.
+        let request = json!({"to": "root", "type": "getRoot"});
+        transport.send(&request)?;
+
+        let response = loop {
+            let msg = transport.recv()?;
+            let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
+            if from == "root" {
+                if msg.get("type").is_some() {
+                    // Push event — skip.
+                    continue;
+                }
+                break msg;
+            }
+        };
+
+        if let Some(err) = response.get("error").and_then(Value::as_str) {
+            return Err(ProtocolError::ActorError {
+                actor: "root".to_owned(),
+                kind: crate::error::ActorErrorKind::from_code(err),
+                error: err.to_owned(),
+                message: response
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned(),
+            });
+        }
 
         let id = response
             .get("deviceActor")
@@ -57,10 +88,21 @@ impl DeviceActor {
     /// Returns `Err` only for transport-level failures (socket errors, malformed
     /// packets).  A missing actor or absent `appVersion` field yields `Ok(None)`.
     pub fn query_version(transport: &mut RdpTransport) -> Result<Option<u32>, ProtocolError> {
-        let Some(actor_id) = Self::get_actor_id(transport)? else {
-            return Ok(None);
+        // Treat actor-level errors (e.g. `unknownActor`, `noSuchActor`) as
+        // "version unknown" rather than propagating — this matches the
+        // documented contract that callers can treat failures as a missing
+        // version.  Transport-level errors still propagate so a broken socket
+        // surfaces up the call stack.
+        let actor_id = match Self::get_actor_id(transport) {
+            Ok(Some(id)) => id,
+            Ok(None) | Err(ProtocolError::ActorError { .. }) => return Ok(None),
+            Err(e) => return Err(e),
         };
-        Self::query_firefox_version(transport, &actor_id)
+        match Self::query_firefox_version(transport, &actor_id) {
+            Ok(v) => Ok(v),
+            Err(ProtocolError::ActorError { .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }
 

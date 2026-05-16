@@ -154,12 +154,12 @@ fn handshake_and_resolve_tab(
     cli: &Cli,
     via_daemon: bool,
 ) -> Result<ConnectedTab, AppError> {
-    connection.warn_if_version_unsupported();
-
     // When the RDP greeting omits the `ua` field (some Firefox builds strip
     // it), try the device actor's `getDescription` as a version fallback.
     // This ensures `remembered_version()` is populated for all downstream
-    // callers (e.g. `version_mismatch_message()` in the screenshot path).
+    // callers (e.g. `version_mismatch_message()` in the screenshot path) and
+    // that the compatibility warning is emitted based on the resolved
+    // version, not the (absent) greeting one.
     let greeting_version = connection.firefox_version();
     let effective_version = if greeting_version.is_none() {
         DeviceActor::query_version(connection.transport_mut())
@@ -168,6 +168,10 @@ fn handshake_and_resolve_tab(
     } else {
         greeting_version
     };
+    if effective_version != greeting_version {
+        connection.set_firefox_version(effective_version);
+    }
+    connection.warn_if_version_unsupported();
     crate::connection_meta::remember_version(effective_version);
 
     let tabs = RootActor::list_tabs(connection.transport_mut()).map_err(AppError::from)?;

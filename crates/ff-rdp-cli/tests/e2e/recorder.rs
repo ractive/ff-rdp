@@ -69,10 +69,12 @@ fn wait_true_server() -> MockRdpServer {
 // Theme A: recorder captures --wait-timeout
 // ---------------------------------------------------------------------------
 
-/// Recording `wait --selector body --wait-timeout 5000` must produce a step
-/// with `"timeout": 5000` in the recorded JSON.
+/// Recording `wait --selector body --wait-timeout 5000` (the default value)
+/// must NOT write the `timeout` field — the default is elided to keep the
+/// recorded file terse.  See `recorder_captures_nondefault_wait_timeout` for
+/// the positive case where a non-default value IS written.
 #[test]
-fn recorder_captures_wait_timeout() {
+fn recorder_elides_explicit_default_wait_timeout() {
     let server = wait_true_server();
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
@@ -285,6 +287,100 @@ fn recorder_omits_default_timeout() {
         !has_timeout,
         "default timeout must be omitted from the recorded step; got: {step}"
     );
+
+    let _ = std::fs::remove_file(&output_path);
+}
+
+/// Recording `wait --text Loaded --wait-timeout 2500` must preserve the
+/// non-default timeout in the recorded step alongside the `text` condition.
+#[test]
+fn recorder_captures_nondefault_timeout_for_text_wait() {
+    let server = wait_true_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let (state_dir, output_path) = temp_recording_env("text_timeout");
+
+    let start_args = vec![
+        "record".to_owned(),
+        "start".to_owned(),
+        output_path.to_string_lossy().into_owned(),
+    ];
+    let start_out = run_with_state(&start_args, &state_dir);
+    assert!(start_out.status.success());
+
+    let mut wait_args = base_args(port);
+    wait_args.extend([
+        "wait".to_owned(),
+        "--text".to_owned(),
+        "Loaded".to_owned(),
+        "--wait-timeout".to_owned(),
+        "2500".to_owned(),
+    ]);
+    let wait_out = run_with_state(&wait_args, &state_dir);
+    assert!(
+        wait_out.status.success(),
+        "wait --text failed: {}",
+        String::from_utf8_lossy(&wait_out.stderr)
+    );
+    handle.join().unwrap();
+
+    let stop_args = vec!["record".to_owned(), "stop".to_owned()];
+    let stop_out = run_with_state(&stop_args, &state_dir);
+    assert!(stop_out.status.success());
+
+    let content = std::fs::read_to_string(&output_path).expect("recorded file must exist");
+    let parsed: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+    let step = &parsed["steps"][0];
+    assert_eq!(step["wait"]["text"], "Loaded");
+    assert_eq!(step["wait"]["timeout"], serde_json::json!(2500));
+
+    let _ = std::fs::remove_file(&output_path);
+}
+
+/// Recording `wait --eval EXPR --wait-timeout 7500` must preserve the
+/// non-default timeout in the recorded step alongside the `eval` condition.
+#[test]
+fn recorder_captures_nondefault_timeout_for_eval_wait() {
+    let server = wait_true_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let (state_dir, output_path) = temp_recording_env("eval_timeout");
+
+    let start_args = vec![
+        "record".to_owned(),
+        "start".to_owned(),
+        output_path.to_string_lossy().into_owned(),
+    ];
+    let start_out = run_with_state(&start_args, &state_dir);
+    assert!(start_out.status.success());
+
+    let mut wait_args = base_args(port);
+    wait_args.extend([
+        "wait".to_owned(),
+        "--eval".to_owned(),
+        "document.readyState === 'complete'".to_owned(),
+        "--wait-timeout".to_owned(),
+        "7500".to_owned(),
+    ]);
+    let wait_out = run_with_state(&wait_args, &state_dir);
+    assert!(
+        wait_out.status.success(),
+        "wait --eval failed: {}",
+        String::from_utf8_lossy(&wait_out.stderr)
+    );
+    handle.join().unwrap();
+
+    let stop_args = vec!["record".to_owned(), "stop".to_owned()];
+    let stop_out = run_with_state(&stop_args, &state_dir);
+    assert!(stop_out.status.success());
+
+    let content = std::fs::read_to_string(&output_path).expect("recorded file must exist");
+    let parsed: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+    let step = &parsed["steps"][0];
+    assert_eq!(step["wait"]["eval"], "document.readyState === 'complete'");
+    assert_eq!(step["wait"]["timeout"], serde_json::json!(7500));
 
     let _ = std::fs::remove_file(&output_path);
 }
