@@ -25,6 +25,7 @@ mod perf;
 mod perf_compare;
 mod responsive;
 mod screenshot;
+mod script_runner;
 mod scroll;
 mod snapshot;
 mod sources;

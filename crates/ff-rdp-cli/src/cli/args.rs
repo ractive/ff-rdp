@@ -1051,6 +1051,82 @@ probe passes, 1 otherwise.
 
 Output: {\"results\": [{\"name\": \"...\", \"status\": \"pass|warn|fail\", \"detail\": \"...\", \"hint\": \"...\"}], \"total\": N, \"meta\": {...}}")]
     Doctor,
+
+    /// Execute a script file (JSON or YAML)
+    #[command(long_about = "Execute a script file (JSON or YAML).
+
+Each step is dispatched in-process and emits one NDJSON line to stdout:
+  {\"step\": N, \"verb\": \"...\", \"ok\": true, \"results\": {...}, \"elapsed_ms\": N}
+
+A final summary line is emitted:
+  {\"summary\": true, \"ok\": true, \"total\": N, \"failed\": 0, \"total_elapsed_ms\": N}
+
+Examples:
+  ff-rdp run login.json
+  ff-rdp run login.yaml --vars email=user@example.com --vars password=secret
+  ff-rdp run login.json --dry-run
+  ff-rdp run login.json --continue-on-failure
+  ff-rdp run login.json --record session.json")]
+    Run {
+        /// Path to the script file (.json or .yaml)
+        script: std::path::PathBuf,
+        /// Ad-hoc variable overrides (format: KEY=VALUE)
+        #[arg(long = "vars", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        vars: Vec<String>,
+        /// Load variables from a dotenv-style file
+        #[arg(long = "env-file", value_name = "PATH")]
+        env_file: Option<std::path::PathBuf>,
+        /// Continue running steps after a failure (default: stop on first failure)
+        #[arg(long = "continue-on-failure")]
+        continue_on_failure: bool,
+        /// Parse and validate the script; resolve variables; print steps without executing
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// Show secret values in step output (default: redact fields matching *password*, *token*, *secret*)
+        #[arg(long = "show-secrets")]
+        show_secrets: bool,
+        /// Record executed steps to this file
+        #[arg(long = "record", value_name = "OUTPUT")]
+        record: Option<std::path::PathBuf>,
+        /// Force a specific input format (json|yaml), overriding file extension detection
+        #[arg(long = "script-format", value_name = "FORMAT")]
+        script_format: Option<String>,
+    },
+
+    /// Record browser commands to a replayable script
+    #[command(long_about = "Record browser commands to a replayable script.
+
+Subcommands:
+  record start <output.json>   Start recording to the given file
+  record stop                  Stop the active recording and print the file path
+  record status                Show whether a recording is active
+
+Examples:
+  ff-rdp record start session.json
+  ff-rdp navigate https://example.com
+  ff-rdp click \"button[type=submit]\"
+  ff-rdp record stop")]
+    Record {
+        #[command(subcommand)]
+        record_command: RecordCommand,
+    },
+}
+
+/// Subcommands for `ff-rdp record`.
+#[derive(Subcommand)]
+pub enum RecordCommand {
+    /// Start a recording session
+    Start {
+        /// Output file path for the recorded script
+        output: std::path::PathBuf,
+        /// Human-readable name embedded in the script
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Stop the active recording session and print the file path
+    Stop,
+    /// Show whether a recording is active
+    Status,
 }
 
 #[derive(Subcommand)]

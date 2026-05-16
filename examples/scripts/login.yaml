@@ -1,0 +1,29 @@
+$schema: "https://ff-rdp.dev/schemas/script/v1.json"
+version: 1
+name: "Login fixture"
+vars:
+  email: "agent@example.com"
+  password: "secret"
+steps:
+  - navigate:
+      url: "{{vars.fixture_url}}"
+  - assert_text:
+      selector: "h1"
+      contains: "Sign in"
+  - type:
+      selector: "#email"
+      text: "{{vars.email}}"
+      clear: true
+  - type:
+      selector: "#password"
+      text: "{{vars.password}}"
+      clear: true
+      secret: true
+  - click:
+      selector: "#submit-btn"
+      wait_for_text: "Welcome"
+  - assert_text:
+      selector: "#dashboard-heading"
+      contains: "Welcome"
+  - assert_url:
+      matches: "dashboard"

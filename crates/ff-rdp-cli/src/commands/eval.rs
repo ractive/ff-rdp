@@ -97,6 +97,19 @@ pub(crate) fn build_script(user_script: &str, stringify: bool, isolate: bool) ->
     }
 }
 
+/// Build the final JavaScript source, exposed for use by the script runner.
+pub fn build_eval_js(
+    script: Option<&str>,
+    file: Option<&str>,
+    use_stdin: bool,
+    stringify: bool,
+    no_isolate: bool,
+) -> Result<String, AppError> {
+    let user_script = load_script(script, file, use_stdin)?;
+    let isolate = !no_isolate;
+    Ok(build_script(&user_script, stringify, isolate))
+}
+
 pub fn run(
     cli: &Cli,
     script: Option<&str>,
