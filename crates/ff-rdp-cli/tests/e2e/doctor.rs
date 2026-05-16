@@ -110,6 +110,84 @@ fn doctor_mock_server_passes_handshake_and_tabs() {
     );
 }
 
+/// `doctor` against a greeting that omits the `ua` field must retrieve the
+/// Firefox version via the device actor's `getDescription` response instead of
+/// reporting "Firefox version not advertised in the RDP greeting".
+#[test]
+fn doctor_version_fallback_via_device_actor() {
+    // Greeting with no `ua` field — simulates the wardrobe-assistants build
+    // and any Firefox configuration that strips the user-agent from the greeting.
+    let silent_greeting = serde_json::json!({
+        "from": "root",
+        "applicationType": "browser",
+        "traits": {}
+    });
+
+    let list_tabs_response = load_fixture("list_tabs_response.json");
+
+    // `getRoot` returns a deviceActor ID; `getDescription` returns appVersion.
+    let get_root_response = serde_json::json!({
+        "from": "root",
+        "deviceActor": "server1.conn0.deviceActor1",
+        "screenshotActor": "server1.conn0.screenshotActor7",
+        "preferenceActor": "server1.conn0.preferenceActor2",
+    });
+
+    let get_description_response = serde_json::json!({
+        "from": "server1.conn0.deviceActor1",
+        "value": {
+            "appVersion": "137.0",
+            "platformVersion": "137.0",
+            "appBuildID": "20250101000000",
+            "name": "Firefox",
+        }
+    });
+
+    let server = MockRdpServer::new()
+        .with_greeting(silent_greeting)
+        .on("getRoot", get_root_response)
+        .on("getDescription", get_description_response)
+        .on("listTabs", list_tabs_response);
+
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.push("doctor".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("spawn");
+
+    handle.join().unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+        panic!("stdout must be JSON: {e}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
+    });
+
+    let probes = json["results"].as_array().expect("results array");
+
+    // The firefox_version probe must use the device-actor version (137),
+    // not fall back to "not advertised".
+    let version_probe = probes
+        .iter()
+        .find(|p| p["name"] == "firefox_version")
+        .expect("firefox_version probe must be present");
+
+    let detail = version_probe["detail"].as_str().unwrap_or("");
+    assert!(
+        detail.contains("137"),
+        "firefox_version probe detail should contain version 137 from device actor; got: {detail}"
+    );
+    assert!(
+        !detail.contains("not advertised"),
+        "firefox_version probe must not say 'not advertised' when device actor succeeds; got: {detail}"
+    );
+}
+
 /// `doctor` against a server that gives the greeting but no tabs must mark
 /// the tabs probe as fail and surface a hint about relaunching.
 #[test]

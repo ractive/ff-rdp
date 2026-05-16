@@ -154,12 +154,15 @@ pub fn finalise_output_file(output_path: &Path, _step_count: usize) -> anyhow::R
     // Check if already finalised by reading the tail of the file.
     let content = std::fs::read_to_string(output_path)
         .with_context(|| format!("reading '{}' to check finalisation", output_path.display()))?;
-    if content.trim_end().ends_with("]\n}") || content.ends_with("  ]\n}\n") {
+    if content.trim_end().ends_with("]\n}") || content.ends_with("\n  ]\n}\n") {
         // Already closed — no-op.
         return Ok(());
     }
 
-    let closing = "  ]\n}\n";
+    // A newline before the closing bracket separates the last step's `}` from
+    // `  ]` so the output matches what `serde_json::to_string_pretty` would
+    // produce for the same document.
+    let closing = "\n  ]\n}\n";
     let mut file = std::fs::OpenOptions::new()
         .append(true)
         .open(output_path)
@@ -598,5 +601,48 @@ mod tests {
             !step_lines.is_empty(),
             "step opening braces should be indented 4 spaces:\n{content}"
         );
+    }
+
+    /// C1: A 2-step recorded file must end with `}\n  ]\n}\n` — the same
+    /// suffix that `serde_json::to_string_pretty` would produce for the same
+    /// document structure.
+    #[test]
+    fn c1_two_step_recording_ends_with_correct_closing_sequence() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_owned();
+        drop(tmp);
+
+        let steps = vec![
+            Step::Navigate(NavigateStep {
+                url: "https://example.com".to_owned(),
+                wait_text: None,
+                wait_selector: None,
+            }),
+            Step::Navigate(NavigateStep {
+                url: "https://example.org".to_owned(),
+                wait_text: None,
+                wait_selector: None,
+            }),
+        ];
+
+        let mut recorder = FileRecorder::new(&path, None).unwrap();
+        for step in &steps {
+            recorder.record(step).unwrap();
+        }
+        let final_path = recorder.finish().unwrap();
+
+        let content = std::fs::read_to_string(&final_path).unwrap();
+
+        // The file must end with a newline before the closing bracket,
+        // then `  ]`, then `\n}\n`.
+        assert!(
+            content.ends_with("}\n  ]\n}\n"),
+            "2-step recording must end with `}}\\n  ]\\n}}\\n`; actual tail: {:?}",
+            &content[content.len().saturating_sub(30)..]
+        );
+
+        // Must still be valid JSON.
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["steps"].as_array().unwrap().len(), 2);
     }
 }

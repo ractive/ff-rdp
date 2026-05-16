@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use ff_rdp_core::{
-    ActorId, ProtocolError, RdpConnection, RdpTransport, RootActor, TabActor, TargetInfo,
+    ActorId, DeviceActor, ProtocolError, RdpConnection, RdpTransport, RootActor, TabActor,
+    TargetInfo,
 };
 use serde_json::json;
 
@@ -155,7 +156,19 @@ fn handshake_and_resolve_tab(
 ) -> Result<ConnectedTab, AppError> {
     connection.warn_if_version_unsupported();
 
-    crate::connection_meta::remember_version(connection.firefox_version());
+    // When the RDP greeting omits the `ua` field (some Firefox builds strip
+    // it), try the device actor's `getDescription` as a version fallback.
+    // This ensures `remembered_version()` is populated for all downstream
+    // callers (e.g. `version_mismatch_message()` in the screenshot path).
+    let greeting_version = connection.firefox_version();
+    let effective_version = if greeting_version.is_none() {
+        DeviceActor::query_version(connection.transport_mut())
+            .unwrap_or(None)
+            .or(greeting_version)
+    } else {
+        greeting_version
+    };
+    crate::connection_meta::remember_version(effective_version);
 
     let tabs = RootActor::list_tabs(connection.transport_mut()).map_err(AppError::from)?;
 

@@ -1,5 +1,6 @@
 pub mod accessibility;
 pub mod console;
+pub mod device;
 pub mod dom_walker;
 pub mod inspector;
 pub mod network;

@@ -100,6 +100,19 @@ impl MockRdpServer {
         self.listener.local_addr().expect("local_addr").port()
     }
 
+    /// Override the greeting sent to the client on connect.
+    ///
+    /// The default greeting is:
+    /// ```json
+    /// {"from":"root","applicationType":"browser","traits":{}}
+    /// ```
+    /// Use this to test paths that depend on the greeting shape — e.g. the
+    /// device-actor version fallback when the `ua` field is absent.
+    pub fn with_greeting(mut self, greeting: Value) -> Self {
+        self.greeting = greeting;
+        self
+    }
+
     /// Register a handler: when a request arrives with `"type": method`,
     /// respond with `response`. Handlers are matched in insertion order;
     /// the first match wins.
