@@ -16,10 +16,10 @@ pub struct WaitOptions<'a> {
     pub wait_timeout: u64,
 }
 
-pub fn run(cli: &Cli, opts: &WaitOptions<'_>) -> Result<(), AppError> {
-    // Validate that at least one condition is specified (safety net — clap
-    // enforces this via the "condition" argument group, but this catches
-    // programmatic misuse of WaitOptions).
+/// Wait for a condition and return the result value without printing.
+///
+/// Called by the script runner, which handles its own NDJSON output.
+pub fn run_core(cli: &Cli, opts: &WaitOptions<'_>) -> Result<serde_json::Value, AppError> {
     if opts.selector.is_none() && opts.text.is_none() && opts.eval.is_none() {
         return Err(AppError::User(
             "wait: specify at least one of --selector, --text, or --eval".into(),
@@ -32,7 +32,6 @@ pub fn run(cli: &Cli, opts: &WaitOptions<'_>) -> Result<(), AppError> {
     let console_actor = ctx.target.console_actor.clone();
     let tab_actor_id = ctx.target_tab_actor().to_string();
 
-    // "Selector never found" message: names the selector, elapsed time, and tab actor.
     let not_found_msg = if let Some(sel) = opts.selector {
         format!(
             "selector '{sel}' not found after {}ms on tab '{tab_actor_id}' — the element may not exist; verify with `ff-rdp dom '{sel}' --count`",
@@ -57,9 +56,6 @@ pub fn run(cli: &Cli, opts: &WaitOptions<'_>) -> Result<(), AppError> {
         &not_found_msg,
     )
     .map_err(|e| {
-        // If the transport itself timed out (tab unresponsive), replace the
-        // generic "operation timed out" message with a more specific one that
-        // names the tab actor and tells the user how to recover.
         if let AppError::Timeout(ref msg) = e
             && msg.contains("operation timed out")
         {
@@ -71,7 +67,11 @@ pub fn run(cli: &Cli, opts: &WaitOptions<'_>) -> Result<(), AppError> {
         e
     })?;
 
-    let result_json = json!({"matched": true, "elapsed_ms": elapsed_ms, "condition": condition});
+    Ok(json!({"matched": true, "elapsed_ms": elapsed_ms, "condition": condition}))
+}
+
+pub fn run(cli: &Cli, opts: &WaitOptions<'_>) -> Result<(), AppError> {
+    let result_json = run_core(cli, opts)?;
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,

@@ -100,7 +100,10 @@ fn version_mismatch_message() -> String {
     )
 }
 
-pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
+/// Take a screenshot and return the result value without printing.
+///
+/// Called by the script runner, which handles its own NDJSON output.
+pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Value, AppError> {
     let height_override = match (opts.full_page, opts.viewport_height) {
         (true, Some(_)) => {
             return Err(AppError::User(
@@ -232,7 +235,11 @@ pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
             "bytes": png_bytes.len(),
         })
     };
+    Ok(results)
+}
 
+pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
+    let results = run_core(cli, opts)?;
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,

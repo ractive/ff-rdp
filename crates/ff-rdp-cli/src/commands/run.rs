@@ -18,6 +18,8 @@ pub struct RunCommandOpts<'a> {
     pub dry_run: bool,
     pub show_secrets: bool,
     pub record_output: Option<&'a Path>,
+    /// Fail the entire run if a recording step fails.
+    pub record_strict: bool,
     pub format_override: Option<&'a str>,
 }
 
@@ -51,6 +53,7 @@ pub fn run(cli: &Cli, opts: &RunCommandOpts<'_>) -> Result<(), AppError> {
         dry_run: opts.dry_run,
         show_secrets: opts.show_secrets,
         recorder,
+        record_strict: opts.record_strict,
         format_override: fmt_override,
     };
 

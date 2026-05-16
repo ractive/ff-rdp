@@ -192,10 +192,67 @@ pub fn append_step(output_path: &Path, step: &Step, step_count: usize) -> anyhow
     result
 }
 
-/// Serialise a step to a compact JSON object string.
+/// Returns `true` when a CSS selector looks like a password field.
+///
+/// Matches common patterns: `input[type=password]`, `input[type="password"]`,
+/// `input[type='password']`, or any selector containing "password" or "passwd"
+/// (case-insensitive).  Users can override with `secret: false` if they record
+/// a non-secret value into a password-shaped field.
+fn is_password_selector(selector: &str) -> bool {
+    let lower = selector.to_lowercase();
+    lower.contains("password")
+        || lower.contains("passwd")
+        || lower.contains("[type=password]")
+        || lower.contains("[type=\"password\"]")
+        || lower.contains("[type='password']")
+}
+
+/// Serialise a step to a pretty-printed JSON object string indented by 4 spaces.
+///
+/// The output matches the hand-authored format used in `examples/scripts/`:
+/// each step is a multi-line JSON object with 2-space relative indentation,
+/// indented by 4 spaces within the enclosing `"steps"` array.
+///
+/// Applies the B2 heuristic: if recording a `type` step into a password-shaped
+/// selector and `secret` is not already `true`, it is auto-elevated to `true`.
 fn step_to_json(step: &Step) -> anyhow::Result<String> {
+    // B2: auto-elevate `secret: true` for password-shaped selectors.
+    let effective_step;
+    let step = if let Step::Type(ts) = step
+        && !ts.secret
+        && ts
+            .target
+            .selector
+            .as_deref()
+            .is_some_and(is_password_selector)
+    {
+        effective_step = Step::Type(super::format::TypeStep {
+            secret: true,
+            ..ts.clone()
+        });
+        &effective_step
+    } else {
+        step
+    };
+
     let obj = serde_json::to_value(step).context("step to value")?;
-    serde_json::to_string(&obj).context("step to string")
+    // B3: pretty-print with 2-space indent, then indent every line by 4 spaces
+    // so the step body aligns with the surrounding `"steps": [` array in the file.
+    let pretty = serde_json::to_string_pretty(&obj).context("step to pretty string")?;
+    let indented = pretty
+        .lines()
+        .enumerate()
+        .map(|(i, line)| {
+            if i == 0 {
+                // The first line is placed after the `    ` prefix already added by append_step.
+                line.to_owned()
+            } else {
+                format!("    {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(indented)
 }
 
 // ---------------------------------------------------------------------------
@@ -332,7 +389,7 @@ pub fn record_step_if_active(step: &Step) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::script::format::{NavigateStep, Step};
+    use crate::script::format::{ElementTarget, NavigateStep, Step, TypeStep};
     use tempfile::NamedTempFile;
 
     #[test]
@@ -371,5 +428,175 @@ mod tests {
         let content = std::fs::read_to_string(&final_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert!(parsed["steps"].as_array().unwrap().is_empty());
+    }
+
+    /// B2: Recording a type step into a password selector auto-sets secret: true.
+    #[test]
+    fn b2_password_selector_auto_secret() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_owned();
+        drop(tmp);
+
+        let step = Step::Type(TypeStep {
+            target: ElementTarget {
+                selector: Some("input[type=password]".to_owned()),
+                ..Default::default()
+            },
+            text: "hunter2".to_owned(),
+            clear: false,
+            secret: false, // not explicitly set — recorder should elevate it
+        });
+
+        let mut recorder = FileRecorder::new(&path, None).unwrap();
+        recorder.record(&step).unwrap();
+        let final_path = recorder.finish().unwrap();
+
+        let content = std::fs::read_to_string(&final_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let recorded_step = &parsed["steps"][0];
+        assert_eq!(
+            recorded_step["type"]["secret"],
+            serde_json::json!(true),
+            "password selector should auto-elevate secret to true: {recorded_step}"
+        );
+    }
+
+    /// B2: is_password_selector heuristic coverage.
+    #[test]
+    fn b2_password_selector_heuristics() {
+        assert!(is_password_selector("input[type=password]"));
+        assert!(is_password_selector("input[type=\"password\"]"));
+        assert!(is_password_selector("input[type='password']"));
+        assert!(is_password_selector(".password-field"));
+        assert!(is_password_selector("#passwd"));
+        assert!(!is_password_selector("input[type=text]"));
+        assert!(!is_password_selector("#username"));
+    }
+
+    /// B1: Recording a wait step with a non-default timeout records the timeout field.
+    #[test]
+    fn b1_wait_step_records_timeout() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_owned();
+        drop(tmp);
+
+        let step = Step::Wait(super::super::format::WaitStep {
+            selector: Some(".result".to_owned()),
+            text: None,
+            eval: None,
+            timeout: Some(10_000),
+        });
+
+        let mut recorder = FileRecorder::new(&path, None).unwrap();
+        recorder.record(&step).unwrap();
+        let final_path = recorder.finish().unwrap();
+
+        let content = std::fs::read_to_string(&final_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let recorded_step = &parsed["steps"][0];
+        assert_eq!(
+            recorded_step["wait"]["timeout"],
+            serde_json::json!(10_000),
+            "wait step should record non-default timeout: {recorded_step}"
+        );
+        assert_eq!(
+            recorded_step["wait"]["selector"],
+            serde_json::json!(".result"),
+        );
+    }
+
+    /// B1: Recording a click step with wait_for_text records the field.
+    #[test]
+    fn b1_click_step_records_wait_for_text() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_owned();
+        drop(tmp);
+
+        let step = Step::Click(super::super::format::ElementStep {
+            target: ElementTarget {
+                selector: Some("button#submit".to_owned()),
+                ..Default::default()
+            },
+            wait_for_text: Some("Welcome".to_owned()),
+            wait_for_selector: None,
+        });
+
+        let mut recorder = FileRecorder::new(&path, None).unwrap();
+        recorder.record(&step).unwrap();
+        let final_path = recorder.finish().unwrap();
+
+        let content = std::fs::read_to_string(&final_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let recorded_step = &parsed["steps"][0];
+        assert_eq!(
+            recorded_step["click"]["wait_for_text"],
+            serde_json::json!("Welcome"),
+            "click step should record wait_for_text: {recorded_step}"
+        );
+    }
+
+    /// B3: Recorded steps use pretty-printed JSON with 2-space indent, indented 4 spaces
+    /// within the enclosing steps array — matching the hand-authored script format.
+    #[test]
+    fn b3_recorded_output_is_pretty_printed() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_owned();
+        drop(tmp);
+
+        let steps = vec![
+            Step::Navigate(NavigateStep {
+                url: "https://example.com".to_owned(),
+                wait_text: None,
+                wait_selector: None,
+            }),
+            Step::Type(TypeStep {
+                target: ElementTarget {
+                    selector: Some("#email".to_owned()),
+                    ..Default::default()
+                },
+                text: "user@example.com".to_owned(),
+                clear: true,
+                secret: false,
+            }),
+            Step::Wait(super::super::format::WaitStep {
+                selector: Some(".dashboard".to_owned()),
+                text: None,
+                eval: None,
+                timeout: Some(8_000),
+            }),
+        ];
+
+        let mut recorder = FileRecorder::new(&path, None).unwrap();
+        for step in &steps {
+            recorder.record(step).unwrap();
+        }
+        let final_path = recorder.finish().unwrap();
+
+        let content = std::fs::read_to_string(&final_path).unwrap();
+
+        // Must be valid JSON.
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["steps"].as_array().unwrap().len(), 3);
+
+        // B3: Each step entry must span multiple lines (pretty-printed, not compact).
+        // The navigate step should have at least: `{`, `  "navigate": {`, `    "url": ...`, `  }`, `}`.
+        assert!(
+            content.contains("  \"navigate\": {"),
+            "navigate step should be pretty-printed with nested braces:\n{content}"
+        );
+        assert!(
+            content.contains("    \"url\":"),
+            "navigate url should be indented 4 spaces within step:\n{content}"
+        );
+
+        // B3: Steps must be indented 4 spaces from the file margin.
+        let step_lines: Vec<&str> = content
+            .lines()
+            .filter(|l| l.trim_start().starts_with('{') && l.starts_with("    {"))
+            .collect();
+        assert!(
+            !step_lines.is_empty(),
+            "step opening braces should be indented 4 spaces:\n{content}"
+        );
     }
 }

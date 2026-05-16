@@ -165,6 +165,30 @@ fn redact_value(value: &Value, secrets: &HashMap<String, String>) -> Value {
     }
 }
 
+/// Scan a template string for `{{env.X}}` references and return a map of
+/// the referenced environment variable names to their current values.
+///
+/// Values that are undefined in the environment are silently skipped.
+/// This map is used to extend secret redaction to env-sourced values.
+pub fn collect_env_secrets(template: &str) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    let mut remaining = template;
+    while let Some(start) = remaining.find("{{") {
+        remaining = &remaining[start + 2..];
+        let Some(end) = remaining.find("}}") else {
+            break;
+        };
+        let expr = remaining[..end].trim();
+        remaining = &remaining[end + 2..];
+        if let Some(name) = expr.strip_prefix("env.")
+            && let Ok(val) = std::env::var(name)
+        {
+            result.insert(name.to_owned(), val);
+        }
+    }
+    result
+}
+
 /// Validate that all `{{vars.X}}` references in a string are defined.
 ///
 /// Used by `--dry-run` to catch missing variables before execution.

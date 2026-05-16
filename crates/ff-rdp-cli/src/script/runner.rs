@@ -22,7 +22,9 @@ use super::format::{
     NavigateStep, RunStep, ScreenshotStep, Script, ScriptFormat, Step, TypeStep, WaitStep,
 };
 use super::recorder::FileRecorder;
-use super::vars::{VarContext, check_undefined_vars, is_secret_name, substitute};
+use super::vars::{
+    VarContext, check_undefined_vars, collect_env_secrets, is_secret_name, substitute,
+};
 
 // ---------------------------------------------------------------------------
 // Run options
@@ -40,6 +42,8 @@ pub struct RunOptions<'a> {
     pub show_secrets: bool,
     /// Optional recorder for `--record <output>` mode.
     pub recorder: Option<FileRecorder>,
+    /// Fail the entire run if a recording step fails (default: log and continue).
+    pub record_strict: bool,
     /// Force a specific script format instead of detecting from file extension.
     pub format_override: Option<ScriptFormat>,
 }
@@ -52,6 +56,7 @@ impl Default for RunOptions<'_> {
             dry_run: false,
             show_secrets: false,
             recorder: None,
+            record_strict: false,
             format_override: None,
         }
     }
@@ -207,13 +212,19 @@ fn run_script(
             vars,
             call_stack,
             script.base_url.as_deref(),
+            script.default_timeout_ms,
         );
 
         let elapsed = u64::try_from(step_start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         match exec_result {
             Ok(result_value) => {
-                let redacted = super::vars::redact_secrets(&result_value, vars, opts.show_secrets);
+                // Build combined redaction set: script vars + env vars referenced in this step.
+                let env_secrets = collect_env_secrets_from_step(&resolved);
+                let mut combined_vars = vars.clone();
+                combined_vars.extend(env_secrets);
+                let redacted =
+                    super::vars::redact_secrets(&result_value, &combined_vars, opts.show_secrets);
                 let line = json!({
                     "step": step_num,
                     "verb": verb,
@@ -250,8 +261,13 @@ fn run_script(
         out.flush().ok();
 
         // If we have a recorder attached, record the step.
-        if let Some(ref mut rec) = opts.recorder {
-            rec.record(&resolved).ok();
+        if let Some(ref mut rec) = opts.recorder
+            && let Err(e) = rec.record(&resolved)
+        {
+            eprintln!("warning: recording step failed: {e}");
+            if opts.record_strict {
+                return Err(AppError::User(format!("recording step failed: {e}")));
+            }
         }
     }
 
@@ -574,6 +590,7 @@ fn deferred_iter62_check(step: &Step) -> Option<String> {
 // Step execution
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn execute_step(
     step: &Step,
     script_path: &Path,
@@ -582,16 +599,17 @@ fn execute_step(
     vars: &HashMap<String, String>,
     call_stack: &[PathBuf],
     base_url: Option<&str>,
+    default_timeout_ms: Option<u64>,
 ) -> Result<Value, AppError> {
     match step {
         Step::Navigate(s) => execute_navigate(s, cli, base_url),
         Step::Click(s) => execute_click(s, cli),
         Step::Type(s) => execute_type(s, cli, vars, opts.show_secrets),
-        Step::Wait(s) => execute_wait(s, cli),
-        Step::AssertText(s) => execute_assert_text(s, cli),
+        Step::Wait(s) => execute_wait(s, cli, default_timeout_ms),
+        Step::AssertText(s) => execute_assert_text(s, cli, default_timeout_ms),
         Step::AssertUrl(s) => execute_assert_url(s, cli),
         Step::AssertNoConsoleErrors(s) => execute_assert_no_console_errors(s, cli),
-        Step::AssertNetwork(s) => execute_assert_network(s, cli),
+        Step::AssertNetwork(s) => execute_assert_network(s, cli, default_timeout_ms),
         Step::Screenshot(s) => execute_screenshot(s, cli),
         Step::Eval(s) => execute_eval(s, cli),
         Step::Run(s) => execute_run(s, script_path, cli, opts, vars, call_stack),
@@ -603,7 +621,7 @@ fn execute_navigate(
     cli: &Cli,
     base_url: Option<&str>,
 ) -> Result<Value, AppError> {
-    use crate::commands::navigate::{WaitAfterNav, run as nav_run};
+    use crate::commands::navigate::{WaitAfterNav, run_core as nav_run_core};
 
     // Resolve relative URLs against the script's base_url.
     let effective_url = if let Some(base) = base_url
@@ -623,8 +641,7 @@ fn execute_navigate(
         wait_selector: step.wait_selector.as_deref(),
         wait_timeout: cli.timeout,
     };
-    nav_run(cli, &effective_url, &wait_opts)?;
-    Ok(json!({"navigated": effective_url}))
+    nav_run_core(cli, &effective_url, &wait_opts)
 }
 
 fn resolve_element_target_selector(
@@ -643,7 +660,7 @@ fn resolve_element_target_selector(
 }
 
 fn execute_click(step: &super::format::ElementStep, cli: &Cli) -> Result<Value, AppError> {
-    use crate::commands::click::{ClickOptions, run as click_run};
+    use crate::commands::click::{ClickOptions, run_core as click_run_core};
     let selector = resolve_element_target_selector(&step.target, cli, "click")?;
     let selector = selector.as_str();
 
@@ -658,7 +675,7 @@ fn execute_click(step: &super::format::ElementStep, cli: &Cli) -> Result<Value, 
         v
     };
 
-    click_run(
+    click_run_core(
         cli,
         selector,
         None,
@@ -667,8 +684,7 @@ fn execute_click(step: &super::format::ElementStep, cli: &Cli) -> Result<Value, 
             wait_for: &wait_for,
             ..Default::default()
         },
-    )?;
-    Ok(json!({"clicked": selector}))
+    )
 }
 
 fn execute_type(
@@ -677,11 +693,12 @@ fn execute_type(
     vars: &HashMap<String, String>,
     show_secrets: bool,
 ) -> Result<Value, AppError> {
-    use crate::commands::type_text::{TypeOptions, run as type_run};
+    use crate::commands::type_text::{TypeOptions, run_core as type_run_core};
     let selector = resolve_element_target_selector(&step.target, cli, "type")?;
     let selector = selector.as_str();
 
-    type_run(
+    // Call run_core which does not print — result is used for our NDJSON output.
+    type_run_core(
         cli,
         selector,
         &step.text,
@@ -717,24 +734,31 @@ fn is_secret_field_selector(selector: &str) -> bool {
         || lower.contains("[type='password']")
 }
 
-fn execute_wait(step: &WaitStep, cli: &Cli) -> Result<Value, AppError> {
-    use crate::commands::wait::{WaitOptions, run as wait_run};
-    let timeout = step.timeout.unwrap_or(cli.timeout);
+fn execute_wait(
+    step: &WaitStep,
+    cli: &Cli,
+    default_timeout_ms: Option<u64>,
+) -> Result<Value, AppError> {
+    use crate::commands::wait::{WaitOptions, run_core as wait_run_core};
+    let timeout = step.timeout.or(default_timeout_ms).unwrap_or(cli.timeout);
     let opts = WaitOptions {
         selector: step.selector.as_deref(),
         text: step.text.as_deref(),
         eval: step.eval.as_deref(),
         wait_timeout: timeout,
     };
-    wait_run(cli, &opts)?;
-    Ok(json!({"waited": true}))
+    wait_run_core(cli, &opts)
 }
 
-fn execute_assert_text(step: &AssertTextStep, cli: &Cli) -> Result<Value, AppError> {
+fn execute_assert_text(
+    step: &AssertTextStep,
+    cli: &Cli,
+    default_timeout_ms: Option<u64>,
+) -> Result<Value, AppError> {
     use crate::commands::connect_tab::connect_and_get_target;
     use crate::commands::js_helpers::{escape_selector, eval_or_bail, poll_js_condition};
 
-    let timeout = step.timeout.unwrap_or(cli.timeout);
+    let timeout = step.timeout.or(default_timeout_ms).unwrap_or(cli.timeout);
 
     let selector_escaped = escape_selector(&step.selector);
 
@@ -775,7 +799,7 @@ fn execute_assert_text(step: &AssertTextStep, cli: &Cli) -> Result<Value, AppErr
         ),
     )
     .map_err(|e| {
-        // Augment the error with diagnostics.
+        // Augment the error with structured diagnostics (E6).
         let diag_js = format!(
             "(function() {{ var el = document.querySelector('{selector_escaped}'); return el ? el.innerText : null; }})()"
         );
@@ -786,9 +810,10 @@ fn execute_assert_text(step: &AssertTextStep, cli: &Cli) -> Result<Value, AppErr
                 _ => None,
             });
         if let Some(actual) = actual_text {
-            AppError::User(format!(
-                "{e}\ndiagnostics: actual text was: {actual:?}"
-            ))
+            AppError::Diagnostics {
+                message: format!("{e}"),
+                payload: json!({"actual_text": actual}),
+            }
         } else {
             e
         }
@@ -903,7 +928,11 @@ fn execute_assert_no_console_errors(
     }
 }
 
-fn execute_assert_network(step: &AssertNetworkStep, cli: &Cli) -> Result<Value, AppError> {
+fn execute_assert_network(
+    step: &AssertNetworkStep,
+    cli: &Cli,
+    default_timeout_ms: Option<u64>,
+) -> Result<Value, AppError> {
     // Use the network command to get buffered events.
     use crate::commands::network::run_get_events;
 
@@ -914,7 +943,9 @@ fn execute_assert_network(step: &AssertNetworkStep, cli: &Cli) -> Result<Value, 
         ));
     }
 
-    let events = run_get_events(cli, step.timeout)?;
+    // Use step timeout, then script default, then CLI default.
+    let effective_timeout = step.timeout.or(default_timeout_ms);
+    let events = run_get_events(cli, effective_timeout)?;
 
     let matched = events.iter().any(|e| {
         let url = e.get("url").and_then(Value::as_str).unwrap_or("");
@@ -941,11 +972,11 @@ fn execute_assert_network(step: &AssertNetworkStep, cli: &Cli) -> Result<Value, 
         Ok(json!({"asserted": true, "matched": true}))
     } else {
         let desc = build_network_assert_desc(step);
-        Err(AppError::User(format!(
-            "assert_network: no matching network request found ({desc})\n\
-             diagnostics: {} events in buffer",
-            events.len()
-        )))
+        // E6: return structured diagnostics payload instead of embedding in the string.
+        Err(AppError::Diagnostics {
+            message: format!("assert_network: no matching network request found ({desc})"),
+            payload: json!({"events_in_buffer": events.len()}),
+        })
     }
 }
 
@@ -964,16 +995,14 @@ fn build_network_assert_desc(step: &AssertNetworkStep) -> String {
 }
 
 fn execute_screenshot(step: &ScreenshotStep, cli: &Cli) -> Result<Value, AppError> {
-    use crate::commands::screenshot::{ScreenshotOpts, run as screenshot_run};
-    let height = None;
+    use crate::commands::screenshot::{ScreenshotOpts, run_core as screenshot_run_core};
     let opts = ScreenshotOpts {
         output_path: step.output.as_deref(),
         base64_mode: step.base64,
         full_page: step.full_page,
-        viewport_height: height,
+        viewport_height: None,
     };
-    screenshot_run(cli, &opts)?;
-    Ok(json!({"screenshot": step.output.as_deref().unwrap_or("<base64>")}))
+    screenshot_run_core(cli, &opts)
 }
 
 fn execute_eval(step: &EvalStep, cli: &Cli) -> Result<Value, AppError> {
@@ -1016,7 +1045,8 @@ fn execute_run(
         bail_on_failure: opts.bail_on_failure,
         dry_run: opts.dry_run,
         show_secrets: opts.show_secrets,
-        recorder: None,        // Recorder is not inherited by sub-scripts.
+        recorder: None, // Recorder is not inherited by sub-scripts.
+        record_strict: opts.record_strict,
         format_override: None, // Sub-scripts detect their own format from extension.
     };
 
@@ -1024,16 +1054,29 @@ fn execute_run(
     Ok(json!({"ran": step.path}))
 }
 
-/// Extract structured diagnostics from an error, if available.
-fn extract_diagnostics(e: &AppError) -> Option<Value> {
-    let msg = e.to_string();
-    if msg.contains("diagnostics:") {
-        let parts: Vec<&str> = msg.splitn(2, "diagnostics:").collect();
-        if let Some(diag) = parts.get(1) {
-            return Some(Value::String(diag.trim().to_owned()));
-        }
+/// Collect environment variable values referenced in a step's string fields.
+///
+/// Used to extend secret redaction to `{{env.X}}` values that are not in the
+/// explicit `vars` map but may contain sensitive information (E5).
+fn collect_env_secrets_from_step(step: &Step) -> HashMap<String, String> {
+    let templates = collect_template_strings(step);
+    let mut result = HashMap::new();
+    for tmpl in &templates {
+        result.extend(collect_env_secrets(tmpl));
     }
-    None
+    result
+}
+
+/// Extract structured diagnostics from an error, if available.
+///
+/// Returns the `payload` field from `AppError::Diagnostics`.  All other error
+/// variants carry no structured diagnostics and return `None`.
+fn extract_diagnostics(e: &AppError) -> Option<Value> {
+    if let AppError::Diagnostics { payload, .. } = e {
+        Some(payload.clone())
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1105,5 +1148,51 @@ mod tests {
         assert!(is_secret_field_selector("input[type=\"password\"]"));
         assert!(is_secret_field_selector(".password-input"));
         assert!(!is_secret_field_selector("input[type='text']"));
+    }
+
+    // -----------------------------------------------------------------------
+    // E6: AppError::Diagnostics typed variant
+    // -----------------------------------------------------------------------
+
+    /// E6: extract_diagnostics returns the payload for the Diagnostics variant.
+    #[test]
+    fn e6_extract_diagnostics_returns_payload_for_diagnostics_variant() {
+        let err = AppError::Diagnostics {
+            message: "assertion failed".to_owned(),
+            payload: serde_json::json!({"actual_text": "not what we expected"}),
+        };
+        let diag = extract_diagnostics(&err);
+        assert!(
+            diag.is_some(),
+            "should extract diagnostics from Diagnostics variant"
+        );
+        let diag = diag.unwrap();
+        assert_eq!(diag["actual_text"], "not what we expected");
+    }
+
+    /// E6: extract_diagnostics returns None for non-Diagnostics variants.
+    #[test]
+    fn e6_extract_diagnostics_returns_none_for_user_error() {
+        let err = AppError::User("some user error".to_owned());
+        assert!(
+            extract_diagnostics(&err).is_none(),
+            "User variant should yield no diagnostics"
+        );
+    }
+
+    /// E6: AppError::Diagnostics display shows the message, not the payload.
+    #[test]
+    fn e6_diagnostics_display_shows_message() {
+        let err = AppError::Diagnostics {
+            message: "assert_text failed".to_owned(),
+            payload: serde_json::json!({"actual_text": "wrong"}),
+        };
+        let display = format!("{err}");
+        assert_eq!(display, "assert_text failed");
+        // The payload must not leak into the display string.
+        assert!(
+            !display.contains("wrong"),
+            "payload must not appear in Display output"
+        );
     }
 }
