@@ -1,5 +1,5 @@
 use crate::cli::args::{
-    A11yCommand, Cli, Command, DaemonCommand, DomCommand, PerfCommand, ScrollCommand,
+    A11yCommand, Cli, Command, DaemonCommand, DomCommand, PerfCommand, RecordCommand, ScrollCommand,
 };
 use crate::commands;
 use crate::commands::js_helpers::DispatchMode;
@@ -620,6 +620,64 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             DaemonCommand::Stop => crate::daemon::client::run_daemon_stop(cli),
         },
         Command::Doctor => commands::doctor::run(cli),
+        Command::Run {
+            script,
+            vars,
+            env_file,
+            continue_on_failure,
+            dry_run,
+            show_secrets,
+            record,
+            script_format,
+        } => {
+            // Parse --vars KEY=VALUE flags.
+            let mut extra_vars: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            for kv in vars {
+                if let Some((k, v)) = kv.split_once('=') {
+                    extra_vars.insert(k.to_owned(), v.to_owned());
+                } else {
+                    return Err(AppError::User(format!(
+                        "--vars must be in KEY=VALUE format, got: {kv:?}"
+                    )));
+                }
+            }
+            // Load --env-file if provided.
+            if let Some(env_path) = env_file {
+                let content = std::fs::read_to_string(env_path).map_err(|e| {
+                    AppError::User(format!("reading --env-file '{}': {e}", env_path.display()))
+                })?;
+                for line in content.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    if let Some((k, v)) = line.split_once('=') {
+                        extra_vars
+                            .entry(k.to_owned())
+                            .or_insert_with(|| v.to_owned());
+                    }
+                }
+            }
+
+            let opts = commands::run::RunCommandOpts {
+                script_path: script,
+                extra_vars,
+                bail_on_failure: !continue_on_failure,
+                dry_run: *dry_run,
+                show_secrets: *show_secrets,
+                record_output: record.as_deref(),
+                format_override: script_format.as_deref(),
+            };
+            commands::run::run(cli, &opts)
+        }
+        Command::Record { record_command } => match record_command {
+            RecordCommand::Start { output, name } => {
+                commands::record::run_start(output, name.as_deref())
+            }
+            RecordCommand::Stop => commands::record::run_stop(),
+            RecordCommand::Status => commands::record::run_status(),
+        },
         Command::InstallSkill(args) => {
             if !args.claude {
                 return Err(AppError::User(

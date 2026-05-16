@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ff-rdp Script Fixture</title>
+  <style>
+    body { font-family: sans-serif; max-width: 500px; margin: 2rem auto; }
+    .hidden { display: none; }
+    input { display: block; margin: 0.5rem 0; padding: 0.4rem; width: 100%; box-sizing: border-box; }
+    button { padding: 0.5rem 1rem; cursor: pointer; }
+    #error { color: red; margin-top: 0.5rem; }
+    #dashboard { display: none; }
+    #login-form { display: block; }
+  </style>
+</head>
+<body>
+
+  <!-- Login form -->
+  <div id="login-form">
+    <h1>Sign in</h1>
+    <input type="email" id="email" placeholder="Email" autocomplete="username" />
+    <input type="password" id="password" placeholder="Password" autocomplete="current-password" />
+    <button id="submit-btn" type="button">Log in</button>
+    <div id="error"></div>
+  </div>
+
+  <!-- Dashboard (shown after successful login) -->
+  <div id="dashboard">
+    <h1 id="dashboard-heading">Welcome, Agent</h1>
+    <p id="dashboard-body">You are now logged in.</p>
+  </div>
+
+  <script>
+    document.getElementById('submit-btn').addEventListener('click', function () {
+      var email = document.getElementById('email').value;
+      var password = document.getElementById('password').value;
+      var error = document.getElementById('error');
+
+      if (email === 'agent@example.com' && password === 'secret') {
+        document.getElementById('login-form').style.display = 'none';
+        document.getElementById('dashboard').style.display = 'block';
+        // Update URL to simulate a real navigation.
+        history.pushState({}, '', '/dashboard');
+        error.textContent = '';
+      } else {
+        error.textContent = 'Invalid credentials. Try agent@example.com / secret';
+      }
+    });
+  </script>
+</body>
+</html>

@@ -461,6 +461,71 @@ pub fn build_network_summary(
     summary
 }
 
+/// Return buffered network events as a JSON array.
+///
+/// Used by the script runner's `assert_network` step.
+pub fn run_get_events(cli: &Cli) -> Result<Vec<serde_json::Value>, crate::error::AppError> {
+    use super::network_events::{build_network_entries, drain_network_from_daemon, merge_updates};
+    use ff_rdp_core::{TabActor, WatcherActor};
+    use std::time::Duration;
+
+    let mut ctx = super::connect_tab::connect_and_get_target(cli)?;
+
+    let entries = if ctx.via_daemon {
+        let (resources, updates) = drain_network_from_daemon(ctx.transport_mut())?;
+        let update_map = merge_updates(updates);
+        build_network_entries(&resources, &update_map)
+    } else {
+        // Direct mode: subscribe, drain briefly, unsubscribe.
+        let tab_actor = ctx.target_tab_actor().clone();
+        let watcher_actor = TabActor::get_watcher(ctx.transport_mut(), &tab_actor)
+            .map_err(crate::error::AppError::from)?;
+        WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
+            .map_err(crate::error::AppError::from)?;
+
+        let (resources, updates, _) = super::network_events::drain_network_events_timed(
+            ctx.transport_mut(),
+            Duration::from_millis(500),
+        )
+        .map_err(crate::error::AppError::from)?;
+
+        let _ = WatcherActor::unwatch_resources(
+            ctx.transport_mut(),
+            &watcher_actor,
+            &["network-event"],
+        );
+
+        let update_map = merge_updates(updates);
+        build_network_entries(&resources, &update_map)
+    };
+
+    // Convert to plain JSON array.
+    let json_entries: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| {
+            let url = e
+                .get("url")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let status = e
+                .get("status")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let method_val = e
+                .get("method")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            serde_json::json!({
+                "url": url,
+                "status": status,
+                "method": method_val,
+            })
+        })
+        .collect();
+
+    Ok(json_entries)
+}
+
 /// Stream network events in real time.
 ///
 /// Subscribes to `network-event` resources via the WatcherActor (direct mode)

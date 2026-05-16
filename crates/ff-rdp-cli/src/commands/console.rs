@@ -169,6 +169,53 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
         .map_err(AppError::from)
 }
 
+/// Return all cached console error messages as a JSON array.
+///
+/// Used by the script runner's `assert_no_console_errors` step.  Returns
+/// only messages with `level == "error"`.
+pub fn run_get_errors(cli: &Cli) -> Result<Vec<serde_json::Value>, crate::error::AppError> {
+    let mut ctx = connect_and_get_target(cli)?;
+    let console_actor = ctx.target.console_actor.clone();
+
+    if let Err(e) = WebConsoleActor::start_listeners(
+        ctx.transport_mut(),
+        &console_actor,
+        &["PageError", "ConsoleAPI"],
+    ) && cli.is_verbose()
+    {
+        eprintln!("debug: startListeners failed: {e}");
+    }
+
+    let messages = match WebConsoleActor::get_cached_messages(
+        ctx.transport_mut(),
+        &console_actor,
+        &["PageError", "ConsoleAPI"],
+    ) {
+        Ok(msgs) => msgs,
+        Err(_) => WebConsoleActor::get_cached_messages(
+            ctx.transport_mut(),
+            &console_actor,
+            &["ConsoleAPI"],
+        )
+        .map_err(crate::error::AppError::from)?,
+    };
+
+    let errors: Vec<serde_json::Value> = messages
+        .into_iter()
+        .filter(|m| m.level.eq_ignore_ascii_case("error"))
+        .map(|m| {
+            serde_json::json!({
+                "level": m.level,
+                "message": m.message,
+                "source": m.source,
+                "line": m.line,
+            })
+        })
+        .collect();
+
+    Ok(errors)
+}
+
 /// Stream console messages in real time until the connection is closed.
 ///
 /// Subscribes to `console-message` and `error-message` resource types via the

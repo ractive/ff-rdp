@@ -11,6 +11,7 @@ mod output;
 mod output_controls;
 mod output_pipeline;
 mod port_owner;
+mod script;
 mod tab_target;
 
 use cli::Cli;

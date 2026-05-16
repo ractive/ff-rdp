@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ff-rdp.dev/schemas/script/v1.json",
+  "title": "ff-rdp Script",
+  "description": "A replayable ff-rdp script. JSON (default) or YAML accepted as input.",
+  "type": "object",
+  "required": ["version", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "const": "https://ff-rdp.dev/schemas/script/v1.json"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Script format version. Must be 1."
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable script name."
+    },
+    "base_url": {
+      "type": "string",
+      "description": "Base URL prepended to relative URLs in navigate steps."
+    },
+    "vars": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Default variable values. Overridable via --vars KEY=VALUE."
+    },
+    "metadata": {
+      "description": "Optional opaque metadata (not interpreted by the runner)."
+    },
+    "steps": {
+      "type": "array",
+      "description": "Ordered list of steps to execute.",
+      "items": { "$ref": "#/$defs/Step" }
+    }
+  },
+  "$defs": {
+    "ElementTarget": {
+      "type": "object",
+      "description": "Exactly one of selector, ref, page_map, field must be set.",
+      "properties": {
+        "selector": { "type": "string", "description": "Raw CSS selector." },
+        "ref": { "type": "string", "description": "Iter-60 runtime ref ID (e.g. 'e23')." },
+        "page_map": { "type": "string", "description": "Page-map path (iter-62)." },
+        "field": { "type": "string", "description": "Page-map field shorthand (iter-62)." }
+      }
+    },
+    "Step": {
+      "type": "object",
+      "description": "A single script step — one verb key, one value.",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "navigate": {
+          "type": "object",
+          "required": ["url"],
+          "additionalProperties": false,
+          "properties": {
+            "url": { "type": "string", "description": "URL to navigate to." },
+            "wait_text": { "type": "string", "description": "Wait for this text after navigation." },
+            "wait_selector": { "type": "string", "description": "Wait for this CSS selector after navigation." }
+          }
+        },
+        "click": {
+          "type": "object",
+          "description": "Click a DOM element.",
+          "allOf": [{ "$ref": "#/$defs/ElementTarget" }],
+          "properties": {
+            "selector": {},
+            "ref": {},
+            "page_map": {},
+            "field": {},
+            "wait_for_text": { "type": "string" },
+            "wait_for_selector": { "type": "string" }
+          }
+        },
+        "type": {
+          "type": "object",
+          "description": "Type text into a DOM element.",
+          "required": ["text"],
+          "allOf": [{ "$ref": "#/$defs/ElementTarget" }],
+          "properties": {
+            "selector": {},
+            "ref": {},
+            "page_map": {},
+            "field": {},
+            "text": { "type": "string", "description": "Text to type." },
+            "clear": { "type": "boolean", "default": false, "description": "Clear the field before typing." },
+            "secret": { "type": "boolean", "default": false, "description": "Suppress value in output." }
+          }
+        },
+        "wait": {
+          "type": "object",
+          "description": "Wait for a condition.",
+          "properties": {
+            "selector": { "type": "string" },
+            "text": { "type": "string" },
+            "eval": { "type": "string" },
+            "timeout": { "type": "integer", "description": "Timeout in ms." }
+          }
+        },
+        "assert_text": {
+          "type": "object",
+          "description": "Assert text content of an element.",
+          "required": ["selector"],
+          "additionalProperties": false,
+          "properties": {
+            "selector": { "type": "string" },
+            "contains": { "type": "string", "description": "Assert text contains this substring." },
+            "equals": { "type": "string", "description": "Assert text equals this exactly." },
+            "not": { "type": "boolean", "default": false, "description": "Negate the assertion." },
+            "timeout": { "type": "integer" }
+          }
+        },
+        "assert_url": {
+          "type": "object",
+          "description": "Assert the current URL.",
+          "additionalProperties": false,
+          "properties": {
+            "matches": { "type": "string", "description": "Regex to match against the URL." },
+            "equals": { "type": "string", "description": "Exact URL to match." }
+          }
+        },
+        "assert_no_console_errors": {
+          "type": "object",
+          "description": "Assert no console errors are present.",
+          "additionalProperties": false,
+          "properties": {
+            "ignore_patterns": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Substrings to ignore in console errors."
+            }
+          }
+        },
+        "assert_network": {
+          "type": "object",
+          "description": "Assert a network request matching criteria occurred.",
+          "additionalProperties": false,
+          "properties": {
+            "url_contains": { "type": "string" },
+            "status": { "type": "integer" },
+            "method": { "type": "string" },
+            "api_route": { "type": "string", "description": "Page-map API route ref (iter-62)." }
+          }
+        },
+        "screenshot": {
+          "type": "object",
+          "description": "Capture a screenshot.",
+          "additionalProperties": false,
+          "properties": {
+            "output": { "type": "string", "description": "File path to write the screenshot." },
+            "base64": { "type": "boolean", "default": false },
+            "full_page": { "type": "boolean", "default": false }
+          }
+        },
+        "eval": {
+          "type": "object",
+          "description": "Evaluate JavaScript in the page.",
+          "required": ["script"],
+          "additionalProperties": false,
+          "properties": {
+            "script": { "type": "string" },
+            "stringify": { "type": "boolean", "default": false }
+          }
+        },
+        "run": {
+          "type": "object",
+          "description": "Execute a nested script.",
+          "required": ["path"],
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string", "description": "Path to the sub-script." },
+            "with": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "description": "Variable overrides for the sub-script."
+            }
+          }
+        }
+      }
+    }
+  }
+}
