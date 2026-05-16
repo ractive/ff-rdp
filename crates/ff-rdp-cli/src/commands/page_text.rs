@@ -31,7 +31,12 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
-    let envelope = output::envelope(&json!(text), 1, &meta);
+    // Include `.text` as a convenience alias for `.results` (C1: back-compat
+    // for scripts using `--jq '.text'`).
+    let mut envelope = output::envelope(&json!(text), 1, &meta);
+    if let Some(obj) = envelope.as_object_mut() {
+        obj.insert("text".to_owned(), json!(text));
+    }
 
     let hint_ctx = HintContext::new(HintSource::PageText);
     OutputPipeline::from_cli(cli)?

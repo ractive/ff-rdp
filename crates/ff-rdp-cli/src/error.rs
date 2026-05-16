@@ -13,6 +13,16 @@ pub enum AppError {
     Connection(String),
     /// Operation timed out — exit 124
     Timeout(String),
+    /// Assertion failure with a structured diagnostics payload.
+    ///
+    /// The `message` field is the human-readable failure description; `payload`
+    /// is a `serde_json::Value` that the script runner surfaces as
+    /// `"diagnostics"` in the NDJSON step output.  Using a typed variant avoids
+    /// embedding diagnostics in the error string and parsing them back out.
+    Diagnostics {
+        message: String,
+        payload: serde_json::Value,
+    },
 }
 
 impl fmt::Display for AppError {
@@ -21,6 +31,7 @@ impl fmt::Display for AppError {
             Self::Internal(err) => write!(f, "{err:#}"),
             Self::Exit(code) => write!(f, "exit with code {code}"),
             Self::User(msg) | Self::Connection(msg) | Self::Timeout(msg) => write!(f, "{msg}"),
+            Self::Diagnostics { message, .. } => write!(f, "{message}"),
         }
     }
 }

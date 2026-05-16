@@ -58,7 +58,14 @@ impl WaitAfterNav<'_> {
     }
 }
 
-pub fn run(cli: &Cli, url: &str, wait_opts: &WaitAfterNav<'_>) -> Result<(), AppError> {
+/// Navigate to `url` and return the result value without printing.
+///
+/// Called by the script runner, which handles its own NDJSON output.
+pub fn run_core(
+    cli: &Cli,
+    url: &str,
+    wait_opts: &WaitAfterNav<'_>,
+) -> Result<serde_json::Value, AppError> {
     if !cli.allow_unsafe_urls {
         validate_url(url)?;
     }
@@ -76,6 +83,11 @@ pub fn run(cli: &Cli, url: &str, wait_opts: &WaitAfterNav<'_>) -> Result<(), App
     {
         obj.insert("wait".to_string(), w);
     }
+    Ok(result)
+}
+
+pub fn run(cli: &Cli, url: &str, wait_opts: &WaitAfterNav<'_>) -> Result<(), AppError> {
+    let result = run_core(cli, url, wait_opts)?;
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,

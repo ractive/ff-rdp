@@ -27,13 +27,16 @@ pub struct TypeOptions<'a> {
     pub settle: bool,
 }
 
-pub fn run(
+/// Type text into a DOM element and return the result value without printing.
+///
+/// Called by the script runner, which handles its own NDJSON output.
+pub fn run_core(
     cli: &Cli,
     selector: &str,
     text: &str,
     clear: bool,
     opts: &TypeOptions<'_>,
-) -> Result<(), AppError> {
+) -> Result<serde_json::Value, AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
@@ -49,12 +52,6 @@ pub fn run(
         .map_err(|e| AppError::from(anyhow::anyhow!("failed to encode text argument: {e}")))?;
     let clear_flag_js = if clear { "true" } else { "false" };
 
-    // React/Vue/Svelte track input values via a hidden tracker on the element
-    // (see React's input-value-tracking module).  Setting `el.value = ...`
-    // directly bypasses the framework setter, so the change is silently
-    // discarded.  We look up the native prototype setter on each invocation
-    // and call it to invalidate the tracker, then dispatch the synthetic
-    // `input`/`change` events the framework listeners expect.
     let js = format!(
         r#"(function() {{
   "use strict";
@@ -102,10 +99,23 @@ pub fn run(
         wait_for_predicates(&mut ctx, &console_actor, &predicates, wf_timeout)?;
     }
 
-    let mut meta = json!({"selector": selector});
+    let mut result = result_json;
     if let Some(sm) = settle_method {
-        meta["settle_method"] = json!(sm.as_meta_str());
+        result["settle_method"] = json!(sm.as_meta_str());
     }
+    Ok(result)
+}
+
+pub fn run(
+    cli: &Cli,
+    selector: &str,
+    text: &str,
+    clear: bool,
+    opts: &TypeOptions<'_>,
+) -> Result<(), AppError> {
+    let result_json = run_core(cli, selector, text, clear, opts)?;
+
+    let mut meta = json!({"selector": selector});
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,

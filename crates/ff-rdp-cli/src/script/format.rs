@@ -42,6 +42,12 @@ pub struct Script {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 
+    /// Default timeout in milliseconds for steps that have a `timeout` field
+    /// but do not set one explicitly.  Overrides the CLI `--timeout` default
+    /// only for this script's steps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_timeout_ms: Option<u64>,
+
     /// Steps to execute, in order.
     pub steps: Vec<Step>,
 }

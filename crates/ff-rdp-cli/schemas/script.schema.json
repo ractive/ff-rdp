@@ -29,6 +29,11 @@
       "additionalProperties": { "type": "string" },
       "description": "Default variable values. Overridable via --vars KEY=VALUE."
     },
+    "default_timeout_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Default timeout in milliseconds for steps that support timeout but do not set one explicitly (assert_text, wait, assert_network)."
+    },
     "metadata": {
       "description": "Optional opaque metadata (not interpreted by the runner)."
     },

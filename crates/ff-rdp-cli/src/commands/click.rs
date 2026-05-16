@@ -53,13 +53,16 @@ impl Default for ClickOptions<'_> {
     }
 }
 
-pub fn run(
+/// Click a DOM element and return the result value without printing.
+///
+/// Called by the script runner, which handles its own NDJSON output.
+pub fn run_core(
     cli: &Cli,
     selector: &str,
     wait_for_network: Option<&str>,
     network_timeout: Option<u64>,
     opts: &ClickOptions<'_>,
-) -> Result<(), AppError> {
+) -> Result<Value, AppError> {
     let mut ctx = connect_and_get_target(cli)?;
 
     // When --wait-for-network is requested in direct mode, subscribe to the
@@ -143,11 +146,22 @@ pub fn run(
     if let Some(net) = network_result {
         result["network"] = net;
     }
+    if let Some(sm) = settle_method {
+        result["settle_method"] = json!(sm.as_meta_str());
+    }
+    Ok(result)
+}
+
+pub fn run(
+    cli: &Cli,
+    selector: &str,
+    wait_for_network: Option<&str>,
+    network_timeout: Option<u64>,
+    opts: &ClickOptions<'_>,
+) -> Result<(), AppError> {
+    let result = run_core(cli, selector, wait_for_network, network_timeout, opts)?;
 
     let mut meta = json!({"selector": selector});
-    if let Some(sm) = settle_method {
-        meta["settle_method"] = json!(sm.as_meta_str());
-    }
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,

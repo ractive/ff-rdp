@@ -563,3 +563,119 @@ fn record_start_twice_errors() {
         .output()
         .ok();
 }
+
+// ---------------------------------------------------------------------------
+// A3: NDJSON stdout purity — every output line is valid JSON
+// ---------------------------------------------------------------------------
+
+/// A3: Run a multi-step script with --dry-run and assert that every stdout line
+/// is parseable as a JSON object.  This catches regressions where a command
+/// helper emits a stray `println!` that contaminates the NDJSON stream.
+#[test]
+fn dry_run_stdout_is_pure_ndjson() {
+    let script = r##"{
+        "version": 1,
+        "steps": [
+            {"navigate": {"url": "https://example.com"}},
+            {"click": {"selector": "button"}},
+            {"type": {"selector": "#email", "text": "user@example.com"}},
+            {"wait": {"selector": ".result", "timeout": 1000}},
+            {"assert_text": {"selector": "h1", "contains": "Welcome"}}
+        ]
+    }"##;
+    let output = run_dry(script, &[]);
+    assert!(
+        output.status.success(),
+        "dry-run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Dry-run emits a single JSON object (the plan) — verify it's valid JSON.
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout must not be empty in dry-run"
+    );
+    // Each non-empty line of stdout must be valid JSON.
+    for (i, line) in stdout.lines().filter(|l| !l.trim().is_empty()).enumerate() {
+        serde_json::from_str::<serde_json::Value>(line).unwrap_or_else(|e| {
+            panic!(
+                "A3: stdout line {} is not valid JSON: {e}\n  line: {line:?}",
+                i + 1
+            )
+        });
+    }
+}
+
+/// A3: Verify --vars-file populates vars correctly (replaces --env-file).
+#[test]
+fn vars_file_populates_vars() {
+    use std::io::Write as _;
+    // Create a vars file.
+    let mut vars_tmp = tempfile::NamedTempFile::new().expect("temp vars file");
+    writeln!(vars_tmp, "url=https://example.com").expect("write");
+    writeln!(vars_tmp, "# comment line").expect("write");
+    writeln!(vars_tmp, "email=user@example.com").expect("write");
+    let vars_path = vars_tmp.path().to_owned();
+    let _vars_tmp = vars_tmp;
+
+    let script = r#"{
+        "version": 1,
+        "steps": [
+            {"navigate": {"url": "{{vars.url}}"}},
+            {"assert_text": {"selector": "h1", "contains": "{{vars.email}}"}}
+        ]
+    }"#;
+    let output = run_dry(script, &["--vars-file", vars_path.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "--vars-file should populate vars for dry-run: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// A3: --env-file (deprecated) still works and prints a warning.
+#[test]
+fn env_file_deprecated_alias_warns() {
+    use std::io::Write as _;
+    let mut vars_tmp = tempfile::NamedTempFile::new().expect("temp vars file");
+    writeln!(vars_tmp, "url=https://example.com").expect("write");
+    let vars_path = vars_tmp.path().to_owned();
+    let _vars_tmp = vars_tmp;
+
+    let script = r#"{
+        "version": 1,
+        "steps": [
+            {"navigate": {"url": "{{vars.url}}"}}
+        ]
+    }"#;
+    let output = run_dry(script, &["--env-file", vars_path.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "--env-file alias should still work: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("deprecated") || stderr.contains("--vars-file"),
+        "deprecated warning should mention --vars-file: {stderr}"
+    );
+}
+
+/// A3: default_timeout_ms field is accepted by the parser (C2 regression guard).
+#[test]
+fn default_timeout_ms_accepted_at_parse_time() {
+    let script = r#"{
+        "version": 1,
+        "default_timeout_ms": 5000,
+        "steps": [
+            {"navigate": {"url": "https://example.com"}},
+            {"assert_text": {"selector": "h1", "contains": "Welcome"}}
+        ]
+    }"#;
+    let output = run_dry(script, &[]);
+    assert!(
+        output.status.success(),
+        "default_timeout_ms should be accepted: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

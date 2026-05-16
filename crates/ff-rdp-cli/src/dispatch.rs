@@ -180,15 +180,23 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
             wait_text: wait_text.clone(),
             wait_selector: wait_selector.clone(),
         })),
-        Command::Click { .. } => {
+        Command::Click { wait_for, .. } => {
             let sel = resolved_selector?;
+            // Extract the first `text:<value>` and `selector:<value>` predicates
+            // from `--wait-for` so they round-trip faithfully in recorded scripts.
+            let wait_for_text = wait_for
+                .iter()
+                .find_map(|p| p.strip_prefix("text:").map(str::to_owned));
+            let wait_for_selector = wait_for
+                .iter()
+                .find_map(|p| p.strip_prefix("selector:").map(str::to_owned));
             Some(Step::Click(ElementStep {
                 target: ElementTarget {
                     selector: Some(sel.to_owned()),
                     ..Default::default()
                 },
-                wait_for_text: None,
-                wait_for_selector: None,
+                wait_for_text,
+                wait_for_selector,
             }))
         }
         Command::Type {
@@ -213,18 +221,27 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
             selector,
             text,
             eval,
+            wait_timeout,
             ..
         } => {
-            // Record whichever condition was used.
+            // Record whichever condition was used, including the explicit timeout.
             if selector.is_some() || text.is_some() || eval.is_some() || resolved_selector.is_some()
             {
+                // Record the timeout only when it differs from the default (5000 ms)
+                // so that scripts stay clean when the user didn't explicitly set it.
+                const DEFAULT_WAIT_TIMEOUT_MS: u64 = 5000;
+                let recorded_timeout = if *wait_timeout == DEFAULT_WAIT_TIMEOUT_MS {
+                    None
+                } else {
+                    Some(*wait_timeout)
+                };
                 Some(Step::Wait(crate::script::format::WaitStep {
                     selector: resolved_selector
                         .map(str::to_owned)
                         .or_else(|| selector.clone()),
                     text: text.clone(),
                     eval: eval.clone(),
-                    timeout: None,
+                    timeout: recorded_timeout,
                 }))
             } else {
                 None
@@ -788,11 +805,13 @@ fn dispatch_inner(
         Command::Run {
             script,
             vars,
+            vars_file,
             env_file,
             continue_on_failure,
             dry_run,
             show_secrets,
             record,
+            record_strict,
             script_format,
         } => {
             // Parse --vars KEY=VALUE flags.
@@ -807,10 +826,25 @@ fn dispatch_inner(
                     )));
                 }
             }
-            // Load --env-file if provided.
-            if let Some(env_path) = env_file {
-                let content = std::fs::read_to_string(env_path).map_err(|e| {
-                    AppError::User(format!("reading --env-file '{}': {e}", env_path.display()))
+
+            // Resolve vars file: --vars-file takes priority; --env-file is deprecated alias.
+            let effective_vars_file = vars_file.as_deref().or_else(|| {
+                if env_file.is_some() {
+                    eprintln!(
+                        "warning: --env-file is deprecated; use --vars-file instead \
+                         (values go to {{{{vars.X}}}}, not the process environment)"
+                    );
+                }
+                env_file.as_deref()
+            });
+
+            // Load --vars-file / --env-file if provided.
+            if let Some(vars_path) = effective_vars_file {
+                let content = std::fs::read_to_string(vars_path).map_err(|e| {
+                    AppError::User(format!(
+                        "reading --vars-file '{}': {e}",
+                        vars_path.display()
+                    ))
                 })?;
                 for (line_num, raw_line) in content.lines().enumerate() {
                     let line = raw_line.trim();
@@ -818,13 +852,14 @@ fn dispatch_inner(
                         continue;
                     }
                     if let Some((k, v)) = line.split_once('=') {
+                        // Push secret values into extra_vars so they are auto-redacted.
                         extra_vars
                             .entry(k.to_owned())
                             .or_insert_with(|| v.to_owned());
                     } else {
                         return Err(AppError::User(format!(
-                            "--env-file '{}' line {}: expected KEY=VALUE, got: {line:?}",
-                            env_path.display(),
+                            "--vars-file '{}' line {}: expected KEY=VALUE, got: {line:?}",
+                            vars_path.display(),
                             line_num + 1
                         )));
                     }
@@ -838,6 +873,7 @@ fn dispatch_inner(
                 dry_run: *dry_run,
                 show_secrets: *show_secrets,
                 record_output: record.as_deref(),
+                record_strict: *record_strict,
                 format_override: script_format.as_deref(),
             };
             commands::run::run(cli, &opts)

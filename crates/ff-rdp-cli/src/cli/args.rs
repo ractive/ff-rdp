@@ -1073,8 +1073,11 @@ Examples:
         /// Ad-hoc variable overrides (format: KEY=VALUE)
         #[arg(long = "vars", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
         vars: Vec<String>,
-        /// Load variables from a dotenv-style file
-        #[arg(long = "env-file", value_name = "PATH")]
+        /// Load variables from a dotenv-style file (values go to {{vars.X}}, not the process env)
+        #[arg(long = "vars-file", value_name = "PATH")]
+        vars_file: Option<std::path::PathBuf>,
+        /// Deprecated alias for --vars-file (will be removed in a future release)
+        #[arg(long = "env-file", value_name = "PATH", hide = true)]
         env_file: Option<std::path::PathBuf>,
         /// Continue running steps after a failure (default: stop on first failure)
         #[arg(long = "continue-on-failure")]
@@ -1088,6 +1091,9 @@ Examples:
         /// Record executed steps to this file
         #[arg(long = "record", value_name = "OUTPUT")]
         record: Option<std::path::PathBuf>,
+        /// Fail the run if recording a step fails (default: log to stderr and continue)
+        #[arg(long = "record-strict")]
+        record_strict: bool,
         /// Force a specific input format (json|yaml), overriding file extension detection
         #[arg(long = "script-format", value_name = "FORMAT")]
         script_format: Option<String>,

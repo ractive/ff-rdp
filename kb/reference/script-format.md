@@ -116,18 +116,36 @@ inspection commands produce no step in the recording.
 | `back` | |
 | `forward` | |
 
+## Script-level options
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `version` | `1` | Must be `1` |
+| `name` | string | Human-readable name |
+| `base_url` | string | Prefix for relative `navigate` URLs |
+| `vars` | object | Default variable values |
+| `default_timeout_ms` | number | Default timeout (ms) for steps that have a `timeout` field but don't set it explicitly.  Avoids repeating `"timeout": 10000` on every `assert_text` in a slow-loading script. |
+| `metadata` | object | Opaque metadata (ignored by runner) |
+| `steps` | array | Steps to execute |
+
 ## Variable substitution
 
 Syntax: `{{env.NAME}}`, `{{vars.NAME}}`, `{{steps[N].results.FIELD}}`
 
-- `env.NAME` — reads an environment variable.
-- `vars.NAME` — reads from the script's `vars:` section or `--vars` flags.
+- `env.NAME` — reads an environment variable.  Values from env vars with
+  secret-shaped names (matching `*password*`, `*token*`, `*secret*`, etc.)
+  are automatically redacted from step output.
+- `vars.NAME` — reads from the script's `vars:` section or `--vars` /
+  `--vars-file` overrides.  Secret-shaped names are auto-redacted.
 - `steps[N].results.FIELD` — reads a field from step N's result object
   (N is 1-based).  E.g. `{{steps[1].results.url}}` reads the `url` field
   from the first step's result.
 
-Variables matching `*password*`, `*token*`, `*secret*` are redacted in
-step output unless `--show-secrets` is passed.
+Variables matching `*password*`, `*token*`, `*secret*`, `*key*`, `*passwd*`,
+`*pwd*` are redacted in step output unless `--show-secrets` is passed.
+The `--vars-file PATH` flag loads a dotenv-style `KEY=VALUE` file; values go
+to `{{vars.KEY}}` (not the process environment).  `--env-file` is a deprecated
+alias for `--vars-file`.
 
 `--dry-run` validates all variable references and reports missing ones
 before executing anything.
@@ -180,12 +198,104 @@ The runner detects cycles and errors out cleanly (no stack overflow).
 
 - `assert_text`: polls (with timeout) until the condition is met, using
   iter-59 auto-wait semantics.  On failure, `diagnostics` field contains
-  the actual observed text.
+  the actual observed text.  Respects `default_timeout_ms` if no step-level
+  `timeout` is set.
 - `assert_url`: fetches `window.location.href` and checks against
   `matches` (regex) or `equals` (exact string).
 - `assert_no_console_errors`: checks the console buffer for error-level
   messages; filterable via `ignore_patterns`.
 - `assert_network`: scans buffered network events for a matching entry.
+  Respects `default_timeout_ms` if no step-level `timeout` is set.
+
+## Password-shaped selectors
+
+When recording a `type` step into a selector that contains `password` or
+`passwd` (case-insensitive), the recorder automatically sets `"secret": true`
+on the recorded step.  This prevents the typed text from appearing in replay
+output.
+
+Override with `"secret": false` in the script if you are intentionally typing
+a non-secret value into a password-shaped field.
+
+## `page-text` output
+
+`ff-rdp page-text` emits:
+
+```json
+{"results": "<full page text>", "text": "<same>", "total": 1}
+```
+
+Both `.results` and `.text` are aliases for the same value.  Use
+`--jq '.results'` or `--jq '.text'` — both work.
+
+## Recipes
+
+### Login and assert
+
+```json
+{
+  "$schema": "https://ff-rdp.dev/schemas/script/v1.json",
+  "version": 1,
+  "name": "Login and assert dashboard",
+  "default_timeout_ms": 10000,
+  "vars": {"url": "https://app.example.com", "email": "user@example.com"},
+  "steps": [
+    {"navigate": {"url": "{{vars.url}}/login"}},
+    {"type": {"selector": "input[name=email]", "text": "{{vars.email}}", "clear": true}},
+    {"type": {"selector": "input[type=password]", "text": "{{vars.password}}", "clear": true}},
+    {"click": {"selector": "button[type=submit]", "wait_for_text": "Dashboard"}},
+    {"assert_text": {"selector": "h1", "contains": "Dashboard"}},
+    {"assert_url": {"matches": "/dashboard"}}
+  ]
+}
+```
+
+Run: `ff-rdp run login.json --vars password=secret`
+
+### Navigate and screenshot
+
+```json
+{
+  "version": 1,
+  "steps": [
+    {"navigate": {"url": "https://example.com"}},
+    {"wait": {"selector": "body", "timeout": 3000}},
+    {"screenshot": {"output": "screenshot.png"}}
+  ]
+}
+```
+
+Run: `ff-rdp run screenshot.json`
+
+### Record then replay
+
+```sh
+ff-rdp record start session.json
+ff-rdp navigate https://app.example.com/login
+ff-rdp type "input[name=email]" --text user@example.com --clear
+ff-rdp type "input[type=password]" --text secret --clear
+ff-rdp click "button[type=submit]"
+ff-rdp record stop
+# Replay:
+ff-rdp run session.json --vars password=secret
+```
+
+### Secret from env
+
+```json
+{
+  "version": 1,
+  "steps": [
+    {"navigate": {"url": "{{vars.url}}"}},
+    {"type": {"selector": "input[type=password]", "text": "{{env.APP_PASSWORD}}", "clear": true}}
+  ]
+}
+```
+
+Run: `APP_PASSWORD=secret ff-rdp run flow.json --vars url=https://app.example.com`
+
+The `{{env.APP_PASSWORD}}` value is automatically redacted from step output
+because `APP_PASSWORD` matches the `*password*` pattern.
 
 ## Examples
 

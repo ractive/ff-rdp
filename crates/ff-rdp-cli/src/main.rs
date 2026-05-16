@@ -120,6 +120,13 @@ fn main() {
             eprintln!("error: {msg}");
             std::process::exit(124);
         }
+        Err(AppError::Diagnostics { message, .. }) => {
+            // Assertion failure with structured diagnostics — exit 1.
+            // The diagnostics payload is already surfaced in the NDJSON step output
+            // by the script runner; the CLI-level error just shows the message.
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
     }
 }
 
