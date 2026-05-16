@@ -2,7 +2,7 @@
 title: "Iteration 61d: recorder --timeout capture + headless screenshot + formatting nit"
 type: iteration
 date: 2026-05-16
-status: planned
+status: in_progress
 branch: iter-61d/recorder-timeout-screenshot
 depends_on: [iteration-61c-runner-secret-leak-fixes]
 tags:
@@ -55,7 +55,7 @@ Themes:
 ### A. Recorder `--timeout` capture for `wait`
 
 #### A1. Find the gap — **trivial**
-- [ ] Locate the `wait` arm in the recorder's `Command →
+- [x] Locate the `wait` arm in the recorder's `Command →
   Option<Step>` mapper (added in iter-61b A1, likely in
   `crates/ff-rdp-cli/src/script/recorder.rs` or
   `crates/ff-rdp-cli/src/cli/args.rs`). Verify whether it reads
@@ -63,21 +63,21 @@ Themes:
   evidence strongly suggests it doesn't.
 
 #### A2. Write the field — **trivial**
-- [ ] When the recorded `wait` step has a `--timeout <ms>` argument
+- [x] When the recorded `wait` step has a `--timeout <ms>` argument
   *and that value differs from the default*, write it as
   `wait.timeout` in the recorded JSON. (Skipping defaults keeps
   recorded files terse — a hand-authored script wouldn't write the
   default either.)
-- [ ] Same for `--text` and `--eval` waits — verify each preserves
+- [x] Same for `--text` and `--eval` waits — verify each preserves
   its `timeout` round-trip.
 
 #### A3. Test — **required**
-- [ ] Add `tests/e2e/recorder.rs::recorder_captures_wait_timeout`:
+- [x] Add `tests/e2e/recorder.rs::recorder_captures_wait_timeout`:
   ```rust
   // record `wait --selector body --timeout 5000`,
   // parse the recorded file, assert step has `timeout: 5000`.
   ```
-- [ ] Add `tests/e2e/recorder.rs::recorder_omits_default_timeout`:
+- [x] Add `tests/e2e/recorder.rs::recorder_omits_default_timeout`:
   ```rust
   // record `wait --selector body` (no --timeout),
   // assert step has no `timeout` field.
@@ -85,24 +85,27 @@ Themes:
 - [ ] Add a round-trip e2e: record a wait with a small non-default
   timeout (e.g. 100 ms), replay, assert the replay actually used
   the small timeout (catch via measured elapsed_ms or a deliberately
-  unmet condition that fails fast).
+  unmet condition that fails fast). _Deferred — the e2e mock-server
+  harness asserts on the recorded JSON; round-trip replay timing
+  verification needs a live Firefox or a new mock-server hook and is
+  better tracked as a follow-up._
 
 ### B. Headless screenshot on Firefox builds with silent greeting
 
 #### B1. Reproduce — **investigation**
-- [ ] Use the wardrobe-assistants Firefox PID (or relaunch with the
+- [x] Use the wardrobe-assistants Firefox PID (or relaunch with the
   same flags `ff-rdp launch --headless --port 6000`). Confirm:
   - `ff-rdp doctor` reports `"detail": "Firefox version not
     advertised in the RDP greeting"`.
   - `ff-rdp screenshot -o /tmp/x.png` fails with
     `screenshot actor unavailable on Firefox unknown; minimum
     supported version: 120`.
-- [ ] Capture the actual RDP greeting bytes (raw `{"type":"connected",
+- [x] Capture the actual RDP greeting bytes (raw `{"type":"connected",
   "applicationType":"browser",…}`) to see what *is* present —
   `applicationType`, `actor`, etc. Useful for B2.
 
 #### B2. Switch from version-gate to actor-probe — **major fix**
-- [ ] In the screenshot path, today's logic is roughly:
+- [x] In the screenshot path, today's logic is roughly:
   ```
   if firefox_version < 120 { refuse }
   ```
@@ -112,20 +115,19 @@ Themes:
   fall back to the older capture path (or surface a precise error
   pointing at the actor name).
   ```
-- [ ] Where the older capture path doesn't exist (i.e. we genuinely
+- [x] Where the older capture path doesn't exist (i.e. we genuinely
   do depend on `screenshotContentActor`), the error message should
   still be precise: name the actor, the actual greeting contents,
   and the minimum-required Firefox version. No "upgrade Firefox"
   guess when we don't actually know the version.
 
 #### B3. `version-info` actor fallback — **supporting**
-- [ ] When the connection-handshake greeting is silent on version,
-  fall back to querying the `application/version-info` actor (or
-  whatever Firefox names it — pin it via searchfox lookup; see
-  `memory/reference_firefox_source.md`). This makes
+- [x] When the connection-handshake greeting is silent on version,
+  fall back to querying the `deviceActor.getDescription` (Firefox's
+  standard actor for runtime info, returns `appVersion`). This makes
   `firefox_version` non-empty for the wardrobe-assistants build and
   any future build where the greeting changes shape.
-- [ ] If both the greeting *and* the version-info actor are silent
+- [x] If both the greeting *and* the version-info actor are silent
   (extremely unlikely), keep the iter-61c "unknown version" branch
   but only as a last resort, and gate the "must be >= 120" message
   on us actually having a version to compare against.
@@ -133,40 +135,48 @@ Themes:
 #### B4. Test — **required**
 - [ ] Live e2e: launch Firefox with the same flags used by the
   dogfood session, navigate to a small fixture, screenshot, assert
-  success.
-- [ ] Mock-server e2e: serve a greeting that omits the version
-  field; assert the actor-probe path engages and screenshot
-  succeeds (or, if it must fail, the error names the actor and the
-  greeting shape — not a misleading "upgrade Firefox" hint).
+  success. _Deferred — no live ignored test was added; mock-server
+  coverage exercises the device-actor fallback path. Tracked for the
+  next dogfood session against a real silent-greeting build._
+- [x] Mock-server e2e: serve a greeting that omits the version
+  field; assert the actor-probe path engages and doctor reports real
+  version via device actor (not "version not advertised").
 
 ### C. Closing-bracket formatting in recorded JSON
 
 #### C1. Replace explicit `write!("  ]")` with `PrettyFormatter` — **trivial**
-- [ ] In `script/recorder.rs::finalise_output_file` (or wherever
+- [x] In `script/recorder.rs::finalise_output_file` (or wherever
   the array-close is written), switch from manual `write!(f, "  ]")
   to `serde_json::ser::PrettyFormatter`-driven serialisation so the
   whole file matches the same indent style as the step objects iter-61c B3
-  already pretty-printed.
-- [ ] Test: a 2-step recording's final byte sequence equals
+  already pretty-printed. Fixed by adding `\n` before the `  ]` closing.
+- [x] Test: a 2-step recording's final byte sequence equals
   `"…}\n  ]\n}\n"` (the same suffix a hand-authored 2-step script
   produces under `serde_json::to_string_pretty`).
 
 ## Acceptance Criteria
 
-- [ ] `ff-rdp record start /tmp/r.json` → `ff-rdp wait --selector body
-  --timeout 5000` → `ff-rdp record stop` produces a step with
-  `"timeout": 5000`.
-- [ ] `ff-rdp record start /tmp/r.json` → `ff-rdp wait --selector body`
+- [x] `ff-rdp record start /tmp/r.json` → `ff-rdp wait --selector body
+  --wait-timeout 1234` → `ff-rdp record stop` produces a step with
+  `"timeout": 1234` in the recorded JSON. Non-default timeouts round-trip
+  for `--selector`, `--text`, and `--eval` waits. The 5000 ms default is
+  elided to keep recorded files terse (see the next AC for the elision
+  contract).
+- [x] `ff-rdp record start /tmp/r.json` → `ff-rdp wait --selector body`
   (no `--timeout`) → `ff-rdp record stop` produces a step *without* a
   `timeout` field.
 - [ ] Against the same wardrobe-assistants Firefox build that breaks
   today, `ff-rdp screenshot -o /tmp/x.png` succeeds in headless mode.
-- [ ] When the connection greeting omits version, `ff-rdp doctor`
-  reports a real Firefox version retrieved via the version-info actor
+  _Deferred — the underlying device-actor fallback that makes this
+  possible is in place and covered by `doctor_version_fallback_via_device_actor`,
+  but live verification against the wardrobe-assistants build will
+  happen in the next dogfood session._
+- [x] When the connection greeting omits version, `ff-rdp doctor`
+  reports a real Firefox version retrieved via the device actor
   (not `"Firefox version not advertised in the RDP greeting"`).
-- [ ] A 2-step recorded file ends in `…}\n  ]\n}\n` (matches
+- [x] A 2-step recorded file ends in `…}\n  ]\n}\n` (matches
   `to_string_pretty`).
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D
   warnings && cargo test --workspace -q` clean.
 
 ## Design Notes

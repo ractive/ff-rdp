@@ -9,6 +9,7 @@ pub use actors::accessibility::{AccessibilityActor, AccessibleNode, filter_inter
 pub use actors::console::{
     ConsoleMessage, EvalException, EvalResult, WebConsoleActor, parse_console_notification,
 };
+pub use actors::device::DeviceActor;
 pub use actors::dom_walker::{DomAttr, DomNode, DomWalkerActor};
 pub use actors::inspector::InspectorActor;
 pub use actors::network::{EventTimings, Header, NetworkEventActor, ResponseContent};

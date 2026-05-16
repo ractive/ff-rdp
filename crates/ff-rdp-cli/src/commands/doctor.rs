@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use ff_rdp_core::{
-    COMPATIBLE_FIREFOX_MAX, COMPATIBLE_FIREFOX_MIN, RdpConnection, RootActor, TabInfo,
+    COMPATIBLE_FIREFOX_MAX, COMPATIBLE_FIREFOX_MIN, DeviceActor, RdpConnection, RootActor, TabInfo,
 };
 use serde_json::{Value, json};
 
@@ -93,6 +93,23 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
                     detail: format!("greeting received from {host}:{port}"),
                     hint: None,
                 });
+
+                // When the RDP greeting omits the `ua` field (some Firefox
+                // builds and CI configurations do this), try the device actor's
+                // `getDescription` response as a fallback source for the version
+                // number.  This is a best-effort probe — failure is suppressed
+                // and treated as "version still unknown".
+                if firefox_version.is_none() {
+                    // Ignore any protocol error from the device actor probe —
+                    // it is purely informational and must not block the rest
+                    // of the doctor output.
+                    if let Ok(v) = DeviceActor::query_version(conn.transport_mut())
+                        && v.is_some()
+                    {
+                        firefox_version = v;
+                    }
+                }
+
                 match RootActor::list_tabs(conn.transport_mut()) {
                     Ok(t) => {
                         probes.push(probe_tabs(&t));
