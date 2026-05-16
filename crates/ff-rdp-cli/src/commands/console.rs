@@ -192,12 +192,19 @@ pub fn run_get_errors(cli: &Cli) -> Result<Vec<serde_json::Value>, crate::error:
         &["PageError", "ConsoleAPI"],
     ) {
         Ok(msgs) => msgs,
-        Err(_) => WebConsoleActor::get_cached_messages(
-            ctx.transport_mut(),
-            &console_actor,
-            &["ConsoleAPI"],
-        )
-        .map_err(crate::error::AppError::from)?,
+        Err(e) => {
+            if cli.is_verbose() {
+                eprintln!(
+                    "debug: getCachedMessages(PageError+ConsoleAPI) failed ({e}), retrying with ConsoleAPI only"
+                );
+            }
+            WebConsoleActor::get_cached_messages(
+                ctx.transport_mut(),
+                &console_actor,
+                &["ConsoleAPI"],
+            )
+            .map_err(crate::error::AppError::from)?
+        }
     };
 
     let errors: Vec<serde_json::Value> = messages

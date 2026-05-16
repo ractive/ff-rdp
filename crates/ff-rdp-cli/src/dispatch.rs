@@ -7,6 +7,9 @@ use crate::commands::nav_action::NavAction;
 use crate::daemon::registry;
 use crate::daemon::server;
 use crate::error::AppError;
+use crate::script::format::{
+    ElementStep, ElementTarget, EvalStep, NavigateStep, ScreenshotStep, Step,
+};
 
 /// Parse a `--dispatch` flag value into a [`DispatchMode`].
 fn parse_dispatch_mode(s: &str) -> Result<DispatchMode, AppError> {
@@ -71,7 +74,7 @@ fn resolve_selector_or_ref(
 ///
 /// Returns `AppError::User` with a clear message when the ref has expired,
 /// when no daemon is running, or when `--no-daemon` was passed.
-fn resolve_ref_via_daemon(cli: &Cli, ref_id: &str) -> Result<String, AppError> {
+pub(crate) fn resolve_ref_via_daemon(cli: &Cli, ref_id: &str) -> Result<String, AppError> {
     use ff_rdp_core::{FramedReader, FramedWriter};
     use serde_json::{Value, json};
     use std::net::TcpStream;
@@ -145,6 +148,139 @@ fn resolve_ref_via_daemon(cli: &Cli, ref_id: &str) -> Result<String, AppError> {
     )))
 }
 
+/// Resolve a ref ID to its CSS selector expression for use in script runner verbs.
+///
+/// Provides the same ref-resolution logic as the CLI dispatch path so that
+/// script steps with `ref:` targets work identically to `--ref` on the CLI.
+pub(crate) fn resolve_ref_for_script(
+    cli: &Cli,
+    ref_id: &str,
+    verb: &str,
+) -> Result<String, AppError> {
+    resolve_ref_via_daemon(cli, ref_id)
+        .map_err(|e| AppError::User(format!("script step '{verb}' ref '{ref_id}': {e}")))
+}
+
+/// Convert a CLI command to a recordable `Step`, given the resolved selector
+/// (already resolved from `--ref` by the dispatch path).
+///
+/// Returns `None` for inspection-only commands (tabs, dom, snapshot, console,
+/// network, page-text, cookies, storage, sources, geometry, styles, computed,
+/// responsive, a11y, doctor, daemon *, launch, record *, inspect) that should
+/// not appear in recorded scripts.
+fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Step> {
+    match cmd {
+        Command::Navigate {
+            url,
+            wait_text,
+            wait_selector,
+            ..
+        } => Some(Step::Navigate(NavigateStep {
+            url: url.clone(),
+            wait_text: wait_text.clone(),
+            wait_selector: wait_selector.clone(),
+        })),
+        Command::Click { .. } => {
+            let sel = resolved_selector?;
+            Some(Step::Click(ElementStep {
+                target: ElementTarget {
+                    selector: Some(sel.to_owned()),
+                    ..Default::default()
+                },
+                wait_for_text: None,
+                wait_for_selector: None,
+            }))
+        }
+        Command::Type {
+            text_pos,
+            text_flag,
+            clear,
+            ..
+        } => {
+            let sel = resolved_selector?;
+            let text = text_pos.as_deref().or(text_flag.as_deref())?;
+            Some(Step::Type(crate::script::format::TypeStep {
+                target: ElementTarget {
+                    selector: Some(sel.to_owned()),
+                    ..Default::default()
+                },
+                text: text.to_owned(),
+                clear: *clear,
+                secret: false,
+            }))
+        }
+        Command::Wait {
+            selector,
+            text,
+            eval,
+            ..
+        } => {
+            // Record whichever condition was used.
+            if selector.is_some() || text.is_some() || eval.is_some() || resolved_selector.is_some()
+            {
+                Some(Step::Wait(crate::script::format::WaitStep {
+                    selector: resolved_selector
+                        .map(str::to_owned)
+                        .or_else(|| selector.clone()),
+                    text: text.clone(),
+                    eval: eval.clone(),
+                    timeout: None,
+                }))
+            } else {
+                None
+            }
+        }
+        Command::Screenshot {
+            output,
+            base64,
+            full_page,
+            ..
+        } => Some(Step::Screenshot(ScreenshotStep {
+            output: output.clone(),
+            base64: *base64,
+            full_page: *full_page,
+        })),
+        Command::Eval {
+            script, stringify, ..
+        } => {
+            // Only record inline positional evals (not --file or --stdin).
+            let script_text = script.as_deref()?;
+            Some(Step::Eval(EvalStep {
+                script: script_text.to_owned(),
+                stringify: *stringify,
+            }))
+        }
+        // Reload/Back/Forward, Scroll, inspection-only, and meta commands — never recorded.
+        Command::Reload { .. }
+        | Command::Back
+        | Command::Forward
+        | Command::Scroll { .. }
+        | Command::Tabs
+        | Command::Dom { .. }
+        | Command::Console { .. }
+        | Command::Network { .. }
+        | Command::Perf { .. }
+        | Command::PageText
+        | Command::Cookies { .. }
+        | Command::Storage { .. }
+        | Command::Sources { .. }
+        | Command::Geometry { .. }
+        | Command::Styles { .. }
+        | Command::Computed { .. }
+        | Command::Responsive { .. }
+        | Command::A11y { .. }
+        | Command::Snapshot { .. }
+        | Command::Inspect { .. }
+        | Command::Doctor
+        | Command::Launch { .. }
+        | Command::Record { .. }
+        | Command::Run { .. }
+        | Command::Daemon { .. }
+        | Command::DaemonInternal
+        | Command::InstallSkill(_) => None,
+    }
+}
+
 /// Dispatch a CLI command to its handler.
 ///
 /// # Connection routing
@@ -180,6 +316,27 @@ fn resolve_ref_via_daemon(cli: &Cli, ref_id: &str) -> Result<String, AppError> {
 /// the background — this is the daemon's primary value proposition for
 /// these commands.
 pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
+    // For recording: track the resolved selector (refs resolved to CSS) so the
+    // recorded step uses the concrete selector, not the ephemeral ref ID.
+    let mut recording_resolved_selector: Option<String> = None;
+
+    let result = dispatch_inner(cli, &mut recording_resolved_selector);
+
+    // If the command succeeded and a recording is active, append the step.
+    if result.is_ok()
+        && let Some(step) = command_to_step(&cli.command, recording_resolved_selector.as_deref())
+    {
+        // Best-effort: log to stderr but don't fail the command.
+        crate::script::recorder::record_step_if_active(&step);
+    }
+
+    result
+}
+
+fn dispatch_inner(
+    cli: &Cli,
+    recording_resolved_selector: &mut Option<String>,
+) -> Result<(), AppError> {
     match &cli.command {
         Command::Tabs => commands::tabs::run(cli),
         Command::Navigate {
@@ -342,6 +499,8 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 "click",
                 cli,
             )?;
+            // Capture the resolved selector for recording (ref → concrete CSS selector).
+            *recording_resolved_selector = Some(selector.clone());
             let dispatch_mode = parse_dispatch_mode(dispatch)?;
             commands::click::run(
                 cli,
@@ -377,6 +536,8 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 "type",
                 cli,
             )?;
+            // Capture the resolved selector for recording.
+            *recording_resolved_selector = Some(selector.clone());
             let text = match (text_pos.as_deref(), text_flag.as_deref()) {
                 (Some(_), Some(_)) => {
                     return Err(AppError::User(
@@ -421,6 +582,10 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
             } else {
                 None
             };
+            // Capture resolved selector for recording.
+            if let Some(ref sel) = resolved_selector {
+                *recording_resolved_selector = Some(sel.clone());
+            }
             commands::wait::run(
                 cli,
                 &commands::wait::WaitOptions {
@@ -647,8 +812,8 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                 let content = std::fs::read_to_string(env_path).map_err(|e| {
                     AppError::User(format!("reading --env-file '{}': {e}", env_path.display()))
                 })?;
-                for line in content.lines() {
-                    let line = line.trim();
+                for (line_num, raw_line) in content.lines().enumerate() {
+                    let line = raw_line.trim();
                     if line.is_empty() || line.starts_with('#') {
                         continue;
                     }
@@ -656,6 +821,12 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
                         extra_vars
                             .entry(k.to_owned())
                             .or_insert_with(|| v.to_owned());
+                    } else {
+                        return Err(AppError::User(format!(
+                            "--env-file '{}' line {}: expected KEY=VALUE, got: {line:?}",
+                            env_path.display(),
+                            line_num + 1
+                        )));
                     }
                 }
             }

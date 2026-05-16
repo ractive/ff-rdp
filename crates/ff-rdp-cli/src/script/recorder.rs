@@ -8,6 +8,8 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use fs2::FileExt as _;
+
 use super::format::Step;
 use anyhow::{Context as _, bail};
 use serde::{Deserialize, Serialize};
@@ -62,7 +64,20 @@ pub fn read_state() -> anyhow::Result<Option<RecordingState>> {
 }
 
 /// Write the current recording state.
+///
+/// When `create_new` is true (used for `record start`), the write is atomic:
+/// it fails if the state file already exists, preventing two parallel
+/// `record start` invocations from racing.
 pub fn write_state(state: &RecordingState) -> anyhow::Result<()> {
+    write_state_inner(state, false)
+}
+
+/// Create the state file atomically (fails if already exists).
+pub fn create_state(state: &RecordingState) -> anyhow::Result<()> {
+    write_state_inner(state, true)
+}
+
+fn write_state_inner(state: &RecordingState, create_new: bool) -> anyhow::Result<()> {
     let path = state_file_path()?;
     let dir = path
         .parent()
@@ -70,7 +85,22 @@ pub fn write_state(state: &RecordingState) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir)
         .with_context(|| format!("creating state dir '{}'", dir.display()))?;
     let content = serde_json::to_string_pretty(state).context("serializing recording state")?;
-    std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))
+    if create_new {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .with_context(|| {
+                format!(
+                    "a recording is already active (state file exists: '{}')",
+                    path.display()
+                )
+            })?
+            .write_all(content.as_bytes())
+            .with_context(|| format!("writing {}", path.display()))
+    } else {
+        std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))
+    }
 }
 
 /// Remove the recording state file (called on `record stop`).
@@ -117,7 +147,18 @@ fn build_header(name: Option<&str>) -> String {
 }
 
 /// Finalise the output file by closing the steps array and root object.
+///
+/// Idempotent: if the file already ends with the closing sequence `]\n}\n`,
+/// this is a no-op.
 pub fn finalise_output_file(output_path: &Path, _step_count: usize) -> anyhow::Result<()> {
+    // Check if already finalised by reading the tail of the file.
+    let content = std::fs::read_to_string(output_path)
+        .with_context(|| format!("reading '{}' to check finalisation", output_path.display()))?;
+    if content.trim_end().ends_with("]\n}") || content.ends_with("  ]\n}\n") {
+        // Already closed — no-op.
+        return Ok(());
+    }
+
     let closing = "  ]\n}\n";
     let mut file = std::fs::OpenOptions::new()
         .append(true)
@@ -128,6 +169,9 @@ pub fn finalise_output_file(output_path: &Path, _step_count: usize) -> anyhow::R
 }
 
 /// Append a single step to the recording output file.
+///
+/// Acquires an exclusive file lock before writing to prevent interleaved bytes
+/// when two CLI invocations append concurrently against the same recording.
 pub fn append_step(output_path: &Path, step: &Step, step_count: usize) -> anyhow::Result<()> {
     let step_json = step_to_json(step).context("serializing step")?;
     let comma = if step_count > 0 { "," } else { "" };
@@ -137,8 +181,15 @@ pub fn append_step(output_path: &Path, step: &Step, step_count: usize) -> anyhow
         .append(true)
         .open(output_path)
         .with_context(|| format!("opening '{}' for append", output_path.display()))?;
-    file.write_all(line.as_bytes())
-        .with_context(|| format!("appending step to '{}'", output_path.display()))
+    // SAFETY: exclusive lock ensures concurrent CLI invocations don't interleave bytes.
+    file.lock_exclusive()
+        .with_context(|| format!("locking '{}' for exclusive write", output_path.display()))?;
+    let result = file
+        .write_all(line.as_bytes())
+        .with_context(|| format!("appending step to '{}'", output_path.display()));
+    // Always unlock, even on write failure.
+    let _ = file.unlock();
+    result
 }
 
 /// Serialise a step to a compact JSON object string.
@@ -195,6 +246,9 @@ pub fn start_recording(output_path: &Path, name: Option<&str>) -> anyhow::Result
         );
     }
     // Resolve to an absolute path so the state file is always portable.
+    let filename = output_path
+        .file_name()
+        .context("output path must have a filename component")?;
     let abs_path = output_path
         .canonicalize()
         .or_else(|_| -> anyhow::Result<PathBuf> {
@@ -207,7 +261,7 @@ pub fn start_recording(output_path: &Path, name: Option<&str>) -> anyhow::Result
                     .canonicalize()
                     .with_context(|| format!("resolving parent of '{}'", output_path.display()))?
             };
-            Ok(abs_parent.join(output_path.file_name().unwrap_or_default()))
+            Ok(abs_parent.join(filename))
         })
         .with_context(|| format!("resolving path '{}'", output_path.display()))?;
 
@@ -218,7 +272,9 @@ pub fn start_recording(output_path: &Path, name: Option<&str>) -> anyhow::Result
         step_count: 0,
         name: name.map(str::to_owned),
     };
-    write_state(&state)
+    // Use atomic create_new to prevent two parallel `record start` invocations
+    // from both succeeding when they race.
+    create_state(&state)
 }
 
 /// Stop the active recording session and finalise the output file.
@@ -238,14 +294,35 @@ pub fn get_recording_status() -> anyhow::Result<Option<RecordingState>> {
     read_state()
 }
 
-/// Append a step to the active recording (called from the runner when
-/// `record start` has been invoked externally).
-#[allow(dead_code)]
+/// Append a step to the active recording (called from dispatch after a
+/// successful command when `record start` has been invoked externally).
 pub fn record_step_to_active(step: &Step) -> anyhow::Result<()> {
     let mut state = read_state()?.with_context(|| "record_step called but no active recording")?;
     append_step(&state.output_path, step, state.step_count)?;
     state.step_count += 1;
     write_state(&state)
+}
+
+/// If a recording is active, record a step for the given command.
+/// Errors are logged to stderr but do not fail the command.
+/// If no recording is active, this is a no-op (no warning emitted).
+///
+/// Called from dispatch after a command succeeds.
+pub fn record_step_if_active(step: &Step) {
+    // Check if a recording is active before attempting to write.
+    let is_active = match read_state() {
+        Err(e) => {
+            eprintln!("warning: could not read recording state: {e}");
+            return;
+        }
+        Ok(None) => return,
+        Ok(Some(_)) => true,
+    };
+    debug_assert!(is_active);
+    match record_step_to_active(step) {
+        Ok(()) => {}
+        Err(e) => eprintln!("warning: recording step failed: {e}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
