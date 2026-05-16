@@ -310,10 +310,15 @@ pub fn record_step_to_active(step: &Step) -> anyhow::Result<()> {
 /// Called from dispatch after a command succeeds.
 pub fn record_step_if_active(step: &Step) {
     // Check if a recording is active before attempting to write.
-    let is_active = read_state().ok().flatten().is_some();
-    if !is_active {
-        return;
-    }
+    let is_active = match read_state() {
+        Err(e) => {
+            eprintln!("warning: could not read recording state: {e}");
+            return;
+        }
+        Ok(None) => return,
+        Ok(Some(_)) => true,
+    };
+    debug_assert!(is_active);
     match record_step_to_active(step) {
         Ok(()) => {}
         Err(e) => eprintln!("warning: recording step failed: {e}"),

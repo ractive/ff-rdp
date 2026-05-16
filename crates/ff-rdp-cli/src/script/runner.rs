@@ -149,8 +149,6 @@ fn run_script(
         let verb = step.verb();
         let step_start = Instant::now();
 
-        executed += 1;
-
         // Resolve variable substitutions in the step (best-effort; errors are step failures).
         let resolved = match resolve_step_vars(step, vars, &step_results) {
             Ok(s) => s,
@@ -193,6 +191,12 @@ fn run_script(
             step_results.push(Value::Null);
             continue;
         }
+
+        // Only count as executed once we are actually about to run the step —
+        // variable-resolution failures and deferred-feature rejections above
+        // have already incremented `failed` and `continue`d, so those do not
+        // reach here.
+        executed += 1;
 
         // Execute the step.
         let exec_result = execute_step(
@@ -377,7 +381,17 @@ fn collect_template_strings(step: &Step) -> Vec<String> {
             }
             v
         }
-        Step::AssertNoConsoleErrors(_) | Step::AssertNetwork(_) => vec![],
+        Step::AssertNoConsoleErrors(s) => s.ignore_patterns.clone(),
+        Step::AssertNetwork(s) => {
+            let mut v = Vec::new();
+            if let Some(u) = &s.url_contains {
+                v.push(u.clone());
+            }
+            if let Some(m) = &s.method {
+                v.push(m.clone());
+            }
+            v
+        }
     }
 }
 
@@ -597,9 +611,9 @@ fn execute_navigate(
         && !step.url.starts_with("https://")
         && !step.url.starts_with("//")
     {
-        let base_trimmed = base.trim_end_matches('/');
-        let path = step.url.trim_start_matches('/');
-        format!("{base_trimmed}/{path}")
+        url::Url::parse(base)
+            .and_then(|b| b.join(&step.url))
+            .map_or_else(|_| step.url.clone(), |u| u.to_string())
     } else {
         step.url.clone()
     };

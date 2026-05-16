@@ -59,7 +59,7 @@ Output is **NDJSON** — one JSON line per step:
 ```json
 {"step":1,"verb":"navigate","ok":true,"results":{"navigated":"..."},"elapsed_ms":42}
 {"step":2,"verb":"assert_text","ok":true,"results":{}}
-{"summary":true,"ok":true,"total":2,"failed":0,"passed":2,"total_elapsed_ms":55}
+{"summary":true,"ok":true,"executed":2,"succeeded":2,"failed":0,"skipped":0,"total_elapsed_ms":55}
 ```
 
 ## Recording
@@ -163,7 +163,10 @@ Specifying more than one is a parser error.
 
 `page_map` and `field` require iter-62 page-map support (not yet
 implemented); they are accepted at parse time but produce a clear
-"page-map support requires iter-62" error at runtime.
+"page-map support requires iter-62" error at runtime.  As of iter-61b,
+`--dry-run` also rejects steps that use `page_map` or `field`, so the
+error surfaces early without needing to connect to Firefox.  Full runtime
+support (beyond the error) is deferred to iter-62.
 
 ## Nested scripts (`run:`)
 
