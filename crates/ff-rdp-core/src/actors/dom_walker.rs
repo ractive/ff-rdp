@@ -106,7 +106,7 @@ impl DomWalkerActor {
     /// Send: `{"to": walker, "type": "querySelectorAll", "node": root_node_actor, "selector": "script"}`
     /// Response: `{"list": {"actor": "nodeListActor"}, ...}` then we send `items` to get the nodes.
     ///
-    /// Falls back to an empty list on protocol errors (e.g. when the walker does not support this method).
+    /// Returns `ProtocolError::InvalidPacket` if the response is missing the `list.actor` field.
     pub fn query_selector_all(
         transport: &mut RdpTransport,
         walker_actor: &ActorId,
@@ -133,8 +133,9 @@ impl DomWalkerActor {
             .and_then(Value::as_str);
 
         let Some(nodelist_actor) = nodelist_actor else {
-            // Protocol error or no `list` field — return empty rather than crash.
-            return Ok(Vec::new());
+            return Err(ProtocolError::InvalidPacket(
+                "querySelectorAll response missing 'list.actor' field".into(),
+            ));
         };
 
         // `items` returns {"nodes": [...], ...}

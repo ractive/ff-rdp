@@ -42,6 +42,10 @@ pub(crate) struct EventBuffer {
     network_total_inserted: usize,
     /// Number of `network-event` entries that have been evicted (for index arithmetic).
     network_evicted: usize,
+    /// Monotonically-increasing counter for navigation boundary sequences.
+    /// Tracked independently of `boundaries.len()` so sequence numbers remain
+    /// unique even after the `MAX_BOUNDARIES` ring-buffer truncation kicks in.
+    next_nav_sequence: u64,
 }
 
 const MAX_BOUNDARIES: usize = 1000;
@@ -53,6 +57,7 @@ impl EventBuffer {
             boundaries: Vec::new(),
             network_total_inserted: 0,
             network_evicted: 0,
+            next_nav_sequence: 0,
         }
     }
 
@@ -75,9 +80,13 @@ impl EventBuffer {
     /// Record a navigation boundary for the `network-event` bucket.
     ///
     /// `url` is the top-level document URL of the new page.  The sequence
-    /// number is assigned monotonically (0, 1, 2, …).
-    pub(crate) fn record_nav_boundary(&mut self, url: String) {
-        let sequence = self.boundaries.len() as u64;
+    /// number is assigned from a monotonic counter (0, 1, 2, …), independent
+    /// of the bounded `boundaries` ring buffer, so it never wraps or repeats.
+    ///
+    /// Returns the assigned sequence number.
+    pub(crate) fn record_nav_boundary(&mut self, url: String) -> u64 {
+        let sequence = self.next_nav_sequence;
+        self.next_nav_sequence = self.next_nav_sequence.saturating_add(1);
         let start_index = self.network_total_inserted;
         if self.boundaries.len() >= MAX_BOUNDARIES {
             self.boundaries.remove(0);
@@ -87,9 +96,11 @@ impl EventBuffer {
             url,
             start_index,
         });
+        sequence
     }
 
     /// Return a snapshot of all recorded navigation boundaries.
+    #[allow(dead_code)]
     pub(crate) fn nav_boundaries(&self) -> &[NavBoundary] {
         &self.boundaries
     }
@@ -285,6 +296,39 @@ mod tests {
         let sizes2 = buf.sizes();
         assert!(!sizes2.contains_key("a"));
         assert_eq!(sizes2["b"], 2);
+    }
+
+    #[test]
+    fn record_nav_boundary_returns_monotonic_sequence() {
+        let mut buf = EventBuffer::new();
+        let s0 = buf.record_nav_boundary("https://a/".into());
+        let s1 = buf.record_nav_boundary("https://b/".into());
+        let s2 = buf.record_nav_boundary("https://c/".into());
+        assert_eq!((s0, s1, s2), (0, 1, 2));
+        assert_eq!(buf.nav_boundaries().last().map(|b| b.sequence), Some(2));
+    }
+
+    #[test]
+    fn nav_boundary_sequence_does_not_wrap_after_cap() {
+        // Past the MAX_BOUNDARIES cap, sequences must keep incrementing even
+        // though the boundaries vector is truncated from the front.
+        let mut buf = EventBuffer::new();
+        for i in 0..(MAX_BOUNDARIES + 5) {
+            let seq = buf.record_nav_boundary(format!("https://example/{i}"));
+            assert_eq!(
+                usize::try_from(seq).ok(),
+                Some(i),
+                "sequence should equal insertion index"
+            );
+        }
+        // Ring buffer stays capped.
+        assert_eq!(buf.nav_boundaries().len(), MAX_BOUNDARIES);
+        // The most recent boundary's sequence reflects the total insertions.
+        let last_seq = buf.nav_boundaries().last().map(|b| b.sequence);
+        assert_eq!(last_seq, Some((MAX_BOUNDARIES + 4) as u64));
+        // The oldest retained boundary is not sequence 0 — it was evicted.
+        let first_seq = buf.nav_boundaries().first().map(|b| b.sequence);
+        assert_eq!(first_seq, Some(5_u64));
     }
 
     #[test]

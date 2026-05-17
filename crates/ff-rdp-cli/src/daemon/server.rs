@@ -327,9 +327,7 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
                                 .to_owned();
                             let sequence = {
                                 let mut buf = state.buffer.lock().unwrap();
-                                buf.record_nav_boundary(nav_url.clone());
-                                // The sequence of the just-inserted boundary.
-                                buf.nav_boundaries().len().saturating_sub(1) as u64
+                                buf.record_nav_boundary(nav_url.clone())
                             };
                             // Forward a synthetic navigation event to any stream
                             // subscribers watching "network-event" so that

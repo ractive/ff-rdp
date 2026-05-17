@@ -65,6 +65,27 @@ impl WaitAfterNav<'_> {
     }
 }
 
+/// Read `window.location.href` from the current document.
+///
+/// Returns `None` when the URL cannot be observed (e.g. the console actor is
+/// not yet responsive or the eval raised an exception).  The caller treats
+/// this as "no pre-nav URL available" and falls back to readyState-only.
+fn capture_current_url(ctx: &mut super::connect_tab::ConnectedTab) -> Option<String> {
+    use super::js_helpers::resolve_result;
+    let console_actor = ctx.target.console_actor.clone();
+    let eval = WebConsoleActor::evaluate_js_async(
+        ctx.transport_mut(),
+        &console_actor,
+        "window.location.href",
+    )
+    .ok()?;
+    if eval.exception.is_some() {
+        return None;
+    }
+    let resolved = resolve_result(ctx, &eval.result).ok()?;
+    resolved.as_str().map(str::to_owned)
+}
+
 /// The result of waiting for a navigation to commit.
 struct CommitInfo {
     /// The URL observed after the navigation committed.
@@ -75,17 +96,24 @@ struct CommitInfo {
     elapsed_ms: u64,
 }
 
-/// Poll until the page's URL differs from the pre-navigation value OR
+/// Poll until the page's URL differs from `pre_nav_url` AND
 /// `document.readyState` reaches `interactive` / `complete`, whichever comes first.
 ///
 /// The poll runs against the *new* target actors (refreshed via `getTarget`)
 /// because the navigate tears down the old docshell; the old console actor
 /// would return `noSuchActor`.
 ///
+/// Without the URL change check, the *old* docshell may briefly answer
+/// `evaluateJSAsync` with `readyState === 'complete'` for the old page,
+/// causing a false-positive commit reading from the previous URL.  When
+/// `pre_nav_url` is `None` (no observable pre-nav URL was captured) the
+/// readyState-only check is used.
+///
 /// Returns an error when the timeout elapses before either condition is met.
 fn wait_for_commit(
     ctx: &mut super::connect_tab::ConnectedTab,
     requested_url: &str,
+    pre_nav_url: Option<&str>,
     timeout_ms: u64,
 ) -> Result<CommitInfo, AppError> {
     const POLL_MS: u64 = 150;
@@ -97,13 +125,21 @@ fn wait_for_commit(
     // The JS snippet returns a sentinel-prefixed JSON when the condition is met:
     // { ready: true, url: "<current>", readyState: "<state>" }
     // Returns null while the condition is not yet satisfied.
-    let js = r"(function() {
+    //
+    // When `pre_nav_url` is provided, also require that the live URL differs
+    // from it — otherwise the old docshell's `readyState === 'complete'` can
+    // satisfy the check before the new document is installed.
+    let pre_json = serde_json::to_string(&pre_nav_url).unwrap_or_else(|_| "null".to_owned());
+    let js = format!(
+        r"(function() {{
   var rs = document.readyState;
-  if (rs === 'interactive' || rs === 'complete') {
-    return '__FF_RDP_JSON__' + JSON.stringify({ready: true, url: window.location.href, readyState: rs});
-  }
-  return null;
-})()";
+  if (rs !== 'interactive' && rs !== 'complete') return null;
+  var pre = {pre_json};
+  if (pre && window.location.href === pre) return null;
+  return '__FF_RDP_JSON__' + JSON.stringify({{ready: true, url: window.location.href, readyState: rs}});
+}})()"
+    );
+    let js = js.as_str();
 
     loop {
         // Re-resolve actors to get the current docshell's console actor.
@@ -201,6 +237,11 @@ pub fn run_core(
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
 
+    // Capture the pre-navigation URL before dispatching `navigateTo` so
+    // `wait_for_commit` can distinguish a stale "complete" reading from the
+    // old document from a real commit on the new one.
+    let pre_nav_url = capture_current_url(&mut ctx);
+
     WindowGlobalTarget::navigate_to(ctx.transport_mut(), &target_actor, url)
         .map_err(AppError::from)?;
 
@@ -209,7 +250,12 @@ pub fn run_core(
     let commit_info = if wait_opts.no_wait {
         None
     } else {
-        Some(wait_for_commit(&mut ctx, url, cli.timeout)?)
+        Some(wait_for_commit(
+            &mut ctx,
+            url,
+            pre_nav_url.as_deref(),
+            cli.timeout,
+        )?)
     };
 
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
@@ -280,6 +326,17 @@ pub fn run_with_network(
     }
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
+
+    // Total wall-clock budget for the whole `--with-network` flow.  We
+    // subtract elapsed time when computing the wait-for-commit deadline so
+    // total time stays close to `cli.timeout` rather than `cli.timeout * 2+`.
+    let nav_started = Instant::now();
+    let total_budget = Duration::from_millis(cli.timeout);
+
+    // Capture pre-nav URL before dispatching the navigate so `wait_for_commit`
+    // can distinguish a stale "complete" reading on the old document from a
+    // real commit on the new one.
+    let pre_nav_url = capture_current_url(&mut ctx);
 
     if ctx.via_daemon {
         // Tell the daemon to stream network events in real-time instead of
@@ -368,9 +425,13 @@ pub fn run_with_network(
         let commit_info = if wait_opts.no_wait {
             None
         } else {
-            // Use whatever is left of the timeout budget (minimum 2 s).
-            let remaining_ms = cli.timeout.max(2000);
-            wait_for_commit(&mut ctx, url, remaining_ms).ok()
+            // Use whatever is left of the total budget (minimum 2 s) so the
+            // overall navigate wall-clock time stays close to `cli.timeout`.
+            let remaining = total_budget.saturating_sub(nav_started.elapsed());
+            let remaining_ms = u64::try_from(remaining.as_millis())
+                .unwrap_or(u64::MAX)
+                .max(2000);
+            wait_for_commit(&mut ctx, url, pre_nav_url.as_deref(), remaining_ms).ok()
         };
 
         let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
@@ -475,8 +536,11 @@ pub fn run_with_network(
     let commit_info = if wait_opts.no_wait {
         None
     } else {
-        let remaining_ms = cli.timeout.max(2000);
-        wait_for_commit(&mut ctx, url, remaining_ms).ok()
+        let remaining = total_budget.saturating_sub(nav_started.elapsed());
+        let remaining_ms = u64::try_from(remaining.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(2000);
+        wait_for_commit(&mut ctx, url, pre_nav_url.as_deref(), remaining_ms).ok()
     };
 
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
