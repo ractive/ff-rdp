@@ -22,6 +22,14 @@ fn navigate_server() -> MockRdpServer {
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
         .on("navigateTo", load_fixture("navigate_response.json"))
+        // wait_for_commit re-resolves actors via a second getTarget, then
+        // polls readyState via evaluateJSAsync (immediate ack + async result).
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_ready_state_sentinel.json"),
+        )
 }
 
 fn navigate_with_network_server() -> MockRdpServer {
@@ -276,6 +284,15 @@ fn navigate_wait_text_reresolves_console_actor_after_navigate() {
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
         .on("navigateTo", load_fixture("navigate_response.json"))
+        // wait_for_commit re-resolves actors then polls readyState once.
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_ready_state_sentinel.json"),
+        )
+        // wait_after_navigate (--wait-text) re-resolves actors and polls once.
+        .on("getTarget", load_fixture("get_target_response.json"))
         .on_with_followup(
             "evaluateJSAsync",
             load_fixture("eval_immediate_response.json"),

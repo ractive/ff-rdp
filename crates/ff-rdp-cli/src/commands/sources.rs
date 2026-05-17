@@ -1,4 +1,4 @@
-use ff_rdp_core::ThreadActor;
+use ff_rdp_core::{DomWalkerActor, InspectorActor, ThreadActor};
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -49,6 +49,27 @@ const SOURCES_JS: &str = r#"(function() {
   return '__FF_RDP_JSON__' + JSON.stringify(results);
 })()"#;
 
+/// Which fallback method was used to obtain the source list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FallbackMethod {
+    /// Native thread-actor `sources` method (best, no fallback needed).
+    SourcesActor,
+    /// JS eval via `evaluateJSAsync` + DOM/Performance API.
+    JsEval,
+    /// WalkerActor `querySelectorAll("script")` — used when eval is CSP-blocked.
+    WalkerActor,
+}
+
+impl FallbackMethod {
+    fn as_meta_str(self) -> Option<&'static str> {
+        match self {
+            Self::SourcesActor => None, // No fallback annotation when native path worked.
+            Self::JsEval => Some("js-eval"),
+            Self::WalkerActor => Some("walker-actor"),
+        }
+    }
+}
+
 pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(), AppError> {
     let mut ctx = connect_direct(cli)?;
 
@@ -61,30 +82,59 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
     // Attempt native thread-actor source listing; fall back to JS eval on errors
     // that indicate Firefox 149+ protocol changes (unrecognized method or
     // `undefined passed where a value is required`).
-    let mut used_js_fallback = false;
-    let sources = match ThreadActor::list_sources(ctx.transport_mut(), thread_actor.as_ref()) {
-        Ok(s) => s
-            .into_iter()
-            .map(|s| {
-                json!({
-                    "url": s.url,
-                    "actor": s.actor,
-                    "isBlackBoxed": s.is_black_boxed,
-                })
-            })
-            .collect::<Vec<_>>(),
-        Err(e) if should_use_js_fallback(&e) => {
-            if cli.is_verbose() {
-                eprintln!(
-                    "debug: sources thread actor failed ({e}); \
-                     falling back to JS DOM/Performance API"
-                );
+    let (sources, fallback_method) =
+        match ThreadActor::list_sources(ctx.transport_mut(), thread_actor.as_ref()) {
+            Ok(s) => {
+                let entries = s
+                    .into_iter()
+                    .map(|s| {
+                        json!({
+                            "url": s.url,
+                            "actor": s.actor,
+                            "isBlackBoxed": s.is_black_boxed,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                (entries, FallbackMethod::SourcesActor)
             }
-            used_js_fallback = true;
-            list_sources_via_js(&mut ctx)?
-        }
-        Err(e) => return Err(AppError::from(e)),
-    };
+            Err(e) if should_use_js_fallback(&e) => {
+                if cli.is_verbose() {
+                    eprintln!(
+                        "debug: sources thread actor failed ({e}); \
+                         trying JS DOM/Performance API fallback"
+                    );
+                }
+                // C2: Probe whether the page CSP allows eval before invoking
+                // the JS fallback.  A blocked eval throws an EvalError whose
+                // message typically contains "Content Security Policy" or the
+                // exception class is "EvalError".  We check for that and skip
+                // directly to the walker fallback if eval is blocked.
+                let eval_allowed = probe_eval_allowed(&mut ctx);
+                if cli.is_verbose() && !eval_allowed {
+                    eprintln!("debug: eval probe blocked by CSP — using walker-actor fallback");
+                }
+                if eval_allowed {
+                    match list_sources_via_js(&mut ctx) {
+                        Ok(entries) => (entries, FallbackMethod::JsEval),
+                        Err(_) => {
+                            // JS eval succeeded (not CSP-blocked) but returned an error.
+                            // Fall through to walker.
+                            (
+                                list_sources_via_walker(&mut ctx)?,
+                                FallbackMethod::WalkerActor,
+                            )
+                        }
+                    }
+                } else {
+                    // CSP blocks eval — use walker directly.
+                    (
+                        list_sources_via_walker(&mut ctx)?,
+                        FallbackMethod::WalkerActor,
+                    )
+                }
+            }
+            Err(e) => return Err(AppError::from(e)),
+        };
 
     // Apply filters.
     let regex = pattern
@@ -123,9 +173,11 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
     let shown = limited.len();
     let result_json = json!(limited);
     let mut meta = json!({});
-    if used_js_fallback && let Some(m) = meta.as_object_mut() {
+    if let Some(method_str) = fallback_method.as_meta_str()
+        && let Some(m) = meta.as_object_mut()
+    {
         m.insert("fallback".to_string(), json!(true));
-        m.insert("fallback_method".to_string(), json!("js-eval"));
+        m.insert("fallback_method".to_string(), json!(method_str));
     }
     let envelope = output::envelope_with_truncation(&result_json, shown, total, truncated, &meta);
 
@@ -133,6 +185,111 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
     OutputPipeline::from_cli(cli)?
         .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
+}
+
+/// Probe whether the page CSP allows `eval()` by attempting a no-op eval.
+///
+/// Returns `true` when eval is permitted (or when the probe itself fails for
+/// non-CSP reasons — we err on the side of allowing the JS fallback and let
+/// the actual eval surface the real error if there is one).
+fn probe_eval_allowed(ctx: &mut super::connect_tab::ConnectedTab) -> bool {
+    use ff_rdp_core::WebConsoleActor;
+
+    let console_actor = ctx.target.console_actor.clone();
+    // A no-op expression that `eval()` would accept.  We're not calling `eval`
+    // directly here; `evaluateJSAsync` goes through the Firefox devtools
+    // protocol and is normally unrestricted by CSP.  However some Firefox
+    // versions apply the page's `script-src` CSP to debugger expressions; we
+    // detect that by catching the EvalError / CSP exception class.
+    let probe_js = "1+1";
+    match WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, probe_js) {
+        Err(_) => true, // Protocol error — don't assume CSP; let the caller decide.
+        Ok(result) => {
+            if let Some(ref exc) = result.exception {
+                // CSP-blocked evals throw an EvalError; the message typically
+                // contains "Content Security Policy", "unsafe-eval", or
+                // "EvalError".  All indicate that eval-style execution is blocked.
+                let msg = exc.message.as_deref().unwrap_or("");
+                let is_csp = msg.contains("Content Security Policy")
+                    || msg.contains("unsafe-eval")
+                    || msg.contains("EvalError");
+                !is_csp
+            } else {
+                true // No exception — eval is allowed.
+            }
+        }
+    }
+}
+
+/// List script sources by walking `document.scripts` via the WalkerActor.
+///
+/// This is the CSP-safe fallback that does not use `eval()`.  It uses the
+/// Firefox devtools WalkerActor protocol to list all `<script>` nodes in the
+/// document and extract their `src` attributes (for external scripts) or
+/// synthesise an `inline://document/<index>` URL (for inline scripts).
+///
+/// Returns entries in the same shape as the native thread-actor path:
+/// `{url, actor: "", isBlackBoxed: false}`.
+fn list_sources_via_walker(
+    ctx: &mut super::connect_tab::ConnectedTab,
+) -> Result<Vec<Value>, AppError> {
+    use ff_rdp_core::ActorId;
+
+    let inspector_actor = ctx
+        .target
+        .inspector_actor
+        .clone()
+        .ok_or_else(|| AppError::User("target does not expose an inspector actor".into()))?;
+
+    // Get the DOM walker from the inspector.
+    let walker_actor = InspectorActor::get_walker(ctx.transport_mut(), &inspector_actor)
+        .map_err(AppError::from)?;
+
+    // Get the document element to use as the root for querySelectorAll.
+    let doc_root = DomWalkerActor::document_element(ctx.transport_mut(), &walker_actor)
+        .map_err(AppError::from)?;
+
+    let root_actor = doc_root
+        .actor
+        .as_deref()
+        .ok_or_else(|| AppError::from(anyhow::anyhow!("document element has no actor ID")))?;
+    let root_actor_id = ActorId::from(root_actor);
+
+    // querySelectorAll("script") to get all <script> nodes.
+    let script_nodes = DomWalkerActor::query_selector_all(
+        ctx.transport_mut(),
+        &walker_actor,
+        &root_actor_id,
+        "script",
+    )
+    .map_err(AppError::from)?;
+
+    let mut entries = Vec::new();
+    for (index, node) in script_nodes.iter().enumerate() {
+        // Look for a `src` attribute.
+        let src = node
+            .attrs
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case("src"))
+            .map(|a| a.value.as_str());
+
+        let url = if let Some(s) = src
+            && !s.is_empty()
+        {
+            s.to_owned()
+        } else {
+            // Inline script — synthesise a URL.
+            format!("inline://document/{index}")
+        };
+
+        entries.push(json!({
+            "url": url,
+            "actor": "",
+            "isBlackBoxed": false,
+        }));
+    }
+
+    Ok(entries)
 }
 
 /// Returns `true` for errors that should trigger the JS DOM fallback.

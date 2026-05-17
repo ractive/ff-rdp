@@ -177,14 +177,25 @@ pub(crate) fn resolve_connection_target(
 /// {"from": "daemon", "events": [...]}
 /// ```
 /// An empty array is returned when the daemon has no buffered events.
-pub(crate) fn drain_daemon_events(
+/// Drain daemon events with an optional navigation scope.
+///
+/// `since_nav_index`:
+///  - `0`  → full buffer (no boundary filter)
+///  - `-1` → since most-recent navigation
+///  - `-2` → since second-to-last, etc.
+///
+/// Returns `(events, nav_boundary)` where `nav_boundary` is `Some` when the
+/// daemon applied a boundary filter and includes `{sequence, url}`.
+pub(crate) fn drain_daemon_events_since(
     transport: &mut RdpTransport,
     resource_type: &str,
-) -> Result<Vec<Value>> {
+    since_nav_index: i64,
+) -> Result<(Vec<Value>, Option<Value>)> {
     let msg = json!({
         "to": "daemon",
         "type": "drain",
         "resourceType": resource_type,
+        "sinceNavIndex": since_nav_index,
     });
     transport
         .send(&msg)
@@ -206,7 +217,8 @@ pub(crate) fn drain_daemon_events(
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
-            return Ok(events);
+            let boundary = response.get("nav_boundary").cloned();
+            return Ok((events, boundary));
         }
         // Not a daemon message — discard (forwarded Firefox event).
     }

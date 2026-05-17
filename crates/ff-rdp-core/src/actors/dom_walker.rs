@@ -101,6 +101,53 @@ impl DomWalkerActor {
         }
     }
 
+    /// querySelectorAll — find all nodes matching a CSS selector.
+    ///
+    /// Send: `{"to": walker, "type": "querySelectorAll", "node": root_node_actor, "selector": "script"}`
+    /// Response: `{"list": {"actor": "nodeListActor"}, ...}` then we send `items` to get the nodes.
+    ///
+    /// Falls back to an empty list on protocol errors (e.g. when the walker does not support this method).
+    pub fn query_selector_all(
+        transport: &mut RdpTransport,
+        walker_actor: &ActorId,
+        node_actor: &ActorId,
+        selector: &str,
+    ) -> Result<Vec<DomNode>, ProtocolError> {
+        use crate::actor::actor_request;
+
+        let response = actor_request(
+            transport,
+            walker_actor.as_ref(),
+            "querySelectorAll",
+            Some(&json!({
+                "node": node_actor.as_ref(),
+                "selector": selector
+            })),
+        )?;
+
+        // Firefox returns {"list": {"actor": "nodeListActor1"}, ...}
+        // We then need to call `items` on the nodelist actor to get the nodes.
+        let nodelist_actor = response
+            .get("list")
+            .and_then(|l| l.get("actor"))
+            .and_then(Value::as_str);
+
+        let Some(nodelist_actor) = nodelist_actor else {
+            // Protocol error or no `list` field — return empty rather than crash.
+            return Ok(Vec::new());
+        };
+
+        // `items` returns {"nodes": [...], ...}
+        let items_response = actor_request(transport, nodelist_actor, "items", None)?;
+        let nodes = items_response
+            .get("nodes")
+            .and_then(Value::as_array)
+            .map(|arr| arr.iter().filter_map(parse_dom_node).collect())
+            .unwrap_or_default();
+
+        Ok(nodes)
+    }
+
     /// Get children of a node.
     ///
     /// Send: `{"to": walker, "type": "children", "node": node_actor, "maxNodes": -1}`

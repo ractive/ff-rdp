@@ -11,6 +11,21 @@ use crate::script::format::{
     ElementStep, ElementTarget, EvalStep, NavigateStep, ScreenshotStep, Step,
 };
 
+/// Parse the `--since` flag for the `network` command into a navigation index.
+///
+/// - `"all"` or `"0"` → `0` (full buffer, no boundary filter)
+/// - `"-1"` → `-1` (since most-recent navigation; also the default when `None`)
+/// - Any other integer string → that value directly
+fn parse_since_arg(s: Option<&str>) -> Result<i64, AppError> {
+    match s {
+        None => Ok(-1), // default: current navigation
+        Some("all") => Ok(0),
+        Some(v) => v
+            .parse::<i64>()
+            .map_err(|_| AppError::User(format!("--since: expected a number or 'all', got {v:?}"))),
+    }
+}
+
 /// Parse a `--dispatch` flag value into a [`DispatchMode`].
 fn parse_dispatch_mode(s: &str) -> Result<DispatchMode, AppError> {
     match s {
@@ -179,6 +194,7 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
             url: url.clone(),
             wait_text: wait_text.clone(),
             wait_selector: wait_selector.clone(),
+            // no_wait and wait_for are not currently representable in the script format.
         })),
         Command::Click { wait_for, .. } => {
             let sel = resolved_selector?;
@@ -386,11 +402,15 @@ fn dispatch_inner(
             wait_text,
             wait_selector,
             wait_timeout,
+            no_wait,
+            wait_for,
         } => {
             let wait_opts = commands::navigate::WaitAfterNav {
                 wait_text: wait_text.as_deref(),
                 wait_selector: wait_selector.as_deref(),
                 wait_timeout: *wait_timeout,
+                no_wait: *no_wait,
+                wait_for,
             };
             if *with_network {
                 commands::navigate::run_with_network(cli, url, &wait_opts, *network_timeout)
@@ -489,11 +509,19 @@ fn dispatch_inner(
             method,
             follow,
             headers,
+            since,
         } => {
             if *follow {
                 commands::network::run_follow(cli, filter.as_deref(), method.as_deref())
             } else {
-                commands::network::run(cli, filter.as_deref(), method.as_deref(), *headers)
+                let since_nav = parse_since_arg(since.as_deref())?;
+                commands::network::run(
+                    cli,
+                    filter.as_deref(),
+                    method.as_deref(),
+                    *headers,
+                    since_nav,
+                )
             }
         }
         Command::Perf {

@@ -17,8 +17,8 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::network_events::{
-    build_network_entries_with_ids, drain_network_events, drain_network_from_daemon, merge_updates,
-    performance_api_fallback,
+    build_network_entries_with_ids, drain_network_events, drain_network_from_daemon_since,
+    merge_updates, performance_api_fallback,
 };
 
 /// Floor for the network-drain socket read timeout in daemon mode.
@@ -33,13 +33,14 @@ pub fn run(
     filter: Option<&str>,
     method: Option<&str>,
     headers: bool,
+    since_nav: i64,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let via_daemon = ctx.via_daemon;
 
     let drain_timeout_ms = cli.timeout.max(DAEMON_DRAIN_FLOOR_MS);
 
-    let (all_resources, all_updates) = if ctx.via_daemon {
+    let (all_resources, all_updates, nav_boundary) = if ctx.via_daemon {
         // The daemon has already subscribed to network-event resources and is
         // buffering them.  Drain the buffer without touching watcher state.
         //
@@ -48,7 +49,7 @@ pub fn run(
         let restored_timeout = Duration::from_millis(cli.timeout);
         let drain_timeout = Duration::from_millis(drain_timeout_ms);
         let _ = ctx.transport_mut().set_read_timeout(Some(drain_timeout));
-        let drain_result = drain_network_from_daemon(ctx.transport_mut());
+        let drain_result = drain_network_from_daemon_since(ctx.transport_mut(), since_nav);
         let _ = ctx.transport_mut().set_read_timeout(Some(restored_timeout));
         drain_result.map_err(|e| {
             // Downcast through the anyhow chain to find a ProtocolError::Timeout
@@ -106,7 +107,7 @@ pub fn run(
             &["network-event"],
         );
 
-        result
+        (result.0, result.1, None)
     };
 
     // Merge updates into resources by resource_id.
@@ -183,6 +184,19 @@ pub fn run(
     } else {
         json!({})
     };
+    // Include the navigation boundary that scoped the result, if any.
+    if let Some(ref b) = nav_boundary
+        && let Some(m) = meta.as_object_mut()
+    {
+        m.insert(
+            "since".to_string(),
+            json!({
+                "index": since_nav,
+                "url": b.get("url"),
+                "sequence": b.get("sequence"),
+            }),
+        );
+    }
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
@@ -633,6 +647,27 @@ fn network_follow_loop(
             Ok(msg) => {
                 let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
                 match msg_type {
+                    // Navigation boundary events forwarded by the daemon.
+                    "nav-boundary" | "tabNavigated" => {
+                        let url = msg
+                            .get("url")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned();
+                        let sequence = msg.get("sequence").and_then(Value::as_u64);
+                        let mut nav_entry = json!({
+                            "event": "navigation",
+                            "url": url,
+                        });
+                        if let Some(seq) = sequence {
+                            nav_entry["sequence"] = json!(seq);
+                        }
+                        emit_ndjson(&nav_entry, jq_filter)?;
+                        let _ = std::io::stdout().flush();
+                        // Clear pending on navigation — responses from the
+                        // previous page will never arrive for those requests.
+                        pending.clear();
+                    }
                     "resources-available-array" => {
                         let resources = parse_network_resources(&msg);
                         for res in resources {
