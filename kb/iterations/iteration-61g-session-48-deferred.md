@@ -48,7 +48,7 @@ should fall back to a non-eval path before giving up.
 
 ### A. `navigate` waits for the new document by default
 
-#### A1. Treat navigate as a transition, not a fire-and-forget — **major** [0/3]
+#### A1. Treat navigate as a transition, not a fire-and-forget — **major** [3/3]
 - [x] After dispatching the navigate, poll the target's current URL
   (or `document.readyState`, or both) for up to `cli.timeout` ms.
   Return as soon as either: (a) the URL changes to one whose origin or
@@ -62,21 +62,21 @@ should fall back to a non-eval path before giving up.
   (e.g. starting a navigation, doing other things, then waiting
   manually with `wait --text` or `wait --selector`).
 
-#### A2. `--wait-for` predicate on navigate — **minor** [0/2]
+#### A2. `--wait-for` predicate on navigate — **minor** [2/2]
 - [x] Add `--wait-for <selector|text|eval>` (same vocabulary as
   iter-59) so `navigate URL --wait-for ".athing"` is one call.
 - [x] When `--wait-for` is given, the predicate's timeout uses the
   same `cli.timeout` budget; failure surfaces a selector-aware error
   ("navigated to X but `.athing` did not appear within Ymss").
 
-#### A3. Don't double-wait in the script runner — **minor** [0/1]
+#### A3. Don't double-wait in the script runner — **minor** [1/1]
 - [x] Audit the runner's `navigate` verb to make sure the new default
   blocking doesn't compound with an explicit `wait` step (no double
   budget consumed, no double-counted `elapsed_ms`).
 
 ### B. `network` buffer scoped to the current navigation
 
-#### B1. Mark a navigation boundary in the buffer — **major** [0/2]
+#### B1. Mark a navigation boundary in the buffer — **major** [2/2]
 - [x] On every `navigate` (CLI command or in-page navigation observed
   via the watcher), insert a "boundary" marker into the daemon's
   network buffer carrying the new top-level document URL and a
@@ -84,7 +84,7 @@ should fall back to a non-eval path before giving up.
 - [x] No buffer truncation — keep the full history. The marker is
   metadata, not a delete.
 
-#### B2. Default `network` to "since last navigation" — **major** [0/3]
+#### B2. Default `network` to "since last navigation" — **major** [3/3]
 - [x] `ff-rdp network` (no flag) returns only entries observed after
   the most recent boundary. Summary, slowest, by-cause-type all
   recompute against that window.
@@ -96,7 +96,7 @@ should fall back to a non-eval path before giving up.
 - [x] `meta` carries the boundary marker that scoped the result:
   `{"since": {"index": -1, "url": "https://x.example/page", "sequence": 17}}`.
 
-#### B3. `network --follow` emits boundary events — **minor** [0/2]
+#### B3. `network --follow` emits boundary events — **minor** [2/2]
 - [x] When a navigation occurs while a follow is active, emit a
   single NDJSON line: `{"event": "navigation", "url": "...",
   "sequence": N}`. The agent can then reset its own accounting.
@@ -105,7 +105,7 @@ should fall back to a non-eval path before giving up.
 
 ### C. `sources` non-eval fallback
 
-#### C1. Walk the DOM via the WalkerActor — **major** [0/2]
+#### C1. Walk the DOM via the WalkerActor — **major** [2/2]
 - [x] When the SourceActor-based listing is empty or unavailable and
   the page's CSP would block the existing `js-eval` fallback, fall
   back to walking `document.scripts` via the WalkerActor's native
@@ -117,7 +117,7 @@ should fall back to a non-eval path before giving up.
   `"js-eval"` (existing), or absent when the SourceActor produced
   the full list.
 
-#### C2. CSP detection — **minor** [0/2]
+#### C2. CSP detection — **minor** [2/2]
 - [x] Before invoking the `js-eval` fallback, probe whether the page
   CSP allows `eval` (a one-liner via the WalkerActor reading the
   meta CSP header would do, or just attempt a no-op eval and check
@@ -125,7 +125,7 @@ should fall back to a non-eval path before giving up.
 - [x] If eval is blocked, skip directly to the WalkerActor fallback
   rather than emitting a CSP exception that contaminates the result.
 
-#### C3. Tests — **required** [0/2]
+#### C3. Tests — **required** [2/2]
 - [x] Add a fixture page (or a mock-server response) with three
   `<script>` tags: one external, one inline, one with `src` and a
   CSP that blocks eval. Assert sources returns 3 entries with the
@@ -136,21 +136,21 @@ should fall back to a non-eval path before giving up.
 
 ### D. Documentation
 
-#### D1. Update `navigate --help` — **trivial** [0/1]
+#### D1. Update `navigate --help` — **trivial** [1/1]
 - [x] Document the new wait-by-default contract, the
   `committed_url` / `ready_state` fields, and `--no-wait` /
   `--wait-for`.
 
-#### D2. Update `network --help` — **trivial** [0/1]
+#### D2. Update `network --help` — **trivial** [1/1]
 - [x] Document `--since` and the default-scoped behaviour. Call out
   that `network --since all` is the pre-iter-61g default if anyone
   was scripting against it.
 
-#### D3. Tick the dogfood-session-48 findings — **trivial** [0/1]
+#### D3. Tick the dogfood-session-48 findings — **trivial** [1/1]
 - [x] In [[dogfooding-session-48]], mark #1, #2, #7 as closed once
   this iteration merges, with a pointer back here.
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [6/6]
 
 - [x] `ff-rdp navigate URL && ff-rdp page-text` from a fresh agent
   session reliably reads the *new* page's text without a `sleep` or
