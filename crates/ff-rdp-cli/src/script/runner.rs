@@ -640,6 +640,12 @@ fn execute_navigate(
         wait_text: step.wait_text.as_deref(),
         wait_selector: step.wait_selector.as_deref(),
         wait_timeout: cli.timeout,
+        // Script runner: keep default blocking (commit-wait). Explicit wait
+        // steps that follow this navigate step use the same --timeout budget
+        // independently — there is no double-counting because each step owns
+        // its own Instant::now() baseline.
+        no_wait: false,
+        wait_for: &[],
     };
     nav_run_core(cli, &effective_url, &wait_opts)
 }

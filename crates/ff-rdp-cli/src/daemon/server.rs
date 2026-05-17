@@ -312,6 +312,34 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
                     if is_navigation_event(&msg) {
                         state.nav_generation.fetch_add(1, Ordering::Relaxed);
                         state.ref_store.lock().unwrap().clear();
+                        // Record a navigation boundary in the network buffer.
+                        // `tabNavigated` carries the new URL in the `url` field.
+                        // `willNavigate` also has `url`; `frameUpdate` may not.
+                        // We record boundaries for `tabNavigated` only so the
+                        // boundary URL reflects the committed document, not the
+                        // in-flight request.
+                        let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
+                        if msg_type == "tabNavigated" {
+                            let nav_url = msg
+                                .get("url")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_owned();
+                            let sequence = {
+                                let mut buf = state.buffer.lock().unwrap();
+                                buf.record_nav_boundary(nav_url.clone())
+                            };
+                            // Forward a synthetic navigation event to any stream
+                            // subscribers watching "network-event" so that
+                            // `network --follow` can emit boundary markers.
+                            let nav_event = json!({
+                                "type": "nav-boundary",
+                                "event": "navigation",
+                                "url": nav_url,
+                                "sequence": sequence,
+                            });
+                            forward_nav_event_to_stream_subs(state, &nav_event);
+                        }
                     }
                     forward_to_rpc_client(&state.rpc_writer, &msg);
                 }
@@ -492,6 +520,32 @@ fn dispatch_watcher_event(state: &SharedState, msg: &Value) {
 
     if !unbuffered_types.is_empty() {
         buffer_watcher_event_for_types(&state.buffer, msg, &unbuffered_types);
+    }
+}
+
+/// Forward a navigation boundary event to all stream subscribers watching `"network-event"`.
+///
+/// Called when a `tabNavigated` event is observed; the synthetic event carries
+/// `type: "nav-boundary"`, `event: "navigation"`, `url`, and `sequence` so that
+/// `network --follow` can emit NDJSON navigation markers.
+fn forward_nav_event_to_stream_subs(state: &SharedState, event: &Value) {
+    let json = match serde_json::to_string(event) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("daemon: could not serialise nav-boundary event: {e}");
+            return;
+        }
+    };
+    // unwrap: poisoned mutex — daemon should crash.
+    let mut subs = state.stream_subs.lock().unwrap();
+    let mut dead: Vec<usize> = Vec::new();
+    for (i, sub) in subs.iter_mut().enumerate() {
+        if sub.types.contains("network-event") && sub.writer.send_raw(&json).is_err() {
+            dead.push(i);
+        }
+    }
+    for i in dead.into_iter().rev() {
+        subs.remove(i);
     }
 }
 
@@ -874,11 +928,30 @@ fn handle_daemon_message(
                     "error": "drain requires a non-empty resourceType field",
                 });
             };
-            let events = state.buffer.lock().unwrap().drain(resource_type);
-            json!({
+            // Optional `sinceNavIndex` field (i64):
+            //   0 or absent  → full buffer (no boundary filter)
+            //  -1             → since last navigation (default)
+            //  -2             → since second-to-last, etc.
+            let since_nav_index: i64 = msg
+                .get("sinceNavIndex")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let (events, boundary) = state
+                .buffer
+                .lock()
+                .unwrap()
+                .drain_since(resource_type, since_nav_index);
+            let mut resp = json!({
                 "from": "daemon",
                 "events": events,
-            })
+            });
+            if let Some(b) = boundary {
+                resp["nav_boundary"] = json!({
+                    "sequence": b.sequence,
+                    "url": b.url,
+                });
+            }
+            resp
         }
         "stream" => {
             let Some(resource_type) = msg

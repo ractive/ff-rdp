@@ -1,8 +1,8 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ff_rdp_core::{
-    RdpTransport, TabActor, WatcherActor, WindowGlobalTarget, parse_network_resource_updates,
-    parse_network_resources,
+    RdpTransport, TabActor, WatcherActor, WebConsoleActor, WindowGlobalTarget,
+    parse_network_resource_updates, parse_network_resources,
 };
 use serde_json::json;
 
@@ -14,7 +14,9 @@ use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
-use super::js_helpers::{escape_selector, poll_js_condition};
+use super::js_helpers::{
+    WaitForPredicate, escape_selector, poll_js_condition, wait_for_predicates,
+};
 use super::network_events::{
     build_network_entries, drain_network_events_timed, drain_network_from_daemon, merge_updates,
 };
@@ -50,12 +52,175 @@ pub struct WaitAfterNav<'a> {
     pub wait_selector: Option<&'a str>,
     /// Timeout in milliseconds for the wait condition (default: 5000).
     pub wait_timeout: u64,
+    /// Skip the default commit-wait and return immediately after navigate is dispatched.
+    pub no_wait: bool,
+    /// Additional wait-for predicates to evaluate after the document commits.
+    /// Each element is a raw predicate string: `selector:<css>`, `text:<substr>`, etc.
+    pub wait_for: &'a [String],
 }
 
 impl WaitAfterNav<'_> {
     fn has_condition(&self) -> bool {
         self.wait_text.is_some() || self.wait_selector.is_some()
     }
+}
+
+/// Read `window.location.href` from the current document.
+///
+/// Returns `None` when the URL cannot be observed (e.g. the console actor is
+/// not yet responsive or the eval raised an exception).  The caller treats
+/// this as "no pre-nav URL available" and falls back to readyState-only.
+fn capture_current_url(ctx: &mut super::connect_tab::ConnectedTab) -> Option<String> {
+    use super::js_helpers::resolve_result;
+    let console_actor = ctx.target.console_actor.clone();
+    let eval = WebConsoleActor::evaluate_js_async(
+        ctx.transport_mut(),
+        &console_actor,
+        "window.location.href",
+    )
+    .ok()?;
+    if eval.exception.is_some() {
+        return None;
+    }
+    let resolved = resolve_result(ctx, &eval.result).ok()?;
+    resolved.as_str().map(str::to_owned)
+}
+
+/// The result of waiting for a navigation to commit.
+struct CommitInfo {
+    /// The URL observed after the navigation committed.
+    committed_url: String,
+    /// The `document.readyState` observed when the commit condition was met.
+    ready_state: String,
+    /// Wall-clock milliseconds elapsed from navigate dispatch to commit.
+    elapsed_ms: u64,
+}
+
+/// Poll until the page's URL differs from `pre_nav_url` AND
+/// `document.readyState` reaches `interactive` / `complete`, whichever comes first.
+///
+/// The poll runs against the *new* target actors (refreshed via `getTarget`)
+/// because the navigate tears down the old docshell; the old console actor
+/// would return `noSuchActor`.
+///
+/// Without the URL change check, the *old* docshell may briefly answer
+/// `evaluateJSAsync` with `readyState === 'complete'` for the old page,
+/// causing a false-positive commit reading from the previous URL.  When
+/// `pre_nav_url` is `None` (no observable pre-nav URL was captured) the
+/// readyState-only check is used.
+///
+/// Returns an error when the timeout elapses before either condition is met.
+fn wait_for_commit(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    requested_url: &str,
+    pre_nav_url: Option<&str>,
+    timeout_ms: u64,
+) -> Result<CommitInfo, AppError> {
+    const POLL_MS: u64 = 150;
+
+    let timeout = Duration::from_millis(timeout_ms);
+    let poll = Duration::from_millis(POLL_MS);
+    let started = Instant::now();
+
+    // The JS snippet returns a sentinel-prefixed JSON when the condition is met:
+    // { ready: true, url: "<current>", readyState: "<state>" }
+    // Returns null while the condition is not yet satisfied.
+    //
+    // When `pre_nav_url` is provided, also require that the live URL differs
+    // from it — otherwise the old docshell's `readyState === 'complete'` can
+    // satisfy the check before the new document is installed.
+    let pre_json = serde_json::to_string(&pre_nav_url).unwrap_or_else(|_| "null".to_owned());
+    let js = format!(
+        r"(function() {{
+  var rs = document.readyState;
+  if (rs !== 'interactive' && rs !== 'complete') return null;
+  var pre = {pre_json};
+  if (pre && window.location.href === pre) return null;
+  return '__FF_RDP_JSON__' + JSON.stringify({{ready: true, url: window.location.href, readyState: rs}});
+}})()"
+    );
+    let js = js.as_str();
+
+    loop {
+        // Re-resolve actors to get the current docshell's console actor.
+        let tab_actor = ctx.target_tab_actor().clone();
+        let fresh_target =
+            TabActor::get_target(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+        let console_actor = fresh_target.console_actor;
+
+        let eval = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, js)
+            .map_err(AppError::from)?;
+
+        // Ignore exceptions — the new docshell may not be fully initialised yet.
+        if eval.exception.is_none() {
+            use super::js_helpers::resolve_result;
+            use serde_json::Value;
+
+            if let Ok(resolved) = resolve_result(ctx, &eval.result)
+                && let Value::Object(ref map) = resolved
+                && map.get("ready").and_then(Value::as_bool) == Some(true)
+            {
+                let committed_url = map
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap_or(requested_url)
+                    .to_owned();
+                let ready_state = map
+                    .get("readyState")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_owned();
+                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                return Ok(CommitInfo {
+                    committed_url,
+                    ready_state,
+                    elapsed_ms,
+                });
+            }
+        }
+
+        if started.elapsed() >= timeout {
+            return Err(AppError::Timeout(format!(
+                "navigate: page did not commit within {timeout_ms}ms — use --no-wait to skip commit check or increase --timeout"
+            )));
+        }
+
+        std::thread::sleep(poll);
+    }
+}
+
+/// Run the `--wait-for` predicates from `wait_opts`, re-resolving actors first.
+///
+/// Returns `Some(json)` when predicates were specified, `None` when none were given.
+fn run_wait_for_predicates(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    opts: &WaitAfterNav<'_>,
+) -> Result<Option<serde_json::Value>, AppError> {
+    if opts.wait_for.is_empty() {
+        return Ok(None);
+    }
+
+    let predicates: Vec<WaitForPredicate<'_>> = opts
+        .wait_for
+        .iter()
+        .map(|s| WaitForPredicate::parse(s))
+        .collect::<Result<_, _>>()?;
+
+    // Re-resolve console actor for the new document.
+    let tab_actor = ctx.target_tab_actor().clone();
+    let fresh_target =
+        TabActor::get_target(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+    let console_actor = fresh_target.console_actor;
+
+    let started = Instant::now();
+    wait_for_predicates(ctx, &console_actor, &predicates, opts.wait_timeout)?;
+    let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    Ok(Some(json!({
+        "waited": true,
+        "elapsed_ms": elapsed,
+        "predicates": opts.wait_for,
+    })))
 }
 
 /// Navigate to `url` and return the result value without printing.
@@ -72,16 +237,49 @@ pub fn run_core(
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
 
+    // Capture the pre-navigation URL before dispatching `navigateTo` so
+    // `wait_for_commit` can distinguish a stale "complete" reading from the
+    // old document from a real commit on the new one.
+    let pre_nav_url = capture_current_url(&mut ctx);
+
     WindowGlobalTarget::navigate_to(ctx.transport_mut(), &target_actor, url)
         .map_err(AppError::from)?;
 
+    // Default: block until the new document commits (URL changes + readyState interactive/complete).
+    // --no-wait skips this and returns immediately (old fire-and-forget behaviour).
+    let commit_info = if wait_opts.no_wait {
+        None
+    } else {
+        Some(wait_for_commit(
+            &mut ctx,
+            url,
+            pre_nav_url.as_deref(),
+            cli.timeout,
+        )?)
+    };
+
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
 
+    // Parse and run --wait-for predicates after commit.
+    let wait_for_result = run_wait_for_predicates(&mut ctx, wait_opts)?;
+
     let mut result = json!({"navigated": url});
+    if let Some(ref ci) = commit_info
+        && let Some(obj) = result.as_object_mut()
+    {
+        obj.insert("committed_url".to_string(), json!(ci.committed_url));
+        obj.insert("ready_state".to_string(), json!(ci.ready_state));
+        obj.insert("elapsed_ms".to_string(), json!(ci.elapsed_ms));
+    }
     if let Some(w) = wait_result
         && let Some(obj) = result.as_object_mut()
     {
         obj.insert("wait".to_string(), w);
+    }
+    if let Some(wf) = wait_for_result
+        && let Some(obj) = result.as_object_mut()
+    {
+        obj.insert("wait_for".to_string(), wf);
     }
     Ok(result)
 }
@@ -128,6 +326,17 @@ pub fn run_with_network(
     }
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
+
+    // Total wall-clock budget for the whole `--with-network` flow.  We
+    // subtract elapsed time when computing the wait-for-commit deadline so
+    // total time stays close to `cli.timeout` rather than `cli.timeout * 2+`.
+    let nav_started = Instant::now();
+    let total_budget = Duration::from_millis(cli.timeout);
+
+    // Capture pre-nav URL before dispatching the navigate so `wait_for_commit`
+    // can distinguish a stale "complete" reading on the old document from a
+    // real commit on the new one.
+    let pre_nav_url = capture_current_url(&mut ctx);
 
     if ctx.via_daemon {
         // Tell the daemon to stream network events in real-time instead of
@@ -212,7 +421,21 @@ pub fn run_with_network(
             }
         }
 
+        // After network drain, optionally wait for commit (no-wait skips).
+        let commit_info = if wait_opts.no_wait {
+            None
+        } else {
+            // Use whatever is left of the total budget (minimum 2 s) so the
+            // overall navigate wall-clock time stays close to `cli.timeout`.
+            let remaining = total_budget.saturating_sub(nav_started.elapsed());
+            let remaining_ms = u64::try_from(remaining.as_millis())
+                .unwrap_or(u64::MAX)
+                .max(2000);
+            wait_for_commit(&mut ctx, url, pre_nav_url.as_deref(), remaining_ms).ok()
+        };
+
         let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
+        let wait_for_result = run_wait_for_predicates(&mut ctx, wait_opts)?;
 
         let update_map = merge_updates(all_updates);
         let network_entries = build_network_entries(&all_resources, &update_map);
@@ -223,10 +446,22 @@ pub fn run_with_network(
             "navigated": url,
             "network": network_entries,
         });
+        if let Some(ref ci) = commit_info
+            && let Some(obj) = result.as_object_mut()
+        {
+            obj.insert("committed_url".to_string(), json!(ci.committed_url));
+            obj.insert("ready_state".to_string(), json!(ci.ready_state));
+            obj.insert("elapsed_ms".to_string(), json!(ci.elapsed_ms));
+        }
         if let Some(w) = wait_result
             && let Some(obj) = result.as_object_mut()
         {
             obj.insert("wait".to_string(), w);
+        }
+        if let Some(wf) = wait_for_result
+            && let Some(obj) = result.as_object_mut()
+        {
+            obj.insert("wait_for".to_string(), wf);
         }
         let mut meta = json!({});
         crate::connection_meta::merge_into_if_verbose(
@@ -296,7 +531,20 @@ pub fn run_with_network(
     // already fully collected before we begin waiting.  The daemon path
     // (above) starts the wait before building entries because there is no
     // subscription lifecycle to tear down.
+
+    // After network drain, optionally wait for commit (no-wait skips).
+    let commit_info = if wait_opts.no_wait {
+        None
+    } else {
+        let remaining = total_budget.saturating_sub(nav_started.elapsed());
+        let remaining_ms = u64::try_from(remaining.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(2000);
+        wait_for_commit(&mut ctx, url, pre_nav_url.as_deref(), remaining_ms).ok()
+    };
+
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
+    let wait_for_result = run_wait_for_predicates(&mut ctx, wait_opts)?;
 
     let network_entries = apply_network_controls(cli, network_entries, timeout_reached);
 
@@ -304,10 +552,22 @@ pub fn run_with_network(
         "navigated": url,
         "network": network_entries,
     });
+    if let Some(ref ci) = commit_info
+        && let Some(obj) = result.as_object_mut()
+    {
+        obj.insert("committed_url".to_string(), json!(ci.committed_url));
+        obj.insert("ready_state".to_string(), json!(ci.ready_state));
+        obj.insert("elapsed_ms".to_string(), json!(ci.elapsed_ms));
+    }
     if let Some(w) = wait_result
         && let Some(obj) = result.as_object_mut()
     {
         obj.insert("wait".to_string(), w);
+    }
+    if let Some(wf) = wait_for_result
+        && let Some(obj) = result.as_object_mut()
+    {
+        obj.insert("wait_for".to_string(), wf);
     }
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(
@@ -452,13 +712,19 @@ fn describe_wait_condition(opts: &WaitAfterNav<'_>) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn wait_after_nav_no_condition_returns_none() {
-        let opts = WaitAfterNav {
+    fn default_wait_opts<'a>() -> WaitAfterNav<'a> {
+        WaitAfterNav {
             wait_text: None,
             wait_selector: None,
             wait_timeout: 5000,
-        };
+            no_wait: false,
+            wait_for: &[],
+        }
+    }
+
+    #[test]
+    fn wait_after_nav_no_condition_returns_none() {
+        let opts = default_wait_opts();
         assert!(!opts.has_condition());
     }
 
@@ -466,8 +732,7 @@ mod tests {
     fn wait_after_nav_text_has_condition() {
         let opts = WaitAfterNav {
             wait_text: Some("Hello"),
-            wait_selector: None,
-            wait_timeout: 5000,
+            ..default_wait_opts()
         };
         assert!(opts.has_condition());
     }
@@ -475,9 +740,8 @@ mod tests {
     #[test]
     fn wait_after_nav_selector_has_condition() {
         let opts = WaitAfterNav {
-            wait_text: None,
             wait_selector: Some("button.submit"),
-            wait_timeout: 5000,
+            ..default_wait_opts()
         };
         assert!(opts.has_condition());
     }
@@ -485,9 +749,9 @@ mod tests {
     #[test]
     fn describe_wait_condition_selector() {
         let opts = WaitAfterNav {
-            wait_text: None,
             wait_selector: Some("div#main"),
             wait_timeout: 3000,
+            ..default_wait_opts()
         };
         assert_eq!(describe_wait_condition(&opts), r#"selector="div#main""#);
     }
@@ -496,9 +760,25 @@ mod tests {
     fn describe_wait_condition_text() {
         let opts = WaitAfterNav {
             wait_text: Some("Loaded"),
-            wait_selector: None,
             wait_timeout: 3000,
+            ..default_wait_opts()
         };
         assert_eq!(describe_wait_condition(&opts), r#"text="Loaded""#);
+    }
+
+    #[test]
+    fn no_wait_field_skips_commit_wait() {
+        let opts = WaitAfterNav {
+            no_wait: true,
+            ..default_wait_opts()
+        };
+        assert!(opts.no_wait);
+        assert!(!opts.has_condition());
+    }
+
+    #[test]
+    fn wait_for_empty_slice_is_none() {
+        let opts = default_wait_opts();
+        assert!(opts.wait_for.is_empty());
     }
 }

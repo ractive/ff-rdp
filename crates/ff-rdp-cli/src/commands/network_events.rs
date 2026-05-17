@@ -8,7 +8,7 @@ use ff_rdp_core::{
 };
 use serde_json::{Value, json};
 
-use crate::daemon::client::drain_daemon_events;
+use crate::daemon::client::drain_daemon_events_since;
 use crate::error::AppError;
 
 /// Drain `resources-available-array` and `resources-updated-array` events from
@@ -158,7 +158,35 @@ pub(crate) fn merge_updates(
 pub(crate) fn drain_network_from_daemon(
     transport: &mut RdpTransport,
 ) -> Result<(Vec<NetworkResource>, Vec<NetworkResourceUpdate>), AppError> {
-    let drained = drain_daemon_events(transport, "network-event").map_err(AppError::from)?;
+    drain_network_from_daemon_since(transport, 0).map(|(r, u, _)| (r, u))
+}
+
+/// Result type for [`drain_network_from_daemon_since`].
+///
+/// `(resources, updates, nav_boundary)` — `nav_boundary` is the JSON
+/// `{sequence, url}` object from the daemon when a boundary was applied.
+pub(crate) type DaemonNetworkDrainResult = (
+    Vec<NetworkResource>,
+    Vec<NetworkResourceUpdate>,
+    Option<Value>,
+);
+
+/// Like [`drain_network_from_daemon`] but scoped to a navigation window.
+///
+/// `since_nav_index`:
+///  - `0`  → full buffer (all navigations)
+///  - `-1` → since the most-recent navigation
+///  - `-2` → since second-to-last, etc.
+///
+/// Returns `(resources, updates, nav_boundary)` where `nav_boundary` is the
+/// JSON object `{sequence, url}` from the daemon when a boundary was applied.
+pub(crate) fn drain_network_from_daemon_since(
+    transport: &mut RdpTransport,
+    since_nav_index: i64,
+) -> Result<DaemonNetworkDrainResult, AppError> {
+    let (drained, boundary) =
+        drain_daemon_events_since(transport, "network-event", since_nav_index)
+            .map_err(AppError::from)?;
 
     let mut available_items: Vec<Value> = Vec::new();
     let mut update_items: Vec<Value> = Vec::new();
@@ -177,7 +205,7 @@ pub(crate) fn drain_network_from_daemon(
     let resources = parse_network_resources(&available_msg);
     let resource_updates = parse_network_resource_updates(&update_msg);
 
-    Ok((resources, resource_updates))
+    Ok((resources, resource_updates, boundary))
 }
 
 /// Map a single PerformanceResourceTiming JSON entry (from `performance.getEntriesByType`)

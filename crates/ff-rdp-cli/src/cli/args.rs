@@ -320,14 +320,24 @@ Output: {\"results\": [{\"url\": \"...\", \"title\": \"...\", \"actor\": \"...\"
     /// Navigate to a URL
     #[command(long_about = "Navigate to a URL.
 
+By default, navigate blocks until the new document is committed (URL changes and
+readyState reaches 'interactive' or 'complete'), or the --timeout budget expires.
+The result includes 'committed_url', 'ready_state', and 'elapsed_ms' so agents can
+confirm what page actually loaded.
+
+Use --no-wait to restore the old fire-and-forget behaviour (returns immediately after
+the navigate request is acknowledged, without waiting for the document to commit).
+
 The URL is a positional argument (not a flag). There is no --url option.
 
 Examples:
   ff-rdp navigate https://example.com
   ff-rdp navigate https://example.com --with-network
   ff-rdp navigate https://example.com --wait-text \"Welcome\"
+  ff-rdp navigate https://example.com --wait-for selector:.athing
+  ff-rdp navigate https://example.com --no-wait
 
-Output: {\"results\": {\"url\": \"...\", \"title\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
+Output: {\"results\": {\"navigated\": \"...\", \"committed_url\": \"...\", \"ready_state\": \"...\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}")]
     Navigate {
         /// The URL to navigate to (positional, not a flag)
         url: String,
@@ -347,6 +357,13 @@ Output: {\"results\": {\"url\": \"...\", \"title\": \"...\"}, \"total\": 1, \"me
         /// Timeout for the --wait-text/--wait-selector condition in milliseconds. If the condition is not met within this time, the command fails with an error showing the elapsed time.
         #[arg(long, default_value_t = 5000)]
         wait_timeout: u64,
+        /// Skip waiting for the new document to commit; return immediately after the navigate request is acknowledged (pre-61g fire-and-forget behaviour).
+        #[arg(long)]
+        no_wait: bool,
+        /// After the document commits, additionally wait for a predicate. Accepts selector:<css>, text:<substr>, url:<regex>, or gone:<css>.
+        /// Uses the --timeout budget. On failure surfaces a descriptive error.
+        #[arg(long, value_name = "PREDICATE")]
+        wait_for: Vec<String>,
     },
     /// Evaluate JavaScript in the target tab
     #[command(long_about = "Evaluate JavaScript in the target tab.
@@ -484,6 +501,14 @@ Recommended workflows:
 The --filter and --method flags narrow results after capture; they do not
 affect which requests Firefox records.
 
+Navigation scoping (daemon mode only):
+  By default, `ff-rdp network` returns only entries captured since the most
+  recent navigation — so requests from previous pages don't appear.
+  Use --since to change the scope:
+    --since -1   current navigation (default)
+    --since -2   one navigation back
+    --since all  the full cumulative buffer (pre-61g behaviour)
+
 Field fidelity by source:
   watcher:         method, status, content_type, duration_ms, size_bytes, transfer_size all available
   performance-api: method=null, status=null; duration_ms, transfer_size available via Resource Timing API
@@ -507,6 +532,11 @@ Output (--detail --headers): adds {\"headers\": {\"request\": [{\"name\": \"...\
         /// for performance-api fallback entries (source=performance-api).
         #[arg(long)]
         headers: bool,
+        /// Scope the result to a specific navigation window (daemon mode only).
+        /// -1 = current navigation (default), -2 = one back, 'all' = full cumulative buffer.
+        /// Positive integers are treated as 1-based indices from the oldest boundary.
+        #[arg(long, value_name = "NAV_INDEX_OR_ALL")]
+        since: Option<String>,
     },
     /// Query browser Performance API entries and Core Web Vitals
     #[command(
