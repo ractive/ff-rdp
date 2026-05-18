@@ -1,5 +1,6 @@
-use serde_json::{Value, json};
+use serde_json::Value;
 
+use crate::actor::actor_request;
 use crate::actors::tab::TabInfo;
 use crate::error::ProtocolError;
 use crate::transport::RdpTransport;
@@ -73,7 +74,6 @@ impl RootActor {
 
     /// Get root actor metadata (device, preferences, addons actor IDs).
     pub fn get_root(transport: &mut RdpTransport) -> Result<Value, ProtocolError> {
-        use crate::actor::actor_request;
         actor_request(transport, "root", "getRoot", None)
     }
 
@@ -85,31 +85,7 @@ impl RootActor {
     /// Available in Firefox 87+.  Returns `Err` on older builds or when the
     /// root actor does not recognise the `listProcesses` request type.
     pub fn list_processes(transport: &mut RdpTransport) -> Result<Vec<ProcessInfo>, ProtocolError> {
-        let request = json!({"to": "root", "type": "listProcesses"});
-        transport.send(&request)?;
-
-        let response = loop {
-            let msg = transport.recv()?;
-            let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
-            if from == "root" {
-                if msg.get("type").is_some() {
-                    continue;
-                }
-                if let Some(error) = msg.get("error").and_then(Value::as_str) {
-                    return Err(ProtocolError::ActorError {
-                        actor: "root".to_owned(),
-                        kind: crate::error::ActorErrorKind::from_code(error),
-                        error: error.to_owned(),
-                        message: msg
-                            .get("message")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_owned(),
-                    });
-                }
-                break msg;
-            }
-        };
+        let response = actor_request(transport, "root", "listProcesses", None)?;
 
         let processes = response
             .get("processes")
@@ -133,5 +109,90 @@ impl RootActor {
             .collect();
 
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::transport::{RdpTransport, encode_frame, recv_from};
+
+    /// Spin up a minimal in-process server that sends `response` back to the
+    /// first request it receives.
+    fn make_transport_with_response(response: serde_json::Value) -> RdpTransport {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (accept, _) = listener.accept().unwrap();
+
+        std::thread::spawn(move || {
+            let mut srv_reader = BufReader::new(&accept);
+            // Consume the single request, then reply.
+            let _ = recv_from(&mut srv_reader).unwrap();
+            let frame = encode_frame(&serde_json::to_string(&response).unwrap());
+            (&accept).write_all(frame.as_bytes()).unwrap();
+        });
+
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        RdpTransport::from_parts(reader, writer)
+    }
+
+    #[test]
+    fn list_processes_happy_path_two_processes() {
+        let response = json!({
+            "from": "root",
+            "processes": [
+                { "actor": "server1.conn0.processDescriptor1", "isParent": true },
+                { "actor": "server1.conn0.processDescriptor2", "isParent": false }
+            ]
+        });
+        let mut transport = make_transport_with_response(response);
+        let procs = RootActor::list_processes(&mut transport).unwrap();
+        assert_eq!(procs.len(), 2);
+        assert_eq!(procs[0].actor.as_ref(), "server1.conn0.processDescriptor1");
+        assert!(procs[0].is_parent);
+        assert_eq!(procs[1].actor.as_ref(), "server1.conn0.processDescriptor2");
+        assert!(!procs[1].is_parent);
+    }
+
+    #[test]
+    fn list_processes_missing_processes_field_returns_error() {
+        let response = json!({ "from": "root" });
+        let mut transport = make_transport_with_response(response);
+        let err = RootActor::list_processes(&mut transport).unwrap_err();
+        assert!(
+            err.to_string().contains("'processes'"),
+            "error should mention 'processes': {err}"
+        );
+        assert!(
+            matches!(err, ProtocolError::InvalidPacket(_)),
+            "expected InvalidPacket, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn list_processes_entry_missing_actor_is_filtered_out() {
+        // An entry without an `actor` field is silently skipped (filter_map).
+        let response = json!({
+            "from": "root",
+            "processes": [
+                { "isParent": true },
+                { "actor": "server1.conn0.processDescriptor2", "isParent": false }
+            ]
+        });
+        let mut transport = make_transport_with_response(response);
+        let procs = RootActor::list_processes(&mut transport).unwrap();
+        assert_eq!(
+            procs.len(),
+            1,
+            "malformed entry without actor should be filtered out"
+        );
+        assert_eq!(procs[0].actor.as_ref(), "server1.conn0.processDescriptor2");
     }
 }

@@ -116,57 +116,7 @@ fn parse_target_response(response: &Value) -> Result<TargetInfo, ProtocolError> 
     let frame = response.get("frame").ok_or_else(|| {
         ProtocolError::InvalidPacket("getTarget response missing 'frame' object".into())
     })?;
-
-    let actor = frame.get("actor").and_then(Value::as_str).ok_or_else(|| {
-        ProtocolError::InvalidPacket("getTarget response 'frame' missing 'actor' field".into())
-    })?;
-
-    let console_actor = frame
-        .get("consoleActor")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            ProtocolError::InvalidPacket(
-                "getTarget response 'frame' missing 'consoleActor' field".into(),
-            )
-        })?;
-
-    let thread_actor = frame
-        .get("threadActor")
-        .and_then(Value::as_str)
-        .map(ActorId::from);
-
-    let inspector_actor = frame
-        .get("inspectorActor")
-        .and_then(Value::as_str)
-        .map(ActorId::from);
-
-    let screenshot_content_actor = frame
-        .get("screenshotContentActor")
-        .and_then(Value::as_str)
-        .map(ActorId::from);
-
-    let accessibility_actor = frame
-        .get("accessibilityActor")
-        .and_then(Value::as_str)
-        .map(ActorId::from);
-
-    let responsive_actor = frame
-        .get("responsiveActor")
-        .and_then(Value::as_str)
-        .map(ActorId::from);
-
-    let browsing_context_id = frame.get("browsingContextID").and_then(Value::as_u64);
-
-    Ok(TargetInfo {
-        actor: actor.into(),
-        console_actor: console_actor.into(),
-        thread_actor,
-        inspector_actor,
-        screenshot_content_actor,
-        accessibility_actor,
-        responsive_actor,
-        browsing_context_id,
-    })
+    parse_target_response_inner(frame, "frame")
 }
 
 /// Extract [`TargetInfo`] from a `getTarget` response issued to a process descriptor.
@@ -179,51 +129,59 @@ fn parse_process_target_response(response: &Value) -> Result<TargetInfo, Protoco
     let process = response.get("process").ok_or_else(|| {
         ProtocolError::InvalidPacket("process getTarget response missing 'process' object".into())
     })?;
+    parse_target_response_inner(process, "process")
+}
 
-    let actor = process
-        .get("actor")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            ProtocolError::InvalidPacket(
-                "process getTarget response 'process' missing 'actor' field".into(),
-            )
-        })?;
+/// Shared field extraction logic for both `parse_target_response` and
+/// `parse_process_target_response`.
+///
+/// `inner` is the wrapper object (`frame` or `process`), and `wrapper_key` is
+/// its name (used only in error messages).
+fn parse_target_response_inner(
+    inner: &Value,
+    wrapper_key: &str,
+) -> Result<TargetInfo, ProtocolError> {
+    let actor = inner.get("actor").and_then(Value::as_str).ok_or_else(|| {
+        ProtocolError::InvalidPacket(format!(
+            "getTarget response '{wrapper_key}' missing 'actor' field"
+        ))
+    })?;
 
-    let console_actor = process
+    let console_actor = inner
         .get("consoleActor")
         .and_then(Value::as_str)
         .ok_or_else(|| {
-            ProtocolError::InvalidPacket(
-                "process getTarget response 'process' missing 'consoleActor' field".into(),
-            )
+            ProtocolError::InvalidPacket(format!(
+                "getTarget response '{wrapper_key}' missing 'consoleActor' field"
+            ))
         })?;
 
-    let thread_actor = process
+    let thread_actor = inner
         .get("threadActor")
         .and_then(Value::as_str)
         .map(ActorId::from);
 
-    let inspector_actor = process
+    let inspector_actor = inner
         .get("inspectorActor")
         .and_then(Value::as_str)
         .map(ActorId::from);
 
-    let screenshot_content_actor = process
+    let screenshot_content_actor = inner
         .get("screenshotContentActor")
         .and_then(Value::as_str)
         .map(ActorId::from);
 
-    let accessibility_actor = process
+    let accessibility_actor = inner
         .get("accessibilityActor")
         .and_then(Value::as_str)
         .map(ActorId::from);
 
-    let responsive_actor = process
+    let responsive_actor = inner
         .get("responsiveActor")
         .and_then(Value::as_str)
         .map(ActorId::from);
 
-    let browsing_context_id = process.get("browsingContextID").and_then(Value::as_u64);
+    let browsing_context_id = inner.get("browsingContextID").and_then(Value::as_u64);
 
     Ok(TargetInfo {
         actor: actor.into(),
@@ -389,6 +347,95 @@ mod tests {
             "from": "server1.conn3.tabDescriptor1"
         });
         let err = parse_target_response(&response).unwrap_err();
+        assert!(
+            err.to_string().contains("'consoleActor'"),
+            "error should mention 'consoleActor': {err}"
+        );
+    }
+
+    // --- parse_process_target_response ---
+
+    #[test]
+    fn parse_process_target_response_happy_path() {
+        let response = json!({
+            "process": {
+                "actor": "server1.conn0.processDescriptor1/windowGlobalTarget1",
+                "consoleActor": "server1.conn0.processDescriptor1/consoleActor2",
+                "threadActor": "server1.conn0.processDescriptor1/thread1",
+                "inspectorActor": "server1.conn0.processDescriptor1/inspectorActor3",
+                "screenshotContentActor": "server1.conn0.processDescriptor1/screenshotContentActor4",
+                "accessibilityActor": "server1.conn0.processDescriptor1/accessibilityActor5",
+                "browsingContextID": 99
+            },
+            "from": "server1.conn0.processDescriptor1"
+        });
+        let info = parse_process_target_response(&response).unwrap();
+        assert_eq!(
+            info.actor.as_ref(),
+            "server1.conn0.processDescriptor1/windowGlobalTarget1"
+        );
+        assert_eq!(
+            info.console_actor.as_ref(),
+            "server1.conn0.processDescriptor1/consoleActor2"
+        );
+        assert_eq!(
+            info.thread_actor.as_ref().map(ActorId::as_ref),
+            Some("server1.conn0.processDescriptor1/thread1")
+        );
+        assert_eq!(
+            info.inspector_actor.as_ref().map(ActorId::as_ref),
+            Some("server1.conn0.processDescriptor1/inspectorActor3")
+        );
+        assert_eq!(
+            info.screenshot_content_actor.as_ref().map(ActorId::as_ref),
+            Some("server1.conn0.processDescriptor1/screenshotContentActor4")
+        );
+        assert_eq!(
+            info.accessibility_actor.as_ref().map(ActorId::as_ref),
+            Some("server1.conn0.processDescriptor1/accessibilityActor5")
+        );
+        assert_eq!(info.browsing_context_id, Some(99));
+    }
+
+    #[test]
+    fn parse_process_target_response_optional_fields_absent() {
+        let response = json!({
+            "process": {
+                "actor": "server1.conn0.processDescriptor1/windowGlobalTarget1",
+                "consoleActor": "server1.conn0.processDescriptor1/consoleActor2"
+            },
+            "from": "server1.conn0.processDescriptor1"
+        });
+        let info = parse_process_target_response(&response).unwrap();
+        assert!(info.thread_actor.is_none());
+        assert!(info.inspector_actor.is_none());
+        assert!(info.screenshot_content_actor.is_none());
+        assert!(info.accessibility_actor.is_none());
+        assert!(info.browsing_context_id.is_none());
+    }
+
+    #[test]
+    fn parse_process_target_response_missing_process_wrapper_returns_error() {
+        let response = json!({
+            "actor": "server1.conn0.processDescriptor1/windowGlobalTarget1",
+            "from": "server1.conn0.processDescriptor1"
+        });
+        let err = parse_process_target_response(&response).unwrap_err();
+        assert!(
+            err.to_string().contains("'process'"),
+            "error should mention 'process': {err}"
+        );
+    }
+
+    #[test]
+    fn parse_process_target_response_missing_console_actor_returns_error() {
+        let response = json!({
+            "process": {
+                "actor": "server1.conn0.processDescriptor1/windowGlobalTarget1"
+            },
+            "from": "server1.conn0.processDescriptor1"
+        });
+        let err = parse_process_target_response(&response).unwrap_err();
         assert!(
             err.to_string().contains("'consoleActor'"),
             "error should mention 'consoleActor': {err}"

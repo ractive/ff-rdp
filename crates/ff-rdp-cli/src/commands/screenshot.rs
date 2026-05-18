@@ -370,6 +370,28 @@ fn try_two_step_screenshot(
 ///
 /// `browsing_context_id` is the numeric ID of the content page to capture.
 /// `full_page` controls whether the entire scroll height is captured.
+/// RAII guard that best-effort removes a set of temp files on drop.
+///
+/// This ensures both `tmp_png` and `tmp_err` are cleaned up on every exit
+/// path from `try_chrome_scope_screenshot`, including early-return errors.
+struct TempFileGuard {
+    paths: Vec<std::path::PathBuf>,
+}
+
+impl TempFileGuard {
+    fn new(paths: Vec<std::path::PathBuf>) -> Self {
+        Self { paths }
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        for path in &self.paths {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 fn try_chrome_scope_screenshot(
     ctx: &mut super::connect_tab::ConnectedTab,
     browsing_context_id: u64,
@@ -378,7 +400,9 @@ fn try_chrome_scope_screenshot(
     // Step 1: find the parent process.
     let processes = RootActor::list_processes(ctx.transport_mut()).map_err(|e| {
         AppError::User(format!(
-            "screenshot: could not list processes for chrome-scope fallback ({e})"
+            "screenshot: (Firefox 149+ chrome-scope fallback for the broken \
+             devtools/server/actors/screenshot module also failed) \
+             could not list processes ({e})"
         ))
     })?;
 
@@ -386,39 +410,78 @@ fn try_chrome_scope_screenshot(
         .iter()
         .find(|p: &&ProcessInfo| p.is_parent)
         .ok_or_else(|| {
-            AppError::User("screenshot: no parent process found in listProcesses".to_owned())
+            AppError::User(
+                "screenshot: (Firefox 149+ chrome-scope fallback for the broken \
+                 devtools/server/actors/screenshot module also failed) \
+                 no parent process found in listProcesses"
+                    .to_owned(),
+            )
         })?;
 
     // Step 2: get chrome console actor.
     let chrome_target = TabActor::get_process_target(ctx.transport_mut(), &parent_proc.actor)
         .map_err(|e| {
             AppError::User(format!(
-                "screenshot: could not get parent process target ({e})"
+                "screenshot: (Firefox 149+ chrome-scope fallback for the broken \
+                 devtools/server/actors/screenshot module also failed) \
+                 could not get parent process target ({e})"
             ))
         })?;
 
     let chrome_console = chrome_target.console_actor.clone();
 
-    // Step 3: build temp file paths.
+    // Step 3: build unique, unpredictable temp file paths.
+    //
+    // We combine a millisecond timestamp, the process ID, and a
+    // nanosecond-resolution entropy nibble to make the filename both unique
+    // across parallel invocations and non-predictable (mitigates symlink races
+    // on world-writable /tmp).
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let tmp_png = std::env::temp_dir().join(format!("ff_rdp_chrome_cap_{ts}.png"));
-    let tmp_err = std::env::temp_dir().join(format!("ff_rdp_chrome_cap_{ts}.err"));
+    let pid = std::process::id();
+    let rand = u128::from(std::time::Instant::now().elapsed().subsec_nanos()) ^ ts;
+    let tmp_png = std::env::temp_dir().join(format!("ff_rdp_chrome_cap_{ts}_{pid}_{rand}.png"));
+    let tmp_part =
+        std::env::temp_dir().join(format!("ff_rdp_chrome_cap_{ts}_{pid}_{rand}.png.part"));
+    let tmp_err = std::env::temp_dir().join(format!("ff_rdp_chrome_cap_{ts}_{pid}_{rand}.err"));
 
-    // Build a JSON-safe path string (forward slashes work on all platforms
-    // inside Firefox's nsIFile on macOS/Linux; on Windows the JS receives a
-    // backslash-escaped string from serde_json).
-    let out_path_js = serde_json::to_string(&tmp_png.to_string_lossy().as_ref()).unwrap();
-    let err_path_js = serde_json::to_string(&tmp_err.to_string_lossy().as_ref()).unwrap();
+    // RAII guard: remove all temp files on every exit path.
+    let _guard = TempFileGuard::new(vec![tmp_png.clone(), tmp_part.clone(), tmp_err.clone()]);
 
+    // Build JSON-safe path strings for use inside the JS source.
+    // serde_json::to_string on &str produces a JSON string literal with all
+    // necessary escaping (backslashes on Windows, special chars, etc.).
+    let out_path_js = serde_json::to_string(&tmp_png.to_string_lossy().as_ref())
+        .context("serializing screenshot output path")
+        .map_err(|e| AppError::from(anyhow::anyhow!("{e}")))?;
+    let part_path_js = serde_json::to_string(&tmp_part.to_string_lossy().as_ref())
+        .context("serializing screenshot part path")
+        .map_err(|e| AppError::from(anyhow::anyhow!("{e}")))?;
+    let err_path_js = serde_json::to_string(&tmp_err.to_string_lossy().as_ref())
+        .context("serializing screenshot error path")
+        .map_err(|e| AppError::from(anyhow::anyhow!("{e}")))?;
+
+    // browsing_context_id (u64) and full_page (bool) are safe JS literals, but
+    // we round-trip through serde_json to guarantee valid JS by construction.
+    let bc_id_js = serde_json::to_string(&browsing_context_id)
+        .context("serializing browsing context id")
+        .map_err(|e| AppError::from(anyhow::anyhow!("{e}")))?;
+    let full_page_js = serde_json::to_string(&full_page)
+        .context("serializing full_page flag")
+        .map_err(|e| AppError::from(anyhow::anyhow!("{e}")))?;
+
+    // The JS writes to a `.part` file first, then renames it to the final path
+    // via `moveTo(null, outName)`.  `moveTo` is atomic on the same filesystem,
+    // so the Rust poll loop never observes a partially-written PNG.
     let js = format!(
         r#"(function() {{
-  var outPath = {out_path_js};
-  var errPath = {err_path_js};
-  var bcId    = {browsing_context_id};
-  var full    = {full_page};
+  var outPath  = {out_path_js};
+  var partPath = {part_path_js};
+  var errPath  = {err_path_js};
+  var bcId     = {bc_id_js};
+  var full     = {full_page_js};
 
   function writeBytes(path, arr) {{
     var f = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
@@ -427,6 +490,7 @@ fn try_chrome_scope_screenshot(
     s.init(f, 0x04|0x08|0x20, 0o644, 0);
     var b = Cc["@mozilla.org/binaryoutputstream;1"].createInstance(Ci.nsIBinaryOutputStream);
     b.setOutputStream(s); b.writeByteArray(arr); b.close(); s.close();
+    return f;
   }}
   function writeText(path, text) {{
     var f = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
@@ -452,7 +516,9 @@ fn try_chrome_scope_screenshot(
         var bin = atob(b64);
         var arr = new Uint8Array(bin.length);
         for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-        writeBytes(outPath, arr);
+        var partFile = writeBytes(partPath, arr);
+        var outName  = outPath.replace(/.*[\/\\]/, "");
+        partFile.moveTo(null, outName);
       }})
       .catch(function(e) {{ writeText(errPath, e.name + ": " + e.message); }});
     return "ok";
@@ -467,7 +533,9 @@ fn try_chrome_scope_screenshot(
     let kick_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &chrome_console, &js)
         .map_err(|e| {
             AppError::User(format!(
-                "screenshot: chrome-scope eval failed to start ({e})"
+                "screenshot: (Firefox 149+ chrome-scope fallback for the broken \
+                 devtools/server/actors/screenshot module also failed) \
+                 chrome-scope eval failed to start ({e})"
             ))
         })?;
 
@@ -476,18 +544,22 @@ fn try_chrome_scope_screenshot(
         && s.starts_with("err:")
     {
         return Err(AppError::User(format!(
-            "screenshot: chrome-scope capture failed: {s}"
+            "screenshot: (Firefox 149+ chrome-scope fallback for the broken \
+             devtools/server/actors/screenshot module also failed) \
+             chrome-scope capture failed: {s}"
         )));
     }
 
-    // Step 4: poll for the output file.
+    // Step 4: poll for the final output file (not the .part file — moveTo is atomic).
     let poll_deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if tmp_err.exists() {
             let msg = std::fs::read_to_string(&tmp_err).unwrap_or_default();
-            let _ = std::fs::remove_file(&tmp_err);
+            // _guard will clean up tmp_err and tmp_png on return.
             return Err(AppError::User(format!(
-                "screenshot: chrome-scope capture failed: {msg}"
+                "screenshot: (Firefox 149+ chrome-scope fallback for the broken \
+                 devtools/server/actors/screenshot module also failed) \
+                 chrome-scope capture failed: {msg}"
             )));
         }
 
@@ -495,13 +567,13 @@ fn try_chrome_scope_screenshot(
             && let Ok(meta) = std::fs::metadata(&tmp_png)
             && meta.len() > 8
         {
-            // Read the PNG bytes.
+            // Read the PNG bytes before the guard drops and removes the file.
             let png_bytes = std::fs::read(&tmp_png).map_err(|e| {
                 AppError::from(anyhow::anyhow!(
                     "screenshot: could not read chrome-scope temp PNG: {e}"
                 ))
             })?;
-            let _ = std::fs::remove_file(&tmp_png);
+            // _guard removes the file on drop after this return.
 
             // Encode as a data URL so the caller can use the same
             // prefix-stripping path as the other code paths.
@@ -510,10 +582,11 @@ fn try_chrome_scope_screenshot(
         }
 
         if Instant::now() >= poll_deadline {
-            let _ = std::fs::remove_file(&tmp_png);
-            let _ = std::fs::remove_file(&tmp_err);
+            // _guard will clean up on drop.
             return Err(AppError::User(
-                "screenshot: chrome-scope capture timed out after 10s — \
+                "screenshot: (Firefox 149+ chrome-scope fallback for the broken \
+                 devtools/server/actors/screenshot module also failed) \
+                 chrome-scope capture timed out after 10s — \
                  the Firefox async capture promise did not resolve in time"
                     .to_owned(),
             ));
