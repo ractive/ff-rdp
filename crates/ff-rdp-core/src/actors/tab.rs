@@ -72,6 +72,22 @@ impl TabActor {
         parse_target_response(&response)
     }
 
+    /// Call `getTarget` on a **process descriptor** actor.
+    ///
+    /// Process descriptors (from `listProcesses`) wrap their target inside a
+    /// `"process"` key instead of the `"frame"` key used by tab descriptors.
+    ///
+    /// ```json
+    /// { "process": { "actor": "...", "consoleActor": "...", ... }, "from": "..." }
+    /// ```
+    pub fn get_process_target(
+        transport: &mut RdpTransport,
+        process_actor: &ActorId,
+    ) -> Result<TargetInfo, ProtocolError> {
+        let response = actor_request(transport, process_actor.as_ref(), "getTarget", None)?;
+        parse_process_target_response(&response)
+    }
+
     /// Call `getWatcher` on a tab descriptor to obtain the watcher actor ID.
     pub fn get_watcher(
         transport: &mut RdpTransport,
@@ -140,6 +156,74 @@ fn parse_target_response(response: &Value) -> Result<TargetInfo, ProtocolError> 
         .map(ActorId::from);
 
     let browsing_context_id = frame.get("browsingContextID").and_then(Value::as_u64);
+
+    Ok(TargetInfo {
+        actor: actor.into(),
+        console_actor: console_actor.into(),
+        thread_actor,
+        inspector_actor,
+        screenshot_content_actor,
+        accessibility_actor,
+        responsive_actor,
+        browsing_context_id,
+    })
+}
+
+/// Extract [`TargetInfo`] from a `getTarget` response issued to a process descriptor.
+///
+/// Process descriptor responses wrap the target fields in a `"process"` key:
+/// ```json
+/// { "process": { "actor": "...", "consoleActor": "...", ... }, "from": "..." }
+/// ```
+fn parse_process_target_response(response: &Value) -> Result<TargetInfo, ProtocolError> {
+    let process = response.get("process").ok_or_else(|| {
+        ProtocolError::InvalidPacket("process getTarget response missing 'process' object".into())
+    })?;
+
+    let actor = process
+        .get("actor")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ProtocolError::InvalidPacket(
+                "process getTarget response 'process' missing 'actor' field".into(),
+            )
+        })?;
+
+    let console_actor = process
+        .get("consoleActor")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ProtocolError::InvalidPacket(
+                "process getTarget response 'process' missing 'consoleActor' field".into(),
+            )
+        })?;
+
+    let thread_actor = process
+        .get("threadActor")
+        .and_then(Value::as_str)
+        .map(ActorId::from);
+
+    let inspector_actor = process
+        .get("inspectorActor")
+        .and_then(Value::as_str)
+        .map(ActorId::from);
+
+    let screenshot_content_actor = process
+        .get("screenshotContentActor")
+        .and_then(Value::as_str)
+        .map(ActorId::from);
+
+    let accessibility_actor = process
+        .get("accessibilityActor")
+        .and_then(Value::as_str)
+        .map(ActorId::from);
+
+    let responsive_actor = process
+        .get("responsiveActor")
+        .and_then(Value::as_str)
+        .map(ActorId::from);
+
+    let browsing_context_id = process.get("browsingContextID").and_then(Value::as_u64);
 
     Ok(TargetInfo {
         actor: actor.into(),

@@ -20,7 +20,7 @@ pub use actors::page_style::{
     AppliedRule, BoxModelLayout, BoxSides, ComputedProperty, PageStyleActor, RuleProperty,
 };
 pub use actors::responsive::ResponsiveActor;
-pub use actors::root::RootActor;
+pub use actors::root::{ProcessInfo, RootActor};
 pub use actors::screenshot::ScreenshotActor;
 pub use actors::screenshot_content::{
     CaptureRect, PrepareCapture, ScreenshotCapture, ScreenshotContentActor,

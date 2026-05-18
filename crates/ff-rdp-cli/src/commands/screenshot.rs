@@ -1,10 +1,11 @@
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use base64::Engine as _;
 use ff_rdp_core::{
-    COMPATIBLE_FIREFOX_MIN, Grip, LongStringActor, ProtocolError, ScreenshotActor,
-    ScreenshotContentActor,
+    COMPATIBLE_FIREFOX_MIN, Grip, LongStringActor, ProcessInfo, ProtocolError, RootActor,
+    ScreenshotActor, ScreenshotContentActor, TabActor, WebConsoleActor,
 };
 use serde_json::json;
 
@@ -81,6 +82,16 @@ const PNG_DATA_URL_PREFIX: &str = "data:image/png;base64,";
 fn is_actor_module_load_failure(err: &ProtocolError) -> bool {
     // Display includes both the Firefox `error` code and the `message` text.
     err.to_string().contains("Unable to load actor module")
+}
+
+/// Detect the Firefox 149+ ESM `global` option regression specifically.
+///
+/// `capture-screenshot.js` uses `ChromeUtils.importESModule` without the
+/// `global` option, which fails on Firefox 149+ DevTools distinct globals.
+/// This specific error means the chrome-scope loader workaround is applicable.
+fn is_esm_global_option_error(err: &ProtocolError) -> bool {
+    err.to_string()
+        .contains("global option is required in DevTools distinct global")
 }
 
 /// Build the canonical user-facing message for a missing screenshot actor.
@@ -301,30 +312,215 @@ fn try_two_step_screenshot(
         ))
     })?;
 
-    let data = ScreenshotActor::capture(
+    let capture_result = ScreenshotActor::capture(
         ctx.transport_mut(),
         &screenshot_actor,
         browsing_ctx_id,
         full_page,
         &prep,
-    )
-    .map_err(|e| {
-        if is_actor_module_load_failure(&e) {
-            // The root screenshot actor module failed to load on this build
-            // (the failure mode users hit on certain Firefox channels: the
-            // ESM import requires a `global` option that is not present in
-            // the DevTools distinct global).  Skip the headless hint and
-            // surface a clean version-mismatch message.
-            AppError::User(format!("screenshot: {}", version_mismatch_message()))
-        } else {
-            AppError::User(format!(
-                "screenshot: screenshotActor.capture failed ({e}) — \
-                 screenshots require headless mode; relaunch with: ff-rdp launch --headless"
-            ))
+    );
+
+    match capture_result {
+        Ok(data) => Ok(data),
+        Err(ref e) if is_esm_global_option_error(e) => {
+            // Firefox 149+ regression: `capture-screenshot.js` calls
+            // `ChromeUtils.importESModule` without the `global` option,
+            // which fails in the DevTools distinct global.  Fall back to the
+            // chrome-scope loader workaround that loads the same module via
+            // the DevTools loader (which has the correct global).
+            try_chrome_scope_screenshot(ctx, browsing_ctx_id, full_page)
         }
+        Err(ref e) if is_actor_module_load_failure(e) => {
+            // Generic actor-module-load failure not caused by the ESM global
+            // option issue — surface a clean version-mismatch message.
+            Err(AppError::User(format!(
+                "screenshot: {}",
+                version_mismatch_message()
+            )))
+        }
+        Err(e) => Err(AppError::User(format!(
+            "screenshot: screenshotActor.capture failed ({e}) — \
+             screenshots require headless mode; relaunch with: ff-rdp launch --headless"
+        ))),
+    }
+}
+
+/// Chrome-scope screenshot fallback for Firefox 149+ where the root
+/// `screenshotActor` module fails to load due to an ESM `global` option bug.
+///
+/// Strategy:
+///  1. `listProcesses` → find the parent process descriptor.
+///  2. `getTarget` on the process descriptor → get the chrome-privileged
+///     `consoleActor`.
+///  3. Fire an async `evaluateJSAsync` that:
+///     - Uses `resource://devtools/shared/loader/Loader.sys.mjs` (accessible
+///       from chrome scope) to `require()` `capture-screenshot.js` — this
+///       bypasses the broken `ChromeUtils.importESModule` call in that module.
+///     - Calls `captureScreenshot({…}, BrowsingContext.get(bcId))` which
+///       returns a Promise.
+///     - When the Promise resolves, writes the PNG bytes to a temp file via
+///       `nsIFile` + `nsIBinaryOutputStream`.
+///     - On error, writes the error message to an adjacent `.err` file.
+///  4. Poll the filesystem for the temp file or the error sentinel.
+///  5. Return the PNG bytes to the caller.
+///
+/// The async JS fires-and-forgets: `evaluateJSAsync` returns immediately with
+/// `"ok"` while Firefox's event loop resolves the Promise in the background.
+/// The poll timeout is 10 seconds; screenshots typically complete in < 500 ms.
+///
+/// `browsing_context_id` is the numeric ID of the content page to capture.
+/// `full_page` controls whether the entire scroll height is captured.
+fn try_chrome_scope_screenshot(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    browsing_context_id: u64,
+    full_page: bool,
+) -> Result<String, AppError> {
+    // Step 1: find the parent process.
+    let processes = RootActor::list_processes(ctx.transport_mut()).map_err(|e| {
+        AppError::User(format!(
+            "screenshot: could not list processes for chrome-scope fallback ({e})"
+        ))
     })?;
 
-    Ok(data)
+    let parent_proc = processes
+        .iter()
+        .find(|p: &&ProcessInfo| p.is_parent)
+        .ok_or_else(|| {
+            AppError::User("screenshot: no parent process found in listProcesses".to_owned())
+        })?;
+
+    // Step 2: get chrome console actor.
+    let chrome_target = TabActor::get_process_target(ctx.transport_mut(), &parent_proc.actor)
+        .map_err(|e| {
+            AppError::User(format!(
+                "screenshot: could not get parent process target ({e})"
+            ))
+        })?;
+
+    let chrome_console = chrome_target.console_actor.clone();
+
+    // Step 3: build temp file paths.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let tmp_png = std::env::temp_dir().join(format!("ff_rdp_chrome_cap_{ts}.png"));
+    let tmp_err = std::env::temp_dir().join(format!("ff_rdp_chrome_cap_{ts}.err"));
+
+    // Build a JSON-safe path string (forward slashes work on all platforms
+    // inside Firefox's nsIFile on macOS/Linux; on Windows the JS receives a
+    // backslash-escaped string from serde_json).
+    let out_path_js = serde_json::to_string(&tmp_png.to_string_lossy().as_ref()).unwrap();
+    let err_path_js = serde_json::to_string(&tmp_err.to_string_lossy().as_ref()).unwrap();
+
+    let js = format!(
+        r#"(function() {{
+  var outPath = {out_path_js};
+  var errPath = {err_path_js};
+  var bcId    = {browsing_context_id};
+  var full    = {full_page};
+
+  function writeBytes(path, arr) {{
+    var f = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+    f.initWithPath(path);
+    var s = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
+    s.init(f, 0x04|0x08|0x20, 0o644, 0);
+    var b = Cc["@mozilla.org/binaryoutputstream;1"].createInstance(Ci.nsIBinaryOutputStream);
+    b.setOutputStream(s); b.writeByteArray(arr); b.close(); s.close();
+  }}
+  function writeText(path, text) {{
+    var f = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+    f.initWithPath(path);
+    var s = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
+    s.init(f, 0x04|0x08|0x20, 0o644, 0);
+    var o = Cc["@mozilla.org/intl/converter-output-stream;1"].createInstance(Ci.nsIConverterOutputStream);
+    o.init(s, "UTF-8"); o.writeString(text); o.close(); s.close();
+  }}
+
+  try {{
+    var {{ loader }} = ChromeUtils.importESModule(
+      "resource://devtools/shared/loader/Loader.sys.mjs",
+      {{ global: "current" }}
+    );
+    var {{ captureScreenshot }} = loader.require("devtools/server/actors/utils/capture-screenshot");
+    var bc = BrowsingContext.get(bcId);
+    if (!bc) {{ writeText(errPath, "no BrowsingContext for id " + bcId); return "err:no-bc"; }}
+    captureScreenshot({{ fullpage: full, dpr: 1.0, snapshotScale: 1.0 }}, bc)
+      .then(function(r) {{
+        var dataUrl = r.data;
+        var b64 = dataUrl.replace(/^data:image\/png;base64,/, "");
+        var bin = atob(b64);
+        var arr = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        writeBytes(outPath, arr);
+      }})
+      .catch(function(e) {{ writeText(errPath, e.name + ": " + e.message); }});
+    return "ok";
+  }} catch(e) {{
+    writeText(errPath, "sync: " + e.name + ": " + e.message);
+    return "err:" + e.message;
+  }}
+}})()"#
+    );
+
+    // Fire the async capture.
+    let kick_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &chrome_console, &js)
+        .map_err(|e| {
+            AppError::User(format!(
+                "screenshot: chrome-scope eval failed to start ({e})"
+            ))
+        })?;
+
+    // Check the synchronous return value for early errors.
+    if let Grip::Value(serde_json::Value::String(ref s)) = kick_result.result
+        && s.starts_with("err:")
+    {
+        return Err(AppError::User(format!(
+            "screenshot: chrome-scope capture failed: {s}"
+        )));
+    }
+
+    // Step 4: poll for the output file.
+    let poll_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if tmp_err.exists() {
+            let msg = std::fs::read_to_string(&tmp_err).unwrap_or_default();
+            let _ = std::fs::remove_file(&tmp_err);
+            return Err(AppError::User(format!(
+                "screenshot: chrome-scope capture failed: {msg}"
+            )));
+        }
+
+        if tmp_png.exists()
+            && let Ok(meta) = std::fs::metadata(&tmp_png)
+            && meta.len() > 8
+        {
+            // Read the PNG bytes.
+            let png_bytes = std::fs::read(&tmp_png).map_err(|e| {
+                AppError::from(anyhow::anyhow!(
+                    "screenshot: could not read chrome-scope temp PNG: {e}"
+                ))
+            })?;
+            let _ = std::fs::remove_file(&tmp_png);
+
+            // Encode as a data URL so the caller can use the same
+            // prefix-stripping path as the other code paths.
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+            return Ok(format!("{PNG_DATA_URL_PREFIX}{b64}"));
+        }
+
+        if Instant::now() >= poll_deadline {
+            let _ = std::fs::remove_file(&tmp_png);
+            let _ = std::fs::remove_file(&tmp_err);
+            return Err(AppError::User(
+                "screenshot: chrome-scope capture timed out after 10s — \
+                 the Firefox async capture promise did not resolve in time"
+                    .to_owned(),
+            ));
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Resolve the eval result to an `Option<String>`:
@@ -524,5 +720,48 @@ mod tests {
             js.contains("var h = 4321;"),
             "expected explicit height to be inlined, got: {js}"
         );
+    }
+
+    #[test]
+    fn is_esm_global_option_error_matches_firefox_150_regression() {
+        use ff_rdp_core::{ActorErrorKind, ProtocolError};
+        let err = ProtocolError::ActorError {
+            actor: "server1.conn5.screenshotActor9".to_owned(),
+            kind: ActorErrorKind::Other("unknownError".to_owned()),
+            error: "unknownError".to_owned(),
+            message: "Error occurred while creating actor' \
+                      server1.conn5.screenshotActor9: \
+                      Error: Unable to load actor module 'devtools/server/actors/screenshot' \
+                      ChromeUtils.importESModule: global option is required in DevTools distinct global"
+                .to_owned(),
+        };
+        assert!(
+            is_esm_global_option_error(&err),
+            "should match the Firefox 150 ESM regression error"
+        );
+    }
+
+    #[test]
+    fn is_esm_global_option_error_rejects_generic_module_load_failure() {
+        use ff_rdp_core::{ActorErrorKind, ProtocolError};
+        // A module-load failure without the specific ESM global option error.
+        let err = ProtocolError::ActorError {
+            actor: "server1.conn0.child2/screenshotContentActor15".to_owned(),
+            kind: ActorErrorKind::Other("unknownError".to_owned()),
+            error: "unknownError".to_owned(),
+            message: "Error: Unable to load actor module 'devtools/server/actors/screenshot' \
+                      file not found"
+                .to_owned(),
+        };
+        assert!(
+            !is_esm_global_option_error(&err),
+            "generic module-load failures should not match the ESM regression detector"
+        );
+    }
+
+    #[test]
+    fn is_esm_global_option_error_rejects_unrelated_error() {
+        let err = ff_rdp_core::ProtocolError::Timeout;
+        assert!(!is_esm_global_option_error(&err));
     }
 }
