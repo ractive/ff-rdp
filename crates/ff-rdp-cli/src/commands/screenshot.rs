@@ -167,11 +167,15 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
                 Ok(capture) => capture.data,
                 Err(legacy_err) if legacy_err.is_unrecognized_packet_type() => {
                     // Legacy method not available — try the Firefox 149+ two-step protocol.
+                    // Use the operation timeout for the chrome-scope poll
+                    // deadline so `--timeout 30000` works for slow full-page
+                    // captures (Copilot PR #73 feedback).
                     try_two_step_screenshot(
                         &mut ctx,
                         &actor,
                         browsing_ctx_id,
                         height_override.is_some_and(|h| matches!(h, HeightOverride::FullPage)),
+                        std::time::Duration::from_millis(cli.timeout),
                     )?
                 }
                 Err(e) if is_actor_module_load_failure(&e) => {
@@ -281,6 +285,7 @@ fn try_two_step_screenshot(
     sc_actor: &ff_rdp_core::ActorId,
     browsing_ctx_id: Option<u64>,
     full_page: bool,
+    chrome_scope_timeout: Duration,
 ) -> Result<String, AppError> {
     let browsing_ctx_id = browsing_ctx_id.ok_or_else(|| {
         AppError::User(
@@ -328,7 +333,7 @@ fn try_two_step_screenshot(
             // which fails in the DevTools distinct global.  Fall back to the
             // chrome-scope loader workaround that loads the same module via
             // the DevTools loader (which has the correct global).
-            try_chrome_scope_screenshot(ctx, browsing_ctx_id, full_page)
+            try_chrome_scope_screenshot(ctx, browsing_ctx_id, full_page, chrome_scope_timeout)
         }
         Err(ref e) if is_actor_module_load_failure(e) => {
             // Generic actor-module-load failure not caused by the ESM global
@@ -396,7 +401,12 @@ fn try_chrome_scope_screenshot(
     ctx: &mut super::connect_tab::ConnectedTab,
     browsing_context_id: u64,
     full_page: bool,
+    poll_timeout: Duration,
 ) -> Result<String, AppError> {
+    // Floor the poll deadline at 10 s so very short `--timeout` values don't
+    // make `--full-page` captures of long pages give up immediately. The
+    // upper bound is whatever the user passed via `--timeout`.
+    let poll_timeout = std::cmp::max(poll_timeout, Duration::from_secs(10));
     // Step 1: find the parent process.
     let processes = RootActor::list_processes(ctx.transport_mut()).map_err(|e| {
         AppError::User(format!(
@@ -504,16 +514,26 @@ fn try_chrome_scope_screenshot(
     var f = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
     f.initWithPath(path);
     var s = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
-    s.init(f, 0x04|0x08|0x20, 0o644, 0);
+    // 0o600: owner read/write only. Screenshots may contain sensitive page
+    // content; in a multi-user system the world-readable /tmp default would
+    // leak them until cleanup. (Copilot PR #73 review feedback.)
+    s.init(f, 0x04|0x08|0x20, 0o600, 0);
     var b = Cc["@mozilla.org/binaryoutputstream;1"].createInstance(Ci.nsIBinaryOutputStream);
-    b.setOutputStream(s); b.writeByteArray(arr); b.close(); s.close();
+    b.setOutputStream(s);
+    // Pass explicit length: older Firefox builds bind nsIBinaryOutputStream.writeByteArray
+    // as (array, length); newer builds accept (Uint8Array) alone but tolerate
+    // an extra length arg. Supplying it is the portable form across both ABIs.
+    // (Copilot PR #73 review feedback.)
+    b.writeByteArray(arr, arr.length); b.close(); s.close();
     return f;
   }}
   function writeText(path, text) {{
     var f = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
     f.initWithPath(path);
     var s = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
-    s.init(f, 0x04|0x08|0x20, 0o644, 0);
+    // 0o600 for the same reason as writeBytes — error sentinel files may
+    // contain stack traces with file paths or other internal detail.
+    s.init(f, 0x04|0x08|0x20, 0o600, 0);
     var o = Cc["@mozilla.org/intl/converter-output-stream;1"].createInstance(Ci.nsIConverterOutputStream);
     o.init(s, "UTF-8"); o.writeString(text); o.close(); s.close();
   }}
@@ -568,7 +588,9 @@ fn try_chrome_scope_screenshot(
     }
 
     // Step 4: poll for the final output file (not the .part file — moveTo is atomic).
-    let poll_deadline = Instant::now() + Duration::from_secs(10);
+    // Use the timeout derived from `--timeout` so slow full-page captures
+    // don't get cut off at 10 s (Copilot PR #73 feedback).
+    let poll_deadline = Instant::now() + poll_timeout;
     loop {
         if tmp_err.exists() {
             let msg = std::fs::read_to_string(&tmp_err).unwrap_or_default();

@@ -306,6 +306,14 @@ fn probe_version(version: Option<u32>) -> Probe {
             ),
             hint: None,
         },
+        Some(v) if v < COMPATIBLE_FIREFOX_MIN => Probe {
+            name: "firefox_version",
+            status: Status::Pass,
+            detail: format!(
+                "Firefox {v} (older than tested range {COMPATIBLE_FIREFOX_MIN}–{COMPATIBLE_FIREFOX_MAX}, may lack newer features but should still work)"
+            ),
+            hint: None,
+        },
         Some(v) => Probe {
             name: "firefox_version",
             status: Status::Pass,
@@ -353,13 +361,24 @@ mod tests {
 
     #[test]
     fn probe_version_out_of_range_is_pass() {
-        // Versions newer (or older) than the tested range are reported as Pass
+        // Versions newer or older than the tested range are reported as Pass
         // — the RDP surface rarely breaks across Firefox releases and shouting
-        // on every run is more noise than signal.
-        let p = probe_version(Some(99));
-        assert_eq!(p.status, Status::Pass);
-        let p = probe_version(Some(999));
-        assert_eq!(p.status, Status::Pass);
+        // on every run is more noise than signal.  The detail string distinguishes
+        // older vs newer so users can read it correctly.
+        let older = probe_version(Some(99));
+        assert_eq!(older.status, Status::Pass);
+        assert!(
+            older.detail.contains("older than"),
+            "older-version detail should say 'older than': {}",
+            older.detail
+        );
+        let newer = probe_version(Some(999));
+        assert_eq!(newer.status, Status::Pass);
+        assert!(
+            newer.detail.contains("newer than"),
+            "newer-version detail should say 'newer than': {}",
+            newer.detail
+        );
     }
 
     #[test]
