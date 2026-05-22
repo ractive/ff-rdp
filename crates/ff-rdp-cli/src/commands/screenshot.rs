@@ -432,20 +432,37 @@ fn try_chrome_scope_screenshot(
 
     // Step 3: build unique, unpredictable temp file paths.
     //
-    // We combine a millisecond timestamp, the process ID, and a
-    // nanosecond-resolution entropy nibble to make the filename both unique
-    // across parallel invocations and non-predictable (mitigates symlink races
-    // on world-writable /tmp).
+    // Combine a millisecond timestamp, the process ID, and 8 random bytes
+    // from the OS RNG to make the filename both unique across parallel
+    // invocations and non-predictable (mitigates symlink races on
+    // world-writable /tmp).  Earlier revisions used
+    // `Instant::now().elapsed().subsec_nanos()` which is ~0 immediately after
+    // the Instant was constructed — review feedback (Copilot + CodeRabbit on
+    // PR #73) caught that.  `getrandom` is already a workspace dep.
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
     let pid = std::process::id();
-    let rand = u128::from(std::time::Instant::now().elapsed().subsec_nanos()) ^ ts;
-    let tmp_png = std::env::temp_dir().join(format!("ff_rdp_chrome_cap_{ts}_{pid}_{rand}.png"));
-    let tmp_part =
-        std::env::temp_dir().join(format!("ff_rdp_chrome_cap_{ts}_{pid}_{rand}.png.part"));
-    let tmp_err = std::env::temp_dir().join(format!("ff_rdp_chrome_cap_{ts}_{pid}_{rand}.err"));
+    let rand: u64 = {
+        let mut buf = [0u8; 8];
+        if getrandom::getrandom(&mut buf).is_ok() {
+            u64::from_le_bytes(buf)
+        } else {
+            // Fallback if the OS RNG is momentarily unavailable: pull
+            // sub-second nanoseconds out of SystemTime and rotate-XOR with pid.
+            // Not cryptographically strong, but still varies per-invocation.
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos();
+            u64::from(nanos) ^ u64::from(pid).rotate_left(16)
+        }
+    };
+    let stem = format!("ff_rdp_chrome_cap_{ts}_{pid}_{rand:016x}");
+    let tmp_png = std::env::temp_dir().join(format!("{stem}.png"));
+    let tmp_part = std::env::temp_dir().join(format!("{stem}.png.part"));
+    let tmp_err = std::env::temp_dir().join(format!("{stem}.err"));
 
     // RAII guard: remove all temp files on every exit path.
     let _guard = TempFileGuard::new(vec![tmp_png.clone(), tmp_part.clone(), tmp_err.clone()]);
