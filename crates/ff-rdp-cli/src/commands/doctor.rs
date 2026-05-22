@@ -308,13 +308,11 @@ fn probe_version(version: Option<u32>) -> Probe {
         },
         Some(v) => Probe {
             name: "firefox_version",
-            status: Status::Warn,
+            status: Status::Pass,
             detail: format!(
-                "Firefox {v} is outside the tested range {COMPATIBLE_FIREFOX_MIN}–{COMPATIBLE_FIREFOX_MAX}"
+                "Firefox {v} (newer than tested range {COMPATIBLE_FIREFOX_MIN}–{COMPATIBLE_FIREFOX_MAX}, but supported)"
             ),
-            hint: Some(
-                "some commands may misbehave on this version; report regressions at https://github.com/ractive/ff-rdp/issues".to_owned(),
-            ),
+            hint: None,
         },
     }
 }
@@ -354,9 +352,14 @@ mod tests {
     }
 
     #[test]
-    fn probe_version_out_of_range_is_warn() {
+    fn probe_version_out_of_range_is_pass() {
+        // Versions newer (or older) than the tested range are reported as Pass
+        // — the RDP surface rarely breaks across Firefox releases and shouting
+        // on every run is more noise than signal.
         let p = probe_version(Some(99));
-        assert_eq!(p.status, Status::Warn);
+        assert_eq!(p.status, Status::Pass);
+        let p = probe_version(Some(999));
+        assert_eq!(p.status, Status::Pass);
     }
 
     #[test]

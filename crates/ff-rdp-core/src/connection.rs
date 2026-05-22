@@ -5,10 +5,12 @@ use serde_json::Value;
 use crate::error::ProtocolError;
 use crate::transport::RdpTransport;
 
-/// The inclusive range of Firefox major versions known to be compatible with
-/// this library.  When the detected version falls outside this range a warning
-/// is emitted via [`RdpConnection::warn_if_version_unsupported`]; the
-/// connection is never refused on version grounds alone.
+/// The inclusive range of Firefox major versions explicitly tested against
+/// this library.  Versions outside this range are still allowed to connect —
+/// `doctor` will report the actual version informationally, but no warning is
+/// emitted on each command.  Firefox publishes a new major version roughly
+/// every four weeks and the RDP surface rarely breaks across releases, so
+/// shouting on every invocation produces more noise than signal.
 pub const COMPATIBLE_FIREFOX_MIN: u32 = 120;
 pub const COMPATIBLE_FIREFOX_MAX: u32 = 150;
 
@@ -88,27 +90,9 @@ impl RdpConnection {
 
     /// Override the stored Firefox version. Used when a fallback probe
     /// (e.g. the device actor's `getDescription`) resolves a version that
-    /// the greeting did not advertise, so that subsequent calls to
-    /// [`Self::warn_if_version_unsupported`] see the resolved value.
+    /// the greeting did not advertise.
     pub fn set_firefox_version(&mut self, version: Option<u32>) {
         self.firefox_version = version;
-    }
-
-    /// Emit a warning to stderr when the Firefox version is outside the
-    /// known-compatible range [`COMPATIBLE_FIREFOX_MIN`]–[`COMPATIBLE_FIREFOX_MAX`].
-    ///
-    /// Does nothing when the version is unknown (not present in the greeting).
-    /// Never fails — this is advisory only.
-    pub fn warn_if_version_unsupported(&self) {
-        if let Some(v) = self.firefox_version
-            && !(COMPATIBLE_FIREFOX_MIN..=COMPATIBLE_FIREFOX_MAX).contains(&v)
-        {
-            eprintln!(
-                "warning: connected to Firefox {v}, but ff-rdp is tested against \
-                 Firefox {COMPATIBLE_FIREFOX_MIN}–{COMPATIBLE_FIREFOX_MAX}; \
-                 some features may not work correctly"
-            );
-        }
     }
 
     fn validate_greeting(greeting: &Value) -> Result<(), ProtocolError> {
@@ -220,39 +204,5 @@ mod tests {
             "ua": "Mozilla/5.0 Firefox/120.0"
         });
         assert_eq!(parse_firefox_version(&greeting), Some(120));
-    }
-
-    // -----------------------------------------------------------------------
-    // warn_if_version_unsupported — logic only; no stderr capture needed
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn version_in_range_does_not_trigger_warning_logic() {
-        // We can't easily capture stderr in unit tests, but we can verify the
-        // boundary conditions by checking the comparison directly.
-        for v in [COMPATIBLE_FIREFOX_MIN, COMPATIBLE_FIREFOX_MAX, 135] {
-            assert!(
-                (COMPATIBLE_FIREFOX_MIN..=COMPATIBLE_FIREFOX_MAX).contains(&v),
-                "version {v} should be in range"
-            );
-        }
-    }
-
-    #[test]
-    fn version_below_min_is_out_of_range() {
-        let v = COMPATIBLE_FIREFOX_MIN - 1;
-        assert!(
-            v < COMPATIBLE_FIREFOX_MIN,
-            "version {v} should be below min"
-        );
-    }
-
-    #[test]
-    fn version_above_max_is_out_of_range() {
-        let v = COMPATIBLE_FIREFOX_MAX + 1;
-        assert!(
-            v > COMPATIBLE_FIREFOX_MAX,
-            "version {v} should be above max"
-        );
     }
 }

@@ -171,7 +171,6 @@ fn handshake_and_resolve_tab(
     if effective_version != greeting_version {
         connection.set_firefox_version(effective_version);
     }
-    connection.warn_if_version_unsupported();
     crate::connection_meta::remember_version(effective_version);
 
     let tabs = RootActor::list_tabs(connection.transport_mut()).map_err(AppError::from)?;

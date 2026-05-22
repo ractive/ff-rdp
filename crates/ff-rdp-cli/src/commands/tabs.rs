@@ -24,7 +24,6 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
         other => AppError::from(other),
     })?;
 
-    connection.warn_if_version_unsupported();
     crate::connection_meta::remember_version(connection.firefox_version());
 
     let tabs = RootActor::list_tabs(connection.transport_mut()).map_err(AppError::from)?;
