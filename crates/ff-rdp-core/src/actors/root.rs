@@ -96,19 +96,36 @@ impl RootActor {
                 )
             })?;
 
-        let result = processes
+        // Parse each entry explicitly so malformed entries fail fast instead
+        // of being silently dropped (CodeRabbit review feedback on PR #73).
+        let result: Result<Vec<ProcessInfo>, ProtocolError> = processes
             .iter()
-            .filter_map(|p| {
-                let actor_str = p.get("actor").and_then(Value::as_str)?;
-                let is_parent = p.get("isParent").and_then(Value::as_bool).unwrap_or(false);
-                Some(ProcessInfo {
+            .enumerate()
+            .map(|(idx, p)| {
+                let actor_str = p.get("actor").and_then(Value::as_str).ok_or_else(|| {
+                    ProtocolError::InvalidPacket(format!(
+                        "listProcesses entry {idx} missing or non-string 'actor' field: {p}"
+                    ))
+                })?;
+                // `isParent` is documented as optional in older Firefox builds;
+                // default to `false` when absent, but reject non-bool values.
+                let is_parent = match p.get("isParent") {
+                    None | Some(Value::Null) => false,
+                    Some(Value::Bool(b)) => *b,
+                    Some(other) => {
+                        return Err(ProtocolError::InvalidPacket(format!(
+                            "listProcesses entry {idx} has non-bool 'isParent': {other}"
+                        )));
+                    }
+                };
+                Ok(ProcessInfo {
                     actor: ActorId::from(actor_str),
                     is_parent,
                 })
             })
             .collect();
 
-        Ok(result)
+        result
     }
 }
 
@@ -177,8 +194,9 @@ mod tests {
     }
 
     #[test]
-    fn list_processes_entry_missing_actor_is_filtered_out() {
-        // An entry without an `actor` field is silently skipped (filter_map).
+    fn list_processes_entry_missing_actor_fails_fast() {
+        // An entry without an `actor` field must now fail with a clear error
+        // (CodeRabbit PR #73 feedback: don't silently drop malformed entries).
         let response = json!({
             "from": "root",
             "processes": [
@@ -187,12 +205,49 @@ mod tests {
             ]
         });
         let mut transport = make_transport_with_response(response);
-        let procs = RootActor::list_processes(&mut transport).unwrap();
-        assert_eq!(
-            procs.len(),
-            1,
-            "malformed entry without actor should be filtered out"
+        let err = RootActor::list_processes(&mut transport).unwrap_err();
+        assert!(
+            matches!(err, ProtocolError::InvalidPacket(_)),
+            "expected InvalidPacket, got {err:?}"
         );
-        assert_eq!(procs[0].actor.as_ref(), "server1.conn0.processDescriptor2");
+        assert!(
+            err.to_string().contains("'actor'"),
+            "error should mention the missing 'actor' field: {err}"
+        );
+    }
+
+    #[test]
+    fn list_processes_entry_non_bool_is_parent_fails_fast() {
+        let response = json!({
+            "from": "root",
+            "processes": [
+                { "actor": "server1.conn0.processDescriptor1", "isParent": "yes" }
+            ]
+        });
+        let mut transport = make_transport_with_response(response);
+        let err = RootActor::list_processes(&mut transport).unwrap_err();
+        assert!(
+            matches!(err, ProtocolError::InvalidPacket(_)),
+            "expected InvalidPacket, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("'isParent'"),
+            "error should mention 'isParent': {err}"
+        );
+    }
+
+    #[test]
+    fn list_processes_missing_is_parent_defaults_to_false() {
+        // `isParent` is documented as optional on some Firefox builds.
+        let response = json!({
+            "from": "root",
+            "processes": [
+                { "actor": "server1.conn0.processDescriptor1" }
+            ]
+        });
+        let mut transport = make_transport_with_response(response);
+        let procs = RootActor::list_processes(&mut transport).unwrap();
+        assert_eq!(procs.len(), 1);
+        assert!(!procs[0].is_parent);
     }
 }

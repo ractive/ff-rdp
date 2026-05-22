@@ -96,7 +96,7 @@ iter-61f's "computed --prop is repeatable" commit message.
 
 #### 1. Re-navigating to the current URL times out under the new blocking default — **major**
 
-```
+```text
 $ ff-rdp navigate https://news.ycombinator.com
 { "results": { "committed_url": "https://news.ycombinator.com/", "ready_state": "complete", "elapsed_ms": 632 }, "total": 1 }
 
@@ -123,7 +123,7 @@ data), or `reload` (different semantics from re-navigating).
 
 #### 2. `--wait-for` / `--wait-text` timeout error is generic, not selector-aware — **minor**
 
-```
+```text
 $ ff-rdp navigate https://example.com --wait-text "nonexistent text 123" --timeout 3000
 error: operation timed out — try increasing --timeout
 
@@ -152,7 +152,7 @@ Plan task C2 explicitly says:
 But on HN (CSP-eval-blocked, confirmed by `ff-rdp eval` returning
 `EvalError: call to eval() blocked by CSP`):
 
-```
+```text
 $ ff-rdp sources
 { "meta": { "fallback": true, "fallback_method": "js-eval" }, ... }
 ```
@@ -186,7 +186,7 @@ fallback choice, so the next dogfooder can see the decision tree.
 
 #### 4. `computed --prop` is not repeatable despite iter-61f commit message — **moderate**
 
-```
+```text
 $ ff-rdp computed "a" --prop color --prop font-size
 error: the argument '--prop <NAME>' cannot be used multiple times
 ```
@@ -200,7 +200,7 @@ But `crates/ff-rdp-cli/src/cli/args.rs:954`:
 
 ```rust
 prop: Option<String>,
-```
+```text
 
 — no `ArgAction::Append`, no `Vec<String>`. The flag is still
 single-valued. Either the commit message is wrong about what
@@ -227,7 +227,7 @@ greeting). Not an iter-61g regression — just unchanged.
 #### 6. `network --since all` output shape varies — **minor / suspect**
 
 Initial run:
-```
+```text
 $ ff-rdp network --since all --jq '.results.total_requests'
 # error: cannot index [array] with "total_requests"
 ```
