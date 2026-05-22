@@ -106,17 +106,25 @@ impl DeviceActor {
     }
 }
 
-/// Parse a Firefox major version number from the `appVersion` field of a
-/// `getDescription` response.
+/// Parse a Firefox major version number from the `getDescription` response.
 ///
-/// `appVersion` is typically `"137.0"` or `"137.0a1"`.  We extract the
-/// leading digit sequence before the first `.` or non-digit character.
+/// The field name has changed across Firefox versions:
+/// - Firefox ≤ 149: `appVersion` / `platformVersion` (camelCase)
+/// - Firefox 150+:  `version` / `platformversion` (lowercase)
+///
+/// We try all known field names in priority order so that both old and new
+/// builds are handled by the same parser.  The major version is the leading
+/// digit sequence before the first `.` or non-digit character.
 fn parse_app_version(response: &Value) -> Option<u32> {
     let description = response.get("value").unwrap_or(response);
 
+    // Try fields in priority order: camelCase variants first (older Firefox),
+    // then lowercase variants (Firefox 150+).
     let app_version = description
         .get("appVersion")
         .or_else(|| description.get("platformVersion"))
+        .or_else(|| description.get("version"))
+        .or_else(|| description.get("platformversion"))
         .and_then(Value::as_str)?;
 
     let major: String = app_version
@@ -286,6 +294,33 @@ mod tests {
         assert_eq!(
             parse_app_version(&json!({"value": {"platformVersion": "135.0"}})),
             Some(135)
+        );
+    }
+
+    // Firefox 150 changed the field names to lowercase.
+    #[test]
+    fn parse_app_version_handles_firefox_150_lowercase_version_field() {
+        assert_eq!(
+            parse_app_version(&json!({"value": {"version": "150.0.3"}})),
+            Some(150)
+        );
+    }
+
+    #[test]
+    fn parse_app_version_handles_firefox_150_lowercase_platformversion() {
+        assert_eq!(
+            parse_app_version(&json!({"value": {"platformversion": "150.0.3"}})),
+            Some(150)
+        );
+    }
+
+    #[test]
+    fn parse_app_version_prefers_app_version_over_version() {
+        // When both camelCase and lowercase fields are present,
+        // appVersion (camelCase) is the authoritative one.
+        assert_eq!(
+            parse_app_version(&json!({"value": {"appVersion": "137.0", "version": "150.0"}})),
+            Some(137)
         );
     }
 }

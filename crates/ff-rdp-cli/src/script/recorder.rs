@@ -180,7 +180,13 @@ pub fn append_step(output_path: &Path, step: &Step, step_count: usize) -> anyhow
     let comma = if step_count > 0 { "," } else { "" };
     let line = format!("{comma}\n    {step_json}");
 
+    // NOTE: `.read(true)` is required on Windows.  `fs2::lock_exclusive` ends
+    // up in `LockFileEx`, which needs `GENERIC_READ` or `GENERIC_WRITE` on the
+    // file handle.  `OpenOptions::append(true)` alone maps to `FILE_APPEND_DATA`,
+    // which is *not* enough and triggers `Access is denied. (os error 5)`.
+    // Adding `.read(true)` upgrades the access mask so the lock succeeds.
     let mut file = std::fs::OpenOptions::new()
+        .read(true)
         .append(true)
         .open(output_path)
         .with_context(|| format!("opening '{}' for append", output_path.display()))?;
