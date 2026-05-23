@@ -14,6 +14,7 @@ mod page_style;
 mod root;
 mod screenshot;
 mod target;
+mod target_configuration;
 mod walker;
 mod watcher;
 
@@ -24,5 +25,6 @@ pub use page_style::PageStyleFront;
 pub use root::RootFront;
 pub use screenshot::ScreenshotFront;
 pub use target::TargetFront;
+pub use target_configuration::TargetConfigurationFront;
 pub use walker::WalkerFront;
 pub use watcher::WatcherFront;

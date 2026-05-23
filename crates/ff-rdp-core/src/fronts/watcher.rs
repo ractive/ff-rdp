@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use crate::error::{ActorErrorKind, ProtocolError};
 use crate::registry::{Front, FrontKind, Registry};
-use crate::specs::watcher as spec;
+use crate::specs::{NoArgs, call, watcher as spec};
 use crate::transport::RdpTransport;
 use crate::types::ActorId;
 
@@ -94,7 +94,10 @@ impl WatcherFront {
 
     /// Unsubscribe from target events of the given type.
     ///
-    /// Uses an explicit filtered recv loop to skip push events before the ACK.
+    /// `unwatchTargets` is oneway in Firefox's spec — no reply packet is sent.
+    /// The request is dispatched via the spec-layer [`call`] helper which skips
+    /// the reply read when `Method::ONEWAY` is `true`, preventing a hang on
+    /// CLI shutdown.
     pub fn unwatch_targets(
         &self,
         transport: &mut RdpTransport,
@@ -103,9 +106,82 @@ impl WatcherFront {
         let args = spec::request::UnwatchTargets {
             target_type: target_type.to_string(),
         };
-        let params = serde_json::to_value(&args)
-            .map_err(|e| ProtocolError::InvalidPacket(format!("encode unwatchTargets: {e}")))?;
-        self.send_and_wait_ack(transport, "unwatchTargets", params)
+        call::<spec::UnwatchTargets>(transport, &self.id, &args)?;
+        Ok(())
+    }
+
+    /// Clear cached resources for the given resource types.
+    ///
+    /// `clearResources` is oneway in Firefox's spec — no reply is expected.
+    pub fn clear_resources(
+        &self,
+        transport: &mut RdpTransport,
+        resource_types: &[&str],
+    ) -> Result<(), ProtocolError> {
+        let args = spec::request::ClearResources {
+            resource_types: resource_types.iter().map(|s| (*s).to_string()).collect(),
+        };
+        call::<spec::ClearResources>(transport, &self.id, &args)?;
+        Ok(())
+    }
+
+    /// Get the parent browsing context ID for this watcher's scope.
+    pub fn get_parent_browsing_context_id(
+        &self,
+        transport: &mut RdpTransport,
+    ) -> Result<Option<u64>, ProtocolError> {
+        let reply = call::<spec::GetParentBrowsingContextId>(transport, &self.id, &NoArgs {})?;
+        Ok(reply.browsing_context_id)
+    }
+
+    /// Get the network parent actor for this watcher's scope.
+    ///
+    /// This actor is the entry point for CORS-aware response-body fetching.
+    pub fn get_network_parent_actor(
+        &self,
+        transport: &mut RdpTransport,
+    ) -> Result<ActorId, ProtocolError> {
+        let reply = call::<spec::GetNetworkParentActor>(transport, &self.id, &NoArgs {})?;
+        Ok(reply.actor)
+    }
+
+    /// Get the blackboxing actor for this watcher's scope.
+    pub fn get_blackboxing_actor(
+        &self,
+        transport: &mut RdpTransport,
+    ) -> Result<ActorId, ProtocolError> {
+        let reply = call::<spec::GetBlackboxingActor>(transport, &self.id, &NoArgs {})?;
+        Ok(reply.actor)
+    }
+
+    /// Get the breakpoint list actor for this watcher's scope.
+    pub fn get_breakpoint_list_actor(
+        &self,
+        transport: &mut RdpTransport,
+    ) -> Result<ActorId, ProtocolError> {
+        let reply = call::<spec::GetBreakpointListActor>(transport, &self.id, &NoArgs {})?;
+        Ok(reply.actor)
+    }
+
+    /// Get the target configuration actor for this watcher's scope.
+    ///
+    /// The `TargetConfigurationFront` obtained from this actor can set
+    /// `cacheDisabled`, viewport size overrides, and colour-scheme simulation.
+    pub fn get_target_configuration_actor(
+        &self,
+        transport: &mut RdpTransport,
+    ) -> Result<ActorId, ProtocolError> {
+        let reply = call::<spec::GetTargetConfigurationActor>(transport, &self.id, &NoArgs {})?;
+        Ok(reply.actor)
+    }
+
+    /// Get the thread configuration actor for this watcher's scope.
+    pub fn get_thread_configuration_actor(
+        &self,
+        transport: &mut RdpTransport,
+    ) -> Result<ActorId, ProtocolError> {
+        let reply = call::<spec::GetThreadConfigurationActor>(transport, &self.id, &NoArgs {})?;
+        Ok(reply.actor)
     }
 
     /// Send a watcher request and wait for the ACK, skipping any push events
@@ -290,7 +366,10 @@ mod tests {
     }
 
     #[test]
-    fn unwatch_targets_sends_target_type() {
+    fn unwatch_targets_sends_target_type_no_reply_expected() {
+        // unwatchTargets is oneway — the server sends no reply.
+        // We verify the request is sent correctly and that the call returns
+        // immediately without waiting for a response.
         let (mut transport, server) = make_transport_pair();
         let front = WatcherFront::new(
             ActorId::from("server1.conn0.watcher4"),
@@ -303,7 +382,7 @@ mod tests {
             assert_eq!(req["to"], "server1.conn0.watcher4");
             assert_eq!(req["type"], "unwatchTargets");
             assert_eq!(req["targetType"], "frame");
-            server_reply(&server, json!({"from": "server1.conn0.watcher4"}));
+            // No reply sent — oneway method.
         });
 
         front.unwatch_targets(&mut transport, "frame").unwrap();

@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{Method, sealed};
+use super::{Method, NoArgs, sealed};
 
 // ---------------------------------------------------------------------------
 // Request args
@@ -40,6 +40,13 @@ pub mod request {
         #[serde(rename = "targetType")]
         pub target_type: String,
     }
+
+    /// Args for `clearResources` — clear resources for given types (oneway).
+    #[derive(Debug, Clone, Default, Serialize)]
+    pub struct ClearResources {
+        #[serde(rename = "resourceTypes")]
+        pub resource_types: Vec<String>,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -48,6 +55,7 @@ pub mod request {
 
 pub mod response {
     use super::Deserialize;
+    use crate::types::ActorId;
 
     /// Reply for `watchResources` — empty acknowledgement.
     #[derive(Debug, Clone, Default, Deserialize)]
@@ -64,6 +72,27 @@ pub mod response {
     /// Reply for `unwatchTargets` — empty acknowledgement.
     #[derive(Debug, Clone, Default, Deserialize)]
     pub struct UnwatchTargets {}
+
+    /// Reply for `clearResources` — oneway, no reply expected.
+    #[derive(Debug, Clone, Default, Deserialize)]
+    pub struct ClearResources {}
+
+    /// A generic actor reference returned by watcher accessor methods.
+    ///
+    /// Used by `getNetworkParentActor`, `getBlackboxingActor`,
+    /// `getBreakpointListActor`, `getTargetConfigurationActor`,
+    /// `getThreadConfigurationActor`.
+    #[derive(Debug, Clone, Deserialize)]
+    pub struct ActorRef {
+        pub actor: ActorId,
+    }
+
+    /// Reply for `getParentBrowsingContextID`.
+    #[derive(Debug, Clone, Default, Deserialize)]
+    pub struct GetParentBrowsingContextId {
+        #[serde(rename = "browsingContextID", default)]
+        pub browsing_context_id: Option<u64>,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -98,12 +127,83 @@ impl Method for WatchTargets {
 }
 
 /// `unwatchTargets` method marker.
+///
+/// This method is fire-and-forget (`oneway: true` in Firefox's spec) — Firefox
+/// does not send a reply packet.  Setting `ONEWAY = true` prevents the reply
+/// read that would otherwise hang on CLI shutdown.
 pub struct UnwatchTargets;
 impl sealed::Sealed for UnwatchTargets {}
 impl Method for UnwatchTargets {
     const NAME: &'static str = "unwatchTargets";
     type Args = request::UnwatchTargets;
     type Reply = response::UnwatchTargets;
+    const ONEWAY: bool = true;
+}
+
+/// `clearResources` method marker.
+///
+/// Oneway — clears server-side resource caches for the given types.
+pub struct ClearResources;
+impl sealed::Sealed for ClearResources {}
+impl Method for ClearResources {
+    const NAME: &'static str = "clearResources";
+    type Args = request::ClearResources;
+    type Reply = response::ClearResources;
+    const ONEWAY: bool = true;
+}
+
+/// `getParentBrowsingContextID` method marker.
+pub struct GetParentBrowsingContextId;
+impl sealed::Sealed for GetParentBrowsingContextId {}
+impl Method for GetParentBrowsingContextId {
+    const NAME: &'static str = "getParentBrowsingContextID";
+    type Args = NoArgs;
+    type Reply = response::GetParentBrowsingContextId;
+}
+
+/// `getNetworkParentActor` method marker.
+pub struct GetNetworkParentActor;
+impl sealed::Sealed for GetNetworkParentActor {}
+impl Method for GetNetworkParentActor {
+    const NAME: &'static str = "getNetworkParentActor";
+    type Args = NoArgs;
+    type Reply = response::ActorRef;
+}
+
+/// `getBlackboxingActor` method marker.
+pub struct GetBlackboxingActor;
+impl sealed::Sealed for GetBlackboxingActor {}
+impl Method for GetBlackboxingActor {
+    const NAME: &'static str = "getBlackboxingActor";
+    type Args = NoArgs;
+    type Reply = response::ActorRef;
+}
+
+/// `getBreakpointListActor` method marker.
+pub struct GetBreakpointListActor;
+impl sealed::Sealed for GetBreakpointListActor {}
+impl Method for GetBreakpointListActor {
+    const NAME: &'static str = "getBreakpointListActor";
+    type Args = NoArgs;
+    type Reply = response::ActorRef;
+}
+
+/// `getTargetConfigurationActor` method marker.
+pub struct GetTargetConfigurationActor;
+impl sealed::Sealed for GetTargetConfigurationActor {}
+impl Method for GetTargetConfigurationActor {
+    const NAME: &'static str = "getTargetConfigurationActor";
+    type Args = NoArgs;
+    type Reply = response::ActorRef;
+}
+
+/// `getThreadConfigurationActor` method marker.
+pub struct GetThreadConfigurationActor;
+impl sealed::Sealed for GetThreadConfigurationActor {}
+impl Method for GetThreadConfigurationActor {
+    const NAME: &'static str = "getThreadConfigurationActor";
+    type Args = NoArgs;
+    type Reply = response::ActorRef;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,5 +258,56 @@ mod tests {
         assert_eq!(UnwatchResources::NAME, "unwatchResources");
         assert_eq!(WatchTargets::NAME, "watchTargets");
         assert_eq!(UnwatchTargets::NAME, "unwatchTargets");
+        assert_eq!(ClearResources::NAME, "clearResources");
+        assert_eq!(
+            GetParentBrowsingContextId::NAME,
+            "getParentBrowsingContextID"
+        );
+        assert_eq!(GetNetworkParentActor::NAME, "getNetworkParentActor");
+        assert_eq!(GetBlackboxingActor::NAME, "getBlackboxingActor");
+        assert_eq!(GetBreakpointListActor::NAME, "getBreakpointListActor");
+        assert_eq!(
+            GetTargetConfigurationActor::NAME,
+            "getTargetConfigurationActor"
+        );
+        assert_eq!(
+            GetThreadConfigurationActor::NAME,
+            "getThreadConfigurationActor"
+        );
+    }
+
+    #[test]
+    fn oneway_flags_are_correct() {
+        // oneway methods must set ONEWAY = true.
+        const { assert!(UnwatchTargets::ONEWAY) };
+        const { assert!(ClearResources::ONEWAY) };
+        // Regular methods must NOT be oneway.
+        const { assert!(!WatchResources::ONEWAY) };
+        const { assert!(!WatchTargets::ONEWAY) };
+        const { assert!(!GetNetworkParentActor::ONEWAY) };
+        const { assert!(!GetTargetConfigurationActor::ONEWAY) };
+    }
+
+    #[test]
+    fn actor_ref_response_deserializes() {
+        let v = json!({"from": "server1.conn0.watcher4", "actor": "server1.conn0.networkParent5"});
+        let r: response::ActorRef = serde_json::from_value(v).unwrap();
+        assert_eq!(r.actor.as_ref(), "server1.conn0.networkParent5");
+    }
+
+    #[test]
+    fn get_parent_browsing_context_id_deserializes() {
+        let v = json!({"from": "server1.conn0.watcher4", "browsingContextID": 42});
+        let r: response::GetParentBrowsingContextId = serde_json::from_value(v).unwrap();
+        assert_eq!(r.browsing_context_id, Some(42));
+    }
+
+    #[test]
+    fn clear_resources_request_serializes() {
+        let args = request::ClearResources {
+            resource_types: vec!["network-event".into()],
+        };
+        let v = serde_json::to_value(&args).unwrap();
+        assert_eq!(v["resourceTypes"], json!(["network-event"]));
     }
 }

@@ -136,11 +136,12 @@ mod tests {
             let req = server_read(&server);
             assert_eq!(req["type"], "startListeners");
             assert_eq!(req["listeners"], json!(["PageError", "ConsoleAPI"]));
+            // Firefox returns `startedListeners`, not `listeners`.
             server_reply(
                 &server,
                 json!({
                     "from": "server1.conn0.child1/consoleActor1",
-                    "listeners": ["PageError", "ConsoleAPI"]
+                    "startedListeners": ["PageError", "ConsoleAPI"]
                 }),
             );
         });

@@ -32,8 +32,19 @@ pub mod request {
         #[serde(rename = "browsingContextID")]
         pub browsing_context_id: u64,
         pub fullpage: bool,
-        pub dpr: f64,
+        /// Device pixel ratio — per Firefox spec this is a string (e.g. `"2.0"`).
+        ///
+        /// Pass `Some("2.0".to_string())` to request a 2x DPR capture.
+        /// `None` omits the field and lets Firefox use the display DPR.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub dpr: Option<String>,
+        /// Snapshot scale factor — typically equal to the DPR value as a float.
         pub snapshot_scale: f64,
+        /// Optional delay in milliseconds before capturing — per Firefox spec.
+        ///
+        /// Useful for waiting for animations or deferred renders to settle.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub delay: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub rect: Option<CaptureRect>,
     }
@@ -99,16 +110,50 @@ mod tests {
             args: request::CaptureArgs {
                 browsing_context_id: 42,
                 fullpage: false,
-                dpr: 1.0,
+                dpr: None,
                 snapshot_scale: 1.0,
+                delay: None,
                 rect: None,
             },
         };
         let v = serde_json::to_value(&args).unwrap();
         assert_eq!(v["args"]["browsingContextID"], 42);
         assert_eq!(v["args"]["fullpage"], false);
-        assert_eq!(v["args"]["dpr"], 1.0);
+        // dpr is None so it must be omitted from the serialized output.
+        assert!(v["args"].get("dpr").is_none());
         assert!(v["args"].get("rect").is_none());
+    }
+
+    #[test]
+    fn capture_request_serializes_dpr_as_string() {
+        let args = request::Capture {
+            args: request::CaptureArgs {
+                browsing_context_id: 1,
+                fullpage: false,
+                dpr: Some("2.0".to_string()),
+                snapshot_scale: 2.0,
+                delay: None,
+                rect: None,
+            },
+        };
+        let v = serde_json::to_value(&args).unwrap();
+        assert_eq!(v["args"]["dpr"], "2.0");
+    }
+
+    #[test]
+    fn capture_request_serializes_delay_when_present() {
+        let args = request::Capture {
+            args: request::CaptureArgs {
+                browsing_context_id: 1,
+                fullpage: false,
+                dpr: None,
+                snapshot_scale: 1.0,
+                delay: Some("500".to_string()),
+                rect: None,
+            },
+        };
+        let v = serde_json::to_value(&args).unwrap();
+        assert_eq!(v["args"]["delay"], "500");
     }
 
     #[test]
@@ -117,8 +162,9 @@ mod tests {
             args: request::CaptureArgs {
                 browsing_context_id: 1,
                 fullpage: true,
-                dpr: 2.0,
+                dpr: Some("2.0".to_string()),
                 snapshot_scale: 2.0,
+                delay: None,
                 rect: Some(request::CaptureRect {
                     left: 0.0,
                     top: 0.0,

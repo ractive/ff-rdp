@@ -34,6 +34,7 @@ pub enum FrontKind {
     Walker,
     PageStyle,
     NetworkContent,
+    TargetConfiguration,
     /// Any actor kind not yet given a dedicated variant.
     Other(String),
 }

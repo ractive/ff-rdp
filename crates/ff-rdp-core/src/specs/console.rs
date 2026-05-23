@@ -42,6 +42,11 @@ pub mod request {
     ///
     /// Note: the two-packet protocol is handled in the Front method, not by the
     /// generic `call` helper.
+    ///
+    /// The `chromeContext` field has been removed: chrome-privileged evaluation
+    /// must go through the parent-process descriptor's console actor rather than
+    /// setting a flag on the content console actor.  See `eval.rs` chrome-context
+    /// routing via `evaluate_js_async_chrome`.
     #[derive(Debug, Clone, Serialize)]
     pub struct EvaluateJsAsync {
         pub text: String,
@@ -49,8 +54,6 @@ pub mod request {
         pub eager: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub mapped: Option<EvaluateMapped>,
-        #[serde(rename = "chromeContext", skip_serializing_if = "Option::is_none")]
-        pub chrome_context: Option<bool>,
     }
 
     /// The `mapped` field for `evaluateJSAsync`.
@@ -69,16 +72,23 @@ pub mod response {
     use super::{Deserialize, Value};
 
     /// Reply for `startListeners`.
+    ///
+    /// Firefox returns the confirmed listener names in the `startedListeners` key
+    /// (not `listeners`).  See `devtools/shared/specs/webconsole.js`.
     #[derive(Debug, Clone, Default, Deserialize)]
     pub struct StartListeners {
-        #[serde(default)]
+        /// Listeners successfully started — wire key is `startedListeners`.
+        #[serde(rename = "startedListeners", default)]
         pub listeners: Vec<String>,
     }
 
     /// Reply for `stopListeners`.
+    ///
+    /// Firefox returns the confirmed listener names in the `stoppedListeners` key.
     #[derive(Debug, Clone, Default, Deserialize)]
     pub struct StopListeners {
-        #[serde(default)]
+        /// Listeners successfully stopped — wire key is `stoppedListeners`.
+        #[serde(rename = "stoppedListeners", default)]
         pub listeners: Vec<String>,
     }
 
@@ -163,9 +173,28 @@ mod tests {
     }
 
     #[test]
-    fn start_listeners_response_deserializes() {
+    fn start_listeners_response_deserializes_started_listeners_key() {
+        // Firefox returns `startedListeners`, not `listeners`.
+        // The old key name (`listeners`) should produce an empty Vec via #[serde(default)].
+        let v =
+            json!({"from": "conn0/consoleActor1", "startedListeners": ["PageError", "ConsoleAPI"]});
+        let reply: response::StartListeners = serde_json::from_value(v).unwrap();
+        assert_eq!(reply.listeners, ["PageError", "ConsoleAPI"]);
+    }
+
+    #[test]
+    fn start_listeners_response_old_key_gives_empty_vec() {
+        // If Firefox ever returns the old `listeners` key we should NOT panic;
+        // we silently get an empty Vec and the caller can decide.
         let v = json!({"from": "conn0/consoleActor1", "listeners": ["PageError"]});
         let reply: response::StartListeners = serde_json::from_value(v).unwrap();
+        assert!(reply.listeners.is_empty());
+    }
+
+    #[test]
+    fn stop_listeners_response_deserializes_stopped_listeners_key() {
+        let v = json!({"from": "conn0/consoleActor1", "stoppedListeners": ["PageError"]});
+        let reply: response::StopListeners = serde_json::from_value(v).unwrap();
         assert_eq!(reply.listeners, ["PageError"]);
     }
 

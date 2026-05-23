@@ -19,6 +19,7 @@ pub mod page_style;
 pub mod root;
 pub mod screenshot;
 pub mod target;
+pub mod types;
 pub mod walker;
 pub mod watcher;
 
@@ -47,6 +48,12 @@ pub trait Method: sealed::Sealed {
     type Args: serde::Serialize;
     /// Serde-deserialisable reply.
     type Reply: for<'de> serde::Deserialize<'de>;
+    /// Whether this method is fire-and-forget (no reply packet expected).
+    ///
+    /// When `true`, [`call`] (and [`call_oneway`]) skip the reply read entirely.
+    /// Set to `true` for methods that Firefox marks `oneway: true` in its spec,
+    /// such as `unwatchTargets` and `clearResources`.  Defaults to `false`.
+    const ONEWAY: bool = false;
 }
 
 /// Placeholder args for methods that take no parameters.
@@ -63,6 +70,11 @@ pub struct NoArgs {}
 ///
 /// This is the single entry point used by all front methods.  It eliminates
 /// manual `json!({...})` construction and `Value::as_*` parsing in front code.
+///
+/// When `M::ONEWAY` is `true`, the request is sent but no reply is read —
+/// the return type is still `M::Reply` but is constructed from `serde_json::Value::Null`,
+/// so `M::Reply` must implement `Default`-via-`Deserialize` in that case (using
+/// `#[serde(default)]` on all fields or `Default, Deserialize` derives on an empty struct).
 pub(crate) fn call<M: Method>(
     transport: &mut RdpTransport,
     actor_id: &ActorId,
@@ -70,8 +82,16 @@ pub(crate) fn call<M: Method>(
 ) -> Result<M::Reply, ProtocolError> {
     let params = serde_json::to_value(args)
         .map_err(|e| ProtocolError::InvalidPacket(format!("encode {}: {e}", M::NAME)))?;
-    let response =
-        crate::actor::actor_request(transport, actor_id.as_ref(), M::NAME, Some(&params))?;
-    serde_json::from_value::<M::Reply>(response)
-        .map_err(|e| ProtocolError::InvalidPacket(format!("decode {}: {e}", M::NAME)))
+    if M::ONEWAY {
+        crate::actor::actor_send(transport, actor_id.as_ref(), M::NAME, Some(&params))?;
+        // No reply expected — construct the reply from an empty JSON object.
+        // All oneway reply types are empty structs that accept `{}` via serde.
+        serde_json::from_value::<M::Reply>(serde_json::json!({}))
+            .map_err(|e| ProtocolError::InvalidPacket(format!("decode oneway {}: {e}", M::NAME)))
+    } else {
+        let response =
+            crate::actor::actor_request(transport, actor_id.as_ref(), M::NAME, Some(&params))?;
+        serde_json::from_value::<M::Reply>(response)
+            .map_err(|e| ProtocolError::InvalidPacket(format!("decode {}: {e}", M::NAME)))
+    }
 }

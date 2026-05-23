@@ -8,10 +8,12 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Method, NoArgs, sealed};
+use super::{Method, NoArgs, sealed, types::LongString};
 
 // Re-export the typed structs the actor module uses, so callers use the spec as the surface.
 pub use crate::actors::network::{EventTimings, Header, ResponseContent};
+// Re-export LongString so callers can resolve actor references without importing from types.
+pub use super::types::LongString as HeaderValue;
 
 // ---------------------------------------------------------------------------
 // Request args
@@ -38,10 +40,14 @@ pub mod response {
     use super::{Deserialize, Value};
 
     /// A single header entry from Firefox.
+    ///
+    /// The `value` field may be an inline string or a `longString` actor reference
+    /// (for large headers such as `Set-Cookie` or `Content-Security-Policy`).
+    /// Use [`super::LongString::fetch_full`] to obtain the full value when needed.
     #[derive(Debug, Clone, Default, Deserialize)]
     pub struct HeaderEntry {
         pub name: String,
-        pub value: String,
+        pub value: super::LongString,
     }
 
     /// Reply for `getRequestHeaders`.
@@ -123,8 +129,30 @@ mod tests {
         let reply: response::GetRequestHeaders = serde_json::from_value(v).unwrap();
         assert_eq!(reply.headers.len(), 2);
         assert_eq!(reply.headers[0].name, "Accept");
-        assert_eq!(reply.headers[0].value, "text/html");
+        assert_eq!(reply.headers[0].value.preview(), "text/html");
         assert_eq!(reply.headers_size, 120);
+    }
+
+    #[test]
+    fn get_request_headers_longstring_value_deserializes() {
+        let v = json!({
+            "from": "server1.conn0.netEvent6",
+            "headers": [{
+                "name": "Set-Cookie",
+                "value": {
+                    "type": "longString",
+                    "actor": "conn0/longString1",
+                    "length": 50000,
+                    "initial": "session=abc123"
+                }
+            }],
+            "headersSize": 200
+        });
+        let reply: response::GetRequestHeaders = serde_json::from_value(v).unwrap();
+        assert_eq!(reply.headers.len(), 1);
+        assert_eq!(reply.headers[0].name, "Set-Cookie");
+        assert!(reply.headers[0].value.is_actor());
+        assert_eq!(reply.headers[0].value.preview(), "session=abc123");
     }
 
     #[test]
