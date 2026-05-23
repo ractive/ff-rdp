@@ -1,10 +1,15 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, resource, network]
+tags:
+  - rdp
+  - firefox-server
+  - resource
+  - network
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/resources/network-events.js
   - devtools/server/actors/resources/network-events-content.js
+title: "Resource: network-event"
 ---
 
 # Resource: `network-event`
@@ -16,7 +21,7 @@ The big one. **Watched at the WATCHER (parent-process) level**, not per-target, 
 
 ## Payload at availability time
 
-The resource is the `asResource()` of a [[../actors/network-event]] actor — see that file for fields. Key inline fields:
+The resource is the `asResource()` of a [[rdp/actors/network-event]] actor — see that file for fields. Key inline fields:
 
 ```
 {
@@ -37,7 +42,7 @@ The resource is the `asResource()` of a [[../actors/network-event]] actor — se
 
 ## Configuration knobs
 
-Controlled via [[../actors/network-parent]] (obtained from watcher.getNetworkParentActor):
+Controlled via [[rdp/actors/network-parent]] (obtained from watcher.getNetworkParentActor):
 
 - `setSaveRequestAndResponseBodies(true)` — required for `getResponseContent()` to return data.
 - `setBlockedUrls`, `blockRequest`, `setNetworkThrottling`, `setPersist`, `override`.

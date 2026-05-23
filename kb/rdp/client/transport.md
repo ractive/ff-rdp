@@ -1,6 +1,9 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-client, transport]
+tags:
+  - rdp
+  - firefox-client
+  - transport
 date: 2026-05-23
 firefox_files:
   - devtools/shared/transport/transport.js
@@ -8,6 +11,7 @@ firefox_files:
   - devtools/shared/transport/stream-utils.js
   - devtools/shared/transport/websocket-transport.js
   - devtools/shared/transport/local-transport.js
+title: Transport (client-side framing)
 ---
 
 # RDP Transport Layer (Firefox client)
@@ -18,7 +22,7 @@ transport variants.
 
 ## Framing — length-prefixed JSON
 
-Defined in [`packets.js`](../from-our-codebase/protocol.md). Each JSON packet
+Defined in `devtools/shared/transport/packets.js` (see also [[rdp/protocol/transport|protocol/transport]]). Each JSON packet
 is serialized as UTF-8 and prefixed with its byte length and a colon:
 
 ```
@@ -63,7 +67,7 @@ JSON packet from actor `"root"` describing itself:
 {"from":"root","applicationType":"browser","testConnectionPrefix":"server1.","traits":{...}}
 ```
 
-The client side ([`devtools-client.js:94-120`](../from-our-codebase/devtools-client.md))
+The client side ([`devtools-client.js:94-120`](devtools-client.md))
 sets up a one-shot listener via `this.expectReply("root", ...)` *before* calling
 `this._transport.ready()`. When the greeting arrives, the client:
 
@@ -98,4 +102,4 @@ requests and emits `"closed"`. Clients (including DevTools) start a fresh
 connection from scratch when needed.
 
 See also: [[spec-and-front]], [[devtools-client]],
-[[../flows/connect-and-list-tabs]].
+[[rdp/flows/connect-and-list-tabs]].

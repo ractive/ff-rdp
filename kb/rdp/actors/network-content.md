@@ -1,10 +1,15 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, network]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - network
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/network-monitor/network-content.js
   - devtools/shared/specs/network-content.js
+title: NetworkContentActor
 ---
 
 # NetworkContentActor (typeName `"networkContent"`)
@@ -39,6 +44,6 @@ Looks up via `getResourceWatcher(targetActor, NETWORK_EVENT_STACKTRACE)`. Throws
 
 ## Gotchas for ff-rdp
 
-- To replay/resend a request, this is the actor — paired with [[network-event]] on the observe side.
+- To replay/resend a request, this is the actor — paired with [[rdp/actors/network-event|network-event]] on the observe side.
 - `getStackTrace` requires having `watchResources(["network-event-stacktrace"])` first via [[watcher]].
-- The fetched response is **anonymous** and **bypasses cache** — you cannot use this to read a normal cached resource. For that, use [[network-event]] `getResponseContent` after seeing the event.
+- The fetched response is **anonymous** and **bypasses cache** — you cannot use this to read a normal cached resource. For that, use [[rdp/actors/network-event|network-event]] `getResponseContent` after seeing the event.

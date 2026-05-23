@@ -1,10 +1,15 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, descriptor]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - descriptor
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/descriptors/process.js
   - devtools/shared/specs/descriptors/process.js
+title: ProcessDescriptorActor
 ---
 
 # ProcessDescriptorActor (typeName `"processDescriptor"`)
@@ -19,7 +24,7 @@ Represents a parent or content process. Returned by `RootActor.listProcesses()` 
 - `getTarget()` — returns:
   - **Parent process** (`isParent`): `ParentProcessTargetActor` (a WindowGlobalTarget subclass for the browser chrome). Exception: in xpcshell or background-task mode, returns a `ContentProcessTargetActor` (no chrome doc).
   - **Content process**: connects via `connectToContentProcess` and returns the `ContentProcessTargetActor` over IPC.
-- `getWatcher({enableWindowGlobalThreadActors?})` — creates a [[../watcher]] with `BROWSER_TOOLBOX` (a.k.a `ALL` session type) when called on the parent process; spawns targets for every BrowsingContext in the browser.
+- `getWatcher({enableWindowGlobalThreadActors?})` — creates a [[rdp/actors/watcher]] with `BROWSER_TOOLBOX` (a.k.a `ALL` session type) when called on the parent process; spawns targets for every BrowsingContext in the browser.
 
 ## Lifecycle
 

@@ -1,10 +1,15 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, target]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - target
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/targets/content-process.js
   - devtools/shared/specs/targets/content-process.js
+title: ContentProcessTargetActor
 ---
 
 # ContentProcessTargetActor (typeName `"contentProcessTarget"`)
@@ -16,7 +21,7 @@ Represents a whole content **process** as a debug target. Returned by `ProcessDe
 
 ## Child actors exposed in form
 
-- `consoleActor` — process-level [[../console]] (no window — runs in chrome compartment).
+- `consoleActor` — process-level [[rdp/actors/console]] (no window — runs in chrome compartment).
 - `threadActor`, `memoryActor`, `tracerActor`.
 - `webconsoleActor` (alias).
 

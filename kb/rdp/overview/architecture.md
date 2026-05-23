@@ -55,11 +55,11 @@ instance — locally or over the network. It is described by Mozilla as
    the pool, its children are removed as well"* ([actor-hierarchy][ah]).
 3. **Descriptors → Watcher → Targets → Resources** — a four-level model
    for finding debuggable contexts and observing what happens inside
-   them. See [[../protocol/resources]] and [[watcher-actor]].
+   them. See [[rdp/protocol/resources]] and [[rdp/actors/watcher]].
 4. **Two interaction styles** — request/reply, and request/reply +
    spontaneous notifications ([protocol][proto]).
 5. **Two packet kinds** — JSON packets (`length:json`) and bulk packets
-   (`bulk actor type length:bytes`). See [[../protocol/transport]].
+   (`bulk actor type length:bytes`). See [[rdp/protocol/transport|transport]].
 
 [proto]: https://firefox-source-docs.mozilla.org/devtools/backend/protocol.html
 
@@ -95,7 +95,7 @@ Backward compatibility is one-directional: *"Nightly desktop client
 servers."* ([backward-compatibility][bc]). Clients detect features via
 **traits** (boolean flags on actor forms / root) and
 `target.hasActor("actorTypeName")`. Missing trait → assume `false`.
-See [[../protocol/error-handling]] for how a server signals "I don't
+See [[rdp/protocol/error-handling]] for how a server signals "I don't
 know that".
 
 [bc]: https://firefox-source-docs.mozilla.org/devtools/backend/backward-compatibility.html

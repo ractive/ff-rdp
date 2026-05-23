@@ -1,6 +1,9 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-client, flow]
+tags:
+  - rdp
+  - firefox-client
+  - flow
 date: 2026-05-23
 firefox_files:
   - devtools/shared/specs/descriptors/tab.js
@@ -8,6 +11,7 @@ firefox_files:
   - devtools/shared/specs/watcher.js
   - devtools/client/fronts/descriptors/tab.js
   - devtools/client/fronts/targets/browsing-context.js
+title: "Flow: Attach to a target"
 ---
 
 # Flow: Attach a descriptor → reach child actors

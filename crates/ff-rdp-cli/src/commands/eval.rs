@@ -110,22 +110,40 @@ pub fn build_eval_js(
     Ok(build_script(&user_script, stringify, isolate))
 }
 
+/// Returns `true` when an exception message contains a CSP eval-block phrase.
+///
+/// Matches the *message text only* (not the class prefix).  Handles the
+/// Firefox 149+ form where `extract_exception_message` returns just the
+/// `preview.message` field (e.g. `"call to eval() blocked by CSP"`) without
+/// the `EvalError:` class prefix.  The CSP-specific phrases are
+/// discriminating on their own — no class check is required at the call
+/// site to avoid false positives.
+fn is_csp_message(m: &str) -> bool {
+    m.contains("Content Security Policy")
+        || m.contains("blocked by CSP")
+        || m.contains("blocks the use of 'eval'")
+}
+
 /// Returns `true` when an exception message indicates a CSP eval block.
 ///
-/// Firefox surfaces CSP eval rejections as a JS exception with a message
-/// containing `"EvalError"` and either `"Content Security Policy"` or
-/// `"blocked by CSP"`.  We check for both patterns to handle any wording
-/// variation across Firefox versions.
+/// Accepts both the full stringified form (`"EvalError: call to eval() blocked by CSP"`)
+/// emitted by older Firefox and the message-only form (`"call to eval() blocked by CSP"`)
+/// returned by `extract_exception_message` on Firefox 149+.
+///
+/// The `EvalError` prefix (when present) adds no extra discrimination power beyond
+/// the CSP-specific phrases, but we keep the original check to avoid regressing
+/// callers that pass the full stringified form.
 fn is_csp_eval_error(exc_message: &str) -> bool {
     let m = exc_message;
-    // "EvalError: call to eval() blocked by CSP"
-    // "EvalError: Content Security Policy of your site blocks the use of 'eval'"
-    // Require an EvalError marker plus a CSP-specific phrase so unrelated
-    // EvalErrors do not trigger the privileged chrome-context fallback.
-    m.contains("EvalError")
-        && (m.contains("Content Security Policy")
+    // Full form (older Firefox / unit tests): "EvalError: blocked by CSP"
+    if m.contains("EvalError") {
+        return m.contains("Content Security Policy")
             || m.contains("blocked by CSP")
-            || m.contains("blocks the use of 'eval'"))
+            || m.contains("blocks the use of 'eval'");
+    }
+    // Message-only form (Firefox 149+, extract_exception_message returns preview.message).
+    // No EvalError prefix — rely on the CSP phrase alone.
+    is_csp_message(m)
 }
 
 /// Evaluate `script` via the console actor, automatically retrying with the
@@ -136,19 +154,30 @@ fn is_csp_eval_error(exc_message: &str) -> bool {
 ///
 /// # CSP bypass mechanism
 ///
-/// Firefox's `evaluateJSAsync` accepts a `chromeContext: true` flag that runs
-/// the script in a privileged browser context, which is not subject to page
-/// Content Security Policy.  We first try the normal (content) path.  If we
-/// get an exception whose message matches a known CSP eval-block pattern we
-/// immediately retry with `chromeContext: true`.
+/// When a page CSP blocks `eval()`, the isolation wrapper
+/// `(function() { "use strict"; return eval(encoded); })()` cannot be used
+/// because the CSP applies to `eval()` calls inside scripts.  However,
+/// Firefox's `evaluateJSAsync` itself (the DevTools API eval) is NOT subject
+/// to page CSP — only the `eval()` function called FROM a script is.
 ///
-/// The chrome context still evaluates against the page's DOM — `document`,
-/// `window`, etc. are the page's globals — so `document.title`, DOM queries,
-/// and similar expressions work unchanged.  Only `eval()` is unblocked.
+/// So the bypass works as follows:
+/// 1. Try the normal path with `script` (which may include the isolation wrapper).
+/// 2. On CSP error, retry with `fallback_script` (the raw user script, no
+///    `eval()` wrapper) via `chromeContext: true`.
+///
+/// `chromeContext: true` additionally marks the evaluation as chrome-privileged,
+/// which means `document`, `window`, etc. are still the page globals (for DOM
+/// access) but the evaluation is not subject to content page restrictions.
+///
+/// The key insight (iter-61l): even with `chromeContext: true`, calling
+/// `eval()` from within a script on a CSP-restricted page is still blocked.
+/// The fix is to send the raw expression directly (no `eval()` call) in the
+/// fallback so Firefox evaluates it via its built-in DevTools mechanism.
 fn eval_with_csp_fallback(
     transport: &mut ff_rdp_core::RdpTransport,
     console_actor: &ff_rdp_core::ActorId,
     script: &str,
+    fallback_script: &str,
 ) -> Result<(ff_rdp_core::EvalResult, bool), AppError> {
     let first = WebConsoleActor::evaluate_js_async(transport, console_actor, script)
         .map_err(AppError::from)?;
@@ -164,11 +193,11 @@ fn eval_with_csp_fallback(
         return Ok((first, false));
     }
 
-    // Retry with chrome context.  If the chrome-context eval itself fails with
-    // a protocol error (e.g. the actor does not support chromeContext), fall
-    // back to surfacing the original CSP exception rather than a confusing
-    // internal error.
-    match WebConsoleActor::evaluate_js_async_chrome(transport, console_actor, script) {
+    // Retry with chrome context using the fallback script (no eval() wrapper).
+    // If the chrome-context eval itself fails with a protocol error (e.g. the
+    // actor does not support chromeContext), fall back to surfacing the
+    // original CSP exception rather than a confusing internal error.
+    match WebConsoleActor::evaluate_js_async_chrome(transport, console_actor, fallback_script) {
         Ok(result) => Ok((result, true)),
         Err(ProtocolError::ActorError { .. }) => {
             // Chrome context not available (e.g. content-only build).  Return
@@ -191,11 +220,21 @@ pub fn run(
     let isolate = !no_isolate;
     let final_script = build_script(&script, stringify, isolate);
 
+    // For the CSP fallback: build a version without the eval() isolation wrapper.
+    // The wrapper calls eval() internally which is blocked by page CSP even in
+    // chrome context; the fallback uses the raw expression so Firefox evaluates
+    // it via its built-in DevTools mechanism (not subject to page CSP).
+    let fallback_script = build_script(&script, stringify, false);
+
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
-    let (eval_result, used_chrome_context) =
-        eval_with_csp_fallback(ctx.transport_mut(), &console_actor, &final_script)?;
+    let (eval_result, used_chrome_context) = eval_with_csp_fallback(
+        ctx.transport_mut(),
+        &console_actor,
+        &final_script,
+        &fallback_script,
+    )?;
 
     // If an exception occurred, print it to stderr and exit non-zero.
     if let Some(ref exc) = eval_result.exception {
@@ -441,9 +480,11 @@ mod tests {
     }
 
     #[test]
-    fn is_csp_eval_error_rejects_csp_phrase_without_evalerror_marker() {
-        // CSP phrasing alone (no EvalError marker) is not a CSP eval block.
-        assert!(!is_csp_eval_error(
+    fn is_csp_eval_error_detects_message_only_form_firefox149() {
+        // Firefox 149+: extract_exception_message returns preview.message without
+        // the "EvalError:" class prefix.  The message-only form must be detected.
+        assert!(is_csp_eval_error("call to eval() blocked by CSP"));
+        assert!(is_csp_eval_error(
             "Content Security Policy of your site blocks the use of 'eval'"
         ));
     }

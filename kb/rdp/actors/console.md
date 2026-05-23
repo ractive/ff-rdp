@@ -1,11 +1,18 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, console, eval, critical]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - console
+  - eval
+  - critical
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/webconsole.js
   - devtools/server/actors/webconsole/eval-with-debugger.js
   - devtools/shared/specs/webconsole.js
+title: WebConsoleActor
 ---
 
 # WebConsoleActor (typeName `"console"`)

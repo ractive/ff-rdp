@@ -1,9 +1,14 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, resource, network]
+tags:
+  - rdp
+  - firefox-server
+  - resource
+  - network
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/resources/network-events-decoded-body-size.js
+title: "Resource: network-event-decoded-body-size"
 ---
 
 # Resource: `network-event-decoded-body-size`
@@ -21,7 +26,7 @@ Per-target watcher. Emits a separate resource carrying the **decoded** (post-gzi
 }
 ```
 
-Pair it to the corresponding [[network-event]] by `channelId`.
+Pair it to the corresponding [[rdp/resources/network-event|network-event]] by `channelId`.
 
 ## Why split out
 

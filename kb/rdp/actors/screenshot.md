@@ -1,11 +1,18 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, screenshot, critical, full-page-bug]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - screenshot
+  - critical
+  - full-page-bug
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/screenshot.js
   - devtools/server/actors/utils/capture-screenshot.js
   - devtools/shared/specs/screenshot.js
+title: ScreenshotActor
 ---
 
 # ScreenshotActor (typeName `"screenshot"`)

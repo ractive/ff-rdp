@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use ff_rdp_core::{
-    RdpTransport, TabActor, WatcherActor, WebConsoleActor, WindowGlobalTarget,
+    RdpTransport, RootActor, TabActor, WatcherActor, WebConsoleActor, WindowGlobalTarget,
     parse_network_resource_updates, parse_network_resources,
 };
 use serde_json::json;
@@ -374,6 +374,49 @@ fn refresh_console_actor(ctx: &mut super::connect_tab::ConnectedTab) {
     ctx.refresh_target();
 }
 
+/// Check whether the REAL tab URL (from `listTabs`) is an about:neterror page.
+///
+/// Theme F: `window.location.href` on an about:neterror page returns the
+/// **failed URL** (from the `u=` query parameter), not the `about:neterror?...`
+/// URL itself.  So `CommitInfo.committed_url` — which comes from
+/// `window.location.href` — cannot be used to detect neterror pages.
+///
+/// This function queries `listTabs` which returns the tab descriptor's URL
+/// field, which Firefox populates with the REAL URL (`about:neterror?e=...`).
+///
+/// Returns an `AppError` when the tab has landed on an about:neterror page.
+/// Returns `None` when the tab URL is clean or the check cannot be performed.
+fn check_real_tab_url_for_neterror(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    requested_url: &str,
+) -> Option<AppError> {
+    // listTabs is a root-level RPC and may interleave with other pending events,
+    // so we only do this when we suspect a neterror (non-fatal: if it fails we
+    // fall through to the caller's success path).
+    let Ok(tabs) = RootActor::list_tabs(ctx.transport_mut()) else {
+        return None;
+    };
+
+    // Find the selected tab (or any tab — we just launched a single navigate).
+    let tab_url = tabs
+        .into_iter()
+        .find(|t| t.selected)
+        .map(|t| t.url)
+        .unwrap_or_default();
+
+    if !is_neterror_url(&tab_url) {
+        return None;
+    }
+
+    let (raw_code, error_type) =
+        classify_neterror(&tab_url).unwrap_or_else(|| ("unknown", "unknown".to_owned()));
+    Some(AppError::User(format!(
+        "navigate: DNS/network error navigating to '{requested_url}' — {error_type} (Firefox error: {raw_code})\n\
+         landed_url: {tab_url}\n\
+         hint: check the URL, DNS, or network connectivity"
+    )))
+}
+
 /// Navigate to `url` and return the result value without printing.
 ///
 /// Called by the script runner, which handles its own NDJSON output.
@@ -398,25 +441,54 @@ pub fn run_core(
 
     // Default: block until the new document commits (URL changes + readyState interactive/complete).
     // --no-wait skips this and returns immediately (old fire-and-forget behaviour).
-    let commit_info = if wait_opts.no_wait {
-        None
+    //
+    // For DNS/network failures, Firefox navigates to `about:neterror` and the
+    // commit wait will time out (the requested URL never commits).  We catch the
+    // timeout error and run the neterror check before propagating it.
+    let commit_result = if wait_opts.no_wait {
+        Ok(None)
     } else {
-        Some(wait_for_commit(
-            &mut ctx,
-            url,
-            pre_nav_url.as_deref(),
-            cli.timeout,
-        )?)
+        wait_for_commit(&mut ctx, url, pre_nav_url.as_deref(), cli.timeout).map(Some)
     };
 
     // Theme K: invalidate the cached consoleActor after any navigate so the
     // next `eval` call fetches a fresh actor bound to the new docshell.
     refresh_console_actor(&mut ctx);
 
-    // Theme F: detect about:neterror after commit.
-    if let Some(err) = neterror_error_for_commit(url, commit_info.as_ref()) {
-        return Err(err);
-    }
+    // Theme F: detect about:neterror after commit (or after timeout).
+    //
+    // Two-stage check:
+    // 1. Fast path: check committed_url from wait_for_commit (works when the
+    //    wait times out and we get the about:neterror URL from the eval).
+    // 2. Authoritative path: listTabs gives the real tab URL. Firefox sets
+    //    window.location.href on about:neterror pages to the *failed* URL
+    //    (from the `u=` query param), so committed_url may look like a success.
+    //    listTabs always returns the actual tab descriptor URL.
+    //
+    // We run both checks even when commit_result is Err (timeout), because
+    // DNS failures cause a timeout before we detect the neterror URL.
+    let commit_info = match commit_result {
+        Ok(ci) => {
+            if let Some(err) = neterror_error_for_commit(url, ci.as_ref()) {
+                return Err(err);
+            }
+            if ci.is_some()
+                && let Some(err) = check_real_tab_url_for_neterror(&mut ctx, url)
+            {
+                return Err(err);
+            }
+            ci
+        }
+        Err(timeout_err) => {
+            // Commit timed out — check if Firefox landed on about:neterror
+            // before propagating the timeout.  DNS failures always time out
+            // the commit wait because the requested URL never commits.
+            if let Some(err) = check_real_tab_url_for_neterror(&mut ctx, url) {
+                return Err(err);
+            }
+            return Err(timeout_err);
+        }
+    };
 
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
 
@@ -620,9 +692,13 @@ pub fn run_with_network(
         // Theme K: refresh consoleActor after navigate.
         refresh_console_actor(&mut ctx);
 
-        // Theme F: detect about:neterror in the daemon --with-network path
-        // too, so DNS/network failures don't return success here.
+        // Theme F: detect about:neterror in the daemon --with-network path.
+        // Run listTabs check unconditionally — DNS failures cause commit to
+        // be silently swallowed by .ok() above and commit_info will be None.
         if let Some(err) = neterror_error_for_commit(url, commit_info.as_ref()) {
+            return Err(err);
+        }
+        if let Some(err) = check_real_tab_url_for_neterror(&mut ctx, url) {
             return Err(err);
         }
 
@@ -738,9 +814,13 @@ pub fn run_with_network(
     // Theme K: refresh consoleActor after navigate.
     refresh_console_actor(&mut ctx);
 
-    // Theme F: detect about:neterror in the non-daemon --with-network path
-    // too, so DNS/network failures don't return success here.
+    // Theme F: detect about:neterror in the non-daemon --with-network path.
+    // Run listTabs check unconditionally — DNS failures cause commit to
+    // be silently swallowed by .ok() above and commit_info will be None.
     if let Some(err) = neterror_error_for_commit(url, commit_info.as_ref()) {
+        return Err(err);
+    }
+    if let Some(err) = check_real_tab_url_for_neterror(&mut ctx, url) {
         return Err(err);
     }
 

@@ -1,6 +1,10 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, resource, storage]
+tags:
+  - rdp
+  - firefox-server
+  - resource
+  - storage
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/resources/storage-cookie.js
@@ -10,6 +14,7 @@ firefox_files:
   - devtools/server/actors/resources/storage-cache.js
   - devtools/server/actors/resources/storage-extension.js
   - devtools/server/actors/resources/storage/
+title: "Resource: storage (cookies/local/session/idb/cache)"
 ---
 
 # Storage Resources

@@ -1,11 +1,16 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, resource, network]
+tags:
+  - rdp
+  - firefox-server
+  - resource
+  - network
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/resources/server-sent-events.js
   - devtools/server/actors/resources/websockets.js
   - devtools/server/actors/resources/webtransport.js
+title: "Resource: server-sent-event"
 ---
 
 # Resources: `server-sent-event`, `websocket`, `webtransport`
@@ -35,4 +40,4 @@ Observes HTTP/3 WebTransport sessions. Payload similar, with stream/datagram fra
 ## Gotchas
 
 - These are **per-frame** payloads (potentially many per second) — heavy. Don't subscribe unless you need them.
-- Tied to the parent [[network-event]] resource by `channelId` — use that to associate the upgrade request with the stream.
+- Tied to the parent [[rdp/resources/network-event|network-event]] resource by `channelId` — use that to associate the upgrade request with the stream.

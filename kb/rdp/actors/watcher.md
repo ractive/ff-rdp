@@ -1,6 +1,11 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, watcher, critical]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - watcher
+  - critical
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/watcher.js
@@ -8,6 +13,7 @@ firefox_files:
   - devtools/server/actors/watcher/ParentProcessWatcherRegistry.sys.mjs
   - devtools/server/actors/watcher/session-context.js
   - devtools/server/actors/resources/index.js
+title: WatcherActor
 ---
 
 # WatcherActor (typeName `"watcher"`)
@@ -73,7 +79,7 @@ Cache, cookies, extension-storage, indexed-db, local-storage, session-storage,
 extensions-backgroundscript-status
 ```
 
-See [[../resources/README]] for each.
+See [[rdp/resources/README|resources/]] for each.
 
 ## Gotchas for ff-rdp
 

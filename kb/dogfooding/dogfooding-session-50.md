@@ -14,7 +14,7 @@ tags:
 
 # Dogfooding Session 50
 
-Short verification pass run immediately after [[iter-61i|kb/iterations/iteration-61i-dogfood-49-fixes.md]] merged at `a57f06f`. Three iter-61i fixes confirmed working live, two known-deferred bugs confirmed still present (not regressions), one accidental partial-fix discovered.
+Short verification pass run immediately after [[iteration-61i-dogfood-49-fixes]] merged at `a57f06f`. Three iter-61i fixes confirmed working live, two known-deferred bugs confirmed still present (not regressions), one accidental partial-fix discovered.
 
 Previous: [[dogfooding-session-49]].
 

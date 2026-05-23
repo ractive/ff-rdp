@@ -1,10 +1,15 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, resource, debugger]
+tags:
+  - rdp
+  - firefox-server
+  - resource
+  - debugger
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/resources/sources.js
   - devtools/server/actors/source.js
+title: "Resource: source"
 ---
 
 # Resource: `source`

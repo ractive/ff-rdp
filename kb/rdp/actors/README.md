@@ -1,9 +1,13 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor-index]
+tags:
+  - rdp
+  - firefox-server
+  - actor-index
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/
+title: Firefox DevTools Server Actors — Index
 ---
 
 # Firefox DevTools Server Actors — Index
@@ -15,12 +19,12 @@ Specs live in parallel under `devtools/shared/specs/`.
 
 - [[root]] — `actors/root.js` — entry point, `sayHello`, `listTabs`, `getProcess`, `listWorkers`.
 - [[watcher]] — `actors/watcher.js` — backbone for `watchTargets` / `watchResources`. Lives under TabDescriptor / ProcessDescriptor.
-- [[descriptors/tab-descriptor]] — `actors/descriptors/tab.js` — `getTarget`, `getWatcher`, `navigateTo`, `reloadDescriptor`, `goBack/goForward`, `getFavicon`.
-- [[descriptors/process-descriptor]] — `actors/descriptors/process.js` — content/parent process descriptor; spawns ContentProcessTarget.
-- [[descriptors/worker-descriptor]] — `actors/descriptors/worker.js`.
-- [[targets/window-global-target]] — `actors/targets/window-global.js` — per-WindowGlobal target (top-level frames). 2055 lines. Hosts most child actors.
-- [[targets/content-process-target]] — `actors/targets/content-process.js`.
-- [[targets/parent-process-target]] — `actors/targets/parent-process.js` — Browser Toolbox.
+- [[rdp/actors/descriptors/tab-descriptor]] — `actors/descriptors/tab.js` — `getTarget`, `getWatcher`, `navigateTo`, `reloadDescriptor`, `goBack/goForward`, `getFavicon`.
+- [[rdp/actors/descriptors/process-descriptor]] — `actors/descriptors/process.js` — content/parent process descriptor; spawns ContentProcessTarget.
+- [[rdp/actors/descriptors/worker-descriptor]] — `actors/descriptors/worker.js`.
+- [[rdp/actors/targets/window-global-target]] — `actors/targets/window-global.js` — per-WindowGlobal target (top-level frames). 2055 lines. Hosts most child actors.
+- [[rdp/actors/targets/content-process-target]] — `actors/targets/content-process.js`.
+- [[rdp/actors/targets/parent-process-target]] — `actors/targets/parent-process.js` — Browser Toolbox.
 - `actors/targets/base-target-actor.js` — shared base.
 - `actors/targets/worker.js` — worker target.
 
@@ -32,7 +36,7 @@ Specs live in parallel under `devtools/shared/specs/`.
 
 ## Network
 
-- [[network-event]] — `actors/network-monitor/network-event-actor.js` — per-request actor, getRequestHeaders / getResponseContent / getSecurityInfo. Emits `network-event-update:*` events.
+- [[rdp/actors/network-event|network-event]] — `actors/network-monitor/network-event-actor.js` — per-request actor, getRequestHeaders / getResponseContent / getSecurityInfo. Emits `network-event-update:*` events.
 - [[network-content]] — `actors/network-monitor/network-content.js` — per-target, `sendHTTPRequest`, `getStackTrace`.
 - [[network-parent]] — `actors/network-monitor/network-parent.js` — parent-process side, throttling/blocking config (`setNetworkThrottling`, `setBlockedUrls`).
 
@@ -57,7 +61,7 @@ Specs live in parallel under `devtools/shared/specs/`.
 
 ## Accessibility / Performance / Other Tools
 
-- [[accessibility]] — `actors/accessibility/accessibility.js` — entry; spawns AccessibilityWalker.
+- [[rdp/actors/accessibility|accessibility]] — `actors/accessibility/accessibility.js` — entry; spawns AccessibilityWalker.
 - [[performance]] — `actors/perf.js` — Gecko Profiler control: `startProfiler`, `stopProfilerAndGetProfile`, `isActive`, `getSupportedFeatures`.
 - `actors/memory.js` — heap-snapshot, GC.
 - `actors/animation.js`, `actors/animation-type-longhand.js` — Web Animations API.
@@ -91,4 +95,4 @@ Specs live in parallel under `devtools/shared/specs/`.
 
 ## Resource Watchers (per type)
 
-See [[../resources/README]] for one-file-per-resource breakdown.
+See [[rdp/resources/README|resources/]] for one-file-per-resource breakdown.

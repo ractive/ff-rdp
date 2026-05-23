@@ -53,7 +53,7 @@ This addresses iter-61l AC-H and the largest single LLM-friendliness gap in `ff-
 - The 100ms throttling means short-lived navigations (`example.com`) can race the first flush. Drain the buffer once on `network` invocation.
 - Subscribe to `document-event` too — it gives us `dom-loading`, `dom-interactive`, `dom-complete` we can use to gate `navigate`'s commit detection (relevant to iter-61l AC-G race fix).
 
-Refs: `devtools/server/actors/watcher.js`, `devtools/shared/resources/` and our [[../resources/README|resources/]] index.
+Refs: `devtools/server/actors/watcher.js`, `devtools/shared/resources/` and our [[rdp/resources/README|resources/]] index.
 
 ## 4. consoleActor staleness — Firefox already invalidates; we should too
 
@@ -67,7 +67,7 @@ DevTools' `DevToolsClient` invalidates Front references on `targetDestroyed` eve
 
 ## 5. `--with-network` → `network --headers` data path
 
-**Finding** ([[network-event]] · [[network-content]]):
+**Finding** ([[rdp/actors/network-event|network-event]] · [[network-content]]):
 Response headers come from `NetworkEventActor`'s `getResponseHeaders` request, returning a `headers` array. The `NetworkContentActor` provides response **bodies** separately, via `getResponseContent`. Both require the watcher to be engaged for the event in question — performance-api has no header data path at all.
 
 **Action** (iter-61l AC-C and the N1 regression):
@@ -105,7 +105,7 @@ On macOS, Firefox's UI locale follows the OS unless `intl.locale.matchOS=false` 
 
 ## 9. Bulk packets exist (but we don't need them yet)
 
-**Finding** ([[transport]]):
+**Finding** ([[rdp/protocol/transport|transport]]):
 RDP has a `bulk` packet form: `bulk <actor> <type> <length>:<binary-bytes>`. Used for screenshot data (when sent as raw PNG instead of base64 dataURL) and for stylesheet content over a certain size.
 
 **Action**: not urgent — our actors currently return base64 dataURLs which is fine. Worth noting in case the screenshot fix uncovers a perf cliff at large PNG sizes; switching to bulk would help.

@@ -45,7 +45,7 @@ the **greeting**. Conceptually:
 
 The exact field set is defined by the RootActor implementation, not by
 the protocol spec. Treat unknown fields as opaque. See
-[[../protocol/transport]] for how the bytes are framed.
+[[rdp/protocol/transport|transport]] for how the bytes are framed.
 
 The framework's client-side `connect()` callback fires with
 `(type, traits)` once this greeting arrives ([client-api][ca]):
@@ -60,7 +60,7 @@ The client asks the root actor for a **descriptor**. From
 > *"Get the list of tabs to find the one to attach to.
 > `client.mainRoot.listTabs().then(tabs => { ... })`"*
 
-Common root requests (see [[../protocol/message-format]] for shape):
+Common root requests (see [[rdp/protocol/message-format]] for shape):
 
 | Request type        | Returns                              |
 | ------------------- | ------------------------------------ |
@@ -120,7 +120,7 @@ Independently, ask for the *content* you actually want:
 
 The server then streams `resources-available-array`,
 `resources-updated-array`, `resources-destroyed-array` events from the
-Watcher. Details in [[../protocol/resources]].
+Watcher. Details in [[rdp/protocol/resources]].
 
 ## 7. (Optional) Attach the thread
 

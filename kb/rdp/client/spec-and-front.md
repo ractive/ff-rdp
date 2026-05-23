@@ -1,6 +1,9 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-client, protocol-framework]
+tags:
+  - rdp
+  - firefox-client
+  - protocol-framework
 date: 2026-05-23
 firefox_files:
   - devtools/shared/protocol.js
@@ -12,6 +15,7 @@ firefox_files:
   - devtools/shared/protocol/Actor/generateActorSpec.js
   - devtools/shared/protocol/Front/FrontClassWithSpec.js
   - devtools/shared/specs/*.js
+title: Spec/Front framework
 ---
 
 # Spec/Front Framework

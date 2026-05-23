@@ -1,10 +1,15 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, resource, css]
+tags:
+  - rdp
+  - firefox-server
+  - resource
+  - css
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/resources/css-changes.js
   - devtools/server/actors/changes.js
+title: "Resource: css-change / css-message"
 ---
 
 # Resource: `css-change`
@@ -25,5 +30,5 @@ Frame-target resource. Emitted whenever DevTools (the inspector / rules pane) **
 
 ## Gotchas
 
-- Only fires for **devtools-driven** edits via [[../actors/page-style]] / style-rule actors, NOT for page-script `element.style.x = …` or `sheet.insertRule(...)`.
+- Only fires for **devtools-driven** edits via [[rdp/actors/page-style]] / style-rule actors, NOT for page-script `element.style.x = …` or `sheet.insertRule(...)`.
 - The data is also queryable via `ChangesActor` (`actors/changes.js`) which tracks the full session diff and can produce CSS snippets for copy/export.

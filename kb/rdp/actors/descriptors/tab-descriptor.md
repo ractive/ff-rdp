@@ -1,10 +1,15 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, descriptor]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - descriptor
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/descriptors/tab.js
   - devtools/shared/specs/descriptors/tab.js
+title: TabDescriptorActor
 ---
 
 # TabDescriptorActor (typeName `"tabDescriptor"`)
@@ -29,7 +34,7 @@ Represents one Firefox tab (`<xul:browser>` or `<iframe mozbrowser>`). Returned 
 | Method | Returns | Behavior |
 |---|---|---|
 | `getTarget()` | targetForm | Connect to the WindowGlobalTargetActor in the content process via `connectToFrame`. Returns the target's form. Stored as `targetActorForm`. |
-| `getWatcher({isServerTargetSwitchingEnabled, isPopupDebuggingEnabled})` | watcher actor | Lazy-creates a [[../watcher]] with `BROWSER_ELEMENT` session context bound to this tab's browser. |
+| `getWatcher({isServerTargetSwitchingEnabled, isPopupDebuggingEnabled})` | watcher actor | Lazy-creates a [[rdp/actors/watcher]] with `BROWSER_ELEMENT` session context bound to this tab's browser. |
 | `getFavicon()` | rawData (bytes) | PlacesUtils.favicons lookup, may return null. |
 | `navigateTo(url, waitForLoad=true)` | promise | Installs an `nsIWebProgressListener` then `browsingContext.loadURI(uri, {triggeringPrincipal: systemPrincipal})`. Resolves on `STATE_STOP` (or `STATE_START` if `waitForLoad=false`). |
 | `goBack()` / `goForward()` | — | `browsingContext.goBack/goForward()`. |

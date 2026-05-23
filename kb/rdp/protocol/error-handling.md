@@ -98,7 +98,7 @@ useful reply. The robust pattern:
 
 ## Transport-level failure modes
 
-The transport spec ([[transport]]) doesn't define a "protocol error
+The transport spec ([[rdp/protocol/transport|transport]]) doesn't define a "protocol error
 frame" — if framing breaks (bad length, non-UTF-8 inside JSON,
 unparseable JSON), the server typically just closes the socket.
 Clients should treat sudden close as fatal: there is no resume.

@@ -1,12 +1,17 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-client, flow, watcher]
+tags:
+  - rdp
+  - firefox-client
+  - flow
+  - watcher
 date: 2026-05-23
 firefox_files:
   - devtools/shared/specs/watcher.js
   - devtools/shared/specs/root.js
   - devtools/server/actors/watcher.js
   - devtools/client/fronts/watcher.js
+title: "Flow: Watch resources"
 ---
 
 # Flow: Watch resources (network events, console messages, ...)

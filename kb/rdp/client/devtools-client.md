@@ -1,6 +1,8 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-client]
+tags:
+  - rdp
+  - firefox-client
 date: 2026-05-23
 firefox_files:
   - devtools/client/devtools-client.js
@@ -8,6 +10,7 @@ firefox_files:
   - devtools/client/fronts/root.js
   - devtools/client/fronts/descriptors/tab.js
   - devtools/client/fronts/targets/browsing-context.js
+title: DevToolsClient (Firefox client framework)
 ---
 
 # DevToolsClient + RootFront
@@ -74,7 +77,7 @@ The 2021-era refactor split things in two:
 - For tab targets there's also a **`WatcherFront`** (got via
   `descriptor.getWatcher()`) used for cross-target resource subscription.
 
-See [[../flows/connect-and-list-tabs]] and [[../flows/attach-target]].
+See [[rdp/flows/connect-and-list-tabs]] and [[rdp/flows/attach-target]].
 
 ## Request lifecycle
 
@@ -89,7 +92,7 @@ See [[../flows/connect-and-list-tabs]] and [[../flows/attach-target]].
 Per-actor request **serialization**: only one in-flight request per actor at a
 time (RDP rule). Additional requests for the same actor are queued until the
 prior reply arrives. This is why long-running operations (notably
-`evaluateJSAsync` — see [[../flows/evaluate-js]]) have a deferred-response
+`evaluateJSAsync` — see [[rdp/flows/evaluate-js]]) have a deferred-response
 pattern: the immediate reply is just `{resultID}`, the actual result comes
 later via an event so other console requests aren't blocked.
 

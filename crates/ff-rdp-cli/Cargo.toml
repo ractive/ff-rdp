@@ -48,12 +48,22 @@ path = "tests/e2e/main.rs"
 name = "playbook_evals"
 path = "tests/playbook_evals.rs"
 
+[[test]]
+name = "live_61l"
+path = "tests/live_61l.rs"
+
 [dev-dependencies]
 ff-rdp-core = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 dirs = { workspace = true }
 jsonschema = "0.27"
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { workspace = true }
 
 [lints]
 workspace = true

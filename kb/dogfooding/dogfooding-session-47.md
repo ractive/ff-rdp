@@ -292,7 +292,7 @@ least document the constant.
 - [[dogfooding-session-46]] — previous session (verified iter-61c).
 - [[iteration-61g-session-48-deferred]] — the fix bundle this
   session verifies. Commit `edda8e2` (PR #72).
-- [[iteration-61f-session-48-ergonomics]] — the ergonomic fixes
+- [[iterations/iteration-61g-session-48-deferred]] — the ergonomic fixes
   that closed session-48 #3/#4/#5/#6. **Note**: this file is
   referenced in iter-61g's `depends_on` but the actual KB file
   could not be located in `kb/iterations/`; the commit message
