@@ -167,7 +167,9 @@ fn main() {
 /// | User / Internal / *   | 1         |
 fn error_exit_code(err: &AppError) -> i32 {
     match err {
-        AppError::RdpProtocol { .. } | AppError::Connection(_) | AppError::RdpActorDestroyed { .. } => 3,
+        AppError::RdpProtocol { .. }
+        | AppError::Connection(_)
+        | AppError::RdpActorDestroyed { .. } => 3,
         AppError::RdpShape { .. } => 4,
         AppError::RdpTimeout { .. } => 5,
         AppError::RdpTransport(_) | AppError::RdpRemoteClosed(_) => 6,

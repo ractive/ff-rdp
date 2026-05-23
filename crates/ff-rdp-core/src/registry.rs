@@ -187,6 +187,77 @@ pub trait Front {
 }
 
 // ---------------------------------------------------------------------------
+// Self-healing helper
+// ---------------------------------------------------------------------------
+
+/// Call `op` with `actor_id`, retrying **once** if the first attempt returns
+/// `noSuchActor` (via `ProtocolError::UnknownActor`) or the actor is already
+/// destroyed (via `RdpError::ActorDestroyed`).
+///
+/// On retry, `refresh` is called to obtain a fresh actor ID, which is then
+/// passed to `op` again.  If the second attempt also fails, its error is
+/// returned as-is.
+///
+/// # Design
+///
+/// This is intentionally opt-in (not automatic) — silent retries hide real
+/// bugs.  Commands that need self-healing (e.g. `eval`, `dom`, `computed`,
+/// `snapshot`, `a11y`) call this helper explicitly.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let title = call_with_refresh(
+///     &console_actor_id,
+///     |id| WebConsoleActor::evaluate_js_async(transport, id, "document.title"),
+///     || {
+///         let target = TabActor::get_target(transport, &tab_actor)?;
+///         Ok(target.console_actor)
+///     },
+/// )?;
+/// ```
+pub fn call_with_refresh<T, E, Op, Refresh>(
+    actor_id: &ActorId,
+    op: Op,
+    refresh: Refresh,
+) -> Result<T, E>
+where
+    Op: Fn(&ActorId) -> Result<T, E>,
+    Refresh: FnOnce() -> Result<ActorId, E>,
+    E: IsActorGone,
+{
+    match op(actor_id) {
+        Ok(v) => Ok(v),
+        Err(e) if e.is_actor_gone() => {
+            let fresh = refresh()?;
+            op(&fresh)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Sealed trait for errors that indicate a stale / destroyed actor.
+///
+/// Implemented for [`crate::error::ProtocolError`] and [`crate::error::RdpError`]
+/// so that [`call_with_refresh`] can be used with either error type.
+pub trait IsActorGone {
+    /// Returns `true` when the error means the actor ID is no longer valid.
+    fn is_actor_gone(&self) -> bool;
+}
+
+impl IsActorGone for crate::error::ProtocolError {
+    fn is_actor_gone(&self) -> bool {
+        self.is_unknown_actor()
+    }
+}
+
+impl IsActorGone for crate::error::RdpError {
+    fn is_actor_gone(&self) -> bool {
+        matches!(self, crate::error::RdpError::ActorDestroyed { .. })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
@@ -284,6 +355,91 @@ mod tests {
             }
             other => panic!("expected ActorDestroyed, got {other:?}"),
         }
+    }
+
+    // ── call_with_refresh ─────────────────────────────────────────────────────
+
+    /// Minimal error type implementing `IsActorGone` for testing.
+    #[derive(Debug, PartialEq)]
+    enum TestError {
+        Gone,
+        Other(String),
+    }
+
+    impl IsActorGone for TestError {
+        fn is_actor_gone(&self) -> bool {
+            matches!(self, TestError::Gone)
+        }
+    }
+
+    #[test]
+    fn call_with_refresh_succeeds_on_first_try() {
+        let id = make_id("actor1");
+        let result = call_with_refresh(
+            &id,
+            |a| {
+                if a.as_ref() == "actor1" {
+                    Ok::<_, TestError>("ok")
+                } else {
+                    Err(TestError::Other("wrong actor".into()))
+                }
+            },
+            || unreachable!("refresh should not be called on success"),
+        );
+        assert_eq!(result, Ok("ok"));
+    }
+
+    #[test]
+    fn call_with_refresh_retries_on_gone_and_succeeds() {
+        let id = make_id("actor-old");
+        let call_count = std::cell::Cell::new(0u32);
+
+        let result = call_with_refresh(
+            &id,
+            |a| {
+                call_count.set(call_count.get() + 1);
+                if a.as_ref() == "actor-new" {
+                    Ok::<_, TestError>("fresh result")
+                } else {
+                    Err(TestError::Gone)
+                }
+            },
+            || Ok::<_, TestError>(make_id("actor-new")),
+        );
+
+        assert_eq!(result, Ok("fresh result"));
+        assert_eq!(
+            call_count.get(),
+            2,
+            "op must be called twice (first + retry)"
+        );
+    }
+
+    #[test]
+    fn call_with_refresh_propagates_non_gone_error() {
+        let id = make_id("actor1");
+
+        let result = call_with_refresh(
+            &id,
+            |_| Err::<&str, _>(TestError::Other("timeout".into())),
+            || unreachable!("refresh should not be called for non-gone errors"),
+        );
+
+        assert_eq!(result, Err(TestError::Other("timeout".into())));
+    }
+
+    #[test]
+    fn call_with_refresh_propagates_retry_failure() {
+        let id = make_id("actor1");
+
+        let result = call_with_refresh(
+            &id,
+            |_| Err::<&str, _>(TestError::Gone),
+            || Ok::<_, TestError>(make_id("actor-new")),
+        );
+
+        // The retry also returns Gone — the error from the second op is returned.
+        assert_eq!(result, Err(TestError::Gone));
     }
 
     // ── performance bench ────────────────────────────────────────────────────
