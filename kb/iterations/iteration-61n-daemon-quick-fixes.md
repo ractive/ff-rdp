@@ -49,16 +49,16 @@ Diagnosis came out of [[ff-rdp-daemon-review]]. With wire tracing from iter-61m 
 - [x] If mismatch, CLI exits with `error_type: "daemon_version_mismatch"` and a clear message.
 - [x] Snapshot test for the mismatch case.
 
-## Acceptance Criteria [0/8]
+## Acceptance Criteria [8/8]
 
-- [ ] **A.** Live test `live_daemon_watch_targets` passes: `target-available-form` arrives after a navigation.
-- [ ] **B.** Live test `live_network_default_watcher` passes: `network` (no flags) returns `source: watcher` with populated status/method after `navigate --with-network`.
-- [ ] **B.** `daemon status` shows non-zero `buffer_sizes.network-event` after a navigation that loaded ≥1 subresource.
-- [ ] **C.** Live test `live_daemon_heavy_spa` passes: new CLI connection completes auth in ≤2 s during a 200-XHR burst.
+- [x] **A.** Live test `live_daemon_watch_targets` passes: `target-available-form` arrives after a navigation.
+- [x] **B.** Live test `live_network_default_watcher` passes: `network` (no flags) returns `source: watcher` with populated status/method after `navigate --with-network`.
+- [x] **B.** `daemon status` shows non-zero `buffer_sizes.network-event` after a navigation that loaded ≥1 subresource.
+- [x] **C.** Live test `live_daemon_heavy_spa` passes: new CLI connection completes auth in ≤2 s during a 200-XHR burst.
 - [x] **D.** Daemon greeting carries `protocol_version`; mismatch produces `error_type: "daemon_version_mismatch"`.
 - [x] No regression in iter-61j/61k/61l ACs that are currently green.
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
-- [ ] PR description includes the live-test names and their asserted outputs.
+- [x] PR description includes the live-test names and their asserted outputs.
 
 ## References
 
