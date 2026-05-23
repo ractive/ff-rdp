@@ -120,7 +120,12 @@ fn is_csp_eval_error(exc_message: &str) -> bool {
     let m = exc_message;
     // "EvalError: call to eval() blocked by CSP"
     // "EvalError: Content Security Policy of your site blocks the use of 'eval'"
-    m.contains("Content Security Policy") || m.contains("blocked by CSP") || m.contains("EvalError")
+    // Require an EvalError marker plus a CSP-specific phrase so unrelated
+    // EvalErrors do not trigger the privileged chrome-context fallback.
+    m.contains("EvalError")
+        && (m.contains("Content Security Policy")
+            || m.contains("blocked by CSP")
+            || m.contains("blocks the use of 'eval'"))
 }
 
 /// Evaluate `script` via the console actor, automatically retrying with the
@@ -424,13 +429,23 @@ mod tests {
     #[test]
     fn is_csp_eval_error_detects_content_security_policy() {
         assert!(is_csp_eval_error(
-            "Content Security Policy of your site blocks the use of 'eval'"
+            "EvalError: Content Security Policy of your site blocks the use of 'eval'"
         ));
     }
 
     #[test]
-    fn is_csp_eval_error_detects_evalerror_prefix() {
-        assert!(is_csp_eval_error("EvalError: some message"));
+    fn is_csp_eval_error_rejects_bare_evalerror_without_csp_phrase() {
+        // A bare EvalError without any CSP-specific phrase must NOT trigger
+        // the chrome-context fallback — only true CSP eval blocks should.
+        assert!(!is_csp_eval_error("EvalError: some message"));
+    }
+
+    #[test]
+    fn is_csp_eval_error_rejects_csp_phrase_without_evalerror_marker() {
+        // CSP phrasing alone (no EvalError marker) is not a CSP eval block.
+        assert!(!is_csp_eval_error(
+            "Content Security Policy of your site blocks the use of 'eval'"
+        ));
     }
 
     #[test]

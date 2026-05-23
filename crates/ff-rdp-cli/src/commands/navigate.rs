@@ -342,6 +342,27 @@ fn run_wait_for_predicates(
     })))
 }
 
+/// If `commit_info` lands on `about:neterror`, return an `AppError::User`
+/// describing the failure.  Used by all navigate paths (`run_core`,
+/// daemon `--with-network`, non-daemon `--with-network`) to ensure a
+/// DNS/network failure is surfaced consistently rather than reported as
+/// a successful navigation that just happens to have landed on a Firefox
+/// error page.
+fn neterror_error_for_commit(url: &str, commit_info: Option<&CommitInfo>) -> Option<AppError> {
+    let ci = commit_info?;
+    if !is_neterror_url(&ci.committed_url) {
+        return None;
+    }
+    let (raw_code, error_type) =
+        classify_neterror(&ci.committed_url).unwrap_or_else(|| ("unknown", "unknown".to_owned()));
+    Some(AppError::User(format!(
+        "navigate: DNS/network error navigating to '{url}' — {error_type} (Firefox error: {raw_code})\n\
+         landed_url: {landed}\n\
+         hint: check the URL, DNS, or network connectivity",
+        landed = ci.committed_url,
+    )))
+}
+
 /// Refresh the console actor in `ctx` after navigation.
 ///
 /// Theme K: the consoleActor ID cached in `ctx.target` is bound to the old
@@ -393,17 +414,8 @@ pub fn run_core(
     refresh_console_actor(&mut ctx);
 
     // Theme F: detect about:neterror after commit.
-    if let Some(ref ci) = commit_info
-        && is_neterror_url(&ci.committed_url)
-    {
-        let (raw_code, error_type) = classify_neterror(&ci.committed_url)
-            .unwrap_or_else(|| ("unknown", "unknown".to_owned()));
-        return Err(AppError::User(format!(
-            "navigate: DNS/network error navigating to '{url}' — {error_type} (Firefox error: {raw_code})\n\
-             landed_url: {landed}\n\
-             hint: check the URL, DNS, or network connectivity",
-            landed = ci.committed_url,
-        )));
+    if let Some(err) = neterror_error_for_commit(url, commit_info.as_ref()) {
+        return Err(err);
     }
 
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
@@ -608,6 +620,12 @@ pub fn run_with_network(
         // Theme K: refresh consoleActor after navigate.
         refresh_console_actor(&mut ctx);
 
+        // Theme F: detect about:neterror in the daemon --with-network path
+        // too, so DNS/network failures don't return success here.
+        if let Some(err) = neterror_error_for_commit(url, commit_info.as_ref()) {
+            return Err(err);
+        }
+
         let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
         let wait_for_result = run_wait_for_predicates(&mut ctx, wait_opts)?;
 
@@ -719,6 +737,12 @@ pub fn run_with_network(
 
     // Theme K: refresh consoleActor after navigate.
     refresh_console_actor(&mut ctx);
+
+    // Theme F: detect about:neterror in the non-daemon --with-network path
+    // too, so DNS/network failures don't return success here.
+    if let Some(err) = neterror_error_for_commit(url, commit_info.as_ref()) {
+        return Err(err);
+    }
 
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
     let wait_for_result = run_wait_for_predicates(&mut ctx, wait_opts)?;

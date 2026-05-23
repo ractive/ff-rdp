@@ -179,9 +179,13 @@ pub fn run(
         );
     }
 
+    // Base meta.source on which buffer was actually consulted, not on the
+    // post-filter result count.  Otherwise `--filter <no-match>` against a
+    // non-empty watcher buffer would omit `meta.source` even though the data
+    // source was watcher.
     let mut meta = if used_perf_fallback {
         json!({"source": "performance-api"})
-    } else if !results.is_empty() {
+    } else if !watcher_was_empty {
         json!({"source": "watcher"})
     } else {
         json!({})

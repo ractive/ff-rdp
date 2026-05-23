@@ -40,7 +40,8 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
         other => vec![other],
     };
     controls.apply_sort(&mut items);
-    let (limited, shown_total, _truncated) = controls.apply_limit(items, None);
+    let (limited, total, truncated) = controls.apply_limit(items, None);
+    let shown = limited.len();
     let limited = controls.apply_fields(limited);
 
     let mut meta = json!({});
@@ -51,7 +52,10 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
-    let envelope = output::envelope(&json!(limited), shown_total, &meta);
+    // Use envelope_with_truncation so --limit emits the same `truncated`
+    // signal as other OutputControls-backed list commands (e.g. network, dom).
+    let envelope =
+        output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Tabs);
     OutputPipeline::from_cli(cli)?
