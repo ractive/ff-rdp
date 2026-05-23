@@ -67,6 +67,10 @@ name = "live_daemon_heavy_spa"
 path = "tests/live_daemon_heavy_spa.rs"
 
 [[test]]
+name = "live_network_headers"
+path = "tests/live_network_headers.rs"
+
+[[test]]
 name = "error_shapes"
 path = "tests/error_shapes.rs"
 

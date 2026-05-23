@@ -1,0 +1,34 @@
+name: Live Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+  FF_RDP_LIVE_TESTS: "1"
+  FF_RDP_LIVE_NETWORK_TESTS: "1"
+
+jobs:
+  live-tests:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install Firefox
+        uses: browser-actions/setup-firefox@8058e910ee76e74bb76b7b2e5b61a55b3a65ed78 # v1.7.2
+
+      - name: Verify Firefox installation
+        run: firefox --version
+
+      - name: Build ff-rdp
+        run: cargo build -p ff-rdp-cli
+
+      - name: Run live tests
+        run: cargo test-live

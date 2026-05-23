@@ -12,114 +12,13 @@
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live_daemon_heavy_spa -- --nocapture
 
-use std::path::PathBuf;
+#[path = "common/mod.rs"]
+mod common;
+
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-fn ff_rdp_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
-}
-
-fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind :0");
-    l.local_addr().expect("local_addr").port()
-}
-
-fn wait_for_tcp(port: u16, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    false
-}
-
-struct LiveFirefox {
-    firefox_pid: u32,
-    pub port: u16,
-}
-
-impl LiveFirefox {
-    fn launch() -> Option<Self> {
-        let port = free_port();
-        let output = Command::new(ff_rdp_bin())
-            .args(["launch", "--headless", "--debug-port", &port.to_string()])
-            .stderr(std::process::Stdio::null())
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-        let firefox_pid = u32::try_from(json["results"]["pid"].as_u64()?).ok()?;
-
-        if !wait_for_tcp(port, Duration::from_secs(30)) {
-            kill_pid(firefox_pid);
-            return None;
-        }
-
-        let ff = Self { firefox_pid, port };
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let out = Command::new(ff_rdp_bin())
-                .args([
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    &ff.port.to_string(),
-                    "--no-daemon",
-                    "tabs",
-                ])
-                .output();
-            if let Ok(o) = out
-                && o.status.success()
-                && serde_json::from_slice::<serde_json::Value>(&o.stdout)
-                    .ok()
-                    .and_then(|j| j["total"].as_u64())
-                    .unwrap_or(0)
-                    >= 1
-            {
-                return Some(ff);
-            }
-            if Instant::now() >= deadline {
-                kill_pid(ff.firefox_pid);
-                return None;
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
-    }
-}
-
-impl Drop for LiveFirefox {
-    fn drop(&mut self) {
-        kill_pid(self.firefox_pid);
-    }
-}
-
-#[cfg(unix)]
-fn kill_pid(pid: u32) {
-    unsafe {
-        // SAFETY: kill(2) is safe to call with a valid signal; ESRCH is ignored.
-        libc::kill(pid.cast_signed(), libc::SIGKILL);
-    }
-}
-
-#[cfg(windows)]
-fn kill_pid(pid: u32) {
-    unsafe {
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_TERMINATE, TerminateProcess,
-        };
-        let h = OpenProcess(PROCESS_TERMINATE, 0, pid);
-        if !h.is_null() {
-            TerminateProcess(h, 1);
-            CloseHandle(h);
-        }
-    }
-}
+use common::{LiveFirefox, ff_rdp_bin};
 
 fn parse_json(output: &Output) -> serde_json::Value {
     let s = String::from_utf8_lossy(&output.stdout);
@@ -146,7 +45,7 @@ fn live_daemon_auth_completes_during_burst() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::launch() else {
+    let Some(ff) = LiveFirefox::headless_on_random_port() else {
         eprintln!("live_daemon_auth_completes_during_burst: Firefox not available — skipping");
         return;
     };
@@ -156,7 +55,7 @@ fn live_daemon_auth_completes_during_burst() {
             "--host".to_owned(),
             "127.0.0.1".to_owned(),
             "--port".to_owned(),
-            ff.port.to_string(),
+            ff.port().to_string(),
             "--timeout".to_owned(),
             timeout_ms.to_string(),
         ]
@@ -189,7 +88,7 @@ fn live_daemon_auth_completes_during_burst() {
 </script>";
 
     // Navigate to the burst page in a background thread so it fires XHRs.
-    let ff_port = ff.port;
+    let ff_port = ff.port();
     let burst_thread = std::thread::spawn(move || {
         Command::new(ff_rdp_bin())
             .args([
@@ -228,7 +127,7 @@ fn live_daemon_auth_completes_during_burst() {
             "--host",
             "127.0.0.1",
             "--port",
-            &ff.port.to_string(),
+            &ff.port().to_string(),
             "daemon",
             "stop",
         ])
