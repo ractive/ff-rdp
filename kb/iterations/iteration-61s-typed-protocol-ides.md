@@ -44,15 +44,15 @@ This iteration introduces the typed layer and migrates the high-traffic actors. 
 - [x] Each spec module's header lists the upstream URL.
 - [x] `scripts/check-spec-drift.sh` (optional, best-effort): given a known-good Firefox commit, sanity-check that our spec types match the upstream `*.js` field names. Doesn't have to be perfect — even a per-actor "smoke test" that the `json!` of our `Request` matches a fixture from the Firefox source helps.
 
-### D. Migration of long-tail actors
-- [x] `storage`, `accessibility`, `performance`, `thread`, `responsive`, `device`, `inspector`, `responsive` (when used), `network-content` follow the same pattern.
+### D. Migration of long-tail actors [1/2]
+- [ ] `storage`, `accessibility`, `performance`, `thread`, `responsive`, `device`, `inspector`, `responsive` (when used), `network-content` follow the same pattern. — Only `network-content` got a typed `NetworkContentFront` (reusing the `network_event` spec module); the rest of the long-tail actors stay on the existing `Value`-based path and are deferred to a follow-up iteration.
 - [x] Anything not migrated keeps using the `Value`-based `send_request`; flagged with `#[allow(dead_code)]` or removed if unused.
 
-## Acceptance Criteria [0/7]
+## Acceptance Criteria [6/7]
 
 - [x] At least 9 actors (console, watcher, screenshot, network-event, walker, page-style, root, descriptor, target) use typed Front methods exclusively.
 - [x] `cargo grep '\.send_request("'` returns 0 matches inside the migrated Fronts (use a different mechanism for unmigrated long-tail actors).
-- [x] CI grep check: no `Value::as_str()` / `Value::as_object()` inside `ff-rdp-core/src/fronts/` (the typed layer).
+- [ ] CI grep check: no `Value::as_str()` / `Value::as_object()` inside `ff-rdp-core/src/fronts/` (the typed layer). — Strictly violated by the push-event filtering loops added to `fronts/root.rs` and `fronts/watcher.rs` in response to PR review (skip `from==<actor> && type.is_some()` packets before deserializing). These ~8 lines are transport-level routing, not payload parsing — the typed reply itself is still decoded via `serde_json::from_value`. Either relax the AC to allow filtering helpers, or hoist the filter into a shared `actor.rs` helper in a follow-up.
 - [x] Each migrated spec module has a doc-comment header linking to the upstream Firefox source.
 - [x] No regression in iter-61j/61k/61l/61m/61n/61o/61p/61q/61r ACs.
 - [x] Adding a new actor method requires: (1) add to spec module, (2) add to Front impl. No `Value` plumbing.
