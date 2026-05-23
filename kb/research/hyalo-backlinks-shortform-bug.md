@@ -2,11 +2,16 @@
 title: "hyalo bug: backlinks drops bare-basename wikilinks"
 type: bug-report
 date: 2026-05-23
-status: open
+status: fixed
+fixed_in: 0.15.0 (rebuilt 2026-05-23 15:32; no version bump)
 tool: hyalo
 version_observed: 0.15.0
-tags: [hyalo, bug, wikilinks, kb-tooling]
+tags: [hyalo, bug, fixed, wikilinks, kb-tooling]
 ---
+
+> **Status: fixed** as of `~/.cargo/bin/hyalo` rebuilt at 2026-05-23 15:32. The reproducer below now reports all three backlinks (lines 6, 7, 8). Keeping this document as a regression-test reference: if the 3-line reproducer ever returns fewer than three entries again, the bug has come back.
+
+
 
 # hyalo bug: `backlinks` drops bare-basename wikilinks
 
