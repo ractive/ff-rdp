@@ -23,19 +23,19 @@ Use this as a lookup table when implementing or debugging RDP-facing code. Every
 - **"How do I read network traffic with headers?"** → [[watch-resources]] · [[rdp/actors/network-event|network-event]] · [[network-content]]
 - **"How do I evaluate JS that may be blocked by CSP?"** → [[evaluate-js]] · [[console]] (look for the `mapped: { await: true }` note)
 - **"How do I take a full-page screenshot for real?"** → [[take-screenshot]] · [[screenshot]] · [[screenshot-content]]
-- **"What does Firefox do when DevTools wants this?"** → search [[devtools-client]] then drill into the relevant [[actors-readme|actor]] / [[flows-readme|flow]]
+- **"What does Firefox do when DevTools wants this?"** → search [[devtools-client]] then drill into the relevant [[rdp/actors/README|actor]] / [[rdp/flows/README|flow]]
 - **"What do we already know / what's broken in `ff-rdp`?"** → [[actors-we-use]] · [[lessons-learned]] · [[open-gaps]]
 - **"What should the next ff-rdp iteration tackle?"** → [[ff-rdp-wins]]
 
 ## Folders
 
-- **[[overview/README|overview/]]** — what RDP is, the actor model, the connection lifecycle.
-- **[[protocol/README|protocol/]]** — wire-level details: transport framing, message format, error shape, resource streams.
-- **[[actors/README|actors/]]** — every Firefox server actor we care about, grouped by category. The protocol contract per actor.
-- **[[resources/README|resources/]]** — every resource type the WatcherActor can stream.
-- **[[client/README|client/]]** — Firefox's own client-side RDP implementation (DevToolsClient, Front framework, transport).
-- **[[flows/README|flows/]]** — end-to-end walkthroughs of common consumer flows (connect, attach, eval, watch, screenshot).
-- **[[from-our-codebase/README|from-our-codebase/]]** — what `ff-rdp` already uses, what we've learned the hard way, what's still broken.
+- **[[rdp/overview/README|overview/]]** — what RDP is, the actor model, the connection lifecycle.
+- **[[rdp/protocol/README|protocol/]]** — wire-level details: transport framing, message format, error shape, resource streams.
+- **[[rdp/actors/README|actors/]]** — every Firefox server actor we care about, grouped by category. The protocol contract per actor.
+- **[[rdp/resources/README|resources/]]** — every resource type the WatcherActor can stream.
+- **[[rdp/client/README|client/]]** — Firefox's own client-side RDP implementation (DevToolsClient, Front framework, transport).
+- **[[rdp/flows/README|flows/]]** — end-to-end walkthroughs of common consumer flows (connect, attach, eval, watch, screenshot).
+- **[[rdp/from-our-codebase/README|from-our-codebase/]]** — what `ff-rdp` already uses, what we've learned the hard way, what's still broken.
 
 ## Top three actionable findings (TL;DR for ff-rdp)
 
