@@ -22,7 +22,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Install Firefox
-        uses: browser-actions/setup-firefox@latest
+        uses: browser-actions/setup-firefox@8058e910ee76e74bb76b7b2e5b61a55b3a65ed78 # v1.7.2
 
       - name: Verify Firefox installation
         run: firefox --version

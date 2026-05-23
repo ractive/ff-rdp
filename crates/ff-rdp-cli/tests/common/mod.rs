@@ -77,13 +77,12 @@ pub fn kill_pid(pid: u32) {
 
 /// A live Firefox instance launched via `ff-rdp launch --headless`.
 ///
-/// Holds the Firefox PID and the RDP debug port.  `Drop` kills Firefox and
-/// removes the temporary profile directory automatically.
+/// Holds the Firefox PID and the RDP debug port.  `Drop` kills Firefox; the
+/// temporary profile created by `ff-rdp launch` is left for the OS to reap
+/// (deferred to a future cleanup pass — see iter-61o notes).
 pub struct LiveFirefox {
     firefox_pid: u32,
     port: u16,
-    /// Temp dir is kept alive by owning it; dropped (deleted) when `self` drops.
-    _profile: tempfile::TempDir,
 }
 
 impl LiveFirefox {
@@ -112,7 +111,6 @@ impl LiveFirefox {
     }
 
     fn try_launch() -> Option<Self> {
-        let profile = tempfile::TempDir::new().ok()?;
         let port = free_port()?;
 
         let output = Command::new(ff_rdp_bin())
@@ -135,11 +133,7 @@ impl LiveFirefox {
             return None;
         }
 
-        let ff = Self {
-            firefox_pid,
-            port,
-            _profile: profile,
-        };
+        let ff = Self { firefox_pid, port };
 
         // Wait until at least one tab is available.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);

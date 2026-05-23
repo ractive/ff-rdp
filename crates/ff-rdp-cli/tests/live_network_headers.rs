@@ -7,9 +7,10 @@
 //! # Running
 //!
 //! Requires Firefox, network access (example.com), and the ff-rdp binary.
-//! Gates on `FF_RDP_LIVE_TESTS=1`.
+//! Gates on `FF_RDP_LIVE_NETWORK_TESTS=1` (because it makes a real network request).
 //!
-//!   FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live_network_headers -- --nocapture
+//!   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 \
+//!     cargo test -p ff-rdp-cli --test live_network_headers -- --nocapture
 
 #[path = "common/mod.rs"]
 mod common;
@@ -35,10 +36,10 @@ fn parse_json(output: &Output) -> serde_json::Value {
 /// - At least one entry has a non-empty `headers.response` map
 ///   containing `Content-Type` or `Server`.
 #[test]
-#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_TESTS=1"]
+#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
 fn live_network_headers() {
-    if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
-        eprintln!("live_network_headers: set FF_RDP_LIVE_TESTS=1 to run");
+    if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
+        eprintln!("live_network_headers: set FF_RDP_LIVE_NETWORK_TESTS=1 to run");
         return;
     }
 
