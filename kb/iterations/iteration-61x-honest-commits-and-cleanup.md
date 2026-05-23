@@ -27,6 +27,7 @@ This is the smaller sibling of [[iter-61y-iteration-discipline-tooling]], which 
 - **F — Delete dead navigate polling helper.** `wait_for_commit` and the `JSON.stringify({ready,url})` polling stub are unreachable but compile. Remove.
 - **G — Screenshot spec types match the FF dict.** `snapshot_scale: f64` → `Option<f64>`; doc-comment the three non-spec fields that the server reads directly.
 - **H — `Arc<Resource>` in bus fan-out.** Currently each subscriber gets a clone. With >4 subscribers under a 1000-event burst that's measurable. Replace with `Arc<Resource>`.
+- **I — Close the iter-61w test-coverage gap.** iter-61w landed the security hardening code (constant-time token compare, refstore cap, nav-URL truncation, terminal-escape sanitizer, poisoned-mutex recovery) but only shipped 5 of 12 promised tests. Add the remaining 5 so the ACs are honest, matching the pattern this iteration enforces elsewhere.
 
 ## Tasks
 
@@ -83,7 +84,15 @@ This is the smaller sibling of [[iter-61y-iteration-discipline-tooling]], which 
 - [ ] Update `daemon/buffer.rs::on_resource` and any other subscribers to take `&Arc<Resource>` or deref as needed.
 - [ ] Bench: `bench_bus_fanout_4_subscribers` shows a measurable wall-clock improvement on a 1000-event burst with 4 subscribers.
 
-## Acceptance Criteria [0/12]
+### I. iter-61w test-coverage carry-over
+- [ ] `test_token_comparison_constant_time` in `crates/ff-rdp-cli/src/daemon/server.rs`: 1000 iterations of token compare, median time of full-token vs first-byte-mismatch within 5%. Use `std::time::Instant`; allow a generous tolerance for CI jitter.
+- [ ] `test_refstore_capped` in `crates/ff-rdp-cli/src/daemon/server.rs`: register `MAX_REFS + 100` entries in a tight loop; assert `refs.len() == MAX_REFS` and subsequent inserts in the *same* batch are dropped (regression-guards the per-insert cap from iter-61w post-review fix).
+- [ ] `test_nav_boundary_url_truncated` in `crates/ff-rdp-cli/src/daemon/buffer.rs`: push a 1 MB URL containing non-ASCII chars; assert the stored value is `<= MAX_NAV_URL_LEN` bytes AND starts/ends on a UTF-8 char boundary (`std::str::from_utf8` round-trips).
+- [ ] `test_terminal_escape_sanitized_e2e` (live or fixture-driven): eval throws an exception whose message contains `\x1b[2J`; capture stderr; assert the raw ESC byte does not appear and `?` does.
+- [ ] `test_lock_or_recover_continues_on_poison` in `crates/ff-rdp-cli/src/daemon/server.rs`: inject a panic in a helper thread that holds a daemon mutex; assert the next `lock_or_recover!` call returns the inner value and `tracing` records one error event.
+- [ ] Tick the five corresponding ACs in `kb/iterations/iteration-61w-security-hardening-and-cleanup.md` and update its AC header from `[7/12]` to `[12/12]`; flip status to `done` once 61w is merged AND these tests land.
+
+## Acceptance Criteria [0/13]
 
 - [ ] `grep -rn '"chromeContext"' crates/` returns 0; chrome-context eval round-trips through a different actor.
 - [ ] `RdpError::Navigation{cause: NavCause, url: String}` is in `core::error`; `commands/navigate.rs` returns it.
@@ -96,6 +105,7 @@ This is the smaller sibling of [[iter-61y-iteration-discipline-tooling]], which 
 - [ ] `bench_bus_fanout_4_subscribers` p99 improved vs pre-change baseline.
 - [ ] `live_eval_chrome_csp_bypass` passes; `--chrome-context` is genuinely privileged.
 - [ ] iter-61u plan AC list shows `[8/8]` after the carry-over tests land.
+- [ ] All five iter-61w carry-over tests (theme I) exist and pass; iter-61w plan shows `[12/12]` and `status: done`.
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
