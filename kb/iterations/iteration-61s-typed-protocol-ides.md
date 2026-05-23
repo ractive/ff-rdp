@@ -2,7 +2,7 @@
 title: "Iteration 61s: Typed protocol layer (spec-file → Rust types)"
 type: iteration
 date: 2026-05-23
-status: in-review
+status: completed
 branch: iter-61s/typed-protocol-ides
 depends_on:
   - iteration-61p-actor-registry-and-front-lifecycle
