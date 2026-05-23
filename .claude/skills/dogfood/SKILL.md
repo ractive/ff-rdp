@@ -130,7 +130,6 @@ Pick a few of these based on what's interesting:
 - Chained workflows: navigate → wait → screenshot → eval → type → screenshot
 - `--jq` edge cases: nested paths, array filters, missing fields
 - Error cases: bad selectors, nonexistent elements, invalid URLs
-- Error cases: bad selectors, nonexistent elements, invalid URLs
 
 ### Phase 6: Regression candidates
 

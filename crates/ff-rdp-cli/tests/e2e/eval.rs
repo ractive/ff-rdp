@@ -434,10 +434,10 @@ fn eval_stringify_string_no_double_encoding() {
     );
 }
 
-/// `eval --stringify "({a:1})"` must still return `"results": "{\"a\":1}"` —
-/// objects are passed through JSON.stringify as before.
+/// `eval --stringify "({a:1})"` returns `results` as a parsed JSON value
+/// (iter-61j theme B: auto-parse the server-side JSON.stringify output).
 #[test]
-fn eval_stringify_object_still_stringified() {
+fn eval_stringify_object_parsed_to_json_value() {
     let server = eval_server("eval_result_stringify.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
@@ -476,10 +476,10 @@ fn eval_stringify_object_still_stringified() {
     );
 }
 
-/// `eval --stringify "42"` must return `"results": "42"` — numbers are
-/// JSON.stringify'd to their string representation.
+/// `eval --stringify "42"` returns `results: 42` — iter-61j theme B parses
+/// the JSON-stringified value back into a real JSON number.
 #[test]
-fn eval_stringify_number_becomes_string() {
+fn eval_stringify_number_parsed_to_json_number() {
     let server = eval_server("eval_result_stringify_number.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
@@ -513,8 +513,10 @@ fn eval_stringify_number_becomes_string() {
     );
 }
 
+/// `eval --stringify` on an array-returning expression yields `results` as a
+/// real parsed JSON array (iter-61j theme B).
 #[test]
-fn eval_stringify_returns_json_string() {
+fn eval_stringify_returns_parsed_json_array() {
     let server = eval_server("eval_result_stringify.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());

@@ -960,8 +960,7 @@ Output (--all): full resolved-style object per match (dumps every property)"
         ref_id: Option<String>,
         /// Return only specific property values (repeatable: --prop color --prop font-size).
         /// Also accepts CSS custom properties like --prop=--bg-color.
-        /// Comma-list positional is also accepted for custom properties with leading dashes:
-        /// ff-rdp computed h1 color,font-size,--bg-color
+        /// Comma-separated lists are also accepted: --prop color,font-size,--bg-color
         #[arg(long, value_name = "NAME", action = clap::ArgAction::Append)]
         prop: Vec<String>,
         /// Include every resolved property, not just non-default values

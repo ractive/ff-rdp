@@ -162,16 +162,14 @@ pub fn run(cli: &Cli, selector: &str, props: &[String], include_all: bool) -> Re
 
     // Also support comma-list style for CSS custom properties that start with `--`
     // and cannot be passed as individual clap arguments with leading dashes.
-    // If a single "prop" entry contains a comma, expand it.
-    let expanded_props: Vec<String> = if props.len() == 1 && props[0].contains(',') {
-        props[0]
-            .split(',')
-            .map(|s| s.trim().to_owned())
-            .filter(|s| !s.is_empty())
-            .collect()
-    } else {
-        props.to_vec()
-    };
+    // Split every --prop entry on commas so mixed input like
+    // `--prop color,font-size --prop=--bg-color` expands correctly.
+    let expanded_props: Vec<String> = props
+        .iter()
+        .flat_map(|p| p.split(','))
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
 
     let js = build_js(selector, &expanded_props, include_all);
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "computed query failed")?;
