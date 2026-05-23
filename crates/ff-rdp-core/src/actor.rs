@@ -3,6 +3,26 @@ use serde_json::{Value, json};
 use crate::error::{ActorErrorKind, ProtocolError};
 use crate::transport::RdpTransport;
 
+/// Send a fire-and-forget request to a named actor without reading any reply.
+///
+/// Used for methods marked `oneway: true` in the Firefox spec (e.g. `unwatchTargets`,
+/// `clearResources`).  Builds the packet, sends it, and returns immediately.
+pub fn actor_send(
+    transport: &mut RdpTransport,
+    to: &str,
+    method: &str,
+    params: Option<&Value>,
+) -> Result<(), ProtocolError> {
+    let mut request = params.cloned().unwrap_or_else(|| json!({}));
+    let obj = request.as_object_mut().ok_or_else(|| {
+        ProtocolError::InvalidPacket("actor request params must be a JSON object".into())
+    })?;
+    obj.insert("to".into(), json!(to));
+    obj.insert("type".into(), json!(method));
+    transport.send(&request)?;
+    Ok(())
+}
+
 /// Send a request to a named actor and return the response.
 ///
 /// Builds a message with the required `to` and `type` fields, merges any

@@ -44,6 +44,11 @@ These are the user-visible behavioral fixes the stability roadmap promised but d
 - [ ] Add a comment citing FF Bug 1914386 and `devtools/shared/commands/resource/resource-command.js:73-79`.
 - [ ] Bench micro-test: `bench_bus_dispatch_latency` — single event in, subscriber wake-up < 1ms.
 
+### D. Carryover from iter-61u (skeleton live tests)
+- [ ] Flesh out `crates/ff-rdp-core/tests/live_61u.rs::live_network_set_cookie_longstring`: load a page that sets `Set-Cookie` > 10 000 chars, capture the network event, assert the deserialized header value is the full string (longstring auto-fetched), not an actor reference.
+- [ ] Flesh out `crates/ff-rdp-core/tests/live_61u.rs::live_cache_disable_via_target_config`: navigate to a `Cache-Control: max-age=3600` resource, call `TargetConfigurationFront::set_cache_disabled(true)`, navigate again, assert the second response is a fresh fetch (not 304/disk cache).
+- [ ] Once both pass, update `kb/iterations/iteration-61u-spec-and-front-correctness.md` AC header from `[6/8]` to `[8/8]` and tick the two ACs.
+
 ## Acceptance Criteria [0/8]
 
 - [ ] `live_navigate_dom_complete`: navigate to a page with deferred scripts; `--wait complete` returns only after `dom-complete`, not on first commit.
