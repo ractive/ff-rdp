@@ -281,6 +281,17 @@ pub fn run(
     // string value and set `meta.stringify_parsed: false` so callers know the
     // round-trip did not produce a structured value.
     let mut meta = json!({});
+    // Surface which evaluation path was taken (iter-61r Theme C).
+    // "page-await" = standard evaluateJSAsync with mapped.await=true (default).
+    // "chrome"     = chrome-context CSP bypass path.
+    let eval_path = if used_chrome_context {
+        "chrome"
+    } else {
+        "page-await"
+    };
+    if let Some(m) = meta.as_object_mut() {
+        m.insert("eval_path".to_owned(), json!(eval_path));
+    }
     if used_chrome_context {
         // Surface a one-liner so callers know the chrome-context CSP bypass was used.
         if let Some(m) = meta.as_object_mut() {

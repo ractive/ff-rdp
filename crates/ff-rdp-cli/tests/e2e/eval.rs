@@ -595,3 +595,40 @@ fn eval_stringify_text_suppresses_hints() {
          --stringify is set (dogfood-49 #6); got: {stdout:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// iter-61r: meta.eval_path field
+// ---------------------------------------------------------------------------
+
+/// Verify that eval output always includes `meta.eval_path: "page-await"` on
+/// the standard (non-CSP-fallback) path (iter-61r Theme C).
+#[test]
+fn eval_meta_eval_path_page_await() {
+    let server = eval_server("eval_result_string.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["eval".to_owned(), "document.title".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    assert_eq!(
+        json["meta"]["eval_path"], "page-await",
+        "meta.eval_path must be 'page-await' on the standard path; envelope: {json}"
+    );
+}

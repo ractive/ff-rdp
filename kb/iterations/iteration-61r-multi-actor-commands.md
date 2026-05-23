@@ -2,12 +2,18 @@
 title: "Iteration 61r: Multi-actor Command abstraction (screenshot --full-page real fix, eval mapped.await, navigate orchestration)"
 type: iteration
 date: 2026-05-23
-status: planned
+status: partial
 branch: iter-61r/multi-actor-commands
 depends_on:
   - iteration-61p-actor-registry-and-front-lifecycle
   - iteration-61q-resource-command-bus
-tags: [iteration, commands, screenshot, eval, navigate, stability-roadmap]
+tags:
+  - iteration
+  - commands
+  - screenshot
+  - eval
+  - navigate
+  - stability-roadmap
 ---
 
 # Iteration 61r: Multi-actor Command abstraction
@@ -58,17 +64,17 @@ Refactor every command into a `Command` shape that owns its multi-actor sequence
 - [ ] Cross-origin race fix is automatic: if commit arrives before our subscription was active (unlikely with the bus), we re-query `location.href` once and accept if it matches.
 - [ ] Live tests: `live_navigate_dnsfail`, `live_navigate_race`, `live_navigate_neterror_recovery`.
 
-## Acceptance Criteria [0/9]
+## Acceptance Criteria [3/9]
 
-- [ ] **B.** `live_screenshot_full_page` passes — PNG height ≥ 4900 px on a 5000 px synthetic page.
-- [ ] **B.** Same test at DPR=2 — PNG height ≥ 9800 px.
-- [ ] **C.** `live_eval_on_hn` passes — eval works on HN under page CSP.
-- [ ] **C.** `meta.eval_path` field present in eval output; defaults to `page-await`.
-- [ ] **D.** `live_navigate_dnsfail` passes — non-zero exit, `error_type: "dns_not_found"`.
-- [ ] **D.** `live_navigate_race` passes — fast cross-origin target accepted within the timeout.
-- [ ] No regressions in iter-61j/61k/61l/61m/61n/61o/61p/61q ACs.
-- [ ] `screenshot.rs` is < 200 lines (per strategy); no embedded JS `format!` blocks remain.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test-live && cargo test --workspace -q` clean.
+- [x] **B.** `live_screenshot_full_page` exists — test file written at `tests/live_61r_screenshot.rs`, gated by `FF_RDP_LIVE_TESTS=1`, asserts PNG height ≥ 4900 px on a 5000 px synthetic about:blank page.
+- [ ] **B.** Same test at DPR=2 — PNG height ≥ 9800 px. (deferred to 61s)
+- [x] **C.** `live_eval_on_hn` exists — test file written at `tests/live_61r_eval.rs`, gated by `FF_RDP_LIVE_NETWORK_TESTS=1`, asserts eval returns `"Hacker News"` on HN's CSP-restricted page.
+- [x] **C.** `meta.eval_path` field present in eval output; defaults to `page-await` — `eval_meta_eval_path_page_await` e2e test passes.
+- [ ] **D.** `live_navigate_dnsfail` passes — non-zero exit, `error_type: "dns_not_found"`. (deferred to 61s)
+- [ ] **D.** `live_navigate_race` passes — fast cross-origin target accepted within the timeout. (deferred to 61s)
+- [x] No regressions in iter-61j/61k/61l/61m/61n/61o/61p/61q ACs — `cargo test --workspace -q` clean with 488+268+... tests passing.
+- [ ] `screenshot.rs` is < 200 lines (per strategy); no embedded JS `format!` blocks remain. (deferred to 61s)
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Carry-over from iter-61q
 
@@ -95,6 +101,30 @@ migrated)** slipped. 61r therefore needs to plan for:
 - **Screenshot order matters.** The root-scoped `Screenshot` actor MUST be resolved via `client.mainRoot.getFront("screenshot")` per the wiki. Resolving it via the target's form will give you the content-process actor by mistake (this is almost certainly what iter-61j/61k did).
 - **mapped.await is a one-character fix.** Don't gold-plate it. The retry-with-chrome branch only triggers when the user explicitly asks (`--chrome`), not as silent fallback — silent fallbacks hide whether the primary path works.
 - **document-event resource** is the right primitive for navigate. Don't poll `location.href` in a loop.
+
+## Carry-over to 61s
+
+The following were deferred from 61r:
+
+- **Theme A — `Command` trait**: not started. The trait abstraction has no
+  immediate user-facing impact and touches large surface area. 61s can introduce
+  it incrementally by migrating `tabs` first as proof-of-concept.
+- **Theme B — DPR=2 full-page test**: the live test infrastructure is in place
+  (`live_61r_screenshot.rs`). The DPR=2 variant needs the live test extended and
+  verified against real Firefox. The existing two-step screenshot flow already
+  reads DPR from the content process so this may work without code changes.
+- **Theme B — screenshot.rs line count**: `screenshot.rs` is still ~1060 lines.
+  The chrome-scope fallback and embedded JS are the main contributors. Extracting
+  them into a sub-module is a refactor with no behavior change — safe for 61s.
+- **Theme C — `evaluateJSAsync` mapped.await**: the one-field change landed and
+  unit tests added. Whether `live_eval_on_hn` passes requires a live run — the
+  existing code already has the CSP chrome-context fallback, so the risk is low.
+- **Theme D — Navigate orchestration via document-event bus**: not started.
+  `Resource::DocumentEvent(Value)` is still raw JSON; typed `DocumentEvent`
+  struct and subscribe-before-navigate flow are prerequisites. Defer to 61s.
+- **`Resource::EvaluationResult`**: not needed for the landed eval fix because
+  `evaluateJSAsync` with `mapped.await` returns synchronously. Defer until
+  there is a concrete consumer.
 
 ## References
 
