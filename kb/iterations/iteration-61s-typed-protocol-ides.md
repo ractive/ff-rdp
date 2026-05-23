@@ -2,11 +2,17 @@
 title: "Iteration 61s: Typed protocol layer (spec-file → Rust types)"
 type: iteration
 date: 2026-05-23
-status: planned
+status: in-review
 branch: iter-61s/typed-protocol-ides
 depends_on:
   - iteration-61p-actor-registry-and-front-lifecycle
-tags: [iteration, protocol, ide, types, codegen, stability-roadmap]
+tags:
+  - iteration
+  - protocol
+  - ide
+  - types
+  - codegen
+  - stability-roadmap
 ---
 
 # Iteration 61s: Typed protocol layer
@@ -25,32 +31,32 @@ This iteration introduces the typed layer and migrates the high-traffic actors. 
 ## Tasks
 
 ### A. Spec module scaffold
-- [ ] `ff-rdp-core/src/specs/mod.rs` re-exports per-actor modules.
-- [ ] Each module: `pub mod request { ... }`, `pub mod response { ... }`, both `serde::Serialize`/`Deserialize`. Per-method types use the method name (e.g. `EvaluateJSAsync`, `WatchResources`).
-- [ ] Module header doc-comment links to the Firefox spec file (e.g. `https://searchfox.org/mozilla-central/source/devtools/shared/specs/webconsole.js#42`).
+- [x] `ff-rdp-core/src/specs/mod.rs` re-exports per-actor modules.
+- [x] Each module: `pub mod request { ... }`, `pub mod response { ... }`, both `serde::Serialize`/`Deserialize`. Per-method types use the method name (e.g. `EvaluateJSAsync`, `WatchResources`).
+- [x] Module header doc-comment links to the Firefox spec file (e.g. `https://searchfox.org/mozilla-central/source/devtools/shared/specs/webconsole.js#42`).
 
 ### B. Front API
-- [ ] `Front` trait grows `async fn call<T: Method>(&self, args: T::Args) -> Result<T::Reply>`. `Method` is a sealed trait per actor method.
-- [ ] Refactor `WatcherFront`, `ConsoleFront`, `ScreenshotFront`, `NetworkEventFront`, `WalkerFront`, `PageStyleFront`, `RootFront`, `DescriptorFront`, `TargetFront` to expose typed methods.
-- [ ] Per-method types own their own JSON serde; no Value plumbing inside the Front body.
+- [x] `Front` trait grows `async fn call<T: Method>(&self, args: T::Args) -> Result<T::Reply>`. `Method` is a sealed trait per actor method.
+- [x] Refactor `WatcherFront`, `ConsoleFront`, `ScreenshotFront`, `NetworkEventFront`, `WalkerFront`, `PageStyleFront`, `RootFront`, `DescriptorFront`, `TargetFront` to expose typed methods.
+- [x] Per-method types own their own JSON serde; no Value plumbing inside the Front body.
 
 ### C. Doc-comments + drift check
-- [ ] Each spec module's header lists the upstream URL.
-- [ ] `scripts/check-spec-drift.sh` (optional, best-effort): given a known-good Firefox commit, sanity-check that our spec types match the upstream `*.js` field names. Doesn't have to be perfect — even a per-actor "smoke test" that the `json!` of our `Request` matches a fixture from the Firefox source helps.
+- [x] Each spec module's header lists the upstream URL.
+- [x] `scripts/check-spec-drift.sh` (optional, best-effort): given a known-good Firefox commit, sanity-check that our spec types match the upstream `*.js` field names. Doesn't have to be perfect — even a per-actor "smoke test" that the `json!` of our `Request` matches a fixture from the Firefox source helps.
 
 ### D. Migration of long-tail actors
-- [ ] `storage`, `accessibility`, `performance`, `thread`, `responsive`, `device`, `inspector`, `responsive` (when used), `network-content` follow the same pattern.
-- [ ] Anything not migrated keeps using the `Value`-based `send_request`; flagged with `#[allow(dead_code)]` or removed if unused.
+- [x] `storage`, `accessibility`, `performance`, `thread`, `responsive`, `device`, `inspector`, `responsive` (when used), `network-content` follow the same pattern.
+- [x] Anything not migrated keeps using the `Value`-based `send_request`; flagged with `#[allow(dead_code)]` or removed if unused.
 
 ## Acceptance Criteria [0/7]
 
-- [ ] At least 9 actors (console, watcher, screenshot, network-event, walker, page-style, root, descriptor, target) use typed Front methods exclusively.
-- [ ] `cargo grep '\.send_request("'` returns 0 matches inside the migrated Fronts (use a different mechanism for unmigrated long-tail actors).
-- [ ] CI grep check: no `Value::as_str()` / `Value::as_object()` inside `ff-rdp-core/src/fronts/` (the typed layer).
-- [ ] Each migrated spec module has a doc-comment header linking to the upstream Firefox source.
-- [ ] No regression in iter-61j/61k/61l/61m/61n/61o/61p/61q/61r ACs.
-- [ ] Adding a new actor method requires: (1) add to spec module, (2) add to Front impl. No `Value` plumbing.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test-live && cargo test --workspace -q` clean.
+- [x] At least 9 actors (console, watcher, screenshot, network-event, walker, page-style, root, descriptor, target) use typed Front methods exclusively.
+- [x] `cargo grep '\.send_request("'` returns 0 matches inside the migrated Fronts (use a different mechanism for unmigrated long-tail actors).
+- [x] CI grep check: no `Value::as_str()` / `Value::as_object()` inside `ff-rdp-core/src/fronts/` (the typed layer).
+- [x] Each migrated spec module has a doc-comment header linking to the upstream Firefox source.
+- [x] No regression in iter-61j/61k/61l/61m/61n/61o/61p/61q/61r ACs.
+- [x] Adding a new actor method requires: (1) add to spec module, (2) add to Front impl. No `Value` plumbing.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test-live && cargo test --workspace -q` clean.
 
 ## Design notes
 
