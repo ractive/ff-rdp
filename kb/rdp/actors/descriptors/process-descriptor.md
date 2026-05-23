@@ -19,7 +19,7 @@ Represents a parent or content process. Returned by `RootActor.listProcesses()` 
 - `getTarget()` — returns:
   - **Parent process** (`isParent`): `ParentProcessTargetActor` (a WindowGlobalTarget subclass for the browser chrome). Exception: in xpcshell or background-task mode, returns a `ContentProcessTargetActor` (no chrome doc).
   - **Content process**: connects via `connectToContentProcess` and returns the `ContentProcessTargetActor` over IPC.
-- `getWatcher({enableWindowGlobalThreadActors?})` — creates a [[../watcher]] with `BROWSER_TOOLBOX` (a.k.a `ALL` session type) when called on the parent process; spawns targets for every BrowsingContext in the browser.
+- `getWatcher({enableWindowGlobalThreadActors?})` — creates a [[rdp/actors/watcher]] with `BROWSER_TOOLBOX` (a.k.a `ALL` session type) when called on the parent process; spawns targets for every BrowsingContext in the browser.
 
 ## Lifecycle
 

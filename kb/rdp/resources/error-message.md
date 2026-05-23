@@ -11,7 +11,7 @@ firefox_files:
 
 Frame-target resource. Errors and warnings from the nsIConsoleService — JS exceptions, CSP violations, mixed-content warnings, deprecation notices, etc.
 
-Subclass of `nsIConsoleListenerWatcher` (shared with [[css-message]], [[platform-message]]).
+Subclass of `nsIConsoleListenerWatcher` (shared with [[rdp/resources/css-change]], [[platform-message]]).
 
 ## Payload
 

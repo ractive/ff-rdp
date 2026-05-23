@@ -11,8 +11,15 @@
 //! helper will fail and the guard will return early).  This keeps CI green even
 //! when Firefox is not installed in the CI environment.
 //!
-//! To run locally:
+//! Tests that require external network access (DNS resolution, example.com)
+//! are additionally gated behind `FF_RDP_LIVE_NETWORK_TESTS=1` so they don't
+//! flake in network-restricted CI environments.
+//!
+//! To run locally (Firefox-only tests):
 //!   cargo test -p ff-rdp-cli --test live_61l -- --nocapture
+//!
+//! To run network-requiring tests too:
+//!   FF_RDP_LIVE_NETWORK_TESTS=1 cargo test -p ff-rdp-cli --test live_61l -- --nocapture
 //!
 //! To run a single AC:
 //!   cargo test -p ff-rdp-cli --test live_61l live_screenshot_full_page -- --nocapture
@@ -78,8 +85,7 @@ impl LiveFirefox {
         if !output.status.success() {
             return None;
         }
-        let json: serde_json::Value =
-            serde_json::from_slice(&output.stdout).ok()?;
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
         let firefox_pid = u32::try_from(json["results"]["pid"].as_u64()?).ok()?;
 
         // Wait for the RDP port to become available.  Use 30 s because multiple
@@ -158,7 +164,7 @@ fn kill_pid(pid: u32) {
     unsafe {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::Threading::{
-            OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+            OpenProcess, PROCESS_TERMINATE, TerminateProcess,
         };
         let h = OpenProcess(PROCESS_TERMINATE, 0, pid);
         if !h.is_null() {
@@ -352,6 +358,12 @@ fn live_locale_pin_launch_sets_lang_env() {
 /// - stderr contains "dns_not_found" or similar neterror-shaped error
 #[test]
 fn live_navigate_dnsfail() {
+    if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
+        eprintln!(
+            "live_navigate_dnsfail: requires network (DNS resolution); set FF_RDP_LIVE_NETWORK_TESTS=1 to run"
+        );
+        return;
+    }
     let Some(ff) = LiveFirefox::launch() else {
         eprintln!("live_navigate_dnsfail: Firefox not available — skipping");
         return;
@@ -410,6 +422,12 @@ fn live_navigate_dnsfail() {
 /// scenario is best demonstrated by the unit tests for `urls_match_scheme_host_path`.
 #[test]
 fn live_navigate_cross_origin_url_match() {
+    if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
+        eprintln!(
+            "live_navigate_cross_origin_url_match: requires network (example.com); set FF_RDP_LIVE_NETWORK_TESTS=1 to run"
+        );
+        return;
+    }
     let Some(ff) = LiveFirefox::launch() else {
         eprintln!("live_navigate_cross_origin_url_match: Firefox not available — skipping");
         return;
@@ -554,8 +572,7 @@ fn live_navigate_invalidates_console_actor() {
     };
 
     // First page.
-    let html1 =
-        r"data:text/html,<html><head><title>Page One</title></head><body>one</body></html>";
+    let html1 = r"data:text/html,<html><head><title>Page One</title></head><body>one</body></html>";
     let nav1 = ff.run_args(
         [
             "--timeout",
@@ -582,8 +599,7 @@ fn live_navigate_invalidates_console_actor() {
     assert_eq!(j1["results"], "Page One");
 
     // Second page — different domain-ish (still data: URL but different title).
-    let html2 =
-        r"data:text/html,<html><head><title>Page Two</title></head><body>two</body></html>";
+    let html2 = r"data:text/html,<html><head><title>Page Two</title></head><body>two</body></html>";
     let nav2 = ff.run_args(
         [
             "--timeout",

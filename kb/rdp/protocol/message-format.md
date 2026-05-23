@@ -10,7 +10,7 @@ sources:
 
 # Message format — packet shape and pairing
 
-Once you've decoded a JSON packet off the wire ([[transport]]), this
+Once you've decoded a JSON packet off the wire ([[rdp/protocol/transport|transport]]), this
 page tells you what's *inside* it.
 
 ## Direction is encoded by the addressing field
@@ -104,7 +104,7 @@ A notification looks like an extra server packet:
 It is **not** a reply and must not be paired with a pending request.
 Heuristic: if the packet has a `"type"` and it matches a known event
 for that actor, treat as event; otherwise treat as the next reply for
-that actor. (The actor's spec — see [[../overview/actor-model]] —
+that actor. (The actor's spec — see [[rdp/overview/actor-model]] —
 defines its event names.)
 
 Examples of common events:
@@ -124,7 +124,7 @@ Examples of common events:
 - Arrays of forms tend to be named after the contents (`tabs`,
   `workers`, `addons`, `processes`).
 - Booleans gating new features go under `"traits"` — see
-  backward-compatibility in [[../overview/architecture]].
+  backward-compatibility in [[rdp/overview/architecture]].
 
 ## Putting it together — one round-trip
 

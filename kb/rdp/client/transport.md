@@ -63,7 +63,7 @@ JSON packet from actor `"root"` describing itself:
 {"from":"root","applicationType":"browser","testConnectionPrefix":"server1.","traits":{...}}
 ```
 
-The client side ([`devtools-client.js:94-120`](../from-our-codebase/devtools-client.md))
+The client side ([`devtools-client.js:94-120`](devtools-client.md))
 sets up a one-shot listener via `this.expectReply("root", ...)` *before* calling
 `this._transport.ready()`. When the greeting arrives, the client:
 
@@ -98,4 +98,4 @@ requests and emits `"closed"`. Clients (including DevTools) start a fresh
 connection from scratch when needed.
 
 See also: [[spec-and-front]], [[devtools-client]],
-[[../flows/connect-and-list-tabs]].
+[[rdp/flows/connect-and-list-tabs]].

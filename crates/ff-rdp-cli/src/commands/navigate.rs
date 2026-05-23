@@ -448,8 +448,7 @@ pub fn run_core(
     let commit_result = if wait_opts.no_wait {
         Ok(None)
     } else {
-        wait_for_commit(&mut ctx, url, pre_nav_url.as_deref(), cli.timeout)
-            .map(Some)
+        wait_for_commit(&mut ctx, url, pre_nav_url.as_deref(), cli.timeout).map(Some)
     };
 
     // Theme K: invalidate the cached consoleActor after any navigate so the

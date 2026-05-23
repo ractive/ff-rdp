@@ -21,7 +21,7 @@ Per-target watcher. Emits a separate resource carrying the **decoded** (post-gzi
 }
 ```
 
-Pair it to the corresponding [[network-event]] by `channelId`.
+Pair it to the corresponding [[rdp/resources/network-event|network-event]] by `channelId`.
 
 ## Why split out
 

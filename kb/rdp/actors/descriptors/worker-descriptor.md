@@ -30,6 +30,6 @@ Represents a dedicated worker, shared worker, or service worker. Returned by `Ro
 
 ## Gotchas
 
-- Workers have a stripped-down [[../console]] (worker-listeners only).
+- Workers have a stripped-down [[rdp/actors/console]] (worker-listeners only).
 - No DOM walker — workers have no document.
 - Targeting service workers across navigations is tricky: SW lifecycle is independent of the page's, so worker descriptor lifetime ≠ tab lifetime.

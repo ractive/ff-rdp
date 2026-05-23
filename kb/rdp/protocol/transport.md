@@ -89,7 +89,7 @@ whole packet into a String — read length first, then exact bytes.
 - **Reading line-by-line.** There are no newlines in the framing.
 - **Not handling the greeting** — the very first thing the server
   sends is an unsolicited JSON packet from `"root"` (see
-  [[../overview/connection-lifecycle]]).
+  [[rdp/overview/connection-lifecycle]]).
 - **Choking on bulk packets** even when you don't use them. At minimum
   parse the header and skip.
 

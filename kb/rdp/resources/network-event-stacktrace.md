@@ -22,10 +22,10 @@ Per-target watcher. Captures the JS stack at the moment a request is initiated, 
 }
 ```
 
-If only "stacktrace available" is known (e.g. for chunked tracking), `stacktrace` may be `true`. Fetch the full trace via [[../actors/network-content]] `getStackTrace(resourceId)`.
+If only "stacktrace available" is known (e.g. for chunked tracking), `stacktrace` may be `true`. Fetch the full trace via [[rdp/actors/network-content]] `getStackTrace(resourceId)`.
 
 ## Gotchas
 
-- Separate from [[network-event]] so that the stacktrace overhead is opt-in.
+- Separate from [[rdp/resources/network-event|network-event]] so that the stacktrace overhead is opt-in.
 - Required if you want the netmonitor "Initiator" column.
 - Capturing stacks has measurable perf cost on JS-heavy pages.

@@ -16,7 +16,7 @@ Represents a whole content **process** as a debug target. Returned by `ProcessDe
 
 ## Child actors exposed in form
 
-- `consoleActor` — process-level [[../console]] (no window — runs in chrome compartment).
+- `consoleActor` — process-level [[rdp/actors/console]] (no window — runs in chrome compartment).
 - `threadActor`, `memoryActor`, `tracerActor`.
 - `webconsoleActor` (alias).
 

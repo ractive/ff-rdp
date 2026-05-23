@@ -9,7 +9,7 @@ date: 2026-05-23
 
 The bytes-and-JSON layer. Everything here is observable on the socket.
 
-- [[transport]] — TCP framing: `length:JSON` packets and `bulk actor type length:data` packets. Handshake, WebSocket variant.
+- [[rdp/protocol/transport|transport]] — TCP framing: `length:JSON` packets and `bulk actor type length:data` packets. Handshake, WebSocket variant.
 - [[message-format]] — request/reply/event JSON shape: `from`, `to`, `type`, payload. Per-actor FIFO serialization. How a reply is distinguished from an event.
 - [[error-handling]] — `{from, error, message}` shape; the small set of documented error names + the larger set actually emitted in practice.
 - [[resources]] — the WatcherActor's streaming model: target events, resource events, ordering, throttling.

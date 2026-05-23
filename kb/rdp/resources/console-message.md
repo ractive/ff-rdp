@@ -33,7 +33,7 @@ Wraps `ConsoleAPIListener` from `webconsole/listeners/console-api.js`, which sub
 
 ## Gotchas for ff-rdp
 
-- **`clonedFromContentProcess`** flag exists on the [[../actors/console]]'s live `consoleAPICall` event — when relayed across processes (Browser Toolbox), arguments are pre-serialized as grips on the source side and shipped clones, which means object lookups via Inspector might not resolve.
+- **`clonedFromContentProcess`** flag exists on the [[rdp/actors/console]]'s live `consoleAPICall` event — when relayed across processes (Browser Toolbox), arguments are pre-serialized as grips on the source side and shipped clones, which means object lookups via Inspector might not resolve.
 - `arguments` are *grips* — string/number/boolean inline; objects are ObjectActor references you may have to follow.
 - Cached messages from before the listener started are obtainable via `console.getCachedMessages(["ConsoleAPI"])`.
-- The legacy non-watcher path emits these as `consoleAPICall` events on [[../actors/console]] directly, rather than as resources.
+- The legacy non-watcher path emits these as `consoleAPICall` events on [[rdp/actors/console]] directly, rather than as resources.

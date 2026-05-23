@@ -60,7 +60,7 @@ The client asks the root actor for a **descriptor**. From
 > *"Get the list of tabs to find the one to attach to.
 > `client.mainRoot.listTabs().then(tabs => { ... })`"*
 
-Common root requests (see [[../protocol/message-format]] for shape):
+Common root requests (see [[rdp/protocol/message-format]] for shape):
 
 | Request type        | Returns                              |
 | ------------------- | ------------------------------------ |
@@ -120,7 +120,7 @@ Independently, ask for the *content* you actually want:
 
 The server then streams `resources-available-array`,
 `resources-updated-array`, `resources-destroyed-array` events from the
-Watcher. Details in [[../protocol/resources]].
+Watcher. Details in [[rdp/protocol/resources]].
 
 ## 7. (Optional) Attach the thread
 

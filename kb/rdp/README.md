@@ -17,10 +17,10 @@ Use this as a lookup table when implementing or debugging RDP-facing code. Every
 
 ## Quick lookup by question
 
-- **"How does the protocol move bytes?"** → [[transport]] + [[message-format]]
+- **"How does the protocol move bytes?"** → [[rdp/protocol/transport|transport]] + [[message-format]]
 - **"What's an actor / a grip / a resource?"** → [[glossary]] · [[actor-model]] · [[resources]]
 - **"How do I connect a new client?"** → [[connect-and-list-tabs]] · [[attach-target]] · [[connection-lifecycle]]
-- **"How do I read network traffic with headers?"** → [[watch-resources]] · [[network-event]] · [[network-content]]
+- **"How do I read network traffic with headers?"** → [[watch-resources]] · [[rdp/actors/network-event|network-event]] · [[network-content]]
 - **"How do I evaluate JS that may be blocked by CSP?"** → [[evaluate-js]] · [[console]] (look for the `mapped: { await: true }` note)
 - **"How do I take a full-page screenshot for real?"** → [[take-screenshot]] · [[screenshot]] · [[screenshot-content]]
 - **"What does Firefox do when DevTools wants this?"** → search [[devtools-client]] then drill into the relevant [[actors-readme|actor]] / [[flows-readme|flow]]

@@ -9,7 +9,7 @@ firefox_files:
 
 # NetworkEventActor (typeName `"netEvent"`)
 
-**One actor per HTTP request.** Created by the `network-event` ResourceWatcher (see [[../resources/network-events]]).
+**One actor per HTTP request.** Created by the `network-event` ResourceWatcher (see [[rdp/resources/network-event]]).
 
 - Source: `devtools/server/actors/network-monitor/network-event-actor.js` (849 lines).
 - Spec:   `devtools/shared/specs/network-event.js`.
@@ -76,6 +76,6 @@ Each event has `updateType: <"headers"|"cookies"|…>` as Arg(0) so a single cli
 ## Gotchas for ff-rdp
 
 - The `available` event only tells you a request started — you must call `getResponseHeaders` / `getResponseContent` **after** seeing the matching `network-event-update:response-content` event, else the body may not be ready yet.
-- `transferredSize` (post-decode bytes from the wire) vs `contentSize` (decoded size) vs `decodedBodySize` (separate resource type, see [[../resources/network-events-decoded-body-size]]) are three different numbers.
+- `transferredSize` (post-decode bytes from the wire) vs `contentSize` (decoded size) vs `decodedBodySize` (separate resource type, see [[rdp/resources/network-event-decoded-body-size]]) are three different numbers.
 - `serverTimings` is part of `getEventTimings`, not headers — parsed from `Server-Timing` response header.
 - Storing all NetworkEventActors in memory will leak; either call `release` after extracting what you need or `Watcher.clearResources(["network-event"])`.

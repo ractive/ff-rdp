@@ -80,8 +80,8 @@ From the docs ([actor-hierarchy][ah], [watcher-architecture][wa]):
    `ParentProcessDescriptorActor`, `WebExtensionDescriptorActor`. Each
    exposes `getWatcher()`.
 3. **WatcherActor** — per-descriptor observer; produces *target* and
-   *resource* notifications. See [[watcher-actor]] (slice TBD) and
-   [[../protocol/resources]].
+   *resource* notifications. See [[rdp/actors/watcher]] (slice TBD) and
+   [[rdp/protocol/resources]].
 4. **Target actors** — short-lived, per-context: `WindowGlobalTargetActor`
    (one per document/iframe), `WorkerTargetActor`, `ProcessTargetActor`.
    They hold *target-scoped* children: `WebConsoleActor`,
@@ -112,4 +112,4 @@ are unsolicited. They are not paired with any request and clients must
 demux replies vs events by *"reading the `from` field and matching
 against pending requests, treating anything else as an event."*
 (implied by [protocol][proto] §request/reply/notify). See
-[[../protocol/message-format]].
+[[rdp/protocol/message-format]].

@@ -9,7 +9,7 @@ firefox_files:
 
 # Resource Types — Index
 
-A **Resource** in the modern Firefox RDP is a JSON payload streamed via [[../actors/watcher]] events `resources-available-array` / `resources-updated-array` / `resources-destroyed-array`.
+A **Resource** in the modern Firefox RDP is a JSON payload streamed via [[rdp/actors/watcher]] events `resources-available-array` / `resources-updated-array` / `resources-destroyed-array`.
 
 Each resource type has a *Resource Watcher* class in `devtools/server/actors/resources/<type>.js` that the watcher instantiates **per target** (or per watcher, for root-scope resources). Each watcher exposes a `watch(targetOrWatcherActor, { onAvailable, onUpdated?, onDestroyed? })` method.
 
@@ -66,21 +66,21 @@ Each watcher pushes via `onAvailable(arrayOfResources)`. The watcher actor batch
 ]
 ```
 
-Throttled by 100ms (see [[../actors/watcher]]).
+Throttled by 100ms (see [[rdp/actors/watcher]]).
 
 ## Individual files
 
 - [[console-message]] — `console.log/warn/error/…` plus CSS warnings.
-- [[network-event]] — per-request lifecycle; spawns [[../actors/network-event]] actors.
+- [[rdp/resources/network-event|network-event]] — per-request lifecycle; spawns [[rdp/actors/network-event]] actors.
 - [[network-event-stacktrace]] — JS stack at request start.
 - [[network-event-decoded-body-size]] — separate stream so size can update after `network-event`.
 - [[document-event]] — DOM lifecycle: dom-loading, dom-interactive, dom-complete, will-navigate.
 - [[css-change]] — live edits to stylesheets via devtools (track-changes).
-- [[css-message]] — CSS parser warnings.
+- [[rdp/resources/css-change]] — CSS parser warnings.
 - [[stylesheet]] — stylesheet add/update/destroy.
 - [[reflow]] — layout reflow timing.
 - [[server-sent-event]], [[websocket]], [[webtransport]] — sub-HTTP streams.
 - [[source]] — JS sources for the debugger.
 - [[thread-state]] — paused/resumed/breakpointHit transitions.
-- [[storage-cookies]], [[storage-local-storage]], [[storage-session-storage]], [[storage-indexed-db]], [[storage-cache]] — storage inspector.
+- [[rdp/resources/storage]], [[storage-local-storage]], [[rdp/resources/storage]], [[rdp/resources/storage]], [[rdp/resources/storage]] — storage inspector.
 - [[session-history]] — browser back/forward history.

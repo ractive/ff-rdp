@@ -18,7 +18,7 @@ all relevant targets"*. The Watcher does the cross-target plumbing.
 
 You get one WatcherActor per descriptor via
 `descriptor.getWatcher()` ([actor-hierarchy][ah]). See
-[[../overview/connection-lifecycle]] for where this fits in the boot
+[[rdp/overview/connection-lifecycle]] for where this fits in the boot
 sequence.
 
 [ah]: https://firefox-source-docs.mozilla.org/devtools/backend/actor-hierarchy.html
