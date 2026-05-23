@@ -115,7 +115,7 @@ Try `--format text` vs default JSON.
 - `a11y` — tree structure
 - `a11y contrast --fail-only` — WCAG violations
 - `dom stats` — DOM complexity
-- `computed ".some-element" display,font-size,color` — CSS debugging
+- `computed ".some-element" --prop display --prop font-size --prop color` — CSS debugging
 - `styles ".element"` — full style inspection
 - `responsive ".content" --widths 320,768,1024` — breakpoint behavior
 
@@ -130,8 +130,7 @@ Pick a few of these based on what's interesting:
 - Chained workflows: navigate → wait → screenshot → eval → type → screenshot
 - `--jq` edge cases: nested paths, array filters, missing fields
 - Error cases: bad selectors, nonexistent elements, invalid URLs
-- `llm-help` — is the reference complete and accurate?
-- `recipes` — do the examples actually work?
+- Error cases: bad selectors, nonexistent elements, invalid URLs
 
 ### Phase 6: Regression candidates
 

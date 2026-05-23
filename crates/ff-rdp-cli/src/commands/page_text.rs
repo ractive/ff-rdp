@@ -31,12 +31,9 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
-    // Include `.text` as a convenience alias for `.results` (C1: back-compat
-    // for scripts using `--jq '.text'`).
-    let mut envelope = output::envelope(&json!(text), 1, &meta);
-    if let Some(obj) = envelope.as_object_mut() {
-        obj.insert("text".to_owned(), json!(text));
-    }
+    // `results` holds the text string directly; the old `.text` alias has been
+    // removed (iter-61j A1).  Use `--jq '.results'` to extract the text.
+    let envelope = output::envelope(&json!(text), 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::PageText);
     OutputPipeline::from_cli(cli)?

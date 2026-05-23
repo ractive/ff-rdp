@@ -184,6 +184,11 @@ user_pref("app.update.enabled", false);
 user_pref("devtools.debugger.remote-enabled", true);
 user_pref("devtools.debugger.prompt-connection", false);
 user_pref("devtools.chrome.enabled", true);
+// Pin UI language to English so console/error messages are predictable for LLM agents.
+// Without this, Firefox picks up the OS locale which produces non-English stack traces,
+// error descriptions, and DevTools messages that agents cannot reliably parse.
+user_pref("intl.accept_languages", "en-US, en");
+user_pref("intl.locale.requested", "en-US");
 "#;
 
 /// Build a `Command` ready to spawn Firefox, and return the effective profile
@@ -265,6 +270,14 @@ pub(crate) fn build_command(
             super::auto_consent::install(p)?;
         }
     }
+
+    // Pin the locale for the child process so Firefox console/error messages
+    // are in English regardless of the OS locale.  This makes error strings and
+    // DevTools output predictable for LLM agents.  On Windows the LANG env var
+    // is not meaningful (Windows uses code pages / ICU), but it is harmless to
+    // set it there too.
+    cmd.env("LANG", "en_US.UTF-8");
+    cmd.env("LC_ALL", "en_US.UTF-8");
 
     // Detach from the terminal so the spawned browser doesn't inherit our
     // stdin/stdout. Capture stderr so we can surface early crash messages.

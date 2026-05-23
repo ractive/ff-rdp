@@ -393,6 +393,46 @@ pub(crate) fn register_refs(
     anyhow::bail!("did not receive register-refs response within 64 frames")
 }
 
+/// Store pre-collected network events into the daemon buffer (iter-61j G).
+///
+/// Called by `navigate --with-network` after streaming completes so that
+/// subsequent `ff-rdp network` calls can read the captured events from the
+/// daemon buffer instead of falling back to the Performance API.
+///
+/// `nav_url` — when `Some`, records a navigation boundary before inserting
+/// events so `ff-rdp network --since -1` scopes correctly.
+pub(crate) fn store_network_events(
+    transport: &mut RdpTransport,
+    events: &[serde_json::Value],
+    nav_url: Option<&str>,
+) -> Result<()> {
+    let mut msg = json!({
+        "to": "daemon",
+        "type": "store-events",
+        "resourceType": "network-event",
+        "events": events,
+    });
+    if let Some(url) = nav_url {
+        msg["nav_url"] = serde_json::Value::String(url.to_owned());
+    }
+    transport
+        .send(&msg)
+        .context("sending store-events to daemon")?;
+    // Drain up to 64 frames to skip any in-flight push events before the ack.
+    for _ in 0..64 {
+        let resp = transport
+            .recv()
+            .context("receiving store-events response")?;
+        if resp.get("from").and_then(serde_json::Value::as_str) == Some("daemon") {
+            if let Some(err) = resp.get("error").and_then(serde_json::Value::as_str) {
+                anyhow::bail!("daemon store-events error: {err}");
+            }
+            return Ok(());
+        }
+    }
+    anyhow::bail!("did not receive store-events response within 64 frames")
+}
+
 /// Format a hint pointing to the daemon log file, or an empty string if
 /// the path cannot be determined.
 fn log_path_hint() -> String {

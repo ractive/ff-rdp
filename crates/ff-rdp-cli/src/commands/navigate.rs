@@ -19,6 +19,7 @@ use super::js_helpers::{
 };
 use super::network_events::{
     build_network_entries, drain_network_events_timed, drain_network_from_daemon, merge_updates,
+    serialize_network_resources_for_buffer,
 };
 use super::url_validation::validate_url;
 
@@ -449,6 +450,29 @@ pub fn run_with_network(
             }
             Err(e) => {
                 eprintln!("warning: failed to drain residual daemon buffer after stream: {e:#}");
+            }
+        }
+
+        // Store the collected events back into the daemon buffer so that a
+        // subsequent `ff-rdp network` call can read them rather than falling
+        // back to the Performance API (iter-61j G).  We record a navigation
+        // boundary so `--since -1` scopes the result correctly.
+        //
+        // `all_updates` is consumed by `merge_updates` later, so we build the
+        // update serialization before that.  Failures are non-fatal — streaming
+        // already returned the data; the worst case is the next `network` call
+        // falls back to the perf API as before.
+        {
+            let update_refs: Vec<(u64, &_)> =
+                all_updates.iter().map(|u| (u.resource_id, u)).collect();
+            let items = serialize_network_resources_for_buffer(&all_resources, &update_refs);
+            if let Err(e) =
+                crate::daemon::client::store_network_events(ctx.transport_mut(), &items, Some(url))
+                && cli.is_verbose()
+            {
+                eprintln!(
+                    "warning: navigate --with-network: could not store events in daemon buffer: {e:#}"
+                );
             }
         }
 

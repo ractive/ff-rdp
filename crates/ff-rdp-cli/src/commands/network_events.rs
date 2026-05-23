@@ -208,6 +208,72 @@ pub(crate) fn drain_network_from_daemon_since(
     Ok((resources, resource_updates, boundary))
 }
 
+/// Serialize parsed [`NetworkResource`] and [`NetworkResourceUpdate`] structs
+/// back to the flat-item JSON format that the daemon buffer stores.
+///
+/// The daemon buffer holds individual items from both `resources-available-array`
+/// and `resources-updated-array` events.  Items without a `resourceUpdates` field
+/// are treated as available resources; items with it are treated as updates.
+/// This function reconstructs those items from parsed structs so that
+/// `navigate --with-network` can store its captured events back into the daemon
+/// buffer for subsequent `ff-rdp network` reads (iter-61j G).
+pub(crate) fn serialize_network_resources_for_buffer(
+    resources: &[NetworkResource],
+    updates: &[(u64, &NetworkResourceUpdate)],
+) -> Vec<Value> {
+    let mut items = Vec::with_capacity(resources.len() + updates.len());
+    for r in resources {
+        items.push(json!({
+            "actor": r.actor.as_ref(),
+            "resourceId": r.resource_id,
+            "method": r.method,
+            "url": r.url,
+            "isXHR": r.is_xhr,
+            "causeType": r.cause_type,
+            "startedDateTime": r.started_date_time,
+            "timeStamp": r.timestamp,
+        }));
+    }
+    for (rid, u) in updates {
+        // Reconstruct the resourceUpdates wrapper that `drain_network_from_daemon_since`
+        // looks for to identify update items.
+        let mut upd = json!({
+            "resourceId": rid,
+        });
+        if let Some(ref s) = u.status {
+            upd["status"] = json!(s);
+        }
+        if let Some(ref h) = u.http_version {
+            upd["httpVersion"] = json!(h);
+        }
+        if let Some(ref m) = u.mime_type {
+            upd["mimeType"] = json!(m);
+        }
+        if let Some(t) = u.total_time {
+            upd["totalTime"] = json!(t);
+        }
+        if let Some(c) = u.content_size {
+            upd["contentSize"] = json!(c);
+        }
+        if let Some(ts) = u.transferred_size {
+            upd["transferredSize"] = json!(ts);
+        }
+        if let Some(fc) = u.from_cache {
+            upd["fromCache"] = json!(fc);
+        }
+        if let Some(ref ra) = u.remote_address {
+            upd["remoteAddress"] = json!(ra);
+        }
+        if let Some(ref ss) = u.security_state {
+            upd["securityState"] = json!(ss);
+        }
+        // The `resourceUpdates` wrapper is what distinguishes update items from
+        // resource items in `drain_network_from_daemon_since`.
+        items.push(json!({"resourceUpdates": [upd]}));
+    }
+    items
+}
+
 /// Map a single PerformanceResourceTiming JSON entry (from `performance.getEntriesByType`)
 /// to the same JSON shape produced by [`build_network_entries`].
 pub(crate) fn map_perf_resource_to_network_entry(entry: &Value) -> Value {

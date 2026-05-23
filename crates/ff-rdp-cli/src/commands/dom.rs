@@ -153,11 +153,12 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode, first: bool) -> Result<(
 
     let mut meta = json!({"selector": selector});
     if matches!(effective_mode, OutputMode::AriaTree)
-        && !refs_registered
         && ctx.via_daemon
         && let Some(obj) = meta.as_object_mut()
     {
-        obj.insert("refs_registered".to_string(), json!(false));
+        // Always emit refs_registered so callers can reliably check whether
+        // ref handles in the output are usable (iter-61j D1).
+        obj.insert("refs_registered".to_string(), json!(refs_registered));
     }
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
