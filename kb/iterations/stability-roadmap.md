@@ -1,12 +1,12 @@
 ---
-title: "Stability Roadmap (iter-61m → iter-61s) — derived from kb/rdp/ wiki + 3-agent architectural review"
+title: "Stability Roadmap (iter-61m → iter-61w) — derived from kb/rdp/ wiki + 3-agent architectural review"
 type: roadmap
 date: 2026-05-23
-status: planned
-tags: [roadmap, stability, architecture, iter-61m, iter-61n, iter-61o, iter-61p, iter-61q, iter-61r, iter-61s]
+status: in-progress
+tags: [roadmap, stability, architecture, iter-61m, iter-61n, iter-61o, iter-61p, iter-61q, iter-61r, iter-61s, iter-61t, iter-61u, iter-61v, iter-61w]
 ---
 
-# Stability Roadmap (iter-61m → iter-61s)
+# Stability Roadmap (iter-61m → iter-61w)
 
 After sessions 48–53 and iterations 61g–61l, the recurring instabilities (full-page screenshot, CSP-blocked eval, watcher fallthrough, consoleActor staleness, navigate races) are all symptoms of **one architectural gap**: ff-rdp speaks RDP without the central abstractions Firefox's own DevTools client maintains — typed protocol IDL, registry-managed actor Fronts, resource-subscription bus, multi-actor command coordination, and live-by-default testing.
 
@@ -23,6 +23,10 @@ This roadmap stages the fixes. Each item is a self-contained iteration with conc
 | [[iteration-61q-resource-command-bus\|61q]] | ResourceCommand-style watcher bus + full WatcherActor engagement | event delivery | --with-network gaps in all forms | 61p |
 | [[iteration-61r-multi-actor-commands\|61r]] | Multi-actor Command abstraction: screenshot, eval, navigate, inspector | command coordination | --full-page (5 sessions), CSP-eval, inspector flakiness | 61p, 61q |
 | [[iteration-61s-typed-protocol-ides\|61s]] | Typed protocol layer (spec-file → Rust types) | hardening | "shape errors invisible to compiler" | 61p (registry must exist first) |
+| [[iteration-61t-wire-the-foundations\|61t]] | Wire the foundations (Registry, ResourceCommand bus, ScopedGrip, resources-destroyed) | wiring | scaffolding-without-callers found in 61m..61s review | 61p, 61q, 61r, 61s |
+| [[iteration-61u-spec-and-front-correctness\|61u]] | Spec & Front correctness (oneway, longstring, renames, missing watcher methods) | correctness | spec drift + missing `get*Actor` Fronts | 61s, 61t |
+| [[iteration-61v-navigate-and-screenshot-completion\|61v]] | navigate document-event gating + screenshot fallback drop + bus throttle zero | completion | navigate-race-timeout, screenshot-headless-chrome-scope, race on short navigates | 61r, 61t |
+| [[iteration-61w-security-hardening-and-cleanup\|61w]] | Security hardening (auth, refstore, terminal escapes) + bulk-packet skip + kb refresh | hardening + docs | post-61v security audit + stale kb pages | 61t |
 
 ## Source documents
 
@@ -47,6 +51,38 @@ This roadmap stages the fixes. Each item is a self-contained iteration with conc
 - `--full-page` stripe-stitching as a fallback path — the wiki's `drawSnapshot(rect, ratio, bg, fullpage=true)` finding is the real fix; we don't need the workaround anymore.
 - A library/embedded mode (the "kill the daemon" stance from [[ff-rdp-daemon-review]]). The daemon agent recommended evolve-toward-DevToolsClient (Option B); 61n–61q implement that.
 - BPF/dtrace instrumentation. tracing-via-RUST_LOG is enough for now.
+
+## Post-mortem: what the 61m..61s arc deferred and why
+
+The original roadmap framed 61m..61s as a clean foundation-then-features
+progression.  In practice the seven iterations landed the *abstractions*
+(Registry, ResourceCommand bus, ScopedGrip, multi-actor Command, typed spec)
+but deferred most of the *wiring* into production paths.  An architectural
+review between 61s and 61t catalogued the gap.  The corrective iterations
+61t..61w cleaned it up:
+
+- **iter-61t** wired the Registry into the daemon dispatcher, migrated
+  `daemon/buffer.rs` onto the `ResourceCommand` bus, wrapped eval grips in
+  `ScopedGrip`, and dispatched `resources-destroyed-array`.  Without this,
+  61p/61q/61r were unit-passing but not load-bearing.
+- **iter-61u** fixed spec correctness: `oneway` methods (`clearResources`,
+  `unwatchResources`, `unwatchTargets`) no longer expect replies; the
+  long-string fetch path matches Firefox's IDL; renames brought spec method
+  names back in line; and the five missing `get*Actor` Fronts on
+  `WatcherActor` were added (still primitive — see
+  [[../rdp/from-our-codebase/wired-vs-primitive#watcher-getactor-methods-iter-61u--primitive|wired-vs-primitive]]).
+- **iter-61v** closed the last two stubborn open-gaps from the dogfooding
+  sessions: `--full-page` (proven by `live_screenshot_full_page_dpr2`) and the
+  navigate timeout race (document-event gating + bus throttle = 0).
+- **iter-61w** is a hardening + docs refresh on top: constant-time token
+  comparison, bounded `RefStore`, terminal-escape sanitisation, typed
+  bulk-packet rejection, and this very roadmap update.
+
+The single recurring lesson from the arc: shipping a primitive is not the
+same as shipping the user-visible behaviour change it was supposed to
+enable.  The iter-61t review caught the gap; the convention going forward is
+that an iteration plan's ACs must each name a live test that exercises the
+production path, not the primitive in isolation.
 
 ## Definition of done (roadmap-level)
 

@@ -102,6 +102,7 @@ fn urls_match_ignore_hash(a: &str, b: &str) -> bool {
 }
 
 /// The result of waiting for a navigation to commit.
+#[derive(Debug)]
 struct CommitInfo {
     /// The URL observed after the navigation committed.
     committed_url: String,
@@ -143,6 +144,17 @@ fn wait_for_doc_complete(
     let mut commit_url: Option<String> = None;
 
     loop {
+        // Check deadline first so we do not drain another batch of events
+        // when the timeout has already expired.  This bounds the overrun to
+        // at most one `poll_interval` (100 ms).
+        if Instant::now() >= deadline {
+            return Err(AppError::Timeout(
+                "navigate: page did not fire dom-complete within the timeout — \
+                 use --no-wait to skip or increase --timeout"
+                    .to_owned(),
+            ));
+        }
+
         // Drain the channel — may have been filled by a previous recv batch.
         loop {
             match rx.try_recv() {
@@ -192,14 +204,6 @@ fn wait_for_doc_complete(
                 Ok(_) => {}
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
-        }
-
-        if Instant::now() >= deadline {
-            return Err(AppError::Timeout(
-                "navigate: page did not fire dom-complete within the timeout — \
-                 use --no-wait to skip or increase --timeout"
-                    .to_owned(),
-            ));
         }
 
         // Pump the transport — will block up to `poll_interval` then return
@@ -1333,5 +1337,87 @@ mod tests {
             "https://example.com/",
             "https://other.com/"
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // wait_for_doc_complete — deadline ordering regression test (iter-61w)
+    //
+    // Verifies that the deadline check fires at the top of the outer loop,
+    // so that events flooding the channel do not delay timeout detection beyond
+    // `timeout_ms + poll_interval` (100 ms).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn deadline_fires_within_timeout_plus_one_poll_interval() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::time::Instant;
+
+        use ff_rdp_core::transport::{RdpTransport, encode_frame};
+
+        const TIMEOUT_MS: u64 = 50;
+        const POLL_MS: u64 = 100;
+        // Maximum allowed elapsed: 50ms timeout + 100ms poll + 200ms margin.
+        const MAX_ELAPSED_MS: u64 = TIMEOUT_MS + POLL_MS + 200;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // Spawn a server that only sends the greeting and then idles, so
+        // every transport recv times out.  The dom-loading flood that
+        // exercises the deadline logic is pre-loaded into the mpsc channel
+        // below — the old (post-drain) deadline check could be starved by it.
+        let server_handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+
+            // Send greeting.
+            let greeting = serde_json::json!({
+                "from": "root",
+                "applicationType": "browser",
+                "traits": {}
+            });
+            let _ = writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes());
+
+            // Keep the stream open; send nothing further so the transport times
+            // out on every recv call and the deadline logic is exercised.
+            // (We don't send dom-complete, so the timeout must fire.)
+            std::thread::sleep(Duration::from_secs(1));
+        });
+
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+
+        // Build a ResourceCommand and an mpsc channel whose receiver we pass to
+        // wait_for_doc_complete.  We pre-load the channel with many dom-loading
+        // events so the inner drain loop has work to do on each iteration.
+        let (tx, rx) = std::sync::mpsc::channel::<Resource>();
+        let dom_loading = Resource::DocumentEvent(serde_json::json!({
+            "name": "dom-loading",
+            "url": "https://example.com/",
+        }));
+        // Send enough events to fill several drain batches.
+        for _ in 0..1000 {
+            tx.send(dom_loading.clone()).unwrap();
+        }
+
+        let watcher_actor = ff_rdp_core::ActorId::from("conn0/watcher1");
+        let mut bus = ResourceCommand::new(watcher_actor);
+
+        let started = Instant::now();
+        let result = wait_for_doc_complete(&mut transport, &mut bus, &rx, TIMEOUT_MS);
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+        server_handle.join().unwrap();
+
+        assert!(
+            matches!(result, Err(AppError::Timeout(_))),
+            "expected Timeout, got: {result:?}"
+        );
+        assert!(
+            elapsed_ms <= MAX_ELAPSED_MS,
+            "deadline overrun: elapsed {elapsed_ms}ms > allowed {MAX_ELAPSED_MS}ms"
+        );
     }
 }

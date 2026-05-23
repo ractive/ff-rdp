@@ -17,11 +17,49 @@ use ff_rdp_core::{
 use super::buffer::ResourceBuffer;
 use super::registry::{self, DaemonInfo};
 
+/// Recover from a poisoned mutex by unwrapping its inner value.
+///
+/// A poisoned mutex means a thread panicked while holding the lock.  The
+/// inner data may be in a partially-modified state, but it is safer to
+/// continue with potentially inconsistent data than to propagate a panic
+/// that would crash the entire daemon.
+///
+/// Logs a `tracing::error!` **once per call site** (guarded by a
+/// macro-local `POISON_LOGGED` static) so that the incident is visible in
+/// traces without flooding logs on every call.
+macro_rules! lock_or_recover {
+    ($mutex:expr) => {{
+        static POISON_LOGGED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        $mutex.lock().unwrap_or_else(|p| {
+            if !POISON_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::error!(
+                    "daemon: mutex poisoned — recovering inner value; \
+                     daemon state may be inconsistent"
+                );
+            }
+            p.into_inner()
+        })
+    }};
+}
+
 /// Typed resource types passed to `ResourceCommand::subscribe`.
 const DAEMON_RESOURCE_TYPES: &[ResourceType] = &[
     ResourceType::NetworkEvent,
     ResourceType::ConsoleMessage,
     ResourceType::ErrorMessage,
+];
+
+/// String names of resource types that stream subscribers are allowed to watch.
+///
+/// A `stream` request for an unknown type is rejected immediately with an error
+/// response and the type is NOT added to the subscriber's set, preventing
+/// unbounded growth of the subscriber type list with attacker-controlled strings.
+const WATCHED_RESOURCE_TYPES: &[&str] = &[
+    "network-event",
+    "console-message",
+    "error-message",
+    "document-event",
 ];
 
 /// Daemon protocol version sent in the greeting after successful auth.
@@ -64,10 +102,32 @@ impl RefStore {
         start
     }
 
+    /// Maximum number of ref entries kept in the store at any time.
+    ///
+    /// An attacker who can inject `register-refs` calls could otherwise exhaust
+    /// heap memory by registering an unbounded number of refs.
+    const MAX_REFS: usize = 50_000;
+
     /// Register a batch of `(id, resolver)` pairs.  Consumes the input so we
     /// avoid cloning each string into the storage map.
+    ///
+    /// - Returns early without inserting anything when the store is already full
+    ///   (len >= [`Self::MAX_REFS`]).
+    /// - Individual entries whose resolver string exceeds 4096 bytes are
+    ///   silently skipped.
+    /// - The [`Self::MAX_REFS`] cap is enforced per-insert so a single batch
+    ///   cannot grow the store beyond the cap.
     fn register(&mut self, entries: Vec<(String, String)>) {
+        if self.refs.len() >= Self::MAX_REFS {
+            return;
+        }
         for (id, resolver) in entries {
+            if self.refs.len() >= Self::MAX_REFS {
+                break;
+            }
+            if resolver.len() > 4096 {
+                continue;
+            }
             self.refs.insert(id, resolver);
         }
     }
@@ -361,6 +421,25 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
             Err(ProtocolError::Timeout) => {
                 // Expected — just loop and re-check the shutdown flag.
             }
+            Err(ProtocolError::BulkPacketUnsupported {
+                ref actor,
+                ref kind,
+                length,
+            }) => {
+                // Firefox occasionally sends bulk binary frames (e.g. for
+                // large screenshot data).  The body has already been
+                // discarded by `recv_from`; log once and continue reading.
+                static BULK_LOGGED: AtomicBool = AtomicBool::new(false);
+                if !BULK_LOGGED.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        actor = %actor,
+                        kind = %kind,
+                        length = %length,
+                        "daemon: bulk packet unsupported — skipping; \
+                         this message is logged only once"
+                    );
+                }
+            }
             Err(e) => {
                 eprintln!("daemon: Firefox connection lost: {e}");
                 state.shutdown.store(true, Ordering::Relaxed);
@@ -445,7 +524,7 @@ fn dispatch_firefox_message(
         // Detect navigation events and clear the ref store.
         if is_navigation_event(msg) {
             state.nav_generation.fetch_add(1, Ordering::Relaxed);
-            state.ref_store.lock().unwrap().clear();
+            lock_or_recover!(state.ref_store).clear();
             // Record a navigation boundary in the network buffer.
             // `tabNavigated` carries the new URL in the `url` field.
             // `willNavigate` also has `url`; `frameUpdate` may not.
@@ -617,8 +696,7 @@ fn dispatch_console_push_event(state: &SharedState, msg: &Value) {
         }
     };
 
-    // unwrap: poisoned mutex — daemon should crash.
-    let mut subs = state.stream_subs.lock().unwrap();
+    let mut subs = lock_or_recover!(state.stream_subs);
     let mut dead: Vec<usize> = Vec::new();
 
     for (i, sub) in subs.iter_mut().enumerate() {
@@ -670,7 +748,7 @@ fn dispatch_watcher_event_to_stream_subs(state: &SharedState, msg: &Value) -> Ha
     };
 
     // Forward to each subscriber that wants at least one type in this event.
-    let mut subs = state.stream_subs.lock().unwrap();
+    let mut subs = lock_or_recover!(state.stream_subs);
     let mut dead: Vec<usize> = Vec::new();
     for (i, sub) in subs.iter_mut().enumerate() {
         let wants = event_types.iter().any(|t| sub.types.contains(*t));
@@ -706,8 +784,7 @@ fn forward_nav_event_to_stream_subs(state: &SharedState, event: &Value) {
             return;
         }
     };
-    // unwrap: poisoned mutex — daemon should crash.
-    let mut subs = state.stream_subs.lock().unwrap();
+    let mut subs = lock_or_recover!(state.stream_subs);
     let mut dead: Vec<usize> = Vec::new();
     for (i, sub) in subs.iter_mut().enumerate() {
         if sub.types.contains("network-event") && sub.writer.send_raw(&json).is_err() {
@@ -734,8 +811,7 @@ fn forward_to_rpc_client(rpc_writer: &Mutex<Option<(RawHandle, FramedWriter)>>, 
         }
     };
 
-    // unwrap: poisoned mutex means a thread panicked — daemon should crash.
-    let mut guard = rpc_writer.lock().unwrap();
+    let mut guard = lock_or_recover!(rpc_writer);
     let Some((_id, writer)) = guard.as_mut() else {
         return;
     };
@@ -870,7 +946,17 @@ fn handle_client(
     let mut auth_reader = FramedReader::from_stream(auth_stream);
 
     let auth_ok = match auth_reader.recv() {
-        Ok(msg) => msg.get("auth").and_then(Value::as_str) == Some(state.auth_token.as_str()),
+        Ok(msg) => {
+            use subtle::ConstantTimeEq as _;
+            msg.get("auth")
+                .and_then(Value::as_str)
+                .is_some_and(|presented| {
+                    presented
+                        .as_bytes()
+                        .ct_eq(state.auth_token.as_bytes())
+                        .into()
+                })
+        }
         Err(_) => false,
     };
 
@@ -1107,6 +1193,12 @@ fn handle_daemon_message(
                     "error": "stream requires a non-empty resourceType field",
                 });
             };
+            if !WATCHED_RESOURCE_TYPES.contains(&resource_type) {
+                return json!({
+                    "from": "daemon",
+                    "error": "unknown resourceType",
+                });
+            }
             // Clear existing buffered events for this type so the client
             // only receives events from this point forward.
             let _discarded = state

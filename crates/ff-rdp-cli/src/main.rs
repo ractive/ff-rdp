@@ -128,6 +128,12 @@ fn main() {
 
     init_tracing(&cli);
 
+    // Warn operators when raw (unredacted) trace mode is active so that
+    // credentials and payloads visible in the trace output are not overlooked.
+    if matches!(std::env::var("FF_RDP_TRACE_RAW").as_deref(), Ok(s) if !s.is_empty()) {
+        eprintln!("warning: FF_RDP_TRACE_RAW is set — raw unredacted trace output enabled");
+    }
+
     let result = dispatch::dispatch(&cli);
     match result {
         Ok(()) => {}

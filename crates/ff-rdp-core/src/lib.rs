@@ -9,6 +9,7 @@ pub mod session;
 pub mod specs;
 pub mod transport;
 pub mod types;
+pub mod util;
 
 pub use actors::accessibility::{AccessibilityActor, AccessibleNode, filter_interactive};
 pub use actors::console::{
@@ -51,3 +52,4 @@ pub use resources::{Resource, ResourceCommand, ResourceType, SubscriptionId};
 pub use session::Session;
 pub use transport::{FramedReader, FramedWriter, RdpTransport};
 pub use types::{ActorId, Grip};
+pub use util::terminal::sanitize_for_terminal;

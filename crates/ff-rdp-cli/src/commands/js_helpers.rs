@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 
-use ff_rdp_core::{ActorId, EvalResult, Grip, LongStringActor, WebConsoleActor};
+use ff_rdp_core::{
+    ActorId, EvalResult, Grip, LongStringActor, WebConsoleActor, sanitize_for_terminal,
+};
 use serde_json::Value;
 
 use super::connect_tab::ConnectedTab;
@@ -22,7 +24,7 @@ pub(crate) fn eval_or_bail(
 
     if let Some(ref exc) = eval_result.exception {
         let msg = exc.message.as_deref().unwrap_or(error_context);
-        eprintln!("error: {msg}");
+        eprintln!("error: {}", sanitize_for_terminal(msg));
         return Err(AppError::Exit(1));
     }
 
