@@ -1,0 +1,215 @@
+---
+title: "Iteration 61l: Dogfood-53 fixes — re-fix the 7 iter-61k items that failed live verification + 2 new regressions; mandate live-verify per AC"
+type: iteration
+date: 2026-05-23
+status: planned
+branch: iter-61l/dogfood-53-fixes
+depends_on:
+  - iteration-61k-dogfood-52-fixes
+tags:
+  - iteration
+  - dogfood-fix
+  - screenshot-fullpage
+  - locale
+  - network-watcher
+  - navigate
+  - eval-csp
+  - consoleactor
+  - daemon-timeout
+  - process
+---
+
+# Iteration 61l: Dogfood-53 fixes (live-verify gated)
+
+iter-61k closed 11 ACs but **only 4 actually worked when exercised against real Firefox**. The other 7 passed their unit tests but failed live verification (deferred to "next dogfooding"). That pattern stops here. **Every AC in this iteration is gated on a live cargo-test driving a real running Firefox**, not a mocked behaviour or hand-checked checkbox.
+
+Items to redo from iter-61k:
+- A: `screenshot --full-page` — still 800×600 on a 22k-px page. **5th session running.**
+- B: Firefox locale pin — German still leaks (`intl.locale.matchOS=false` alone insufficient).
+- C: `network` default → watcher — still falls back to performance-api.
+- F: `navigate <bad-dns>` neterror detection — still returns success-shaped JSON.
+- G: `navigate` cross-origin race — still reports timeout when tab actually landed.
+- H: `eval` CSP bypass — still EvalError on HN, lit.dev.
+- K: consoleActor cache refresh after navigate — `eval` after bad-DNS navigate still fails.
+
+Plus 2 new bugs from session 53:
+- N1: `--detail --headers` flips `meta.source` from `watcher` back to `performance-api`. The very flag that should expose headers nukes the only path that can supply them. **Regression introduced by iter-61k D.**
+- N2: Heavy SPA `navigate` (Comparis) → `daemon did not respond within the timeout after auth`. Tab state stale.
+
+Out of scope:
+- The stretch `--include-shadow` flag from iter-61k I (deferred again).
+- `ff-rdp headers <url>` dedicated subcommand (still deferred — C must land first).
+
+## Process change (mandatory)
+
+For every AC below, the work is **not done** until:
+
+1. A new `tests/live_*.rs` (or extension to an existing live test) drives a real headless Firefox (started via `ff-rdp launch --headless --port <ephemeral>`) and asserts the exact post-condition.
+2. The live test is in CI's `cargo test --workspace -q` run (no `#[ignore]` unless network-required, in which case it must be runnable locally with a documented env var and explicitly invoked at least once in the iteration's PR description).
+3. The PR description includes a "Live verification" section: a copy-paste of the live test name and the actual asserted output (status code, file size, JSON shape, console line).
+
+If any AC cannot be live-verified inside CI for legitimate reasons (e.g. needs a real CSP-restricted external site), the implementer must say so in the PR and include a manual repro script under `scripts/manual-verify-<ac>.sh` plus a pasted sample run.
+
+## Tasks
+
+### A. `screenshot --full-page` — 5th attempt
+
+iter-61k landed chrome-scope rect override but live PNG is still 800×600. Likely the override isn't actually firing because either (a) chrome scope isn't reached on standard tabs, (b) DPR rect math is wrong, or (c) the path is on a feature-flag/env-var that isn't on by default.
+
+#### A1. Diagnose [0/3]
+- [ ] Add `RUST_LOG=debug` traces around the screenshot path. Reproduce locally: `RUST_LOG=ff_rdp=debug ff-rdp screenshot --full-page -o /tmp/x.png` after navigating to Wikipedia HTTP. Capture which code path is taken.
+- [ ] Diff against the actual chrome-scope capture-rect code added in iter-61k.
+- [ ] Identify why the live PNG still comes out viewport-sized.
+
+#### A2. Fix [0/2]
+- [ ] Make the chrome-scope capture path the default for `--full-page`. Strip any feature-flag gating.
+- [ ] Verify DPR multiplication is applied in both width and height.
+
+#### A3. Live test (mandatory) [0/2]
+- [ ] `tests/live_screenshot_full_page.rs`: launch headless FF, navigate to a synthetic long page (data: URL with `style="height:5000px"`), run `screenshot --full-page`, assert PNG height ≥ 4900 px.
+- [ ] Same test with DPR=2 (set via `layout.css.devPixelsPerPx`), assert PNG height ≥ 9800 px.
+
+### B. Firefox locale pin — env vars, finally
+
+iter-61k added `intl.locale.matchOS=false` but the env-var path was explicitly deferred. macOS DevTools/quirks-mode strings still come from the OS locale unless `LANG`/`LC_ALL` are pinned in the child env.
+
+#### B1. Env vars on launched Firefox [0/2]
+- [ ] In `crates/ff-rdp-cli/src/commands/launch.rs`, set child-process env: `LANG=en_US.UTF-8`, `LC_ALL=en_US.UTF-8` (without overwriting any user-provided LANG/LC_ALL).
+- [ ] Also pass `MOZ_FORCE_DISABLE_E10S=` unset and keep `-foreground` off (already the case for headless).
+
+#### B2. Live test (mandatory) [0/2]
+- [ ] `tests/live_locale_pin.rs`: launch FF on a system where macOS LANG is German (simulate via `LANG=de_DE.UTF-8` in the parent shell), navigate to a quirks-mode HTML, capture `console --level warn`, assert message is English (`/quirks/i` matches; no `Kompatibilitätsmodus`).
+- [ ] Document in `launch --help` that LANG/LC_ALL are pinned to en_US.UTF-8 by default and how to override.
+
+### C. `network` default → watcher when available
+
+iter-61k claimed this via `network_meta_source_watcher_when_watcher_has_entries` mock test. Live still fails: after `navigate --with-network`, `network` returns `source: performance-api`. The watcher data is present (`daemon status` shows buffered events) but the default scoping query doesn't consult it.
+
+#### C1. Live repro and diagnose [0/2]
+- [ ] Reproduce: `navigate https://news.ycombinator.com --with-network`, `daemon status` (confirm `network-event` buffer > 0), `network`. Capture which buffer-query path runs.
+- [ ] Identify why the watcher buffer isn't queried by default `--since -1` scoping.
+
+#### C2. Fix [0/2]
+- [ ] When daemon is running AND has watcher entries for the current navigation, `network` (no flags) returns `source: watcher` with populated status/method.
+- [ ] When buffer is empty, fall back to performance-api (as today).
+
+#### C3. Live test (mandatory) [0/2]
+- [ ] `tests/live_network_default_watcher.rs`: launch FF, navigate to `https://example.com --with-network`, run `network`, assert `meta.source == "watcher"` and at least one entry has non-null `status` and `method`.
+- [ ] Same test with `--no-daemon`: assert `meta.source == "performance-api"` (fallback preserved).
+
+### D. `--detail --headers` regression (N1)
+
+iter-61k added the explanatory note for perf-api fallback (good), but in doing so changed the source-selection logic so that `--headers` flips meta.source back to `performance-api` even when the watcher path was being used.
+
+#### D1. Restore watcher path under `--headers` [0/2]
+- [ ] When `--with-network` engaged the watcher and `network --detail --headers` is invoked, keep `meta.source = "watcher"` and return real response headers per entry. Don't downgrade.
+- [ ] Keep the explanatory note ONLY when the underlying source genuinely has no headers (no-daemon mode or no buffered events).
+
+#### D2. Live test (mandatory) [0/1]
+- [ ] `tests/live_network_headers.rs`: navigate `https://example.com --with-network`, `network --detail --headers`, assert at least one entry has a non-empty `headers.response` map containing `Content-Type` or `Server`.
+
+### F. `navigate` neterror detection (re-fix)
+
+iter-61k added the helper `neterror_error_for_commit` and applied it in three paths. Live shows it's NOT firing on the actual DNS-failure path.
+
+#### F1. Diagnose [0/2]
+- [ ] Repro `navigate https://this-domain-truly-does-not-exist-zzz.invalid`. Capture the actual landed URL and the code path that reports the result.
+- [ ] Confirm whether `is_neterror_url` is being called at all in that path (likely the helper is wired but the call site doesn't reach it because commit succeeds with `about:neterror?...` as the committed URL).
+
+#### F2. Fix [0/2]
+- [ ] Apply neterror detection after **every** commit, not just timeout/error paths. If the committed URL starts with `about:neterror`, return the structured error.
+- [ ] Set `error_type` based on the `e=` query param.
+
+#### F3. Live test (mandatory) [0/1]
+- [ ] `tests/live_navigate_dnsfail.rs`: `navigate https://this-domain-totally-does-not-exist-xx.invalid`, assert process exits non-zero, stderr or JSON contains `"error_type":"dns_not_found"` (or whatever Firefox surfaces — assert it's neterror-shaped, not success-shaped).
+
+### G. `navigate` cross-origin race (re-fix)
+
+iter-61k added `urls_match_scheme_host_path_*` unit tests for the URL-comparison helper but live behavior still reports timeout when the URL actually committed.
+
+#### G1. Diagnose [0/2]
+- [ ] Repro: `navigate https://news.ycombinator.com`, then `navigate https://example.com`. Capture whether the URL-match recovery branch is entered and why it doesn't catch the case.
+- [ ] Possibly the timeout path returns before checking `current_url`; ensure the recovery check happens *on* the timeout, not before it.
+
+#### G2. Fix [0/2]
+- [ ] On commit-wait timeout, query `current_url` (via consoleActor or browsingContext) and if it matches the target by scheme+host+path, return success.
+- [ ] Also extend recovery to cases where the page is mid-load (`document.readyState == "loading"`) but URL has committed.
+
+#### G3. Live test (mandatory) [0/1]
+- [ ] `tests/live_navigate_race.rs`: navigate to a slow page first, then immediately to a fast cross-origin target with a tight `--timeout 800`. Assert exit 0 if the tab eventually lands on the target. (May need a local test server with a known-slow first page.)
+
+### H. `eval` CSP bypass — the big one (re-fix)
+
+iter-61k attempted `Cu.evalInSandbox` but live still EvalErrors on HN and lit.dev. Either the sandbox path isn't routed for `eval` (maybe behind a flag), or `Cu.evalInSandbox` isn't accessible from the consoleActor scope used.
+
+#### H1. Diagnose [0/3]
+- [ ] Repro: `navigate https://news.ycombinator.com`, then `eval 'document.title'`. Capture the exact CSP error and which actor/evaluation path was used.
+- [ ] Read the existing implementation in `crates/ff-rdp-core/src/eval*.rs` (or wherever the sandbox attempt lives). Confirm it's actually invoked.
+- [ ] Verify `Cu.evalInSandbox` is callable from the chrome global the consoleActor exposes — or pick an alternative: tabActor's `evaluateJSAsync` already runs in a chrome-privileged scope and ignores page CSP if the request is shaped correctly (use `evalWithBindings` with a chrome-scoped iframe context).
+
+#### H2. Fix [0/3]
+- [ ] Make the CSP-safe path the default for `eval` (auto-fallback on CSP rejection, or always-on if it's strictly more capable).
+- [ ] Surface `meta.eval_path: "page" | "sandbox" | "chrome"` so callers can see which one ran.
+- [ ] If the sandbox lacks DOM access (some `Cu.evalInSandbox` configurations do), make sure the sandbox is created with `sandboxPrototype: window` so `document` works.
+
+#### H3. Live test (mandatory) [0/2]
+- [ ] `tests/live_eval_csp.rs`: navigate to a data URL with CSP `script-src 'self'`, then `eval 'document.title'` — assert success and correct title.
+- [ ] Manual verification (since needs the real HN CSP): document in PR description that `ff-rdp eval 'document.title'` returns `"Hacker News"` on `https://news.ycombinator.com`. Include the captured output.
+
+### K. consoleActor cache refresh after navigate (re-fix)
+
+Live test from session 53 was actually navigating to `about:neterror`, which itself blocks eval. That conflates with H, but the underlying actor-refresh logic might still be busted on legitimate same-origin navigations.
+
+#### K1. Diagnose [0/2]
+- [ ] Repro: navigate to two different real pages in sequence (`example.com` then `example.org`). Run `eval 1+1` after each. If it works, the bug is specific to the about:neterror landing case (which is dominated by F + H).
+- [ ] If it fails between two real pages, the actor cache isn't being invalidated.
+
+#### K2. Fix (if needed) [0/2]
+- [ ] On every navigate (success or error), drop the cached consoleActor reference; re-resolve on next call.
+- [ ] Add a `live_navigate_invalidates_console_actor.rs` test.
+
+### N2. Daemon SPA navigate timeout
+
+Session 53 hit `error: daemon did not respond within the timeout after auth` on Comparis (heavy SPA). Tab state was left stale.
+
+#### N2.1. Diagnose [0/2]
+- [ ] Repro: navigate to a known-heavy SPA (Comparis hypotheken, or a synthetic page with many sync XHRs). Capture daemon logs.
+- [ ] Identify whether auth handshake itself is timing out, or whether the post-auth response is what fails.
+
+#### N2.2. Fix [0/2]
+- [ ] If auth itself is fine but post-navigate work blocks the daemon, increase the post-auth response timeout (or make it derive from the user's `--timeout`).
+- [ ] On daemon timeout, surface the actual diagnostic (which message timed out) and reset tab state if possible so the next call doesn't see stale data.
+
+#### N2.3. Live test (mandatory if reproducible in CI) [0/1]
+- [ ] `tests/live_navigate_heavy_spa.rs` against a local mock that simulates Comparis's load profile (many concurrent XHRs, large JS bundle). Assert `navigate --timeout 30` either succeeds or fails with a clear `daemon_timeout` error and clean tab state.
+
+## Acceptance Criteria [0/13]
+
+Each AC requires a passing live test (real Firefox) cited in the PR description. No checkbox without a test name.
+
+- [ ] **A.** `live_screenshot_full_page` test passes: PNG height ≥ scrollHeight × DPR on a 5000 px synthetic page.
+- [ ] **B.** `live_locale_pin` test passes: English console message under simulated German `LANG`.
+- [ ] **C.** `live_network_default_watcher` test passes: `network` (no flags) returns `source: watcher` after `--with-network`.
+- [ ] **D.** `live_network_headers` test passes: `--detail --headers` returns real response headers, source remains `watcher`.
+- [ ] **F.** `live_navigate_dnsfail` test passes: bad-DNS navigate exits non-zero with `error_type`.
+- [ ] **G.** `live_navigate_race` test passes: tight-timeout cross-origin navigate recovers via URL-match.
+- [ ] **H.** `live_eval_csp` test passes: eval works on a CSP-restricted data URL. PR includes manual verification of HN.
+- [ ] **K.** Either fix is unnecessary (covered by F+H) or `live_navigate_invalidates_console_actor` passes.
+- [ ] **N1.** `--detail --headers` no longer regresses `meta.source` from watcher to performance-api.
+- [ ] **N2.** Heavy-SPA navigate timeout returns clean diagnostic and cleans up state.
+- [ ] All previous iter-61j and iter-61k ACs remain green; the four live-verified iter-61k items (D, E, I, J) still work.
+- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [ ] PR description has a "Live verification" section listing every live test name and its asserted output.
+
+## Design Notes
+
+- **The pattern matters more than any one bug.** iter-61k passed unit tests for A/B/C/F/G/H/K and live-failed all of them. The plan checkboxes ("deferred to next dogfooding session") let it through. iter-61l's process change makes the live test the source of truth; cmux child must not declare AC done without a passing live test name.
+- **A (`--full-page`)** has now failed in sessions 48/49/51/52/53. If the chrome-scope rect override still doesn't work after diagnosis, switch strategies entirely: scroll-and-stitch viewport screenshots. Less elegant but reliably correct. **Do not defer A again.**
+- **H (CSP eval)** is the biggest LLM-friendliness gain remaining. If `Cu.evalInSandbox` truly cannot be invoked from the consoleActor scope, the next option is to use the TabActor's `evaluateJSAsync` with `bindObjectAsProperty` and `evalWithBindings`, which under the hood uses the chrome-privileged debugger frame (not page eval). Investigate before deciding.
+- **D (--headers regression)** suggests the meta.source computation is tangled. Worth refactoring to a single resolver that returns `(source, entries, header_availability)` together rather than three separate decisions.
+
+## References
+
+- Source: [[dogfooding-session-53]]
+- Previous: [[iteration-61k-dogfood-52-fixes]] (7 ACs lifted for re-fix)
+- Previous-previous: [[iteration-61j-dogfood-51-fixes]]
