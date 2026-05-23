@@ -61,3 +61,7 @@ The foundation for everything downstream. Until we can see what bytes go across 
 - [[ff-rdp-architecture-review]] §8 (Error handling) — current `anyhow` everywhere
 - [[firefox-devtools-patterns-for-ff-rdp]] §10 (Logging and tracing), §8 (Errors as data)
 - [[stability-roadmap]]
+
+---
+
+iter-61o note: AC checkbox test-name convention added retroactively; this iteration's ACs predate it.

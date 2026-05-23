@@ -33,6 +33,21 @@ Before committing or creating a PR, run **in this order** and fix all issues:
 Never skip a step. Never commit code that fails any of these.
 Do *not* merge with "--squash".
 
+### Live tests
+Some tests require a running Firefox instance and are gated by an env var:
+- `FF_RDP_LIVE_TESTS=1` — enables tests that launch headless Firefox locally.
+- `FF_RDP_LIVE_NETWORK_TESTS=1` — enables tests that also make real network requests.
+
+Run them with: `FF_RDP_LIVE_TESTS=1 cargo test-live`
+
+The `cargo test-live` alias (defined in `.cargo/config.toml`) expands to `cargo test --workspace -- --include-ignored`, which includes all `#[ignore]`-gated live tests.
+
+**AC checkbox convention**: every AC checkbox in an iteration plan MUST name the live test and the asserted post-condition, e.g.:
+```
+- [ ] live_screenshot_full_page: PNG height ≥ scrollHeight × DPR
+```
+An AC without a named test is not done.
+
 ## Code Patterns
 - No `.unwrap()` / `.expect()` outside of tests — use `anyhow::Context` with `?`
 - No `clone()` unless the borrow checker demands it — try references first

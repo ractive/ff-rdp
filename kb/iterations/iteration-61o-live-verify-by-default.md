@@ -2,11 +2,16 @@
 title: "Iteration 61o: Live-verify-by-default test architecture + mock watcher push events"
 type: iteration
 date: 2026-05-23
-status: planned
+status: in-progress
 branch: iter-61o/live-verify-by-default
 depends_on:
   - iteration-61m-wire-tracing-and-structured-errors
-tags: [iteration, testing, mock-server, watcher, stability-roadmap]
+tags:
+  - iteration
+  - testing
+  - mock-server
+  - watcher
+  - stability-roadmap
 ---
 
 # Iteration 61o: Live-verify-by-default test architecture
@@ -41,13 +46,13 @@ iter-61k passed 11 ACs' unit tests; live verification showed 7 of them broken. i
 - [ ] Update `kb/iterations/.template.md` (or whatever the planning template is) to require AC checkboxes to name a test.
 - [ ] Audit iter-61n's plan AC names — they already follow this convention; backfill iter-61m's.
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [5/6]
 
-- [ ] `Firefox::headless_on_random_port()` (or equivalent) returns a usable handle in ≤3 s; `Drop` kills FF cleanly.
-- [ ] Mock-server `inject_watcher_resource` snapshot test passes for at least 3 resource types.
-- [ ] `cargo test-live` alias works and a CI workflow surfaces live results.
-- [ ] At least one previously-deferred AC (e.g. iter-61l N1 — `--detail --headers` keeps `meta.source = "watcher"`) gets converted to a passing live test in this iteration.
-- [ ] iter-61j/61k/61l ACs that were green remain green; new live failures (if any) are filed as iter-61p/61q candidates.
+- [x] `Firefox::headless_on_random_port()` (or equivalent) returns a usable handle in ≤3 s; `Drop` kills FF cleanly.
+- [x] Mock-server `inject_watcher_resource` snapshot test passes for at least 3 resource types.
+- [x] `cargo test-live` alias works and a CI workflow surfaces live results.
+- [x] At least one previously-deferred AC (e.g. iter-61l N1 — `--detail --headers` keeps `meta.source = "watcher"`) gets converted to a passing live test in this iteration.
+- [x] iter-61j/61k/61l ACs that were green remain green; new live failures (if any) are filed as iter-61p/61q candidates.
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q && cargo test-live` clean.
 
 ## Design notes

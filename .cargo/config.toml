@@ -1,0 +1,5 @@
+[alias]
+# Run the full test suite including live (Firefox-dependent) tests.
+# Requires FF_RDP_LIVE_TESTS=1 at runtime; Firefox must be available.
+# Usage: FF_RDP_LIVE_TESTS=1 cargo test-live
+test-live = "test --workspace -- --include-ignored"
