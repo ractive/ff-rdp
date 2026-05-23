@@ -2,7 +2,7 @@
 title: "Iteration 61l: Dogfood-53 fixes — re-fix the 7 iter-61k items that failed live verification + 2 new regressions; mandate live-verify per AC"
 type: iteration
 date: 2026-05-23
-status: in-progress
+status: completed
 branch: iter-61l/dogfood-53-fixes
 depends_on:
   - iteration-61k-dogfood-52-fixes
