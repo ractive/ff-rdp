@@ -81,6 +81,16 @@ const ARIA_TREE_JS_TEMPLATE: &str = r"(function() {
     if (level !== null) node.level = level;
     if (Object.keys(state).length) node.state = state;
     if (Object.keys(attrs).length) node.attrs = attrs;
+    // Shadow-DOM hints: flag host elements so callers know a shadow tree is
+    // attached. shadowRoot is null for closed roots from content-scope JS,
+    // so we check el.openOrClosedShadowRoot (chrome-privileged) when available,
+    // then fall back to el.shadowRoot (open only).
+    var sr = (typeof el.openOrClosedShadowRoot !== 'undefined')
+      ? el.openOrClosedShadowRoot : el.shadowRoot;
+    if (sr) {
+      node.hasShadowRoot = true;
+      node.shadowMode = sr.mode || 'open';
+    }
     // Resolver expression: re-selects this element by its querySelectorAll index.
     node.__resolver = 'document.querySelectorAll(\'__SELECTOR__\')[' + i + ']';
     results.push(node);
@@ -598,6 +608,25 @@ mod tests {
         assert!(
             ARIA_TREE_JS_TEMPLATE.contains("__SELECTOR__"),
             "template must have selector placeholder"
+        );
+    }
+
+    #[test]
+    fn aria_tree_js_template_includes_shadow_root_hints() {
+        // The template must check for shadow roots and emit hasShadowRoot +
+        // shadowMode so agent callers can detect shadow-DOM hosts without
+        // issuing a second query.
+        assert!(
+            ARIA_TREE_JS_TEMPLATE.contains("hasShadowRoot"),
+            "ARIA-tree template must set hasShadowRoot: {ARIA_TREE_JS_TEMPLATE}"
+        );
+        assert!(
+            ARIA_TREE_JS_TEMPLATE.contains("shadowMode"),
+            "ARIA-tree template must set shadowMode: {ARIA_TREE_JS_TEMPLATE}"
+        );
+        assert!(
+            ARIA_TREE_JS_TEMPLATE.contains("shadowRoot"),
+            "ARIA-tree template must inspect shadowRoot: {ARIA_TREE_JS_TEMPLATE}"
         );
     }
 }

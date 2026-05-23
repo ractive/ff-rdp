@@ -611,3 +611,121 @@ fn network_follow_filter_suppresses_non_matching_requests() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Theme C: watcher source shown in meta when daemon buffer has entries
+// ---------------------------------------------------------------------------
+
+#[test]
+fn network_meta_source_watcher_when_watcher_has_entries() {
+    // Watcher returns events → source should be "watcher" in meta, not "performance-api".
+    let server = network_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["--detail".to_owned(), "network".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    // When watcher has entries, meta.source must be "watcher".
+    assert_eq!(
+        json["meta"]["source"], "watcher",
+        "expected meta.source = watcher when watcher returned entries, got: {}",
+        json["meta"]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Theme D: --detail --headers on performance-api source emits a note per entry
+// ---------------------------------------------------------------------------
+
+#[test]
+fn network_detail_headers_on_perf_fallback_emits_note() {
+    // Watcher returns no events; performance-api fallback returns 2 entries.
+    // When --headers is requested, each entry should carry a note explaining
+    // that headers are unavailable from performance-api.
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on(
+            "unwatchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_network_perf_fallback.json"),
+        );
+
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "--detail".to_owned(),
+        "network".to_owned(),
+        "--headers".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    // Meta must advertise the actual source.
+    assert_eq!(json["meta"]["source"], "performance-api");
+
+    // Every entry must have a note mentioning --headers was ignored.
+    let results = json["results"].as_array().expect("results is array");
+    assert!(
+        !results.is_empty(),
+        "expected at least one result from perf fallback"
+    );
+    for entry in results {
+        let note = entry["note"].as_str().unwrap_or("");
+        assert!(
+            note.contains("--headers ignored"),
+            "expected '--headers ignored' note on performance-api entry, got: {note:?}"
+        );
+        assert!(
+            note.contains("--with-network"),
+            "note should mention --with-network, got: {note:?}"
+        );
+        // Entries must NOT have a headers field (since none were fetched).
+        assert!(
+            entry.get("headers").is_none(),
+            "performance-api entries must not have a headers field"
+        );
+    }
+}

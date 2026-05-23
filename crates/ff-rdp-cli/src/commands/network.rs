@@ -181,6 +181,8 @@ pub fn run(
 
     let mut meta = if used_perf_fallback {
         json!({"source": "performance-api"})
+    } else if !results.is_empty() {
+        json!({"source": "watcher"})
     } else {
         json!({})
     };
@@ -257,7 +259,27 @@ pub fn run(
         // Fetch request+response headers for each entry when --headers is set
         // and the entry came from the watcher (has _resource_id).
         let mut limited = limited;
-        if headers && !used_perf_fallback {
+        if headers && used_perf_fallback {
+            // Performance-api source has no response headers. Emit a note per
+            // entry so callers know why headers are absent; never silently drop.
+            const HEADERS_NOTE: &str = "--headers ignored (performance-api source has no \
+                response headers; use --with-network to engage watcher)";
+            for entry in &mut limited {
+                if let Some(obj) = entry.as_object_mut() {
+                    obj.entry("note".to_string())
+                        .and_modify(|v| {
+                            // Append to existing note rather than overwrite.
+                            if let Some(existing) = v.as_str() {
+                                *v = json!(format!("{existing}; {HEADERS_NOTE}"));
+                            } else {
+                                *v = json!(HEADERS_NOTE);
+                            }
+                        })
+                        .or_insert_with(|| json!(HEADERS_NOTE));
+                    obj.remove("_resource_id");
+                }
+            }
+        } else if headers && !used_perf_fallback {
             for entry in &mut limited {
                 if let Some(rid) = entry.get("_resource_id").and_then(Value::as_u64)
                     && let Some(actor) = actor_by_resource_id.get(&rid)

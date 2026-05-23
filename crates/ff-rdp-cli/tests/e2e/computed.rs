@@ -50,10 +50,15 @@ fn computed_single_match_returns_object() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
 
     assert_eq!(json["total"], 1);
-    assert_eq!(json["results"]["selector"], "h1");
-    assert_eq!(json["results"]["index"], 0);
-    assert_eq!(json["results"]["computed"]["color"], "rgb(10, 20, 30)");
-    assert_eq!(json["results"]["computed"]["font-size"], "32px");
+    // Theme E: always an array of {selector, index, computed} records.
+    let arr = json["results"]
+        .as_array()
+        .expect("results is always an array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["selector"], "h1");
+    assert_eq!(arr[0]["index"], 0);
+    assert_eq!(arr[0]["computed"]["color"], "rgb(10, 20, 30)");
+    assert_eq!(arr[0]["computed"]["font-size"], "32px");
 }
 
 #[test]
@@ -117,8 +122,13 @@ fn computed_prop_mode_single_returns_scalar() {
     );
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Theme E: single-prop single-match now returns array-of-records shape.
     assert_eq!(json["total"], 1);
-    assert_eq!(json["results"], "rgb(10, 20, 30)");
+    let arr = json["results"].as_array().expect("results is array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["selector"], "h1");
+    assert_eq!(arr[0]["index"], 0);
+    assert_eq!(arr[0]["computed"]["color"], "rgb(10, 20, 30)");
 }
 
 #[test]
@@ -159,7 +169,8 @@ fn computed_with_jq_filter() {
         "computed".to_owned(),
         "h1".to_owned(),
         "--jq".to_owned(),
-        ".results.computed.color".to_owned(),
+        // Theme E: results is always an array; index into [0].
+        ".results[0].computed.color".to_owned(),
     ]);
 
     let output = std::process::Command::new(ff_rdp_bin())

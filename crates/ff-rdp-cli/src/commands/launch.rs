@@ -189,6 +189,8 @@ user_pref("devtools.chrome.enabled", true);
 // error descriptions, and DevTools messages that agents cannot reliably parse.
 user_pref("intl.accept_languages", "en-US, en");
 user_pref("intl.locale.requested", "en-US");
+// Prevent Firefox from overriding the above locale pin with the OS locale.
+user_pref("intl.locale.matchOS", false);
 "#;
 
 /// Build a `Command` ready to spawn Firefox, and return the effective profile

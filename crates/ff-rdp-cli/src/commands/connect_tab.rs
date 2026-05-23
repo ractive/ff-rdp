@@ -203,4 +203,27 @@ impl ConnectedTab {
     pub fn target_tab_actor(&self) -> &ActorId {
         &self.tab_actor
     }
+
+    /// Re-resolve the target actors (consoleActor, etc.) from Firefox.
+    ///
+    /// After a navigation the docshell is torn down and replaced.  The old
+    /// `consoleActor` ID becomes stale — any `evaluateJSAsync` sent to it
+    /// returns `noSuchActor`.  Calling this refreshes `self.target` so the
+    /// next `eval` uses the actor bound to the new docshell.
+    ///
+    /// Errors are intentionally swallowed: a failed refresh is non-fatal
+    /// since the caller will get a `noSuchActor` error on the next eval
+    /// (same failure mode as before) and the retry with a fresh target will
+    /// succeed.
+    pub fn refresh_target(&mut self) {
+        let tab_actor = self.tab_actor.clone();
+        match TabActor::get_target(self.connection.transport_mut(), &tab_actor) {
+            Ok(fresh) => {
+                self.target = fresh;
+            }
+            Err(e) => {
+                eprintln!("warning: navigate: could not refresh target actors: {e:#}");
+            }
+        }
+    }
 }

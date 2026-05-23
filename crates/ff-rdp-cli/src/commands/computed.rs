@@ -21,16 +21,16 @@ use super::js_helpers::{JSON_SENTINEL, escape_selector, eval_or_bail};
 
 /// Build the JavaScript that collects computed styles for every matching element.
 ///
-/// When `props` is non-empty, returns a JSON array `[{selector, index, value}, ...]`
-/// (single prop) or `[{selector, index, computed: {prop1: val1, …}}, ...]` (multi-prop).
-/// When `props` is empty, returns a JSON array `[{selector, index, computed: {...}}, ...]`
-/// where `computed` is the full (or filtered) resolved-style object.
+/// Always returns a JSON array `[{selector, index, computed: {...}}, ...]` regardless
+/// of how many `props` are requested (zero, one, or many). When `props` is non-empty,
+/// `computed` contains only the requested properties. When `props` is empty, `computed`
+/// is the full (or filtered) resolved-style object.
 ///
 /// CSS custom properties (`--bg-color`, etc.) are supported via `getPropertyValue`,
 /// which is the standard API for custom properties (bracket notation does not work
 /// for them in `CSSStyleDeclaration`).
 ///
-/// `include_all` selects the object payload:
+/// `include_all` selects the object payload when `props` is empty:
 /// - `false`: only properties whose computed value differs from the element's
 ///   default (filtering happens page-side to keep the output readable —
 ///   practical tests routinely return 300+ properties per element).
@@ -39,24 +39,7 @@ fn build_js(selector: &str, props: &[String], include_all: bool) -> String {
     let escaped_sel = escape_selector(selector);
 
     if !props.is_empty() {
-        if props.len() == 1 {
-            // Single property: existing shape {selector, index, value}.
-            let escaped_prop = escape_selector(&props[0]);
-            return format!(
-                r"(function() {{
-  var els = document.querySelectorAll('{escaped_sel}');
-  var out = [];
-  for (var i = 0; i < els.length; i++) {{
-    var cs = getComputedStyle(els[i]);
-    out.push({{selector: '{escaped_sel}', index: i, value: cs.getPropertyValue('{escaped_prop}').trim() || cs['{escaped_prop}'] || ''}});
-  }}
-  return '{JSON_SENTINEL}' + JSON.stringify(out);
-}})()"
-            );
-        }
-
-        // Multiple properties: emit {selector, index, computed: {p1: v1, p2: v2, …}}.
-        // Build a JS array literal of property names and use getPropertyValue for each.
+        // One or more explicit props: always `{selector, index, computed: {p: v, …}}`.
         let props_json = serde_json::to_string(props).unwrap_or_else(|_| "[]".to_owned());
         return format!(
             r"(function() {{
@@ -182,36 +165,11 @@ pub fn run(cli: &Cli, selector: &str, props: &[String], include_all: bool) -> Re
         )));
     }
 
-    // --prop mode: single string per entry (single prop) or {computed: {…}}
-    // per entry (multi-prop).  For a single match with a single prop we
-    // collapse to a scalar string for the most common case
-    // (`ff-rdp computed h1 --prop color` → "rgb(0,0,0)").
-    // Multi-match always returns an array.
+    // Always return an array of `{selector, index, computed: {…}}` records,
+    // regardless of --prop count (zero, one, or many). This uniform shape
+    // means callers never need to special-case single-prop or single-match.
     let total = entries.len();
-
-    let results = if !expanded_props.is_empty() {
-        if expanded_props.len() == 1 {
-            // Single prop: legacy scalar / array shape.
-            if entries.len() == 1 {
-                entries
-                    .into_iter()
-                    .next()
-                    .and_then(|mut e| e.as_object_mut().and_then(|o| o.remove("value")))
-                    .unwrap_or(Value::Null)
-            } else {
-                Value::Array(entries)
-            }
-        } else {
-            // Multi-prop: always an array with {selector, index, computed: {…}}.
-            Value::Array(entries)
-        }
-    } else if entries.len() == 1 {
-        // Single match → unwrap to {selector, index, computed} so the common
-        // case does not need `.results[0]` indexing.
-        entries.into_iter().next().unwrap_or(Value::Null)
-    } else {
-        Value::Array(entries)
-    };
+    let results = Value::Array(entries);
     let mut meta = json!({
         "selector": selector,
     });
@@ -241,8 +199,43 @@ mod tests {
     #[test]
     fn build_js_prop_mode_references_property() {
         let js = build_js("h1", &props(&["color"]), false);
-        assert!(js.contains("getPropertyValue('color')"));
+        // Single prop now uses the same props-array path as multi-prop.
+        assert!(js.contains("getPropertyValue(p)"));
+        assert!(js.contains(r#"["color"]"#));
         assert!(js.contains("querySelectorAll('h1')"));
+    }
+
+    /// Zero props: output shape is always `[{selector, index, computed:{…}}]`.
+    #[test]
+    fn build_js_zero_props_returns_computed_object() {
+        let js = build_js("h1", &[], false);
+        assert!(js.contains("computed: obj"), "expected 'computed: obj' key");
+        // Zero-props path uses a `sel` JS variable rather than inlining the literal.
+        assert!(
+            js.contains("var sel = 'h1'"),
+            "expected selector assigned to sel variable"
+        );
+        assert!(
+            js.contains("querySelectorAll(sel)"),
+            "expected querySelectorAll using sel variable"
+        );
+    }
+
+    /// Single prop: output shape is `[{selector, index, computed:{prop: val}}]`.
+    #[test]
+    fn build_js_single_prop_uses_computed_key() {
+        let js = build_js("h1", &props(&["color"]), false);
+        // Must use props array path with `computed` key (not legacy `value`).
+        assert!(js.contains("computed[p]"), "expected 'computed[p]' key");
+        assert!(!js.contains("value:"), "must not use legacy 'value' key");
+    }
+
+    /// Multi prop: output shape is `[{selector, index, computed:{…}}]`.
+    #[test]
+    fn build_js_multi_prop_uses_computed_key() {
+        let js = build_js("h1", &props(&["color", "font-size"]), false);
+        assert!(js.contains("computed[p]"), "expected 'computed[p]' key");
+        assert!(js.contains(r#"["color","font-size"]"#));
     }
 
     #[test]
@@ -278,8 +271,9 @@ mod tests {
     #[test]
     fn build_js_custom_property_single_prop() {
         let js = build_js("div", &props(&["--bg-color"]), false);
-        // Custom properties must use getPropertyValue (not bracket notation).
-        assert!(js.contains("getPropertyValue('--bg-color')"));
+        // Custom properties use the props-array path with getPropertyValue(p).
+        assert!(js.contains(r#"["--bg-color"]"#));
+        assert!(js.contains("getPropertyValue(p)"));
     }
 
     #[test]
