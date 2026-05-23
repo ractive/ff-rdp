@@ -28,6 +28,8 @@ pub mod request {
     #[derive(Debug, Clone, Serialize)]
     #[serde(rename_all = "camelCase")]
     pub struct CaptureArgs {
+        /// Firefox expects the wire key `browsingContextID` (uppercase ID).
+        #[serde(rename = "browsingContextID")]
         pub browsing_context_id: u64,
         pub fullpage: bool,
         pub dpr: f64,
@@ -103,7 +105,7 @@ mod tests {
             },
         };
         let v = serde_json::to_value(&args).unwrap();
-        assert_eq!(v["args"]["browsingContextId"], 42);
+        assert_eq!(v["args"]["browsingContextID"], 42);
         assert_eq!(v["args"]["fullpage"], false);
         assert_eq!(v["args"]["dpr"], 1.0);
         assert!(v["args"].get("rect").is_none());

@@ -124,7 +124,7 @@ mod tests {
         let t = std::thread::spawn(move || {
             let req = server_read(&server);
             assert_eq!(req["type"], "capture");
-            assert_eq!(req["args"]["browsingContextId"], 42);
+            assert_eq!(req["args"]["browsingContextID"], 42);
             assert_eq!(req["args"]["fullpage"], false);
             server_reply(
                 &server,

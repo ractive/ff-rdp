@@ -49,9 +49,9 @@ pub mod response {
         #[serde(default)]
         pub screenshot_actor: Option<ActorId>,
         #[serde(default)]
-        pub preference_actor: Option<String>,
+        pub preference_actor: Option<ActorId>,
         #[serde(default)]
-        pub device_actor: Option<String>,
+        pub device_actor: Option<ActorId>,
     }
 
     /// A process descriptor entry from `listProcesses`.
@@ -150,7 +150,10 @@ mod tests {
             Some("server1.conn0.screenshotActor7")
         );
         assert_eq!(
-            reply.preference_actor.as_deref(),
+            reply
+                .preference_actor
+                .as_ref()
+                .map(std::convert::AsRef::as_ref),
             Some("server1.conn0.preferenceActor1")
         );
     }
