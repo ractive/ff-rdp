@@ -70,6 +70,26 @@ Refactor every command into a `Command` shape that owns its multi-actor sequence
 - [ ] `screenshot.rs` is < 200 lines (per strategy); no embedded JS `format!` blocks remain.
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test-live && cargo test --workspace -q` clean.
 
+## Carry-over from iter-61q
+
+PR #82 landed only themes **A (bus)** and **B (typed `Resource` enum, sans
+`From<Value>` impls)**. Themes **C (daemon buffer rewrite)** and **D (commands
+migrated)** slipped. 61r therefore needs to plan for:
+
+- The bus exists but no command is wired to it yet. Migrating `eval` /
+  `navigate` to the bus in this iteration also implies doing the equivalent
+  of 61q-D for those commands (subscribe / receive / unsubscribe end-to-end).
+- `ResourceType` currently covers network/console/error/document/css/thread.
+  `eval`'s `evaluationResult` is **not** a `ResourceType` in 61q. Theme C here
+  must either (a) add `ResourceType::EvaluationResult` + `Resource::EvaluationResult`
+  to the bus, or (b) correlate via a side channel — (a) is cheaper and matches
+  the watcher semantics.
+- `Resource::DocumentEvent(Value)` is raw JSON today. Theme D should add a
+  typed `DocumentEvent { kind, url, is_error_page, .. }` payload so navigate
+  doesn't reach back into `serde_json::Value` matching.
+- Daemon buffer (61q-C) is still deferred. 61r commands run in one-shot mode;
+  if any AC depends on buffered events across processes, defer it.
+
 ## Design notes
 
 - **Screenshot order matters.** The root-scoped `Screenshot` actor MUST be resolved via `client.mainRoot.getFront("screenshot")` per the wiki. Resolving it via the target's form will give you the content-process actor by mistake (this is almost certainly what iter-61j/61k did).

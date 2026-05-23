@@ -2,11 +2,18 @@
 title: "Iteration 61q: ResourceCommand-style watcher bus + full WatcherActor engagement"
 type: iteration
 date: 2026-05-23
-status: planned
+status: in-progress
 branch: iter-61q/resource-command-bus
 depends_on:
   - iteration-61p-actor-registry-and-front-lifecycle
-tags: [iteration, watcher, resources, bus, network, console, stability-roadmap]
+tags:
+  - iteration
+  - watcher
+  - resources
+  - bus
+  - network
+  - console
+  - stability-roadmap
 ---
 
 # Iteration 61q: ResourceCommand-style watcher bus
@@ -25,12 +32,12 @@ Closes `--with-network` for good: `network` (no flags), `network --detail --head
 ## Tasks
 
 ### A. ResourceCommand
-- [ ] `ff-rdp-core/src/resources/command.rs`: `pub struct ResourceCommand { watcher: WatcherFront, subscriptions: ... }` with `subscribe`/`unsubscribe`.
-- [ ] Internally reconciles: many subscribers asking for `NetworkEvent` produce exactly one `watchResources(["networkEvent"])` request. Reference-counted; last unsubscribe sends `unwatchResources`.
-- [ ] Throttling: events come in batched (`[[type, [r1, r2]], ...]`) — the bus unpacks once and fans out per-resource to subscribers.
+- [x] `ff-rdp-core/src/resources/command.rs`: `pub struct ResourceCommand { watcher: WatcherFront, subscriptions: ... }` with `subscribe`/`unsubscribe`.
+- [x] Internally reconciles: many subscribers asking for `NetworkEvent` produce exactly one `watchResources(["networkEvent"])` request. Reference-counted; last unsubscribe sends `unwatchResources`.
+- [x] Throttling: events come in batched (`[[type, [r1, r2]], ...]`) — the bus unpacks once and fans out per-resource to subscribers.
 
 ### B. Typed Resource enum
-- [ ] One variant per resource type listed in [[resources/README]]. Each variant carries a typed payload (e.g. `NetworkEvent { request: HttpRequest, response: HttpResponse, ... }`).
+- [x] One variant per resource type listed in [[resources/README]]. Each variant carries a typed payload (e.g. `NetworkEvent { request: HttpRequest, response: HttpResponse, ... }`).
 - [ ] `From<serde_json::Value>` impls per variant; mock-server uses these for `inject_watcher_resource`.
 
 ### C. Daemon buffer on the bus
@@ -43,16 +50,22 @@ Closes `--with-network` for good: `network` (no flags), `network --detail --head
 - [ ] `console`: same shape — reads from the bus, default tail behaves like `tail -f`, `--since` honored.
 - [ ] `storage`: reads from the bus for the resource types the watcher delivers; performance-API has no storage data anyway.
 
-## Acceptance Criteria [0/8]
+## Acceptance Criteria [2/8]
+
+> Scope landed in PR #82 = themes A & B (bus foundation + typed `Resource` enum).
+> Themes C (daemon buffer rewrite) and D (commands migrated) are deferred to a
+> follow-up iteration. Live ACs 1–4 / eviction / no-daemon-regression remain
+> unchecked because they require those follow-up themes; only the in-process
+> bus unit test (`resource_command_bus_test.rs`) and the gates AC landed here.
 
 - [ ] `live_network_default_watcher`: `ff-rdp navigate <url> --with-network` then `ff-rdp network` returns `source: watcher` with populated `status`, `method`, `transfer_size`. (Re-greens iter-61l C.)
 - [ ] `live_network_detail_headers`: `ff-rdp network --detail --headers` after `--with-network` returns real response headers per entry, `meta.source` stays `watcher`. (Closes iter-61l N1 regression.)
 - [ ] `live_resource_dedupe`: two CLI invocations subscribing to `network-event` simultaneously result in exactly one `watchResources` call on the wire (assert via iter-61m's tracing).
 - [ ] `live_console_tail`: `ff-rdp console --follow` streams new messages as they arrive; closing the consumer correctly unsubscribes.
-- [ ] Mock-server-driven unit test: bus correctly dedupes subscribers, fans out events, and unsubscribes on last drop.
+- [x] Mock-server-driven unit test: bus correctly dedupes subscribers, fans out events, and unsubscribes on last drop.
 - [ ] Eviction respects configured cap; old events are evicted in arrival order.
 - [ ] No regression in iter-61n's daemon ACs.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test-live && cargo test --workspace -q` clean.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test-live && cargo test --workspace -q` clean.
 
 ## Design notes
 
