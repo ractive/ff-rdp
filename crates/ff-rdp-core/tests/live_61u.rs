@@ -43,11 +43,13 @@ fn live_unwatch_targets_does_not_hang() {
     drop(conn);
 }
 
-/// Verify that headers with large values (longString actors) deserialize correctly.
-///
-/// AC: live_network_set_cookie_longstring — page sets a 50 KB Set-Cookie; the
-/// header value deserializes as a LongString::Actor (not a panic/decode error),
-/// and `fetch_full` returns the complete value.
+/// Smoke test that the network-event resource pipeline survives a real
+/// navigation against an external endpoint.  This is the carry-over skeleton
+/// for AC `live_network_set_cookie_longstring`; the full LongString
+/// fetch-back assertion (50 KB Set-Cookie deserializes as `LongString::Actor`
+/// and `fetch_full` returns the complete value) is still TODO and will land
+/// in a follow-up iteration alongside a fixture that produces a true
+/// longString response.
 ///
 /// This test requires `FF_RDP_LIVE_NETWORK_TESTS=1` and an internet connection.
 #[test]
@@ -90,6 +92,13 @@ fn live_network_set_cookie_longstring() {
     )
     .unwrap();
 
+    // Use a short socket read timeout so the deadline check below is honored.
+    // The connection-level timeout (10s) would otherwise let recv() block
+    // past our intended 5s deadline.
+    let _ = conn
+        .transport_mut()
+        .set_read_timeout(Some(Duration::from_millis(100)));
+
     // Drain events for up to 5 seconds — at least one network-event must arrive.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let mut got_network_event = false;
@@ -116,10 +125,11 @@ fn live_network_set_cookie_longstring() {
 }
 
 /// Verify that `getTargetConfigurationActor` returns an actor reference and
-/// that `set_cache_disabled` sends `updateConfiguration` correctly.
-///
-/// AC: live_cache_disable_via_target_config — after `set_cache_disabled(true)`,
-/// a request to a Cache-Control: max-age=3600 resource returns a non-304 response.
+/// that `set_cache_disabled(true/false)` round-trips the `updateConfiguration`
+/// protocol call without error.  The full end-to-end cache-bypass assertion
+/// (request a `Cache-Control: max-age=3600` resource, observe a non-304 fresh
+/// response after disabling) is still TODO and will land in a follow-up
+/// iteration that wires in a stable cacheable fixture URL.
 #[test]
 #[ignore = "requires live Firefox — FF_RDP_LIVE_TESTS=1"]
 fn live_cache_disable_via_target_config() {

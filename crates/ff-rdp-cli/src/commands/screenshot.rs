@@ -424,30 +424,8 @@ mod tests {
         assert!(!is_actor_module_load_failure(&err));
     }
 
-    /// Live test: DPR=2 full-page screenshot dimensions.
-    /// AC: `live_screenshot_full_page_dpr2` — PNG height ≥ scrollHeight × DPR.
-    ///
-    /// Requires a live headless Firefox and `FF_RDP_LIVE_TESTS=1`.
-    #[test]
-    #[ignore = "requires live Firefox — FF_RDP_LIVE_TESTS=1"]
-    fn live_screenshot_full_page_dpr2() {
-        if std::env::var("FF_RDP_LIVE_TESTS").as_deref() != Ok("1") {
-            return;
-        }
-        // This test exercises the SnapshotActor path (the only path after
-        // Theme B removed the chrome-scope fallback).  DPR=2 is simulated by
-        // the `window_dpr` value returned from prepareCapture when Firefox is
-        // launched with `--pixel-ratio 2`.
-        //
-        // Full assertion shape: png_height >= scroll_height * dpr.
-        // Implementation in crates/ff-rdp-cli/tests/live_61v_screenshot.rs.
-        let dpr: f64 = 2.0;
-        let scroll_height: f64 = 5000.0;
-        // Placeholder: in the full live test, png_height comes from the actual PNG.
-        let png_height: f64 = scroll_height * dpr;
-        assert!(
-            png_height >= scroll_height * dpr,
-            "PNG height {png_height} must be ≥ scrollHeight {scroll_height} × DPR {dpr}"
-        );
-    }
+    // NOTE: `live_screenshot_full_page_dpr2` is not implemented in this
+    // iteration — its AC remains unchecked in the iteration plan.  Adding a
+    // stub here would falsely advertise coverage in CI, so the test will land
+    // alongside the real DPR=2 live harness (separate iteration).
 }

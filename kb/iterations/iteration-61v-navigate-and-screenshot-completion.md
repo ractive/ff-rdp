@@ -41,7 +41,7 @@ These are the user-visible behavioral fixes the stability roadmap promised but d
 - [x] Delete `commands/screenshot.rs:24-66` (`SCREENSHOT_JS_PROGRAM` constant) and lines 696-733 (chrome-context JS fallback strategy).
 - [x] Remove any `EvalStrategy::ChromeJs`/`EvalStrategy::ContentJs` variants from the screenshot strategy enum; the only strategies left are `SnapshotActor` and `SnapshotActorFullPage`.
 - [x] File should drop to < 500 LOC. Refactor any remaining helpers shared with eval into `core/src/screenshot/`.
-- [x] Add `tests/live_screenshot_full_page_dpr2.rs`: launch headless FF, set window.devicePixelRatio = 2 via `--remote-debugging-port` prefs, navigate to a 5000px-tall page, run `screenshot --full-page --output /tmp/x.png`, assert `width = viewport*2` and `height ≥ 5000*2`.
+- [ ] Add `tests/live_screenshot_full_page_dpr2.rs`: launch headless FF, set window.devicePixelRatio = 2 via `--remote-debugging-port` prefs, navigate to a 5000px-tall page, run `screenshot --full-page --output /tmp/x.png`, assert `width = viewport*2` and `height ≥ 5000*2`. _(Not landed — a stub was removed in PR review; deferred to a follow-up iteration.)_
 
 ### C. Bus throttle = 0
 - [x] In `core/src/resources/command.rs`, change the throttle constant from 100ms to 0 (or delete the timer field).
@@ -50,9 +50,9 @@ These are the user-visible behavioral fixes the stability roadmap promised but d
 - [x] Bench micro-test: `bench_bus_dispatch_latency` — single event in, subscriber wake-up < 1ms.
 
 ### D. Carryover from iter-61u (skeleton live tests)
-- [x] Flesh out `crates/ff-rdp-core/tests/live_61u.rs::live_network_set_cookie_longstring`: load a page that sets `Set-Cookie` > 10 000 chars, capture the network event, assert the deserialized header value is the full string (longstring auto-fetched), not an actor reference.
-- [x] Flesh out `crates/ff-rdp-core/tests/live_61u.rs::live_cache_disable_via_target_config`: navigate to a `Cache-Control: max-age=3600` resource, call `TargetConfigurationFront::set_cache_disabled(true)`, navigate again, assert the second response is a fresh fetch (not 304/disk cache).
-- [x] Once both pass, update `kb/iterations/iteration-61u-spec-and-front-correctness.md` AC header from `[6/8]` to `[8/8]` and tick the two ACs.
+- [ ] Flesh out `crates/ff-rdp-core/tests/live_61u.rs::live_network_set_cookie_longstring`: load a page that sets `Set-Cookie` > 10 000 chars, capture the network event, assert the deserialized header value is the full string (longstring auto-fetched), not an actor reference. _(Only a smoke skeleton landed — verifies the network-event pipeline survives a navigation but does not assert LongString fetch-back. PR review surfaced the gap and the docstring was corrected.)_
+- [ ] Flesh out `crates/ff-rdp-core/tests/live_61u.rs::live_cache_disable_via_target_config`: navigate to a `Cache-Control: max-age=3600` resource, call `TargetConfigurationFront::set_cache_disabled(true)`, navigate again, assert the second response is a fresh fetch (not 304/disk cache). _(Only the protocol round-trip is asserted — no navigation or cache-bypass check. Docstring updated to reflect the actual coverage.)_
+- [ ] Once both pass, update `kb/iterations/iteration-61u-spec-and-front-correctness.md` AC header from `[6/8]` to `[8/8]` and tick the two ACs. _(Blocked on the two items above.)_
 
 ## Acceptance Criteria [3/8]
 

@@ -171,6 +171,13 @@ fn wait_for_doc_complete(
                             commit_url = Some(url);
                         }
                         "dom-complete" => {
+                            // Ignore pre-existing/stale dom-complete events that
+                            // are not tied to *this* navigate call.  The watcher
+                            // emits both existing and new resources, so an early
+                            // dom-complete may arrive before our dom-loading.
+                            if commit_url.is_none() {
+                                continue;
+                            }
                             let elapsed_ms =
                                 u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                             return Ok(CommitInfo {
