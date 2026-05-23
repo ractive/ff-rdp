@@ -2,7 +2,7 @@
 title: "Iteration 61k: Dogfood-52 fixes — full-page screenshot, locale pin, network watcher path, computed shape, navigate neterror, CSP-safe eval, shadow DOM, --fields on tabs"
 type: iteration
 date: 2026-05-23
-status: in_review
+status: completed
 branch: iter-61k/dogfood-52-fixes
 depends_on:
   - iteration-61j-dogfood-51-fixes
