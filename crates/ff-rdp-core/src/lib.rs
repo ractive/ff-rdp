@@ -5,6 +5,7 @@ pub mod error;
 pub mod fronts;
 pub mod registry;
 pub mod resources;
+pub mod specs;
 pub mod transport;
 pub mod types;
 
