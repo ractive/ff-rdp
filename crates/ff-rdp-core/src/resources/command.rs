@@ -211,7 +211,7 @@ impl ResourceCommand {
         let mut dead: Vec<SubscriptionId> = Vec::new();
         for resource in resources {
             let type_name = resource.type_name();
-            let rt = ResourceType::from_wire_str(type_name);
+            let rt = ResourceType::from_wire_str(&type_name);
             for sub in &self.subscribers {
                 let wants = rt.is_some_and(|t| sub.types.contains(&t));
                 if wants && sub.tx.send(resource.clone()).is_err() {

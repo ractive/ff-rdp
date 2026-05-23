@@ -1,8 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use ff_rdp_core::{
-    ConsoleResource, NetworkResource, NetworkResourceUpdate, Resource, SubscriptionId,
-};
+use ff_rdp_core::{ConsoleResource, NetworkResource, NetworkResourceUpdate, Resource};
 use serde_json::{Value, json};
 
 const MAX_EVENTS: usize = 50_000;
@@ -13,36 +11,38 @@ const MAX_BOUNDARIES: usize = 1_000;
 pub(crate) struct NavBoundary {
     pub sequence: u64,
     pub url: String,
-    /// Insertion index of the first store entry belonging to this navigation.
-    pub store_start: usize,
+    /// Insertion sequence number of the first store entry belonging to this
+    /// navigation.  Entries with `seq >= store_start` belong to this epoch.
+    pub store_start: u64,
 }
 
 struct Entry {
     resource_type: String,
     resource_id: Option<String>,
     data: Value,
+    /// Monotonically-increasing insertion sequence number.
+    ///
+    /// Compared against [`NavBoundary::store_start`] to determine whether an
+    /// entry belongs to a particular navigation epoch without being confused by
+    /// Destroyed-pruning removing entries from the middle of the queue.
+    seq: u64,
 }
 
 /// Single-queue resource buffer populated from the `ResourceCommand` bus.
 pub(crate) struct ResourceBuffer {
-    #[allow(dead_code)]
-    subscription: SubscriptionId,
     store: VecDeque<Entry>,
     boundaries: Vec<NavBoundary>,
     next_nav_sequence: u64,
-    total_inserted: usize,
-    total_evicted: usize,
+    total_inserted: u64,
 }
 
 impl ResourceBuffer {
-    pub(crate) fn new(subscription: SubscriptionId) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            subscription,
             store: VecDeque::new(),
             boundaries: Vec::new(),
             next_nav_sequence: 0,
             total_inserted: 0,
-            total_evicted: 0,
         }
     }
 
@@ -53,12 +53,14 @@ impl ResourceBuffer {
                 resource_type,
                 resource_id,
             } => {
-                if let Some(pos) = self.store.iter().position(|e| {
-                    &e.resource_type == resource_type
-                        && e.resource_id.as_deref() == Some(resource_id.as_str())
-                }) {
-                    self.store.remove(pos);
-                }
+                // Retain all entries that do NOT match (resource_type, resource_id).
+                // A single resource_id may have multiple buffered entries (e.g.
+                // an initial network-event + subsequent network-event updates),
+                // so we remove ALL of them to avoid stale data.
+                self.store.retain(|e| {
+                    !(e.resource_type == *resource_type
+                        && e.resource_id.as_deref() == Some(resource_id.as_str()))
+                });
             }
             Resource::NetworkEvent(n) => self.push(
                 "network-event",
@@ -85,14 +87,15 @@ impl ResourceBuffer {
     fn push(&mut self, resource_type: &str, resource_id: Option<String>, data: Value) {
         if self.store.len() >= MAX_EVENTS {
             self.store.pop_front();
-            self.total_evicted = self.total_evicted.saturating_add(1);
         }
+        let seq = self.total_inserted;
+        self.total_inserted = self.total_inserted.saturating_add(1);
         self.store.push_back(Entry {
             resource_type: resource_type.to_owned(),
             resource_id,
             data,
+            seq,
         });
-        self.total_inserted = self.total_inserted.saturating_add(1);
     }
 
     /// Insert a raw JSON value (for `store-events` IPC back-compat).
@@ -111,6 +114,9 @@ impl ResourceBuffer {
         if self.boundaries.len() >= MAX_BOUNDARIES {
             self.boundaries.remove(0);
         }
+        // `store_start` is the insertion sequence number of the *next* entry
+        // to be pushed.  Entries with `seq >= store_start` belong to this
+        // navigation epoch or later.
         self.boundaries.push(NavBoundary {
             sequence,
             url,
@@ -120,20 +126,24 @@ impl ResourceBuffer {
     }
 
     /// Drain entries for `resource_type`, optionally filtered by nav boundary.
+    ///
+    /// When `since_nav_index != 0`, only entries whose insertion sequence number
+    /// (`seq`) is >= the boundary's `store_start` are included.  Because `seq`
+    /// is assigned at push-time and is never affected by Destroyed-pruning or
+    /// prior drains, the comparison is always correct regardless of how many
+    /// entries have been removed in the interim.
     pub(crate) fn drain_since(
         &mut self,
         resource_type: &str,
         since_nav_index: i64,
     ) -> (Vec<Value>, Option<NavBoundary>) {
         let boundary = resolve_boundary(&self.boundaries, since_nav_index);
-        let skip = boundary
-            .as_ref()
-            .map_or(0, |b| b.store_start.saturating_sub(self.total_evicted));
+        let min_seq: u64 = boundary.as_ref().map_or(0, |b| b.store_start);
 
         let mut results = Vec::new();
         let mut remaining = VecDeque::new();
-        for (pos, entry) in self.store.drain(..).enumerate() {
-            if entry.resource_type == resource_type && pos >= skip {
+        for entry in self.store.drain(..) {
+            if entry.resource_type == resource_type && entry.seq >= min_seq {
                 results.push(entry.data);
             } else {
                 remaining.push_back(entry);
@@ -227,11 +237,6 @@ mod tests {
     use super::*;
     use ff_rdp_core::ActorId;
 
-    fn sub() -> SubscriptionId {
-        // SAFETY: SubscriptionId is a newtype over u64; same size and alignment.
-        unsafe { std::mem::transmute(1_u64) }
-    }
-
     fn net(id: u64, url: &str) -> Resource {
         Resource::NetworkEvent(NetworkResource {
             actor: ActorId::from("conn0/n1"),
@@ -247,7 +252,7 @@ mod tests {
 
     #[test]
     fn append_and_drain() {
-        let mut buf = ResourceBuffer::new(sub());
+        let mut buf = ResourceBuffer::new();
         buf.on_resource(&net(1, "https://a.com"));
         buf.on_resource(&net(2, "https://b.com"));
         let events = buf.drain("network-event");
@@ -258,22 +263,33 @@ mod tests {
     }
 
     #[test]
-    fn destroyed_prunes_store() {
-        let mut buf = ResourceBuffer::new(sub());
+    fn destroyed_prunes_all_matching_entries() {
+        // Two entries with the same resource_id (initial + update); both must
+        // be removed by a single Destroyed event.
+        let mut buf = ResourceBuffer::new();
         buf.on_resource(&net(1, "https://a.com"));
+        // Push a second entry with the same resource_id via insert_raw.
+        buf.insert_raw(
+            "network-event",
+            json!({"resourceId": "1", "url": "https://a.com/update"}),
+        );
         buf.on_resource(&net(2, "https://b.com"));
         buf.on_resource(&Resource::Destroyed {
             resource_type: "network-event".into(),
             resource_id: "1".into(),
         });
         let events = buf.drain("network-event");
-        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events.len(),
+            1,
+            "both entries for resource_id=1 must be removed"
+        );
         assert_eq!(events[0]["url"], "https://b.com");
     }
 
     #[test]
     fn drain_since_filters_by_nav_boundary() {
-        let mut buf = ResourceBuffer::new(sub());
+        let mut buf = ResourceBuffer::new();
         buf.on_resource(&net(1, "https://before.com"));
         buf.record_nav_boundary("https://after.com".into());
         buf.on_resource(&net(2, "https://after.com/page"));
@@ -285,7 +301,7 @@ mod tests {
 
     #[test]
     fn drain_since_zero_returns_all() {
-        let mut buf = ResourceBuffer::new(sub());
+        let mut buf = ResourceBuffer::new();
         buf.on_resource(&net(1, "https://a.com"));
         buf.record_nav_boundary("https://b.com".into());
         buf.on_resource(&net(2, "https://b.com/page"));
@@ -295,8 +311,34 @@ mod tests {
     }
 
     #[test]
+    fn drain_since_correct_after_destroyed_removals() {
+        // Insert 3 events, destroy the first, then drain_since the boundary
+        // that was recorded after the first insert.  Only the post-boundary
+        // surviving entry (id=3) should be returned.
+        let mut buf = ResourceBuffer::new();
+        buf.on_resource(&net(1, "https://before.com"));
+        buf.record_nav_boundary("https://nav.com".into());
+        buf.on_resource(&net(2, "https://nav.com/a"));
+        buf.on_resource(&net(3, "https://nav.com/b"));
+        // Destroy id=2: this shifts VecDeque positions but must not affect
+        // the seq-based boundary calculation.
+        buf.on_resource(&Resource::Destroyed {
+            resource_type: "network-event".into(),
+            resource_id: "2".into(),
+        });
+        let (events, boundary) = buf.drain_since("network-event", -1);
+        assert!(boundary.is_some());
+        assert_eq!(
+            events.len(),
+            1,
+            "only post-boundary surviving entry expected"
+        );
+        assert_eq!(events[0]["url"], "https://nav.com/b");
+    }
+
+    #[test]
     fn insert_raw_back_compat() {
-        let mut buf = ResourceBuffer::new(sub());
+        let mut buf = ResourceBuffer::new();
         buf.insert_raw(
             "network-event",
             json!({"resourceId": 99, "url": "https://x.com"}),

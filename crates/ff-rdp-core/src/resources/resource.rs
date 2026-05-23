@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use serde_json::Value;
 
 use crate::actors::watcher::{ConsoleResource, NetworkResource, NetworkResourceUpdate};
@@ -42,13 +44,19 @@ pub enum Resource {
 
 impl Resource {
     /// Return the wire-format type name for this resource.
-    pub fn type_name(&self) -> &str {
+    ///
+    /// Returns a `Cow<'static, str>` so that all fixed variants can return a
+    /// `'static` borrow while `Destroyed` (whose type name is stored as a
+    /// heap-allocated `String`) can return an `Owned` variant without
+    /// changing the observable type.  Callers that only need `&str` can call
+    /// `.as_ref()` or rely on `Deref`.
+    pub fn type_name(&self) -> Cow<'static, str> {
         match self {
-            Self::NetworkEvent(_) | Self::NetworkUpdate(_) => "network-event",
-            Self::ConsoleMessage(_) => "console-message",
-            Self::ErrorMessage(_) => "error-message",
-            Self::DocumentEvent(_) => "document-event",
-            Self::Destroyed { resource_type, .. } => resource_type.as_str(),
+            Self::NetworkEvent(_) | Self::NetworkUpdate(_) => Cow::Borrowed("network-event"),
+            Self::ConsoleMessage(_) => Cow::Borrowed("console-message"),
+            Self::ErrorMessage(_) => Cow::Borrowed("error-message"),
+            Self::DocumentEvent(_) => Cow::Borrowed("document-event"),
+            Self::Destroyed { resource_type, .. } => Cow::Owned(resource_type.clone()),
         }
     }
 }

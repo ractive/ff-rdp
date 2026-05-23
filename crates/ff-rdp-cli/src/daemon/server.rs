@@ -203,7 +203,7 @@ pub(crate) fn run_daemon(
     // Create the ResourceCommand bus and subscribe to all daemon resource types.
     // This sends `watchResources` on the wire and returns a typed receiver.
     let mut resource_bus = ResourceCommand::new(watcher_actor.clone());
-    let (sub_id, resource_rx) = resource_bus
+    let (_sub_id, resource_rx) = resource_bus
         .subscribe(&mut transport, DAEMON_RESOURCE_TYPES)
         .context("subscribing to resources via ResourceCommand")?;
 
@@ -238,7 +238,7 @@ pub(crate) fn run_daemon(
     let (event_tx, event_rx) = mpsc::sync_channel::<Value>(4096);
 
     let state = Arc::new(SharedState {
-        buffer: Mutex::new(ResourceBuffer::new(sub_id)),
+        buffer: Mutex::new(ResourceBuffer::new()),
         rpc_writer: Mutex::new(None),
         stream_subs: Mutex::new(Vec::new()),
         greeting,
@@ -414,15 +414,21 @@ fn dispatch_firefox_message(
         // types were claimed by at least one subscriber.
         let streamed_types = dispatch_watcher_event_to_stream_subs(state, msg);
 
-        // Parse into typed Resources via the bus, then drain to the buffer —
-        // but ONLY for types that had no stream subscriber.  This mirrors the
-        // old "buffer only unbuffered types" logic so that `navigate --with-network`
-        // streaming does not cause double-counting when the CLI later stores
-        // events back via `store-events`.
+        // Parse into typed Resources via the bus, then route to the buffer.
+        //
+        // For non-Destroyed resources: buffer only if the type had no active
+        // stream subscriber.  This avoids double-counting when the CLI stores
+        // events back via `store-events` after a `navigate --with-network` stream.
+        //
+        // For Destroyed resources: ALWAYS call buf.on_resource so stale entries
+        // are pruned regardless of whether the type has a stream subscriber.
+        // Skipping the buffer prune would leave stale entries in the buffer
+        // indefinitely.
         resource_bus.dispatch_event(msg);
-        let mut buf = state.buffer.lock().unwrap();
+        let mut buf = state.buffer.lock().expect("buffer lock");
         for resource in resource_rx.try_iter() {
-            if !streamed_types.contains(resource.type_name()) {
+            let is_destroyed = matches!(resource, ff_rdp_core::Resource::Destroyed { .. });
+            if is_destroyed || !streamed_types.contains(resource.type_name().as_ref()) {
                 buf.on_resource(&resource);
             }
         }
@@ -454,7 +460,7 @@ fn dispatch_firefox_message(
                     .unwrap_or("")
                     .to_owned();
                 let sequence = {
-                    let mut buf = state.buffer.lock().unwrap();
+                    let mut buf = state.buffer.lock().expect("buffer lock");
                     buf.record_nav_boundary(nav_url.clone())
                 };
                 // Forward a synthetic navigation event to any stream
@@ -749,7 +755,7 @@ fn buffer_watcher_event(buffer: &Mutex<ResourceBuffer>, msg: &Value) {
     let Some(array) = msg.get("array").and_then(Value::as_array) else {
         return;
     };
-    let mut buf = buffer.lock().unwrap();
+    let mut buf = buffer.lock().expect("buffer lock");
     for sub in array {
         let Some(sub_arr) = sub.as_array() else {
             continue;
@@ -1103,7 +1109,11 @@ fn handle_daemon_message(
             };
             // Clear existing buffered events for this type so the client
             // only receives events from this point forward.
-            let _discarded = state.buffer.lock().unwrap().drain(resource_type);
+            let _discarded = state
+                .buffer
+                .lock()
+                .expect("buffer lock")
+                .drain(resource_type);
 
             // Add this resource type to the client's subscriber entry.
             // If the client is not yet a subscriber, add it now.
@@ -1321,7 +1331,7 @@ fn handle_daemon_message(
                 });
             };
 
-            let mut buf = state.buffer.lock().unwrap();
+            let mut buf = state.buffer.lock().expect("buffer lock");
             let n = events_arr.len();
             for ev in events_arr {
                 buf.insert_raw(resource_type, ev.clone());
@@ -1336,7 +1346,7 @@ fn handle_daemon_message(
 
         "status" => {
             let uptime = state.start_time.elapsed().as_secs();
-            let sizes = state.buffer.lock().unwrap().sizes();
+            let sizes = state.buffer.lock().expect("buffer lock").sizes();
             let subscriber_count = state.stream_subs.lock().unwrap().len();
             let target_count = state.target_count.load(Ordering::Relaxed);
             json!({
@@ -1380,10 +1390,8 @@ mod tests {
 
     // A minimal test-only SharedState with no real sockets.
     fn test_state() -> SharedState {
-        // SAFETY: SubscriptionId is a newtype over u64; transmute is safe here.
-        let sub_id: ff_rdp_core::SubscriptionId = unsafe { std::mem::transmute(0_u64) };
         SharedState {
-            buffer: Mutex::new(ResourceBuffer::new(sub_id)),
+            buffer: Mutex::new(ResourceBuffer::new()),
             rpc_writer: Mutex::new(None),
             stream_subs: Mutex::new(Vec::new()),
             greeting: json!({"applicationType": "browser"}),
@@ -1779,7 +1787,11 @@ mod tests {
             "array": [["network-event", [{"actor": "a1"}]]]
         });
         dispatch_watcher_event_to_stream_subs(&state, &msg);
-        let events = state.buffer.lock().unwrap().drain("network-event");
+        let events = state
+            .buffer
+            .lock()
+            .expect("buffer lock")
+            .drain("network-event");
         assert!(
             events.is_empty(),
             "stream dispatch must not buffer when no subscribers"

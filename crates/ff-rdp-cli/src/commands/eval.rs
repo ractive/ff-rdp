@@ -230,9 +230,9 @@ pub fn run(
 
     let mut ctx = connect_and_get_target(cli)?;
 
-    // Resolve the console actor ID from the registry.  The registry is the
-    // authoritative source: after any navigation + refresh_target the stale
-    // actor is invalidated and a fresh one registered.
+    // The console actor ID is taken directly from the target descriptor
+    // returned by `get_target`.  The retry path below re-fetches the target
+    // if the actor turns out to be stale (noSuchActor / unknownActor).
     let console_actor = ctx.target.console_actor.clone();
 
     // First attempt.  On noSuchActor / unknownActor, refresh the target once
