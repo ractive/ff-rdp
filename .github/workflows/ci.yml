@@ -49,3 +49,20 @@ jobs:
         run: cargo test --workspace
       - name: Verify CLI runs
         run: cargo run -p ff-rdp-cli -- --help
+
+  discipline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install ripgrep
+        run: sudo apt-get install -y ripgrep
+      - name: Build xtask
+        run: cargo build -p xtask
+      - name: Check dead primitives
+        run: cargo run -p xtask -- check-dead-primitives --since origin/main
+      - name: Check TODO annotations
+        run: cargo run -p xtask -- check-todo-annotations --since origin/main
