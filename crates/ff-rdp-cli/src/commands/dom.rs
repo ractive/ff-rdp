@@ -89,7 +89,7 @@ const ARIA_TREE_JS_TEMPLATE: &str = r"(function() {
   return '__FF_RDP_JSON__' + JSON.stringify(results);
 })()";
 
-pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> {
+pub fn run(cli: &Cli, selector: &str, mode: OutputMode, first: bool) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
@@ -167,31 +167,45 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode) -> Result<(), AppError> 
         cli.is_verbose(),
     );
 
-    // Apply output controls when results is an array (multi-element queries).
-    // DOM results are in document order — no default sort applied.
-    if let Value::Array(arr) = results {
-        let controls = OutputControls::from_cli(cli, SortDir::Asc);
-        let mut items = arr;
-        controls.apply_sort(&mut items);
-        let (limited, total, truncated) = controls.apply_limit(items, Some(20));
-        let shown = limited.len();
-        let limited = controls.apply_fields(limited);
-        let envelope =
-            output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
-        let hint_ctx = HintContext::new(HintSource::Dom).with_selector(selector);
+    // Normalise to an array unconditionally (dogfood-49 #3): every `dom`
+    // call now returns `results` as an array regardless of match count so
+    // agent `--jq '.results[0]'` recipes are no longer footguns.
+    //
+    // - null  → []          (no matches)
+    // - {…}   → [{…}]       (single match, wrapped)
+    // - [a,b] → [a,b]       (multi-match, unchanged)
+    //
+    // `--first` reverts to the legacy single-element-object shape for
+    // callers who explicitly want it.
+    let items_array: Vec<Value> = match results {
+        Value::Null => Vec::new(),
+        Value::Array(arr) => arr,
+        single => vec![single],
+    };
+
+    // Apply output controls (sort/limit/fields) uniformly on the array.
+    let controls = OutputControls::from_cli(cli, SortDir::Asc);
+    let mut items = items_array;
+    controls.apply_sort(&mut items);
+    let (limited, total, truncated) = controls.apply_limit(items, Some(20));
+    let shown = limited.len();
+    let limited = controls.apply_fields(limited);
+
+    let hint_ctx = HintContext::new(HintSource::Dom).with_selector(selector);
+
+    if first {
+        // Legacy shape: return the first element as an object (or null when
+        // empty). `total` reflects the *post-limit* count, capped at 1.
+        let first = limited.into_iter().next().unwrap_or(Value::Null);
+        let total = usize::from(!matches!(first, Value::Null));
+        let envelope = output::envelope(&first, total, &meta);
         return OutputPipeline::from_cli(cli)?
             .finalize_with_hints(&envelope, Some(&hint_ctx))
             .map_err(AppError::from);
     }
 
-    let total = match &results {
-        Value::Null => 0,
-        _ => 1,
-    };
-
-    let envelope = output::envelope(&results, total, &meta);
-
-    let hint_ctx = HintContext::new(HintSource::Dom).with_selector(selector);
+    let envelope =
+        output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
     OutputPipeline::from_cli(cli)?
         .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)

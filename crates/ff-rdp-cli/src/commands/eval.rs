@@ -174,7 +174,17 @@ pub fn run(
     let envelope = output::envelope(&result_json, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Eval);
-    OutputPipeline::from_cli(cli)?
+    let pipeline = OutputPipeline::from_cli(cli)?;
+    // When the caller passes `--stringify`, they're extracting a raw value;
+    // appending the trailing "-> ff-rdp …" hint line would pollute their
+    // captured stdout (dogfood-49 #6).  Suppress hints unconditionally in
+    // that mode — symmetric with `--jq` and `--no-hints`.
+    let pipeline = if stringify {
+        pipeline.without_hints()
+    } else {
+        pipeline
+    };
+    pipeline
         .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
 }

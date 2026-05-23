@@ -54,7 +54,9 @@ fn dom_single_element_outer_html() {
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
-    assert_eq!(json["results"], "<h1>Example Domain</h1>");
+    // iter-61i: results is always an array, even for single matches.
+    assert!(json["results"].is_array(), "expected array: {json}");
+    assert_eq!(json["results"][0], "<h1>Example Domain</h1>");
     assert_eq!(json["total"], 1);
     assert_eq!(json["meta"]["selector"], "h1");
 }
@@ -82,7 +84,9 @@ fn dom_single_element_text() {
     assert!(output.status.success());
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["results"], "Example Domain");
+    // iter-61i: results is always an array.
+    assert!(json["results"].is_array(), "expected array: {json}");
+    assert_eq!(json["results"][0], "Example Domain");
     assert_eq!(json["total"], 1);
 }
 
@@ -109,7 +113,9 @@ fn dom_no_match_returns_null() {
     assert!(output.status.success());
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["results"].is_null());
+    // iter-61i: results is always an array — empty for no-match.
+    assert!(json["results"].is_array(), "expected array: {json}");
+    assert_eq!(json["results"].as_array().expect("results array").len(), 0);
     assert_eq!(json["total"], 0);
 }
 
@@ -173,9 +179,11 @@ fn dom_single_element_attrs() {
     assert!(output.status.success());
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let results = &json["results"];
-    assert_eq!(results["href"], "https://www.iana.org/domains/example");
-    assert_eq!(results["class"], "link");
+    // iter-61i: results is always an array.
+    assert!(json["results"].is_array(), "expected array: {json}");
+    let item = &json["results"][0];
+    assert_eq!(item["href"], "https://www.iana.org/domains/example");
+    assert_eq!(item["class"], "link");
     assert_eq!(json["total"], 1);
 }
 
@@ -285,13 +293,15 @@ fn dom_single_element_text_attrs() {
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
-    let results = &json["results"];
-    assert_eq!(results["textContent"], "More information...");
+    // iter-61i: results is always an array.
+    assert!(json["results"].is_array(), "expected array: {json}");
+    let item = &json["results"][0];
+    assert_eq!(item["textContent"], "More information...");
     assert_eq!(
-        results["attrs"]["href"],
+        item["attrs"]["href"],
         "https://www.iana.org/domains/example"
     );
-    assert_eq!(results["attrs"]["class"], "link");
+    assert_eq!(item["attrs"]["class"], "link");
     assert_eq!(json["total"], 1);
 }
 
@@ -311,7 +321,8 @@ fn dom_with_jq_filter() {
         "h1".to_owned(),
         "--text".to_owned(),
         "--jq".to_owned(),
-        ".results".to_owned(),
+        // iter-61i: results is always an array, so reach into [0] for the value.
+        ".results[0]".to_owned(),
     ]);
 
     let output = std::process::Command::new(ff_rdp_bin())
@@ -364,10 +375,15 @@ fn dom_format_html_returns_raw_html_string() {
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
-    // With --format html the mock returns a raw HTML string in results.
+    // iter-61i: results is always an array.  With --format html the array
+    // contains the raw HTML string for each matched element (here, one).
     assert!(
-        json["results"].is_string(),
-        "expected string results with --format html; got: {json}"
+        json["results"].is_array(),
+        "expected array results with --format html; got: {json}"
+    );
+    assert!(
+        json["results"][0].is_string(),
+        "expected first item to be the raw HTML string; got: {json}"
     );
 }
 

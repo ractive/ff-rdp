@@ -87,6 +87,30 @@ ff-rdp --format html dom "h1"
 
 **This is the legacy escape hatch.** The default ARIA-tree JSON (see below) is better for most agent and inspection use cases.
 
+## Shape contract: `dom` always returns an array
+
+Since **iter-61i**, `ff-rdp dom <selector>` always returns
+`results: [ … ]` regardless of match count — no more polymorphic
+object-vs-array shape that broke `--jq '.results[0]'` for single
+matches.  Concretely:
+
+| Match count | `results` shape | `total` |
+|---|---|---|
+| 0   | `[]`              | `0` |
+| 1   | `[ node ]`        | `1` |
+| N>1 | `[ node, node, …]`| `N` |
+
+Callers who want the legacy single-element-object shape can pass
+`--first`:
+
+```sh
+ff-rdp dom "h1" --first
+# results: { "ref": "e1", "role": "heading", … }
+# total:   1
+```
+
+With `--first` and no match, `results` is `null` and `total` is 0.
+
 ## dom default: ARIA-tree JSON
 
 Since iter-60, `dom <selector>` returns an ARIA-tree node per element:

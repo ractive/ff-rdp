@@ -543,3 +543,45 @@ fn eval_stringify_returns_json_string() {
     );
     assert_eq!(json["total"], 1);
 }
+
+// ---------------------------------------------------------------------------
+// iter-61i theme D: --stringify auto-suppresses hints under --format text
+// ---------------------------------------------------------------------------
+
+#[test]
+fn eval_stringify_text_suppresses_hints() {
+    let server = eval_server("eval_result_stringify_string.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "eval".to_owned(),
+        "'hello'".to_owned(),
+        "--stringify".to_owned(),
+        "--format".to_owned(),
+        "text".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // The hint suffix that --stringify must now suppress:
+    assert!(
+        !stdout.contains("-> ff-rdp"),
+        "stdout must not contain a `-> ff-rdp …` hint suffix when \
+         --stringify is set (dogfood-49 #6); got: {stdout:?}"
+    );
+}

@@ -2,7 +2,7 @@
 title: "Iteration 61i: Dogfood-49 fixes — same-URL navigate, dom shape, computed flags, hint suppression"
 type: iteration
 date: 2026-05-22
-status: planned
+status: in-progress
 branch: iter-61i/dogfood-49-fixes
 depends_on:
   - iteration-61h-headless-screenshot-firefox150
@@ -59,49 +59,62 @@ Themes:
 ### A. Same-URL navigate no-op
 
 #### A1. Short-circuit `wait_for_commit` on same-URL [3/3]
-- [ ] In `crates/ff-rdp-cli/src/commands/navigate.rs`,
+- [x] In `crates/ff-rdp-cli/src/commands/navigate.rs`,
   `wait_for_commit`: detect when `pre_nav_url` and `requested_url` refer
   to the same document (compare after stripping any URL fragment and
   any single trailing slash — keep this conservative, no full URL
   parser). When same: drop the "URL must differ" guard from the in-page
   JS so a steady-state `readyState === 'complete'` satisfies the wait
   immediately.
-- [ ] Add a `fn urls_match_ignore_hash(a: &str, b: &str) -> bool`
+- [x] Add a `fn urls_match_ignore_hash(a: &str, b: &str) -> bool`
   helper next to `capture_current_url`. Trim `#fragment` and a single
   trailing `/`. Document the conservative-comparison choice.
-- [ ] Unit test the helper with: same URL, same+slash, same+hash,
-  different paths, different schemes.
+- [x] Unit test the helper with: same URL, same+slash, same+hash,
+  different paths, different schemes, different queries, different
+  hosts.
 
-#### A2. Live test against a same-URL navigate [1/1]
+#### A2. Live test against a same-URL navigate [0/1]
 - [ ] Add an e2e or live test: navigate to a URL twice in a row.
   Second navigate must succeed in well under `cli.timeout` and return
-  `committed_url` matching the original.
+  `committed_url` matching the original. (Deferred — needs live
+  Firefox in CI; unit tests cover the matcher exhaustively.)
 
 ### B. `dom` always returns an array
 
 #### B1. Normalise `results` to an array [3/3]
-- [ ] In `crates/ff-rdp-cli/src/commands/dom.rs`, when building the
+- [x] In `crates/ff-rdp-cli/src/commands/dom.rs`, when building the
   output envelope, always wrap the matched-elements list as a JSON
   array — even when only one element matched. Today single-match
   returns `results: { … }` (object) and multi-match returns
   `results: [ … ]` (array). Pick array unconditionally.
-- [ ] Update snapshot fixtures and any e2e tests that previously
-  asserted the object shape.
-- [ ] Document in `kb/reference/output-formats.md` (under "Shape
-  contracts") that `dom` always returns an array.
+- [x] Update snapshot fixtures and any e2e tests that previously
+  asserted the object shape (7 e2e tests updated).
+- [x] Document in `kb/reference/output-formats.md` (under "Shape
+  contract: `dom` always returns an array") that `dom` always returns
+  an array.
 
 #### B2. `--first` flag for the single-result case [1/1]
-- [ ] Some callers genuinely want "just the first match" without the
-  array indirection. Add `--first` to `dom`: returns
+- [x] Some callers genuinely want "just the first match" without the
+  array indirection. Added `--first` to `dom`: returns
   `results: <element>` (object) and `total: 1` when at least one
-  element matches; returns `null` and `total: 0` when no match. Cleanly
-  documented; agents who want the array can omit `--first`.
+  element matches; returns `null` and `total: 0` when no match.
+  Threaded through CLI args + dispatch.
 
 #### B3. `--jq '.results[0]'` works in both forms [1/1]
-- [ ] e2e: assert `dom 'h1' --jq '.results | type'` is `"array"` after
-  the fix, both for 1-match and N-match cases.
+- [x] e2e regression: existing dom e2e tests now exercise
+  `.is_array()` for both 1-match and N-match cases; the `dom_with_jq_filter`
+  test was updated to use `.results[0]` which is the canonical
+  post-iter-61i agent recipe.
 
-### C. `computed --prop` ergonomics
+### C. `computed --prop` ergonomics — **deferred to iter-61j**
+
+The clap-args restructuring (repeatable `--prop`, accepting `--<name>`
+via the `=` form, multi-value output map) turned out to ripple through
+more of `commands::computed` than a same-PR pass could absorb safely.
+Deferred to a follow-up iteration with its own focused scope. The
+current single-`--prop`-or-empty behaviour is unchanged.
+
+
 
 #### C1. Multi-`--prop` repeatable [2/2]
 - [ ] In `crates/ff-rdp-cli/src/cli/args.rs`, change `Command::Computed`'s
@@ -133,34 +146,20 @@ Themes:
 ### D. `--stringify` auto-suppresses hints
 
 #### D1. Tie hint emission to "raw value" mode [2/2]
-- [ ] In `crates/ff-rdp-cli/src/commands/eval.rs` (or wherever the hint
-  decision lands — possibly `output_pipeline.rs`), treat
-  `--stringify` like `--jq` and `--no-hints`: when on, don't append
-  the `-> ff-rdp console …` suffix to `--format text` output.
-- [ ] Add a CLI snapshot test: `eval '"x"' --stringify --format text`
-  output is `"x"\n` exactly — no trailing hint line.
+- [x] Added `OutputPipeline::without_hints()` to force-suppress hints
+  on an existing pipeline.  `commands::eval::run` now calls
+  `pipeline.without_hints()` whenever `--stringify` is set — symmetric
+  with `--jq` / `--no-hints`.
+- [x] e2e test `eval_stringify_text_suppresses_hints` asserts that
+  `eval … --stringify --format text` stdout does not contain
+  `-> ff-rdp`.
 
-### E. Friction polish
+### E. Friction polish — **deferred to iter-61j**
 
-#### E1. Version warning leakage from `ff-rdp run` [1/1]
-- [ ] iter-61h removed the per-command Firefox-version warning. Audit
-  the `ff-rdp run` execution loop: each in-process step now goes
-  through `connect_and_get_target`. Confirm no per-step stderr noise
-  remains and add a regression test that runs a 3-step script and
-  asserts stderr is empty for the script invocation.
-
-#### E2. Dogfood-skill template drift [1/1]
-- [ ] `.claude/skills/dogfood/SKILL.md` references `scroll down`,
-  `recipes`, `llm-help` — none of which are real ff-rdp subcommands.
-  Replace `scroll down` with `scroll by --dy <px>`; remove or replace
-  the references to `recipes` / `llm-help`. (This is a kb/skill
-  edit, not Rust code.)
-
-#### E3. Recorder pretty-printing of empty `steps[]` [1/1]
-- [ ] When `record start` → no recordable commands → `record stop`
-  produces a file with a literal blank line inside `"steps": [  ]`.
-  Trim to `"steps": []` (single line) for cosmetic cleanliness.
-  Verifies via the recorder unit tests.
+E1 (run stderr audit), E2 (dogfood skill template), and E3 (recorder
+empty-steps cosmetic) are deferred to a follow-up iteration with the
+deferred C scope.  None of them are correctness issues — they don't
+block the headline A/B/D fixes from shipping.
 
 ## Acceptance Criteria
 

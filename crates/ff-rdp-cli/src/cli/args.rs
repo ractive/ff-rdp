@@ -455,6 +455,10 @@ With --count: {\"results\": {\"count\": N}, \"total\": 1, \"meta\": {...}}")]
         /// Return only the count of matching elements
         #[arg(long, group = "output_mode")]
         count: bool,
+        /// Return just the first match as an object (or null) instead of an array.
+        /// Provided for callers who want the legacy pre-iter-61i single-element shape.
+        #[arg(long)]
+        first: bool,
     },
     /// Read console messages
     #[command(long_about = "Read console messages.

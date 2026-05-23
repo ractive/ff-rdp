@@ -81,6 +81,21 @@ impl OutputPipeline {
         })
     }
 
+    /// Force `hints_mode = Off` on this pipeline.
+    ///
+    /// Used by `eval` when `--stringify` is set: the caller is asking for raw
+    /// value extraction and the trailing `-> ff-rdp …` tip line is
+    /// indistinguishable from real output when the consumer captures stdout
+    /// as a single string (dogfood session 49 #6 / user feedback).
+    ///
+    /// Idempotent — if hints are already off (e.g. `--no-hints` was passed),
+    /// this is a no-op.
+    #[must_use]
+    pub fn without_hints(mut self) -> Self {
+        self.hints_mode = HintsMode::Off;
+        self
+    }
+
     /// Apply the pipeline to a JSON envelope and print to stdout.
     ///
     /// If a `HintContext` is provided and hints are enabled, generates

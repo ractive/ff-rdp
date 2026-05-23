@@ -86,6 +86,21 @@ fn capture_current_url(ctx: &mut super::connect_tab::ConnectedTab) -> Option<Str
     resolved.as_str().map(str::to_owned)
 }
 
+/// Returns `true` when two URLs refer to the same document under the
+/// "same-URL navigate" heuristic: equal after stripping any `#fragment` and
+/// a single trailing `/`.  Intentionally conservative — false positives turn
+/// into a no-op (caller can `ff-rdp reload`), false negatives reintroduce
+/// the dogfood-49 timeout bug.  We avoid a full URL parser; only normalise
+/// what's likely to legitimately vary across "navigate to the page I'm on"
+/// invocations.
+fn urls_match_ignore_hash(a: &str, b: &str) -> bool {
+    fn normalize(u: &str) -> &str {
+        let no_hash = u.split_once('#').map_or(u, |(head, _)| head);
+        no_hash.strip_suffix('/').unwrap_or(no_hash)
+    }
+    normalize(a) == normalize(b)
+}
+
 /// The result of waiting for a navigation to commit.
 struct CommitInfo {
     /// The URL observed after the navigation committed.
@@ -122,14 +137,30 @@ fn wait_for_commit(
     let poll = Duration::from_millis(POLL_MS);
     let started = Instant::now();
 
+    // Same-URL navigate short-circuit (dogfood-49 #1):
+    //
+    // If the caller asked to navigate to the URL the tab is already on, the
+    // URL-change guard in the wait JS would never become true and we would
+    // time out at `cli.timeout`.  In that case, drop the URL guard and let
+    // the steady-state `readyState === 'complete'` reading satisfy the wait
+    // immediately.  This makes `navigate <currentUrl>` a no-op that returns
+    // straight away.  Callers that want a forced refresh should use
+    // `ff-rdp reload`, which has its own commit-wait path.
+    let same_url = pre_nav_url.is_some_and(|p| urls_match_ignore_hash(p, requested_url));
+
     // The JS snippet returns a sentinel-prefixed JSON when the condition is met:
     // { ready: true, url: "<current>", readyState: "<state>" }
     // Returns null while the condition is not yet satisfied.
     //
-    // When `pre_nav_url` is provided, also require that the live URL differs
-    // from it — otherwise the old docshell's `readyState === 'complete'` can
-    // satisfy the check before the new document is installed.
-    let pre_json = serde_json::to_string(&pre_nav_url).unwrap_or_else(|_| "null".to_owned());
+    // When `pre_nav_url` is provided AND it differs from `requested_url`,
+    // also require that the live URL differs from `pre_nav_url` — otherwise
+    // the old docshell's `readyState === 'complete'` can satisfy the check
+    // before the new document is installed.
+    let pre_json = if same_url {
+        "null".to_owned()
+    } else {
+        serde_json::to_string(&pre_nav_url).unwrap_or_else(|_| "null".to_owned())
+    };
     let js = format!(
         r"(function() {{
   var rs = document.readyState;
@@ -726,6 +757,83 @@ mod tests {
     fn wait_after_nav_no_condition_returns_none() {
         let opts = default_wait_opts();
         assert!(!opts.has_condition());
+    }
+
+    // -----------------------------------------------------------------------
+    // urls_match_ignore_hash — same-URL navigate short-circuit (dogfood-49 #1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn urls_match_identical() {
+        assert!(urls_match_ignore_hash(
+            "https://example.com/path",
+            "https://example.com/path"
+        ));
+    }
+
+    #[test]
+    fn urls_match_trailing_slash_only_on_one() {
+        assert!(urls_match_ignore_hash(
+            "https://example.com/",
+            "https://example.com"
+        ));
+        assert!(urls_match_ignore_hash(
+            "https://example.com/path/",
+            "https://example.com/path"
+        ));
+    }
+
+    #[test]
+    fn urls_match_hash_only_on_one() {
+        assert!(urls_match_ignore_hash(
+            "https://example.com/path#section",
+            "https://example.com/path"
+        ));
+        assert!(urls_match_ignore_hash(
+            "https://example.com/path#a",
+            "https://example.com/path#b"
+        ));
+    }
+
+    #[test]
+    fn urls_match_trailing_slash_and_hash() {
+        assert!(urls_match_ignore_hash(
+            "https://example.com/path/#section",
+            "https://example.com/path"
+        ));
+    }
+
+    #[test]
+    fn urls_do_not_match_different_paths() {
+        assert!(!urls_match_ignore_hash(
+            "https://example.com/a",
+            "https://example.com/b"
+        ));
+    }
+
+    #[test]
+    fn urls_do_not_match_different_queries() {
+        // Query strings are NOT normalised — different ?p=… is different page.
+        assert!(!urls_match_ignore_hash(
+            "https://news.ycombinator.com/?p=2",
+            "https://news.ycombinator.com/?p=3"
+        ));
+    }
+
+    #[test]
+    fn urls_do_not_match_different_schemes() {
+        assert!(!urls_match_ignore_hash(
+            "http://example.com/",
+            "https://example.com/"
+        ));
+    }
+
+    #[test]
+    fn urls_do_not_match_different_hosts() {
+        assert!(!urls_match_ignore_hash(
+            "https://a.example.com/",
+            "https://b.example.com/"
+        ));
     }
 
     #[test]
