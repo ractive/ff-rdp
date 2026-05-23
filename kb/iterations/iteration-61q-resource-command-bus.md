@@ -50,7 +50,13 @@ Closes `--with-network` for good: `network` (no flags), `network --detail --head
 - [ ] `console`: same shape — reads from the bus, default tail behaves like `tail -f`, `--since` honored.
 - [ ] `storage`: reads from the bus for the resource types the watcher delivers; performance-API has no storage data anyway.
 
-## Acceptance Criteria [0/8]
+## Acceptance Criteria [2/8]
+
+> Scope landed in PR #82 = themes A & B (bus foundation + typed `Resource` enum).
+> Themes C (daemon buffer rewrite) and D (commands migrated) are deferred to a
+> follow-up iteration. Live ACs 1–4 / eviction / no-daemon-regression remain
+> unchecked because they require those follow-up themes; only the in-process
+> bus unit test (`resource_command_bus_test.rs`) and the gates AC landed here.
 
 - [ ] `live_network_default_watcher`: `ff-rdp navigate <url> --with-network` then `ff-rdp network` returns `source: watcher` with populated `status`, `method`, `transfer_size`. (Re-greens iter-61l C.)
 - [ ] `live_network_detail_headers`: `ff-rdp network --detail --headers` after `--with-network` returns real response headers per entry, `meta.source` stays `watcher`. (Closes iter-61l N1 regression.)
