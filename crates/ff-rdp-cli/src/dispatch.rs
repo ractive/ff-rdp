@@ -412,7 +412,7 @@ fn dispatch_inner(
                 wait_timeout: *wait_timeout,
                 no_wait: *no_wait,
                 wait_for,
-                wait_level: commands::navigate::WaitLevel::from_str(wait),
+                wait_level: *wait,
             };
             if *with_network {
                 commands::navigate::run_with_network(cli, url, &wait_opts, *network_timeout)

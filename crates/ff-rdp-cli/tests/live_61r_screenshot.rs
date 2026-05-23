@@ -189,7 +189,7 @@ fn live_screenshot_full_page_dpr2() {
         .args(ff_args())
         .args([
             "eval",
-            "Services.prefs.setIntPref('layout.css.devPixelsPerPx', 2); 'ok'",
+            "Services.prefs.setFloatPref('layout.css.devPixelsPerPx', 2.0); 'ok'",
         ])
         .output()
         .expect("eval set DPR");

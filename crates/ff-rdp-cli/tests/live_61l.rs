@@ -669,13 +669,11 @@ fn live_eval_chrome_csp_bypass() {
         .iter()
         .map(ToString::to_string),
     );
-    if !nav.status.success() {
-        eprintln!(
-            "live_eval_chrome_csp_bypass: navigate failed: {}",
-            String::from_utf8_lossy(&nav.stderr)
-        );
-        return;
-    }
+    assert!(
+        nav.status.success(),
+        "live_eval_chrome_csp_bypass: navigate failed: {}",
+        String::from_utf8_lossy(&nav.stderr)
+    );
 
     // Eval a simple expression — the chrome bypass path should be triggered.
     let output = ff.run(&["eval", "1+1"]);

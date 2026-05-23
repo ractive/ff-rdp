@@ -35,7 +35,8 @@ fn restore_timeout(transport: &mut RdpTransport, original_timeout_ms: u64) {
 }
 
 /// The readiness level to wait for before declaring navigation complete.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+#[clap(rename_all = "lowercase")]
 pub enum WaitLevel {
     /// Return as soon as `dom-loading` fires (URL committed).
     Loading,
@@ -44,17 +45,6 @@ pub enum WaitLevel {
     /// Return as soon as `dom-complete` fires (all resources loaded) — default.
     #[default]
     Complete,
-}
-
-impl WaitLevel {
-    /// Parse a CLI `--wait` flag value.
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "loading" => Self::Loading,
-            "interactive" => Self::Interactive,
-            _ => Self::Complete,
-        }
-    }
 }
 
 /// Options controlling an optional wait condition after navigation.
@@ -110,7 +100,7 @@ struct CommitInfo {
 ///   `dom-loading` for neterror detection).
 /// - [`WaitLevel::Complete`]    — resolves on `dom-complete` (default).
 ///
-/// Always returns `Err(AppError::User(Navigation{…}))` on `about:neterror`
+/// Always returns `Err(AppError::Navigation { … })` on `about:neterror`
 /// regardless of `wait_level`.
 ///
 /// Returns a [`CommitInfo`] describing the outcome.  Returns

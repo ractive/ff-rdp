@@ -125,7 +125,7 @@ impl ResourceCommand {
         id
     }
 
-    /// Subscribe to `types`.  Returns a `(SubscriptionId, Receiver<Resource>)`.
+    /// Subscribe to `types`.  Returns a `(SubscriptionId, Receiver<Arc<Resource>>)`.
     ///
     /// For any type not already on the wire, this sends a `watchResources`
     /// request via `transport`.  Types already subscribed by another subscriber
