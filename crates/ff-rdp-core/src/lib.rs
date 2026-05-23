@@ -43,6 +43,6 @@ pub use fronts::{
     ConsoleFront, DescriptorFront, NetworkContentFront, PageStyleFront, RootFront, ScreenshotFront,
     TargetFront, WalkerFront, WatcherFront,
 };
-pub use registry::{Front, FrontKind, FrontState, IsActorGone, Registry, call_with_refresh};
+pub use registry::{Front, FrontKind, IsActorGone, Registry, call_with_refresh};
 pub use transport::{FramedReader, FramedWriter, RdpTransport};
 pub use types::{ActorId, Grip};

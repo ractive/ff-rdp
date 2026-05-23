@@ -26,7 +26,7 @@ impl fmt::Display for ActorId {
 
 impl From<String> for ActorId {
     fn from(s: String) -> Self {
-        Self(Arc::from(s.as_str()))
+        Self(Arc::from(s.into_boxed_str()))
     }
 }
 

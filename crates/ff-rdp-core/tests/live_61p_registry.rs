@@ -66,11 +66,13 @@ fn live_dead_actor_error_type() {
 
 // ── live_single_target_per_browsing_context ──────────────────────────────────
 
-/// AC: the registry holds at most one TargetFront per browsing-context-id at
+/// AC: the registry holds exactly one TargetFront per browsing-context-id at
 /// any given time.
 ///
-/// We connect to Firefox, list tabs, open the first tab's target, and assert
-/// there is exactly one registered TargetFront for that target actor.
+/// We connect to Firefox, list tabs, open the first tab's target, register a
+/// TargetFront, then assert there is exactly one TargetFront-kind entry for
+/// that actor.  We also verify that attempting to register a second TargetFront
+/// for the same actor ID replaces the first (registry.register overwrites).
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_single_target_per_browsing_context() {
@@ -97,20 +99,33 @@ fn live_single_target_per_browsing_context() {
         target_info.actor.clone(),
     );
 
-    // Exactly one target-kind entry should exist (the TargetFront we just added).
-    let target_count = reg.count_alive_fronts_for_target(&target_info.actor);
-
-    // The console front is owned by the target — so count_alive_fronts_for_target
-    // counts it, but the TargetFront itself has no target_root (it IS the root).
     // Verify the TargetFront is registered and alive.
     reg.assert_alive(&target_info.actor)
         .expect("target front must be alive after registration");
 
-    // count_alive_fronts_for_target counts fronts OWNED BY this target (i.e.
-    // console), not the target itself. Console + any other fronts we registered.
-    assert!(
-        target_count <= 1,
-        "expected at most 1 front owned by the target (the console), got {target_count}"
+    // Exactly one TargetFront-kind entry must exist for this actor.
+    let target_front_count = reg.count_alive_target_fronts_for(&target_info.actor);
+    assert_eq!(
+        target_front_count, 1,
+        "expected exactly 1 TargetFront registered for actor {}, got {target_front_count}",
+        target_info.actor
+    );
+
+    // Attempt to register a second TargetFront for the same actor.
+    // registry.register overwrites the existing entry — the count must remain 1.
+    reg.register(target_info.actor.clone(), FrontKind::Target, None);
+    let after_second_register = reg.count_alive_target_fronts_for(&target_info.actor);
+    assert_eq!(
+        after_second_register, 1,
+        "registering a second TargetFront for the same actor must not create a duplicate \
+         (overwrites); expected count=1, got {after_second_register}"
+    );
+
+    // fronts owned-by the target (console etc.) must not be counted as TargetFronts.
+    let console_as_target = reg.count_alive_target_fronts_for(&target_info.console_actor);
+    assert_eq!(
+        console_as_target, 0,
+        "console actor must not be counted as a TargetFront"
     );
 }
 

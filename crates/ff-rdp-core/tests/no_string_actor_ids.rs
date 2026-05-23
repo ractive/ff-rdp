@@ -1,10 +1,15 @@
-//! CI check: ensure no public struct fields use bare `String` for actor IDs.
+//! CI check: ensure no `.rs` source files under `src/` use bare `String` for
+//! well-known actor-ID field names.
 //!
-//! We look for patterns like `actor: String` or `actor_id: String` in the
-//! `actors/` and `fronts/` subdirectories of `src/` — places where untyped
-//! actor handles would be a regression.  Error types (`error.rs`) and the
-//! registry module intentionally keep some `String` fields for protocol error
-//! messages and are excluded.
+//! The scanner walks all `.rs` files under `src/` recursively and looks for
+//! patterns like `actor: String` or `console_actor: String` (see
+//! `ACTOR_FIELD_NAMES`).  It does **not** distinguish `pub` vs private fields —
+//! any occurrence of a named actor-ID field typed as `String` is flagged.
+//!
+//! A small allowlist (`EXEMPT_FILE_SUFFIXES`) excludes files that legitimately
+//! keep `String` actor fields: `error.rs` (RdpError/ProtocolError carry actor
+//! names in error messages) and `thread.rs` (SourceInfo.actor is a source URL,
+//! not an actor handle).
 //!
 //! Run automatically as part of `cargo test --workspace`.
 

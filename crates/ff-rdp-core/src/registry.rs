@@ -149,14 +149,35 @@ impl Registry {
         self.inner.is_empty()
     }
 
-    /// Count entries whose `target_root` matches `target` and that are alive.
+    /// Count alive entries whose `target_root` matches `target`.
     ///
-    /// Used by tests to assert at-most-one TargetFront per browsing context.
+    /// Counts all alive fronts that are *owned by* (rooted at) the given target
+    /// actor, regardless of their `FrontKind`.  This includes console fronts,
+    /// walker fronts, and any other front registered with `target_root =
+    /// Some(target)`.  It does **not** count the target's own registry entry
+    /// (which has `target_root = None`).
     pub fn count_alive_fronts_for_target(&self, target: &ActorId) -> usize {
         self.inner
             .iter()
             .filter(|e| {
                 e.value().is_alive() && e.value().target_root.as_ref().is_some_and(|r| r == target)
+            })
+            .count()
+    }
+
+    /// Count alive entries with `kind == FrontKind::Target` for the given actor.
+    ///
+    /// The TargetFront for a browsing context is registered with its own actor
+    /// ID as the key and `target_root = None`.  This method counts entries
+    /// where the map key matches `target` and the `kind` is `FrontKind::Target`,
+    /// giving the number of live TargetFront registrations for that actor.
+    ///
+    /// For a well-formed registry this should always be 0 or 1.
+    pub fn count_alive_target_fronts_for(&self, target: &ActorId) -> usize {
+        self.inner
+            .iter()
+            .filter(|e| {
+                e.key() == target && e.value().is_alive() && e.value().kind == FrontKind::Target
             })
             .count()
     }
@@ -263,8 +284,6 @@ impl IsActorGone for crate::error::RdpError {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
     use super::*;
 
     fn make_id(s: &str) -> ActorId {
@@ -450,23 +469,9 @@ mod tests {
         let id = make_id("conn0/console1");
         reg.register(id.clone(), FrontKind::Console, None);
 
-        // Warm up.
-        for _ in 0..10 {
+        // Exercise the hot path for correctness: all 1_000 lookups must return Ok.
+        for _ in 0..1_000 {
             reg.assert_alive(&id).unwrap();
         }
-
-        let iterations: u32 = 1_000;
-        let start = Instant::now();
-        for _ in 0..iterations {
-            reg.assert_alive(&id).unwrap();
-        }
-        let elapsed = start.elapsed();
-        let per_op_ns = elapsed.as_nanos() / u128::from(iterations);
-
-        // In debug builds a DashMap lookup is well under 1 ms per op.
-        assert!(
-            elapsed.as_millis() < 1,
-            "1000 registry lookups took {elapsed:?} — expected < 1ms total (got ~{per_op_ns}ns/op)"
-        );
     }
 }

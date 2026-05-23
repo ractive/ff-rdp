@@ -199,6 +199,25 @@ impl ProtocolError {
 mod tests {
     use super::*;
 
+    // ── RdpError::ActorDestroyed ─────────────────────────────────────────────
+
+    #[test]
+    fn actor_destroyed_display_contains_actor_and_phrase() {
+        let actor = ActorId::from("conn0/tab1");
+        let err = RdpError::ActorDestroyed {
+            actor: actor.clone(),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("conn0/tab1"),
+            "display must include the actor ID; got: {msg}"
+        );
+        assert!(
+            msg.contains("has been destroyed"),
+            "display must contain 'has been destroyed'; got: {msg}"
+        );
+    }
+
     #[test]
     fn actor_error_kind_from_code_known_codes() {
         assert_eq!(

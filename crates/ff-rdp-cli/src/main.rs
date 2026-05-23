@@ -156,15 +156,16 @@ fn main() {
 
 /// Map an `AppError` to a deterministic exit code.
 ///
-/// | Variant               | Exit code |
-/// |-----------------------|-----------|
-/// | Protocol              | 3         |
-/// | Shape                 | 4         |
-/// | RdpTimeout            | 5         |
-/// | Transport / RemoteClosed | 6      |
-/// | Connection            | 3         |
-/// | Timeout (op-level)    | 124       |
-/// | User / Internal / *   | 1         |
+/// | Variant                    | Exit code |
+/// |----------------------------|-----------|
+/// | Protocol                   | 3         |
+/// | Connection                 | 3         |
+/// | RdpActorDestroyed          | 3         |
+/// | Shape                      | 4         |
+/// | RdpTimeout                 | 5         |
+/// | Transport / RemoteClosed   | 6         |
+/// | Timeout (op-level)         | 124       |
+/// | User / Internal / *        | 1         |
 fn error_exit_code(err: &AppError) -> i32 {
     match err {
         AppError::RdpProtocol { .. }
@@ -184,7 +185,8 @@ fn error_exit_code(err: &AppError) -> i32 {
 
 #[cfg(test)]
 mod main_tests {
-    use super::is_type_invocation;
+    use super::{error_exit_code, is_type_invocation};
+    use crate::error::AppError;
 
     #[test]
     fn detects_type_subcommand() {
@@ -258,5 +260,15 @@ mod main_tests {
         .map(ToString::to_string)
         .collect();
         assert!(is_type_invocation(&args));
+    }
+
+    #[test]
+    fn rdp_actor_destroyed_exit_code() {
+        assert_eq!(
+            error_exit_code(&AppError::RdpActorDestroyed {
+                actor: "conn0/tab1".to_owned()
+            }),
+            3
+        );
     }
 }

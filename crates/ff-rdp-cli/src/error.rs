@@ -289,4 +289,61 @@ mod tests {
             "JSON error message should mention daemon version"
         );
     }
+
+    // ── RdpActorDestroyed ────────────────────────────────────────────────────
+
+    #[test]
+    fn rdp_actor_destroyed_error_type() {
+        let err = AppError::RdpActorDestroyed {
+            actor: "conn0/tab1".to_owned(),
+        };
+        assert_eq!(err.error_type(), "actor_destroyed");
+    }
+
+    #[test]
+    fn rdp_actor_destroyed_display_contains_actor_id() {
+        let err = AppError::RdpActorDestroyed {
+            actor: "conn0/tab1".to_owned(),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("conn0/tab1"),
+            "display must include the actor ID; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn rdp_actor_destroyed_json_has_correct_error_type_and_actor() {
+        let err = AppError::RdpActorDestroyed {
+            actor: "conn0/tab1".to_owned(),
+        };
+        let json = err.to_error_json();
+        assert_eq!(
+            json["error_type"].as_str(),
+            Some("actor_destroyed"),
+            "JSON error_type must be 'actor_destroyed'"
+        );
+        assert!(
+            json["error"].as_str().unwrap_or("").contains("conn0/tab1"),
+            "JSON error message must include the actor ID"
+        );
+    }
+
+    #[test]
+    fn rdp_error_actor_destroyed_converts_to_app_error_rdp_actor_destroyed() {
+        let actor = ff_rdp_core::ActorId::from("conn0/tab1");
+        let rdp_err = ff_rdp_core::RdpError::ActorDestroyed {
+            actor: actor.clone(),
+        };
+        let app_err = AppError::from(rdp_err);
+        match app_err {
+            AppError::RdpActorDestroyed { actor: ref a } => {
+                assert_eq!(
+                    a, "conn0/tab1",
+                    "converted AppError must carry the same actor string"
+                );
+            }
+            other => panic!("expected RdpActorDestroyed, got {other:?}"),
+        }
+    }
 }
