@@ -2,7 +2,7 @@
 title: "Iteration 61n: Daemon quick-fixes (watchTargets + double-boundary + mpsc isolation + protocol version)"
 type: iteration
 date: 2026-05-23
-status: in-progress
+status: completed
 branch: iter-61n/daemon-quick-fixes
 depends_on:
   - iteration-61m-wire-tracing-and-structured-errors
