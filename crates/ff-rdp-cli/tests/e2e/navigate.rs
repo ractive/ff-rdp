@@ -18,18 +18,33 @@ fn base_args(port: u16) -> Vec<String> {
 }
 
 fn navigate_server() -> MockRdpServer {
+    // Since iter-61v Theme A, navigate subscribes to document-event resources
+    // and waits for dom-complete (not JS readyState polling).  The flow is:
+    //   listTabs → getTarget → getWatcher → watchResources → navigateTo
+    //   (with dom-loading + dom-complete followups) → unwatchResources
+    //   → getTarget (refresh_console_actor after navigate)
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
-        .on("navigateTo", load_fixture("navigate_response.json"))
-        // wait_for_commit re-resolves actors via a second getTarget, then
-        // polls readyState via evaluateJSAsync (immediate ack + async result).
-        .on("getTarget", load_fixture("get_target_response.json"))
-        .on_with_followup(
-            "evaluateJSAsync",
-            load_fixture("eval_immediate_response.json"),
-            load_fixture("eval_result_ready_state_sentinel.json"),
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
         )
+        .on_with_followups(
+            "navigateTo",
+            load_fixture("navigate_response.json"),
+            vec![
+                load_fixture("resources_available_document_event_dom_loading.json"),
+                load_fixture("resources_available_document_event_dom_complete.json"),
+            ],
+        )
+        .on(
+            "unwatchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        // refresh_console_actor calls getTarget after the navigate completes.
+        .on("getTarget", load_fixture("get_target_response.json"))
 }
 
 fn navigate_with_network_server() -> MockRdpServer {
@@ -283,14 +298,26 @@ fn navigate_wait_text_reresolves_console_actor_after_navigate() {
     let mut server = MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
-        .on("navigateTo", load_fixture("navigate_response.json"))
-        // wait_for_commit re-resolves actors then polls readyState once.
-        .on("getTarget", load_fixture("get_target_response.json"))
-        .on_with_followup(
-            "evaluateJSAsync",
-            load_fixture("eval_immediate_response.json"),
-            load_fixture("eval_result_ready_state_sentinel.json"),
+        // Theme A (iter-61v): document-event subscription replaces readyState polling.
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
         )
+        .on_with_followups(
+            "navigateTo",
+            load_fixture("navigate_response.json"),
+            vec![
+                load_fixture("resources_available_document_event_dom_loading.json"),
+                load_fixture("resources_available_document_event_dom_complete.json"),
+            ],
+        )
+        .on(
+            "unwatchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        // refresh_console_actor calls getTarget after the navigate completes.
+        .on("getTarget", load_fixture("get_target_response.json"))
         // wait_after_navigate (--wait-text) re-resolves actors and polls once.
         .on("getTarget", load_fixture("get_target_response.json"))
         .on_with_followup(
