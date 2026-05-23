@@ -2,7 +2,7 @@
 title: "Iteration 61y: Iteration discipline tooling (dead-primitive check, AC fidelity, claim/code diff, plan template)"
 type: iteration
 date: 2026-05-23
-status: in-review
+status: completed
 branch: iter-61y/iteration-discipline-tooling
 depends_on:
   - iteration-61x-honest-commits-and-cleanup
