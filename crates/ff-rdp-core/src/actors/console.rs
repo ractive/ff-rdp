@@ -123,6 +123,12 @@ impl WebConsoleActor {
             "type": "evaluateJSAsync",
             "text": text,
             "eager": false,
+            // mapped.await instructs Firefox to await any Promise returned by the
+            // evaluated expression before surfacing the result. Without this flag,
+            // async expressions resolve to a Promise grip rather than the awaited
+            // value, and CSP-restricted pages may return a pending-promise error
+            // instead of the actual JS result.
+            "mapped": { "await": true },
         });
         transport.send(&request)?;
 
@@ -218,6 +224,9 @@ impl WebConsoleActor {
             "text": text,
             "eager": false,
             "chromeContext": true,
+            // Same mapped.await as the page-context path so async expressions
+            // are resolved before the result is returned.
+            "mapped": { "await": true },
         });
         transport.send(&request)?;
 
@@ -962,6 +971,92 @@ mod tests {
 
         let eval_result =
             WebConsoleActor::evaluate_js_async(&mut transport, &console_actor, "1 + 41").unwrap();
+
+        assert_eq!(eval_result.result, Grip::Value(json!(42)));
+        srv.join().unwrap();
+    }
+
+    // ── mapped.await field tests ─────────────────────────────────────────────
+
+    /// Verify that `evaluate_js_async` sends `mapped: { await: true }` so that
+    /// Firefox resolves Promises before returning the result (Theme C, iter-61r).
+    #[test]
+    fn evaluate_js_async_sends_mapped_await_true() {
+        let (mut transport, server) = make_transport_pair();
+        let console_actor: ActorId = "server1.conn0.child2/consoleActor3".into();
+
+        let actor_str = console_actor.as_ref().to_owned();
+        let srv = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            // Read the evaluateJSAsync request and verify `mapped.await`.
+            let req = transport_recv_from(&mut reader).unwrap();
+            assert_eq!(
+                req["mapped"]["await"],
+                serde_json::Value::Bool(true),
+                "evaluateJSAsync must include mapped.await=true"
+            );
+
+            let ack = json!({"from": &actor_str, "resultID": "mapped-await-test"});
+            send_frame(&server, &ack);
+
+            let result = json!({
+                "from": &actor_str,
+                "type": "evaluationResult",
+                "resultID": "mapped-await-test",
+                "result": "resolved",
+                "hasException": false
+            });
+            send_frame(&server, &result);
+        });
+
+        let eval_result = WebConsoleActor::evaluate_js_async(
+            &mut transport,
+            &console_actor,
+            "Promise.resolve('resolved')",
+        )
+        .unwrap();
+
+        assert_eq!(eval_result.result, Grip::Value(json!("resolved")),);
+        srv.join().unwrap();
+    }
+
+    /// Verify that `evaluate_js_async_chrome` also sends `mapped: { await: true }`.
+    #[test]
+    fn evaluate_js_async_chrome_sends_mapped_await_true() {
+        let (mut transport, server) = make_transport_pair();
+        let console_actor: ActorId = "server1.conn0.child2/consoleActor3".into();
+
+        let actor_str = console_actor.as_ref().to_owned();
+        let srv = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            let req = transport_recv_from(&mut reader).unwrap();
+            assert_eq!(
+                req["mapped"]["await"],
+                serde_json::Value::Bool(true),
+                "evaluate_js_async_chrome must include mapped.await=true"
+            );
+            assert_eq!(
+                req["chromeContext"],
+                serde_json::Value::Bool(true),
+                "chrome context must be set"
+            );
+
+            let ack = json!({"from": &actor_str, "resultID": "chrome-mapped-await"});
+            send_frame(&server, &ack);
+
+            let result = json!({
+                "from": &actor_str,
+                "type": "evaluationResult",
+                "resultID": "chrome-mapped-await",
+                "result": 42,
+                "hasException": false
+            });
+            send_frame(&server, &result);
+        });
+
+        let eval_result =
+            WebConsoleActor::evaluate_js_async_chrome(&mut transport, &console_actor, "42")
+                .unwrap();
 
         assert_eq!(eval_result.result, Grip::Value(json!(42)));
         srv.join().unwrap();
