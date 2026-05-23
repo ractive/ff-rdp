@@ -4,6 +4,7 @@ pub mod connection;
 pub mod error;
 pub mod fronts;
 pub mod registry;
+pub mod resources;
 pub mod transport;
 pub mod types;
 
@@ -44,5 +45,6 @@ pub use fronts::{
     TargetFront, WalkerFront, WatcherFront,
 };
 pub use registry::{Front, FrontKind, IsActorGone, Registry, call_with_refresh};
+pub use resources::{Resource, ResourceCommand, ResourceType, SubscriptionId};
 pub use transport::{FramedReader, FramedWriter, RdpTransport};
 pub use types::{ActorId, Grip};
