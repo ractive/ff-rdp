@@ -5,6 +5,11 @@ use serde_json::{Value, json};
 
 const MAX_EVENTS: usize = 50_000;
 const MAX_BOUNDARIES: usize = 1_000;
+/// Maximum byte length of a navigation URL stored in a [`NavBoundary`].
+///
+/// URLs longer than this are silently truncated on insert to bound memory usage
+/// and prevent very long URLs from being echoed back to operators in logs.
+const MAX_NAV_URL_LEN: usize = 4096;
 
 /// A navigation boundary recorded when `tabNavigated` fires.
 #[derive(Debug, Clone)]
@@ -114,6 +119,13 @@ impl ResourceBuffer {
         if self.boundaries.len() >= MAX_BOUNDARIES {
             self.boundaries.remove(0);
         }
+        // Truncate the URL to bound memory usage and prevent very long URLs
+        // from being stored in the boundary log.
+        let url = if url.len() > MAX_NAV_URL_LEN {
+            url.chars().take(MAX_NAV_URL_LEN).collect()
+        } else {
+            url
+        };
         // `store_start` is the insertion sequence number of the *next* entry
         // to be pushed.  Entries with `seq >= store_start` belong to this
         // navigation epoch or later.

@@ -473,9 +473,42 @@ pub fn encode_frame(json: &str) -> String {
 }
 
 /// Read a single length-prefixed JSON packet from `reader`.
+///
+/// Firefox RDP uses two frame formats:
+///
+/// 1. **JSON frames**: `<length>:<json>` — normal packets handled here.
+/// 2. **Bulk frames**: `bulk <actor> <kind> <length>:<binary-data>` — binary
+///    packets that begin with the ASCII letter `b`.  This implementation cannot
+///    process their binary payload, so the body bytes are consumed (skipped) and
+///    [`ProtocolError::BulkPacketUnsupported`] is returned.  The stream remains
+///    valid; the caller can log the error once and continue reading.
 pub fn recv_from(reader: &mut impl Read) -> Result<Value, ProtocolError> {
-    // Read one byte at a time until we hit ':'.
+    // Read the first byte to distinguish JSON vs bulk frames.
+    let mut first = [0u8; 1];
+    reader.read_exact(&mut first).map_err(map_recv_io_error)?;
+
+    if first[0] == b'b' {
+        return recv_bulk_frame(reader);
+    }
+
+    // Normal JSON frame: read remaining bytes of the length prefix.
     let mut length_buf = Vec::with_capacity(10);
+
+    if first[0] == b':' {
+        // Degenerate: length was empty.
+        return Err(ProtocolError::InvalidPacket(
+            "empty length prefix".to_owned(),
+        ));
+    }
+
+    if !first[0].is_ascii_digit() {
+        return Err(ProtocolError::InvalidPacket(format!(
+            "unexpected byte {:#x} in length prefix",
+            first[0]
+        )));
+    }
+    length_buf.push(first[0]);
+
     loop {
         let mut byte = [0u8; 1];
         reader.read_exact(&mut byte).map_err(map_recv_io_error)?;
@@ -501,12 +534,6 @@ pub fn recv_from(reader: &mut impl Read) -> Result<Value, ProtocolError> {
         }
     }
 
-    if length_buf.is_empty() {
-        return Err(ProtocolError::InvalidPacket(
-            "empty length prefix".to_owned(),
-        ));
-    }
-
     let length_str = std::str::from_utf8(&length_buf)
         .map_err(|_| ProtocolError::InvalidPacket("non-UTF8 in length prefix".to_owned()))?;
 
@@ -530,6 +557,73 @@ pub fn recv_from(reader: &mut impl Read) -> Result<Value, ProtocolError> {
         .map_err(|e| ProtocolError::InvalidPacket(format!("JSON parse error: {e}")))?;
 
     Ok(value)
+}
+
+/// Parse and discard a Firefox bulk frame.
+///
+/// Called when `recv_from` sees a leading `b`.  The bulk frame header format is:
+/// `bulk <actor> <kind> <length>:` followed by exactly `length` binary bytes.
+/// The `b` has already been consumed; this function reads the rest of the header
+/// and skips the body.
+///
+/// Returns [`ProtocolError::BulkPacketUnsupported`] on success (body skipped)
+/// or a parse/IO error if the stream is malformed.
+fn recv_bulk_frame(reader: &mut impl Read) -> Result<Value, ProtocolError> {
+    // We already consumed the leading 'b'.  Read up to ':' to get the rest of
+    // the header: "ulk <actor> <kind> <length>".
+    let mut header_buf: Vec<u8> = b"b".to_vec();
+    loop {
+        let mut byte = [0u8; 1];
+        reader.read_exact(&mut byte).map_err(map_recv_io_error)?;
+
+        if byte[0] == b':' {
+            break;
+        }
+        header_buf.push(byte[0]);
+
+        // Sanity limit: headers shouldn't be multi-KB.
+        if header_buf.len() > 4096 {
+            return Err(ProtocolError::InvalidPacket(
+                "bulk frame header exceeds 4096 bytes".to_owned(),
+            ));
+        }
+    }
+
+    let header = std::str::from_utf8(&header_buf)
+        .map_err(|_| ProtocolError::InvalidPacket("non-UTF8 in bulk frame header".to_owned()))?;
+
+    // Expected format: "bulk <actor> <kind> <length>"
+    let parts: Vec<&str> = header.splitn(4, ' ').collect();
+    if parts.len() != 4 || parts[0] != "bulk" {
+        return Err(ProtocolError::InvalidPacket(format!(
+            "malformed bulk frame header: {header:?}"
+        )));
+    }
+    let actor = parts[1].to_owned();
+    let kind = parts[2].to_owned();
+    let length: u64 = parts[3]
+        .parse()
+        .map_err(|e| ProtocolError::InvalidPacket(format!("bulk length parse error: {e}")))?;
+
+    // Consume (discard) the body bytes in chunks to avoid large allocations.
+    let mut remaining = length;
+    let mut discard = [0u8; 8192];
+    while remaining > 0 {
+        let chunk_len = discard.len().min(
+            // Safe: remaining fits in usize because we take at most discard.len().
+            usize::try_from(remaining).unwrap_or(discard.len()),
+        );
+        reader
+            .read_exact(&mut discard[..chunk_len])
+            .map_err(map_recv_io_error)?;
+        remaining -= chunk_len as u64;
+    }
+
+    Err(ProtocolError::BulkPacketUnsupported {
+        actor,
+        kind,
+        length,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -793,5 +887,73 @@ mod tests {
         let raw = String::from_utf8(buf).unwrap();
         let expected_json = serde_json::to_string(&msg).unwrap();
         assert_eq!(raw, encode_frame(&expected_json));
+    }
+
+    // -----------------------------------------------------------------------
+    // Bulk frame handling (Theme C, iter-61w)
+    // -----------------------------------------------------------------------
+
+    /// Build a synthetic bulk frame: `bulk <actor> <kind> <length>:<body>`.
+    fn make_bulk_frame(actor: &str, kind: &str, body: &[u8]) -> Vec<u8> {
+        let header = format!("bulk {} {} {}:", actor, kind, body.len());
+        let mut bytes = header.into_bytes();
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
+    #[test]
+    fn bulk_frame_returns_bulk_packet_unsupported() {
+        let frame = make_bulk_frame("conn0/actor1", "screenshot", b"binary payload");
+        let mut cursor = Cursor::new(frame);
+
+        let err = recv_from(&mut cursor).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ProtocolError::BulkPacketUnsupported {
+                    actor: ref a,
+                    kind: ref k,
+                    length: 14,
+                } if a == "conn0/actor1" && k == "screenshot"
+            ),
+            "expected BulkPacketUnsupported with correct fields, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn bulk_frame_followed_by_json_frame_parses_correctly() {
+        // Simulate a stream with a bulk frame followed by a normal JSON packet.
+        let bulk = make_bulk_frame("conn0/actor1", "blob", b"some binary data");
+        let json_payload = r#"{"type":"continue","from":"root"}"#;
+        let json_frame = encode_frame(json_payload);
+
+        let mut stream: Vec<u8> = bulk;
+        stream.extend_from_slice(json_frame.as_bytes());
+
+        let mut cursor = Cursor::new(stream);
+
+        // First recv: bulk — should return error but consume the body.
+        let err = recv_from(&mut cursor).unwrap_err();
+        assert!(
+            matches!(err, ProtocolError::BulkPacketUnsupported { .. }),
+            "first recv should be BulkPacketUnsupported, got: {err:?}"
+        );
+
+        // Second recv: the JSON packet must parse correctly after the skip.
+        let value = recv_from(&mut cursor).unwrap();
+        assert_eq!(value["type"], "continue");
+        assert_eq!(value["from"], "root");
+    }
+
+    #[test]
+    fn bulk_frame_empty_body_is_handled() {
+        let frame = make_bulk_frame("conn0/blob1", "empty", b"");
+        let mut cursor = Cursor::new(frame);
+
+        let err = recv_from(&mut cursor).unwrap_err();
+        assert!(
+            matches!(err, ProtocolError::BulkPacketUnsupported { length: 0, .. }),
+            "expected BulkPacketUnsupported with length 0, got: {err:?}"
+        );
     }
 }

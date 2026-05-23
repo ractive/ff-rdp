@@ -3,6 +3,7 @@ use std::io::Read;
 use anyhow::Context as _;
 use ff_rdp_core::{
     ActorId, Grip, ObjectActor, ProtocolError, ScopedGrip, TabActor, WebConsoleActor,
+    sanitize_for_terminal,
 };
 use serde_json::json;
 
@@ -271,7 +272,7 @@ pub fn run(
             .as_deref()
             .unwrap_or("evaluation threw an exception");
         let detail = exc.value.to_json();
-        eprintln!("error: {msg}");
+        eprintln!("error: {}", sanitize_for_terminal(msg));
         eprintln!(
             "{}",
             serde_json::to_string_pretty(&detail).unwrap_or_default()

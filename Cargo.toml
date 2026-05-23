@@ -42,6 +42,7 @@ getrandom = "0.2"
 url = "2"
 ureq = "3"
 include_dir = "0.7"
+subtle = "2"
 
 [workspace.dependencies.libc]
 version = "0.2"

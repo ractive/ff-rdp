@@ -129,6 +129,21 @@ pub enum ProtocolError {
     #[error("RDP frame too large: declared {declared} bytes, max {max} bytes")]
     FrameTooLarge { declared: usize, max: usize },
 
+    /// Firefox sent a `bulk` binary frame that this implementation cannot process.
+    ///
+    /// The frame has been consumed from the stream (all `length` bytes skipped)
+    /// so the next `recv_from` call will see the following packet correctly.
+    /// Callers should log this once and continue reading.
+    #[error(
+        "bulk packet unsupported: actor={actor} kind={kind} length={length} \
+         (skipped {length} bytes)"
+    )]
+    BulkPacketUnsupported {
+        actor: String,
+        kind: String,
+        length: u64,
+    },
+
     #[error("actor error from {actor}: {error} ({kind}) — {message}")]
     ActorError {
         actor: String,

@@ -81,6 +81,26 @@ extensions-backgroundscript-status
 
 See [[rdp/resources/README|resources/]] for each.
 
+## Method support matrix
+
+State of the `WatcherFront` (`crates/ff-rdp-core/src/fronts/watcher.rs`) after iter-61u.  "Spec" = present in `crates/ff-rdp-core/src/specs/watcher.rs`; "Front" = a typed Rust method exists on `WatcherFront`; "Wired" = called from production code paths (daemon or CLI commands), not only tests.
+
+| Method | Spec | Front | Wired | Notes |
+|---|---|---|---|---|
+| `watchTargets` | yes | `watch_targets` | yes | Daemon engagement + `commands/navigate.rs`. |
+| `unwatchTargets` | yes (oneway) | `unwatch_targets` | yes | Used on daemon shutdown to avoid hang (iter-61n). |
+| `watchResources` | yes | `watch_resources` | yes | Via `ResourceCommand::subscribe` (iter-61q/t). |
+| `unwatchResources` | yes (oneway) | `unwatch_resources` | yes | |
+| `clearResources` | yes (oneway) | `clear_resources` | primitive | Front exists; no production call site yet. |
+| `getParentBrowsingContextID` | yes | `get_parent_browsing_context_id` | primitive | iter-61u — Front only. |
+| `getNetworkParentActor` | yes | `get_network_parent_actor` | primitive | iter-61u — Front only.  Needed for throttling/blocking once implemented. |
+| `getBlackboxingActor` | yes | `get_blackboxing_actor` | primitive | iter-61u — Front only. |
+| `getBreakpointListActor` | yes | `get_breakpoint_list_actor` | primitive | iter-61u — Front only. |
+| `getTargetConfigurationActor` | yes | `get_target_configuration_actor` | primitive | iter-61u; `TargetConfigurationFront` exists but not yet called from a CLI command. |
+| `getThreadConfigurationActor` | yes | `get_thread_configuration_actor` | primitive | iter-61u — Front only. |
+
+See [[from-our-codebase/wired-vs-primitive]] for the broader wired-vs-primitive snapshot across iter-61p..61u landings.
+
 ## Gotchas for ff-rdp
 
 - **Iframe-before-top-level race**: bfcache navigations can deliver iframe targets before the top target. `_earlyIframeTargets` caches them until the top arrives (see comment block ~L123).

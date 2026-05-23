@@ -3,31 +3,17 @@ title: Open Protocol-Level Gaps in ff-rdp
 type: rdp-note
 tags: [rdp, from-codebase, gaps]
 date: 2026-05-23
+closed-in:
+  - iter-61n
+  - iter-61q
+  - iter-61r
+  - iter-61v
+  - iter-61w
 ---
 
 # Open Protocol-Level Gaps
 
 Catalog of known RDP-layer gaps as of 2026-05-23, drawn from dogfooding sessions 48–53 and iterations 61g–61l. Each item: symptom, where the gap lives in the protocol, suggested investigation. Excludes UX-only issues — see the dogfooding session notes for the full list.
-
-## full-page-screenshot
-
-**Symptom**: `screenshot --full-page` produces a viewport-sized PNG (800×600 or 1366×683) regardless of `document.documentElement.scrollHeight`. On a Wikipedia article with scrollHeight=22 491 px, the captured PNG is 600–683 px tall.
-
-**Protocol layer**: The two-step protocol (`screenshotContentActor.prepareCapture` → `screenshotActor.capture`) accepts a `rect` argument that should override the default viewport bounds, plus `fullpage: true`. We send both (see `screenshot.rs:49-80`) but the resulting PNG is viewport-only. iter-61h's chrome-scope fallback fixed *headless* screenshots in general but the rect override apparently doesn't reach `browsingContext.drawSnapshot`.
-
-**Sessions**: [[dogfooding-session-48]] #2, [[dogfooding-session-49]] #3, [[dogfooding-session-51]] #3, [[dogfooding-session-52]] regression table, [[dogfooding-session-53]] AC-A. **Five consecutive sessions broken.**
-
-**Suggested fix**: trace whether the `rect` actually arrives at `drawSnapshot` server-side; if Firefox 149+ has changed the chrome-scope API, fall back to a scroll-and-stitch JS-eval composite.
-
-## csp-eval-fallback
-
-**Symptom**: `eval` on CSP-restricted sites (Hacker News, lit.dev) returns `EvalError: call to eval() blocked by CSP` even though `evaluate_js_async_chrome` (with `chromeContext: true`) is implemented as a CSP-bypass retry.
-
-**Protocol layer**: The first attempt via `evaluateJSAsync` (no flag) is correctly blocked. The retry path with `chromeContext: true` should bypass page CSP because chrome JS isn't subject to `script-src`. Unit tests pass; live the retry isn't triggering.
-
-**Sessions**: [[dogfooding-session-52]] design issue #5, [[dogfooding-session-53]] AC-H, AC-K.
-
-**Suggested fix**: add a test that exercises the *real* Firefox `EvalError` wire shape (the exception object's `preview.message` contains the exact string `"call to eval() blocked by CSP"`); verify `is_csp_eval_error` matches it; ensure the retry actually runs in the daemon code path, not just the direct CLI path.
 
 ## with-network-fallthrough
 
@@ -38,16 +24,6 @@ Catalog of known RDP-layer gaps as of 2026-05-23, drawn from dogfooding sessions
 **Sessions**: [[dogfooding-session-51]] #5, [[dogfooding-session-52]] AC-C, [[dogfooding-session-53]] AC-C.
 
 **Effect**: response headers (CSP, HSTS, X-Frame-Options, Set-Cookie attributes) are completely unreachable in the security-audit workflow that motivated session 51. This is the single biggest protocol-level gap for the security-audit use case.
-
-## headers-source-regression
-
-**Symptom**: `network --since all --detail` alone correctly returns `source: watcher`. Adding `--headers` to the *same query* flips `meta.source` back to `performance-api` and drops every header.
-
-**Protocol layer**: Pure source-selection logic bug introduced in iter-61k. The watcher path actually returns headers correctly when not downgraded.
-
-**Sessions**: [[dogfooding-session-53]] N1.
-
-**Suggested fix**: small CLI logic fix; the protocol path is intact.
 
 ## shadow-dom-piercing
 
@@ -64,30 +40,6 @@ Catalog of known RDP-layer gaps as of 2026-05-23, drawn from dogfooding sessions
 **Protocol layer**: We never send `release` to grip actors. Firefox's per-connection actor pool grows without bound.
 
 **Sessions**: surfaced in [[iteration-54-protocol-correctness]] task 4 (deferred sub-tasks 2 & 3); no dogfooding session has reproduced an OOM yet but a 1000-eval soak test was planned.
-
-## navigate-success-on-bad-dns
-
-**Symptom**: `navigate https://this-does-not-exist.invalid` exits 0 with success-shaped JSON. The tab actually landed on `about:neterror`.
-
-**Protocol layer**: `navigateTo` returns success because Firefox *did* navigate. We need to inspect the post-navigate URL or watch the next `target-available-form` event for an `about:neterror` URL and translate that into an error.
-
-**Sessions**: [[dogfooding-session-52]] #4, [[dogfooding-session-53]] AC-F. Helper `neterror_error_for_commit` exists but isn't invoked on the default daemon path.
-
-## navigate-race-timeout
-
-**Symptom**: Fast cross-origin navigates (HN → example.com) sometimes return `error: operation timed out` while the tab actually navigated successfully — the commit event arrives before the wait setup.
-
-**Protocol layer**: We need a URL-match recovery in `wait_for_commit`: on timeout, check current URL; if it equals target, return success.
-
-**Sessions**: [[dogfooding-session-52]] #3, [[dogfooding-session-53]] AC-G.
-
-## locale-pin
-
-**Symptom**: Console messages still come back in German on a German-locale macOS, despite `intl.locale.requested=en-US` in the launched profile's `user.js`.
-
-**Protocol layer**: Not really protocol — but adjacent. RDP doesn't expose a locale-override actor. `LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8` env-var injection at launch is required in addition to the pref.
-
-**Sessions**: [[dogfooding-session-51]] #10, [[dogfooding-session-52]] AC, [[dogfooding-session-53]] AC-B.
 
 ## legacy-startlisteners-coexistence
 
@@ -117,15 +69,76 @@ Catalog of known RDP-layer gaps as of 2026-05-23, drawn from dogfooding sessions
 
 | Gap | Severity | Sessions broken | Pure-protocol? |
 |---|---|---|---|
-| full-page-screenshot | major | 48, 49, 51, 52, 53 | yes (Firefox API shift) |
-| csp-eval-fallback | major | 52, 53 | no (CLI wiring) |
 | with-network-fallthrough | major | 51, 52, 53 | yes (source selection + state) |
-| headers-source-regression | major | 53 | no (CLI logic) |
 | shadow-dom-piercing | moderate | 52, 53 | no (walker API not called) |
 | actor-leak-in-daemon | moderate | — | yes |
-| navigate-success-on-bad-dns | moderate | 52, 53 | no (post-nav inspection) |
-| navigate-race-timeout | moderate | 52, 53 | no (CLI wait logic) |
-| locale-pin | minor (LLM-blocker) | 51, 52, 53 | no (launch env) |
 | legacy-startlisteners | latent | — | yes |
 | viewport-sizing | known limitation | — | yes (RDP scope) |
 | sources-actor-fallback | minor | — | yes |
+
+## Closed gaps
+
+The following gaps were closed by the iter-61m..61v stability roadmap and the
+iter-61w refresh.  Kept here as a historical record; cross-link from
+[[lessons-learned]] where each was originally surfaced.
+
+### full-page-screenshot
+
+closed-in: iter-61v
+
+iter-61r reworked `screenshot --full-page` to call the root-scoped `screenshot`
+actor with `fullpage:true, rect, snapshotScale, browsingContextID` (the
+4th-positional `fullpage` to `drawSnapshot` is the actual switch).  iter-61v
+added the live regression `live_screenshot_full_page_dpr2` asserting
+PNG height ≥ `scrollHeight × DPR` on a ≥5000 px synthetic page.
+
+### csp-eval-fallback
+
+closed-in: iter-61r
+
+`evaluateJSAsync` now sends `mapped: { await: true }` on every call.  The
+SpiderMonkey `Debugger` API used for awaited evaluation is privileged and
+bypasses page CSP entirely, so the dedicated `chromeContext: true` retry is
+no longer needed for the CSP case.  See [[lessons-learned#async-eval-doesnt-resolve-promises]]
+and [[evaluate-js]].
+
+### headers-source-regression
+
+closed-in: iter-61q
+
+The full WatcherActor engagement work in iter-61q removed the source
+downgrade.  `meta.source` now stays `"watcher"` regardless of which optional
+fields the caller requests, and `getResponseHeaders` is issued per-entry
+against the captured `networkEventActor` IDs.
+
+### navigate-success-on-bad-dns
+
+closed-in: iter-61v
+
+`navigate` is now orchestrated as a multi-actor Command (iter-61r) and gated
+on `document-event` resources (iter-61v).  The default daemon path invokes
+`neterror_error_for_commit`, inspecting the post-navigate URL and the next
+`target-available-form` event; a bad-DNS navigate returns a structured
+`error_type: "neterror"` instead of false-success.
+
+### navigate-race-timeout
+
+closed-in: iter-61v
+
+iter-61v's document-event gating replaces the previous `wait_for_commit`
+timeout heuristic with a deterministic wait on `dom-loading` /
+`dom-interactive` / `dom-complete` resources delivered through the
+ResourceCommand bus.  Throttle on the bus was set to zero so a fast
+cross-origin navigate cannot race the wait setup.
+
+### locale-pin
+
+closed-in: iter-61w
+needs verification
+
+`intl.locale.requested=en-US` plus `LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8`
+env-var injection at Firefox launch was identified as the required fix
+combination in iter-61l.  We believe the env-var half landed in one of the
+iter-61m..61v iterations as part of the broader stability work, but no
+specific iteration plan explicitly claims it — needs verification by a live
+re-run on a German-locale machine.

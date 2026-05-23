@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use ff_rdp_core::transport::RdpTransport;
 use ff_rdp_core::{
     Grip, LongStringActor, NetworkResource, NetworkResourceUpdate, ProtocolError, WebConsoleActor,
-    parse_network_resource_updates, parse_network_resources,
+    parse_network_resource_updates, parse_network_resources, sanitize_for_terminal,
 };
 use serde_json::{Value, json};
 
@@ -336,7 +336,10 @@ pub(crate) fn performance_api_fallback(ctx: &mut super::connect_tab::ConnectedTa
     // If the eval threw an exception treat it as an empty result.
     if let Some(ref exc) = eval_result.exception {
         let msg = exc.message.as_deref().unwrap_or("(no message)");
-        eprintln!("hint: performance-api fallback JS exception: {msg}");
+        eprintln!(
+            "hint: performance-api fallback JS exception: {}",
+            sanitize_for_terminal(msg)
+        );
         return vec![];
     }
 

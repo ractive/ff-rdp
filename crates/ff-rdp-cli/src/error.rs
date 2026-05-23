@@ -247,8 +247,11 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
                 expected: format!("<= {max} bytes"),
                 got: format!("{declared} bytes"),
             },
-            // EvalNavigatedDuringEval remains Internal.
-            ff_rdp_core::ProtocolError::EvalNavigatedDuringEval => {
+            // EvalNavigatedDuringEval and BulkPacketUnsupported remain Internal.
+            // Bulk frames are not something the CLI handles; they are skipped
+            // by the daemon and surfaced as Internal for direct-connect callers.
+            ff_rdp_core::ProtocolError::EvalNavigatedDuringEval
+            | ff_rdp_core::ProtocolError::BulkPacketUnsupported { .. } => {
                 Self::Internal(anyhow::Error::new(err))
             }
         }

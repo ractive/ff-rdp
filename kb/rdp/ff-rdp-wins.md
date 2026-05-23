@@ -3,6 +3,8 @@ title: "RDP findings that should drive ff-rdp improvements"
 type: rdp-note
 tags: [rdp, ff-rdp, action-items, derived-from-wiki]
 date: 2026-05-23
+closed-in:
+  - iter-61t
 ---
 
 # RDP findings that should drive `ff-rdp` improvements
@@ -56,6 +58,8 @@ This addresses iter-61l AC-H and the largest single LLM-friendliness gap in `ff-
 Refs: `devtools/server/actors/watcher.js`, `devtools/shared/resources/` and our [[rdp/resources/README|resources/]] index.
 
 ## 4. consoleActor staleness — Firefox already invalidates; we should too
+
+**Status: wired in iter-61t.** The daemon dispatcher subscribes to `target-available-form` / `target-destroyed-form` and calls `Registry::invalidate_target` on receipt; cached `consoleActor` references are dropped automatically and re-resolved from the descriptor on the next call.  See [[iteration-61t-wire-the-foundations]].
 
 **Finding** ([[devtools-client]]):
 DevTools' `DevToolsClient` invalidates Front references on `targetDestroyed` events. When a target dies (cross-origin navigation, about:neterror, process switch), its actor IDs become invalid. Firefox handles this transparently via the descriptor's `targetAvailable`/`targetDestroyed` events.
