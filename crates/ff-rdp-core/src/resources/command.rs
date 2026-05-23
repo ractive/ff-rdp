@@ -33,6 +33,7 @@
 //! Reference: `devtools/shared/commands/resource/resource-command.js:73-79`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use serde_json::Value;
@@ -63,7 +64,7 @@ pub struct SubscriptionId(u64);
 struct Subscriber {
     id: SubscriptionId,
     types: Vec<ResourceType>,
-    tx: Sender<Resource>,
+    tx: Sender<Arc<Resource>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +106,26 @@ impl ResourceCommand {
         }
     }
 
-    /// Subscribe to `types`.  Returns a `(SubscriptionId, Receiver<Resource>)`.
+    /// Register a subscriber directly (bypassing the wire) for testing.
+    ///
+    /// Does NOT send `watchResources` — only used in benchmarks and unit tests
+    /// that drive `dispatch_event` without a real transport.
+    #[cfg(test)]
+    pub(crate) fn add_subscriber_direct(
+        &mut self,
+        types: Vec<ResourceType>,
+        tx: Sender<Arc<Resource>>,
+    ) -> SubscriptionId {
+        for &t in &types {
+            *self.ref_counts.entry(t).or_insert(0) += 1;
+        }
+        let id = SubscriptionId(self.next_sub_id);
+        self.next_sub_id += 1;
+        self.subscribers.push(Subscriber { id, types, tx });
+        id
+    }
+
+    /// Subscribe to `types`.  Returns a `(SubscriptionId, Receiver<Arc<Resource>>)`.
     ///
     /// For any type not already on the wire, this sends a `watchResources`
     /// request via `transport`.  Types already subscribed by another subscriber
@@ -117,7 +137,7 @@ impl ResourceCommand {
         &mut self,
         transport: &mut RdpTransport,
         types: &[ResourceType],
-    ) -> Result<(SubscriptionId, Receiver<Resource>), ProtocolError> {
+    ) -> Result<(SubscriptionId, Receiver<Arc<Resource>>), ProtocolError> {
         // Deduplicate the caller-supplied slice so that duplicate entries don't
         // corrupt ref-counts or produce duplicate wire strings.
         let mut deduped: Vec<ResourceType> = Vec::with_capacity(types.len());
@@ -146,7 +166,7 @@ impl ResourceCommand {
 
         let id = SubscriptionId(self.next_sub_id);
         self.next_sub_id += 1;
-        let (tx, rx) = mpsc::channel::<Resource>();
+        let (tx, rx) = mpsc::channel::<Arc<Resource>>();
         self.subscribers.push(Subscriber {
             id,
             types: deduped,
@@ -220,13 +240,16 @@ impl ResourceCommand {
         };
 
         // Fan out and collect dead subscriber IDs.
+        // Wrap each Resource in Arc once so all subscribers share the same
+        // allocation — no per-subscriber clone of the Resource data.
         let mut dead: Vec<SubscriptionId> = Vec::new();
         for resource in resources {
             let type_name = resource.type_name();
             let rt = ResourceType::from_wire_str(&type_name);
+            let arc = Arc::new(resource);
             for sub in &self.subscribers {
                 let wants = rt.is_some_and(|t| sub.types.contains(&t));
-                if wants && sub.tx.send(resource.clone()).is_err() {
+                if wants && sub.tx.send(Arc::clone(&arc)).is_err() {
                     dead.push(sub.id);
                 }
             }
@@ -387,11 +410,11 @@ mod tests {
     /// Build a minimal `ResourceCommand` that has one subscriber registered
     /// for `NetworkEvent` without going through the wire — we bypass
     /// `subscribe` and insert directly so tests have no transport dependency.
-    fn bus_with_net_subscriber() -> (ResourceCommand, std::sync::mpsc::Receiver<Resource>) {
+    fn bus_with_net_subscriber() -> (ResourceCommand, std::sync::mpsc::Receiver<Arc<Resource>>) {
         let watcher: ActorId = ActorId::from("conn0/watcher1");
         let mut bus = ResourceCommand::new(watcher);
 
-        let (tx, rx) = std::sync::mpsc::channel::<Resource>();
+        let (tx, rx) = std::sync::mpsc::channel::<Arc<Resource>>();
         bus.subscribers.push(Subscriber {
             id: SubscriptionId(1),
             types: vec![ResourceType::NetworkEvent],
@@ -419,14 +442,14 @@ mod tests {
 
         bus.dispatch_event(&packet);
 
-        let events: Vec<Resource> = rx.try_iter().collect();
+        let events: Vec<Arc<Resource>> = rx.try_iter().collect();
         assert_eq!(
             events.len(),
             1,
             "subscriber should receive exactly 1 Destroyed event"
         );
 
-        match &events[0] {
+        match events[0].as_ref() {
             Resource::Destroyed {
                 resource_type,
                 resource_id,
@@ -452,10 +475,10 @@ mod tests {
 
         bus.dispatch_event(&packet);
 
-        let events: Vec<Resource> = rx.try_iter().collect();
+        let events: Vec<Arc<Resource>> = rx.try_iter().collect();
         assert_eq!(events.len(), 1);
 
-        match &events[0] {
+        match events[0].as_ref() {
             Resource::Destroyed { resource_id, .. } => {
                 assert_eq!(resource_id, "99");
             }
@@ -470,7 +493,7 @@ mod tests {
         let watcher: ActorId = ActorId::from("conn0/watcher1");
         let mut bus = ResourceCommand::new(watcher);
 
-        let (tx, rx) = std::sync::mpsc::channel::<Resource>();
+        let (tx, rx) = std::sync::mpsc::channel::<Arc<Resource>>();
         bus.subscribers.push(Subscriber {
             id: SubscriptionId(1),
             types: vec![ResourceType::ConsoleMessage],
@@ -488,7 +511,7 @@ mod tests {
         });
         bus.dispatch_event(&packet);
 
-        let events: Vec<Resource> = rx.try_iter().collect();
+        let events: Vec<Arc<Resource>> = rx.try_iter().collect();
         assert!(
             events.is_empty(),
             "console-message subscriber must not receive network-event destroyed"
@@ -528,7 +551,7 @@ mod tests {
         });
         bus.dispatch_event(&destroyed);
 
-        let events: Vec<Resource> = rx.try_iter().collect();
+        let events: Vec<Arc<Resource>> = rx.try_iter().collect();
         assert_eq!(
             events.len(),
             2,
@@ -536,10 +559,10 @@ mod tests {
         );
 
         assert!(
-            matches!(events[0], Resource::NetworkEvent(_)),
+            matches!(events[0].as_ref(), Resource::NetworkEvent(_)),
             "first event should be NetworkEvent"
         );
-        match &events[1] {
+        match events[1].as_ref() {
             Resource::Destroyed {
                 resource_type,
                 resource_id,
@@ -603,6 +626,75 @@ mod tests {
             median_ns < BUDGET_NS,
             "bus dispatch median latency {median_ns} ns exceeds 5 ms budget — \
              check for accidental timer/throttle re-introduction"
+        );
+    }
+
+    /// Theme H (iter-61x): `bench_bus_fanout_4_subscribers` — verify that
+    /// fanning out one event to 4 subscribers costs well under 5 ms per call.
+    ///
+    /// Before the `Arc<Resource>` change each subscriber received an
+    /// individually-cloned `Resource`.  With `Arc<Resource>` only 4 pointer
+    /// copies are made regardless of the payload size.
+    ///
+    /// This test exercises the `Arc` path: 4 subscribers, 1 000 events, each
+    /// carrying a network-event payload.  We assert that the 50th-percentile
+    /// latency stays below the same 5 ms wall-clock budget used by the single-
+    /// subscriber bench — the pointer copies must not materially increase the
+    /// per-dispatch cost over the baseline.
+    #[test]
+    fn bench_bus_fanout_4_subscribers() {
+        use std::time::Instant;
+
+        const ITERS: usize = 1_000;
+        const BUDGET_NS: u128 = 5_000_000; // 5 ms (loose; catches regressions)
+
+        let mut bus = ResourceCommand::new(ActorId::from("conn0/watcher1"));
+
+        // Add 4 subscribers for the same resource type (no wire calls needed
+        // because we drive dispatch_event directly).
+        let rxs: Vec<_> = (0..4)
+            .map(|_| {
+                let (tx, rx) = mpsc::channel::<std::sync::Arc<Resource>>();
+                let sub_id = bus.add_subscriber_direct(vec![ResourceType::NetworkEvent], tx);
+                (sub_id, rx)
+            })
+            .collect();
+
+        let packet = json!({
+            "type": "resources-available-array",
+            "array": [
+                ["network-event", [{
+                    "actor": "conn0/netEvent1",
+                    "method": "GET",
+                    "url": "https://example.com/",
+                    "isXHR": false,
+                    "cause": {"type": "document"},
+                    "startedDateTime": "2026-01-01T00:00:00Z",
+                    "timeStamp": 1000.0,
+                    "resourceId": 1_u64
+                }]]
+            ]
+        });
+
+        let mut times_ns = Vec::with_capacity(ITERS);
+
+        for _ in 0..ITERS {
+            let t0 = Instant::now();
+            bus.dispatch_event(&packet);
+            times_ns.push(t0.elapsed().as_nanos());
+            // Drain all 4 receivers to avoid unbounded channel growth.
+            for (_, rx) in &rxs {
+                while rx.try_recv().is_ok() {}
+            }
+        }
+
+        times_ns.sort_unstable();
+        let median_ns = times_ns[ITERS / 2];
+
+        assert!(
+            median_ns < BUDGET_NS,
+            "bus fanout-4 median latency {median_ns} ns exceeds 5 ms budget — \
+             Arc<Resource> clone overhead is too high"
         );
     }
 }

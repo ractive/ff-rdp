@@ -2,8 +2,8 @@ use std::io::Read;
 
 use anyhow::Context as _;
 use ff_rdp_core::{
-    ActorId, Grip, ObjectActor, ProtocolError, ScopedGrip, TabActor, WebConsoleActor,
-    sanitize_for_terminal,
+    ActorId, Grip, ObjectActor, ProcessDescriptorFront, ProtocolError, RootActor, ScopedGrip,
+    TabActor, WebConsoleActor, sanitize_for_terminal,
 };
 use serde_json::json;
 
@@ -149,6 +149,26 @@ fn is_csp_eval_error(exc_message: &str) -> bool {
     is_csp_message(m)
 }
 
+/// Obtain the chrome-privileged console actor from the browser parent process.
+///
+/// Calls `root.getProcess(0)` → `processDescriptor.getTarget()` to get the
+/// parent-process target, then returns its `consoleActor` ID.
+///
+/// This console actor is chrome-privileged and does not require the deprecated
+/// `chromeContext: true` flag that was used on the tab console actor.
+///
+/// Returns `None` when the root actor does not support `getProcess` (older
+/// Firefox builds or content-only builds), so callers can gracefully degrade.
+fn get_chrome_console_actor(
+    transport: &mut ff_rdp_core::RdpTransport,
+    registry: &ff_rdp_core::Registry,
+) -> Option<ActorId> {
+    let proc_descriptor_id = RootActor::get_process(transport, 0).ok()?;
+    let proc_front = ProcessDescriptorFront::new(proc_descriptor_id, registry.clone(), None);
+    let target = proc_front.get_target(transport).ok()?;
+    Some(target.console_actor)
+}
+
 /// Evaluate `script` via the console actor, automatically retrying with the
 /// chrome context when the first attempt is blocked by page CSP.
 ///
@@ -165,19 +185,22 @@ fn is_csp_eval_error(exc_message: &str) -> bool {
 ///
 /// So the bypass works as follows:
 /// 1. Try the normal path with `script` (which may include the isolation wrapper).
-/// 2. On CSP error, retry with `fallback_script` (the raw user script, no
-///    `eval()` wrapper) via `chromeContext: true`.
+/// 2. On CSP error, obtain the parent-process console actor via
+///    `root.getProcess(0)` → `processDescriptor.getTarget()`.
+/// 3. Retry with `fallback_script` (no `eval()` wrapper) against the
+///    chrome-privileged parent-process console actor.
 ///
-/// `chromeContext: true` additionally marks the evaluation as chrome-privileged,
-/// which means `document`, `window`, etc. are still the page globals (for DOM
-/// access) but the evaluation is not subject to content page restrictions.
+/// The parent-process console actor is chrome-privileged by design; it does not
+/// require the deprecated `chromeContext: true` flag that was previously sent on
+/// the tab console actor.
 ///
-/// The key insight (iter-61l): even with `chromeContext: true`, calling
-/// `eval()` from within a script on a CSP-restricted page is still blocked.
-/// The fix is to send the raw expression directly (no `eval()` call) in the
-/// fallback so Firefox evaluates it via its built-in DevTools mechanism.
+/// The key insight (iter-61l): even in a privileged context, calling `eval()`
+/// from within a script on a CSP-restricted page is still blocked.  The fix is
+/// to send the raw expression directly so Firefox evaluates it via its built-in
+/// DevTools mechanism (not subject to page CSP).
 fn eval_with_csp_fallback(
     transport: &mut ff_rdp_core::RdpTransport,
+    registry: &ff_rdp_core::Registry,
     console_actor: &ActorId,
     script: &str,
     fallback_script: &str,
@@ -196,15 +219,19 @@ fn eval_with_csp_fallback(
         return Ok((first, false));
     }
 
-    // Retry with chrome context using the fallback script (no eval() wrapper).
-    // If the chrome-context eval itself fails with a protocol error (e.g. the
-    // actor does not support chromeContext), fall back to surfacing the
-    // original CSP exception rather than a confusing internal error.
-    match WebConsoleActor::evaluate_js_async_chrome(transport, console_actor, fallback_script) {
+    // Obtain the parent-process chrome console actor via getProcess(0).
+    // If getProcess is not supported (older Firefox, content-only build), fall
+    // back to surfacing the original CSP exception rather than a confusing error.
+    let Some(chrome_console) = get_chrome_console_actor(transport, registry) else {
+        return Ok((first, false));
+    };
+
+    // Retry with the chrome-privileged parent-process console actor using the
+    // fallback script (no eval() wrapper so page CSP does not apply).
+    match WebConsoleActor::evaluate_js_async(transport, &chrome_console, fallback_script) {
         Ok(result) => Ok((result, true)),
         Err(ProtocolError::ActorError { .. }) => {
-            // Chrome context not available (e.g. content-only build).  Return
-            // the original CSP error so the user gets the real message.
+            // Chrome context not available — return the original CSP error.
             Ok((first, false))
         }
         Err(e) => Err(AppError::from(e)),
@@ -235,11 +262,15 @@ pub fn run(
     // returned by `get_target`.  The retry path below re-fetches the target
     // if the actor turns out to be stale (noSuchActor / unknownActor).
     let console_actor = ctx.target.console_actor.clone();
+    // Clone the registry before the first fallback call to avoid
+    // simultaneous mutable (transport) + immutable (registry) borrows of ctx.
+    let registry = std::sync::Arc::clone(ctx.registry());
 
     // First attempt.  On noSuchActor / unknownActor, refresh the target once
     // and retry — exactly one retry per call_with_refresh contract.
     let (eval_result, used_chrome_context) = match eval_with_csp_fallback(
         ctx.transport_mut(),
+        registry.as_ref(),
         &console_actor,
         &final_script,
         &fallback_script,
@@ -257,6 +288,7 @@ pub fn run(
             ctx.target = fresh_target;
             eval_with_csp_fallback(
                 ctx.transport_mut(),
+                registry.as_ref(),
                 &fresh_console,
                 &final_script,
                 &fallback_script,

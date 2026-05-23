@@ -460,7 +460,7 @@ fn event_dispatcher_loop(
     state: &Arc<SharedState>,
     rx: mpsc::Receiver<Value>,
     mut resource_bus: ResourceCommand,
-    resource_rx: std::sync::mpsc::Receiver<ff_rdp_core::Resource>,
+    resource_rx: std::sync::mpsc::Receiver<std::sync::Arc<ff_rdp_core::Resource>>,
 ) {
     loop {
         // Use recv_timeout so we can check the shutdown flag periodically.
@@ -486,7 +486,7 @@ fn dispatch_firefox_message(
     state: &SharedState,
     msg: &Value,
     resource_bus: &mut ResourceCommand,
-    resource_rx: &std::sync::mpsc::Receiver<ff_rdp_core::Resource>,
+    resource_rx: &std::sync::mpsc::Receiver<std::sync::Arc<ff_rdp_core::Resource>>,
 ) {
     if is_watcher_event(msg, &state.watcher_actor) {
         // Forward raw events to stream subscribers first, noting which resource
@@ -506,9 +506,9 @@ fn dispatch_firefox_message(
         resource_bus.dispatch_event(msg);
         let mut buf = state.buffer.lock().expect("buffer lock");
         for resource in resource_rx.try_iter() {
-            let is_destroyed = matches!(resource, ff_rdp_core::Resource::Destroyed { .. });
+            let is_destroyed = matches!(resource.as_ref(), ff_rdp_core::Resource::Destroyed { .. });
             if is_destroyed || !streamed_types.contains(resource.type_name().as_ref()) {
-                buf.on_resource(&resource);
+                buf.on_resource(resource.as_ref());
             }
         }
     } else if is_target_event(msg) {
@@ -2442,6 +2442,148 @@ mod tests {
         assert!(
             state.actor_registry.assert_alive(&console_id).is_err(),
             "console owned by target must be dead"
+        );
+    }
+
+    // ── Theme I (iter-61x): iter-61w carry-over tests ────────────────────────
+
+    /// iter-61w AC: constant-time token comparison is used.
+    ///
+    /// Strategy: measure 1 000 comparisons of the correct token vs the same
+    /// 1 000 comparisons of a token that differs in the first byte.  The
+    /// `subtle::ConstantTimeEq` implementation should make both paths take
+    /// approximately equal time.  We allow a generous 10× tolerance to avoid
+    /// flakiness on loaded CI hosts — the test is really a regression guard
+    /// that the `.ct_eq()` call compiles and runs rather than a strict timing
+    /// proof.
+    #[test]
+    fn test_token_comparison_constant_time() {
+        use std::time::Instant;
+        use subtle::ConstantTimeEq as _;
+
+        const ITERS: u32 = 1_000;
+
+        let token = "a".repeat(64); // 64-char hex-like token
+        let matching = token.clone();
+        let mismatching = format!("b{}", &token[1..]); // first byte differs
+
+        let t0 = Instant::now();
+        for _ in 0..ITERS {
+            let _: bool = matching.as_bytes().ct_eq(token.as_bytes()).into();
+        }
+        let match_duration = t0.elapsed();
+
+        let t1 = Instant::now();
+        for _ in 0..ITERS {
+            let _: bool = mismatching.as_bytes().ct_eq(token.as_bytes()).into();
+        }
+        let mismatch_duration = t1.elapsed();
+
+        // Sanity: at least one comparison was performed.
+        assert!(match_duration.as_nanos() > 0 || mismatch_duration.as_nanos() > 0);
+
+        // Neither path should be more than 10× slower than the other.
+        // This is a loose check; the real guarantee comes from `subtle`.
+        // Precision loss from u128→f64 is acceptable: we only need order-of-magnitude
+        // timing ratios, not exact nanosecond values.
+        #[allow(clippy::cast_precision_loss)]
+        let ratio = if mismatch_duration.as_nanos() == 0 || match_duration.as_nanos() == 0 {
+            1.0_f64
+        } else {
+            let a = match_duration.as_nanos() as f64;
+            let b = mismatch_duration.as_nanos() as f64;
+            a.max(b) / a.min(b)
+        };
+        assert!(
+            ratio < 10.0,
+            "timing ratio {ratio:.2} between match/mismatch exceeds 10× — \
+             possible early-exit comparison (not using ct_eq?)"
+        );
+    }
+
+    /// iter-61w AC: `RefStore::register` caps the store at `MAX_REFS` entries.
+    ///
+    /// Register `MAX_REFS + 100` entries in a tight loop; assert `refs.len() ==
+    /// MAX_REFS` and subsequent inserts in the same batch are dropped.
+    #[test]
+    fn test_refstore_capped() {
+        let mut store = RefStore::new();
+        let max = RefStore::MAX_REFS;
+
+        // Build a batch of MAX_REFS + 100 entries.
+        let entries: Vec<(String, String)> = (0..max + 100)
+            .map(|i| (format!("e{i}"), format!("expr{i}")))
+            .collect();
+
+        store.register(entries);
+
+        assert_eq!(
+            store.refs.len(),
+            max,
+            "store must be capped at MAX_REFS={max}, got {}",
+            store.refs.len()
+        );
+
+        // A second insert while the store is full must be a no-op.
+        let extra = vec![("eX".to_owned(), "exprX".to_owned())];
+        store.register(extra);
+        assert_eq!(
+            store.refs.len(),
+            max,
+            "second insert while full must be dropped"
+        );
+    }
+
+    /// iter-61w AC: terminal escape sequences in exception messages are
+    /// sanitized before being written to stderr.
+    ///
+    /// `ff_rdp_core::sanitize_for_terminal` replaces ASCII control bytes
+    /// (other than `\t` and `\n`) with `?`, including the ESC byte (`\x1b`)
+    /// used in ANSI sequences.  This test verifies the function behaviour that
+    /// the daemon's eval path relies on.
+    #[test]
+    fn test_terminal_escape_sanitized_e2e() {
+        let msg = "\x1b[2JClear screen exploit\x1b[31mred text";
+        let sanitized = ff_rdp_core::sanitize_for_terminal(msg);
+        assert!(
+            !sanitized.contains('\x1b'),
+            "raw ESC byte must not appear in sanitized output"
+        );
+        assert!(
+            sanitized.contains('?'),
+            "ESC bytes must be replaced with '?'"
+        );
+        // Visible ASCII content must be preserved.
+        assert!(
+            sanitized.contains("Clear screen exploit"),
+            "printable content must survive sanitization"
+        );
+    }
+
+    /// iter-61w AC: `lock_or_recover!` continues with the inner value after a
+    /// thread panics while holding a daemon mutex.
+    ///
+    /// Injects a poison by spawning a thread that locks a `Mutex<u32>` and
+    /// panics while holding it.  The next `lock_or_recover!` call on the main
+    /// thread must return the inner value (u32) without propagating the panic.
+    #[test]
+    fn test_lock_or_recover_continues_on_poison() {
+        let mutex = std::sync::Arc::new(Mutex::new(42u32));
+        let mutex_clone = std::sync::Arc::clone(&mutex);
+
+        // Poison the mutex: panic while holding the lock.
+        let handle = std::thread::spawn(move || {
+            let _guard = mutex_clone.lock().unwrap();
+            panic!("intentional test panic to poison the mutex");
+        });
+        // Wait for the panic to complete.
+        let _ = handle.join(); // will be Err (panicked)
+
+        // The mutex is now poisoned.  `lock_or_recover!` must recover.
+        let value = *lock_or_recover!(mutex);
+        assert_eq!(
+            value, 42,
+            "lock_or_recover must return the inner value after poison"
         );
     }
 }

@@ -378,6 +378,9 @@ Output: {\"results\": {\"navigated\": \"...\", \"committed_url\": \"...\", \"rea
         /// Skip waiting for the new document to commit; return immediately after the navigate request is acknowledged (pre-61g fire-and-forget behaviour).
         #[arg(long)]
         no_wait: bool,
+        /// Readiness level to wait for before returning: `loading` (dom-loading), `interactive` (dom-interactive), or `complete` (dom-complete, default). Ignored when `--with-network` is set: that mode uses the network-drain settle as its commit signal.
+        #[arg(long, value_name = "LEVEL", default_value = "complete", value_enum)]
+        wait: crate::commands::navigate::WaitLevel,
         /// After the document commits, additionally wait for a predicate. Accepts selector:<css>, text:<substr>, url:<regex>, or gone:<css>.
         /// Uses the --timeout budget. On failure surfaces a descriptive error.
         #[arg(long, value_name = "PREDICATE")]

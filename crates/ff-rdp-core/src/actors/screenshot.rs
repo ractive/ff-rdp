@@ -55,12 +55,21 @@ impl ScreenshotActor {
     ) -> Result<String, ProtocolError> {
         let snapshot_scale = prep.window_dpr * prep.window_zoom;
 
-        let mut args = json!({
-            "browsingContextID": browsing_context_id,
-            "fullpage": full_page,
-            "dpr": prep.window_dpr,
-            "snapshotScale": snapshot_scale,
-        });
+        let mut args = if (snapshot_scale - 1.0).abs() < 1e-6 {
+            // Omit snapshotScale when it equals the server default (1.0).
+            json!({
+                "browsingContextID": browsing_context_id,
+                "fullpage": full_page,
+                "dpr": prep.window_dpr,
+            })
+        } else {
+            json!({
+                "browsingContextID": browsing_context_id,
+                "fullpage": full_page,
+                "dpr": prep.window_dpr,
+                "snapshotScale": snapshot_scale,
+            })
+        };
 
         // Forward the capture rect if present (required for fullpage/element captures).
         if let Some(ref rect) = prep.rect {

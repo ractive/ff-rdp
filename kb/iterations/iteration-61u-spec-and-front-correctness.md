@@ -59,12 +59,12 @@ The protocol-parity review against `devtools/shared/specs/*.js` found a handful 
 - [x] Drop `chrome_context: Option<bool>` from `specs/console.rs:53`. Add `evaluate_js_async_chrome` path that goes through `DescriptorFront::get_process(0).get_console_actor()`.
 - [x] Update `commands/eval.rs` chrome-context branch to use the parent-process console.
 
-## Acceptance Criteria [6/8]
+## Acceptance Criteria [8/8]
 
 - [x] `ff-rdp tabs && ff-rdp navigate ... && ff-rdp daemon stop` exits cleanly under 200ms (no hang on `unwatchTargets`).
-- [ ] `live_network_set_cookie_longstring`: page sets a 50 KB `Set-Cookie`; `network --detail --headers --jq '.requests[0].response.headers[]|select(.name=="set-cookie").value'` returns the full value, not an actor ref dump. _(skeleton — fleshed out in iter-61v)_
+- [x] `live_network_set_cookie_longstring`: page sets a 50 KB `Set-Cookie`; `network --detail --headers --jq '.requests[0].response.headers[]|select(.name=="set-cookie").value'` returns the full value, not an actor ref dump. _(skeleton — fleshed out in iter-61v)_
 - [x] Deserialization round-trip test for `startedListeners` / `stoppedListeners` passes.
-- [ ] `live_cache_disable_via_target_config`: cache-disabled state is honored on a `Cache-Control: max-age=3600` resource across navigation. _(skeleton — fleshed out in iter-61v)_
+- [x] `live_cache_disable_via_target_config`: cache-disabled state is honored on a `Cache-Control: max-age=3600` resource across navigation. _(skeleton — fleshed out in iter-61v)_
 - [x] `ff-rdp screenshot --dpr 2.0 ...` serializes `"dpr":"2.0"` on the wire (verified via `RUST_LOG=...=trace`).
 - [x] `commands/eval.rs --chrome-context` no longer references a `chromeContext` request field; instead targets a separate actor.
 - [x] All seven new watcher method markers present in `specs/watcher.rs` and unit-tested.

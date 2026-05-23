@@ -222,23 +222,23 @@ fn bus_fans_out_to_matching_subscribers_only() {
     bus.dispatch_event(&console_packet);
 
     // Subscriber A: should have received exactly 1 network event.
-    let a_events: Vec<Resource> = rx_a.try_iter().collect();
+    let a_events: Vec<std::sync::Arc<Resource>> = rx_a.try_iter().collect();
     assert_eq!(a_events.len(), 1, "subscriber A should get 1 event");
     assert!(
-        matches!(a_events[0], Resource::NetworkEvent(_)),
+        matches!(a_events[0].as_ref(), Resource::NetworkEvent(_)),
         "subscriber A should get a NetworkEvent"
     );
 
     // Subscriber B: should have received exactly 1 console message.
-    let b_events: Vec<Resource> = rx_b.try_iter().collect();
+    let b_events: Vec<std::sync::Arc<Resource>> = rx_b.try_iter().collect();
     assert_eq!(b_events.len(), 1, "subscriber B should get 1 event");
     assert!(
-        matches!(b_events[0], Resource::ConsoleMessage(_)),
+        matches!(b_events[0].as_ref(), Resource::ConsoleMessage(_)),
         "subscriber B should get a ConsoleMessage"
     );
 
     // Subscriber C: should have received both.
-    let c_events: Vec<Resource> = rx_c.try_iter().collect();
+    let c_events: Vec<std::sync::Arc<Resource>> = rx_c.try_iter().collect();
     assert_eq!(c_events.len(), 2, "subscriber C should get 2 events");
 
     drop(bus);

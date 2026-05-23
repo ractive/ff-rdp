@@ -423,9 +423,4 @@ mod tests {
         let err = ff_rdp_core::ProtocolError::Timeout;
         assert!(!is_actor_module_load_failure(&err));
     }
-
-    // NOTE: `live_screenshot_full_page_dpr2` is not implemented in this
-    // iteration — its AC remains unchecked in the iteration plan.  Adding a
-    // stub here would falsely advertise coverage in CI, so the test will land
-    // alongside the real DPR=2 live harness (separate iteration).
 }

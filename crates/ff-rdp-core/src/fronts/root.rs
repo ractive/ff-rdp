@@ -3,6 +3,7 @@ use serde_json::Value;
 use crate::actors::root::RootActor;
 use crate::actors::tab::TabInfo;
 use crate::error::{ActorErrorKind, ProtocolError};
+use crate::fronts::ProcessDescriptorFront;
 use crate::registry::{Front, FrontKind, Registry};
 use crate::specs::root as spec;
 use crate::transport::RdpTransport;
@@ -63,6 +64,45 @@ impl RootFront {
         })
     }
 
+    /// Get a process descriptor front for the browser process with the given OS `id`.
+    ///
+    /// Pass `id = 0` to get the browser parent process (main process), which
+    /// hosts chrome-privileged APIs including the parent-process console actor.
+    /// The returned [`ProcessDescriptorFront`] can then call `get_target()` to
+    /// obtain the chrome-privileged `consoleActor`.
+    ///
+    /// Sends `getProcess` and skips any push events until the authoritative reply.
+    pub fn get_process(
+        &self,
+        transport: &mut RdpTransport,
+        id: u32,
+    ) -> Result<ProcessDescriptorFront, ProtocolError> {
+        use serde_json::json;
+
+        let actor_id = self.filtered_call_with_args(
+            transport,
+            "getProcess",
+            Some(json!({ "id": id })),
+            |v| {
+                let actor_str = v
+                    .get("processDescriptor")
+                    .and_then(|pd| pd.get("actor"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        ProtocolError::InvalidPacket(
+                            "getProcess response missing 'processDescriptor.actor' field".into(),
+                        )
+                    })?;
+                Ok(ActorId::from(actor_str))
+            },
+        )?;
+        Ok(ProcessDescriptorFront::new(
+            actor_id,
+            self.registry.clone(),
+            Some(self.id.clone()),
+        ))
+    }
+
     /// Send `method` to the root actor and loop, skipping push events (packets
     /// from root that carry a `type` field), then pass the reply through `parse`.
     fn filtered_call<T>(
@@ -71,9 +111,28 @@ impl RootFront {
         method: &str,
         parse: impl FnOnce(Value) -> Result<T, ProtocolError>,
     ) -> Result<T, ProtocolError> {
+        self.filtered_call_with_args(transport, method, None, parse)
+    }
+
+    /// Like [`filtered_call`] but merges extra JSON fields into the request.
+    fn filtered_call_with_args<T>(
+        &self,
+        transport: &mut RdpTransport,
+        method: &str,
+        extra: Option<Value>,
+        parse: impl FnOnce(Value) -> Result<T, ProtocolError>,
+    ) -> Result<T, ProtocolError> {
         use serde_json::json;
 
-        let request = json!({"to": self.id.as_ref(), "type": method});
+        let mut request = json!({"to": self.id.as_ref(), "type": method});
+        if let Some(extra_val) = extra
+            && let (Some(req_obj), Some(extra_obj)) =
+                (request.as_object_mut(), extra_val.as_object())
+        {
+            for (k, v) in extra_obj {
+                req_obj.insert(k.clone(), v.clone());
+            }
+        }
         transport.send(&request)?;
 
         let response = loop {

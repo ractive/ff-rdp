@@ -77,6 +77,33 @@ impl RootActor {
         actor_request(transport, "root", "getRoot", None)
     }
 
+    /// Get the process descriptor actor for a browser process.
+    ///
+    /// Pass `id = 0` to get the browser parent process (the main process that
+    /// hosts chrome-privileged APIs and the parent-process console actor).
+    ///
+    /// Wire call: `{"to": "root", "type": "getProcess", "id": <id>}`.
+    /// Returns the `processDescriptor` actor ID from the response.
+    ///
+    /// Available in Firefox 87+.
+    pub fn get_process(transport: &mut RdpTransport, id: u32) -> Result<ActorId, ProtocolError> {
+        use serde_json::json;
+
+        let response = actor_request(transport, "root", "getProcess", Some(&json!({ "id": id })))?;
+
+        let actor_str = response
+            .get("processDescriptor")
+            .and_then(|pd| pd.get("actor"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ProtocolError::InvalidPacket(
+                    "getProcess response missing 'processDescriptor.actor' field".into(),
+                )
+            })?;
+
+        Ok(ActorId::from(actor_str))
+    }
+
     /// List all browser processes.
     ///
     /// Returns a list of process descriptors.  Use `is_parent` to find the

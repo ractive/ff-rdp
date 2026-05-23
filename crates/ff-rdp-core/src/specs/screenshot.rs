@@ -25,10 +25,24 @@ pub mod request {
     }
 
     /// Inner args object passed inside the outer `{ "args": {...} }` wrapper.
+    ///
+    /// # Non-spec fields
+    ///
+    /// The following three fields are **not** declared in the canonical Firefox
+    /// spec dict at `devtools/shared/specs/screenshot.js:13-20` but are read
+    /// directly by the server actor
+    /// (`devtools/server/actors/utils/capture-screenshot.js`):
+    ///
+    /// - `browsingContextID` — selects the browsing context to capture.
+    /// - `rect` — optional crop rectangle in CSS pixels.
+    /// - `snapshotScale` — optional scale factor; server defaults to `1.0`
+    ///   when absent (treated as `None`).
     #[derive(Debug, Clone, Serialize)]
     #[serde(rename_all = "camelCase")]
     pub struct CaptureArgs {
         /// Firefox expects the wire key `browsingContextID` (uppercase ID).
+        ///
+        /// Non-spec field: not in `devtools/shared/specs/screenshot.js`.
         #[serde(rename = "browsingContextID")]
         pub browsing_context_id: u64,
         pub fullpage: bool,
@@ -39,12 +53,19 @@ pub mod request {
         #[serde(skip_serializing_if = "Option::is_none")]
         pub dpr: Option<String>,
         /// Snapshot scale factor — typically equal to the DPR value as a float.
-        pub snapshot_scale: f64,
+        ///
+        /// Non-spec field: not in `devtools/shared/specs/screenshot.js`.
+        /// When `None`, the field is omitted from the wire packet and the
+        /// server defaults to `1.0`
+        /// (`devtools/server/actors/utils/capture-screenshot.js`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub snapshot_scale: Option<f64>,
         /// Optional delay in milliseconds before capturing — per Firefox spec.
         ///
         /// Useful for waiting for animations or deferred renders to settle.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub delay: Option<String>,
+        /// Non-spec field: not in `devtools/shared/specs/screenshot.js`.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub rect: Option<CaptureRect>,
     }
@@ -111,7 +132,7 @@ mod tests {
                 browsing_context_id: 42,
                 fullpage: false,
                 dpr: None,
-                snapshot_scale: 1.0,
+                snapshot_scale: None,
                 delay: None,
                 rect: None,
             },
@@ -119,9 +140,26 @@ mod tests {
         let v = serde_json::to_value(&args).unwrap();
         assert_eq!(v["args"]["browsingContextID"], 42);
         assert_eq!(v["args"]["fullpage"], false);
-        // dpr is None so it must be omitted from the serialized output.
+        // dpr and snapshotScale are None so they must be omitted.
         assert!(v["args"].get("dpr").is_none());
+        assert!(v["args"].get("snapshotScale").is_none());
         assert!(v["args"].get("rect").is_none());
+    }
+
+    #[test]
+    fn capture_request_serializes_snapshot_scale_when_present() {
+        let args = request::Capture {
+            args: request::CaptureArgs {
+                browsing_context_id: 1,
+                fullpage: false,
+                dpr: None,
+                snapshot_scale: Some(2.0),
+                delay: None,
+                rect: None,
+            },
+        };
+        let v = serde_json::to_value(&args).unwrap();
+        assert_eq!(v["args"]["snapshotScale"], 2.0);
     }
 
     #[test]
@@ -131,7 +169,7 @@ mod tests {
                 browsing_context_id: 1,
                 fullpage: false,
                 dpr: Some("2.0".to_string()),
-                snapshot_scale: 2.0,
+                snapshot_scale: Some(2.0),
                 delay: None,
                 rect: None,
             },
@@ -147,7 +185,7 @@ mod tests {
                 browsing_context_id: 1,
                 fullpage: false,
                 dpr: None,
-                snapshot_scale: 1.0,
+                snapshot_scale: None,
                 delay: Some("500".to_string()),
                 rect: None,
             },
@@ -163,7 +201,7 @@ mod tests {
                 browsing_context_id: 1,
                 fullpage: true,
                 dpr: Some("2.0".to_string()),
-                snapshot_scale: 2.0,
+                snapshot_scale: Some(2.0),
                 delay: None,
                 rect: Some(request::CaptureRect {
                     left: 0.0,
