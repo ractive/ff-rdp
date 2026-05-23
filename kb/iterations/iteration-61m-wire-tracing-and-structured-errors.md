@@ -2,7 +2,7 @@
 title: "Iteration 61m: Wire-level tracing + structured errors"
 type: iteration
 date: 2026-05-23
-status: in-review
+status: completed
 branch: iter-61m/wire-tracing-structured-errors
 depends_on:
   - iteration-61l-dogfood-53-fixes
