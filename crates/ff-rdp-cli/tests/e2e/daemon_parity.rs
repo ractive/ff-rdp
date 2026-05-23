@@ -154,6 +154,8 @@ fn navigate_with_network_daemon_server() -> MockRdpServer {
             load_fixture("start_listeners_response.json"),
         )
         .on("getWatcher", load_fixture("get_watcher_response.json"))
+        // Daemon startup calls watchTargets("frame") before watchResources.
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
         // Daemon startup watchResources has no followups; network events arrive
         // as followups to navigateTo because the daemon streams them in real-time.
         .on(
@@ -191,6 +193,8 @@ fn network_daemon_server() -> MockRdpServer {
             load_fixture("start_listeners_response.json"),
         )
         .on("getWatcher", load_fixture("get_watcher_response.json"))
+        // Daemon startup calls watchTargets("frame") before watchResources.
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
         // watchResources is called at daemon startup. The followups simulate
         // network events that the daemon buffers for later drain by the CLI.
         .on_with_followups(

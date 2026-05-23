@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,6 +19,13 @@ use super::registry::{self, DaemonInfo};
 
 /// Resource types the daemon subscribes to at startup.
 const WATCHED_RESOURCE_TYPES: &[&str] = &["network-event", "console-message", "error-message"];
+
+/// Daemon protocol version sent in the greeting after successful auth.
+///
+/// Increment this whenever the daemon ↔ CLI handshake format changes in a way
+/// that is NOT backward-compatible.  The CLI checks this on startup and exits
+/// with `error_type: "daemon_version_mismatch"` when the versions disagree.
+pub(crate) const DAEMON_PROTOCOL_VERSION: u32 = 1;
 
 /// Per-tab ref store: maps stable `e<N>` handles to JS resolver expressions.
 ///
@@ -135,6 +143,20 @@ struct SharedState {
     /// stores the current value alongside each ref so `resolve-ref` can detect
     /// whether the ref was registered for the current page load.
     nav_generation: AtomicU64,
+    /// Total number of `target-available-form` events received since daemon
+    /// startup.  Exposed via `daemon status` for diagnostics and live tests.
+    target_count: AtomicU64,
+    /// Send half of the Firefox-reader → dispatcher channel.
+    ///
+    /// The Firefox reader thread pushes every inbound message here instead of
+    /// routing it inline.  A dedicated dispatcher thread drains the channel and
+    /// fans out to stream subscribers / `rpc_writer`, keeping the reader hot
+    /// path free from lock contention with the client-handler threads.
+    ///
+    /// `SyncSender` with a bounded capacity (4096) so a crashed dispatcher does
+    /// not cause unbounded memory growth; the bound is large enough that the
+    /// reader will never block in normal operation.
+    event_tx: SyncSender<Value>,
 }
 
 /// Main entry point for the daemon process.
@@ -174,6 +196,12 @@ pub(crate) fn run_daemon(
 
     let watcher_actor =
         TabActor::get_watcher(&mut transport, &tab_actor).context("getting watcher actor")?;
+    // Subscribe to frame target events *before* resources so that
+    // `target-available-form` / `target-destroyed-form` arrive from the
+    // start of the session.  Per the Firefox RDP protocol, `watchTargets`
+    // must be called before `watchResources`.
+    WatcherActor::watch_targets(&mut transport, &watcher_actor, "frame")
+        .context("subscribing to frame targets")?;
     WatcherActor::watch_resources(&mut transport, &watcher_actor, WATCHED_RESOURCE_TYPES)
         .context("subscribing to resources")?;
 
@@ -202,6 +230,11 @@ pub(crate) fn run_daemon(
     // Split the transport so the reader and writer can live on separate threads.
     let (firefox_reader, firefox_writer) = transport.split();
 
+    // Bounded channel: reader pushes; dispatcher drains.  4096 slots prevents
+    // unbounded growth if the dispatcher falls behind; large enough that the
+    // reader never blocks in normal SPA traffic (hundreds of events/s).
+    let (event_tx, event_rx) = mpsc::sync_channel::<Value>(4096);
+
     let state = Arc::new(SharedState {
         buffer: Mutex::new(EventBuffer::new()),
         rpc_writer: Mutex::new(None),
@@ -214,6 +247,8 @@ pub(crate) fn run_daemon(
         auth_token,
         ref_store: Mutex::new(RefStore::new()),
         nav_generation: AtomicU64::new(0),
+        target_count: AtomicU64::new(0),
+        event_tx,
     });
 
     setup_signal_handler(&state);
@@ -228,6 +263,15 @@ pub(crate) fn run_daemon(
         .name("firefox-reader".into())
         .spawn(move || firefox_reader_loop(&state_for_reader, firefox_reader))
         .context("spawning Firefox reader thread")?;
+
+    // Spawn the dispatcher thread that drains the mpsc channel and routes
+    // events to stream subscribers / rpc_writer.  Decoupled from the reader
+    // so that heavy event bursts do not delay auth-greeting writes.
+    let state_for_dispatcher = Arc::clone(&state);
+    thread::Builder::new()
+        .name("event-dispatcher".into())
+        .spawn(move || event_dispatcher_loop(&state_for_dispatcher, event_rx))
+        .context("spawning event dispatcher thread")?;
 
     let result = accept_loop(&state, &listener, &firefox_writer, idle_timeout);
 
@@ -273,14 +317,11 @@ fn setup_signal_handler(state: &Arc<SharedState>) {
 // Firefox reader thread
 // ---------------------------------------------------------------------------
 
-/// Read from Firefox indefinitely.
+/// Read from Firefox indefinitely, pushing every message into the mpsc channel.
 ///
-/// - Watcher events (`resources-available-array`, `resources-updated-array`)
-///   are forwarded to each matching stream subscriber, or buffered when no
-///   subscriber is interested in that resource type.
-/// - All other messages (RDP request responses) are forwarded to the current
-///   RPC client, if any.
-/// - A 1-second read timeout lets us check `state.shutdown` periodically.
+/// All routing logic lives in the dispatcher thread (`event_dispatcher_loop`)
+/// so this thread never contends on `rpc_writer` or stream-subscriber locks.
+/// A 1-second read timeout lets us check `state.shutdown` periodically.
 fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
     // Apply a short read timeout so we can check the shutdown flag.
     if let Err(e) = reader.set_read_timeout(Some(Duration::from_secs(1))) {
@@ -298,50 +339,10 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
                 // is in an inconsistent state and crashing is the right action.
                 *state.last_activity.lock().unwrap() = Instant::now();
 
-                if is_watcher_event(&msg, &state.watcher_actor) {
-                    // Route to matching streaming subscribers or buffer.
-                    dispatch_watcher_event(state, &msg);
-                } else if is_console_push_event(&msg) {
-                    // Firefox 149+: direct consoleAPICall / pageError push.
-                    // Forward to console-message/error-message stream subscribers
-                    // AND to the RPC client (e.g. eval may be awaiting results).
-                    dispatch_console_push_event(state, &msg);
-                    forward_to_rpc_client(&state.rpc_writer, &msg);
-                } else {
-                    // Detect navigation events and clear the ref store.
-                    if is_navigation_event(&msg) {
-                        state.nav_generation.fetch_add(1, Ordering::Relaxed);
-                        state.ref_store.lock().unwrap().clear();
-                        // Record a navigation boundary in the network buffer.
-                        // `tabNavigated` carries the new URL in the `url` field.
-                        // `willNavigate` also has `url`; `frameUpdate` may not.
-                        // We record boundaries for `tabNavigated` only so the
-                        // boundary URL reflects the committed document, not the
-                        // in-flight request.
-                        let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
-                        if msg_type == "tabNavigated" {
-                            let nav_url = msg
-                                .get("url")
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_owned();
-                            let sequence = {
-                                let mut buf = state.buffer.lock().unwrap();
-                                buf.record_nav_boundary(nav_url.clone())
-                            };
-                            // Forward a synthetic navigation event to any stream
-                            // subscribers watching "network-event" so that
-                            // `network --follow` can emit boundary markers.
-                            let nav_event = json!({
-                                "type": "nav-boundary",
-                                "event": "navigation",
-                                "url": nav_url,
-                                "sequence": sequence,
-                            });
-                            forward_nav_event_to_stream_subs(state, &nav_event);
-                        }
-                    }
-                    forward_to_rpc_client(&state.rpc_writer, &msg);
+                // Push to dispatcher; if the channel is full (dispatcher lagged),
+                // drop the message rather than blocking the reader.
+                if state.event_tx.try_send(msg).is_err() {
+                    eprintln!("daemon: dispatcher channel full — dropping Firefox message");
                 }
             }
             Err(ProtocolError::Timeout) => {
@@ -353,6 +354,86 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
                 break;
             }
         }
+    }
+}
+
+/// Drain the event channel and route each Firefox message appropriately.
+///
+/// This is the single dispatcher thread that does all routing work formerly
+/// done inline in the reader thread.  By moving the routing here, the reader
+/// thread is never blocked on `rpc_writer` or stream-subscriber locks —
+/// eliminating the auth-greeting delay under heavy event bursts.
+// `rx: mpsc::Receiver<Value>` must be owned to call recv_timeout; clippy
+// incorrectly flags it as "not consumed" because we call methods rather than
+// move out of it.  The Receiver is consumed by the loop when Disconnected.
+#[allow(clippy::needless_pass_by_value)]
+fn event_dispatcher_loop(state: &Arc<SharedState>, rx: mpsc::Receiver<Value>) {
+    loop {
+        // Use recv_timeout so we can check the shutdown flag periodically.
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(msg) => dispatch_firefox_message(state, &msg),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if state.shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // Reader thread exited — drain any remaining messages then stop.
+                break;
+            }
+        }
+    }
+}
+
+/// Route a single Firefox message to the appropriate destination(s).
+fn dispatch_firefox_message(state: &SharedState, msg: &Value) {
+    if is_watcher_event(msg, &state.watcher_actor) {
+        // Route to matching streaming subscribers or buffer.
+        dispatch_watcher_event(state, msg);
+    } else if is_target_event(msg) {
+        // Log target lifecycle events and track the count.
+        handle_target_event(state, msg);
+    } else if is_console_push_event(msg) {
+        // Firefox 149+: direct consoleAPICall / pageError push.
+        // Forward to console-message/error-message stream subscribers
+        // AND to the RPC client (e.g. eval may be awaiting results).
+        dispatch_console_push_event(state, msg);
+        forward_to_rpc_client(&state.rpc_writer, msg);
+    } else {
+        // Detect navigation events and clear the ref store.
+        if is_navigation_event(msg) {
+            state.nav_generation.fetch_add(1, Ordering::Relaxed);
+            state.ref_store.lock().unwrap().clear();
+            // Record a navigation boundary in the network buffer.
+            // `tabNavigated` carries the new URL in the `url` field.
+            // `willNavigate` also has `url`; `frameUpdate` may not.
+            // We record boundaries for `tabNavigated` only so the
+            // boundary URL reflects the committed document, not the
+            // in-flight request.
+            let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
+            if msg_type == "tabNavigated" {
+                let nav_url = msg
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
+                let sequence = {
+                    let mut buf = state.buffer.lock().unwrap();
+                    buf.record_nav_boundary(nav_url.clone())
+                };
+                // Forward a synthetic navigation event to any stream
+                // subscribers watching "network-event" so that
+                // `network --follow` can emit boundary markers.
+                let nav_event = json!({
+                    "type": "nav-boundary",
+                    "event": "navigation",
+                    "url": nav_url,
+                    "sequence": sequence,
+                });
+                forward_nav_event_to_stream_subs(state, &nav_event);
+            }
+        }
+        forward_to_rpc_client(&state.rpc_writer, msg);
     }
 }
 
@@ -409,6 +490,50 @@ fn is_navigation_event(msg: &Value) -> bool {
         msg.get("type").and_then(Value::as_str),
         Some("tabNavigated" | "willNavigate" | "frameUpdate")
     )
+}
+
+/// Return `true` when `msg` is a `target-available-form` or
+/// `target-destroyed-form` event (emitted after `watchTargets`).
+fn is_target_event(msg: &Value) -> bool {
+    matches!(
+        msg.get("type").and_then(Value::as_str),
+        Some("target-available-form" | "target-destroyed-form")
+    )
+}
+
+/// Log a target lifecycle event and update `state.target_count`.
+///
+/// Only `target-available-form` increments the counter; `target-destroyed-form`
+/// is logged but does not change the count (it signals a target going away, not
+/// a new one appearing).  Full Front-actor invalidation is deferred to iter-61p.
+fn handle_target_event(state: &SharedState, msg: &Value) {
+    let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
+    let url = msg
+        .get("target")
+        .and_then(|t| t.get("url"))
+        .and_then(Value::as_str)
+        .unwrap_or("<no url>");
+    let is_top_level = msg
+        .get("target")
+        .and_then(|t| t.get("isTopLevelTarget"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if msg_type == "target-available-form" {
+        state.target_count.fetch_add(1, Ordering::Relaxed);
+        tracing::info!(
+            event = "target-available-form",
+            url,
+            is_top_level,
+            "daemon: target available"
+        );
+    } else {
+        tracing::info!(
+            event = "target-destroyed-form",
+            url,
+            is_top_level,
+            "daemon: target destroyed"
+        );
+    }
 }
 
 /// Forward a direct console push event to stream subscribers.
@@ -755,16 +880,24 @@ fn handle_client(
     let client_id = stream.as_raw_fd_or_handle();
 
     // Send the cached greeting so the client can identify the connected Firefox.
+    // Augment with `protocol_version` so the CLI can detect stale daemon builds.
     // Write the greeting before registering the client as the forwarding
     // target — no concurrent writes are possible yet.
     {
+        let mut greeting_with_version = state.greeting.clone();
+        if let Some(obj) = greeting_with_version.as_object_mut() {
+            obj.insert(
+                "protocol_version".to_owned(),
+                Value::Number(DAEMON_PROTOCOL_VERSION.into()),
+            );
+        }
         let mut greeting_writer = FramedWriter::from_stream(
             stream
                 .try_clone()
                 .context("cloning client stream for greeting")?,
         );
         greeting_writer
-            .send(&state.greeting)
+            .send(&greeting_with_version)
             .map_err(|e| anyhow::anyhow!("sending greeting to CLI client: {e}"))?;
     }
 
@@ -1153,11 +1286,16 @@ fn handle_daemon_message(
         // ends and subsequent `ff-rdp network` calls fall back to the
         // Performance API.
         //
+        // Navigation boundaries are recorded exclusively by the
+        // `tabNavigated` handler in the Firefox reader loop.  This handler
+        // must NOT record another boundary — that would produce a duplicate
+        // boundary and cause `--since -1` to resolve past the events just
+        // stored (the "double-boundary" bug from iter-61n).
+        //
         // Request: {
         //   type: "store-events",
         //   resourceType: "network-event",
-        //   events: [...],          ← raw watcher event JSON values
-        //   nav_url: "https://…"    ← optional: record a nav boundary first
+        //   events: [...]    ← raw watcher event JSON values
         // }
         // Response: { from: "daemon", stored: N }
         // ------------------------------------------------------------------
@@ -1178,16 +1316,8 @@ fn handle_daemon_message(
                     "error": "store-events requires an `events` array field",
                 });
             };
-            let nav_url = msg
-                .get("nav_url")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
 
             let mut buf = state.buffer.lock().unwrap();
-            // Optionally record a navigation boundary before inserting events.
-            if let Some(url) = nav_url {
-                buf.record_nav_boundary(url);
-            }
             let n = events_arr.len();
             for ev in events_arr {
                 buf.insert(resource_type, ev.clone());
@@ -1204,11 +1334,13 @@ fn handle_daemon_message(
             let uptime = state.start_time.elapsed().as_secs();
             let sizes = state.buffer.lock().unwrap().sizes();
             let subscriber_count = state.stream_subs.lock().unwrap().len();
+            let target_count = state.target_count.load(Ordering::Relaxed);
             json!({
                 "from": "daemon",
                 "uptime_secs": uptime,
                 "buffer_sizes": sizes,
                 "stream_subscriber_count": subscriber_count,
+                "target_count": target_count,
             })
         }
         "shutdown" => {
@@ -1256,6 +1388,8 @@ mod tests {
             auth_token: "test-token".to_owned(),
             ref_store: Mutex::new(RefStore::new()),
             nav_generation: AtomicU64::new(0),
+            target_count: AtomicU64::new(0),
+            event_tx: mpsc::sync_channel::<Value>(1).0,
         }
     }
 

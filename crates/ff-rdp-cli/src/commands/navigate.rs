@@ -666,8 +666,7 @@ pub fn run_with_network(
             let update_refs: Vec<(u64, &_)> =
                 all_updates.iter().map(|u| (u.resource_id, u)).collect();
             let items = serialize_network_resources_for_buffer(&all_resources, &update_refs);
-            if let Err(e) =
-                crate::daemon::client::store_network_events(ctx.transport_mut(), &items, Some(url))
+            if let Err(e) = crate::daemon::client::store_network_events(ctx.transport_mut(), &items)
                 && cli.is_verbose()
             {
                 eprintln!(

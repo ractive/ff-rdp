@@ -123,6 +123,22 @@ fn connect_to_firefox(
             }
         })?;
 
+        // Verify protocol version — a mismatch means the running daemon is a
+        // different build than this CLI binary.
+        let daemon_version = greeting
+            .get("protocol_version")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|v| u32::try_from(v).ok());
+        let expected = crate::daemon::server::DAEMON_PROTOCOL_VERSION;
+        if let Some(v) = daemon_version
+            && v != expected
+        {
+            return Err(AppError::DaemonVersionMismatch {
+                daemon: v,
+                cli: expected,
+            });
+        }
+
         // Now wrap in RdpConnection. We already consumed the greeting; pass it
         // through so the Firefox version stays available for connection_meta.
         return Ok(RdpConnection::from_authenticated_transport(
