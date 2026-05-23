@@ -15,8 +15,11 @@ pub enum Resource {
     /// An update to an existing network event (status, headers, timing).
     NetworkUpdate(NetworkResourceUpdate),
 
-    /// A console message (`"console-message"` or `"error-message"`).
+    /// A console message (`"console-message"`).
     ConsoleMessage(ConsoleResource),
+
+    /// A JS exception or page error (`"error-message"`).
+    ErrorMessage(ConsoleResource),
 
     /// A raw document lifecycle event (`"document-event"`).
     ///
@@ -25,11 +28,12 @@ pub enum Resource {
 }
 
 impl Resource {
-    /// Return the display name of this resource's type (matches wire format).
+    /// Return the wire-format type name for this resource.
     pub fn type_name(&self) -> &'static str {
         match self {
             Self::NetworkEvent(_) | Self::NetworkUpdate(_) => "network-event",
             Self::ConsoleMessage(_) => "console-message",
+            Self::ErrorMessage(_) => "error-message",
             Self::DocumentEvent(_) => "document-event",
         }
     }
@@ -82,6 +86,10 @@ mod tests {
         assert_eq!(
             Resource::ConsoleMessage(dummy_console_resource()).type_name(),
             "console-message"
+        );
+        assert_eq!(
+            Resource::ErrorMessage(dummy_console_resource()).type_name(),
+            "error-message"
         );
         assert_eq!(
             Resource::DocumentEvent(serde_json::json!({"type": "dom-complete"})).type_name(),

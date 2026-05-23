@@ -14,14 +14,13 @@
 //! - Each `ResourceType` is subscribed to on the wire at most **once**, regardless
 //!   of how many in-process subscribers have requested it.  The bus maintains a
 //!   reference-count per type; the last `unsubscribe` triggers `unwatchResources`.
-//! - Subscribers receive a `Sender` channel end; the bus fans out each event by
-//!   cloning and sending to every subscriber that requested the matching type.
+//! - Callers receive a `Receiver<Resource>` channel end from [`ResourceCommand::subscribe`];
+//!   the bus keeps the `Sender` end and fans out each event by cloning and sending to every
+//!   subscriber that requested the matching type.
 //! - Subscription/unsubscription manipulates the in-process state only; I/O is
 //!   performed by the caller-supplied transport at `subscribe` / `unsubscribe` time.
 
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use serde_json::Value;
@@ -68,15 +67,14 @@ struct Subscriber {
 ///
 /// # Thread safety
 ///
-/// `ResourceCommand` is **not** `Send` or `Sync` — it is designed to be owned
-/// by a single synchronous thread (the Firefox reader thread or a CLI command).
-/// Fan-out happens via `mpsc::Sender` channels which are `Send`, so subscriber
-/// receivers can live on other threads.
+/// `ResourceCommand` is designed to be owned by a single thread; all methods
+/// take `&mut self`.  The `Receiver<Resource>` ends returned by `subscribe` are
+/// `Send` and may be moved to other threads.
 pub struct ResourceCommand {
     /// The Firefox Watcher actor ID used for all `watchResources` calls.
     watcher_actor: ActorId,
     /// Monotonically-increasing counter for subscription IDs.
-    next_sub_id: Arc<AtomicU64>,
+    next_sub_id: u64,
     /// All active in-process subscribers.
     subscribers: Vec<Subscriber>,
     /// Reference-count per resource type.  When > 0 the type is subscribed on
@@ -89,7 +87,7 @@ impl ResourceCommand {
     pub fn new(watcher_actor: ActorId) -> Self {
         Self {
             watcher_actor,
-            next_sub_id: Arc::new(AtomicU64::new(1)),
+            next_sub_id: 1,
             subscribers: Vec::new(),
             ref_counts: HashMap::new(),
         }
@@ -108,8 +106,17 @@ impl ResourceCommand {
         transport: &mut RdpTransport,
         types: &[ResourceType],
     ) -> Result<(SubscriptionId, Receiver<Resource>), ProtocolError> {
+        // Deduplicate the caller-supplied slice so that duplicate entries don't
+        // corrupt ref-counts or produce duplicate wire strings.
+        let mut deduped: Vec<ResourceType> = Vec::with_capacity(types.len());
+        for &t in types {
+            if !deduped.contains(&t) {
+                deduped.push(t);
+            }
+        }
+
         // Find types that need a new wire subscription.
-        let new_wire_types: Vec<ResourceType> = types
+        let new_wire_types: Vec<ResourceType> = deduped
             .iter()
             .filter(|t| self.ref_counts.get(t).copied().unwrap_or(0) == 0)
             .copied()
@@ -121,15 +128,16 @@ impl ResourceCommand {
         }
 
         // Commit: increment ref-counts and register subscriber.
-        for t in types {
-            *self.ref_counts.entry(*t).or_insert(0) += 1;
+        for &t in &deduped {
+            *self.ref_counts.entry(t).or_insert(0) += 1;
         }
 
-        let id = SubscriptionId(self.next_sub_id.fetch_add(1, Ordering::Relaxed));
+        let id = SubscriptionId(self.next_sub_id);
+        self.next_sub_id += 1;
         let (tx, rx) = mpsc::channel::<Resource>();
         self.subscribers.push(Subscriber {
             id,
-            types: types.to_vec(),
+            types: deduped,
             tx,
         });
 
@@ -210,10 +218,27 @@ impl ResourceCommand {
             }
         }
 
-        // Prune dead channels (no wire call — the subscriber just dropped its receiver).
-        dead.sort_unstable_by_key(|id| id.0);
-        dead.dedup();
-        self.subscribers.retain(|s| !dead.contains(&s.id));
+        // Prune dead channels.  We must also decrement ref-counts for the
+        // pruned subscribers' types so that wire subscriptions don't leak and
+        // subsequent `unsubscribe` calls can still send `unwatchResources`.
+        if !dead.is_empty() {
+            dead.sort_unstable_by_key(|id| id.0);
+            dead.dedup();
+            // Partition into dead and live; collect types from dead subscribers.
+            let mut i = 0;
+            while i < self.subscribers.len() {
+                if dead.contains(&self.subscribers[i].id) {
+                    let removed = self.subscribers.swap_remove(i);
+                    for t in &removed.types {
+                        let count = self.ref_counts.entry(*t).or_insert(0);
+                        *count = count.saturating_sub(1);
+                    }
+                    // Don't advance i — the swap put a new element at position i.
+                } else {
+                    i += 1;
+                }
+            }
+        }
     }
 
     /// Parse a `resources-available-array` event into typed [`Resource`] items.
@@ -241,12 +266,18 @@ impl ResourceCommand {
                         out.push(Resource::NetworkEvent(r));
                     }
                 }
-                "console-message" | "error-message" => {
-                    // Re-wrap for the existing parser.
+                "console-message" => {
                     let wrapped =
-                        serde_json::json!({"array": [[resource_type_str, sub_arr[1].clone()]]});
+                        serde_json::json!({"array": [["console-message", sub_arr[1].clone()]]});
                     for r in parse_console_resources(&wrapped) {
                         out.push(Resource::ConsoleMessage(r));
+                    }
+                }
+                "error-message" => {
+                    let wrapped =
+                        serde_json::json!({"array": [["error-message", sub_arr[1].clone()]]});
+                    for r in parse_console_resources(&wrapped) {
+                        out.push(Resource::ErrorMessage(r));
                     }
                 }
                 "document-event" => {

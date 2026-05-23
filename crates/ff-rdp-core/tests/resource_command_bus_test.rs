@@ -86,7 +86,8 @@ fn bus_deduplicates_watch_resources_calls() {
         "bus should have 2 in-process subscribers"
     );
 
-    // Unsubscribe both — last one should trigger unwatchResources.
+    // Unsubscribe only the first subscriber; ref-count goes to 1 (not zero,
+    // so no `unwatchResources` wire call is expected for this test).
     bus.unsubscribe(&mut transport, sub_id_a)
         .expect("unsubscribe A");
     assert_eq!(
