@@ -1,0 +1,20 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Iteration discipline tooling for ff-rdp"
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
