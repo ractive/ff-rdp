@@ -2,7 +2,7 @@
 title: "Iteration 61v: navigate document-event gating + screenshot fallback cleanup + bus throttle zero"
 type: iteration
 date: 2026-05-23
-status: in-progress
+status: completed
 branch: iter-61v/navigate-screenshot-completion
 depends_on:
   - iteration-61r-multi-actor-commands
