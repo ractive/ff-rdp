@@ -422,10 +422,14 @@ Output: {\"results\": \"<page text as a plain string>\", \"total\": 1, \"meta\":
     /// Query DOM elements by CSS selector
     #[command(long_about = "Query DOM elements by CSS selector.
 
-Default output (ARIA-tree JSON): {\"results\": {\"ref\":\"e1\",\"role\":\"heading\",\"name\":\"...\",\"level\":1,\"tag\":\"h1\",\"attrs\":{...}}, \"total\": N}
+Default output (ARIA-tree JSON): {\"results\": [{\"ref\":\"e1\",\"role\":\"heading\",\"name\":\"...\",\"level\":1,\"tag\":\"h1\",\"attrs\":{...}}, ...], \"total\": N}
+
+Since iter-61i, `results` is **always an array** regardless of match count (0 → [], 1 → [item], N → [item, ...]). Agent recipes like `--jq '.results[0]'` work uniformly.
+
 Each element has: ref (stable ID), role (ARIA semantic role), name (accessible name), tag, attrs (actionable only), state, level (headings).
-Use --format html for the legacy raw HTML string output.
-With --count: {\"results\": {\"count\": N}, \"total\": 1, \"meta\": {...}}")]
+Use --format html for raw HTML strings in each array slot.
+Use --first to revert to the legacy single-value shape (object/string/null, total: 0 or 1).
+With --count: {\"results\": {\"count\": N}, \"total\": N, \"meta\": {...}}")]
     #[command(group(ArgGroup::new("dom_target").required(false).multiple(false).args(["selector", "ref_id"])))]
     Dom {
         #[command(subcommand)]
@@ -455,6 +459,11 @@ With --count: {\"results\": {\"count\": N}, \"total\": 1, \"meta\": {...}}")]
         /// Return only the count of matching elements
         #[arg(long, group = "output_mode")]
         count: bool,
+        /// Return just the first match as a single value (or null) instead of an array.
+        /// Provided for callers who want the legacy pre-iter-61i single-element shape.
+        /// Mutually exclusive with --count.
+        #[arg(long, conflicts_with = "count")]
+        first: bool,
     },
     /// Read console messages
     #[command(long_about = "Read console messages.

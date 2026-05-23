@@ -456,6 +456,7 @@ fn dispatch_inner(
             attrs,
             text_attrs,
             count,
+            first,
         } => match dom_command {
             Some(DomCommand::Stats) => commands::dom::run_stats(cli),
             Some(DomCommand::Tree {
@@ -489,7 +490,7 @@ fn dispatch_inner(
                         // `--format html` switches to raw HTML in run().
                         commands::dom::OutputMode::AriaTree
                     };
-                    commands::dom::run(cli, sel, mode)
+                    commands::dom::run(cli, sel, mode, *first)
                 }
             }
         },
