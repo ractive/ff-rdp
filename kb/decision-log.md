@@ -205,3 +205,26 @@ The ff-rdp client reads the token from the registry and sends it before any othe
 **Trade-off**: Older pages that detect event type as `'pointer'` and treat it differently than `'mouse'` could behave unexpectedly. The `--dispatch legacy` and `--dispatch click-only` flags exist as escape hatches for those cases. In practice this is rare — most event handlers ignore `event.type` once dispatched.
 
 **Applies to**: `commands/click.rs`, `commands/js_helpers.rs` (`build_click_js`).
+
+## 2026-05-24: Iteration discipline tooling (iter-61y)
+
+**Context**: The iter-61m..61s postmortem identified eight process root causes for recurring claim/code gaps: primitives introduced but not wired, TODOs without issue links, iteration plans without dogfood paths or first-call-site declarations. The same failure modes recurred in iter-61t..61v. Humans are bad at noticing what's *missing* — tools are good at it.
+
+**Decision**: Encode the three most frequent failures as mechanical CI gates, not prose rules.
+
+### Dead-primitive check (`cargo xtask check-dead-primitives`)
+Every new `pub fn/struct/enum/trait/mod` introduced in the diff since `origin/main` must have at least one non-test consumer in the workspace. Zero matches → fail CI.
+
+**Motivation**: iter-61s shipped `Registry::new` and `ScopedGrip::new` as dead code. The claim "adds X" appeared in commit messages while X had no callers. No tool caught this because the existing tests still passed — dead code doesn't break tests.
+
+### TODO annotation rule (`cargo xtask check-todo-annotations`)
+New `TODO`/`FIXME`/`XXX` comments must include a GitHub issue link, Jira-style ticket, or `// allow-todo: <reason>`. Bare annotations are rejected.
+
+**Motivation**: The iter-61s `dispatch_event` TODO knew about `resources-destroyed-array` but was never tracked, and the context was lost across iterations. Annotated TODOs create a paper trail that survives context windows.
+
+### Iteration plan lint (`cargo xtask check-iteration-plan`)
+Every iteration plan that introduces new pub items must declare `first_call_sites` in frontmatter, and all plans must declare `dogfood_path`. This makes the claim–code relationship explicit before implementation begins.
+
+**Implementation**: All three checks live in `crates/xtask` (a `publish = false` workspace crate). A pre-commit hook in `.githooks/pre-commit` runs the TODO check locally. The same checks run in the CI `discipline` job on every PR. See `CONTRIBUTING.md` for developer instructions.
+
+**Applies to**: `crates/xtask/`, `.githooks/pre-commit`, `.github/workflows/ci.yml`, `CLAUDE.md`, `kb/iterations/_template.md`.

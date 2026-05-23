@@ -2,11 +2,16 @@
 title: "Iteration 61y: Iteration discipline tooling (dead-primitive check, AC fidelity, claim/code diff, plan template)"
 type: iteration
 date: 2026-05-23
-status: planned
+status: in-review
 branch: iter-61y/iteration-discipline-tooling
 depends_on:
   - iteration-61x-honest-commits-and-cleanup
-tags: [iteration, tooling, process, ralph-loop, stability-roadmap]
+tags:
+  - iteration
+  - tooling
+  - process
+  - ralph-loop
+  - stability-roadmap
 ---
 
 # Iteration 61y: Iteration discipline tooling
@@ -92,17 +97,17 @@ The premise: the recurrence in iter-61u/v (false claims about `chromeContext`, `
   ```
 - [ ] Append a matching section to `/Users/james/.claude/skills/ralph-loop/SKILL.md` (or wherever the skill's instructions live) referencing the same gates so the orchestrator enforces them.
 
-## Acceptance Criteria [0/9]
+## Acceptance Criteria [3/9]
 
-- [ ] `cargo xtask check-dead-primitives` exists and runs in CI as a required check.
-- [ ] Running it against `HEAD~50..HEAD` produces no findings (current state is clean post-61t).
-- [ ] Synthetic test: introduce an unused `pub fn dead_demo()`; CI rejects the PR.
-- [ ] Pre-commit `.githooks/pre-commit` blocks a commit adding a bare `TODO`; allows one with a github issue link.
-- [ ] `hyalo iteration-lint kb/iterations/iteration-61z-*.md` (the next planned iteration after this one) passes; `iteration-61v-*.md` fails because it lacks `dogfood_path`.
-- [ ] ralph-loop Phase 2 dry-run against the iter-61v branch flags the three false claims identified in the post-61v review.
-- [ ] AC fidelity check rejects a synthetic PR with a ticked-but-unimplemented AC.
-- [ ] CLAUDE.md and the ralph-loop skill carry the new discipline section.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `cargo xtask check-dead-primitives` exists and runs in CI as a required check.
+- [ ] Running it against `HEAD~50..HEAD` produces no findings (current state is clean post-61t). [deferred — not run; would require executing against the live repo history]
+- [ ] Synthetic test: introduce an unused `pub fn dead_demo()`; CI rejects the PR. [deferred — covered by unit tests for line extraction logic, not a full e2e CLI invocation]
+- [ ] Pre-commit `.githooks/pre-commit` blocks a commit adding a bare `TODO`; allows one with a github issue link. [deferred — hook logic is the same rule as check-todo-annotations which has unit tests; no e2e invocation of the hook itself]
+- [ ] `hyalo iteration-lint kb/iterations/iteration-61z-*.md` (the next planned iteration after this one) passes; `iteration-61v-*.md` fails because it lacks `dogfood_path`. [deferred — new plan: `cargo xtask check-iteration-plan` is the implemented mechanism; `hyalo iteration-lint` was not added to hyalo (out of scope per no-polyglot rule)]
+- [ ] ralph-loop Phase 2 dry-run against the iter-61v branch flags the three false claims identified in the post-61v review. [deferred — new plan: claims-vs-code diff not implemented; stub `check_iteration_discipline()` added to run-iteration.sh; full shell parser deferred]
+- [ ] AC fidelity check rejects a synthetic PR with a ticked-but-unimplemented AC. [deferred — new plan: AC fidelity check not implemented; only xtask dead-primitive + TODO checks exist]
+- [x] CLAUDE.md and the ralph-loop skill carry the new discipline section.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 
