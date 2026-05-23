@@ -1,0 +1,89 @@
+#!/bin/sh
+# pre-commit: Block commits that add unannotated TODO/FIXME/XXX.
+#
+# Rules:
+#   - Allow if line contains a GitHub issue link (github.com/.../issues/N)
+#   - Allow if line contains a Jira-style ticket (WORD-123)
+#   - Allow if line contains: allow-todo:
+#   - Reject everything else
+#
+# Install: git config core.hooksPath .githooks
+# Bypass (emergencies only): git commit --no-verify
+# Note: CI runs the same check via `cargo xtask check-todo-annotations`.
+
+set -e
+
+STAGED_DIFF=$(git diff --cached -U0)
+
+if [ -z "$STAGED_DIFF" ]; then
+    exit 0
+fi
+
+findings=""
+
+# Parse the staged diff to extract added lines with their file and line number.
+current_file=""
+new_line=0
+
+while IFS= read -r line; do
+    # Track current file from diff header
+    case "$line" in
+        "+++ b/"*)
+            current_file="${line#+++ b/}"
+            new_line=0
+            continue
+            ;;
+        "@@"*)
+            # Extract the new-file start line from @@ -a,b +c,d @@
+            new_start=$(printf '%s' "$line" | grep -o '+[0-9]*' | head -1 | tr -d '+')
+            new_line="${new_start:-0}"
+            continue
+            ;;
+        "---"* | "+++"*)
+            continue
+            ;;
+        "-"*)
+            # Removed line — does not advance new file counter
+            continue
+            ;;
+    esac
+
+    # Context or added line — advance counter
+    if printf '%s' "$line" | grep -qE '^(\+| )'; then
+        if printf '%s' "$line" | grep -q '^+'; then
+            # Strip leading '+' to get the actual content
+            content="${line#+}"
+
+            # Check for TODO/FIXME/XXX at word boundary
+            if printf '%s' "$content" | grep -qE '\b(TODO|FIXME|XXX)\b'; then
+                # Allow if it has an issue link, Jira ticket, or allow-todo annotation
+                if printf '%s' "$content" | grep -qE 'github\.com/[^/]+/[^/]+/issues/[0-9]+'; then
+                    : # allowed
+                elif printf '%s' "$content" | grep -qE '\b[A-Z]+-[0-9]+\b'; then
+                    : # allowed — Jira-style ticket
+                elif printf '%s' "$content" | grep -q 'allow-todo:'; then
+                    : # allowed — explicit annotation
+                else
+                    findings="${findings}${current_file}:${new_line}: ${content}
+"
+                fi
+            fi
+        fi
+        new_line=$((new_line + 1))
+    fi
+done <<EOF
+$STAGED_DIFF
+EOF
+
+if [ -n "$findings" ]; then
+    echo "" >&2
+    echo "pre-commit: unannotated TODO/FIXME/XXX found in staged changes:" >&2
+    echo "  Add a GitHub issue link, a Jira ticket (WORD-123)," >&2
+    echo "  or '// allow-todo: <reason>' to the line." >&2
+    echo "  Use 'git commit --no-verify' to bypass (emergencies only — CI will still catch it)." >&2
+    echo "" >&2
+    printf '%s' "$findings" >&2
+    exit 1
+fi
+
+exit 0
