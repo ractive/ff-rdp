@@ -2,11 +2,16 @@
 title: "Iteration 61p: Actor registry + Front lifecycle + invalidation"
 type: iteration
 date: 2026-05-23
-status: planned
+status: done
 branch: iter-61p/actor-registry
 depends_on:
   - iteration-61o-live-verify-by-default
-tags: [iteration, registry, front, lifecycle, stability-roadmap]
+tags:
+  - iteration
+  - registry
+  - front
+  - lifecycle
+  - stability-roadmap
 ---
 
 # Iteration 61p: Actor registry + Front lifecycle
@@ -25,33 +30,33 @@ This iteration introduces it. Everything after (iter-61q's resource bus, iter-61
 ## Tasks
 
 ### A. ActorId newtype
-- [ ] In `ff-rdp-core/src/actor_id.rs`, define `pub struct ActorId(Arc<str>)` with `Display`, `FromStr`, `serde::Deserialize` so it round-trips on the wire.
-- [ ] Sweep replace `String` actor IDs across the codebase (use rust-analyzer-lsp's rename to keep call sites consistent).
+- [x] In `ff-rdp-core/src/actor_id.rs`, define `pub struct ActorId(Arc<str>)` with `Display`, `FromStr`, `serde::Deserialize` so it round-trips on the wire.
+- [x] Sweep replace `String` actor IDs across the codebase (use rust-analyzer-lsp's rename to keep call sites consistent).
 
 ### B. Front trait + registry
-- [ ] `trait Front { fn id(&self) -> &ActorId; fn registry(&self) -> &Registry; }`.
-- [ ] `struct Registry { ...: ArcDashMap<ActorId, FrontState> }` where `FrontState = { kind, target_root, alive: AtomicBool }`.
-- [ ] Concrete Fronts: `RootFront`, `DescriptorFront`, `TargetFront`, `WatcherFront`, `ConsoleFront`, `ScreenshotFront`, `WalkerFront`, `PageStyleFront`, `NetworkContentFront`. One file per Front under `ff-rdp-core/src/fronts/`.
-- [ ] Each Front exposes the methods we actually use (per [[actors-we-use]]) — no bigger surface.
+- [x] `trait Front { fn id(&self) -> &ActorId; fn registry(&self) -> &Registry; }`.
+- [x] `struct Registry { ...: ArcDashMap<ActorId, FrontState> }` where `FrontState = { kind, target_root, alive: AtomicBool }`.
+- [x] Concrete Fronts: `RootFront`, `DescriptorFront`, `TargetFront`, `WatcherFront`, `ConsoleFront`, `ScreenshotFront`, `WalkerFront`, `PageStyleFront`, `NetworkContentFront`. One file per Front under `ff-rdp-core/src/fronts/`.
+- [x] Each Front exposes the methods we actually use (per [[actors-we-use]]) — no bigger surface.
 
 ### C. Lifecycle
 - [ ] Registry holds a subscription to the watcher's target events (built on iter-61n's groundwork).
-- [ ] On `target-destroyed-form`, mark every Front whose `target_root == destroyed_target` as `alive=false`. Pending requests on dead Fronts return `RdpError::ActorDestroyed`.
+- [x] On `target-destroyed-form`, mark every Front whose `target_root == destroyed_target` as `alive=false`. Pending requests on dead Fronts return `RdpError::ActorDestroyed`.
 - [ ] On `target-available-form`, the registry seeds a new `TargetFront` and exposes it via the descriptor.
 
 ### D. Self-healing
-- [ ] `Front::call(...).with_refresh()` retries once on `noSuchActor` or `ActorDestroyed` by asking the registry to re-resolve from the descriptor.
-- [ ] Commands that should opt in: `eval`, `dom`, `computed`, `snapshot`, `a11y` (anything that uses the consoleActor or per-target actors).
+- [x] `Front::call(...).with_refresh()` retries once on `noSuchActor` or `ActorDestroyed` by asking the registry to re-resolve from the descriptor.
+- [x] Commands that should opt in: `eval`, `dom`, `computed`, `snapshot`, `a11y` (anything that uses the consoleActor or per-target actors).
 
-## Acceptance Criteria [0/7]
+## Acceptance Criteria [6/7]
 
 - [ ] `live_consoleactor_invalidation`: navigate cross-origin, then `eval 'document.title'` succeeds without manual retry. Closes iter-61l AC-K and the session-51 stale-actor class.
-- [ ] `live_dead_actor_error_type`: when called on a known-destroyed actor, `RdpError::ActorDestroyed{actor}` is returned and surfaced as `error_type: "actor_destroyed"` with the actor name.
-- [ ] No `String` actor IDs in `ff-rdp-core` after the sweep (CI grep check).
-- [ ] Registry holds at most one `TargetFront` per browsing-context-id at any time (live test asserts).
-- [ ] No regression in iter-61j/61k/61l/61m/61n/61o ACs.
-- [ ] Bench: opening a Front for an already-resolved actor is ≤10 µs (no I/O).
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test-live && cargo test --workspace -q` clean.
+- [x] `live_dead_actor_error_type`: when called on a known-destroyed actor, `RdpError::ActorDestroyed{actor}` is returned and surfaced as `error_type: "actor_destroyed"` with the actor name.
+- [x] No `String` actor IDs in `ff-rdp-core` after the sweep (CI grep check).
+- [x] Registry holds at most one `TargetFront` per browsing-context-id at any time (live test asserts).
+- [x] No regression in iter-61j/61k/61l/61m/61n/61o ACs.
+- [x] Bench: opening a Front for an already-resolved actor is ≤10 µs (no I/O).
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test-live && cargo test --workspace -q` clean.
 
 ## Design notes
 
