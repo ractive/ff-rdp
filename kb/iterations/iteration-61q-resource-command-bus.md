@@ -2,7 +2,7 @@
 title: "Iteration 61q: ResourceCommand-style watcher bus + full WatcherActor engagement"
 type: iteration
 date: 2026-05-23
-status: in-progress
+status: completed
 branch: iter-61q/resource-command-bus
 depends_on:
   - iteration-61p-actor-registry-and-front-lifecycle
