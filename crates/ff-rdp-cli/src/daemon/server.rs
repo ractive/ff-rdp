@@ -339,10 +339,18 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
                 // is in an inconsistent state and crashing is the right action.
                 *state.last_activity.lock().unwrap() = Instant::now();
 
-                // Push to dispatcher; if the channel is full (dispatcher lagged),
-                // drop the message rather than blocking the reader.
-                if state.event_tx.try_send(msg).is_err() {
-                    eprintln!("daemon: dispatcher channel full — dropping Firefox message");
+                // Push to dispatcher.  Use blocking `send` (not `try_send`) so
+                // that RDP responses are never dropped on transient dispatcher
+                // lag — dropping a response would hang the requesting client.
+                // The 4096-slot bound provides backpressure to Firefox (via TCP
+                // window) when the dispatcher genuinely cannot keep up, which
+                // is the correct behavior.  `send` only returns Err when the
+                // receiver has been dropped, i.e. the dispatcher thread is
+                // gone — at which point the daemon must shut down.
+                if state.event_tx.send(msg).is_err() {
+                    eprintln!("daemon: dispatcher channel closed — shutting down reader");
+                    state.shutdown.store(true, Ordering::Relaxed);
+                    break;
                 }
             }
             Err(ProtocolError::Timeout) => {
@@ -378,7 +386,9 @@ fn event_dispatcher_loop(state: &Arc<SharedState>, rx: mpsc::Receiver<Value>) {
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                // Reader thread exited — drain any remaining messages then stop.
+                // Reader thread exited (and dropped the sender) — stop.
+                // Any messages still in the channel were already drained by
+                // prior `recv_timeout` calls before `Disconnected` fires.
                 break;
             }
         }
