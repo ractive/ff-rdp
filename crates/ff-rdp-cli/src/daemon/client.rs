@@ -399,22 +399,19 @@ pub(crate) fn register_refs(
 /// subsequent `ff-rdp network` calls can read the captured events from the
 /// daemon buffer instead of falling back to the Performance API.
 ///
-/// `nav_url` — when `Some`, records a navigation boundary before inserting
-/// events so `ff-rdp network --since -1` scopes correctly.
+/// Navigation boundaries are recorded by the daemon's `tabNavigated` handler
+/// automatically.  Do **not** pass a `nav_url` here — doing so would insert a
+/// second boundary and cause `--since -1` to resolve past the stored events.
 pub(crate) fn store_network_events(
     transport: &mut RdpTransport,
     events: &[serde_json::Value],
-    nav_url: Option<&str>,
 ) -> Result<()> {
-    let mut msg = json!({
+    let msg = json!({
         "to": "daemon",
         "type": "store-events",
         "resourceType": "network-event",
         "events": events,
     });
-    if let Some(url) = nav_url {
-        msg["nav_url"] = serde_json::Value::String(url.to_owned());
-    }
     transport
         .send(&msg)
         .context("sending store-events to daemon")?;

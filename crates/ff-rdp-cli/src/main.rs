@@ -172,7 +172,10 @@ fn error_exit_code(err: &AppError) -> i32 {
         AppError::RdpTimeout { .. } => 5,
         AppError::RdpTransport(_) | AppError::RdpRemoteClosed(_) => 6,
         AppError::Timeout(_) => 124,
-        AppError::User(_) | AppError::Internal(_) | AppError::Diagnostics { .. } => 1,
+        AppError::User(_)
+        | AppError::Internal(_)
+        | AppError::Diagnostics { .. }
+        | AppError::DaemonVersionMismatch { .. } => 1,
         AppError::Exit(code) => *code,
     }
 }

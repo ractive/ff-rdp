@@ -55,6 +55,18 @@ name = "live_61l"
 path = "tests/live_61l.rs"
 
 [[test]]
+name = "live_daemon_watch_targets"
+path = "tests/live_daemon_watch_targets.rs"
+
+[[test]]
+name = "live_network_default_watcher"
+path = "tests/live_network_default_watcher.rs"
+
+[[test]]
+name = "live_daemon_heavy_spa"
+path = "tests/live_daemon_heavy_spa.rs"
+
+[[test]]
 name = "error_shapes"
 path = "tests/error_shapes.rs"
 

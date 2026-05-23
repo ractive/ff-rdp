@@ -42,6 +42,8 @@ pub enum AppError {
     RdpTransport(String),
     /// Remote peer closed the connection — exit 6.
     RdpRemoteClosed(String),
+    /// Daemon protocol version does not match CLI.
+    DaemonVersionMismatch { daemon: u32, cli: u32 },
 }
 
 impl AppError {
@@ -57,6 +59,7 @@ impl AppError {
             Self::RdpShape { .. } => "Shape",
             Self::RdpTransport(_) => "Transport",
             Self::RdpRemoteClosed(_) => "RemoteClosed",
+            Self::DaemonVersionMismatch { .. } => "daemon_version_mismatch",
         }
     }
 
@@ -126,6 +129,13 @@ impl fmt::Display for AppError {
             }
             Self::RdpTimeout { phase, after_ms } => {
                 write!(f, "operation timed out after {after_ms}ms (phase: {phase})")
+            }
+            Self::DaemonVersionMismatch { daemon, cli } => {
+                write!(
+                    f,
+                    "daemon protocol version mismatch: daemon={daemon}, cli={cli}.\n\
+                     Stop the running daemon (`ff-rdp daemon stop`) so a fresh one is started."
+                )
             }
         }
     }
@@ -229,5 +239,41 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
                 Self::Internal(anyhow::Error::new(err))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_version_mismatch_error_type() {
+        let err = AppError::DaemonVersionMismatch { daemon: 0, cli: 1 };
+        assert_eq!(err.error_type(), "daemon_version_mismatch");
+    }
+
+    #[test]
+    fn daemon_version_mismatch_display_contains_versions() {
+        let err = AppError::DaemonVersionMismatch { daemon: 0, cli: 1 };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("daemon=0") && msg.contains("cli=1"),
+            "message should mention both versions: {msg}"
+        );
+    }
+
+    #[test]
+    fn daemon_version_mismatch_json_has_correct_error_type() {
+        let err = AppError::DaemonVersionMismatch { daemon: 0, cli: 1 };
+        let json = err.to_error_json();
+        assert_eq!(
+            json["error_type"].as_str(),
+            Some("daemon_version_mismatch"),
+            "JSON error_type must be 'daemon_version_mismatch'"
+        );
+        assert!(
+            json["error"].as_str().unwrap_or("").contains("daemon=0"),
+            "JSON error message should mention daemon version"
+        );
     }
 }

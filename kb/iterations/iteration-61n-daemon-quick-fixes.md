@@ -2,11 +2,16 @@
 title: "Iteration 61n: Daemon quick-fixes (watchTargets + double-boundary + mpsc isolation + protocol version)"
 type: iteration
 date: 2026-05-23
-status: planned
+status: in-progress
 branch: iter-61n/daemon-quick-fixes
 depends_on:
   - iteration-61m-wire-tracing-and-structured-errors
-tags: [iteration, daemon, watcher, network, stability-roadmap]
+tags:
+  - iteration
+  - daemon
+  - watcher
+  - network
+  - stability-roadmap
 ---
 
 # Iteration 61n: Daemon quick-fixes
@@ -25,35 +30,35 @@ Diagnosis came out of [[ff-rdp-daemon-review]]. With wire tracing from iter-61m 
 ## Tasks
 
 ### A. watchTargets engagement
-- [ ] In `crates/ff-rdp-core/src/daemon/server.rs`, after the watcher is created, call `watch_targets("frame")` before `watch_resources(...)`.
-- [ ] Subscribe to `target-available-form` and `target-destroyed-form` events; log them at `tracing::info!` level for now (full Front-invalidation cascade is iter-61p).
-- [ ] Live test in `tests/live_daemon_watch_targets.rs`: navigate same tab to two cross-origin pages; assert at least one `target-available-form` event was received and the daemon's `target_count` counter incremented.
+- [x] In `crates/ff-rdp-core/src/daemon/server.rs`, after the watcher is created, call `watch_targets("frame")` before `watch_resources(...)`.
+- [x] Subscribe to `target-available-form` and `target-destroyed-form` events; log them at `tracing::info!` level for now (full Front-invalidation cascade is iter-61p).
+- [x] Live test in `tests/live_daemon_watch_targets.rs`: navigate same tab to two cross-origin pages; assert at least one `target-available-form` event was received and the daemon's `target_count` counter incremented.
 
 ### B. Boundary fix
-- [ ] In `daemon/buffer.rs` and `daemon/client.rs`, remove the implicit boundary insertion inside `store_network_events`.
-- [ ] Verify the navigation boundary is recorded exactly once per `tabNavigated`.
-- [ ] Live test in `tests/live_network_default_watcher.rs` (the same one iter-61l deferred): `ff-rdp navigate <url> --with-network` then `ff-rdp network` (no flags) returns `source: watcher` with non-null `status` and `method` for at least one entry. Without this fix it returns `source: performance-api`.
+- [x] In `daemon/buffer.rs` and `daemon/client.rs`, remove the implicit boundary insertion inside `store_network_events`.
+- [x] Verify the navigation boundary is recorded exactly once per `tabNavigated`.
+- [x] Live test in `tests/live_network_default_watcher.rs` (the same one iter-61l deferred): `ff-rdp navigate <url> --with-network` then `ff-rdp network` (no flags) returns `source: watcher` with non-null `status` and `method` for at least one entry. Without this fix it returns `source: performance-api`.
 
 ### C. Reader/dispatcher decoupling
-- [ ] Introduce a single `tokio::sync::mpsc::Sender<DaemonInboundEvent>` owned by the dispatcher task. Reader thread pushes; dispatcher fans out to per-subscriber `broadcast` channels and writes the rpc reply stream.
-- [ ] Auth handshake writes go through the dispatcher so they never contend with reader-thread writes.
-- [ ] Live test in `tests/live_daemon_heavy_spa.rs`: launch FF, navigate to a synthetic page that fires 200 XHRs in a tight loop, assert the daemon accepts a new CLI connection (auth completes within 2 s) during the burst.
+- [x] Introduce a single `tokio::sync::mpsc::Sender<DaemonInboundEvent>` owned by the dispatcher task. Reader thread pushes; dispatcher fans out to per-subscriber `broadcast` channels and writes the rpc reply stream.
+- [x] Auth handshake writes go through the dispatcher so they never contend with reader-thread writes.
+- [x] Live test in `tests/live_daemon_heavy_spa.rs`: launch FF, navigate to a synthetic page that fires 200 XHRs in a tight loop, assert the daemon accepts a new CLI connection (auth completes within 2 s) during the burst.
 
 ### D. Protocol version
-- [ ] Add `protocol_version: u32` to the daemon greeting and the CLI's first request.
-- [ ] If mismatch, CLI exits with `error_type: "daemon_version_mismatch"` and a clear message.
-- [ ] Snapshot test for the mismatch case.
+- [x] Add `protocol_version: u32` to the daemon greeting and the CLI's first request.
+- [x] If mismatch, CLI exits with `error_type: "daemon_version_mismatch"` and a clear message.
+- [x] Snapshot test for the mismatch case.
 
-## Acceptance Criteria [0/8]
+## Acceptance Criteria [8/8]
 
-- [ ] **A.** Live test `live_daemon_watch_targets` passes: `target-available-form` arrives after a navigation.
-- [ ] **B.** Live test `live_network_default_watcher` passes: `network` (no flags) returns `source: watcher` with populated status/method after `navigate --with-network`.
-- [ ] **B.** `daemon status` shows non-zero `buffer_sizes.network-event` after a navigation that loaded ≥1 subresource.
-- [ ] **C.** Live test `live_daemon_heavy_spa` passes: new CLI connection completes auth in ≤2 s during a 200-XHR burst.
-- [ ] **D.** Daemon greeting carries `protocol_version`; mismatch produces `error_type: "daemon_version_mismatch"`.
-- [ ] No regression in iter-61j/61k/61l ACs that are currently green.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
-- [ ] PR description includes the live-test names and their asserted outputs.
+- [x] **A.** Live test `live_daemon_watch_targets` passes: `target-available-form` arrives after a navigation.
+- [x] **B.** Live test `live_network_default_watcher` passes: `network` (no flags) returns `source: watcher` with populated status/method after `navigate --with-network`.
+- [x] **B.** `daemon status` shows non-zero `buffer_sizes.network-event` after a navigation that loaded ≥1 subresource.
+- [x] **C.** Live test `live_daemon_heavy_spa` passes: new CLI connection completes auth in ≤2 s during a 200-XHR burst.
+- [x] **D.** Daemon greeting carries `protocol_version`; mismatch produces `error_type: "daemon_version_mismatch"`.
+- [x] No regression in iter-61j/61k/61l ACs that are currently green.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] PR description includes the live-test names and their asserted outputs.
 
 ## References
 

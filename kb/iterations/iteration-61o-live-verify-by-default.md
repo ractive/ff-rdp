@@ -55,6 +55,7 @@ iter-61k passed 11 ACs' unit tests; live verification showed 7 of them broken. i
 - The mock-server push API is the single biggest hole — without it, every watcher-dependent unit test is misleading. Treat it as the most important task in this iteration.
 - Don't over-engineer the harness — a `struct Firefox { port: u16, child: Child, profile: TempDir }` is fine. Resist the urge to model the entire DevToolsClient.
 - Live tests must be flakiness-bounded: each test logs which port + PID it used, so post-mortems are tractable.
+- **Concrete refactor candidates from iter-61n**: `tests/live_daemon_watch_targets.rs`, `tests/live_daemon_heavy_spa.rs`, and `tests/live_network_default_watcher.rs` each duplicate a `LiveFirefox` struct (launch via `ff-rdp launch --headless`, `free_port`, `wait_for_tcp`, cross-platform `kill_pid`). They are the prime first consumers of the new harness — migrating them after Theme A lands is a fast validator that the API is good enough.
 
 ## References
 
