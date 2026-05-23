@@ -43,22 +43,22 @@ Out of scope (own iteration):
 
 ### A. `page-text` output deduplication
 
-#### A1. Remove the `text` key from `page-text` output [0/3]
+#### A1. Remove the `text` key from `page-text` output [3/3]
 - [x] In `crates/ff-rdp-cli/src/commands/page_text.rs` (or wherever the response is shaped), drop the `text` field. `results` already holds the string.
 - [x] Update the help text / "Output:" stanza in `--help` so it documents the single-field shape.
 - [x] Snapshot test the new shape.
 
-#### A2. Migration note [0/1]
+#### A2. Migration note [1/1]
 - [x] Mention in the README / kb/ release notes that `.text` is gone — `--jq .results` is the replacement. (`.text` was undocumented in `--help`; risk is small.)
 
 ### B. `eval --stringify` returns a real JSON object
 
-#### B1. Parse server-side [0/3]
+#### B1. Parse server-side [3/3]
 - [x] After Firefox returns the JSON.stringified value, `serde_json::from_str` it on the ff-rdp side and embed the parsed value directly under `results`.
 - [x] If parsing fails (e.g. caller wrapped it in another `JSON.stringify`), fall back to the current string output and add a `meta.stringify_parsed: false` flag.
 - [x] Update `eval --help` to document that `--stringify` now returns a parsed object.
 
-#### B2. Tests [0/2]
+#### B2. Tests [2/2]
 - [x] Unit: `--stringify '({a:1, b:[2,3]})'` returns `results: {a:1, b:[2,3]}` (object, not string).
 - [x] Unit: malformed-stringified case keeps the string and sets `meta.stringify_parsed = false`.
 
@@ -66,41 +66,41 @@ Out of scope (own iteration):
 
 (Lifted verbatim from iter-61i §C, which deferred this.)
 
-#### C1. Multi-`--prop` repeatable [0/2]
+#### C1. Multi-`--prop` repeatable [2/2]
 - [x] `clap` annotation: `--prop` becomes `Vec<String>`. Each occurrence appends one property name.
 - [x] When multiple `--prop` are passed, return `computed: {name1: value1, name2: value2}` instead of the single-string short-circuit.
 
-#### C2. Accept CSS custom-property names like `--bg-color` [0/2]
+#### C2. Accept CSS custom-property names like `--bg-color` [2/2]
 - [x] `clap` `--` argument separator handling: support `ff-rdp computed h1 --prop -- --bg-color` *or* document an alternative (e.g. `--prop=color,--bg-color` if a separator-safe form exists).
 - [x] If clap can't carry leading-dash values cleanly, accept a positional comma-list as a second argument: `ff-rdp computed h1 color,font-size,--bg-color`.
 
-#### C3. Snapshot-test the new shape [0/1]
+#### C3. Snapshot-test the new shape [1/1]
 - [x] Multi-prop and custom-prop cases both covered.
 
 ### D. `dom` single-match parity
 
-#### D1. Always register refs [0/2]
+#### D1. Always register refs [2/2]
 - [x] For single-element results, register the ref the same way multi-element results do — emit `ref: "e0"` on the entry and set `meta.refs_registered: true`.
 - [x] Unit: `dom 'title'` returns `[{tag: "title", ref: "e0", …}]` with `refs_registered: true`.
 
 ### E. `navigate` UX polish
 
-#### E1. Default timeout bump [0/1]
+#### E1. Default timeout bump [1/1]
 - [x] Raise the global default `--timeout` from 5000ms to 10000ms. (Or push only `navigate`'s effective default while keeping the global 5s — implementer's call. Document in `--help`.)
 
-#### E2. Unify timeout error wording [0/2]
+#### E2. Unify timeout error wording [2/2]
 - [x] Audit the two messages observed in session 51:
   - "page did not commit within Xms — use --no-wait …"
   - "operation timed out — try increasing --timeout"
 - [x] Pick one canonical message for commit-wait timeouts (the first is more actionable). Use it everywhere commit-wait fires.
 
-#### E3. Detect dead Firefox before claiming success [0/2]
+#### E3. Detect dead Firefox before claiming success [2/2]
 - [x] In `navigate --no-wait`, do a cheap pre-flight RDP ping (or wrap the send in a 200ms timeout) and surface "Firefox not reachable" if the socket is gone — instead of returning `{"navigated":"…"}` success-shaped.
 - [x] Unit / live test that kills Firefox before navigate and asserts a non-success exit code.
 
 ### F. Firefox locale pin
 
-#### F1. Force English in launched profiles [0/3]
+#### F1. Force English in launched profiles [3/3]
 - [x] In `crates/ff-rdp-cli/src/commands/launch.rs`, set `intl.accept_languages=en-US, en` in the generated user.js (or the temp profile prefs).
 - [x] Also set `LANG=C.UTF-8` (or `en_US.UTF-8`) in the child process env when launching Firefox.
 - [x] Verify with a live test: after launch, the headless quirks-mode warning is in English.
@@ -109,43 +109,43 @@ Out of scope (own iteration):
 
 This is the heart of the iteration.
 
-#### G1. Diagnose [0/2]
+#### G1. Diagnose [2/2]
 - [x] Reproduce: `ff-rdp navigate <url> --with-network` followed by `ff-rdp network --detail --headers` returns `source: performance-api` with `status:null, method:null`. Confirm `daemon status` shows `buffer_sizes: {}` even after multiple navigates.
 - [x] Inspect the watcher-engagement code path — does `--with-network` actually subscribe the daemon to `networkEvent` resources before navigation, or does it only flip a CLI-side flag that the daemon never sees?
 
-#### G2. Wire `--with-network` end-to-end [0/3]
+#### G2. Wire `--with-network` end-to-end [3/3]
 - [x] CLI → daemon protocol: when `navigate --with-network` is invoked, send an explicit "subscribe network resources" message to the daemon *before* the navigate request goes out. Daemon stores the events in its per-tab buffer.
 - [x] `network` (without `--no-daemon`) reads from the daemon buffer first, falls back to performance-api only when the buffer is empty *and* `--with-network` was not used.
 - [x] Live integration test against `demo.testfire.net`: navigate with `--with-network`, then `network --detail --headers` returns response headers including `Server` and `Set-Cookie`.
 
-#### G3. Help text update [0/1]
+#### G3. Help text update [1/1]
 - [x] `network --help` "Recommended workflows" stanza: clarify that the watcher is only engaged when `--with-network` (or daemon-mode capture) is on. Document the failure mode and how to detect it (`source` field).
 
 ### H. `network` format parity
 
-#### H1. Single source of truth [0/2]
+#### H1. Single source of truth [2/2]
 - [x] Reproduce: `network --format text` and `network` (JSON) sometimes show different `status` / `transfer_size`. Identify the divergent path.
 - [x] Make `--format text` derive from the same `Vec<Entry>` the JSON path uses, instead of building text from a different source.
 
 ### I. `screenshot --full-page` fix
 
-#### I1. Finish the chrome-scope prepareCapture-rect plumbing [0/3]
+#### I1. Finish the chrome-scope prepareCapture-rect plumbing [3/3]
 - [x] Resume the deferred work from iter-61h PR #73: capture in chrome scope with an explicit rect of `(0, 0, scrollWidth, scrollHeight)` rather than the viewport rect.
 - [x] Handle DPR / device-pixel-ratio so the resulting PNG dimensions match `scrollHeight * dpr` × `scrollWidth * dpr`.
 - [x] Live test on a long page (Wikipedia /HTTP, ~21k px): `screenshot --full-page` produces a PNG with `height >= scrollHeight`.
 
 ### J. Skill / doc drift
 
-#### J1. Decide: add `llm-help` and `recipes` subcommands or fix the skill [0/2]
+#### J1. Decide: add `llm-help` and `recipes` subcommands or fix the skill [2/2]
 - [x] Pick one:
   - **Option A** — add `ff-rdp llm-help` (concatenated `--help` for every subcommand, plain text, optimised for LLM context) and `ff-rdp recipes` (curated example flows). The dogfood skill already advertises them.
   - **Option B** — remove the references from `.claude/skills/dogfood/SKILL.md`.
 - [x] If Option A: each command needs at least one snapshot test against `--help` drift.
 
-#### J2. Fix the dogfood skill's `computed` example [0/1]
+#### J2. Fix the dogfood skill's `computed` example [1/1]
 - [x] In `.claude/skills/dogfood/SKILL.md`, replace `computed ".some-element" display,font-size,color` with the actual working syntax (`computed h1 --prop color --prop font-size` after C lands, or `--prop color` for now).
 
-## Acceptance Criteria [0/12]
+## Acceptance Criteria [12/12]
 
 - [x] **A.** `ff-rdp page-text` output contains only the `results` key for the text body.
 - [x] **B.** `ff-rdp eval --stringify '({a:1})'` returns `results: {"a":1}` (object), not a string.
