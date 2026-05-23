@@ -10,15 +10,19 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 use ff_rdp_core::{
-    FramedReader, FramedWriter, ProtocolError, RdpTransport, RootActor, TabActor, WatcherActor,
-    WebConsoleActor,
+    ActorId, FramedReader, FramedWriter, FrontKind, ProtocolError, RdpTransport, Registry,
+    ResourceCommand, ResourceType, RootActor, TabActor, WatcherActor,
 };
 
-use super::buffer::EventBuffer;
+use super::buffer::ResourceBuffer;
 use super::registry::{self, DaemonInfo};
 
-/// Resource types the daemon subscribes to at startup.
-const WATCHED_RESOURCE_TYPES: &[&str] = &["network-event", "console-message", "error-message"];
+/// Typed resource types passed to `ResourceCommand::subscribe`.
+const DAEMON_RESOURCE_TYPES: &[ResourceType] = &[
+    ResourceType::NetworkEvent,
+    ResourceType::ConsoleMessage,
+    ResourceType::ErrorMessage,
+];
 
 /// Daemon protocol version sent in the greeting after successful auth.
 ///
@@ -94,7 +98,7 @@ struct StreamSubscriber {
 }
 
 struct SharedState {
-    buffer: Mutex<EventBuffer>,
+    buffer: Mutex<ResourceBuffer>,
     /// Write-half of the current "RPC" CLI client, if any.
     ///
     /// This is the client that sends Firefox RDP requests (e.g. `eval`) and
@@ -146,6 +150,13 @@ struct SharedState {
     /// Total number of `target-available-form` events received since daemon
     /// startup.  Exposed via `daemon status` for diagnostics and live tests.
     target_count: AtomicU64,
+    /// Actor registry for the daemon session.
+    ///
+    /// Shared across all daemon threads.  Updated by `handle_target_event`
+    /// when `target-available-form` / `target-destroyed-form` events arrive.
+    /// Command-handling paths (e.g. eval) may share this registry to look up
+    /// live fronts without re-querying Firefox.
+    actor_registry: Arc<Registry>,
     /// Send half of the Firefox-reader → dispatcher channel.
     ///
     /// The Firefox reader thread pushes every inbound message here instead of
@@ -180,20 +191,6 @@ pub(crate) fn run_daemon(
     let tabs = RootActor::list_tabs(&mut transport).context("listing tabs")?;
     let tab_actor = tabs.first().context("no tabs available")?.actor.clone();
 
-    // Obtain the console actor ID and activate its internal listeners so that
-    // console.log() calls from eval (on any connection) are delivered through
-    // the watcher's console-message subscription.  Without startListeners the
-    // watcher subscription is registered but Firefox does not emit events.
-    let target_info =
-        TabActor::get_target(&mut transport, &tab_actor).context("getting tab target")?;
-    if let Err(e) = WebConsoleActor::start_listeners(
-        &mut transport,
-        &target_info.console_actor,
-        &["PageError", "ConsoleAPI"],
-    ) {
-        eprintln!("daemon: startListeners failed (non-fatal): {e}");
-    }
-
     let watcher_actor =
         TabActor::get_watcher(&mut transport, &tab_actor).context("getting watcher actor")?;
     // Subscribe to frame target events *before* resources so that
@@ -202,8 +199,13 @@ pub(crate) fn run_daemon(
     // must be called before `watchResources`.
     WatcherActor::watch_targets(&mut transport, &watcher_actor, "frame")
         .context("subscribing to frame targets")?;
-    WatcherActor::watch_resources(&mut transport, &watcher_actor, WATCHED_RESOURCE_TYPES)
-        .context("subscribing to resources")?;
+
+    // Create the ResourceCommand bus and subscribe to all daemon resource types.
+    // This sends `watchResources` on the wire and returns a typed receiver.
+    let mut resource_bus = ResourceCommand::new(watcher_actor.clone());
+    let (_sub_id, resource_rx) = resource_bus
+        .subscribe(&mut transport, DAEMON_RESOURCE_TYPES)
+        .context("subscribing to resources via ResourceCommand")?;
 
     // Listen on a random loopback port; the OS assigns the port number.
     let listener = TcpListener::bind("127.0.0.1:0").context("binding TCP listener")?;
@@ -236,7 +238,7 @@ pub(crate) fn run_daemon(
     let (event_tx, event_rx) = mpsc::sync_channel::<Value>(4096);
 
     let state = Arc::new(SharedState {
-        buffer: Mutex::new(EventBuffer::new()),
+        buffer: Mutex::new(ResourceBuffer::new()),
         rpc_writer: Mutex::new(None),
         stream_subs: Mutex::new(Vec::new()),
         greeting,
@@ -248,6 +250,7 @@ pub(crate) fn run_daemon(
         ref_store: Mutex::new(RefStore::new()),
         nav_generation: AtomicU64::new(0),
         target_count: AtomicU64::new(0),
+        actor_registry: Arc::new(Registry::new()),
         event_tx,
     });
 
@@ -270,7 +273,9 @@ pub(crate) fn run_daemon(
     let state_for_dispatcher = Arc::clone(&state);
     thread::Builder::new()
         .name("event-dispatcher".into())
-        .spawn(move || event_dispatcher_loop(&state_for_dispatcher, event_rx))
+        .spawn(move || {
+            event_dispatcher_loop(&state_for_dispatcher, event_rx, resource_bus, resource_rx);
+        })
         .context("spawning event dispatcher thread")?;
 
     let result = accept_loop(&state, &listener, &firefox_writer, idle_timeout);
@@ -367,19 +372,23 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
 
 /// Drain the event channel and route each Firefox message appropriately.
 ///
-/// This is the single dispatcher thread that does all routing work formerly
-/// done inline in the reader thread.  By moving the routing here, the reader
-/// thread is never blocked on `rpc_writer` or stream-subscriber locks —
-/// eliminating the auth-greeting delay under heavy event bursts.
-// `rx: mpsc::Receiver<Value>` must be owned to call recv_timeout; clippy
-// incorrectly flags it as "not consumed" because we call methods rather than
-// move out of it.  The Receiver is consumed by the loop when Disconnected.
+/// Owns the `ResourceCommand` bus and the typed `Resource` receiver so that
+/// watcher events can be parsed once and fanned out to the `ResourceBuffer`.
+// `rx: mpsc::Receiver<Value>` must be owned; clippy incorrectly flags it as
+// "not consumed" because we call methods rather than move out of it.
 #[allow(clippy::needless_pass_by_value)]
-fn event_dispatcher_loop(state: &Arc<SharedState>, rx: mpsc::Receiver<Value>) {
+fn event_dispatcher_loop(
+    state: &Arc<SharedState>,
+    rx: mpsc::Receiver<Value>,
+    mut resource_bus: ResourceCommand,
+    resource_rx: std::sync::mpsc::Receiver<ff_rdp_core::Resource>,
+) {
     loop {
         // Use recv_timeout so we can check the shutdown flag periodically.
         match rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(msg) => dispatch_firefox_message(state, &msg),
+            Ok(msg) => {
+                dispatch_firefox_message(state, &msg, &mut resource_bus, &resource_rx);
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if state.shutdown.load(Ordering::Relaxed) {
                     break;
@@ -387,8 +396,6 @@ fn event_dispatcher_loop(state: &Arc<SharedState>, rx: mpsc::Receiver<Value>) {
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 // Reader thread exited (and dropped the sender) — stop.
-                // Any messages still in the channel were already drained by
-                // prior `recv_timeout` calls before `Disconnected` fires.
                 break;
             }
         }
@@ -396,10 +403,35 @@ fn event_dispatcher_loop(state: &Arc<SharedState>, rx: mpsc::Receiver<Value>) {
 }
 
 /// Route a single Firefox message to the appropriate destination(s).
-fn dispatch_firefox_message(state: &SharedState, msg: &Value) {
+fn dispatch_firefox_message(
+    state: &SharedState,
+    msg: &Value,
+    resource_bus: &mut ResourceCommand,
+    resource_rx: &std::sync::mpsc::Receiver<ff_rdp_core::Resource>,
+) {
     if is_watcher_event(msg, &state.watcher_actor) {
-        // Route to matching streaming subscribers or buffer.
-        dispatch_watcher_event(state, msg);
+        // Forward raw events to stream subscribers first, noting which resource
+        // types were claimed by at least one subscriber.
+        let streamed_types = dispatch_watcher_event_to_stream_subs(state, msg);
+
+        // Parse into typed Resources via the bus, then route to the buffer.
+        //
+        // For non-Destroyed resources: buffer only if the type had no active
+        // stream subscriber.  This avoids double-counting when the CLI stores
+        // events back via `store-events` after a `navigate --with-network` stream.
+        //
+        // For Destroyed resources: ALWAYS call buf.on_resource so stale entries
+        // are pruned regardless of whether the type has a stream subscriber.
+        // Skipping the buffer prune would leave stale entries in the buffer
+        // indefinitely.
+        resource_bus.dispatch_event(msg);
+        let mut buf = state.buffer.lock().expect("buffer lock");
+        for resource in resource_rx.try_iter() {
+            let is_destroyed = matches!(resource, ff_rdp_core::Resource::Destroyed { .. });
+            if is_destroyed || !streamed_types.contains(resource.type_name().as_ref()) {
+                buf.on_resource(&resource);
+            }
+        }
     } else if is_target_event(msg) {
         // Log target lifecycle events and track the count.
         handle_target_event(state, msg);
@@ -428,7 +460,7 @@ fn dispatch_firefox_message(state: &SharedState, msg: &Value) {
                     .unwrap_or("")
                     .to_owned();
                 let sequence = {
-                    let mut buf = state.buffer.lock().unwrap();
+                    let mut buf = state.buffer.lock().expect("buffer lock");
                     buf.record_nav_boundary(nav_url.clone())
                 };
                 // Forward a synthetic navigation event to any stream
@@ -447,16 +479,16 @@ fn dispatch_firefox_message(state: &SharedState, msg: &Value) {
     }
 }
 
-/// Returns `true` only for `resources-available-array` / `resources-updated-array`
-/// events that originate from the **daemon's own watcher actor**.
+/// Returns `true` for resource array events from the **daemon's own watcher actor**.
 ///
-/// Events of the same type from other watcher actors (e.g. one created by a
-/// CLI command forwarded through the daemon) must be forwarded to the RPC
-/// client so that the `watchResources` handshake completes correctly.
+/// Covers `resources-available-array`, `resources-updated-array`, and
+/// `resources-destroyed-array`.  Events from other watchers (e.g. created by
+/// a CLI command forwarded through the daemon) must reach the RPC client so
+/// that the `watchResources` handshake completes correctly.
 fn is_watcher_event(msg: &Value, daemon_watcher_actor: &str) -> bool {
     let is_watcher_type = matches!(
         msg.get("type").and_then(Value::as_str),
-        Some("resources-available-array" | "resources-updated-array")
+        Some("resources-available-array" | "resources-updated-array" | "resources-destroyed-array")
     );
     if !is_watcher_type {
         return false;
@@ -518,18 +550,31 @@ fn is_target_event(msg: &Value) -> bool {
 /// a new one appearing).  Full Front-actor invalidation is deferred to iter-61p.
 fn handle_target_event(state: &SharedState, msg: &Value) {
     let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
-    let url = msg
-        .get("target")
+    let target_obj = msg.get("target");
+    let url = target_obj
         .and_then(|t| t.get("url"))
         .and_then(Value::as_str)
         .unwrap_or("<no url>");
-    let is_top_level = msg
-        .get("target")
+    let is_top_level = target_obj
         .and_then(|t| t.get("isTopLevelTarget"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+
+    // Extract the target actor ID from the event payload.
+    //
+    // Firefox encodes the actor as `target.actor` in `target-available-form`
+    // and `target-destroyed-form`.  We register/invalidate it in the shared
+    // registry so command paths can detect stale fronts without a round-trip.
+    let target_actor_id = target_obj
+        .and_then(|t| t.get("actor"))
+        .and_then(Value::as_str)
+        .map(ActorId::from);
+
     if msg_type == "target-available-form" {
         state.target_count.fetch_add(1, Ordering::Relaxed);
+        if let Some(id) = target_actor_id {
+            state.actor_registry.register(id, FrontKind::Target, None);
+        }
         tracing::info!(
             event = "target-available-form",
             url,
@@ -537,6 +582,9 @@ fn handle_target_event(state: &SharedState, msg: &Value) {
             "daemon: target available"
         );
     } else {
+        if let Some(ref id) = target_actor_id {
+            state.actor_registry.invalidate_target(id);
+        }
         tracing::info!(
             event = "target-destroyed-form",
             url,
@@ -584,12 +632,17 @@ fn dispatch_console_push_event(state: &SharedState, msg: &Value) {
     }
 }
 
-/// Dispatch a watcher event: forward to each streaming subscriber whose type
-/// set overlaps the event's resource types.  Resource types that have no
-/// subscriber are buffered for later drain requests.
-fn dispatch_watcher_event(state: &SharedState, msg: &Value) {
+/// Forward a watcher event to all streaming subscribers whose type set overlaps
+/// the event's resource types.
+///
+/// Returns the set of resource type strings that were successfully forwarded to
+/// at least one subscriber — the caller uses this to skip buffering for those
+/// types (so that `navigate --with-network` streaming doesn't double-count events).
+fn dispatch_watcher_event_to_stream_subs(state: &SharedState, msg: &Value) -> HashSet<String> {
+    let mut streamed: HashSet<String> = HashSet::new();
+
     let Some(array) = msg.get("array").and_then(Value::as_array) else {
-        return;
+        return streamed;
     };
 
     // Collect the resource types present in this event.
@@ -603,24 +656,21 @@ fn dispatch_watcher_event(state: &SharedState, msg: &Value) {
         }
     }
 
-    // Determine which types have a subscriber and which need buffering.
-    // unwrap: poisoned mutex — daemon should crash.
-    let mut subs = state.stream_subs.lock().unwrap();
-
-    // Track which resource types were forwarded to at least one subscriber.
-    let mut forwarded_types: HashSet<&str> = HashSet::new();
+    if event_types.is_empty() {
+        return streamed;
+    }
 
     // Serialise the message once (shared across all subscribers).
     let json = match serde_json::to_string(msg) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("daemon: could not serialise watcher event: {e}");
-            return;
+            return streamed;
         }
     };
 
     // Forward to each subscriber that wants at least one type in this event.
-    // Collect indices of dead subscribers for removal after iteration.
+    let mut subs = state.stream_subs.lock().unwrap();
     let mut dead: Vec<usize> = Vec::new();
     for (i, sub) in subs.iter_mut().enumerate() {
         let wants = event_types.iter().any(|t| sub.types.contains(*t));
@@ -630,32 +680,17 @@ fn dispatch_watcher_event(state: &SharedState, msg: &Value) {
             } else {
                 for t in &event_types {
                     if sub.types.contains(*t) {
-                        forwarded_types.insert(t);
+                        streamed.insert((*t).to_owned());
                     }
                 }
             }
         }
     }
-
-    // Remove dead subscribers in reverse order to preserve indices.
     for i in dead.into_iter().rev() {
         subs.remove(i);
     }
 
-    // Drop the lock before acquiring the buffer lock to avoid lock ordering
-    // issues.
-    drop(subs);
-
-    // Buffer any resource types that were NOT forwarded to any subscriber.
-    let unbuffered_types: Vec<&str> = event_types
-        .iter()
-        .filter(|t| !forwarded_types.contains(*t))
-        .copied()
-        .collect();
-
-    if !unbuffered_types.is_empty() {
-        buffer_watcher_event_for_types(&state.buffer, msg, &unbuffered_types);
-    }
+    streamed
 }
 
 /// Forward a navigation boundary event to all stream subscribers watching `"network-event"`.
@@ -710,52 +745,17 @@ fn forward_to_rpc_client(rpc_writer: &Mutex<Option<(RawHandle, FramedWriter)>>, 
     }
 }
 
-/// Parse a watcher event and insert individual resource items into the buffer,
-/// but only for the listed resource types.
-fn buffer_watcher_event_for_types(
-    buffer: &Mutex<EventBuffer>,
-    msg: &Value,
-    types_to_buffer: &[&str],
-) {
-    let Some(array) = msg.get("array").and_then(Value::as_array) else {
-        return;
-    };
-
-    // unwrap: poisoned mutex means a thread panicked — crash is intentional.
-    let mut buf = buffer.lock().unwrap();
-    for sub in array {
-        let Some(sub_arr) = sub.as_array() else {
-            continue;
-        };
-        if sub_arr.len() != 2 {
-            continue;
-        }
-        let Some(resource_type) = sub_arr[0].as_str() else {
-            continue;
-        };
-        if !types_to_buffer.contains(&resource_type) {
-            continue;
-        }
-        let Some(items) = sub_arr[1].as_array() else {
-            continue;
-        };
-        for item in items {
-            buf.insert(resource_type, item.clone());
-        }
-    }
-}
-
-/// Parse a watcher event and insert ALL resource items into the buffer.
+/// Insert raw JSON items from a watcher event into the buffer (test helper).
 ///
-/// Used in tests to verify buffering behaviour without subscribers.
+/// Replaces the old `buffer_watcher_event` / `buffer_watcher_event_for_types`
+/// helpers.  Uses `insert_raw` so the test-only path stays decoupled from the
+/// typed `ResourceCommand` bus used in production.
 #[cfg(test)]
-fn buffer_watcher_event(buffer: &Mutex<EventBuffer>, msg: &Value) {
+fn buffer_watcher_event(buffer: &Mutex<ResourceBuffer>, msg: &Value) {
     let Some(array) = msg.get("array").and_then(Value::as_array) else {
         return;
     };
-
-    // unwrap: poisoned mutex means a thread panicked — crash is intentional.
-    let mut buf = buffer.lock().unwrap();
+    let mut buf = buffer.lock().expect("buffer lock");
     for sub in array {
         let Some(sub_arr) = sub.as_array() else {
             continue;
@@ -770,7 +770,7 @@ fn buffer_watcher_event(buffer: &Mutex<EventBuffer>, msg: &Value) {
             continue;
         };
         for item in items {
-            buf.insert(resource_type, item.clone());
+            buf.insert_raw(resource_type, item.clone());
         }
     }
 }
@@ -1109,7 +1109,11 @@ fn handle_daemon_message(
             };
             // Clear existing buffered events for this type so the client
             // only receives events from this point forward.
-            let _discarded = state.buffer.lock().unwrap().drain(resource_type);
+            let _discarded = state
+                .buffer
+                .lock()
+                .expect("buffer lock")
+                .drain(resource_type);
 
             // Add this resource type to the client's subscriber entry.
             // If the client is not yet a subscriber, add it now.
@@ -1327,10 +1331,10 @@ fn handle_daemon_message(
                 });
             };
 
-            let mut buf = state.buffer.lock().unwrap();
+            let mut buf = state.buffer.lock().expect("buffer lock");
             let n = events_arr.len();
             for ev in events_arr {
-                buf.insert(resource_type, ev.clone());
+                buf.insert_raw(resource_type, ev.clone());
             }
             drop(buf);
 
@@ -1342,7 +1346,7 @@ fn handle_daemon_message(
 
         "status" => {
             let uptime = state.start_time.elapsed().as_secs();
-            let sizes = state.buffer.lock().unwrap().sizes();
+            let sizes = state.buffer.lock().expect("buffer lock").sizes();
             let subscriber_count = state.stream_subs.lock().unwrap().len();
             let target_count = state.target_count.load(Ordering::Relaxed);
             json!({
@@ -1387,7 +1391,7 @@ mod tests {
     // A minimal test-only SharedState with no real sockets.
     fn test_state() -> SharedState {
         SharedState {
-            buffer: Mutex::new(EventBuffer::new()),
+            buffer: Mutex::new(ResourceBuffer::new()),
             rpc_writer: Mutex::new(None),
             stream_subs: Mutex::new(Vec::new()),
             greeting: json!({"applicationType": "browser"}),
@@ -1399,6 +1403,7 @@ mod tests {
             ref_store: Mutex::new(RefStore::new()),
             nav_generation: AtomicU64::new(0),
             target_count: AtomicU64::new(0),
+            actor_registry: Arc::new(Registry::new()),
             event_tx: mpsc::sync_channel::<Value>(1).0,
         }
     }
@@ -1417,12 +1422,12 @@ mod tests {
             .buffer
             .lock()
             .expect("buffer lock")
-            .insert("network-event", json!({"url": "https://a.com"}));
+            .insert_raw("network-event", json!({"url": "https://a.com"}));
         state
             .buffer
             .lock()
             .expect("buffer lock")
-            .insert("network-event", json!({"url": "https://b.com"}));
+            .insert_raw("network-event", json!({"url": "https://b.com"}));
 
         let msg = json!({"to": "daemon", "type": "drain", "resourceType": "network-event"});
         let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
@@ -1512,17 +1517,17 @@ mod tests {
             .buffer
             .lock()
             .expect("buffer lock")
-            .insert("network-event", json!({}));
+            .insert_raw("network-event", json!({}));
         state
             .buffer
             .lock()
             .expect("buffer lock")
-            .insert("console-message", json!({}));
+            .insert_raw("console-message", json!({}));
         state
             .buffer
             .lock()
             .expect("buffer lock")
-            .insert("console-message", json!({}));
+            .insert_raw("console-message", json!({}));
 
         let msg = json!({"to": "daemon", "type": "status"});
         let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
@@ -1651,88 +1656,6 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // buffer_watcher_event
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn buffer_watcher_event_stores_items_by_resource_type() {
-        let state = test_state();
-        let msg = json!({
-            "type": "resources-available-array",
-            "array": [
-                ["network-event", [{"actor": "a1", "url": "https://x.com"}]],
-                ["console-message", [{"msg": "hello"}, {"msg": "world"}]]
-            ]
-        });
-        buffer_watcher_event(&state.buffer, &msg);
-
-        let mut buf = state.buffer.lock().expect("buffer lock");
-        let net = buf.drain("network-event");
-        assert_eq!(net.len(), 1, "expected 1 network-event");
-        assert_eq!(net[0]["url"], "https://x.com");
-
-        let console = buf.drain("console-message");
-        assert_eq!(console.len(), 2, "expected 2 console-messages");
-        assert_eq!(console[0]["msg"], "hello");
-        assert_eq!(console[1]["msg"], "world");
-    }
-
-    #[test]
-    fn buffer_watcher_event_ignores_missing_array_field() {
-        let state = test_state();
-        // Message without "array" field — must not panic or insert anything.
-        let msg = json!({"type": "resources-available-array"});
-        buffer_watcher_event(&state.buffer, &msg);
-        assert!(
-            state.buffer.lock().expect("buffer lock").is_empty(),
-            "buffer must remain empty when 'array' field is absent"
-        );
-    }
-
-    #[test]
-    fn buffer_watcher_event_skips_malformed_sub_entries() {
-        let state = test_state();
-        let msg = json!({
-            "type": "resources-available-array",
-            "array": [
-                // Too short — only one element instead of two.
-                ["network-event"],
-                // Correct entry mixed in.
-                ["console-message", [{"msg": "ok"}]]
-            ]
-        });
-        buffer_watcher_event(&state.buffer, &msg);
-
-        let mut buf = state.buffer.lock().expect("buffer lock");
-        // The malformed entry must be silently skipped.
-        assert!(
-            buf.drain("network-event").is_empty(),
-            "malformed entry must produce no events"
-        );
-        assert_eq!(
-            buf.drain("console-message").len(),
-            1,
-            "valid entry after malformed one must still be stored"
-        );
-    }
-
-    #[test]
-    fn buffer_watcher_event_handles_empty_items_list() {
-        let state = test_state();
-        let msg = json!({
-            "type": "resources-available-array",
-            "array": [
-                ["network-event", []]
-            ]
-        });
-        buffer_watcher_event(&state.buffer, &msg);
-        assert!(
-            state.buffer.lock().expect("buffer lock").is_empty(),
-            "empty items list must not add any events"
-        );
-    }
-
-    // -----------------------------------------------------------------------
     // handle_daemon_message — stream / stop-stream
     // -----------------------------------------------------------------------
 
@@ -1744,7 +1667,7 @@ mod tests {
             .buffer
             .lock()
             .expect("buffer lock")
-            .insert("network-event", json!({"url": "https://stale.com"}));
+            .insert_raw("network-event", json!({"url": "https://stale.com"}));
 
         let msg = json!({"to": "daemon", "type": "stream", "resourceType": "network-event"});
         let resp = handle_daemon_message(&state, &msg, TEST_CLIENT_ID, None);
@@ -1776,59 +1699,103 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // buffer_watcher_event_for_types
+    // buffer_watcher_event (test helper)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn buffer_for_types_only_buffers_matching_types() {
+    fn buffer_watcher_event_stores_items_by_resource_type() {
         let state = test_state();
         let msg = json!({
             "type": "resources-available-array",
             "array": [
                 ["network-event", [{"actor": "a1", "url": "https://x.com"}]],
-                ["console-message", [{"msg": "hello"}]]
+                ["console-message", [{"msg": "hello"}, {"msg": "world"}]]
             ]
         });
-        // Only buffer network-event.
-        buffer_watcher_event_for_types(&state.buffer, &msg, &["network-event"]);
+        buffer_watcher_event(&state.buffer, &msg);
 
         let mut buf = state.buffer.lock().expect("buffer lock");
         let net = buf.drain("network-event");
-        assert_eq!(net.len(), 1);
+        assert_eq!(net.len(), 1, "expected 1 network-event");
+        assert_eq!(net[0]["url"], "https://x.com");
+
         let console = buf.drain("console-message");
-        assert!(console.is_empty(), "console-message must not be buffered");
+        assert_eq!(console.len(), 2, "expected 2 console-messages");
+        assert_eq!(console[0]["msg"], "hello");
+        assert_eq!(console[1]["msg"], "world");
+    }
+
+    #[test]
+    fn buffer_watcher_event_ignores_missing_array_field() {
+        let state = test_state();
+        let msg = json!({"type": "resources-available-array"});
+        buffer_watcher_event(&state.buffer, &msg);
+        let buf = state.buffer.lock().expect("buffer lock");
+        assert!(
+            buf.sizes().is_empty(),
+            "buffer must remain empty when 'array' field is absent"
+        );
+    }
+
+    #[test]
+    fn buffer_watcher_event_skips_malformed_sub_entries() {
+        let state = test_state();
+        let msg = json!({
+            "type": "resources-available-array",
+            "array": [
+                ["network-event"],
+                ["console-message", [{"msg": "ok"}]]
+            ]
+        });
+        buffer_watcher_event(&state.buffer, &msg);
+
+        let mut buf = state.buffer.lock().expect("buffer lock");
+        assert!(
+            buf.drain("network-event").is_empty(),
+            "malformed entry must produce no events"
+        );
+        assert_eq!(buf.drain("console-message").len(), 1);
+    }
+
+    #[test]
+    fn buffer_watcher_event_handles_empty_items_list() {
+        let state = test_state();
+        let msg = json!({
+            "type": "resources-available-array",
+            "array": [["network-event", []]]
+        });
+        buffer_watcher_event(&state.buffer, &msg);
+        let buf = state.buffer.lock().expect("buffer lock");
+        assert!(
+            buf.sizes().is_empty(),
+            "empty items list must not add any events"
+        );
     }
 
     // -----------------------------------------------------------------------
-    // is_watcher_event (duplicate guard)
+    // dispatch_watcher_event_to_stream_subs — no buffering
     // -----------------------------------------------------------------------
 
     #[test]
-    fn should_stream_event_returns_true_for_streaming_type() {
-        // Verify dispatch_watcher_event routing logic via buffer fallback:
-        // if no subscriber claims a type, it must land in the buffer.
+    fn stream_dispatch_does_not_buffer_when_no_subscribers() {
+        // After Theme B, stream dispatch no longer falls back to buffering.
+        // The ResourceCommand bus handles buffering via on_resource().
+        // Verify that dispatch_watcher_event_to_stream_subs doesn't touch buffer.
         let state = test_state();
         let msg = json!({
             "type": "resources-available-array",
             "array": [["network-event", [{"actor": "a1"}]]]
         });
-        dispatch_watcher_event(&state, &msg);
-        // No subscriber registered → falls into buffer.
-        let events = state.buffer.lock().unwrap().drain("network-event");
-        assert_eq!(events.len(), 1);
-    }
-
-    #[test]
-    fn dispatch_buffers_when_no_subscribers() {
-        let state = test_state();
-        let msg = json!({
-            "type": "resources-available-array",
-            "array": [["console-message", [{"msg": "hi"}]]]
-        });
-        dispatch_watcher_event(&state, &msg);
-        let events = state.buffer.lock().unwrap().drain("console-message");
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0]["msg"], "hi");
+        dispatch_watcher_event_to_stream_subs(&state, &msg);
+        let events = state
+            .buffer
+            .lock()
+            .expect("buffer lock")
+            .drain("network-event");
+        assert!(
+            events.is_empty(),
+            "stream dispatch must not buffer when no subscribers"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2297,6 +2264,92 @@ mod tests {
             greeting.get("applicationType").and_then(Value::as_str),
             Some("browser"),
             "daemon must forward the cached Firefox greeting after auth"
+        );
+    }
+
+    // ── Registry integration ─────────────────────────────────────────────────
+
+    #[test]
+    fn handle_target_available_registers_actor_in_registry() {
+        let state = test_state();
+        let msg = json!({
+            "type": "target-available-form",
+            "target": {
+                "actor": "server1.conn0/windowGlobalTarget42",
+                "url": "https://example.com",
+                "isTopLevelTarget": true,
+            },
+        });
+
+        handle_target_event(&state, &msg);
+
+        assert_eq!(state.target_count.load(Ordering::Relaxed), 1);
+        let id = ActorId::from("server1.conn0/windowGlobalTarget42");
+        assert!(
+            state.actor_registry.assert_alive(&id).is_ok(),
+            "target actor must be alive in registry after target-available-form"
+        );
+    }
+
+    #[test]
+    fn handle_target_destroyed_invalidates_actor_in_registry() {
+        let state = test_state();
+        let id = ActorId::from("server1.conn0/windowGlobalTarget42");
+        // Pre-register the actor as if it had been seen in a previous event.
+        state
+            .actor_registry
+            .register(id.clone(), FrontKind::Target, None);
+
+        let msg = json!({
+            "type": "target-destroyed-form",
+            "target": {
+                "actor": "server1.conn0/windowGlobalTarget42",
+                "url": "https://example.com",
+                "isTopLevelTarget": true,
+            },
+        });
+
+        handle_target_event(&state, &msg);
+
+        assert!(
+            state.actor_registry.assert_alive(&id).is_err(),
+            "target actor must be dead in registry after target-destroyed-form"
+        );
+    }
+
+    #[test]
+    fn handle_target_destroyed_cascades_to_owned_fronts() {
+        let state = test_state();
+        let target_id = ActorId::from("server1.conn0/target1");
+        let console_id = ActorId::from("server1.conn0/console1");
+
+        state
+            .actor_registry
+            .register(target_id.clone(), FrontKind::Target, None);
+        state.actor_registry.register(
+            console_id.clone(),
+            FrontKind::Console,
+            Some(target_id.clone()),
+        );
+
+        let msg = json!({
+            "type": "target-destroyed-form",
+            "target": {
+                "actor": "server1.conn0/target1",
+                "url": "https://example.com",
+                "isTopLevelTarget": true,
+            },
+        });
+
+        handle_target_event(&state, &msg);
+
+        assert!(
+            state.actor_registry.assert_alive(&target_id).is_err(),
+            "target must be dead"
+        );
+        assert!(
+            state.actor_registry.assert_alive(&console_id).is_err(),
+            "console owned by target must be dead"
         );
     }
 }

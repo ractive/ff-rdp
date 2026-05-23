@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use serde_json::Value;
 
 use crate::actors::watcher::{ConsoleResource, NetworkResource, NetworkResourceUpdate};
@@ -25,16 +27,36 @@ pub enum Resource {
     ///
     /// Delivered as raw JSON until a typed `DocumentEvent` struct is needed.
     DocumentEvent(Value),
+
+    /// A resource that has been destroyed (`"resources-destroyed-array"`).
+    ///
+    /// Firefox emits this when a resource (e.g. a completed network event) is
+    /// removed from the server's registry.  Consumers should prune any local
+    /// store entries keyed on `resource_id`.
+    Destroyed {
+        /// The wire-format resource type string (e.g. `"network-event"`).
+        resource_type: String,
+        /// The opaque resource identifier matching a prior [`Resource::NetworkEvent`]
+        /// or similar variant's resource ID field.
+        resource_id: String,
+    },
 }
 
 impl Resource {
     /// Return the wire-format type name for this resource.
-    pub fn type_name(&self) -> &'static str {
+    ///
+    /// Returns a `Cow<'static, str>` so that all fixed variants can return a
+    /// `'static` borrow while `Destroyed` (whose type name is stored as a
+    /// heap-allocated `String`) can return an `Owned` variant without
+    /// changing the observable type.  Callers that only need `&str` can call
+    /// `.as_ref()` or rely on `Deref`.
+    pub fn type_name(&self) -> Cow<'static, str> {
         match self {
-            Self::NetworkEvent(_) | Self::NetworkUpdate(_) => "network-event",
-            Self::ConsoleMessage(_) => "console-message",
-            Self::ErrorMessage(_) => "error-message",
-            Self::DocumentEvent(_) => "document-event",
+            Self::NetworkEvent(_) | Self::NetworkUpdate(_) => Cow::Borrowed("network-event"),
+            Self::ConsoleMessage(_) => Cow::Borrowed("console-message"),
+            Self::ErrorMessage(_) => Cow::Borrowed("error-message"),
+            Self::DocumentEvent(_) => Cow::Borrowed("document-event"),
+            Self::Destroyed { resource_type, .. } => Cow::Owned(resource_type.clone()),
         }
     }
 }
@@ -94,6 +116,14 @@ mod tests {
         assert_eq!(
             Resource::DocumentEvent(serde_json::json!({"type": "dom-complete"})).type_name(),
             "document-event"
+        );
+        assert_eq!(
+            Resource::Destroyed {
+                resource_type: "network-event".into(),
+                resource_id: "42".into(),
+            }
+            .type_name(),
+            "network-event"
         );
     }
 }

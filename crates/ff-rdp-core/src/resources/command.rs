@@ -182,10 +182,11 @@ impl ResourceCommand {
 
     /// Dispatch a raw Firefox RDP event packet to all matching subscribers.
     ///
-    /// Call this for every `resources-available-array` and
-    /// `resources-updated-array` message received from the transport.
-    /// The bus parses the packet once and fans out typed [`Resource`] events
-    /// to every subscriber that requested the matching type.
+    /// Call this for every `resources-available-array`,
+    /// `resources-updated-array`, and `resources-destroyed-array` message
+    /// received from the transport.  The bus parses the packet once and fans
+    /// out typed [`Resource`] events to every subscriber that requested the
+    /// matching type.
     ///
     /// Packets for unknown resource types are silently ignored.
     /// Dead subscriber channels (dropped receivers) are cleaned up lazily on
@@ -202,6 +203,7 @@ impl ResourceCommand {
                 .into_iter()
                 .map(Resource::NetworkUpdate)
                 .collect(),
+            "resources-destroyed-array" => Self::parse_destroyed_resources(event),
             _ => return,
         };
 
@@ -209,7 +211,7 @@ impl ResourceCommand {
         let mut dead: Vec<SubscriptionId> = Vec::new();
         for resource in resources {
             let type_name = resource.type_name();
-            let rt = ResourceType::from_wire_str(type_name);
+            let rt = ResourceType::from_wire_str(&type_name);
             for sub in &self.subscribers {
                 let wants = rt.is_some_and(|t| sub.types.contains(&t));
                 if wants && sub.tx.send(resource.clone()).is_err() {
@@ -294,6 +296,55 @@ impl ResourceCommand {
         out
     }
 
+    /// Parse a `resources-destroyed-array` event into typed [`Resource::Destroyed`] items.
+    ///
+    /// The wire format mirrors `resources-available-array`:
+    /// ```json
+    /// { "type": "resources-destroyed-array",
+    ///   "array": [["network-event", [{"resourceId": "...", ...}]], ...] }
+    /// ```
+    /// Each inner resource object is expected to carry a `resourceId` field.
+    /// Objects without a recognisable `resourceId` are skipped.
+    fn parse_destroyed_resources(event: &Value) -> Vec<Resource> {
+        let mut out = Vec::new();
+
+        let Some(array) = event.get("array").and_then(Value::as_array) else {
+            return out;
+        };
+
+        for entry in array {
+            let entry_arr = match entry.as_array() {
+                Some(a) if a.len() == 2 => a,
+                _ => continue,
+            };
+
+            let resource_type = match entry_arr[0].as_str() {
+                Some(s) if !s.is_empty() => s.to_owned(),
+                _ => continue,
+            };
+
+            let Some(resources_arr) = entry_arr[1].as_array() else {
+                continue;
+            };
+
+            for resource_obj in resources_arr {
+                // `resourceId` may be a string or a number on the wire.
+                let resource_id = match resource_obj.get("resourceId") {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(Value::Number(n)) => n.to_string(),
+                    _ => continue,
+                };
+
+                out.push(Resource::Destroyed {
+                    resource_type: resource_type.clone(),
+                    resource_id,
+                });
+            }
+        }
+
+        out
+    }
+
     /// Return the wire-level ref-count for `rt` (number of active subscriptions).
     ///
     /// Primarily for testing and diagnostics.
@@ -309,5 +360,182 @@ impl ResourceCommand {
     /// Return the watcher actor ID bound to this bus.
     pub fn watcher_actor(&self) -> &ActorId {
         &self.watcher_actor
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for `dispatch_event` (no transport / mock server required)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Build a minimal `ResourceCommand` that has one subscriber registered
+    /// for `NetworkEvent` without going through the wire — we bypass
+    /// `subscribe` and insert directly so tests have no transport dependency.
+    fn bus_with_net_subscriber() -> (ResourceCommand, std::sync::mpsc::Receiver<Resource>) {
+        let watcher: ActorId = ActorId::from("conn0/watcher1");
+        let mut bus = ResourceCommand::new(watcher);
+
+        let (tx, rx) = std::sync::mpsc::channel::<Resource>();
+        bus.subscribers.push(Subscriber {
+            id: SubscriptionId(1),
+            types: vec![ResourceType::NetworkEvent],
+            tx,
+        });
+        *bus.ref_counts
+            .entry(ResourceType::NetworkEvent)
+            .or_insert(0) += 1;
+
+        (bus, rx)
+    }
+
+    /// Theme D AC: `resources-destroyed-array` is dispatched as
+    /// `Resource::Destroyed` to matching subscribers.
+    #[test]
+    fn dispatch_destroyed_array_reaches_subscriber() {
+        let (mut bus, rx) = bus_with_net_subscriber();
+
+        let packet = json!({
+            "type": "resources-destroyed-array",
+            "array": [
+                ["network-event", [{"resourceId": "42"}]]
+            ]
+        });
+
+        bus.dispatch_event(&packet);
+
+        let events: Vec<Resource> = rx.try_iter().collect();
+        assert_eq!(
+            events.len(),
+            1,
+            "subscriber should receive exactly 1 Destroyed event"
+        );
+
+        match &events[0] {
+            Resource::Destroyed {
+                resource_type,
+                resource_id,
+            } => {
+                assert_eq!(resource_type, "network-event");
+                assert_eq!(resource_id, "42");
+            }
+            other => panic!("expected Resource::Destroyed, got {other:?}"),
+        }
+    }
+
+    /// Numeric `resourceId` values (as produced by Firefox) are stringified.
+    #[test]
+    fn dispatch_destroyed_array_numeric_resource_id() {
+        let (mut bus, rx) = bus_with_net_subscriber();
+
+        let packet = json!({
+            "type": "resources-destroyed-array",
+            "array": [
+                ["network-event", [{"resourceId": 99_u64}]]
+            ]
+        });
+
+        bus.dispatch_event(&packet);
+
+        let events: Vec<Resource> = rx.try_iter().collect();
+        assert_eq!(events.len(), 1);
+
+        match &events[0] {
+            Resource::Destroyed { resource_id, .. } => {
+                assert_eq!(resource_id, "99");
+            }
+            other => panic!("expected Resource::Destroyed, got {other:?}"),
+        }
+    }
+
+    /// Non-subscribers for a type do not receive destroyed events for that type.
+    #[test]
+    fn dispatch_destroyed_array_non_matching_type_not_received() {
+        // Subscriber only wants console-message, but packet destroys network-event.
+        let watcher: ActorId = ActorId::from("conn0/watcher1");
+        let mut bus = ResourceCommand::new(watcher);
+
+        let (tx, rx) = std::sync::mpsc::channel::<Resource>();
+        bus.subscribers.push(Subscriber {
+            id: SubscriptionId(1),
+            types: vec![ResourceType::ConsoleMessage],
+            tx,
+        });
+        *bus.ref_counts
+            .entry(ResourceType::ConsoleMessage)
+            .or_insert(0) += 1;
+
+        let packet = json!({
+            "type": "resources-destroyed-array",
+            "array": [
+                ["network-event", [{"resourceId": "7"}]]
+            ]
+        });
+        bus.dispatch_event(&packet);
+
+        let events: Vec<Resource> = rx.try_iter().collect();
+        assert!(
+            events.is_empty(),
+            "console-message subscriber must not receive network-event destroyed"
+        );
+    }
+
+    /// Mixed available → updated → destroyed scenario: all three event shapes
+    /// reach the same subscriber in order.
+    #[test]
+    fn dispatch_available_then_destroyed_roundtrip() {
+        let (mut bus, rx) = bus_with_net_subscriber();
+
+        // 1. available
+        let available = json!({
+            "type": "resources-available-array",
+            "array": [
+                ["network-event", [{
+                    "actor": "conn0/netEvent1",
+                    "method": "GET",
+                    "url": "https://example.com/",
+                    "isXHR": false,
+                    "cause": {"type": "document"},
+                    "startedDateTime": "2026-01-01T00:00:00Z",
+                    "timeStamp": 1000.0,
+                    "resourceId": 1_u64
+                }]]
+            ]
+        });
+        bus.dispatch_event(&available);
+
+        // 2. destroyed
+        let destroyed = json!({
+            "type": "resources-destroyed-array",
+            "array": [
+                ["network-event", [{"resourceId": "1"}]]
+            ]
+        });
+        bus.dispatch_event(&destroyed);
+
+        let events: Vec<Resource> = rx.try_iter().collect();
+        assert_eq!(
+            events.len(),
+            2,
+            "subscriber should receive 1 NetworkEvent + 1 Destroyed"
+        );
+
+        assert!(
+            matches!(events[0], Resource::NetworkEvent(_)),
+            "first event should be NetworkEvent"
+        );
+        match &events[1] {
+            Resource::Destroyed {
+                resource_type,
+                resource_id,
+            } => {
+                assert_eq!(resource_type, "network-event");
+                assert_eq!(resource_id, "1");
+            }
+            other => panic!("second event should be Destroyed, got {other:?}"),
+        }
     }
 }

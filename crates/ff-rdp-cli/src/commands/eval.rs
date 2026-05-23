@@ -1,7 +1,9 @@
 use std::io::Read;
 
 use anyhow::Context as _;
-use ff_rdp_core::{Grip, ObjectActor, ProtocolError, WebConsoleActor};
+use ff_rdp_core::{
+    ActorId, Grip, ObjectActor, ProtocolError, ScopedGrip, TabActor, WebConsoleActor,
+};
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -10,7 +12,7 @@ use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_and_get_target;
+use super::connect_tab::{connect_and_get_target, register_target_fronts};
 
 /// Load the JavaScript source from exactly one of the three input modes.
 ///
@@ -175,7 +177,7 @@ fn is_csp_eval_error(exc_message: &str) -> bool {
 /// fallback so Firefox evaluates it via its built-in DevTools mechanism.
 fn eval_with_csp_fallback(
     transport: &mut ff_rdp_core::RdpTransport,
-    console_actor: &ff_rdp_core::ActorId,
+    console_actor: &ActorId,
     script: &str,
     fallback_script: &str,
 ) -> Result<(ff_rdp_core::EvalResult, bool), AppError> {
@@ -227,14 +229,40 @@ pub fn run(
     let fallback_script = build_script(&script, stringify, false);
 
     let mut ctx = connect_and_get_target(cli)?;
+
+    // The console actor ID is taken directly from the target descriptor
+    // returned by `get_target`.  The retry path below re-fetches the target
+    // if the actor turns out to be stale (noSuchActor / unknownActor).
     let console_actor = ctx.target.console_actor.clone();
 
-    let (eval_result, used_chrome_context) = eval_with_csp_fallback(
+    // First attempt.  On noSuchActor / unknownActor, refresh the target once
+    // and retry — exactly one retry per call_with_refresh contract.
+    let (eval_result, used_chrome_context) = match eval_with_csp_fallback(
         ctx.transport_mut(),
         &console_actor,
         &final_script,
         &fallback_script,
-    )?;
+    ) {
+        Ok(result) => result,
+        Err(AppError::RdpProtocol { ref name, .. })
+            if name == "noSuchActor" || name == "unknownActor" =>
+        {
+            // Actor is stale — re-resolve and retry once.
+            let tab_actor = ctx.target_tab_actor().clone();
+            let fresh_target =
+                TabActor::get_target(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+            register_target_fronts(ctx.registry(), &fresh_target);
+            let fresh_console = fresh_target.console_actor.clone();
+            ctx.target = fresh_target;
+            eval_with_csp_fallback(
+                ctx.transport_mut(),
+                &fresh_console,
+                &final_script,
+                &fallback_script,
+            )?
+        }
+        Err(e) => return Err(e),
+    };
 
     // If an exception occurred, print it to stderr and exit non-zero.
     if let Some(ref exc) = eval_result.exception {
@@ -251,14 +279,32 @@ pub fn run(
         return Err(AppError::Exit(1));
     }
 
+    // Compute the JSON representation before we potentially move the grip into
+    // a ScopedGrip.  `to_json()` borrows `result`, so this must come first.
     let mut result_json = eval_result.result.to_json();
+
+    // Wrap object/long-string grips in ScopedGrip so we can release them
+    // before the process exits.  Firefox allocates a server-side actor for
+    // each such grip returned by evaluateJSAsync; on long-lived daemon
+    // connections these accumulate without bound.  We send `release` after
+    // printing output so Firefox can free the actor immediately.
+    //
+    // Release applies equally in direct-connect and daemon-proxy modes: the
+    // daemon transparently forwards all RDP frames, so the `release` packet
+    // reaches Firefox through the same channel.
+    let scoped_grip: Option<ScopedGrip> = match eval_result.result {
+        g @ (Grip::Object { .. } | Grip::LongString { .. }) => Some(ScopedGrip::new(g)),
+        _ => None,
+    };
 
     // For object grips, enrich the output with the list of own property names.
     // Best-effort: if the actor is gone or the request fails, we skip silently.
     //
     // Firefox 149 removed the `ownPropertyNames` packet type, so we use
     // `prototypeAndProperties` and extract the keys from the result.
-    if let Grip::Object { ref actor, .. } = eval_result.result {
+    if let Some(ref sg) = scoped_grip
+        && let Grip::Object { ref actor, .. } = *sg.grip()
+    {
         match ObjectActor::prototype_and_properties(ctx.transport_mut(), actor.as_ref()) {
             Ok(pap) => {
                 let names: Vec<&str> = pap.own_properties.keys().map(String::as_str).collect();
@@ -336,9 +382,23 @@ pub fn run(
     } else {
         pipeline
     };
-    pipeline
+    let pipeline_result = pipeline
         .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+        .map_err(AppError::from);
+
+    // Release the server-side object actor after output is flushed.
+    //
+    // We intentionally release *after* printing so the caller sees the full
+    // output even if release fails.  Release failures are logged at WARN and
+    // never propagate — a failed release means the actor leaks until the
+    // connection closes, which is acceptable for one-shot CLI invocations.
+    if let Some(sg) = scoped_grip
+        && let Err(e) = sg.release(ctx.transport_mut())
+    {
+        tracing::warn!("eval: failed to release object actor: {e}");
+    }
+
+    pipeline_result
 }
 
 #[cfg(test)]

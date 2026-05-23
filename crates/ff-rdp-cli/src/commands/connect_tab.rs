@@ -1,8 +1,9 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use ff_rdp_core::{
-    ActorId, DeviceActor, ProtocolError, RdpConnection, RdpTransport, RootActor, TabActor,
-    TargetInfo,
+    ActorId, DeviceActor, FrontKind, ProtocolError, RdpConnection, RdpTransport, Registry,
+    RootActor, Session, TabActor, TargetInfo,
 };
 use serde_json::json;
 
@@ -11,8 +12,20 @@ use crate::daemon::client::{ConnectionTarget, resolve_connection_target};
 use crate::error::AppError;
 
 /// Shared state after connecting to Firefox and resolving a tab target.
+///
+/// Owns a [`Session`] (transport + actor registry) and the resolved tab
+/// metadata.  The registry is pre-populated with the target and console fronts
+/// discovered during the `getTarget` handshake.
 pub struct ConnectedTab {
-    connection: RdpConnection,
+    session: Session,
+    /// Firefox major version, if detectable from the greeting or device actor.
+    ///
+    /// Currently the version is also stored in the process-global
+    /// `connection_meta::remembered_version()`.  This field is kept for
+    /// potential future use (e.g. exposing it via `ConnectedTab::firefox_version()`
+    /// without a global read).
+    #[allow(dead_code)]
+    pub(crate) firefox_version: Option<u32>,
     pub(crate) target: TargetInfo,
     tab_actor: ActorId,
     /// Whether this connection goes through the daemon proxy.
@@ -166,7 +179,8 @@ fn connect_to_firefox(
     })
 }
 
-/// Run the RDP handshake: list tabs, resolve the target tab, call `getTarget`.
+/// Run the RDP handshake: list tabs, resolve the target tab, call `getTarget`,
+/// and register the discovered actor fronts in the session registry.
 fn handshake_and_resolve_tab(
     mut connection: RdpConnection,
     cli: &Cli,
@@ -205,17 +219,58 @@ fn handshake_and_resolve_tab(
     let target_info =
         TabActor::get_target(connection.transport_mut(), &tab_actor).map_err(AppError::from)?;
 
+    // Consume the RdpConnection and build a Session so all subsequent
+    // actor interactions use the registry for front resolution.
+    let firefox_version = connection.firefox_version();
+    let transport = connection.into_transport();
+    let session = Session::new(transport);
+
+    // Register the target front (WindowGlobalTarget) and its console front.
+    // These two are always present after getTarget.
+    register_target_fronts(session.registry(), &target_info);
+
     Ok(ConnectedTab {
-        connection,
+        session,
+        firefox_version,
         target: target_info,
         tab_actor,
         via_daemon,
     })
 }
 
+/// Register target and console fronts in the registry after `getTarget`.
+///
+/// Called once per `handshake_and_resolve_tab` and again after each
+/// `refresh_target` to keep the registry in sync with Firefox's actor state.
+pub(crate) fn register_target_fronts(registry: &Arc<Registry>, target: &TargetInfo) {
+    let target_id = target.actor.clone();
+    let console_id = target.console_actor.clone();
+
+    registry.register(target_id.clone(), FrontKind::Target, None);
+    registry.register(console_id, FrontKind::Console, Some(target_id));
+}
+
 impl ConnectedTab {
+    /// Borrow the underlying RDP transport.
     pub fn transport_mut(&mut self) -> &mut RdpTransport {
-        self.connection.transport_mut()
+        self.session.transport_mut()
+    }
+
+    /// Borrow the session (transport + registry).
+    ///
+    /// Used by theme C/D agents (iter-61t) to access both transport and
+    /// registry together without separate borrows.
+    #[allow(dead_code)]
+    pub fn session_mut(&mut self) -> &mut Session {
+        &mut self.session
+    }
+
+    /// Return a reference to the actor registry for this session.
+    ///
+    /// Callers use this to look up pre-registered fronts or to register
+    /// additional fronts (e.g. after acquiring a watcher actor).
+    pub fn registry(&self) -> &Arc<Registry> {
+        self.session.registry()
     }
 
     pub fn target_tab_actor(&self) -> &ActorId {
@@ -229,14 +284,23 @@ impl ConnectedTab {
     /// returns `noSuchActor`.  Calling this refreshes `self.target` so the
     /// next `eval` uses the actor bound to the new docshell.
     ///
+    /// When a refresh succeeds the registry is also updated: the old console
+    /// front is invalidated (via `invalidate_target` on the old target ID) and
+    /// the new target + console fronts are registered.
+    ///
     /// Errors are intentionally swallowed: a failed refresh is non-fatal
     /// since the caller will get a `noSuchActor` error on the next eval
     /// (same failure mode as before) and the retry with a fresh target will
     /// succeed.
     pub fn refresh_target(&mut self) {
         let tab_actor = self.tab_actor.clone();
-        match TabActor::get_target(self.connection.transport_mut(), &tab_actor) {
+        match TabActor::get_target(self.session.transport_mut(), &tab_actor) {
             Ok(fresh) => {
+                // Invalidate the stale target front and all its owned actors.
+                let old_target_id = self.target.actor.clone();
+                self.session.registry().invalidate_target(&old_target_id);
+                // Register the fresh fronts.
+                register_target_fronts(self.session.registry(), &fresh);
                 self.target = fresh;
             }
             Err(e) => {
