@@ -1,5 +1,48 @@
 use thiserror::Error;
 
+// ---------------------------------------------------------------------------
+// Top-level typed error + result alias
+// ---------------------------------------------------------------------------
+
+/// Typed error taxonomy for the Firefox RDP core library.
+///
+/// All public methods in `ff-rdp-core` return errors that can be mapped to
+/// one of these discriminants, allowing callers (e.g. the CLI) to
+/// distinguish failure modes and emit deterministic exit codes.
+#[derive(Debug, Error)]
+pub enum RdpError {
+    /// Low-level I/O or framing failure on the TCP transport.
+    #[error("transport error: {0}")]
+    Transport(#[from] std::io::Error),
+
+    /// Firefox returned an error packet from an actor.
+    #[error("actor error from {actor}: {name} — {message}")]
+    Protocol {
+        actor: String,
+        name: String,
+        message: String,
+    },
+
+    /// A received packet does not have the expected JSON shape.
+    #[error("unexpected packet shape at {path}: expected {expected}, got {got}")]
+    Shape {
+        path: String,
+        expected: String,
+        got: String,
+    },
+
+    /// An operation exceeded its deadline.
+    #[error("operation timed out after {after_ms}ms (phase: {phase})")]
+    Timeout { phase: String, after_ms: u64 },
+
+    /// The Firefox RDP peer closed the connection.
+    #[error("remote connection closed unexpectedly")]
+    RemoteClosed,
+}
+
+/// Convenience alias used throughout `ff-rdp-core`.
+pub type RdpResult<T> = Result<T, RdpError>;
+
 /// Well-known Firefox RDP actor error codes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorErrorKind {

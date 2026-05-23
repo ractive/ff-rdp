@@ -6,6 +6,105 @@ use serde_json::Value;
 
 use crate::error::ProtocolError;
 
+// ---------------------------------------------------------------------------
+// Payload redactor
+// ---------------------------------------------------------------------------
+
+/// Keys whose string values are always redacted regardless of length.
+const SENSITIVE_KEYS: &[&str] = &[
+    "cookie",
+    "set-cookie",
+    "authorization",
+    "auth-token",
+    "x-auth-token",
+    "password",
+];
+
+/// Keys whose values contain JS source or request body text and should be
+/// redacted to avoid leaking eval payloads in traces.
+const SOURCE_KEYS: &[&str] = &["text", "expression"];
+
+/// Maximum string length (in bytes) allowed through the redactor for ad-hoc
+/// string values that aren't explicitly listed in `SENSITIVE_KEYS`.
+///
+/// Any string exceeding this threshold inside a traced packet is replaced with
+/// `<redacted len=N>`.
+const MAX_INLINE_STR: usize = 32;
+
+/// Redact a JSON value in-place for safe trace output.
+///
+/// - All values of keys matching [`SENSITIVE_KEYS`] are replaced.
+/// - All values of keys matching [`SOURCE_KEYS`] are replaced.
+/// - String values exceeding [`MAX_INLINE_STR`] anywhere in the tree are
+///   replaced.
+///
+/// When the `FF_RDP_TRACE_RAW=1` environment variable is set at the time the
+/// function is called, redaction is skipped and the value is returned
+/// unchanged.  This allows local debugging without recompiling.
+pub fn redact(value: &Value) -> Value {
+    if std::env::var("FF_RDP_TRACE_RAW").as_deref() == Ok("1") {
+        return value.clone();
+    }
+    redact_inner(value)
+}
+
+fn redact_inner(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (k, v) in map {
+                let key_lower = k.to_lowercase();
+                let is_sensitive = SENSITIVE_KEYS.iter().any(|s| *s == key_lower);
+                let is_source = SOURCE_KEYS.iter().any(|s| *s == key_lower);
+                let redacted_v = if is_sensitive || is_source {
+                    redact_string_value(v)
+                } else {
+                    redact_inner(v)
+                };
+                out.insert(k.clone(), redacted_v);
+            }
+            Value::Object(out)
+        }
+        Value::Array(arr) => Value::Array(arr.iter().map(redact_inner).collect()),
+        Value::String(s) => {
+            if s.len() > MAX_INLINE_STR {
+                Value::String(format!("<redacted len={}>", s.len()))
+            } else {
+                value.clone()
+            }
+        }
+        _ => value.clone(),
+    }
+}
+
+fn redact_string_value(value: &Value) -> Value {
+    match value {
+        Value::String(s) => Value::String(format!("<redacted len={}>", s.len())),
+        // Redact nested structures too — e.g. cookie arrays.
+        Value::Array(arr) => Value::Array(arr.iter().map(redact_string_value).collect()),
+        _ => Value::String(format!("<redacted len={}>", value.to_string().len())),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tracing helpers
+// ---------------------------------------------------------------------------
+
+/// Extract the `"to"` or `"from"` actor field from a JSON packet for tracing.
+fn packet_actor(packet: &Value) -> &str {
+    packet
+        .get("to")
+        .or_else(|| packet.get("from"))
+        .and_then(Value::as_str)
+        .unwrap_or("-")
+}
+
+/// Extract the packet type field for tracing (`"type"` for requests, `"from"`
+/// actor is in the response but the type may be missing — fall back to "-").
+fn packet_kind(packet: &Value) -> &str {
+    packet.get("type").and_then(Value::as_str).unwrap_or("-")
+}
+
 /// Maximum frame payload size accepted from a Firefox RDP peer.
 ///
 /// 64 MiB comfortably exceeds the largest legitimate frame observed in the
@@ -160,6 +259,15 @@ impl RdpTransport {
         let json = serde_json::to_string(message)
             .map_err(|e| ProtocolError::InvalidPacket(e.to_string()))?;
 
+        tracing::trace!(
+            target: "ff_rdp_core::transport",
+            direction = "send",
+            actor = %packet_actor(message),
+            kind = %packet_kind(message),
+            payload_size = json.len(),
+            body = %serde_json::to_string(&redact(message)).unwrap_or_default(),
+        );
+
         let frame = encode_frame(&json);
         self.writer
             .write_all(frame.as_bytes())
@@ -170,7 +278,18 @@ impl RdpTransport {
 
     /// Receive a single length-prefixed JSON message.
     pub fn recv(&mut self) -> Result<Value, ProtocolError> {
-        recv_from(&mut self.reader)
+        let value = recv_from(&mut self.reader)?;
+
+        tracing::trace!(
+            target: "ff_rdp_core::transport",
+            direction = "recv",
+            actor = %packet_actor(&value),
+            kind = %packet_kind(&value),
+            payload_size = serde_json::to_string(&value).map_or(0, |s| s.len()),
+            body = %serde_json::to_string(&redact(&value)).unwrap_or_default(),
+        );
+
+        Ok(value)
     }
 
     /// Send a request and immediately receive one response.
@@ -206,7 +325,18 @@ impl FramedReader {
     ///
     /// Mirrors [`RdpTransport::recv`].
     pub fn recv(&mut self) -> Result<Value, ProtocolError> {
-        recv_from(&mut self.reader)
+        let value = recv_from(&mut self.reader)?;
+
+        tracing::trace!(
+            target: "ff_rdp_core::transport",
+            direction = "recv",
+            actor = %packet_actor(&value),
+            kind = %packet_kind(&value),
+            payload_size = serde_json::to_string(&value).map_or(0, |s| s.len()),
+            body = %serde_json::to_string(&redact(&value)).unwrap_or_default(),
+        );
+
+        Ok(value)
     }
 
     /// Set the read timeout on the underlying socket.
@@ -249,6 +379,16 @@ impl FramedWriter {
     pub fn send(&mut self, message: &Value) -> Result<(), ProtocolError> {
         let json = serde_json::to_string(message)
             .map_err(|e| ProtocolError::InvalidPacket(e.to_string()))?;
+
+        tracing::trace!(
+            target: "ff_rdp_core::transport",
+            direction = "send",
+            actor = %packet_actor(message),
+            kind = %packet_kind(message),
+            payload_size = json.len(),
+            body = %serde_json::to_string(&redact(message)).unwrap_or_default(),
+        );
+
         let frame = encode_frame(&json);
         self.writer
             .write_all(frame.as_bytes())
@@ -496,6 +636,78 @@ mod tests {
             ),
             "expected FrameTooLarge, got {err:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // redact — pure unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn redact_sensitive_key_replaces_value() {
+        let v = serde_json::json!({"cookie": "session=abc123"});
+        let r = redact(&v);
+        let s = r["cookie"].as_str().unwrap();
+        assert!(s.starts_with("<redacted"), "expected redaction, got: {s}");
+    }
+
+    #[test]
+    fn redact_source_key_replaces_value() {
+        let v = serde_json::json!({"text": "console.log('hello')"});
+        let r = redact(&v);
+        let s = r["text"].as_str().unwrap();
+        assert!(s.starts_with("<redacted"), "expected redaction, got: {s}");
+    }
+
+    #[test]
+    fn redact_long_string_replaces_value() {
+        let long = "x".repeat(MAX_INLINE_STR + 1);
+        let v = serde_json::json!({"data": long});
+        let r = redact(&v);
+        let s = r["data"].as_str().unwrap();
+        assert!(
+            s.starts_with("<redacted"),
+            "long string should be redacted, got: {s}"
+        );
+    }
+
+    #[test]
+    fn redact_short_string_passes_through() {
+        let short = "short";
+        let v = serde_json::json!({"data": short});
+        let r = redact(&v);
+        assert_eq!(r["data"].as_str().unwrap(), short);
+    }
+
+    #[test]
+    fn redact_noop_when_ff_rdp_trace_raw_set() {
+        // SAFETY: test-only mutation of the environment variable; no concurrent
+        // threads in this test are reading FF_RDP_TRACE_RAW.
+        unsafe {
+            std::env::set_var("FF_RDP_TRACE_RAW", "1");
+        }
+        let secret = "a".repeat(100);
+        let v = serde_json::json!({"cookie": secret.clone()});
+        let r = redact(&v);
+        // Raw mode: no redaction.
+        assert_eq!(r["cookie"].as_str().unwrap(), secret);
+        // SAFETY: same as above.
+        unsafe {
+            std::env::remove_var("FF_RDP_TRACE_RAW");
+        }
+    }
+
+    #[test]
+    fn redact_nested_object_handles_sensitive_key() {
+        let v =
+            serde_json::json!({"headers": {"cookie": "session=abc", "content-type": "text/html"}});
+        let r = redact(&v);
+        let cookie = r["headers"]["cookie"].as_str().unwrap();
+        assert!(
+            cookie.starts_with("<redacted"),
+            "cookie in nested obj must be redacted"
+        );
+        // Non-sensitive key at same level passes through.
+        assert_eq!(r["headers"]["content-type"].as_str().unwrap(), "text/html");
     }
 
     // -----------------------------------------------------------------------
