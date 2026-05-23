@@ -61,3 +61,17 @@ An AC without a named test is not done.
 - One iteration = one branch = one PR
 - Branch naming: `iter-N/short-description`
 - Self-review the diff before requesting review — catch fmt, clippy, dead code yourself
+
+## Iteration discipline
+- Every new `pub` item must have at least one non-test consumer in the same PR.
+  Run `cargo run -p xtask -- check-dead-primitives --since origin/main` to verify.
+- Every `TODO`/`FIXME`/`XXX` must include a GitHub issue link, Jira ticket, or `// allow-todo: <reason>`.
+  Run `cargo run -p xtask -- check-todo-annotations --since origin/main` to verify.
+- Every spec method change must have a live Firefox test, not just a unit test.
+- Carry-over work must be filed as a new iteration plan BEFORE the current PR merges.
+- AC checkboxes must be paired with test evidence or a `[deferred — new plan: …]` annotation.
+  An AC without a named test is not done — do not tick it.
+- Iteration plans must include `dogfood_path` and `first_call_sites` (if new pub items).
+  Validate with: `cargo run -p xtask -- check-iteration-plan kb/iterations/iteration-NN-slug.md`
+- `cargo xtask check-dead-primitives` and `check-todo-annotations` run in CI as required checks.
+- See `CONTRIBUTING.md` for full details and install instructions for the pre-commit hook.
