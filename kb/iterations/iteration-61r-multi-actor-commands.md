@@ -2,7 +2,7 @@
 title: "Iteration 61r: Multi-actor Command abstraction (screenshot --full-page real fix, eval mapped.await, navigate orchestration)"
 type: iteration
 date: 2026-05-23
-status: partial
+status: done
 branch: iter-61r/multi-actor-commands
 depends_on:
   - iteration-61p-actor-registry-and-front-lifecycle
