@@ -44,7 +44,7 @@ pub use connection::{COMPATIBLE_FIREFOX_MAX, COMPATIBLE_FIREFOX_MIN, RdpConnecti
 pub use error::{ActorErrorKind, ProtocolError, RdpError, RdpResult};
 pub use fronts::{
     ConsoleFront, DescriptorFront, NetworkContentFront, PageStyleFront, RootFront, ScreenshotFront,
-    TargetFront, WalkerFront, WatcherFront,
+    TargetConfigurationFront, TargetFront, WalkerFront, WatcherFront,
 };
 pub use registry::{Front, FrontKind, IsActorGone, Registry, call_with_refresh};
 pub use resources::{Resource, ResourceCommand, ResourceType, SubscriptionId};

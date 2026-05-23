@@ -1,0 +1,17 @@
+{
+  "from": "server1.conn0.watcher4",
+  "type": "resources-available-array",
+  "array": [
+    [
+      "document-event",
+      [
+        {
+          "resourceType": "document-event",
+          "name": "dom-loading",
+          "time": 1700000000000,
+          "url": "https://example.com"
+        }
+      ]
+    ]
+  ]
+}

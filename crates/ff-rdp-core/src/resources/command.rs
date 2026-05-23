@@ -19,6 +19,18 @@
 //!   subscriber that requested the matching type.
 //! - Subscription/unsubscription manipulates the in-process state only; I/O is
 //!   performed by the caller-supplied transport at `subscribe` / `unsubscribe` time.
+//!
+//! # Throttle policy — zero delay (Bug 1914386)
+//!
+//! The upstream `ResourceCommand.js` used to coalesce resource notifications
+//! with a 100 ms timer before dispatching them to listeners (see the old
+//! `_throttledDispatchResourceAvailable` implementation).  Firefox Bug 1914386
+//! removed that throttle in favour of passing every packet through immediately
+//! while still supporting array-batching: a single `resources-available-array`
+//! frame carrying N resources fans out as one `dispatch_event` call that loops
+//! over the inner array and delivers each `Resource` to matching subscribers.
+//!
+//! Reference: `devtools/shared/commands/resource/resource-command.js:73-79`.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -537,5 +549,58 @@ mod tests {
             }
             other => panic!("second event should be Destroyed, got {other:?}"),
         }
+    }
+
+    /// Micro-benchmark: a single `resources-available-array` event must fan out
+    /// to a subscriber in well under 1 ms (p99 target from iter-61v AC7).
+    ///
+    /// This is a regular `#[test]` using wall-clock measurement rather than a
+    /// criterion bench, so it runs in the normal test suite.  We repeat 1 000
+    /// iterations and assert that the median (50th-percentile) round-trip is
+    /// below 1 ms; this is conservative on any modern machine and catches
+    /// accidental re-introduction of sleep/timer throttling.
+    #[test]
+    fn bench_bus_dispatch_latency() {
+        use std::time::Instant;
+
+        const ITERS: usize = 1_000;
+        const ONE_MS_NS: u128 = 1_000_000;
+
+        let (mut bus, rx) = bus_with_net_subscriber();
+
+        let packet = json!({
+            "type": "resources-available-array",
+            "array": [
+                ["network-event", [{
+                    "actor": "conn0/netEvent1",
+                    "method": "GET",
+                    "url": "https://example.com/",
+                    "isXHR": false,
+                    "cause": {"type": "document"},
+                    "startedDateTime": "2026-01-01T00:00:00Z",
+                    "timeStamp": 1000.0,
+                    "resourceId": 1_u64
+                }]]
+            ]
+        });
+
+        let mut times_ns = Vec::with_capacity(ITERS);
+
+        for _ in 0..ITERS {
+            let t0 = Instant::now();
+            bus.dispatch_event(&packet);
+            times_ns.push(t0.elapsed().as_nanos());
+            // Drain so the channel does not grow unbounded.
+            let _ = rx.try_recv();
+        }
+
+        times_ns.sort_unstable();
+        let median_ns = times_ns[ITERS / 2];
+
+        assert!(
+            median_ns < ONE_MS_NS,
+            "bus dispatch median latency {median_ns} ns exceeds 1 ms budget — \
+             check for accidental timer/throttle re-introduction"
+        );
     }
 }
