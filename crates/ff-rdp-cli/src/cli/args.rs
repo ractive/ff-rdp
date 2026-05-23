@@ -195,6 +195,16 @@ TROUBLESHOOTING:
     \"could not connect\" -> run ff-rdp launch first (safe alongside normal browser)
     Timeout -> increase --timeout or check --port matches the launched instance";
 
+/// Log verbosity level for `--log-level`.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
 #[derive(Parser)]
 #[command(
     name = "ff-rdp",
@@ -296,6 +306,14 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub verbose: bool,
 
+    /// Set the log level for structured tracing output to stderr.
+    ///
+    /// "trace" enables per-packet wire dumps (ff_rdp_core::transport=trace).
+    /// Set FF_RDP_TRACE_RAW=1 to disable redaction of sensitive fields in trace output.
+    /// Overrides the RUST_LOG environment variable when specified.
+    #[arg(long, global = true, value_name = "LEVEL")]
+    pub log_level: Option<LogLevel>,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -303,10 +321,10 @@ pub struct Cli {
 impl Cli {
     /// Returns `true` when internal debug messages should be printed to stderr.
     ///
-    /// Enabled by `--verbose` or by having `RUST_LOG` set (the latter implies
-    /// that the caller already opted into structured logging output).
+    /// Enabled by `--verbose`, `--log-level`, or by having `RUST_LOG` set
+    /// (the latter implies that the caller already opted into structured logging output).
     pub fn is_verbose(&self) -> bool {
-        self.verbose || std::env::var("RUST_LOG").is_ok()
+        self.verbose || self.log_level.is_some() || std::env::var("RUST_LOG").is_ok()
     }
 }
 

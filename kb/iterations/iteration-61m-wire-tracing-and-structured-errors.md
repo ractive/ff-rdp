@@ -2,11 +2,16 @@
 title: "Iteration 61m: Wire-level tracing + structured errors"
 type: iteration
 date: 2026-05-23
-status: planned
+status: in-review
 branch: iter-61m/wire-tracing-structured-errors
 depends_on:
   - iteration-61l-dogfood-53-fixes
-tags: [iteration, tracing, errors, foundation, stability-roadmap]
+tags:
+  - iteration
+  - tracing
+  - errors
+  - foundation
+  - stability-roadmap
 ---
 
 # Iteration 61m: Wire-level tracing + structured errors
@@ -22,28 +27,28 @@ The foundation for everything downstream. Until we can see what bytes go across 
 ## Tasks
 
 ### A. Wire tracing
-- [ ] Add `tracing` + `tracing-subscriber` to `ff-rdp-core` and `ff-rdp-cli`.
-- [ ] In transport (send/receive packet loops): `tracing::trace!(target: "ff_rdp_core::transport", direction = ?dir, actor = %actor, kind = ?kind, payload_size = sz, body = %redact(json))`.
-- [ ] Redactor: replace cookie values, auth-token strings, and `request.text`/`eval.text` bodies with `<redacted len=N>` by default. Add `FF_RDP_TRACE_RAW=1` to disable redaction for local debugging.
-- [ ] `--log-level trace|debug|info|warn|error` CLI flag that maps onto `RUST_LOG`.
+- [x] Add `tracing` + `tracing-subscriber` to `ff-rdp-core` and `ff-rdp-cli`.
+- [x] In transport (send/receive packet loops): `tracing::trace!(target: "ff_rdp_core::transport", direction = ?dir, actor = %actor, kind = ?kind, payload_size = sz, body = %redact(json))`.
+- [x] Redactor: replace cookie values, auth-token strings, and `request.text`/`eval.text` bodies with `<redacted len=N>` by default. Add `FF_RDP_TRACE_RAW=1` to disable redaction for local debugging.
+- [x] `--log-level trace|debug|info|warn|error` CLI flag that maps onto `RUST_LOG`.
 
 ### B. Structured error type
-- [ ] In `ff-rdp-core/src/error.rs`, define `RdpError` enum (`thiserror`) with the discriminants above.
-- [ ] Replace `anyhow::anyhow!("…")` in core code paths with typed variants. CLI keeps `anyhow` at the outer boundary.
-- [ ] CLI: when a command fails, JSON output is `{"error": "…", "error_type": "<discriminant>", "context": ["…", "…"]}` and exit code maps deterministically (`Protocol` → 3, `Shape` → 4, `Timeout` → 5, `Transport`/`RemoteClosed` → 6, others → 1).
+- [x] In `ff-rdp-core/src/error.rs`, define `RdpError` enum (`thiserror`) with the discriminants above.
+- [x] Replace `anyhow::anyhow!("…")` in core code paths with typed variants. CLI keeps `anyhow` at the outer boundary.
+- [x] CLI: when a command fails, JSON output is `{"error": "…", "error_type": "<discriminant>", "context": ["…", "…"]}` and exit code maps deterministically (`Protocol` → 3, `Shape` → 4, `Timeout` → 5, `Transport`/`RemoteClosed` → 6, others → 1).
 
 ### C. Error context plumbing
-- [ ] Audit `crates/ff-rdp-cli/src/commands/*.rs`: every `.send_request(...)?` gets a `.with_context(|| format!("{actor} {method}"))`.
-- [ ] Snapshot test in `tests/error_shapes.rs`: run a command against the mock server with a fault injected at each layer, assert the JSON output's `error_type` and `context` chain.
+- [x] Audit `crates/ff-rdp-cli/src/commands/*.rs`: every `.send_request(...)?` gets a `.with_context(|| format!("{actor} {method}"))`.
+- [x] Snapshot test in `tests/error_shapes.rs`: run a command against the mock server with a fault injected at each layer, assert the JSON output's `error_type` and `context` chain.
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [6/6]
 
-- [ ] `RUST_LOG=ff_rdp_core::transport=trace ff-rdp tabs` prints every request/reply on stderr in a one-line-per-packet format with redaction.
-- [ ] `FF_RDP_TRACE_RAW=1` disables redaction and includes full bodies.
-- [ ] CLI JSON errors include `meta.error_type` matching the `RdpError` discriminant.
-- [ ] CLI exit codes map deterministically per the table above.
-- [ ] Snapshot tests cover at least Protocol / Shape / Timeout / Transport faults.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `RUST_LOG=ff_rdp_core::transport=trace ff-rdp tabs` prints every request/reply on stderr in a one-line-per-packet format with redaction.
+- [x] `FF_RDP_TRACE_RAW=1` disables redaction and includes full bodies.
+- [x] CLI JSON errors include `meta.error_type` matching the `RdpError` discriminant.
+- [x] CLI exit codes map deterministically per the table above.
+- [x] Snapshot tests cover at least Protocol / Shape / Timeout / Transport faults.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 

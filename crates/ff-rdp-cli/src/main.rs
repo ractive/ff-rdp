@@ -38,6 +38,7 @@ fn is_type_invocation(args: &[String]) -> bool {
         "--sort",
         "--fields",
         "--format",
+        "--log-level",
     ];
 
     let mut iter = args.iter().skip(1); // skip program name
@@ -58,6 +59,36 @@ fn is_type_invocation(args: &[String]) -> bool {
         return a == "type";
     }
     false
+}
+
+fn init_tracing(cli: &Cli) {
+    use cli::args::LogLevel;
+    use tracing_subscriber::EnvFilter;
+
+    // Determine the filter directive: --log-level wins over RUST_LOG.
+    let filter = if let Some(level) = cli.log_level {
+        // Map Trace to include the transport target at trace level so that
+        // a simple `--log-level trace` gets wire-level packet dumps.
+        let directive = match level {
+            LogLevel::Trace => {
+                "ff_rdp_core::transport=trace,ff_rdp_core=trace,ff_rdp_cli=trace".to_owned()
+            }
+            LogLevel::Debug => "ff_rdp_core=debug,ff_rdp_cli=debug".to_owned(),
+            LogLevel::Info => "info".to_owned(),
+            LogLevel::Warn => "warn".to_owned(),
+            LogLevel::Error => "error".to_owned(),
+        };
+        EnvFilter::new(directive)
+    } else {
+        // Fall back to RUST_LOG if set; otherwise suppress everything.
+        EnvFilter::from_default_env()
+    };
+
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(filter)
+        .with_target(true)
+        .init();
 }
 
 fn main() {
@@ -94,31 +125,14 @@ fn main() {
             }
         }
     };
+
+    init_tracing(&cli);
+
     let result = dispatch::dispatch(&cli);
     match result {
         Ok(()) => {}
-        Err(AppError::User(msg)) => {
-            eprintln!("error: {msg}");
-            std::process::exit(1);
-        }
-        Err(AppError::Internal(err)) => {
-            // Internal errors are unexpected runtime failures — exit 1.
-            // Exit 2 is reserved for usage/argument errors (clap parse failures).
-            eprintln!("internal error: {err:#}");
-            std::process::exit(1);
-        }
         Err(AppError::Exit(code)) => {
             std::process::exit(code);
-        }
-        Err(AppError::Connection(msg)) => {
-            // Exit 3 — could not reach Firefox or daemon.
-            eprintln!("error: {msg}");
-            std::process::exit(3);
-        }
-        Err(AppError::Timeout(msg)) => {
-            // Exit 124 — operation exceeded its timeout (matches GNU timeout convention).
-            eprintln!("error: {msg}");
-            std::process::exit(124);
         }
         Err(AppError::Diagnostics { message, .. }) => {
             // Assertion failure with structured diagnostics — exit 1.
@@ -127,6 +141,39 @@ fn main() {
             eprintln!("error: {message}");
             std::process::exit(1);
         }
+        Err(err) => {
+            // All other errors: emit human-readable message to stderr and
+            // JSON error envelope to stdout so programmatic callers can
+            // parse error_type and context.
+            let exit_code = error_exit_code(&err);
+            eprintln!("error: {err}");
+            let json = err.to_error_json();
+            println!("{}", serde_json::to_string(&json).unwrap_or_default());
+            std::process::exit(exit_code);
+        }
+    }
+}
+
+/// Map an `AppError` to a deterministic exit code.
+///
+/// | Variant               | Exit code |
+/// |-----------------------|-----------|
+/// | Protocol              | 3         |
+/// | Shape                 | 4         |
+/// | RdpTimeout            | 5         |
+/// | Transport / RemoteClosed | 6      |
+/// | Connection            | 3         |
+/// | Timeout (op-level)    | 124       |
+/// | User / Internal / *   | 1         |
+fn error_exit_code(err: &AppError) -> i32 {
+    match err {
+        AppError::RdpProtocol { .. } | AppError::Connection(_) => 3,
+        AppError::RdpShape { .. } => 4,
+        AppError::RdpTimeout { .. } => 5,
+        AppError::RdpTransport(_) | AppError::RdpRemoteClosed(_) => 6,
+        AppError::Timeout(_) => 124,
+        AppError::User(_) | AppError::Internal(_) | AppError::Diagnostics { .. } => 1,
+        AppError::Exit(code) => *code,
     }
 }
 

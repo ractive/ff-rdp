@@ -13,6 +13,7 @@ description = "Core library for Firefox Remote Debugging Protocol over TCP"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 regex = { workspace = true }

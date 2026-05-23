@@ -36,6 +36,6 @@ pub use actors::watcher::{
     parse_target_event,
 };
 pub use connection::{COMPATIBLE_FIREFOX_MAX, COMPATIBLE_FIREFOX_MIN, RdpConnection};
-pub use error::{ActorErrorKind, ProtocolError};
+pub use error::{ActorErrorKind, ProtocolError, RdpError, RdpResult};
 pub use transport::{FramedReader, FramedWriter, RdpTransport};
 pub use types::{ActorId, Grip};
