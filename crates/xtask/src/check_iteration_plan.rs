@@ -64,14 +64,14 @@ pub fn parse_plan(content: &str) -> Result<ParsedPlan> {
 /// Validate a parsed plan and return a list of findings (empty = OK).
 pub fn validate_plan(plan: &ParsedPlan) -> Vec<String> {
     let mut findings = Vec::new();
-    let valid_statuses = ["planned", "in-review", "done", "in-progress"];
+    let valid_statuses = ["planned", "in-progress", "in-review", "done"];
 
     // Validate status field.
     match &plan.frontmatter.status {
-        None => findings.push(
-            "frontmatter missing required field: status (must be planned|in-review|done)"
-                .to_owned(),
-        ),
+        None => findings.push(format!(
+            "frontmatter missing required field: status (must be {})",
+            valid_statuses.join("|")
+        )),
         Some(s) if !valid_statuses.contains(&s.as_str()) => findings.push(format!(
             "frontmatter status '{}' is not one of: {}",
             s,

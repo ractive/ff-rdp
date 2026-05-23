@@ -54,12 +54,14 @@ while IFS= read -r line; do
             # Strip leading '+' to get the actual content
             content="${line#+}"
 
-            # Check for TODO/FIXME/XXX at word boundary
-            if printf '%s' "$content" | grep -qE '\b(TODO|FIXME|XXX)\b'; then
+            # Check for TODO/FIXME/XXX at word boundary.
+            # POSIX ERE does not define \b portably (BSD/macOS grep treats it as a backspace),
+            # so we emulate word boundaries with explicit non-word-char classes plus ^/$.
+            if printf '%s' "$content" | grep -qE '(^|[^A-Za-z0-9_])(TODO|FIXME|XXX)([^A-Za-z0-9_]|$)'; then
                 # Allow if it has an issue link, Jira ticket, or allow-todo annotation
                 if printf '%s' "$content" | grep -qE 'github\.com/[^/]+/[^/]+/issues/[0-9]+'; then
                     : # allowed
-                elif printf '%s' "$content" | grep -qE '\b[A-Z]+-[0-9]+\b'; then
+                elif printf '%s' "$content" | grep -qE '(^|[^A-Za-z0-9_])[A-Z]+-[0-9]+([^A-Za-z0-9_]|$)'; then
                     : # allowed — Jira-style ticket
                 elif printf '%s' "$content" | grep -q 'allow-todo:'; then
                     : # allowed — explicit annotation

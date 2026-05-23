@@ -140,7 +140,7 @@ fn parse_hunk_new_start(hunk_header: &str) -> Option<usize> {
 
 /// Search workspace (minus xtask) for uses of `symbol_name`.
 /// Returns true if at least one non-test consumer exists.
-pub fn has_non_test_consumer(symbol_name: &str, declaring_file: &str) -> Result<bool> {
+pub fn has_non_test_consumer(symbol_name: &str, _declaring_file: &str) -> Result<bool> {
     let output = Command::new("rg")
         .args([
             "--type",
@@ -153,15 +153,25 @@ pub fn has_non_test_consumer(symbol_name: &str, declaring_file: &str) -> Result<
         .output()
         .context("failed to run rg (is ripgrep installed?)")?;
 
+    if !output.status.success() && !output.stdout.is_empty() {
+        // rg exits 1 when no matches; treat any other non-success with no stdout
+        // as a real failure below.
+    }
+    // rg returns exit 1 when there are zero matches (which is meaningful: no consumers).
+    // Treat exit codes >= 2 as hard errors so missing rg or invocation bugs don't
+    // silently let dead symbols pass.
+    if let Some(code) = output.status.code()
+        && code >= 2
+    {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("rg failed (exit {code}) while searching for '{symbol_name}': {stderr}");
+    }
+
     let text = String::from_utf8_lossy(&output.stdout);
     for line in text.lines() {
         // Extract the file path from rg output (format: "path:line:content")
         let file_path = line.split(':').next().unwrap_or("");
 
-        // Skip the declaring file itself.
-        if file_path == declaring_file {
-            continue;
-        }
         // Skip xtask.
         if file_path.contains("crates/xtask/") {
             continue;
@@ -171,6 +181,8 @@ pub fn has_non_test_consumer(symbol_name: &str, declaring_file: &str) -> Result<
             continue;
         }
         // Skip lines that look like declarations (not consumers).
+        // This filters the declaration line itself even when it lives in the
+        // declaring file — so same-file callers below still count as consumers.
         let content_part = line.splitn(3, ':').nth(2).unwrap_or("");
         let trimmed = content_part.trim();
         if trimmed.starts_with("pub fn ")
@@ -200,7 +212,9 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     let mut findings: Vec<String> = Vec::new();
-    let mut seen_names: HashSet<String> = HashSet::new();
+    // Dedup by (file, name) so distinct same-named pub items in different
+    // modules are each checked.
+    let mut seen: HashSet<(String, String)> = HashSet::new();
 
     for file in &files {
         let diff_output = Command::new("git")
@@ -208,26 +222,26 @@ pub fn run(args: Args) -> Result<()> {
             .output()
             .with_context(|| format!("failed to get diff for {file}"))?;
 
+        if !diff_output.status.success() {
+            let stderr = String::from_utf8_lossy(&diff_output.stderr);
+            anyhow::bail!("git diff failed for {file}: {stderr}");
+        }
+
         let diff_text = String::from_utf8_lossy(&diff_output.stdout);
         let decls = extract_pub_decls(file, &diff_text);
 
         for decl in decls {
-            // Deduplicate by name across files (e.g. re-exports).
-            if !seen_names.insert(decl.name.clone()) {
+            if !seen.insert((decl.file.clone(), decl.name.clone())) {
                 continue;
             }
 
-            match has_non_test_consumer(&decl.name, file) {
-                Ok(true) => {} // has consumers, fine
-                Ok(false) => {
-                    findings.push(format!(
-                        "{}:{}: pub {} {} has no non-test consumers",
-                        decl.file, decl.line, decl.kind, decl.name
-                    ));
-                }
-                Err(e) => {
-                    eprintln!("warning: consumer search failed for {}: {e}", decl.name);
-                }
+            let has_consumer = has_non_test_consumer(&decl.name, file)
+                .with_context(|| format!("consumer search failed for {}", decl.name))?;
+            if !has_consumer {
+                findings.push(format!(
+                    "{}:{}: pub {} {} has no non-test consumers",
+                    decl.file, decl.line, decl.kind, decl.name
+                ));
             }
         }
     }

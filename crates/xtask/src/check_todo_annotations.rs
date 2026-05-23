@@ -146,6 +146,11 @@ pub fn run(args: Args) -> Result<()> {
         .output()
         .context("failed to run git diff")?;
 
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git diff against {git_ref} failed: {stderr}");
+    }
+
     let diff_text = String::from_utf8_lossy(&output.stdout);
     let file_diffs = parse_diff_added_lines(&diff_text);
     let findings = check_file_diffs(&file_diffs);

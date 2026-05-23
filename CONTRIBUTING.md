@@ -52,7 +52,7 @@ cargo run -p xtask -- check-iteration-plan kb/iterations/iteration-NN-slug.md
 ```
 
 This validates:
-- `status` is one of: `planned`, `in-review`, `done`
+- `status` is one of: `planned`, `in-progress`, `in-review`, `done`
 - If the plan body mentions `pub fn/struct/enum/trait/mod`, `first_call_sites` must be non-empty
   with `primitive` and `site` keys per entry
 - A `dogfood_path` frontmatter key or a `## Dogfood path` body section is present
