@@ -10,6 +10,7 @@ categories = ["network-programming"]
 description = "Core library for Firefox Remote Debugging Protocol over TCP"
 
 [dependencies]
+dashmap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

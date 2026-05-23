@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::types::ActorId;
+
 // ---------------------------------------------------------------------------
 // Top-level typed error + result alias
 // ---------------------------------------------------------------------------
@@ -38,6 +40,12 @@ pub enum RdpError {
     /// The Firefox RDP peer closed the connection.
     #[error("remote connection closed unexpectedly")]
     RemoteClosed,
+
+    /// The actor has been destroyed (e.g. after a cross-origin navigation or tab close).
+    ///
+    /// Surfaced as `error_type: "actor_destroyed"` in CLI JSON output.
+    #[error("actor {actor} has been destroyed — target navigated or closed")]
+    ActorDestroyed { actor: ActorId },
 }
 
 /// Convenience alias used throughout `ff-rdp-core`.
@@ -190,6 +198,25 @@ impl ProtocolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── RdpError::ActorDestroyed ─────────────────────────────────────────────
+
+    #[test]
+    fn actor_destroyed_display_contains_actor_and_phrase() {
+        let actor = ActorId::from("conn0/tab1");
+        let err = RdpError::ActorDestroyed {
+            actor: actor.clone(),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("conn0/tab1"),
+            "display must include the actor ID; got: {msg}"
+        );
+        assert!(
+            msg.contains("has been destroyed"),
+            "display must contain 'has been destroyed'; got: {msg}"
+        );
+    }
 
     #[test]
     fn actor_error_kind_from_code_known_codes() {

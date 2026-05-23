@@ -60,6 +60,14 @@ Closes `--with-network` for good: `network` (no flags), `network --detail --head
 - The daemon mode is a thin shell: it owns the bus, exposes a subscribe-via-RPC surface, but the bus itself is a normal in-process abstraction usable without daemon mode.
 - Don't over-model: the typed `Resource` enum doesn't need every Firefox-side field on day one. Add fields as commands need them.
 
+### Carry-over from iter-61p
+
+- `Registry`, `ActorId`, `Front` trait, and `WatcherFront` already exist (`ff-rdp-core/src/registry.rs`, `src/fronts/watcher.rs`) and Front lifecycle (`alive: AtomicBool`, `target_root` cascade) works for destruction. Reuse this — do not redesign.
+- `WatcherFront` in 61p is a thin stub: it only registers an `ActorId` in the registry. Real `watchResources` / `unwatchResources` / `watchTargets` request logic still lives in `crates/ff-rdp-core/src/actors/watcher.rs`. 61q must either (a) move those methods onto `WatcherFront` so `ResourceCommand` can call them directly, or (b) have `ResourceCommand` hold both the Front (for id/registry) and a reference to the existing `watcher.rs` request helpers. Option (a) is cleaner; option (b) is faster.
+- Two C-block items from 61p deferred to here (or 61q-adjacent): (1) registry subscription to watcher target events, and (2) auto-seeding a new `TargetFront` on `target-available-form`. The bus is the natural place to wire (1) since it already consumes the watcher event stream; (2) belongs alongside it.
+- `live_consoleactor_invalidation` as a true cross-origin live test (eval `document.title` after navigation, no manual retry) is still outstanding from 61p AC. Once `ResourceCommand` is delivering target lifecycle events into the registry, that AC becomes achievable — consider adding it as an extra AC here or in 61r.
+- `call_with_refresh` (61p Part D) is the retry primitive subscribers can wrap calls in; the bus itself does not need refresh on internal `watchResources` calls.
+
 ## References
 
 - [[firefox-devtools-patterns-for-ff-rdp]] §4 (Resource subscription as shared bus) — top-3 pattern
