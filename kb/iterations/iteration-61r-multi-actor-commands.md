@@ -35,40 +35,40 @@ Refactor every command into a `Command` shape that owns its multi-actor sequence
 
 ## Tasks
 
-### A. Command trait
-- [ ] `ff-rdp-core/src/command/mod.rs`: `trait Command { type Output; async fn execute(...) -> Result<Self::Output>; }`.
-- [ ] Migrate `tabs`, `cookies`, `storage`, `dom`, `computed` to the new shape first (low-risk, no multi-actor coordination needed).
+### A. Command trait [0/2]
+- [ ] `ff-rdp-core/src/command/mod.rs`: `trait Command { type Output; async fn execute(...) -> Result<Self::Output>; }`. (deferred to 61s — no abstraction landed)
+- [ ] Migrate `tabs`, `cookies`, `storage`, `dom`, `computed` to the new shape first (low-risk, no multi-actor coordination needed). (deferred to 61s)
 
-### B. Screenshot
-- [ ] `commands/screenshot/full_page.rs`: implements the [[take-screenshot]] flow exactly.
+### B. Screenshot [1/3]
+- [ ] `commands/screenshot/full_page.rs`: implements the [[take-screenshot]] flow exactly. (deferred to 61s — `screenshot.rs` not refactored)
   1. Resolve content-process `ScreenshotContentFront` from the target.
   2. `prepareCapture({fullpage: true})` → `{rect, windowDpr, windowZoom}`.
   3. Resolve **root-scoped** `ScreenshotFront` from the root actor (not the target!).
   4. `capture({fullpage: true, rect, snapshotScale: dpr*zoom, browsingContextID, ...})`.
   5. Decode the base64 PNG, write to file or stdout.
-- [ ] Remove the embedded JS canvas-scrolling strategy entirely.
-- [ ] Live test `live_screenshot_full_page`: synthetic 5000 px page, assert PNG height ≥ 4900 px. Same with DPR=2 → ≥9800 px.
+- [ ] Remove the embedded JS canvas-scrolling strategy entirely. (deferred to 61s)
+- [x] Live test `live_screenshot_full_page`: synthetic 5000 px page, assert PNG height ≥ 4900 px. (DPR=2 variant deferred to 61s)
 
-### C. Eval
-- [ ] `commands/eval.rs`: single implementation. Send `evaluateJSAsync({text, mapped: {await: true}, ...})`.
-- [ ] Subscribe to `evaluationResult` events via the bus (keyed by `resultID`), correlate, return.
-- [ ] If page-eval fails with CSP, retry with `chrome-context` only when the user opts in via `--chrome` (default keeps trying via the mapped.await path which already bypasses page CSP through Debugger API).
-- [ ] `meta.eval_path: "page-await" | "chrome"` surfaced in output.
-- [ ] Live test `live_eval_on_hn`: navigate to HN, `eval 'document.title'` returns `"Hacker News"` (no CSP error).
+### C. Eval [2/5]
+- [ ] `commands/eval.rs`: single implementation. Send `evaluateJSAsync({text, mapped: {await: true}, ...})`. (partial — `mapped.await` added to both `evaluate_js_async` and `evaluate_js_async_chrome` paths in `actors/console.rs`; the "single implementation" refactor consolidating the two paths is deferred to 61s)
+- [ ] Subscribe to `evaluationResult` events via the bus (keyed by `resultID`), correlate, return. (deferred to 61s — existing side-channel correlation unchanged)
+- [ ] If page-eval fails with CSP, retry with `chrome-context` only when the user opts in via `--chrome` (default keeps trying via the mapped.await path which already bypasses page CSP through Debugger API). (deferred to 61s — existing silent-fallback behavior unchanged)
+- [x] `meta.eval_path: "page-await" | "chrome"` surfaced in output.
+- [x] Live test `live_eval_on_hn`: navigate to HN, `eval 'document.title'` returns `"Hacker News"` (no CSP error).
 
-### D. Navigate
-- [ ] Subscribe to `document-event` resources for the active target before sending navigate.
-- [ ] Commit = first `dom-loading` whose URL matches the target by scheme+host+path.
-- [ ] Completion = `dom-complete` (default) or `dom-interactive` (with `--no-wait-complete`).
-- [ ] Neterror = any `document-event` with `is-error-page: true` → return structured error with `error_type` parsed from the URL's `e=` param.
-- [ ] Cross-origin race fix is automatic: if commit arrives before our subscription was active (unlikely with the bus), we re-query `location.href` once and accept if it matches.
-- [ ] Live tests: `live_navigate_dnsfail`, `live_navigate_race`, `live_navigate_neterror_recovery`.
+### D. Navigate [0/6]
+- [ ] Subscribe to `document-event` resources for the active target before sending navigate. (deferred to 61s)
+- [ ] Commit = first `dom-loading` whose URL matches the target by scheme+host+path. (deferred to 61s)
+- [ ] Completion = `dom-complete` (default) or `dom-interactive` (with `--no-wait-complete`). (deferred to 61s)
+- [ ] Neterror = any `document-event` with `is-error-page: true` → return structured error with `error_type` parsed from the URL's `e=` param. (deferred to 61s)
+- [ ] Cross-origin race fix is automatic: if commit arrives before our subscription was active (unlikely with the bus), we re-query `location.href` once and accept if it matches. (deferred to 61s)
+- [ ] Live tests: `live_navigate_dnsfail`, `live_navigate_race`, `live_navigate_neterror_recovery`. (deferred to 61s)
 
-## Acceptance Criteria [3/9]
+## Acceptance Criteria [5/9]
 
-- [x] **B.** `live_screenshot_full_page` exists — test file written at `tests/live_61r_screenshot.rs`, gated by `FF_RDP_LIVE_TESTS=1`, asserts PNG height ≥ 4900 px on a 5000 px synthetic about:blank page.
-- [ ] **B.** Same test at DPR=2 — PNG height ≥ 9800 px. (deferred to 61s)
-- [x] **C.** `live_eval_on_hn` exists — test file written at `tests/live_61r_eval.rs`, gated by `FF_RDP_LIVE_NETWORK_TESTS=1`, asserts eval returns `"Hacker News"` on HN's CSP-restricted page.
+- [x] **B.** `live_screenshot_full_page` exists — test file written at `crates/ff-rdp-cli/tests/live_61r_screenshot.rs`, gated by `FF_RDP_LIVE_TESTS=1`, asserts PNG height ≥ 4900 px on a 5000 px synthetic about:blank page.
+- [ ] **B.** `live_screenshot_full_page_dpr2`: PNG height ≥ scrollHeight × DPR (expected ≥ 9800 px on 5000 px page at DPR=2). (deferred to 61s)
+- [x] **C.** `live_eval_on_hn` exists — test file written at `crates/ff-rdp-cli/tests/live_61r_eval.rs`, gated by `FF_RDP_LIVE_NETWORK_TESTS=1`, asserts eval returns `"Hacker News"` on HN's CSP-restricted page.
 - [x] **C.** `meta.eval_path` field present in eval output; defaults to `page-await` — `eval_meta_eval_path_page_await` e2e test passes.
 - [ ] **D.** `live_navigate_dnsfail` passes — non-zero exit, `error_type: "dns_not_found"`. (deferred to 61s)
 - [ ] **D.** `live_navigate_race` passes — fast cross-origin target accepted within the timeout. (deferred to 61s)
@@ -122,9 +122,13 @@ The following were deferred from 61r:
 - **Theme D — Navigate orchestration via document-event bus**: not started.
   `Resource::DocumentEvent(Value)` is still raw JSON; typed `DocumentEvent`
   struct and subscribe-before-navigate flow are prerequisites. Defer to 61s.
-- **`Resource::EvaluationResult`**: not needed for the landed eval fix because
-  `evaluateJSAsync` with `mapped.await` returns synchronously. Defer until
-  there is a concrete consumer.
+- **`Resource::EvaluationResult`**: not needed for the landed eval fix. The RDP
+  wire pattern is still two-phase (immediate ack + later `evaluationResult`
+  event); `mapped.await` only changes JS Promise semantics so the awaited value
+  appears on that event instead of a pending-Promise grip. The current eval
+  command already correlates ack→event by `resultID` via a side channel; routing
+  it through `Resource::EvaluationResult` is a refactor without behavior change.
+  Defer until there is a concrete bus consumer.
 
 ## References
 

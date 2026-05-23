@@ -35,11 +35,13 @@ fn png_height_from_bytes(data: &[u8]) -> Option<u32> {
     Some(u32::from_be_bytes(data[20..24].try_into().ok()?))
 }
 
-/// Navigate to a data-URL that contains a 5 000 px tall page, take a
-/// `--full-page` screenshot, and assert the PNG height ≥ 4 900 px.
+/// Navigate to `about:blank`, inject a 5 000 px tall document body via
+/// `eval`, take a `--full-page` screenshot, and assert the PNG height
+/// ≥ 4 900 px.
 ///
-/// The 5 000 px tall inline page avoids any external network dependency and
-/// is deterministic across runs.
+/// Using `about:blank` + `eval` (rather than a data-URL) avoids any external
+/// network dependency and any data-URL encoding complexity, and is
+/// deterministic across runs.
 ///
 /// AC: `live_screenshot_full_page` — PNG height ≥ 4 900 px on a 5 000 px
 /// synthetic page.
@@ -70,13 +72,11 @@ fn live_screenshot_full_page() {
         .output()
         .expect("navigate to about:blank");
 
-    if !nav.status.success() {
-        eprintln!(
-            "live_screenshot_full_page: navigate failed — {}",
-            String::from_utf8_lossy(&nav.stderr)
-        );
-        return;
-    }
+    assert!(
+        nav.status.success(),
+        "live_screenshot_full_page: navigate failed — {}",
+        String::from_utf8_lossy(&nav.stderr)
+    );
 
     // Inject a 5 000 px tall document body via eval.
     let setup = Command::new(ff_rdp_bin())
@@ -88,13 +88,11 @@ fn live_screenshot_full_page() {
         .output()
         .expect("eval body height");
 
-    if !setup.status.success() {
-        eprintln!(
-            "live_screenshot_full_page: body setup eval failed — {}",
-            String::from_utf8_lossy(&setup.stderr)
-        );
-        return;
-    }
+    assert!(
+        setup.status.success(),
+        "live_screenshot_full_page: body setup eval failed — {}",
+        String::from_utf8_lossy(&setup.stderr)
+    );
 
     // Take a full-page screenshot in base64 mode so we don't need a temp file.
     let out = Command::new(ff_rdp_bin())
@@ -122,15 +120,16 @@ fn live_screenshot_full_page() {
     );
 
     // Cross-check: decode the base64 and verify from the PNG IHDR header.
-    if let Some(b64) = json["results"]["base64"].as_str() {
-        let png_bytes = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .expect("valid base64");
-        if let Some(ihdr_height) = png_height_from_bytes(&png_bytes) {
-            assert!(
-                ihdr_height >= 4_900,
-                "live_screenshot_full_page: PNG IHDR height {ihdr_height} < 4900"
-            );
-        }
-    }
+    let b64 = json["results"]["base64"]
+        .as_str()
+        .expect("results.base64 must be present when --base64 is used");
+    let png_bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .expect("valid base64");
+    let ihdr_height =
+        png_height_from_bytes(&png_bytes).expect("PNG IHDR height must be extractable");
+    assert!(
+        ihdr_height >= 4_900,
+        "live_screenshot_full_page: PNG IHDR height {ihdr_height} < 4900"
+    );
 }
