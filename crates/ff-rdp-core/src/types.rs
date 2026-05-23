@@ -1,12 +1,22 @@
 use std::fmt;
+use std::str::FromStr;
+use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Value, json};
 
 /// A newtype wrapping a Firefox RDP actor ID string.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-#[serde(transparent)]
-pub struct ActorId(String);
+///
+/// Uses `Arc<str>` internally so cloning is O(1) — actor IDs are passed
+/// around freely as typed handles without heap allocation per clone.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ActorId(Arc<str>);
+
+impl Serialize for ActorId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
 
 impl fmt::Display for ActorId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -16,19 +26,49 @@ impl fmt::Display for ActorId {
 
 impl From<String> for ActorId {
     fn from(s: String) -> Self {
-        Self(s)
+        Self(Arc::from(s.as_str()))
     }
 }
 
 impl From<&str> for ActorId {
     fn from(s: &str) -> Self {
-        Self(s.to_owned())
+        Self(Arc::from(s))
     }
 }
 
 impl AsRef<str> for ActorId {
     fn as_ref(&self) -> &str {
         &self.0
+    }
+}
+
+impl PartialEq<&str> for ActorId {
+    fn eq(&self, other: &&str) -> bool {
+        self.0.as_ref() == *other
+    }
+}
+
+impl PartialEq<ActorId> for &str {
+    fn eq(&self, other: &ActorId) -> bool {
+        *self == other.0.as_ref()
+    }
+}
+
+impl FromStr for ActorId {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::from(s))
+    }
+}
+
+impl<'de> Deserialize<'de> for ActorId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(Self::from(s))
     }
 }
 

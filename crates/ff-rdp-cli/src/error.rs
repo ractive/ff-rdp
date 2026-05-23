@@ -44,6 +44,8 @@ pub enum AppError {
     RdpRemoteClosed(String),
     /// Daemon protocol version does not match CLI.
     DaemonVersionMismatch { daemon: u32, cli: u32 },
+    /// An actor has been destroyed (target navigated or closed) — exit 3.
+    RdpActorDestroyed { actor: String },
 }
 
 impl AppError {
@@ -60,6 +62,7 @@ impl AppError {
             Self::RdpTransport(_) => "Transport",
             Self::RdpRemoteClosed(_) => "RemoteClosed",
             Self::DaemonVersionMismatch { .. } => "daemon_version_mismatch",
+            Self::RdpActorDestroyed { .. } => "actor_destroyed",
         }
     }
 
@@ -137,6 +140,13 @@ impl fmt::Display for AppError {
                      Stop the running daemon (`ff-rdp daemon stop`) so a fresh one is started."
                 )
             }
+            Self::RdpActorDestroyed { actor } => {
+                write!(
+                    f,
+                    "actor {actor} has been destroyed — the target navigated or closed.\n\
+                     hint: retry the command; ff-rdp will reconnect to the new target."
+                )
+            }
         }
     }
 }
@@ -175,6 +185,9 @@ impl From<ff_rdp_core::RdpError> for AppError {
             ff_rdp_core::RdpError::RemoteClosed => {
                 Self::RdpRemoteClosed("remote connection closed unexpectedly".to_owned())
             }
+            ff_rdp_core::RdpError::ActorDestroyed { actor } => Self::RdpActorDestroyed {
+                actor: actor.to_string(),
+            },
         }
     }
 }

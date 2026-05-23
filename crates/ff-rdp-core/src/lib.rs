@@ -2,6 +2,8 @@ pub(crate) mod actor;
 pub(crate) mod actors;
 pub mod connection;
 pub mod error;
+pub mod fronts;
+pub mod registry;
 pub mod transport;
 pub mod types;
 
@@ -37,5 +39,10 @@ pub use actors::watcher::{
 };
 pub use connection::{COMPATIBLE_FIREFOX_MAX, COMPATIBLE_FIREFOX_MIN, RdpConnection};
 pub use error::{ActorErrorKind, ProtocolError, RdpError, RdpResult};
+pub use fronts::{
+    ConsoleFront, DescriptorFront, NetworkContentFront, PageStyleFront, RootFront, ScreenshotFront,
+    TargetFront, WalkerFront, WatcherFront,
+};
+pub use registry::{Front, FrontKind, FrontState, Registry};
 pub use transport::{FramedReader, FramedWriter, RdpTransport};
 pub use types::{ActorId, Grip};

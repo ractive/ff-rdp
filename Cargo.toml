@@ -37,6 +37,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
+dashmap = "6"
 getrandom = "0.2"
 url = "2"
 ureq = "3"

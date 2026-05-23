@@ -11,7 +11,6 @@ use crate::types::ActorId;
 #[serde(rename_all = "camelCase")]
 pub struct TabInfo {
     /// The tab descriptor actor ID.
-    #[serde(deserialize_with = "deserialize_actor_id")]
     pub actor: ActorId,
     /// Page title.
     #[serde(default)]
@@ -193,14 +192,6 @@ fn parse_target_response_inner(
         responsive_actor,
         browsing_context_id,
     })
-}
-
-fn deserialize_actor_id<'de, D>(deserializer: D) -> Result<ActorId, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    Ok(ActorId::from(s))
 }
 
 #[cfg(test)]
