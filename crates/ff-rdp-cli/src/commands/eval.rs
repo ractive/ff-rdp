@@ -1,7 +1,7 @@
 use std::io::Read;
 
 use anyhow::Context as _;
-use ff_rdp_core::{Grip, ObjectActor, WebConsoleActor};
+use ff_rdp_core::{Grip, ObjectActor, ProtocolError, WebConsoleActor};
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -110,6 +110,75 @@ pub fn build_eval_js(
     Ok(build_script(&user_script, stringify, isolate))
 }
 
+/// Returns `true` when an exception message indicates a CSP eval block.
+///
+/// Firefox surfaces CSP eval rejections as a JS exception with a message
+/// containing `"EvalError"` and either `"Content Security Policy"` or
+/// `"blocked by CSP"`.  We check for both patterns to handle any wording
+/// variation across Firefox versions.
+fn is_csp_eval_error(exc_message: &str) -> bool {
+    let m = exc_message;
+    // "EvalError: call to eval() blocked by CSP"
+    // "EvalError: Content Security Policy of your site blocks the use of 'eval'"
+    // Require an EvalError marker plus a CSP-specific phrase so unrelated
+    // EvalErrors do not trigger the privileged chrome-context fallback.
+    m.contains("EvalError")
+        && (m.contains("Content Security Policy")
+            || m.contains("blocked by CSP")
+            || m.contains("blocks the use of 'eval'"))
+}
+
+/// Evaluate `script` via the console actor, automatically retrying with the
+/// chrome context when the first attempt is blocked by page CSP.
+///
+/// Returns `(result, used_chrome)` where `used_chrome` is `true` when the
+/// fallback path was taken.
+///
+/// # CSP bypass mechanism
+///
+/// Firefox's `evaluateJSAsync` accepts a `chromeContext: true` flag that runs
+/// the script in a privileged browser context, which is not subject to page
+/// Content Security Policy.  We first try the normal (content) path.  If we
+/// get an exception whose message matches a known CSP eval-block pattern we
+/// immediately retry with `chromeContext: true`.
+///
+/// The chrome context still evaluates against the page's DOM — `document`,
+/// `window`, etc. are the page's globals — so `document.title`, DOM queries,
+/// and similar expressions work unchanged.  Only `eval()` is unblocked.
+fn eval_with_csp_fallback(
+    transport: &mut ff_rdp_core::RdpTransport,
+    console_actor: &ff_rdp_core::ActorId,
+    script: &str,
+) -> Result<(ff_rdp_core::EvalResult, bool), AppError> {
+    let first = WebConsoleActor::evaluate_js_async(transport, console_actor, script)
+        .map_err(AppError::from)?;
+
+    // Check whether the exception looks like a CSP eval block.
+    let is_csp = first
+        .exception
+        .as_ref()
+        .and_then(|e| e.message.as_deref())
+        .is_some_and(is_csp_eval_error);
+
+    if !is_csp {
+        return Ok((first, false));
+    }
+
+    // Retry with chrome context.  If the chrome-context eval itself fails with
+    // a protocol error (e.g. the actor does not support chromeContext), fall
+    // back to surfacing the original CSP exception rather than a confusing
+    // internal error.
+    match WebConsoleActor::evaluate_js_async_chrome(transport, console_actor, script) {
+        Ok(result) => Ok((result, true)),
+        Err(ProtocolError::ActorError { .. }) => {
+            // Chrome context not available (e.g. content-only build).  Return
+            // the original CSP error so the user gets the real message.
+            Ok((first, false))
+        }
+        Err(e) => Err(AppError::from(e)),
+    }
+}
+
 pub fn run(
     cli: &Cli,
     script: Option<&str>,
@@ -125,9 +194,8 @@ pub fn run(
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
-    let eval_result =
-        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &final_script)
-            .map_err(AppError::from)?;
+    let (eval_result, used_chrome_context) =
+        eval_with_csp_fallback(ctx.transport_mut(), &console_actor, &final_script)?;
 
     // If an exception occurred, print it to stderr and exit non-zero.
     if let Some(ref exc) = eval_result.exception {
@@ -174,6 +242,15 @@ pub fn run(
     // string value and set `meta.stringify_parsed: false` so callers know the
     // round-trip did not produce a structured value.
     let mut meta = json!({});
+    if used_chrome_context {
+        // Surface a one-liner so callers know the chrome-context CSP bypass was used.
+        if let Some(m) = meta.as_object_mut() {
+            m.insert(
+                "note".to_owned(),
+                json!("eval ran in chrome context (page CSP blocks eval; bypassed automatically)"),
+            );
+        }
+    }
     if stringify && let serde_json::Value::String(ref s) = result_json {
         match serde_json::from_str::<serde_json::Value>(s) {
             Ok(parsed) => {
@@ -336,5 +413,45 @@ mod tests {
         assert!(s.ends_with(")()"));
         // Encoded string should contain the escaped newline.
         assert!(s.contains(r"\n"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Theme H: CSP error detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn is_csp_eval_error_detects_blocked_by_csp() {
+        assert!(is_csp_eval_error(
+            "EvalError: call to eval() blocked by CSP"
+        ));
+    }
+
+    #[test]
+    fn is_csp_eval_error_detects_content_security_policy() {
+        assert!(is_csp_eval_error(
+            "EvalError: Content Security Policy of your site blocks the use of 'eval'"
+        ));
+    }
+
+    #[test]
+    fn is_csp_eval_error_rejects_bare_evalerror_without_csp_phrase() {
+        // A bare EvalError without any CSP-specific phrase must NOT trigger
+        // the chrome-context fallback — only true CSP eval blocks should.
+        assert!(!is_csp_eval_error("EvalError: some message"));
+    }
+
+    #[test]
+    fn is_csp_eval_error_rejects_csp_phrase_without_evalerror_marker() {
+        // CSP phrasing alone (no EvalError marker) is not a CSP eval block.
+        assert!(!is_csp_eval_error(
+            "Content Security Policy of your site blocks the use of 'eval'"
+        ));
+    }
+
+    #[test]
+    fn is_csp_eval_error_does_not_match_unrelated_errors() {
+        assert!(!is_csp_eval_error("ReferenceError: foo is not defined"));
+        assert!(!is_csp_eval_error("TypeError: cannot read property"));
+        assert!(!is_csp_eval_error("SyntaxError: unexpected token"));
     }
 }

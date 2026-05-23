@@ -297,7 +297,7 @@ fn try_two_step_screenshot(
     })?;
 
     // Step 1: prepare — collect viewport DPR/zoom from the content process actor.
-    let prep =
+    let mut prep =
         ScreenshotContentActor::prepare_capture(ctx.transport_mut(), sc_actor.as_ref(), full_page)
             .map_err(|e| {
                 if is_actor_module_load_failure(&e) {
@@ -308,6 +308,66 @@ fn try_two_step_screenshot(
                     ))
                 }
             })?;
+
+    // For full-page captures: Firefox's `prepareCapture` often returns a
+    // viewport-sized rect (or null) even when `fullpage: true` is requested,
+    // causing the capture to be clipped to the visible area. Fix: read the
+    // actual scroll dimensions from the page and override the rect.
+    //
+    // This has been the root cause of `--full-page` capturing only the
+    // viewport across dogfood sessions 48/49/51/52 (iter-61k A).
+    if full_page {
+        let console_actor = ctx.target.console_actor.clone();
+        let scroll_js = r"(function() {
+  var dpr = window.devicePixelRatio || 1;
+  var w = Math.max(
+    document.documentElement.scrollWidth,
+    document.body ? document.body.scrollWidth : 0,
+    window.innerWidth || 0
+  );
+  var h = Math.max(
+    document.documentElement.scrollHeight,
+    document.body ? document.body.scrollHeight : 0,
+    window.innerHeight || 0
+  );
+  return JSON.stringify({dpr: dpr, scrollW: w, scrollH: h});
+})()";
+        if let Ok(eval_result) = eval_or_bail(
+            ctx,
+            &console_actor,
+            scroll_js,
+            "screenshot: scroll dims eval",
+        ) && let Grip::Value(serde_json::Value::String(ref s)) = eval_result.result
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(s)
+        {
+            let scroll_w = v
+                .get("scrollW")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0);
+            let scroll_h = v
+                .get("scrollH")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0);
+            let dpr = v
+                .get("dpr")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(1.0);
+            if scroll_w > 0.0 && scroll_h > 0.0 {
+                // Override prep rect with full-page dimensions in CSS pixels.
+                // DPR from the page overrides the one from prepareCapture so
+                // the PNG dimensions are dpr × CSS pixels.
+                prep.rect = Some(ff_rdp_core::CaptureRect {
+                    left: 0.0,
+                    top: 0.0,
+                    width: scroll_w,
+                    height: scroll_h,
+                });
+                prep.window_dpr = dpr;
+            }
+        }
+        // Non-fatal: if the eval fails we proceed with whatever prepareCapture
+        // returned; the capture may still be viewport-sized in that edge case.
+    }
 
     // Step 2: capture — call the root-level screenshotActor.
     let screenshot_actor = ScreenshotActor::get_actor_id(ctx.transport_mut()).map_err(|e| {

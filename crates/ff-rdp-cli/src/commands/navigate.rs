@@ -112,6 +112,64 @@ struct CommitInfo {
     elapsed_ms: u64,
 }
 
+/// Classify an `about:neterror` URL into a structured error type string.
+///
+/// Firefox encodes the error kind in the `e=` query parameter.  We map the
+/// known values to snake_case strings that callers can match on.  Unknown
+/// values are returned as-is so callers are not broken by new Firefox error
+/// codes.
+fn classify_neterror(url: &str) -> Option<(&str, String)> {
+    // about:neterror?e=dnsNotFound&...
+    let query = url.strip_prefix("about:neterror?")?;
+    let e_param = query
+        .split('&')
+        .find(|seg| seg.starts_with("e="))?
+        .strip_prefix("e=")?;
+
+    let error_type = match e_param {
+        "dnsNotFound" => "dns_not_found",
+        "connectionFailure" => "connection_failed",
+        "netTimeout" => "net_timeout",
+        "netReset" => "connection_reset",
+        "netInterrupt" => "connection_interrupted",
+        "connectionRefused" => "connection_refused",
+        "unknownProtocolFound" => "unknown_protocol",
+        "proxyConnectFailure" => "proxy_connect_failed",
+        "proxyAuthorizationRequired" => "proxy_auth_required",
+        "contentEncodingError" => "content_encoding_error",
+        "remoteXUL" => "remote_xul",
+        "cspBlocked" => "csp_blocked",
+        "corruptedContentError" => "corrupted_content",
+        "sslv3Used" => "ssl_version_error",
+        "inadequateSecurityError" => "tls_security_error",
+        "blockedByPolicy" => "blocked_by_policy",
+        other => other,
+    };
+    Some((e_param, error_type.to_owned()))
+}
+
+/// Returns `true` when `url` begins with `about:neterror`.
+fn is_neterror_url(url: &str) -> bool {
+    url.starts_with("about:neterror")
+}
+
+/// Check whether two URLs refer to the same origin + path (ignoring query, hash,
+/// and trailing slash).  Used by the cross-origin race fix (Theme G): when a
+/// commit-wait times out but the landed URL shares scheme+host+port+path with
+/// the requested URL, we treat the navigation as successful.
+fn urls_match_scheme_host_path(a: &str, b: &str) -> bool {
+    fn strip_query_and_hash(u: &str) -> &str {
+        let no_hash = u.split_once('#').map_or(u, |(h, _)| h);
+        no_hash.split_once('?').map_or(no_hash, |(h, _)| h)
+    }
+    fn strip_trailing_slash(u: &str) -> &str {
+        u.strip_suffix('/').unwrap_or(u)
+    }
+    let norm_a = strip_trailing_slash(strip_query_and_hash(a));
+    let norm_b = strip_trailing_slash(strip_query_and_hash(b));
+    norm_a == norm_b
+}
+
 /// Poll until the page's URL differs from `pre_nav_url` AND
 /// `document.readyState` reaches `interactive` / `complete`, whichever comes first.
 ///
@@ -212,6 +270,35 @@ fn wait_for_commit(
         }
 
         if started.elapsed() >= timeout {
+            // Theme G: cross-origin race fix.
+            //
+            // When the commit-wait times out, do one final URL check.  If the
+            // current URL matches the requested URL (scheme+host+path) — the
+            // page committed but our polling window missed the transition —
+            // treat this as a success rather than surfacing a confusing timeout.
+            use super::js_helpers::resolve_result;
+            let tab_actor = ctx.target_tab_actor().clone();
+            if let Ok(fresh) = TabActor::get_target(ctx.transport_mut(), &tab_actor) {
+                let ca = fresh.console_actor;
+                if let Ok(ev) = WebConsoleActor::evaluate_js_async(
+                    ctx.transport_mut(),
+                    &ca,
+                    "window.location.href",
+                ) && ev.exception.is_none()
+                    && let Ok(v) = resolve_result(ctx, &ev.result)
+                    && let Some(landed) = v.as_str()
+                    && urls_match_scheme_host_path(landed, requested_url)
+                {
+                    let elapsed_ms =
+                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    return Ok(CommitInfo {
+                        committed_url: landed.to_owned(),
+                        ready_state: "unknown".to_owned(),
+                        elapsed_ms,
+                    });
+                }
+            }
+
             return Err(AppError::Timeout(format!(
                 "navigate: page did not commit within {timeout_ms}ms — use --no-wait to skip commit check or increase --timeout"
             )));
@@ -255,6 +342,38 @@ fn run_wait_for_predicates(
     })))
 }
 
+/// If `commit_info` lands on `about:neterror`, return an `AppError::User`
+/// describing the failure.  Used by all navigate paths (`run_core`,
+/// daemon `--with-network`, non-daemon `--with-network`) to ensure a
+/// DNS/network failure is surfaced consistently rather than reported as
+/// a successful navigation that just happens to have landed on a Firefox
+/// error page.
+fn neterror_error_for_commit(url: &str, commit_info: Option<&CommitInfo>) -> Option<AppError> {
+    let ci = commit_info?;
+    if !is_neterror_url(&ci.committed_url) {
+        return None;
+    }
+    let (raw_code, error_type) =
+        classify_neterror(&ci.committed_url).unwrap_or_else(|| ("unknown", "unknown".to_owned()));
+    Some(AppError::User(format!(
+        "navigate: DNS/network error navigating to '{url}' — {error_type} (Firefox error: {raw_code})\n\
+         landed_url: {landed}\n\
+         hint: check the URL, DNS, or network connectivity",
+        landed = ci.committed_url,
+    )))
+}
+
+/// Refresh the console actor in `ctx` after navigation.
+///
+/// Theme K: the consoleActor ID cached in `ctx.target` is bound to the old
+/// docshell.  After any navigate (including to about:neterror pages), call this
+/// to fetch a fresh actor so the next `eval` does not get `noSuchActor`.
+///
+/// This is a best-effort operation; failures are logged to stderr and swallowed.
+fn refresh_console_actor(ctx: &mut super::connect_tab::ConnectedTab) {
+    ctx.refresh_target();
+}
+
 /// Navigate to `url` and return the result value without printing.
 ///
 /// Called by the script runner, which handles its own NDJSON output.
@@ -289,6 +408,15 @@ pub fn run_core(
             cli.timeout,
         )?)
     };
+
+    // Theme K: invalidate the cached consoleActor after any navigate so the
+    // next `eval` call fetches a fresh actor bound to the new docshell.
+    refresh_console_actor(&mut ctx);
+
+    // Theme F: detect about:neterror after commit.
+    if let Some(err) = neterror_error_for_commit(url, commit_info.as_ref()) {
+        return Err(err);
+    }
 
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
 
@@ -489,6 +617,15 @@ pub fn run_with_network(
             wait_for_commit(&mut ctx, url, pre_nav_url.as_deref(), remaining_ms).ok()
         };
 
+        // Theme K: refresh consoleActor after navigate.
+        refresh_console_actor(&mut ctx);
+
+        // Theme F: detect about:neterror in the daemon --with-network path
+        // too, so DNS/network failures don't return success here.
+        if let Some(err) = neterror_error_for_commit(url, commit_info.as_ref()) {
+            return Err(err);
+        }
+
         let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
         let wait_for_result = run_wait_for_predicates(&mut ctx, wait_opts)?;
 
@@ -597,6 +734,15 @@ pub fn run_with_network(
             .max(2000);
         wait_for_commit(&mut ctx, url, pre_nav_url.as_deref(), remaining_ms).ok()
     };
+
+    // Theme K: refresh consoleActor after navigate.
+    refresh_console_actor(&mut ctx);
+
+    // Theme F: detect about:neterror in the non-daemon --with-network path
+    // too, so DNS/network failures don't return success here.
+    if let Some(err) = neterror_error_for_commit(url, commit_info.as_ref()) {
+        return Err(err);
+    }
 
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
     let wait_for_result = run_wait_for_predicates(&mut ctx, wait_opts)?;
@@ -912,5 +1058,96 @@ mod tests {
     fn wait_for_empty_slice_is_none() {
         let opts = default_wait_opts();
         assert!(opts.wait_for.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Theme F: neterror detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classify_neterror_dns_not_found() {
+        let url = "about:neterror?e=dnsNotFound&u=https%3A//bad.invalid/";
+        let (raw, typed) = classify_neterror(url).unwrap();
+        assert_eq!(raw, "dnsNotFound");
+        assert_eq!(typed, "dns_not_found");
+    }
+
+    #[test]
+    fn classify_neterror_connection_failure() {
+        let url = "about:neterror?e=connectionFailure&u=foo";
+        let (_, typed) = classify_neterror(url).unwrap();
+        assert_eq!(typed, "connection_failed");
+    }
+
+    #[test]
+    fn classify_neterror_unknown_code_passthrough() {
+        let url = "about:neterror?e=someNewFirefoxCode&u=foo";
+        let (raw, typed) = classify_neterror(url).unwrap();
+        assert_eq!(raw, typed); // unknown codes are returned as-is
+    }
+
+    #[test]
+    fn classify_neterror_returns_none_for_non_neterror() {
+        assert!(classify_neterror("https://example.com").is_none());
+        assert!(classify_neterror("about:blank").is_none());
+    }
+
+    #[test]
+    fn is_neterror_url_detects_about_neterror() {
+        assert!(is_neterror_url("about:neterror?e=dnsNotFound"));
+        assert!(!is_neterror_url("https://example.com"));
+        assert!(!is_neterror_url("about:blank"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Theme G: cross-origin URL matching
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn urls_match_scheme_host_path_identical() {
+        assert!(urls_match_scheme_host_path(
+            "https://example.com/path",
+            "https://example.com/path"
+        ));
+    }
+
+    #[test]
+    fn urls_match_scheme_host_path_strips_query() {
+        assert!(urls_match_scheme_host_path(
+            "https://example.com/path?q=1",
+            "https://example.com/path?q=2"
+        ));
+        assert!(urls_match_scheme_host_path(
+            "https://example.com/path?q=1",
+            "https://example.com/path"
+        ));
+    }
+
+    #[test]
+    fn urls_match_scheme_host_path_strips_hash() {
+        assert!(urls_match_scheme_host_path(
+            "https://example.com/path#a",
+            "https://example.com/path#b"
+        ));
+    }
+
+    #[test]
+    fn urls_match_scheme_host_path_strips_trailing_slash() {
+        assert!(urls_match_scheme_host_path(
+            "https://example.com/path/",
+            "https://example.com/path"
+        ));
+    }
+
+    #[test]
+    fn urls_do_not_match_different_paths_scheme_host_path() {
+        assert!(!urls_match_scheme_host_path(
+            "https://example.com/a",
+            "https://example.com/b"
+        ));
+        assert!(!urls_match_scheme_host_path(
+            "https://example.com/",
+            "https://other.com/"
+        ));
     }
 }

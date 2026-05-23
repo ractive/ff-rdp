@@ -192,6 +192,88 @@ impl WebConsoleActor {
         }
     }
 
+    /// Evaluate a JavaScript expression in the privileged chrome context.
+    ///
+    /// Unlike [`evaluate_js_async`], this sends `"chromeContext": true` which
+    /// causes Firefox to evaluate the script in a privileged chrome JS context.
+    /// This context is **not subject to page CSP** (`script-src` directives do
+    /// not apply), so pages that block `eval()` via CSP still allow evaluation
+    /// through this path.
+    ///
+    /// Security note: the chrome context can access privileged Firefox internals
+    /// (`Cu`, `Cc`, `Ci`, `Services`, …).  User scripts should be wrapped in an
+    /// IIFE or strict-mode guard to avoid polluting the global scope.  ff-rdp's
+    /// `build_script` isolation wrapper already does this.
+    ///
+    /// This is the same protocol path as [`evaluate_js_async`] but with the
+    /// `chromeContext` flag set; the response parsing is identical.
+    pub fn evaluate_js_async_chrome(
+        transport: &mut RdpTransport,
+        console_actor: &ActorId,
+        text: &str,
+    ) -> Result<EvalResult, ProtocolError> {
+        let request = json!({
+            "to": console_actor.as_ref(),
+            "type": "evaluateJSAsync",
+            "text": text,
+            "eager": false,
+            "chromeContext": true,
+        });
+        transport.send(&request)?;
+
+        // Identical receive loop to evaluate_js_async.
+        let immediate = loop {
+            let msg = transport.recv()?;
+            let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
+            if from == console_actor.as_ref() && msg.get("type").is_none() {
+                if let Some(error) = msg.get("error").and_then(Value::as_str) {
+                    return Err(ProtocolError::ActorError {
+                        actor: from.to_owned(),
+                        kind: ActorErrorKind::from_code(error),
+                        error: error.to_owned(),
+                        message: msg
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned(),
+                    });
+                }
+                break msg;
+            }
+        };
+
+        let result_id = immediate
+            .get("resultID")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ProtocolError::InvalidPacket(
+                    "evaluateJSAsync (chrome) response missing 'resultID' field".into(),
+                )
+            })?
+            .to_owned();
+
+        loop {
+            let msg = transport.recv()?;
+            let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
+            let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
+
+            if from == console_actor.as_ref()
+                && (msg_type == "tabNavigated" || msg_type == "willNavigate")
+            {
+                return Err(ProtocolError::EvalNavigatedDuringEval);
+            }
+
+            let msg_result_id = msg
+                .get("resultID")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+
+            if msg_type == "evaluationResult" && msg_result_id == result_id {
+                return Ok(Self::parse_eval_result(&msg));
+            }
+        }
+    }
+
     fn parse_eval_result(msg: &Value) -> EvalResult {
         // Firefox sends timestamp as a float (milliseconds since epoch).
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

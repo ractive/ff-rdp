@@ -518,6 +518,13 @@ Navigation scoping (daemon mode only):
     --since -2   one navigation back
     --since all  the full cumulative buffer (pre-61g behaviour)
 
+Source precedence (daemon mode):
+  1. Daemon watcher buffer (source=watcher): used when the daemon has buffered
+     network events for the current navigation. This is the default path when
+     the daemon is running and `navigate --with-network` was used previously.
+  2. Performance API fallback (source=performance-api): used only when the
+     watcher buffer is empty (no events captured for the current navigation).
+
 Field fidelity by source:
   watcher:         method, status, content_type, duration_ms, size_bytes, transfer_size all available
   performance-api: method=null, status=null; duration_ms, transfer_size available via Resource Timing API
@@ -537,8 +544,10 @@ Output (--detail --headers): adds {\"headers\": {\"request\": [{\"name\": \"...\
         #[arg(long)]
         follow: bool,
         /// Include request and response headers in --detail output.
-        /// Headers are fetched per-entry from the NetworkEventActor; not available
-        /// for performance-api fallback entries (source=performance-api).
+        /// Headers are fetched per-entry from the NetworkEventActor (watcher source
+        /// only). When the source is performance-api, a per-entry note is emitted
+        /// explaining why headers are missing; use --with-network to engage the
+        /// watcher and make headers available.
         #[arg(long)]
         headers: bool,
         /// Scope the result to a specific navigation window (daemon mode only).
