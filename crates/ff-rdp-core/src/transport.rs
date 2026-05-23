@@ -31,22 +31,61 @@ const SOURCE_KEYS: &[&str] = &["text", "expression"];
 /// `<redacted len=N>`.
 const MAX_INLINE_STR: usize = 32;
 
-/// Redact a JSON value in-place for safe trace output.
+/// Redact a JSON value and return a redacted clone for safe trace output.
 ///
 /// - All values of keys matching [`SENSITIVE_KEYS`] are replaced.
 /// - All values of keys matching [`SOURCE_KEYS`] are replaced.
 /// - String values exceeding [`MAX_INLINE_STR`] anywhere in the tree are
 ///   replaced.
 ///
-/// When the `FF_RDP_TRACE_RAW=1` environment variable is set at the time the
-/// function is called, redaction is skipped and the value is returned
-/// unchanged.  This allows local debugging without recompiling.
+/// When the `FF_RDP_TRACE_RAW=1` environment variable is set, redaction is
+/// skipped and the value is returned as a clone.  This allows local debugging
+/// without recompiling.  The env var is read once and cached in a
+/// [`std::sync::OnceLock`].
 pub fn redact(value: &Value) -> Value {
-    if std::env::var("FF_RDP_TRACE_RAW").as_deref() == Ok("1") {
+    if trace_raw_enabled() {
         return value.clone();
     }
     redact_inner(value)
 }
+
+/// Returns `true` if raw (un-redacted) trace output is enabled.
+///
+/// In production the result is cached after the first call via a
+/// [`std::sync::OnceLock`].  In tests, [`set_trace_raw_for_test`] can inject
+/// an explicit override that bypasses the cache entirely.
+static TRACE_RAW_CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn trace_raw_enabled() -> bool {
+    #[cfg(test)]
+    {
+        // Check the test override first; if set, bypass the production cache.
+        if let Some(v) = *TEST_TRACE_RAW_OVERRIDE.lock().unwrap() {
+            return v;
+        }
+    }
+
+    *TRACE_RAW_CACHE.get_or_init(|| {
+        // Any non-empty value enables raw mode; "1" is the documented value.
+        matches!(
+            std::env::var("FF_RDP_TRACE_RAW").as_deref(),
+            Ok(s) if !s.is_empty()
+        )
+    })
+}
+
+/// Override the [`trace_raw_enabled`] result for the duration of a test.
+///
+/// Pass `Some(true)` or `Some(false)` to force a value, or `None` to clear
+/// the override and fall back to the production cache / env var.  Callers
+/// should hold [`ENV_LOCK`] for the duration of the test to prevent races.
+#[cfg(test)]
+pub(crate) fn set_trace_raw_for_test(value: Option<bool>) {
+    *TEST_TRACE_RAW_OVERRIDE.lock().unwrap() = value;
+}
+
+#[cfg(test)]
+static TEST_TRACE_RAW_OVERRIDE: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
 
 fn redact_inner(value: &Value) -> Value {
     match value {
@@ -259,14 +298,16 @@ impl RdpTransport {
         let json = serde_json::to_string(message)
             .map_err(|e| ProtocolError::InvalidPacket(e.to_string()))?;
 
-        tracing::trace!(
-            target: "ff_rdp_core::transport",
-            direction = "send",
-            actor = %packet_actor(message),
-            kind = %packet_kind(message),
-            payload_size = json.len(),
-            body = %serde_json::to_string(&redact(message)).unwrap_or_default(),
-        );
+        if tracing::enabled!(tracing::Level::TRACE) {
+            tracing::trace!(
+                target: "ff_rdp_core::transport",
+                direction = "send",
+                actor = %packet_actor(message),
+                kind = %packet_kind(message),
+                payload_size = json.len(),
+                body = %serde_json::to_string(&redact(message)).unwrap_or_default(),
+            );
+        }
 
         let frame = encode_frame(&json);
         self.writer
@@ -280,14 +321,16 @@ impl RdpTransport {
     pub fn recv(&mut self) -> Result<Value, ProtocolError> {
         let value = recv_from(&mut self.reader)?;
 
-        tracing::trace!(
-            target: "ff_rdp_core::transport",
-            direction = "recv",
-            actor = %packet_actor(&value),
-            kind = %packet_kind(&value),
-            payload_size = serde_json::to_string(&value).map_or(0, |s| s.len()),
-            body = %serde_json::to_string(&redact(&value)).unwrap_or_default(),
-        );
+        if tracing::enabled!(tracing::Level::TRACE) {
+            tracing::trace!(
+                target: "ff_rdp_core::transport",
+                direction = "recv",
+                actor = %packet_actor(&value),
+                kind = %packet_kind(&value),
+                payload_size = serde_json::to_string(&value).map_or(0, |s| s.len()),
+                body = %serde_json::to_string(&redact(&value)).unwrap_or_default(),
+            );
+        }
 
         Ok(value)
     }
@@ -327,14 +370,16 @@ impl FramedReader {
     pub fn recv(&mut self) -> Result<Value, ProtocolError> {
         let value = recv_from(&mut self.reader)?;
 
-        tracing::trace!(
-            target: "ff_rdp_core::transport",
-            direction = "recv",
-            actor = %packet_actor(&value),
-            kind = %packet_kind(&value),
-            payload_size = serde_json::to_string(&value).map_or(0, |s| s.len()),
-            body = %serde_json::to_string(&redact(&value)).unwrap_or_default(),
-        );
+        if tracing::enabled!(tracing::Level::TRACE) {
+            tracing::trace!(
+                target: "ff_rdp_core::transport",
+                direction = "recv",
+                actor = %packet_actor(&value),
+                kind = %packet_kind(&value),
+                payload_size = serde_json::to_string(&value).map_or(0, |s| s.len()),
+                body = %serde_json::to_string(&redact(&value)).unwrap_or_default(),
+            );
+        }
 
         Ok(value)
     }
@@ -380,14 +425,16 @@ impl FramedWriter {
         let json = serde_json::to_string(message)
             .map_err(|e| ProtocolError::InvalidPacket(e.to_string()))?;
 
-        tracing::trace!(
-            target: "ff_rdp_core::transport",
-            direction = "send",
-            actor = %packet_actor(message),
-            kind = %packet_kind(message),
-            payload_size = json.len(),
-            body = %serde_json::to_string(&redact(message)).unwrap_or_default(),
-        );
+        if tracing::enabled!(tracing::Level::TRACE) {
+            tracing::trace!(
+                target: "ff_rdp_core::transport",
+                direction = "send",
+                actor = %packet_actor(message),
+                kind = %packet_kind(message),
+                payload_size = json.len(),
+                body = %serde_json::to_string(&redact(message)).unwrap_or_default(),
+            );
+        }
 
         let frame = encode_frame(&json);
         self.writer
@@ -514,6 +561,10 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
+
+    /// Serialize access to the `set_trace_raw_for_test` override so that tests
+    /// manipulating redaction state don't race with each other.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // -----------------------------------------------------------------------
     // encode_frame — pure, no I/O
@@ -680,20 +731,19 @@ mod tests {
 
     #[test]
     fn redact_noop_when_ff_rdp_trace_raw_set() {
-        // SAFETY: test-only mutation of the environment variable; no concurrent
-        // threads in this test are reading FF_RDP_TRACE_RAW.
-        unsafe {
-            std::env::set_var("FF_RDP_TRACE_RAW", "1");
-        }
+        // Use the test override rather than mutating the process environment.
+        // Lock ENV_LOCK to prevent races between tests that touch this state.
+        let _guard = ENV_LOCK.lock().unwrap();
+        set_trace_raw_for_test(Some(true));
+
         let secret = "a".repeat(100);
         let v = serde_json::json!({"cookie": secret.clone()});
         let r = redact(&v);
         // Raw mode: no redaction.
         assert_eq!(r["cookie"].as_str().unwrap(), secret);
-        // SAFETY: same as above.
-        unsafe {
-            std::env::remove_var("FF_RDP_TRACE_RAW");
-        }
+
+        // Restore: clear the override so other tests see the default behaviour.
+        set_trace_raw_for_test(None);
     }
 
     #[test]

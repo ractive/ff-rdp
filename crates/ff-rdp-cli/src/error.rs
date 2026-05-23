@@ -175,9 +175,10 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
             ff_rdp_core::ProtocolError::ConnectionFailed(_) => Self::Connection(format!(
                 "{err}\nhint: run `ff-rdp doctor` for a full diagnostic, or `ff-rdp launch` to start Firefox."
             )),
-            ff_rdp_core::ProtocolError::Timeout => {
-                Self::Timeout(format!("{err} — try increasing --timeout"))
-            }
+            ff_rdp_core::ProtocolError::Timeout => Self::RdpTimeout {
+                phase: "recv".to_owned(),
+                after_ms: 0,
+            },
             ff_rdp_core::ProtocolError::ActorError {
                 kind,
                 actor,
@@ -212,9 +213,21 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
             // I/O errors on the established connection map to Transport (exit 6).
             ff_rdp_core::ProtocolError::RecvFailed(_)
             | ff_rdp_core::ProtocolError::SendFailed(_) => Self::RdpTransport(format!("{err}")),
-            // All other protocol errors (InvalidPacket, FrameTooLarge,
-            // EvalNavigatedDuringEval) remain Internal.
-            _ => Self::Internal(anyhow::Error::new(err)),
+            // Wire-framing errors map to RdpShape (exit 4).
+            ff_rdp_core::ProtocolError::InvalidPacket(detail) => Self::RdpShape {
+                path: "frame".to_owned(),
+                expected: "valid RDP frame".to_owned(),
+                got: detail.clone(),
+            },
+            ff_rdp_core::ProtocolError::FrameTooLarge { declared, max } => Self::RdpShape {
+                path: "frame.length".to_owned(),
+                expected: format!("<= {max} bytes"),
+                got: format!("{declared} bytes"),
+            },
+            // EvalNavigatedDuringEval remains Internal.
+            ff_rdp_core::ProtocolError::EvalNavigatedDuringEval => {
+                Self::Internal(anyhow::Error::new(err))
+            }
         }
     }
 }

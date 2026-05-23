@@ -195,6 +195,16 @@ TROUBLESHOOTING:
     \"could not connect\" -> run ff-rdp launch first (safe alongside normal browser)
     Timeout -> increase --timeout or check --port matches the launched instance";
 
+/// Log verbosity level for `--log-level`.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
 #[derive(Parser)]
 #[command(
     name = "ff-rdp",
@@ -298,12 +308,11 @@ pub struct Cli {
 
     /// Set the log level for structured tracing output to stderr.
     ///
-    /// Accepted values: trace, debug, info, warn, error.
-    /// "trace" enables per-packet wire dumps via RUST_LOG=ff_rdp_core::transport=trace.
+    /// "trace" enables per-packet wire dumps (ff_rdp_core::transport=trace).
     /// Set FF_RDP_TRACE_RAW=1 to disable redaction of sensitive fields in trace output.
     /// Overrides the RUST_LOG environment variable when specified.
     #[arg(long, global = true, value_name = "LEVEL")]
-    pub log_level: Option<String>,
+    pub log_level: Option<LogLevel>,
 
     #[command(subcommand)]
     pub command: Command,

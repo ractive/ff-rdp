@@ -244,12 +244,12 @@ mod tests {
     }
 
     #[test]
-    fn map_style_error_other_errors_become_internal() {
+    fn map_style_error_invalid_packet_becomes_rdp_shape() {
         let err = ff_rdp_core::ProtocolError::InvalidPacket("bad data".into());
         let app_err = map_style_error(err);
         match app_err {
-            AppError::Internal(_) => {}
-            other => panic!("expected Internal error, got {other:?}"),
+            AppError::RdpShape { .. } => {}
+            other => panic!("expected RdpShape error, got {other:?}"),
         }
     }
 

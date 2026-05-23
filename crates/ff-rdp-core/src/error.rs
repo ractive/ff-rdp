@@ -6,9 +6,9 @@ use thiserror::Error;
 
 /// Typed error taxonomy for the Firefox RDP core library.
 ///
-/// All public methods in `ff-rdp-core` return errors that can be mapped to
-/// one of these discriminants, allowing callers (e.g. the CLI) to
-/// distinguish failure modes and emit deterministic exit codes.
+/// New typed-error variants for wire-level failures; existing actors still
+/// return [`ProtocolError`] for now.  Callers (e.g. the CLI) can map these
+/// discriminants to deterministic exit codes.
 #[derive(Debug, Error)]
 pub enum RdpError {
     /// Low-level I/O or framing failure on the TCP transport.

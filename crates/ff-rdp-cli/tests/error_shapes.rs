@@ -217,43 +217,34 @@ fn connection_fault_nothing_listening() {
 }
 
 // ---------------------------------------------------------------------------
-// Shape fault: server sends a response that is missing required fields.
+// Shape fault: server sends a frame with invalid JSON body.
 //
-// The mock server returns `listTabs` with an empty object instead of the
-// expected array — the actor parser will return an InvalidPacket or the CLI
-// will see a missing field, surfacing a shape-like error.
+// The length prefix says 10 bytes but we only send 3 bytes of valid JSON.
+// recv_from returns ProtocolError::InvalidPacket → AppError::RdpShape → exit 4.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn shape_fault_malformed_tabs_response() {
-    use std::io::BufReader;
+fn shape_fault_malformed_frame() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
 
     let handle = std::thread::spawn(move || {
-        let (stream, _) = listener.accept().expect("accept");
-        let mut writer = stream.try_clone().unwrap();
-        let mut reader = BufReader::new(stream);
+        let (mut stream, _) = listener.accept().expect("accept");
 
-        // Send greeting.
+        // Send a valid greeting so the client gets past connect().
         let greeting = serde_json::json!({
             "from": "root",
             "applicationType": "browser",
             "traits": {}
         });
         let frame = encode_frame(&serde_json::to_string(&greeting).unwrap());
-        writer.write_all(frame.as_bytes()).ok();
+        stream.write_all(frame.as_bytes()).ok();
 
-        // Read the listTabs request (discard).
-        let _ = ff_rdp_core::transport::recv_from(&mut reader);
-
-        // Reply with a malformed response — `tabs` field is missing entirely.
-        let malformed = serde_json::json!({
-            "from": "root",
-            "unexpectedField": true
-        });
-        let frame = encode_frame(&serde_json::to_string(&malformed).unwrap());
-        writer.write_all(frame.as_bytes()).ok();
+        // Send a frame whose length prefix (100) is much larger than the
+        // actual body we provide (3 bytes: `{}`\n).  The client will try to
+        // read 100 bytes, get EOF, and surface InvalidPacket → RdpShape.
+        stream.write_all(b"100:{}").ok();
+        // Drop immediately — client gets EOF mid-read.
     });
 
     let mut args = base_args(port);
@@ -266,17 +257,24 @@ fn shape_fault_malformed_tabs_response() {
 
     handle.join().unwrap();
 
-    // The command should fail — we don't assert a specific exit code because
-    // the current RootActor parser treats missing `tabs` as an empty list.
-    // What we DO assert is that if it fails, JSON error output is present and
-    // includes `error_type`.
-    if output.status.code() != Some(0) {
-        let json = parse_stdout_json(&output.stdout).expect("expected JSON on stdout after error");
-        assert!(
-            json.get("error_type").is_some(),
-            "error_type must be present when command fails; got {json}"
-        );
-    }
+    // Must fail — the frame is clearly malformed.
+    let code = output.status.code().unwrap_or(-1);
+    assert!(
+        code == 4 || code == 6,
+        "malformed frame must exit 4 (RdpShape) or 6 (RdpTransport/EOF); got {code}; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json = parse_stdout_json(&output.stdout).expect("expected JSON on stdout after error");
+    let error_type = json["error_type"].as_str().expect("error_type missing");
+    assert!(
+        error_type == "Shape" || error_type == "Transport" || error_type == "RemoteClosed",
+        "expected Shape, Transport, or RemoteClosed error_type; got {error_type}"
+    );
+    assert!(
+        json.get("error").is_some(),
+        "error field must be present; got {json}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -322,19 +320,20 @@ fn timeout_fault_operation_timeout() {
 
     handle.join().unwrap();
 
-    // Either Timeout (124) or Transport (6) — the socket read timeout fires
-    // which maps to ProtocolError::Timeout → AppError::Timeout (124).
+    // ProtocolError::Timeout → AppError::RdpTimeout → exit 5.
     let code = output.status.code().unwrap_or(-1);
-    assert!(
-        code == 124 || code == 6 || code == 1,
-        "timeout must exit 124, 6, or 1; got {code}; stderr={}",
+    assert_eq!(
+        code,
+        5,
+        "socket read timeout must exit 5 (RdpTimeout); got {code}; stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // JSON output must include error_type.
+    // JSON output must include error_type = "Timeout".
     let json = parse_stdout_json(&output.stdout).expect("expected JSON on stdout after timeout");
-    assert!(
-        json.get("error_type").is_some(),
-        "error_type must be present; got {json}"
+    let error_type = json["error_type"].as_str().expect("error_type missing");
+    assert_eq!(
+        error_type, "Timeout",
+        "expected Timeout error_type; got {error_type}"
     );
 }

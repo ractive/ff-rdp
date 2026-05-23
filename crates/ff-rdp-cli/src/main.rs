@@ -62,16 +62,21 @@ fn is_type_invocation(args: &[String]) -> bool {
 }
 
 fn init_tracing(cli: &Cli) {
+    use cli::args::LogLevel;
     use tracing_subscriber::EnvFilter;
 
     // Determine the filter directive: --log-level wins over RUST_LOG.
-    let filter = if let Some(level) = cli.log_level.as_deref() {
-        // Map "trace" to include the transport target at trace level so that
+    let filter = if let Some(level) = cli.log_level {
+        // Map Trace to include the transport target at trace level so that
         // a simple `--log-level trace` gets wire-level packet dumps.
         let directive = match level {
-            "trace" => "ff_rdp_core::transport=trace,ff_rdp_core=trace,ff_rdp_cli=trace".to_owned(),
-            "debug" => "ff_rdp_core=debug,ff_rdp_cli=debug".to_owned(),
-            other => other.to_owned(),
+            LogLevel::Trace => {
+                "ff_rdp_core::transport=trace,ff_rdp_core=trace,ff_rdp_cli=trace".to_owned()
+            }
+            LogLevel::Debug => "ff_rdp_core=debug,ff_rdp_cli=debug".to_owned(),
+            LogLevel::Info => "info".to_owned(),
+            LogLevel::Warn => "warn".to_owned(),
+            LogLevel::Error => "error".to_owned(),
         };
         EnvFilter::new(directive)
     } else {
@@ -129,12 +134,11 @@ fn main() {
         Err(AppError::Exit(code)) => {
             std::process::exit(code);
         }
-        Err(AppError::Diagnostics { message, payload }) => {
+        Err(AppError::Diagnostics { message, .. }) => {
             // Assertion failure with structured diagnostics — exit 1.
             // The diagnostics payload is already surfaced in the NDJSON step output
             // by the script runner; the CLI-level error just shows the message.
             eprintln!("error: {message}");
-            drop(payload);
             std::process::exit(1);
         }
         Err(err) => {

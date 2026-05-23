@@ -41,7 +41,7 @@ The foundation for everything downstream. Until we can see what bytes go across 
 - [x] Audit `crates/ff-rdp-cli/src/commands/*.rs`: every `.send_request(...)?` gets a `.with_context(|| format!("{actor} {method}"))`.
 - [x] Snapshot test in `tests/error_shapes.rs`: run a command against the mock server with a fault injected at each layer, assert the JSON output's `error_type` and `context` chain.
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [6/6]
 
 - [x] `RUST_LOG=ff_rdp_core::transport=trace ff-rdp tabs` prints every request/reply on stderr in a one-line-per-packet format with redaction.
 - [x] `FF_RDP_TRACE_RAW=1` disables redaction and includes full bodies.
