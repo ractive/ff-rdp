@@ -386,6 +386,43 @@ fn try_two_step_screenshot(
     );
 
     match capture_result {
+        Ok(data) if full_page => {
+            // Firefox 149-151+: `screenshotActor.capture` calls
+            // `browsingContext.drawSnapshot()` which ignores the `rect` argument
+            // and always clips to the viewport.  Detect this by comparing the
+            // returned PNG height to the scroll height we read in the prep step.
+            // If the PNG height is < 90 % of the expected full-page height,
+            // the actor silently clipped — fall back to the chrome-scope path
+            // which uses `captureScreenshot` and honors the explicit rect.
+            let needs_chrome_fallback = prep.rect.as_ref().is_some_and(|r| {
+                let b64_payload = data.strip_prefix(PNG_DATA_URL_PREFIX).unwrap_or(&data);
+                let png_bytes = base64::engine::general_purpose::STANDARD
+                    .decode(b64_payload)
+                    .unwrap_or_default();
+                match png_dimensions(&png_bytes) {
+                    Some((_, png_h)) => f64::from(png_h) < r.height * 0.90,
+                    None => false,
+                }
+            });
+            // Pass the pre-measured page rect so the chrome-scope JS doesn't
+            // need to read bc.window (which is null from the parent process).
+            let chrome_rect = prep.rect.as_ref().map(|r| PageRect {
+                scroll_w: r.width,
+                scroll_h: r.height,
+                dpr: prep.window_dpr,
+            });
+            if needs_chrome_fallback {
+                try_chrome_scope_screenshot(
+                    ctx,
+                    browsing_ctx_id,
+                    full_page,
+                    chrome_scope_timeout,
+                    chrome_rect,
+                )
+            } else {
+                Ok(data)
+            }
+        }
         Ok(data) => Ok(data),
         Err(ref e) if is_esm_global_option_error(e) => {
             // Firefox 149+ regression: `capture-screenshot.js` calls
@@ -393,7 +430,24 @@ fn try_two_step_screenshot(
             // which fails in the DevTools distinct global.  Fall back to the
             // chrome-scope loader workaround that loads the same module via
             // the DevTools loader (which has the correct global).
-            try_chrome_scope_screenshot(ctx, browsing_ctx_id, full_page, chrome_scope_timeout)
+            // Pass the pre-measured page rect so the chrome-scope JS doesn't
+            // need to read bc.window (which is null from the parent process).
+            let chrome_rect = if full_page {
+                prep.rect.as_ref().map(|r| PageRect {
+                    scroll_w: r.width,
+                    scroll_h: r.height,
+                    dpr: prep.window_dpr,
+                })
+            } else {
+                None
+            };
+            try_chrome_scope_screenshot(
+                ctx,
+                browsing_ctx_id,
+                full_page,
+                chrome_scope_timeout,
+                chrome_rect,
+            )
         }
         Err(ref e) if is_actor_module_load_failure(e) => {
             // Generic actor-module-load failure not caused by the ESM global
@@ -457,11 +511,20 @@ impl Drop for TempFileGuard {
     }
 }
 
+/// Pre-measured page dimensions to use in place of the `bc.window` read
+/// (which returns `null` from the chrome/parent-process context on Firefox 151).
+struct PageRect {
+    scroll_w: f64,
+    scroll_h: f64,
+    dpr: f64,
+}
+
 fn try_chrome_scope_screenshot(
     ctx: &mut super::connect_tab::ConnectedTab,
     browsing_context_id: u64,
     full_page: bool,
     poll_timeout: Duration,
+    page_rect: Option<PageRect>,
 ) -> Result<String, AppError> {
     // Floor the poll deadline at 10 s so very short `--timeout` values don't
     // make `--full-page` captures of long pages give up immediately. The
@@ -559,16 +622,39 @@ fn try_chrome_scope_screenshot(
         .context("serializing full_page flag")
         .map_err(|e| AppError::from(anyhow::anyhow!("{e}")))?;
 
+    // Pre-measured page dimensions — passed as JSON literals so the JS doesn't
+    // need to read them from `bc.window` (which is always null in the
+    // chrome/parent-process context on Firefox 151+).
+    // Serialise pre-measured dimensions to JSON literals; "null" when not provided.
+    let (js_preset_width, js_preset_height, js_preset_dpr) = if let Some(r) = page_rect {
+        let js_w = serde_json::to_string(&r.scroll_w)
+            .context("serializing scroll width")
+            .map_err(|e| AppError::from(anyhow::anyhow!("{e}")))?;
+        let js_h = serde_json::to_string(&r.scroll_h)
+            .context("serializing scroll height")
+            .map_err(|e| AppError::from(anyhow::anyhow!("{e}")))?;
+        let js_d = serde_json::to_string(&r.dpr)
+            .context("serializing dpr")
+            .map_err(|e| AppError::from(anyhow::anyhow!("{e}")))?;
+        (js_w, js_h, js_d)
+    } else {
+        ("null".to_owned(), "null".to_owned(), "null".to_owned())
+    };
+
     // The JS writes to a `.part` file first, then renames it to the final path
     // via `moveTo(null, outName)`.  `moveTo` is atomic on the same filesystem,
     // so the Rust poll loop never observes a partially-written PNG.
     let js = format!(
         r#"(function() {{
-  var outPath  = {out_path_js};
-  var partPath = {part_path_js};
-  var errPath  = {err_path_js};
-  var bcId     = {bc_id_js};
-  var full     = {full_page_js};
+  var outPath   = {out_path_js};
+  var partPath  = {part_path_js};
+  var errPath   = {err_path_js};
+  var bcId      = {bc_id_js};
+  var full      = {full_page_js};
+  // Pre-measured dimensions supplied by the Rust caller (null = compute from bc.window).
+  var presetW   = {js_preset_width};
+  var presetH   = {js_preset_height};
+  var presetDpr = {js_preset_dpr};
 
   function writeBytes(path, arr) {{
     var f = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
@@ -613,17 +699,26 @@ fn try_chrome_scope_screenshot(
     // correctly-sized PNG (width*dpr × height*dpr pixels).
     var captureArgs = {{ fullpage: full, dpr: 1.0, snapshotScale: 1.0 }};
     if (full) {{
-      var win = bc.window;
-      var dpr = (win && win.devicePixelRatio) ? win.devicePixelRatio : 1.0;
-      var scrollW = win ? Math.max(
-        win.document.documentElement.scrollWidth,
-        win.document.body ? win.document.body.scrollWidth : 0
-      ) : 800;
-      var scrollH = win ? Math.max(
-        win.document.documentElement.scrollHeight,
-        win.document.body ? win.document.body.scrollHeight : 0,
-        win.innerHeight || 0
-      ) : 600;
+      var dpr, scrollW, scrollH;
+      if (presetW !== null && presetH !== null && presetDpr !== null) {{
+        // Use pre-measured dimensions passed from Rust — `bc.window` is always
+        // null from the chrome/parent-process context on Firefox 151+.
+        dpr     = presetDpr;
+        scrollW = presetW;
+        scrollH = presetH;
+      }} else {{
+        var win = bc.window;
+        dpr     = (win && win.devicePixelRatio) ? win.devicePixelRatio : 1.0;
+        scrollW = win ? Math.max(
+          win.document.documentElement.scrollWidth,
+          win.document.body ? win.document.body.scrollWidth : 0
+        ) : 800;
+        scrollH = win ? Math.max(
+          win.document.documentElement.scrollHeight,
+          win.document.body ? win.document.body.scrollHeight : 0,
+          win.innerHeight || 0
+        ) : 600;
+      }}
       captureArgs = {{
         fullpage: true,
         dpr: dpr,
