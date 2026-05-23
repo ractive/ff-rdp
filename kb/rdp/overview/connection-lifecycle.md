@@ -45,7 +45,7 @@ the **greeting**. Conceptually:
 
 The exact field set is defined by the RootActor implementation, not by
 the protocol spec. Treat unknown fields as opaque. See
-[[../protocol/transport]] for how the bytes are framed.
+[[rdp/protocol/transport|transport]] for how the bytes are framed.
 
 The framework's client-side `connect()` callback fires with
 `(type, traits)` once this greeting arrives ([client-api][ca]):

@@ -1,10 +1,16 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, descriptor, worker]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - descriptor
+  - worker
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/descriptors/worker.js
   - devtools/shared/specs/descriptors/worker.js
+title: WorkerDescriptorActor
 ---
 
 # WorkerDescriptorActor (typeName `"workerDescriptor"`)

@@ -1,11 +1,17 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, target, critical]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - target
+  - critical
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/targets/window-global.js
   - devtools/server/actors/targets/base-target-actor.js
   - devtools/shared/specs/targets/window-global.js
+title: WindowGlobalTargetActor
 ---
 
 # WindowGlobalTargetActor (typeName `"windowGlobalTarget"`)

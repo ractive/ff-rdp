@@ -1,10 +1,15 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, resource, performance]
+tags:
+  - rdp
+  - firefox-server
+  - resource
+  - performance
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/resources/reflow.js
   - devtools/server/actors/reflow.js
+title: "Resource: reflow"
 ---
 
 # Resource: `reflow`

@@ -1,11 +1,16 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-client, flow, webconsole]
+tags:
+  - rdp
+  - firefox-client
+  - flow
+  - webconsole
 date: 2026-05-23
 firefox_files:
   - devtools/shared/specs/webconsole.js
   - devtools/server/actors/webconsole.js
   - devtools/client/webconsole/middleware/event-telemetry.js
+title: "Flow: Evaluate JS in a target"
 ---
 
 # Flow: Evaluate JavaScript in a target

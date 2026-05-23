@@ -1,10 +1,15 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, root]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - root
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/root.js
   - devtools/shared/specs/root.js
+title: RootActor
 ---
 
 # RootActor (typeName `"root"`)

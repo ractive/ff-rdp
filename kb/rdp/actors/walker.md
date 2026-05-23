@@ -1,11 +1,17 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, inspector, dom]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - inspector
+  - dom
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/inspector/walker.js
   - devtools/server/actors/inspector/inspector.js
   - devtools/shared/specs/walker.js
+title: WalkerActor (DOM inspector)
 ---
 
 # WalkerActor (typeName `"domwalker"`)

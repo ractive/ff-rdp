@@ -1,10 +1,15 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, network]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - network
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/network-monitor/network-parent.js
   - devtools/shared/specs/network-parent.js
+title: NetworkParentActor
 ---
 
 # NetworkParentActor (typeName `"networkParent"`)

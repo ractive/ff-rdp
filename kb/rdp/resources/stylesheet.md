@@ -1,11 +1,16 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, resource, css]
+tags:
+  - rdp
+  - firefox-server
+  - resource
+  - css
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/resources/stylesheets.js
   - devtools/server/actors/style-sheets.js
   - devtools/server/actors/stylesheets/
+title: "Resource: stylesheet"
 ---
 
 # Resource: `stylesheet`

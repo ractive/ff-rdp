@@ -1,10 +1,15 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, resources, index]
+tags:
+  - rdp
+  - firefox-server
+  - resources
+  - index
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/resources/
   - devtools/server/actors/resources/index.js
+title: RDP Resources — Index
 ---
 
 # Resource Types — Index
@@ -74,13 +79,13 @@ Throttled by 100ms (see [[rdp/actors/watcher]]).
 - [[rdp/resources/network-event|network-event]] — per-request lifecycle; spawns [[rdp/actors/network-event]] actors.
 - [[network-event-stacktrace]] — JS stack at request start.
 - [[network-event-decoded-body-size]] — separate stream so size can update after `network-event`.
-- [[document-event]] — DOM lifecycle: dom-loading, dom-interactive, dom-complete, will-navigate.
+- [[rdp/resources/document-event|document-event]] — DOM lifecycle: dom-loading, dom-interactive, dom-complete, will-navigate.
 - [[css-change]] — live edits to stylesheets via devtools (track-changes).
-- [[rdp/resources/css-change]] — CSS parser warnings.
+- [[css-message]] — CSS parser warnings.
 - [[stylesheet]] — stylesheet add/update/destroy.
-- [[reflow]] — layout reflow timing.
-- [[server-sent-event]], [[websocket]], [[webtransport]] — sub-HTTP streams.
-- [[source]] — JS sources for the debugger.
-- [[thread-state]] — paused/resumed/breakpointHit transitions.
-- [[rdp/resources/storage]], [[storage-local-storage]], [[rdp/resources/storage]], [[rdp/resources/storage]], [[rdp/resources/storage]] — storage inspector.
-- [[session-history]] — browser back/forward history.
+- [[rdp/resources/reflow|reflow]] — layout reflow timing.
+- [[server-sent-event]], `websocket`, `webtransport` — sub-HTTP streams (only `server-sent-event` has its own page so far).
+- [[rdp/resources/source|source]] — JS sources for the debugger.
+- [[rdp/resources/thread-state|thread-state]] — paused/resumed/breakpointHit transitions.
+- [[rdp/resources/storage|storage]] — storage inspector (covers [[storage-cookies|cookies]], [[storage-local-storage|local-storage]], [[storage-session-storage|session-storage]], [[storage-indexed-db|indexed-db]], [[storage-cache|cache]]).
+- `session-history` — browser back/forward history (no dedicated page yet).

@@ -53,7 +53,7 @@ This addresses iter-61l AC-H and the largest single LLM-friendliness gap in `ff-
 - The 100ms throttling means short-lived navigations (`example.com`) can race the first flush. Drain the buffer once on `network` invocation.
 - Subscribe to `document-event` too — it gives us `dom-loading`, `dom-interactive`, `dom-complete` we can use to gate `navigate`'s commit detection (relevant to iter-61l AC-G race fix).
 
-Refs: `devtools/server/actors/watcher.js`, `devtools/shared/resources/` and our [[../resources/README|resources/]] index.
+Refs: `devtools/server/actors/watcher.js`, `devtools/shared/resources/` and our [[rdp/resources/README|resources/]] index.
 
 ## 4. consoleActor staleness — Firefox already invalidates; we should too
 

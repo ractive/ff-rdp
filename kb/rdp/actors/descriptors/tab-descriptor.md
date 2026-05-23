@@ -1,10 +1,15 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, descriptor]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - descriptor
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/descriptors/tab.js
   - devtools/shared/specs/descriptors/tab.js
+title: TabDescriptorActor
 ---
 
 # TabDescriptorActor (typeName `"tabDescriptor"`)

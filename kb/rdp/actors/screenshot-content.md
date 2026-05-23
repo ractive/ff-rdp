@@ -1,10 +1,16 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, screenshot, content-process]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - screenshot
+  - content-process
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/screenshot-content.js
   - devtools/shared/specs/screenshot-content.js
+title: ScreenshotContentActor
 ---
 
 # ScreenshotContentActor (typeName `"screenshot-content"`)

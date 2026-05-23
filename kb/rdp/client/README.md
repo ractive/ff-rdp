@@ -12,7 +12,7 @@ How Firefox itself talks to a Firefox debugger server. `ff-rdp` reimplements thi
 - [[rdp/client/transport|transport]] — TCP framing + WebSocket variant (mirror of [[rdp/protocol/transport|protocol/transport]] but from the client's perspective).
 - [[spec-and-front]] — the `Arg`/`Option`/`RetVal` spec framework. Every server actor has a matching JS spec in `devtools/shared/specs/`. These spec files ARE the protocol contract; treat them as a documented IDL.
 - [[devtools-client]] — `DevToolsClient` + `RootFront`: connection bootstrap, request lifecycle, per-actor serialization quirks.
-- [[remote-agent-cdp]] — historical note: the Remote Agent used to bridge CDP→RDP. CDP support has been **removed**; only Marionette and WebDriver BiDi remain.
+- [[rdp/client/remote-agent-cdp|remote-agent-cdp]] — historical note: the Remote Agent used to bridge CDP→RDP. CDP support has been **removed**; only Marionette and WebDriver BiDi remain.
 
 ## Why this matters for ff-rdp
 

@@ -59,7 +59,7 @@ instance — locally or over the network. It is described by Mozilla as
 4. **Two interaction styles** — request/reply, and request/reply +
    spontaneous notifications ([protocol][proto]).
 5. **Two packet kinds** — JSON packets (`length:json`) and bulk packets
-   (`bulk actor type length:bytes`). See [[../protocol/transport]].
+   (`bulk actor type length:bytes`). See [[rdp/protocol/transport|transport]].
 
 [proto]: https://firefox-source-docs.mozilla.org/devtools/backend/protocol.html
 

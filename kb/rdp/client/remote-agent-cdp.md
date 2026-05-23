@@ -1,12 +1,18 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-client, remote-agent, cdp, webdriver-bidi]
+tags:
+  - rdp
+  - firefox-client
+  - remote-agent
+  - cdp
+  - webdriver-bidi
 date: 2026-05-23
 firefox_files:
   - remote/README.md
   - remote/components/RemoteAgent.sys.mjs
   - remote/webdriver-bidi/
   - remote/marionette/
+title: Remote Agent — historical CDP→RDP bridge
 ---
 
 # Remote Agent (the `--remote-debugging-port` server)

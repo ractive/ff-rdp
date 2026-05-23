@@ -20,8 +20,8 @@ If you're about to add a new `ff-rdp` command:
 
 1. Skim [[actors-we-use]] to see if we already talk to the actor you need.
 2. Check [[lessons-learned]] — many actors have non-obvious quirks already documented (evaluateJSAsync's `mapped.await`, longString grips, 64 MiB frame cap, etc.).
-3. Find the actor's contract in [[../actors/README|actors/]] (Firefox-side spec).
-4. Find the canonical client flow in [[../flows/README|flows/]] if applicable.
+3. Find the actor's contract in [[rdp/actors/README|actors/]] (Firefox-side spec).
+4. Find the canonical client flow in [[rdp/flows/README|flows/]] if applicable.
 5. If your work fixes an item in [[open-gaps]] (or a [[lessons-learned]] gotcha), close the loop and update the relevant page.
 
 ## Cross-references

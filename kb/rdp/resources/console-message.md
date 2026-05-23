@@ -1,10 +1,15 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, resource, console]
+tags:
+  - rdp
+  - firefox-server
+  - resource
+  - console
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/resources/console-messages.js
   - devtools/server/actors/webconsole/listeners/console-api.js
+title: "Resource: console-message"
 ---
 
 # Resource: `console-message`

@@ -63,7 +63,7 @@ Inventory of every Firefox RDP actor surfaced by `ff-rdp-core` as of 2026-05-23.
 ### `ResponsiveActor`
 - Code: `crates/ff-rdp-core/src/actors/responsive.rs` (72 lines).
 - Methods used: `toggleTouchSimulator` only.
-- *Cannot use*: `setViewportSize` — see [[project_viewport_protocol]] memory note. The actor never exposed it; viewport sizing in DevTools RDM uses `synchronouslyUpdateRemoteBrowserDimensions` on the browser chrome layer, which is unreachable from RDP. We simulate viewport via CSS width constraints instead.
+- *Cannot use*: `setViewportSize` — see the `project_viewport_protocol` memory note. The actor never exposed it; viewport sizing in DevTools RDM uses `synchronouslyUpdateRemoteBrowserDimensions` on the browser chrome layer, which is unreachable from RDP. We simulate viewport via CSS width constraints instead.
 
 ### `ScreenshotActor` / `ScreenshotContentActor`
 - Code: `screenshot.rs` (340 lines), `screenshot_content.rs` (361 lines).

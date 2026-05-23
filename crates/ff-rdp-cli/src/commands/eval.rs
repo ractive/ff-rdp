@@ -112,17 +112,12 @@ pub fn build_eval_js(
 
 /// Returns `true` when an exception message contains a CSP eval-block phrase.
 ///
-/// Matches the *message text only* (not the class prefix).  The exception
-/// class (`EvalError`) is checked separately in the caller via the Grip so
-/// that we handle both:
-///
-/// - Firefox ≤ 148: exception message is the full stringified form
-///   `"EvalError: call to eval() blocked by CSP"`.
-/// - Firefox 149+: `extract_exception_message` returns only the `preview.message`
-///   field, which is just `"call to eval() blocked by CSP"` (no class prefix).
-///
-/// Callers that also check the exception class (i.e. `Grip::Object { class: "EvalError", .. }`)
-/// can pass just the message here and rely on the class guard for safety.
+/// Matches the *message text only* (not the class prefix).  Handles the
+/// Firefox 149+ form where `extract_exception_message` returns just the
+/// `preview.message` field (e.g. `"call to eval() blocked by CSP"`) without
+/// the `EvalError:` class prefix.  The CSP-specific phrases are
+/// discriminating on their own — no class check is required at the call
+/// site to avoid false positives.
 fn is_csp_message(m: &str) -> bool {
     m.contains("Content Security Policy")
         || m.contains("blocked by CSP")

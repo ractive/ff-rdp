@@ -1,10 +1,15 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, resource, css]
+tags:
+  - rdp
+  - firefox-server
+  - resource
+  - css
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/resources/css-changes.js
   - devtools/server/actors/changes.js
+title: "Resource: css-change / css-message"
 ---
 
 # Resource: `css-change`

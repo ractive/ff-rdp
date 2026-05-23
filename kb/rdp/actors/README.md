@@ -1,9 +1,13 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor-index]
+tags:
+  - rdp
+  - firefox-server
+  - actor-index
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/
+title: Firefox DevTools Server Actors — Index
 ---
 
 # Firefox DevTools Server Actors — Index
@@ -57,7 +61,7 @@ Specs live in parallel under `devtools/shared/specs/`.
 
 ## Accessibility / Performance / Other Tools
 
-- [[accessibility]] — `actors/accessibility/accessibility.js` — entry; spawns AccessibilityWalker.
+- [[rdp/actors/accessibility|accessibility]] — `actors/accessibility/accessibility.js` — entry; spawns AccessibilityWalker.
 - [[performance]] — `actors/perf.js` — Gecko Profiler control: `startProfiler`, `stopProfilerAndGetProfile`, `isActive`, `getSupportedFeatures`.
 - `actors/memory.js` — heap-snapshot, GC.
 - `actors/animation.js`, `actors/animation-type-longhand.js` — Web Animations API.
@@ -91,4 +95,4 @@ Specs live in parallel under `devtools/shared/specs/`.
 
 ## Resource Watchers (per type)
 
-See [[../resources/README]] for one-file-per-resource breakdown.
+See [[rdp/resources/README|resources/]] for one-file-per-resource breakdown.

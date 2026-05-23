@@ -1,10 +1,16 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, performance, profiler]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - performance
+  - profiler
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/perf.js
   - devtools/shared/specs/perf.js
+title: PerformanceActor (perf.js)
 ---
 
 # PerfActor (typeName `"perf"`)

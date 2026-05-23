@@ -1,10 +1,15 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, target]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - target
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/targets/content-process.js
   - devtools/shared/specs/targets/content-process.js
+title: ContentProcessTargetActor
 ---
 
 # ContentProcessTargetActor (typeName `"contentProcessTarget"`)

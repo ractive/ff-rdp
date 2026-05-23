@@ -1,9 +1,14 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, resource, network]
+tags:
+  - rdp
+  - firefox-server
+  - resource
+  - network
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/resources/network-events-decoded-body-size.js
+title: "Resource: network-event-decoded-body-size"
 ---
 
 # Resource: `network-event-decoded-body-size`

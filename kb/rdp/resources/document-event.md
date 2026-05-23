@@ -1,11 +1,16 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, resource, navigation]
+tags:
+  - rdp
+  - firefox-server
+  - resource
+  - navigation
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/resources/document-event.js
   - devtools/server/actors/resources/parent-process-document-event.js
   - devtools/server/actors/webconsole/listeners/document-events.js
+title: "Resource: document-event"
 ---
 
 # Resource: `document-event`

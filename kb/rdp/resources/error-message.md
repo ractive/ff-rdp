@@ -1,17 +1,23 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, resource, console, errors]
+tags:
+  - rdp
+  - firefox-server
+  - resource
+  - console
+  - errors
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/resources/error-messages.js
   - devtools/server/actors/resources/utils/nsIConsoleListenerWatcher.js
+title: "Resource: error-message"
 ---
 
 # Resource: `error-message`
 
 Frame-target resource. Errors and warnings from the nsIConsoleService — JS exceptions, CSP violations, mixed-content warnings, deprecation notices, etc.
 
-Subclass of `nsIConsoleListenerWatcher` (shared with [[rdp/resources/css-change]], [[platform-message]]).
+Subclass of `nsIConsoleListenerWatcher` (shared with [[css-message]] and the `platform-message` resource).
 
 ## Payload
 

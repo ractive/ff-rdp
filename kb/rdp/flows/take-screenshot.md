@@ -1,6 +1,11 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-client, flow, screenshot, bug-lookup]
+tags:
+  - rdp
+  - firefox-client
+  - flow
+  - screenshot
+  - bug-lookup
 date: 2026-05-23
 firefox_files:
   - devtools/client/shared/screenshot.js
@@ -10,6 +15,7 @@ firefox_files:
   - devtools/server/actors/screenshot-content.js
   - devtools/server/actors/utils/capture-screenshot.js
   - browser/components/screenshots/
+title: "Flow: Take a screenshot"
 ---
 
 # Flow: Take a (full-page) screenshot

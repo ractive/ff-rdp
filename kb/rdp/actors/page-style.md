@@ -1,10 +1,16 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, inspector, css]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - inspector
+  - css
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/page-style.js
   - devtools/shared/specs/page-style.js
+title: PageStyleActor
 ---
 
 # PageStyleActor (typeName `"pagestyle"`)
@@ -40,4 +46,4 @@ Computed styles, matched rules, font usage, layout boxes. Spawned by the Inspect
 
 - `getApplied` is **the** call for "give me the cascade for this element" — heavier than `getComputed` because it includes rule sources.
 - `filter` values are `"all" | "ua" | "user"` (filter out user-agent stylesheets, etc).
-- Returns `domstylerule` types defined in `devtools/shared/specs/style/style-types.js` — these may be backed by [[rdp/resources/stylesheet]] actors that you can mutate to live-edit CSS.
+- Returns `domstylerule` types defined in `devtools/shared/specs/style/style-types.js` — these reference the underlying `StyleSheetActor` (see also the [[rdp/resources/stylesheet]] resource) which you can mutate to live-edit CSS.

@@ -17,5 +17,5 @@ The bytes-and-JSON layer. Everything here is observable on the socket.
 ## Related
 
 - For the spec/Front layer above the wire (Firefox client-side framework), see [[spec-and-front]].
-- For per-actor request lists, see [[actors/README|actors/]].
-- For resource-type-specific payloads, see [[resources/README|resources/]] (yes — confusingly named: `protocol/resources.md` is *how* resources stream; `resources/*.md` is *what* each resource type looks like).
+- For per-actor request lists, see [[rdp/actors/README|actors/]].
+- For resource-type-specific payloads, see [[rdp/resources/README|resources/]] (yes — confusingly named: `protocol/resources.md` is *how* resources stream; `resources/*.md` is *what* each resource type looks like).

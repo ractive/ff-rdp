@@ -1,12 +1,16 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-client, flow]
+tags:
+  - rdp
+  - firefox-client
+  - flow
 date: 2026-05-23
 firefox_files:
   - devtools/shared/transport/transport.js
   - devtools/client/devtools-client.js
   - devtools/shared/specs/root.js
   - devtools/client/fronts/root.js
+title: "Flow: Connect and list tabs"
 ---
 
 # Flow: Connect and list tabs

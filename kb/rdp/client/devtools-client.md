@@ -1,6 +1,8 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-client]
+tags:
+  - rdp
+  - firefox-client
 date: 2026-05-23
 firefox_files:
   - devtools/client/devtools-client.js
@@ -8,6 +10,7 @@ firefox_files:
   - devtools/client/fronts/root.js
   - devtools/client/fronts/descriptors/tab.js
   - devtools/client/fronts/targets/browsing-context.js
+title: DevToolsClient (Firefox client framework)
 ---
 
 # DevToolsClient + RootFront

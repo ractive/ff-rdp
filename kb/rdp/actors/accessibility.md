@@ -1,12 +1,17 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-server, actor, accessibility]
+tags:
+  - rdp
+  - firefox-server
+  - actor
+  - accessibility
 date: 2026-05-23
 firefox_files:
   - devtools/server/actors/accessibility/accessibility.js
   - devtools/server/actors/accessibility/walker.js
   - devtools/server/actors/accessibility/accessible.js
   - devtools/shared/specs/accessibility.js
+title: AccessibilityActor
 ---
 
 # AccessibilityActor (typeName `"accessibility"`)

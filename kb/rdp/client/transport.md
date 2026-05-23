@@ -1,6 +1,9 @@
 ---
 type: rdp-note
-tags: [rdp, firefox-client, transport]
+tags:
+  - rdp
+  - firefox-client
+  - transport
 date: 2026-05-23
 firefox_files:
   - devtools/shared/transport/transport.js
@@ -8,6 +11,7 @@ firefox_files:
   - devtools/shared/transport/stream-utils.js
   - devtools/shared/transport/websocket-transport.js
   - devtools/shared/transport/local-transport.js
+title: Transport (client-side framing)
 ---
 
 # RDP Transport Layer (Firefox client)
@@ -18,7 +22,7 @@ transport variants.
 
 ## Framing — length-prefixed JSON
 
-Defined in [`packets.js`](../from-our-codebase/protocol.md). Each JSON packet
+Defined in `devtools/shared/transport/packets.js` (see also [[rdp/protocol/transport|protocol/transport]]). Each JSON packet
 is serialized as UTF-8 and prefixed with its byte length and a colon:
 
 ```
