@@ -50,7 +50,12 @@ pub trait Method: sealed::Sealed {
     type Reply: for<'de> serde::Deserialize<'de>;
     /// Whether this method is fire-and-forget (no reply packet expected).
     ///
-    /// When `true`, [`call`] (and [`call_oneway`]) skip the reply read entirely.
+    /// When `true`, [`call`] skips the reply read entirely and synthesizes a
+    /// reply by deserializing an empty JSON object (`{}`).  The `Reply` type
+    /// for oneway methods must therefore deserialize from `{}` — typically a
+    /// unit struct with `#[derive(Deserialize)]`, or a struct whose fields all
+    /// have `#[serde(default)]`.
+    ///
     /// Set to `true` for methods that Firefox marks `oneway: true` in its spec,
     /// such as `unwatchTargets` and `clearResources`.  Defaults to `false`.
     const ONEWAY: bool = false;
@@ -71,10 +76,10 @@ pub struct NoArgs {}
 /// This is the single entry point used by all front methods.  It eliminates
 /// manual `json!({...})` construction and `Value::as_*` parsing in front code.
 ///
-/// When `M::ONEWAY` is `true`, the request is sent but no reply is read —
-/// the return type is still `M::Reply` but is constructed from `serde_json::Value::Null`,
-/// so `M::Reply` must implement `Default`-via-`Deserialize` in that case (using
-/// `#[serde(default)]` on all fields or `Default, Deserialize` derives on an empty struct).
+/// When [`Method::ONEWAY`] is `true`, the request is sent but no reply is read.
+/// The return value is synthesized by deserializing an empty JSON object (`{}`),
+/// so `M::Reply` must deserialize successfully from `{}` — typically a unit
+/// struct or a struct with all `#[serde(default)]` fields.
 pub(crate) fn call<M: Method>(
     transport: &mut RdpTransport,
     actor_id: &ActorId,

@@ -48,7 +48,7 @@ impl ScreenshotFront {
         // Encode DPR as a string per the Firefox spec (dpr is declared as `string`
         // in devtools/shared/specs/screenshot.js).  Skip 1.0 (the default) to
         // keep the packet minimal; Firefox defaults to 1.0 when the field is absent.
-        let dpr_str = if (prep.window_dpr - 1.0).abs() < f64::EPSILON {
+        let dpr_str = if (prep.window_dpr - 1.0).abs() < 1e-6 {
             None
         } else {
             Some(format!("{}", prep.window_dpr))

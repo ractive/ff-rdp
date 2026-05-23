@@ -96,8 +96,8 @@ impl WatcherFront {
     ///
     /// `unwatchTargets` is oneway in Firefox's spec — no reply packet is sent.
     /// The request is dispatched via the spec-layer [`call`] helper which skips
-    /// the reply read when `Method::ONEWAY` is `true`, preventing a hang on
-    /// CLI shutdown.
+    /// the reply read when [`crate::specs::Method::ONEWAY`] is `true`, preventing
+    /// a hang on CLI shutdown.
     pub fn unwatch_targets(
         &self,
         transport: &mut RdpTransport,

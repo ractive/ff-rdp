@@ -30,10 +30,10 @@ use crate::types::ActorId;
 ///
 /// # Serialization
 ///
-/// `Inline` serializes as a bare JSON string.  The `Actor` variant is not
-/// re-emitted by this crate (it is a received-only shape), so its serialization
-/// produces a compact object — callers typically call [`LongString::fetch_full`]
-/// and work with the resolved `String`.
+/// `Inline` serializes as a bare JSON string.  Serializing the `Actor` variant
+/// re-emits the full `longString` object shape; this is primarily useful for
+/// debugging and round-tripping — Firefox itself only ever sends longString
+/// objects to clients and never accepts them as input.
 #[derive(Debug, Clone)]
 pub enum LongString {
     /// A small string sent inline on the wire.
@@ -46,11 +46,19 @@ pub enum LongString {
     },
 }
 
+/// Maximum number of bytes that [`LongString::fetch_full`] will allocate.
+///
+/// Server-provided `length` values larger than this are rejected with
+/// [`ProtocolError::InvalidPacket`] before any allocation is made, guarding
+/// against memory-exhaustion from a malicious or misbehaving Firefox server.
+pub const LONGSTRING_MAX_FETCH_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
+
 impl LongString {
     /// Return a best-effort display value without a network round-trip.
     ///
     /// For `Inline` this is the full string.  For `Actor` this is the `initial`
-    /// prefix followed by `"…"` when the string is longer than the initial segment.
+    /// prefix only — callers should append a truncation indicator (e.g. `"…"`)
+    /// if they need to signal that the string continues beyond this segment.
     pub fn preview(&self) -> &str {
         match self {
             Self::Inline(s) => s.as_str(),
@@ -63,10 +71,22 @@ impl LongString {
     ///
     /// For `Inline` this is a zero-copy borrow-and-clone.  For `Actor` this
     /// performs one or more round-trips to the Firefox server.
+    ///
+    /// Returns [`ProtocolError::InvalidPacket`] if `length` exceeds
+    /// [`LONGSTRING_MAX_FETCH_BYTES`] (16 MiB) to prevent unbounded allocation.
     pub fn fetch_full(&self, transport: &mut RdpTransport) -> Result<String, ProtocolError> {
         match self {
             Self::Inline(s) => Ok(s.clone()),
             Self::Actor { actor, length, .. } => {
+                let len = usize::try_from(*length).unwrap_or(usize::MAX);
+                if len > LONGSTRING_MAX_FETCH_BYTES {
+                    return Err(ProtocolError::InvalidPacket(format!(
+                        "longString actor {} declared length {} exceeds max {} bytes",
+                        actor.as_ref(),
+                        length,
+                        LONGSTRING_MAX_FETCH_BYTES,
+                    )));
+                }
                 LongStringActor::full_string(transport, actor.as_ref(), *length)
             }
         }

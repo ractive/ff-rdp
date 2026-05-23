@@ -49,6 +49,12 @@ fn live_unwatch_targets_does_not_hang() {
 #[test]
 #[ignore = "requires live Firefox + network — FF_RDP_LIVE_NETWORK_TESTS=1"]
 fn live_network_set_cookie_longstring() {
+    // TODO(iter-61v): assert that a 50 KB Set-Cookie header value deserializes as
+    // LongString::Actor (not a panic/decode error) and that fetch_full returns the
+    // full value matching the expected length.
+    if !should_run_live() {
+        return;
+    }
     let needs_network = std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_ok_and(|v| v == "1");
     if !needs_network {
         return;
@@ -73,6 +79,8 @@ fn live_network_set_cookie_longstring() {
 #[test]
 #[ignore = "requires live Firefox — FF_RDP_LIVE_TESTS=1"]
 fn live_cache_disable_via_target_config() {
+    // TODO(iter-61v): assert that after set_cache_disabled(true), a request to a
+    // Cache-Control: max-age=3600 resource returns a non-304 response (cache bypassed).
     if !should_run_live() {
         return;
     }
