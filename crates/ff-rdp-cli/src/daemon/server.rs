@@ -1145,6 +1145,61 @@ fn handle_daemon_message(
             }
         }
 
+        // ------------------------------------------------------------------
+        // Store pre-collected events back into the buffer (iter-61j G).
+        //
+        // Used by `navigate --with-network` after it drains events via
+        // streaming.  Without this, the buffer is empty after the stream
+        // ends and subsequent `ff-rdp network` calls fall back to the
+        // Performance API.
+        //
+        // Request: {
+        //   type: "store-events",
+        //   resourceType: "network-event",
+        //   events: [...],          ← raw watcher event JSON values
+        //   nav_url: "https://…"    ← optional: record a nav boundary first
+        // }
+        // Response: { from: "daemon", stored: N }
+        // ------------------------------------------------------------------
+        "store-events" => {
+            let Some(resource_type) = msg
+                .get("resourceType")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            else {
+                return json!({
+                    "from": "daemon",
+                    "error": "store-events requires a non-empty resourceType field",
+                });
+            };
+            let Some(events_arr) = msg.get("events").and_then(Value::as_array) else {
+                return json!({
+                    "from": "daemon",
+                    "error": "store-events requires an `events` array field",
+                });
+            };
+            let nav_url = msg
+                .get("nav_url")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+
+            let mut buf = state.buffer.lock().unwrap();
+            // Optionally record a navigation boundary before inserting events.
+            if let Some(url) = nav_url {
+                buf.record_nav_boundary(url);
+            }
+            let n = events_arr.len();
+            for ev in events_arr {
+                buf.insert(resource_type, ev.clone());
+            }
+            drop(buf);
+
+            json!({
+                "from": "daemon",
+                "stored": n,
+            })
+        }
+
         "status" => {
             let uptime = state.start_time.elapsed().as_secs();
             let sizes = state.buffer.lock().unwrap().sizes();

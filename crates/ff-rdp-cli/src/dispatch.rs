@@ -740,7 +740,7 @@ fn dispatch_inner(
                 "computed",
                 cli,
             )?;
-            commands::computed::run(cli, &selector, prop.as_deref(), *all)
+            commands::computed::run(cli, &selector, prop, *all)
         }
         Command::Styles {
             selector_pos,

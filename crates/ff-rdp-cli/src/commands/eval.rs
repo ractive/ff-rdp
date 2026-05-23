@@ -163,7 +163,32 @@ pub fn run(
         }
     }
 
+    // When --stringify was used, the JS already ran JSON.stringify() so the
+    // eval result is a JSON string (e.g. `"{\"a\":1}"`).  Parse it on the
+    // ff-rdp side so `results` holds a real JSON object/array rather than a
+    // string — agents can then use `--jq '.results.a'` directly without an
+    // extra parse step.
+    //
+    // If parsing fails (e.g. the expression itself returned a plain string, or
+    // the caller double-wrapped via another JSON.stringify), keep the raw
+    // string value and set `meta.stringify_parsed: false` so callers know the
+    // round-trip did not produce a structured value.
     let mut meta = json!({});
+    if stringify && let serde_json::Value::String(ref s) = result_json {
+        match serde_json::from_str::<serde_json::Value>(s) {
+            Ok(parsed) => {
+                result_json = parsed;
+                // stringify_parsed defaults to true — omit the flag when parsing
+                // succeeds so the output stays minimal.
+            }
+            Err(_) => {
+                // Keep the raw string but signal that parsing did not succeed.
+                if let Some(m) = meta.as_object_mut() {
+                    m.insert("stringify_parsed".to_owned(), json!(false));
+                }
+            }
+        }
+    }
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,

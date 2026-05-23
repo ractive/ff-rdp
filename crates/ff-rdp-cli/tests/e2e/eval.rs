@@ -434,10 +434,10 @@ fn eval_stringify_string_no_double_encoding() {
     );
 }
 
-/// `eval --stringify "({a:1})"` must still return `"results": "{\"a\":1}"` —
-/// objects are passed through JSON.stringify as before.
+/// `eval --stringify "({a:1})"` returns `results` as a parsed JSON value
+/// (iter-61j theme B: auto-parse the server-side JSON.stringify output).
 #[test]
-fn eval_stringify_object_still_stringified() {
+fn eval_stringify_object_parsed_to_json_value() {
     let server = eval_server("eval_result_stringify.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
@@ -465,17 +465,21 @@ fn eval_stringify_object_still_stringified() {
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
-    // The fixture encodes a NodeList-style array — still a JSON string.
-    let results = json["results"].as_str().expect("results must be a string");
-    // Verify it parses as JSON (it's a stringified object/array).
-    serde_json::from_str::<serde_json::Value>(results)
-        .expect("--stringify object result must be valid JSON");
+    // Theme B (iter-61j): --stringify now auto-parses the JSON string so
+    // `results` holds a real JSON value (array/object), not a raw string.
+    // The fixture encodes a NodeList-style array — after parsing it becomes
+    // an array value in results.
+    assert!(
+        json["results"].is_array(),
+        "--stringify array result must be parsed to a JSON array; got: {}",
+        json["results"]
+    );
 }
 
-/// `eval --stringify "42"` must return `"results": "42"` — numbers are
-/// JSON.stringify'd to their string representation.
+/// `eval --stringify "42"` returns `results: 42` — iter-61j theme B parses
+/// the JSON-stringified value back into a real JSON number.
 #[test]
-fn eval_stringify_number_becomes_string() {
+fn eval_stringify_number_parsed_to_json_number() {
     let server = eval_server("eval_result_stringify_number.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
@@ -499,16 +503,20 @@ fn eval_stringify_number_becomes_string() {
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
+    // Theme B (iter-61j): --stringify now auto-parses the JSON string.
+    // "42" is valid JSON for the number 42, so results becomes Number(42).
     assert_eq!(
         json["results"],
-        serde_json::Value::String("42".to_owned()),
-        "number result must be stringified to \"42\"; got: {}",
+        serde_json::Value::Number(serde_json::Number::from(42)),
+        "number result must be parsed from JSON string \"42\" to number 42; got: {}",
         json["results"]
     );
 }
 
+/// `eval --stringify` on an array-returning expression yields `results` as a
+/// real parsed JSON array (iter-61j theme B).
 #[test]
-fn eval_stringify_returns_json_string() {
+fn eval_stringify_returns_parsed_json_array() {
     let server = eval_server("eval_result_stringify.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
@@ -536,10 +544,12 @@ fn eval_stringify_returns_json_string() {
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
-    // The mock returns a JSON string; results should be that string.
+    // Theme B (iter-61j): --stringify now auto-parses the JSON string.
+    // The mock returns a JSON-encoded array string; after parsing, results
+    // is a real JSON array.
     assert_eq!(
         json["results"],
-        r#"[{"href":"https://example.com","text":"Example"}]"#
+        serde_json::json!([{"href": "https://example.com", "text": "Example"}])
     );
     assert_eq!(json["total"], 1);
 }

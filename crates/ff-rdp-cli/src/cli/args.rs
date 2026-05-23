@@ -235,7 +235,7 @@ pub struct Cli {
     pub jq: Option<String>,
 
     /// Operation timeout in milliseconds
-    #[arg(long, default_value_t = 5000, global = true)]
+    #[arg(long, default_value_t = 10000, global = true)]
     pub timeout: u64,
 
     /// Connect directly to Firefox, bypassing the daemon. Use for one-off commands or fresh connections. The daemon (default) keeps a persistent connection and buffers events for streaming commands (--follow).
@@ -958,9 +958,11 @@ Output (--all): full resolved-style object per match (dumps every property)"
         /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
         #[arg(long = "ref", value_name = "REF_ID", group = "computed_target")]
         ref_id: Option<String>,
-        /// Return only a single property value (e.g. \"color\", \"display\")
-        #[arg(long, value_name = "NAME")]
-        prop: Option<String>,
+        /// Return only specific property values (repeatable: --prop color --prop font-size).
+        /// Also accepts CSS custom properties like --prop=--bg-color.
+        /// Comma-separated lists are also accepted: --prop color,font-size,--bg-color
+        #[arg(long, value_name = "NAME", action = clap::ArgAction::Append)]
+        prop: Vec<String>,
         /// Include every resolved property, not just non-default values
         #[arg(long, conflicts_with = "prop")]
         all: bool,

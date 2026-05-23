@@ -546,7 +546,32 @@ fn try_chrome_scope_screenshot(
     var {{ captureScreenshot }} = loader.require("devtools/server/actors/utils/capture-screenshot");
     var bc = BrowsingContext.get(bcId);
     if (!bc) {{ writeText(errPath, "no BrowsingContext for id " + bcId); return "err:no-bc"; }}
-    captureScreenshot({{ fullpage: full, dpr: 1.0, snapshotScale: 1.0 }}, bc)
+    // For full-page captures, read the actual scroll dimensions from the content
+    // window and pass an explicit rect so `captureScreenshot` uses the correct
+    // total height rather than the viewport height (iter-61j I).
+    // DPR is read from the content window so retina / HiDPI screens produce a
+    // correctly-sized PNG (width*dpr × height*dpr pixels).
+    var captureArgs = {{ fullpage: full, dpr: 1.0, snapshotScale: 1.0 }};
+    if (full) {{
+      var win = bc.window;
+      var dpr = (win && win.devicePixelRatio) ? win.devicePixelRatio : 1.0;
+      var scrollW = win ? Math.max(
+        win.document.documentElement.scrollWidth,
+        win.document.body ? win.document.body.scrollWidth : 0
+      ) : 800;
+      var scrollH = win ? Math.max(
+        win.document.documentElement.scrollHeight,
+        win.document.body ? win.document.body.scrollHeight : 0,
+        win.innerHeight || 0
+      ) : 600;
+      captureArgs = {{
+        fullpage: true,
+        dpr: dpr,
+        snapshotScale: dpr,
+        rect: {{ left: 0, top: 0, width: scrollW, height: scrollH }},
+      }};
+    }}
+    captureScreenshot(captureArgs, bc)
       .then(function(r) {{
         var dataUrl = r.data;
         var b64 = dataUrl.replace(/^data:image\/png;base64,/, "");
