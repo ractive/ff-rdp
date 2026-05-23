@@ -42,10 +42,11 @@ pub use actors::watcher::{
     parse_target_event,
 };
 pub use connection::{COMPATIBLE_FIREFOX_MAX, COMPATIBLE_FIREFOX_MIN, RdpConnection};
-pub use error::{ActorErrorKind, ProtocolError, RdpError, RdpResult};
+pub use error::{ActorErrorKind, NavCause, ProtocolError, RdpError, RdpResult};
 pub use fronts::{
-    ConsoleFront, DescriptorFront, NetworkContentFront, PageStyleFront, RootFront, ScreenshotFront,
-    TargetConfigurationFront, TargetFront, WalkerFront, WatcherFront,
+    ConsoleFront, DescriptorFront, NetworkContentFront, PageStyleFront, ProcessDescriptorFront,
+    ProcessTarget, RootFront, ScreenshotFront, TargetConfigurationFront, TargetFront, WalkerFront,
+    WatcherFront,
 };
 pub use registry::{Front, FrontKind, IsActorGone, Registry, call_with_refresh};
 pub use resources::{Resource, ResourceCommand, ResourceType, SubscriptionId};

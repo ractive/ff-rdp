@@ -646,6 +646,7 @@ fn execute_navigate(
         // its own Instant::now() baseline.
         no_wait: false,
         wait_for: &[],
+        wait_level: crate::commands::navigate::WaitLevel::Complete,
     };
     nav_run_core(cli, &effective_url, &wait_opts)
 }

@@ -365,4 +365,41 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["url"], "https://x.com");
     }
+
+    /// Theme I (iter-61x): `record_nav_boundary` truncates URLs longer than
+    /// `MAX_NAV_URL_LEN` bytes, and the truncated value is:
+    /// - at most `MAX_NAV_URL_LEN` bytes long, and
+    /// - valid UTF-8 (i.e. `std::str::from_utf8` round-trips without error).
+    ///
+    /// The URL is constructed from 1-byte ASCII chars plus a multi-byte Unicode
+    /// code point at the end to exercise the char-boundary walk.
+    #[test]
+    fn test_nav_boundary_url_truncated() {
+        let mut buf = ResourceBuffer::new();
+
+        // Build a URL that is exactly MAX_NAV_URL_LEN + 256 bytes when encoded.
+        // End with a 4-byte code point (U+1F600 GRINNING FACE = 0xF0 0x9F 0x98 0x80)
+        // so the boundary walk has to step back past a multi-byte sequence.
+        let base: String = "a".repeat(MAX_NAV_URL_LEN + 252);
+        let url = format!("{base}\u{1F600}"); // base + 4 UTF-8 bytes = MAX_NAV_URL_LEN + 256
+
+        buf.record_nav_boundary(url);
+
+        let stored_url = buf
+            .boundaries
+            .last()
+            .expect("boundary must have been recorded")
+            .url
+            .clone();
+
+        assert!(
+            stored_url.len() <= MAX_NAV_URL_LEN,
+            "stored URL must be <= MAX_NAV_URL_LEN bytes, got {}",
+            stored_url.len()
+        );
+        assert!(
+            std::str::from_utf8(stored_url.as_bytes()).is_ok(),
+            "stored URL must be valid UTF-8"
+        );
+    }
 }

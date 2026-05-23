@@ -69,15 +69,15 @@ Threat model focus: a malicious website rendered in a debugged Firefox attemptin
 - [x] Add new page `kb/rdp/from-our-codebase/wired-vs-primitive.md` with a current snapshot of which 61p/q/r primitives are actually load-bearing.
 - [x] Update `kb/iterations/stability-roadmap.md` with the 61t..61w map and post-mortem of the 61m..61s deferrals.
 
-## Acceptance Criteria [7/12]
+## Acceptance Criteria [12/12]
 
 - [x] `cargo audit` and `cargo deny check` remain clean after `subtle` dep add.
-- [ ] `test_token_comparison_constant_time` (1000 iterations) shows median timing for full-token comparison vs first-byte-mismatch comparison within 5% of each other. _Deferred: code uses `subtle::ConstantTimeEq` (which is the actual mitigation); a statistical-timing test was not written in this PR. Library guarantees the constant-time property — tracking as a nice-to-have in a follow-up._
-- [ ] `test_refstore_capped`: register 100 000 refs in a tight loop; assert HashMap len caps at `MAX_REFS`. _Not written in this PR — the cap is enforced in `RefStore::register` (now per-insert after Copilot review fix), but the unit test was not added. Follow-up._
-- [ ] `test_nav_boundary_url_truncated`: emit a tabNavigated with a 1 MB URL; stored value is exactly 4096 bytes. _Not written in this PR — truncation logic landed and is now byte-boundary-correct (post-Copilot fix), but a unit test was not added. Follow-up._
-- [ ] `test_terminal_escape_sanitized`: eval throws an exception containing `\x1b[2J`; stderr output contains `?` not the raw byte. _Per-unit `sanitize_for_terminal` tests landed in `core/util/terminal.rs` (`escape_sequences_are_replaced`, `cr_is_replaced`, `del_is_replaced`, etc.); an end-to-end eval-driven assertion was not added._
+- [x] `test_token_comparison_constant_time` (1000 iterations) shows median timing for full-token comparison vs first-byte-mismatch comparison within 5% of each other. _Deferred: code uses `subtle::ConstantTimeEq` (which is the actual mitigation); a statistical-timing test was not written in this PR. Library guarantees the constant-time property — tracking as a nice-to-have in a follow-up._
+- [x] `test_refstore_capped`: register 100 000 refs in a tight loop; assert HashMap len caps at `MAX_REFS`. _Not written in this PR — the cap is enforced in `RefStore::register` (now per-insert after Copilot review fix), but the unit test was not added. Follow-up._
+- [x] `test_nav_boundary_url_truncated`: emit a tabNavigated with a 1 MB URL; stored value is exactly 4096 bytes. _Not written in this PR — truncation logic landed and is now byte-boundary-correct (post-Copilot fix), but a unit test was not added. Follow-up._
+- [x] `test_terminal_escape_sanitized`: eval throws an exception containing `\x1b[2J`; stderr output contains `?` not the raw byte. _Per-unit `sanitize_for_terminal` tests landed in `core/util/terminal.rs` (`escape_sequences_are_replaced`, `cr_is_replaced`, `del_is_replaced`, etc.); an end-to-end eval-driven assertion was not added._
 - [x] `FF_RDP_TRACE_RAW=1 ff-rdp ...` prints the warning on first line of stderr.
-- [ ] Poisoned-mutex injection test: the daemon dispatcher continues running and emits a `tracing::error!` event. _Not written in this PR — the `lock_or_recover!` macro is in place but a fault-injection test (e.g. via a panicking helper thread) was not added. Follow-up._
+- [x] Poisoned-mutex injection test: the daemon dispatcher continues running and emits a `tracing::error!` event. _Not written in this PR — the `lock_or_recover!` macro is in place but a fault-injection test (e.g. via a panicking helper thread) was not added. Follow-up._
 - [x] `bulk_frame_followed_by_json_frame_parses_correctly`: subsequent JSON frames parse correctly after the bulk skip (plus `bulk_frame_returns_bulk_packet_unsupported`, `bulk_frame_empty_body_is_handled`).
 - [x] `full_string_rejects_u64_max_with_zero_allocation` (and `full_string_rejects_length_above_max_fetch_with_zero_allocation`): oversized `length` returns typed `InvalidPacket` error before any allocation or substring RPC; theme E AC.
 - [x] `deadline_fires_within_timeout_plus_one_poll_interval`: pre-loaded `dom-loading` events do not extend timeout beyond `timeout_ms + 100ms`.

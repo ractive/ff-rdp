@@ -629,3 +629,72 @@ fn live_navigate_invalidates_console_actor() {
         "eval after second navigate should see the new page title"
     );
 }
+
+// ---------------------------------------------------------------------------
+// AC A (iter-61x): live_eval_chrome_csp_bypass
+// ---------------------------------------------------------------------------
+
+/// `live_eval_chrome_csp_bypass`:
+/// Navigate to a page with CSP `script-src 'none'` (blocks `eval()`) and assert:
+/// 1. `ff-rdp eval "1+1"` succeeds and returns `2` — the chrome-context bypass
+///    via `getProcess(0)` → parent-process console actor is triggered.
+/// 2. The JSON output's `meta.eval_path` is `"chrome"`.
+/// 3. Eval without CSP on a normal page still uses `"page-await"` path.
+///
+/// This test gates Theme A of iter-61x: the `chromeContext: true` field has been
+/// removed; privileged eval now routes through the parent-process descriptor.
+#[test]
+#[ignore = "requires live Firefox — FF_RDP_LIVE_TESTS=1"]
+fn live_eval_chrome_csp_bypass() {
+    if std::env::var("FF_RDP_LIVE_TESTS").as_deref() != Ok("1") {
+        return;
+    }
+
+    let Some(ff) = LiveFirefox::launch() else {
+        eprintln!("live_eval_chrome_csp_bypass: Firefox not available — skipping");
+        return;
+    };
+
+    // A page with HTTP-equiv CSP that blocks eval().
+    let csp_html = r#"data:text/html,<html><head><title>CSP Test</title><meta http-equiv="Content-Security-Policy" content="script-src 'none'"></head><body>CSP page</body></html>"#;
+
+    let nav = ff.run_args(
+        [
+            "--timeout",
+            "10000",
+            "navigate",
+            csp_html,
+            "--allow-unsafe-urls",
+        ]
+        .iter()
+        .map(ToString::to_string),
+    );
+    if !nav.status.success() {
+        eprintln!(
+            "live_eval_chrome_csp_bypass: navigate failed: {}",
+            String::from_utf8_lossy(&nav.stderr)
+        );
+        return;
+    }
+
+    // Eval a simple expression — the chrome bypass path should be triggered.
+    let output = ff.run(&["eval", "1+1"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "eval '1+1' on CSP-restricted page must succeed via parent-process bypass\n\
+         stdout={stdout}\nstderr={stderr}"
+    );
+
+    let json = parse_json(&output);
+    assert_eq!(
+        json["results"], 2,
+        "eval '1+1' should return 2, got: {json}"
+    );
+    assert_eq!(
+        json["meta"]["eval_path"], "chrome",
+        "meta.eval_path must be 'chrome' on CSP bypass, got: {json}"
+    );
+}

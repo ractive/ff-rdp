@@ -6,6 +6,49 @@ use crate::types::ActorId;
 // Top-level typed error + result alias
 // ---------------------------------------------------------------------------
 
+/// Root cause of a navigation failure, extracted from Firefox's `about:neterror` URL.
+///
+/// Maps the `e=` query-parameter values that Firefox encodes in `about:neterror`
+/// to typed variants so callers (and the CLI exit-code mapper) can branch on them
+/// without parsing raw strings.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum NavCause {
+    /// `e=dnsNotFound` — DNS resolution failed.
+    #[error("DNS resolution failed")]
+    DnsFail,
+    /// `e=nssFailure2`, `e=sslv3Used`, `e=inadequateSecurityError` — TLS/cert error.
+    #[error("TLS/certificate error")]
+    CertError,
+    /// `e=netReset`, `e=netInterrupt`, `e=connectionRefused` — connection reset or refused.
+    #[error("connection reset or refused")]
+    ConnReset,
+    /// `e=netTimeout` — network timeout.
+    #[error("network timeout")]
+    Timeout,
+    /// `e=cspBlocked`, `e=blockedByPolicy`, `e=remoteXUL` — content blocked by policy.
+    #[error("content blocked by policy")]
+    ContentBlocked,
+    /// Any other `e=` value not covered above.
+    #[error("navigation error: {0}")]
+    Unknown(String),
+}
+
+impl NavCause {
+    /// Classify a raw `e=` parameter value from an `about:neterror` URL.
+    pub fn from_e_param(e: &str) -> Self {
+        match e {
+            "dnsNotFound" => Self::DnsFail,
+            "nssFailure2" | "sslv3Used" | "inadequateSecurityError" => Self::CertError,
+            "netReset" | "netInterrupt" | "connectionRefused" | "connectionFailure" => {
+                Self::ConnReset
+            }
+            "netTimeout" => Self::Timeout,
+            "cspBlocked" | "blockedByPolicy" | "remoteXUL" => Self::ContentBlocked,
+            other => Self::Unknown(other.to_owned()),
+        }
+    }
+}
+
 /// Typed error taxonomy for the Firefox RDP core library.
 ///
 /// New typed-error variants for wire-level failures; existing actors still
@@ -46,6 +89,13 @@ pub enum RdpError {
     /// Surfaced as `error_type: "actor_destroyed"` in CLI JSON output.
     #[error("actor {actor} has been destroyed — target navigated or closed")]
     ActorDestroyed { actor: ActorId },
+
+    /// Firefox navigated to `about:neterror`, indicating a DNS/network failure.
+    ///
+    /// The `cause` discriminant lets callers (and the CLI) map to deterministic
+    /// exit codes without parsing raw strings.
+    #[error("navigation to '{url}' failed: {cause}")]
+    Navigation { cause: NavCause, url: String },
 }
 
 /// Convenience alias used throughout `ff-rdp-core`.
@@ -213,6 +263,77 @@ impl ProtocolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── NavCause::from_e_param ───────────────────────────────────────────────
+
+    #[test]
+    fn classify_neterror_dns_not_found() {
+        assert_eq!(NavCause::from_e_param("dnsNotFound"), NavCause::DnsFail);
+    }
+
+    #[test]
+    fn classify_neterror_cert_errors() {
+        assert_eq!(NavCause::from_e_param("nssFailure2"), NavCause::CertError);
+        assert_eq!(NavCause::from_e_param("sslv3Used"), NavCause::CertError);
+        assert_eq!(
+            NavCause::from_e_param("inadequateSecurityError"),
+            NavCause::CertError
+        );
+    }
+
+    #[test]
+    fn classify_neterror_conn_reset() {
+        assert_eq!(NavCause::from_e_param("netReset"), NavCause::ConnReset);
+        assert_eq!(
+            NavCause::from_e_param("connectionRefused"),
+            NavCause::ConnReset
+        );
+        assert_eq!(
+            NavCause::from_e_param("connectionFailure"),
+            NavCause::ConnReset
+        );
+    }
+
+    #[test]
+    fn classify_neterror_timeout() {
+        assert_eq!(NavCause::from_e_param("netTimeout"), NavCause::Timeout);
+    }
+
+    #[test]
+    fn classify_neterror_content_blocked() {
+        assert_eq!(
+            NavCause::from_e_param("cspBlocked"),
+            NavCause::ContentBlocked
+        );
+        assert_eq!(
+            NavCause::from_e_param("blockedByPolicy"),
+            NavCause::ContentBlocked
+        );
+    }
+
+    #[test]
+    fn classify_neterror_unknown_passthrough() {
+        assert_eq!(
+            NavCause::from_e_param("someNewFirefoxCode"),
+            NavCause::Unknown("someNewFirefoxCode".to_owned())
+        );
+    }
+
+    // ── RdpError::Navigation ─────────────────────────────────────────────────
+
+    #[test]
+    fn rdp_error_navigation_display() {
+        let err = RdpError::Navigation {
+            cause: NavCause::DnsFail,
+            url: "https://bad.invalid/".to_owned(),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("https://bad.invalid/"),
+            "must include url: {msg}"
+        );
+        assert!(msg.contains("DNS"), "must mention DNS: {msg}");
+    }
 
     // ── RdpError::ActorDestroyed ─────────────────────────────────────────────
 

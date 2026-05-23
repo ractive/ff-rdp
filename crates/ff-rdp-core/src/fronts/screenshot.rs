@@ -53,12 +53,18 @@ impl ScreenshotFront {
         } else {
             Some(format!("{}", prep.window_dpr))
         };
+        // Only send snapshotScale when it differs from the server default (1.0).
+        let snapshot_scale_opt = if (snapshot_scale - 1.0).abs() < 1e-6 {
+            None
+        } else {
+            Some(snapshot_scale)
+        };
         let args = spec::request::Capture {
             args: spec::request::CaptureArgs {
                 browsing_context_id,
                 fullpage: full_page,
                 dpr: dpr_str,
-                snapshot_scale,
+                snapshot_scale: snapshot_scale_opt,
                 delay: None,
                 rect,
             },

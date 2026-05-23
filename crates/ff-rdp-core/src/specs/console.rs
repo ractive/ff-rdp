@@ -43,10 +43,10 @@ pub mod request {
     /// Note: the two-packet protocol is handled in the Front method, not by the
     /// generic `call` helper.
     ///
-    /// The `chromeContext` field has been removed: chrome-privileged evaluation
-    /// must go through the parent-process descriptor's console actor rather than
-    /// setting a flag on the content console actor.  See `eval.rs` chrome-context
-    /// routing via `evaluate_js_async_chrome`.
+    /// Chrome-privileged evaluation goes through the parent-process console
+    /// actor obtained via `root.getProcess(0)` → `processDescriptor.getTarget()`.
+    /// The `chromeContext` field is intentionally absent from this struct: the
+    /// parent-process console actor is chrome-privileged by design.
     #[derive(Debug, Clone, Serialize)]
     pub struct EvaluateJsAsync {
         pub text: String,

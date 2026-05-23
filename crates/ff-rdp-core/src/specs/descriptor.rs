@@ -1,6 +1,10 @@
-//! Spec for the tab Descriptor actor (plays the role of a DevTools descriptor front).
+//! Spec for descriptor actors (tab and process).
 //!
-//! Mirrors <https://searchfox.org/mozilla-central/source/devtools/shared/specs/descriptors/tab.js>
+//! Tab descriptor mirrors:
+//!   <https://searchfox.org/mozilla-central/source/devtools/shared/specs/descriptors/tab.js>
+//!
+//! Process descriptor (`getProcess` / parent-process console routing) mirrors:
+//!   <https://searchfox.org/mozilla-central/source/devtools/shared/specs/descriptors/process.js>
 
 use serde::Deserialize;
 
@@ -14,6 +18,8 @@ pub use crate::actors::tab::{TabInfo, TargetInfo};
 // ---------------------------------------------------------------------------
 
 pub mod request {
+    use serde::Serialize;
+
     use super::NoArgs;
 
     /// Args for `getTarget` — no parameters.
@@ -21,6 +27,17 @@ pub mod request {
 
     /// Args for `getWatcher` — no parameters.
     pub type GetWatcher = NoArgs;
+
+    /// Args for root actor's `getProcess(id)`.
+    ///
+    /// `id` is the OS process ID.  Pass `0` to request the browser parent
+    /// process (the privileged main process that hosts chrome-privileged APIs).
+    ///
+    /// Wire shape: `{"to": "root", "type": "getProcess", "id": <u32>}`.
+    #[derive(Debug, Clone, Serialize)]
+    pub struct GetProcess {
+        pub id: u32,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +79,51 @@ pub mod response {
     pub struct GetWatcher {
         pub actor: ActorId,
     }
+
+    /// A process descriptor form returned inside a `getProcess` reply.
+    ///
+    /// Wire field: `"processDescriptor"`.
+    #[derive(Debug, Clone, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ProcessDescriptorForm {
+        pub actor: ActorId,
+        #[serde(default)]
+        pub is_parent: bool,
+    }
+
+    /// Reply for root actor's `getProcess(id)`.
+    ///
+    /// Wire shape: `{"from": "root", "processDescriptor": {"actor": "...", "isParent": true}}`.
+    #[derive(Debug, Clone, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct GetProcess {
+        pub process_descriptor: ProcessDescriptorForm,
+    }
+
+    /// A process target returned by `getTarget` on a process descriptor actor.
+    ///
+    /// Unlike the tab target (`TargetFrame`), the process target is returned
+    /// directly (not nested under `"frame"`).
+    ///
+    /// Wire shape (abbreviated):
+    /// ```json
+    /// {"from": "<processDescriptor>", "processDescriptor": {"actor": "...", "consoleActor": "..."}}
+    /// ```
+    #[derive(Debug, Clone, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ProcessTargetForm {
+        pub actor: ActorId,
+        pub console_actor: ActorId,
+    }
+
+    /// Reply for `getTarget` on a process descriptor actor.
+    ///
+    /// Wire field: `"processDescriptor"`.
+    #[derive(Debug, Clone, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct GetProcessTarget {
+        pub process_descriptor: ProcessTargetForm,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -84,6 +146,29 @@ impl Method for GetWatcher {
     const NAME: &'static str = "getWatcher";
     type Args = NoArgs;
     type Reply = response::GetWatcher;
+}
+
+/// `getProcess` method marker — sent to the **root** actor, not a tab descriptor.
+///
+/// Returns a `processDescriptor` actor form.  Use ID `0` to get the browser
+/// parent process, which hosts the chrome-privileged console actor.
+pub struct GetProcess;
+impl sealed::Sealed for GetProcess {}
+impl Method for GetProcess {
+    const NAME: &'static str = "getProcess";
+    type Args = request::GetProcess;
+    type Reply = response::GetProcess;
+}
+
+/// `getTarget` method marker for the process descriptor actor.
+///
+/// Returns `processDescriptor: { actor, consoleActor }` rather than `frame: {...}`.
+pub struct GetProcessTarget;
+impl sealed::Sealed for GetProcessTarget {}
+impl Method for GetProcessTarget {
+    const NAME: &'static str = "getTarget";
+    type Args = NoArgs;
+    type Reply = response::GetProcessTarget;
 }
 
 // ---------------------------------------------------------------------------

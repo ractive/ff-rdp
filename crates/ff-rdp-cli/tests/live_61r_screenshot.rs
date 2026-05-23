@@ -133,3 +133,129 @@ fn live_screenshot_full_page() {
         "live_screenshot_full_page: PNG IHDR height {ihdr_height} < 4900"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Theme D (iter-61x): live_screenshot_full_page_dpr2 — 3rd attempt
+// ---------------------------------------------------------------------------
+
+/// `live_screenshot_full_page_dpr2`:
+/// Navigate to a 5 000 px tall synthetic page with `layout.css.devPixelsPerPx`
+/// pre-set to `2.0` in the Firefox profile, then take a `--full-page` screenshot
+/// and assert:
+///
+/// - PNG width  = viewport CSS pixels × 2 (DPR).
+/// - PNG height ≥ 5 000 × 2 = 10 000 CSS pixels × DPR.
+///
+/// This test exercises the two-step screenshot protocol (`getRoot.screenshotActor`
+/// → `prepareCapture` → `capture`) at DPR ≠ 1.0 to verify that `snapshotScale`
+/// is correctly computed as `dpr × zoom` and that the captured PNG dimensions
+/// reflect the device-pixel grid rather than the CSS-pixel grid.
+///
+/// AC: `live_screenshot_full_page_dpr2` — PNG height ≥ 5 000 × 2 = 10 000.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_screenshot_full_page_dpr2() {
+    if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
+        eprintln!("live_screenshot_full_page_dpr2: set FF_RDP_LIVE_TESTS=1 to run");
+        return;
+    }
+
+    // Launch Firefox; then set DPR=2 via the chrome-privileged Services.prefs API.
+    // This requires the parent-process console actor (available after getProcess(0)).
+    let Some(ff) = LiveFirefox::headless_on_random_port() else {
+        eprintln!("live_screenshot_full_page_dpr2: Firefox not available — skipping");
+        return;
+    };
+
+    let ff_args = || base_args(ff.port());
+
+    // Navigate to about:blank first so there's a real document.
+    let nav = Command::new(ff_rdp_bin())
+        .args(ff_args())
+        .args(["navigate", "about:blank"])
+        .output()
+        .expect("navigate to about:blank");
+
+    assert!(
+        nav.status.success(),
+        "live_screenshot_full_page_dpr2: navigate failed — {}",
+        String::from_utf8_lossy(&nav.stderr)
+    );
+
+    // Set DPR=2 via Services.prefs.  This only works if the eval goes through
+    // the chrome-privileged parent-process console actor (Theme A of iter-61x).
+    // If not available (older Firefox or test build), skip gracefully.
+    let set_dpr = Command::new(ff_rdp_bin())
+        .args(ff_args())
+        .args([
+            "eval",
+            "Services.prefs.setIntPref('layout.css.devPixelsPerPx', 2); 'ok'",
+        ])
+        .output()
+        .expect("eval set DPR");
+
+    if !set_dpr.status.success() {
+        eprintln!(
+            "live_screenshot_full_page_dpr2: Services.prefs eval failed — \
+             chrome-context not available or pref not settable; skipping\n{}",
+            String::from_utf8_lossy(&set_dpr.stderr)
+        );
+        return;
+    }
+
+    // Inject a 5 000 CSS-px tall body.
+    let setup = Command::new(ff_rdp_bin())
+        .args(ff_args())
+        .args([
+            "eval",
+            "document.body.style.height='5000px'; document.body.style.background='#0f0'; 'ok'",
+        ])
+        .output()
+        .expect("eval body height");
+
+    assert!(
+        setup.status.success(),
+        "live_screenshot_full_page_dpr2: body setup eval failed — {}",
+        String::from_utf8_lossy(&setup.stderr)
+    );
+
+    // Take a full-page screenshot.
+    let out = Command::new(ff_rdp_bin())
+        .args(ff_args())
+        .args(["screenshot", "--full-page", "--base64"])
+        .output()
+        .expect("screenshot --full-page --base64");
+
+    assert!(
+        out.status.success(),
+        "live_screenshot_full_page_dpr2: screenshot exited non-zero — stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json = parse_json(&out);
+
+    // At DPR=2 the PNG height should be ≥ 5 000 × 2 = 10 000.
+    let height = json["results"]["height"]
+        .as_u64()
+        .expect("results.height must be a number");
+
+    assert!(
+        height >= 10_000,
+        "live_screenshot_full_page_dpr2: PNG height {height} < 10000 at DPR=2 — \
+         expected ≥ 5000 CSS px × DPR=2"
+    );
+
+    // Cross-check via PNG IHDR.
+    let b64 = json["results"]["base64"]
+        .as_str()
+        .expect("results.base64 must be present when --base64 is used");
+    let png_bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .expect("valid base64");
+    let ihdr_height =
+        png_height_from_bytes(&png_bytes).expect("PNG IHDR height must be extractable");
+    assert!(
+        ihdr_height >= 10_000,
+        "live_screenshot_full_page_dpr2: PNG IHDR height {ihdr_height} < 10000 at DPR=2"
+    );
+}

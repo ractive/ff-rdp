@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use ff_rdp_core::{
-    RdpTransport, Resource, ResourceCommand, ResourceType, RootActor, TabActor, WatcherActor,
-    WebConsoleActor, WindowGlobalTarget, parse_network_resource_updates, parse_network_resources,
+    NavCause, RdpTransport, Resource, ResourceCommand, ResourceType, RootActor, TabActor,
+    WatcherActor, WindowGlobalTarget, parse_network_resource_updates, parse_network_resources,
 };
 use serde_json::json;
 
@@ -34,6 +34,29 @@ fn restore_timeout(transport: &mut RdpTransport, original_timeout_ms: u64) {
     }
 }
 
+/// The readiness level to wait for before declaring navigation complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WaitLevel {
+    /// Return as soon as `dom-loading` fires (URL committed).
+    Loading,
+    /// Return as soon as `dom-interactive` fires (DOM parsed, scripts may still be running).
+    Interactive,
+    /// Return as soon as `dom-complete` fires (all resources loaded) — default.
+    #[default]
+    Complete,
+}
+
+impl WaitLevel {
+    /// Parse a CLI `--wait` flag value.
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "loading" => Self::Loading,
+            "interactive" => Self::Interactive,
+            _ => Self::Complete,
+        }
+    }
+}
+
 /// Options controlling an optional wait condition after navigation.
 ///
 /// # False positive risk
@@ -58,47 +81,14 @@ pub struct WaitAfterNav<'a> {
     /// Additional wait-for predicates to evaluate after the document commits.
     /// Each element is a raw predicate string: `selector:<css>`, `text:<substr>`, etc.
     pub wait_for: &'a [String],
+    /// Readiness level to wait for (default: `Complete`).
+    pub wait_level: WaitLevel,
 }
 
 impl WaitAfterNav<'_> {
     fn has_condition(&self) -> bool {
         self.wait_text.is_some() || self.wait_selector.is_some()
     }
-}
-
-/// Read `window.location.href` from the current document.
-///
-/// Returns `None` when the URL cannot be observed (e.g. the console actor is
-/// not yet responsive or the eval raised an exception).  The caller treats
-/// this as "no pre-nav URL available" and falls back to readyState-only.
-///
-/// Used by the `--with-network` path which still drains events via a
-/// concurrent loop rather than a document-event bus subscription.
-fn capture_current_url(ctx: &mut super::connect_tab::ConnectedTab) -> Option<String> {
-    use super::js_helpers::resolve_result;
-    let console_actor = ctx.target.console_actor.clone();
-    let eval = WebConsoleActor::evaluate_js_async(
-        ctx.transport_mut(),
-        &console_actor,
-        "window.location.href",
-    )
-    .ok()?;
-    if eval.exception.is_some() {
-        return None;
-    }
-    let resolved = resolve_result(ctx, &eval.result).ok()?;
-    resolved.as_str().map(str::to_owned)
-}
-
-/// Returns `true` when two URLs refer to the same document under the
-/// "same-URL navigate" heuristic: equal after stripping any `#fragment` and
-/// a single trailing `/`.  Used by the `--with-network` path.
-fn urls_match_ignore_hash(a: &str, b: &str) -> bool {
-    fn normalize(u: &str) -> &str {
-        let no_hash = u.split_once('#').map_or(u, |(head, _)| head);
-        no_hash.strip_suffix('/').unwrap_or(no_hash)
-    }
-    normalize(a) == normalize(b)
 }
 
 /// The result of waiting for a navigation to commit.
@@ -112,13 +102,20 @@ struct CommitInfo {
     elapsed_ms: u64,
 }
 
-/// Wait for a `document-event` `dom-complete` (or `dom-loading` with a neterror
-/// URL) on the bus, pumping the transport until the condition is met or the
-/// timeout elapses.
+/// Wait for a document-event on the bus (level determined by `wait_level`),
+/// pumping the transport until the condition is met or the timeout elapses.
+///
+/// - [`WaitLevel::Loading`]     — resolves on `dom-loading`.
+/// - [`WaitLevel::Interactive`] — resolves on `dom-interactive` (or earlier
+///   `dom-loading` for neterror detection).
+/// - [`WaitLevel::Complete`]    — resolves on `dom-complete` (default).
+///
+/// Always returns `Err(AppError::User(Navigation{…}))` on `about:neterror`
+/// regardless of `wait_level`.
 ///
 /// Returns a [`CommitInfo`] describing the outcome.  Returns
-/// `Err(AppError::Timeout)` when neither a neterror nor a `dom-complete` event
-/// arrives within `timeout_ms`.
+/// `Err(AppError::Timeout)` when the target event does not arrive within
+/// `timeout_ms`.
 ///
 /// The caller must have already subscribed to [`ResourceType::DocumentEvent`]
 /// via `bus` before calling this function.  The subscription is left open so
@@ -126,11 +123,10 @@ struct CommitInfo {
 fn wait_for_doc_complete(
     transport: &mut RdpTransport,
     bus: &mut ResourceCommand,
-    rx: &std::sync::mpsc::Receiver<Resource>,
+    rx: &std::sync::mpsc::Receiver<std::sync::Arc<Resource>>,
     timeout_ms: u64,
+    wait_level: WaitLevel,
 ) -> Result<CommitInfo, AppError> {
-    use std::sync::mpsc::TryRecvError;
-
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
     // Use a short socket read timeout so we can check the deadline
@@ -142,67 +138,107 @@ fn wait_for_doc_complete(
 
     let started = Instant::now();
     let mut commit_url: Option<String> = None;
+    // Track whether we've seen dom-interactive so Loading/Interactive can return early.
+    let mut interactive_url: Option<String> = None;
 
     loop {
         // Check deadline first so we do not drain another batch of events
         // when the timeout has already expired.  This bounds the overrun to
         // at most one `poll_interval` (100 ms).
         if Instant::now() >= deadline {
-            return Err(AppError::Timeout(
-                "navigate: page did not fire dom-complete within the timeout — \
+            let level_name = match wait_level {
+                WaitLevel::Loading => "dom-loading",
+                WaitLevel::Interactive => "dom-interactive",
+                WaitLevel::Complete => "dom-complete",
+            };
+            return Err(AppError::Timeout(format!(
+                "navigate: page did not fire {level_name} within the timeout — \
                  use --no-wait to skip or increase --timeout"
-                    .to_owned(),
-            ));
+            )));
         }
 
         // Drain the channel — may have been filled by a previous recv batch.
-        loop {
-            match rx.try_recv() {
-                Ok(Resource::DocumentEvent(v)) => {
-                    let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    let url = v
-                        .get("url")
-                        .and_then(|u| u.as_str())
-                        .unwrap_or("")
-                        .to_owned();
+        while let Ok(arc) = rx.try_recv() {
+            if let Resource::DocumentEvent(v) = arc.as_ref() {
+                let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                let url = v
+                    .get("url")
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("")
+                    .to_owned();
 
-                    match name {
-                        "dom-loading" => {
-                            // Detect neterror early — Firefox loads about:neterror
-                            // as a document and we will see dom-loading with the
-                            // neterror URL before dom-complete fires.
-                            if is_neterror_url(&url) {
-                                let (raw_code, error_type) = classify_neterror(&url)
-                                    .unwrap_or_else(|| ("unknown", "unknown".to_owned()));
-                                return Err(AppError::User(format!(
-                                    "navigate: DNS/network error — {error_type} (Firefox error: {raw_code})\n\
-                                     landed_url: {url}\n\
-                                     hint: check the URL, DNS, or network connectivity",
-                                )));
-                            }
-                            commit_url = Some(url);
+                match name {
+                    "dom-loading" => {
+                        // Always detect neterror early — Firefox loads about:neterror
+                        // as a document and we will see dom-loading with the
+                        // neterror URL before dom-complete fires.
+                        if is_neterror_url(&url) {
+                            let nav_cause = classify_neterror(&url).map_or(
+                                NavCause::Unknown("unknown".to_owned()),
+                                NavCause::from_e_param,
+                            );
+                            return Err(AppError::Navigation {
+                                cause: nav_cause,
+                                url,
+                            });
                         }
-                        "dom-complete" => {
-                            // Ignore pre-existing/stale dom-complete events that
-                            // are not tied to *this* navigate call.  The watcher
-                            // emits both existing and new resources, so an early
-                            // dom-complete may arrive before our dom-loading.
-                            if commit_url.is_none() {
-                                continue;
-                            }
+                        commit_url = Some(url.clone());
+                        // --wait loading: resolve immediately on dom-loading.
+                        if wait_level == WaitLevel::Loading {
                             let elapsed_ms =
                                 u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                             return Ok(CommitInfo {
-                                committed_url: commit_url.take().unwrap_or_default(),
-                                ready_state: "complete".to_owned(),
+                                committed_url: url,
+                                ready_state: "loading".to_owned(),
                                 elapsed_ms,
                             });
                         }
-                        _ => {}
                     }
+                    "dom-interactive" => {
+                        // Record the interactive URL. If we haven't seen dom-loading
+                        // yet, treat this as both loading and interactive.
+                        let eff_url = if url.is_empty() {
+                            commit_url.clone().unwrap_or_default()
+                        } else {
+                            url.clone()
+                        };
+                        if commit_url.is_none() {
+                            commit_url = Some(eff_url.clone());
+                        }
+                        interactive_url = Some(eff_url.clone());
+                        // --wait interactive: resolve on dom-interactive.
+                        if wait_level == WaitLevel::Interactive && commit_url.is_some() {
+                            let elapsed_ms =
+                                u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                            return Ok(CommitInfo {
+                                committed_url: eff_url,
+                                ready_state: "interactive".to_owned(),
+                                elapsed_ms,
+                            });
+                        }
+                    }
+                    "dom-complete" => {
+                        // Ignore pre-existing/stale dom-complete events that
+                        // are not tied to *this* navigate call.  The watcher
+                        // emits both existing and new resources, so an early
+                        // dom-complete may arrive before our dom-loading.
+                        if commit_url.is_none() {
+                            continue;
+                        }
+                        let elapsed_ms =
+                            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                        let committed = interactive_url
+                            .take()
+                            .or_else(|| commit_url.take())
+                            .unwrap_or_default();
+                        return Ok(CommitInfo {
+                            committed_url: committed,
+                            ready_state: "complete".to_owned(),
+                            elapsed_ms,
+                        });
+                    }
+                    _ => {}
                 }
-                Ok(_) => {}
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
 
@@ -220,40 +256,17 @@ fn wait_for_doc_complete(
     }
 }
 
-/// Classify an `about:neterror` URL into a structured error type string.
+/// Extract the `e=` parameter value from an `about:neterror` URL.
 ///
-/// Firefox encodes the error kind in the `e=` query parameter.  We map the
-/// known values to snake_case strings that callers can match on.  Unknown
-/// values are returned as-is so callers are not broken by new Firefox error
-/// codes.
-fn classify_neterror(url: &str) -> Option<(&str, String)> {
+/// Returns the raw `e=` value so the caller can pass it to
+/// [`NavCause::from_e_param`] for typed classification.
+fn classify_neterror(url: &str) -> Option<&str> {
     // about:neterror?e=dnsNotFound&...
     let query = url.strip_prefix("about:neterror?")?;
-    let e_param = query
+    query
         .split('&')
         .find(|seg| seg.starts_with("e="))?
-        .strip_prefix("e=")?;
-
-    let error_type = match e_param {
-        "dnsNotFound" => "dns_not_found",
-        "connectionFailure" => "connection_failed",
-        "netTimeout" => "net_timeout",
-        "netReset" => "connection_reset",
-        "netInterrupt" => "connection_interrupted",
-        "connectionRefused" => "connection_refused",
-        "unknownProtocolFound" => "unknown_protocol",
-        "proxyConnectFailure" => "proxy_connect_failed",
-        "proxyAuthorizationRequired" => "proxy_auth_required",
-        "contentEncodingError" => "content_encoding_error",
-        "remoteXUL" => "remote_xul",
-        "cspBlocked" => "csp_blocked",
-        "corruptedContentError" => "corrupted_content",
-        "sslv3Used" => "ssl_version_error",
-        "inadequateSecurityError" => "tls_security_error",
-        "blockedByPolicy" => "blocked_by_policy",
-        other => other,
-    };
-    Some((e_param, error_type.to_owned()))
+        .strip_prefix("e=")
 }
 
 /// Returns `true` when `url` begins with `about:neterror`.
@@ -265,6 +278,7 @@ fn is_neterror_url(url: &str) -> bool {
 /// and trailing slash).  Used by the cross-origin race fix (Theme G): when a
 /// commit-wait times out but the landed URL shares scheme+host+port+path with
 /// the requested URL, we treat the navigation as successful.
+#[allow(dead_code)]
 fn urls_match_scheme_host_path(a: &str, b: &str) -> bool {
     fn strip_query_and_hash(u: &str) -> &str {
         let no_hash = u.split_once('#').map_or(u, |(h, _)| h);
@@ -276,144 +290,6 @@ fn urls_match_scheme_host_path(a: &str, b: &str) -> bool {
     let norm_a = strip_trailing_slash(strip_query_and_hash(a));
     let norm_b = strip_trailing_slash(strip_query_and_hash(b));
     norm_a == norm_b
-}
-
-/// Poll until the page's URL differs from `pre_nav_url` AND
-/// `document.readyState` reaches `interactive` / `complete`, whichever comes first.
-///
-/// The poll runs against the *new* target actors (refreshed via `getTarget`)
-/// because the navigate tears down the old docshell; the old console actor
-/// would return `noSuchActor`.
-///
-/// Without the URL change check, the *old* docshell may briefly answer
-/// `evaluateJSAsync` with `readyState === 'complete'` for the old page,
-/// causing a false-positive commit reading from the previous URL.  When
-/// `pre_nav_url` is `None` (no observable pre-nav URL was captured) the
-/// readyState-only check is used.
-///
-/// Returns an error when the timeout elapses before either condition is met.
-fn wait_for_commit(
-    ctx: &mut super::connect_tab::ConnectedTab,
-    requested_url: &str,
-    pre_nav_url: Option<&str>,
-    timeout_ms: u64,
-) -> Result<CommitInfo, AppError> {
-    const POLL_MS: u64 = 150;
-
-    let timeout = Duration::from_millis(timeout_ms);
-    let poll = Duration::from_millis(POLL_MS);
-    let started = Instant::now();
-
-    // Same-URL navigate short-circuit (dogfood-49 #1):
-    //
-    // If the caller asked to navigate to the URL the tab is already on, the
-    // URL-change guard in the wait JS would never become true and we would
-    // time out at `cli.timeout`.  In that case, drop the URL guard and let
-    // the steady-state `readyState === 'complete'` reading satisfy the wait
-    // immediately.  This makes `navigate <currentUrl>` a no-op that returns
-    // straight away.  Callers that want a forced refresh should use
-    // `ff-rdp reload`, which has its own commit-wait path.
-    let same_url = pre_nav_url.is_some_and(|p| urls_match_ignore_hash(p, requested_url));
-
-    // The JS snippet returns a sentinel-prefixed JSON when the condition is met:
-    // { ready: true, url: "<current>", readyState: "<state>" }
-    // Returns null while the condition is not yet satisfied.
-    //
-    // When `pre_nav_url` is provided AND it differs from `requested_url`,
-    // also require that the live URL differs from `pre_nav_url` — otherwise
-    // the old docshell's `readyState === 'complete'` can satisfy the check
-    // before the new document is installed.
-    let pre_json = if same_url {
-        "null".to_owned()
-    } else {
-        serde_json::to_string(&pre_nav_url).unwrap_or_else(|_| "null".to_owned())
-    };
-    let js = format!(
-        r"(function() {{
-  var rs = document.readyState;
-  if (rs !== 'interactive' && rs !== 'complete') return null;
-  var pre = {pre_json};
-  if (pre && window.location.href === pre) return null;
-  return '__FF_RDP_JSON__' + JSON.stringify({{ready: true, url: window.location.href, readyState: rs}});
-}})()"
-    );
-    let js = js.as_str();
-
-    loop {
-        // Re-resolve actors to get the current docshell's console actor.
-        let tab_actor = ctx.target_tab_actor().clone();
-        let fresh_target =
-            TabActor::get_target(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
-        let console_actor = fresh_target.console_actor;
-
-        let eval = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, js)
-            .map_err(AppError::from)?;
-
-        // Ignore exceptions — the new docshell may not be fully initialised yet.
-        if eval.exception.is_none() {
-            use super::js_helpers::resolve_result;
-            use serde_json::Value;
-
-            if let Ok(resolved) = resolve_result(ctx, &eval.result)
-                && let Value::Object(ref map) = resolved
-                && map.get("ready").and_then(Value::as_bool) == Some(true)
-            {
-                let committed_url = map
-                    .get("url")
-                    .and_then(Value::as_str)
-                    .unwrap_or(requested_url)
-                    .to_owned();
-                let ready_state = map
-                    .get("readyState")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown")
-                    .to_owned();
-                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                return Ok(CommitInfo {
-                    committed_url,
-                    ready_state,
-                    elapsed_ms,
-                });
-            }
-        }
-
-        if started.elapsed() >= timeout {
-            // Theme G: cross-origin race fix.
-            //
-            // When the commit-wait times out, do one final URL check.  If the
-            // current URL matches the requested URL (scheme+host+path) — the
-            // page committed but our polling window missed the transition —
-            // treat this as a success rather than surfacing a confusing timeout.
-            use super::js_helpers::resolve_result;
-            let tab_actor = ctx.target_tab_actor().clone();
-            if let Ok(fresh) = TabActor::get_target(ctx.transport_mut(), &tab_actor) {
-                let ca = fresh.console_actor;
-                if let Ok(ev) = WebConsoleActor::evaluate_js_async(
-                    ctx.transport_mut(),
-                    &ca,
-                    "window.location.href",
-                ) && ev.exception.is_none()
-                    && let Ok(v) = resolve_result(ctx, &ev.result)
-                    && let Some(landed) = v.as_str()
-                    && urls_match_scheme_host_path(landed, requested_url)
-                {
-                    let elapsed_ms =
-                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    return Ok(CommitInfo {
-                        committed_url: landed.to_owned(),
-                        ready_state: "unknown".to_owned(),
-                        elapsed_ms,
-                    });
-                }
-            }
-
-            return Err(AppError::Timeout(format!(
-                "navigate: page did not commit within {timeout_ms}ms — use --no-wait to skip commit check or increase --timeout"
-            )));
-        }
-
-        std::thread::sleep(poll);
-    }
 }
 
 /// Run the `--wait-for` predicates from `wait_opts`, re-resolving actors first.
@@ -448,27 +324,6 @@ fn run_wait_for_predicates(
         "elapsed_ms": elapsed,
         "predicates": opts.wait_for,
     })))
-}
-
-/// If `commit_info` lands on `about:neterror`, return an `AppError::User`
-/// describing the failure.  Used by all navigate paths (`run_core`,
-/// daemon `--with-network`, non-daemon `--with-network`) to ensure a
-/// DNS/network failure is surfaced consistently rather than reported as
-/// a successful navigation that just happens to have landed on a Firefox
-/// error page.
-fn neterror_error_for_commit(url: &str, commit_info: Option<&CommitInfo>) -> Option<AppError> {
-    let ci = commit_info?;
-    if !is_neterror_url(&ci.committed_url) {
-        return None;
-    }
-    let (raw_code, error_type) =
-        classify_neterror(&ci.committed_url).unwrap_or_else(|| ("unknown", "unknown".to_owned()));
-    Some(AppError::User(format!(
-        "navigate: DNS/network error navigating to '{url}' — {error_type} (Firefox error: {raw_code})\n\
-         landed_url: {landed}\n\
-         hint: check the URL, DNS, or network connectivity",
-        landed = ci.committed_url,
-    )))
 }
 
 /// Refresh the console actor in `ctx` after navigation.
@@ -516,13 +371,14 @@ fn check_real_tab_url_for_neterror(
         return None;
     }
 
-    let (raw_code, error_type) =
-        classify_neterror(&tab_url).unwrap_or_else(|| ("unknown", "unknown".to_owned()));
-    Some(AppError::User(format!(
-        "navigate: DNS/network error navigating to '{requested_url}' — {error_type} (Firefox error: {raw_code})\n\
-         landed_url: {tab_url}\n\
-         hint: check the URL, DNS, or network connectivity"
-    )))
+    let nav_cause = classify_neterror(&tab_url).map_or(
+        NavCause::Unknown("unknown".to_owned()),
+        NavCause::from_e_param,
+    );
+    Some(AppError::Navigation {
+        cause: nav_cause,
+        url: requested_url.to_owned(),
+    })
 }
 
 /// Navigate to `url` and return the result value without printing.
@@ -580,7 +436,13 @@ pub fn run_core(
             }))
             .map_err(AppError::from)?;
 
-        let result = wait_for_doc_complete(ctx.transport_mut(), &mut bus, &rx, cli.timeout);
+        let result = wait_for_doc_complete(
+            ctx.transport_mut(),
+            &mut bus,
+            &rx,
+            cli.timeout,
+            wait_opts.wait_level,
+        );
 
         // Unsubscribe regardless of outcome so Firefox cleans up server state.
         let _ = bus.unsubscribe(ctx.transport_mut(), sub_id);
@@ -667,17 +529,6 @@ pub fn run_with_network(
     }
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
-
-    // Total wall-clock budget for the whole `--with-network` flow.  We
-    // subtract elapsed time when computing the wait-for-commit deadline so
-    // total time stays close to `cli.timeout` rather than `cli.timeout * 2+`.
-    let nav_started = Instant::now();
-    let total_budget = Duration::from_millis(cli.timeout);
-
-    // Capture pre-nav URL before dispatching the navigate so `wait_for_commit`
-    // can distinguish a stale "complete" reading on the old document from a
-    // real commit on the new one.
-    let pre_nav_url = capture_current_url(&mut ctx);
 
     if ctx.via_daemon {
         // Tell the daemon to stream network events in real-time instead of
@@ -784,28 +635,14 @@ pub fn run_with_network(
             }
         }
 
-        // After network drain, optionally wait for commit (no-wait skips).
-        let commit_info = if wait_opts.no_wait {
-            None
-        } else {
-            // Use whatever is left of the total budget (minimum 2 s) so the
-            // overall navigate wall-clock time stays close to `cli.timeout`.
-            let remaining = total_budget.saturating_sub(nav_started.elapsed());
-            let remaining_ms = u64::try_from(remaining.as_millis())
-                .unwrap_or(u64::MAX)
-                .max(2000);
-            wait_for_commit(&mut ctx, url, pre_nav_url.as_deref(), remaining_ms).ok()
-        };
+        // The network drain already waited for events to settle; no separate
+        // commit-wait is needed.  Neterror detection runs via listTabs below.
+        let commit_info: Option<CommitInfo> = None;
 
         // Theme K: refresh consoleActor after navigate.
         refresh_console_actor(&mut ctx);
 
-        // Theme F: detect about:neterror in the daemon --with-network path.
-        // Run listTabs check unconditionally — DNS failures cause commit to
-        // be silently swallowed by .ok() above and commit_info will be None.
-        if let Some(err) = neterror_error_for_commit(url, commit_info.as_ref()) {
-            return Err(err);
-        }
+        // Detect about:neterror in the daemon --with-network path.
         if let Some(err) = check_real_tab_url_for_neterror(&mut ctx, url) {
             return Err(err);
         }
@@ -908,26 +745,14 @@ pub fn run_with_network(
     // (above) starts the wait before building entries because there is no
     // subscription lifecycle to tear down.
 
-    // After network drain, optionally wait for commit (no-wait skips).
-    let commit_info = if wait_opts.no_wait {
-        None
-    } else {
-        let remaining = total_budget.saturating_sub(nav_started.elapsed());
-        let remaining_ms = u64::try_from(remaining.as_millis())
-            .unwrap_or(u64::MAX)
-            .max(2000);
-        wait_for_commit(&mut ctx, url, pre_nav_url.as_deref(), remaining_ms).ok()
-    };
+    // The network drain already waited for events to settle; no separate
+    // commit-wait is needed.  Neterror detection runs via listTabs below.
+    let commit_info: Option<CommitInfo> = None;
 
     // Theme K: refresh consoleActor after navigate.
     refresh_console_actor(&mut ctx);
 
-    // Theme F: detect about:neterror in the non-daemon --with-network path.
-    // Run listTabs check unconditionally — DNS failures cause commit to
-    // be silently swallowed by .ok() above and commit_info will be None.
-    if let Some(err) = neterror_error_for_commit(url, commit_info.as_ref()) {
-        return Err(err);
-    }
+    // Detect about:neterror in the non-daemon --with-network path.
     if let Some(err) = check_real_tab_url_for_neterror(&mut ctx, url) {
         return Err(err);
     }
@@ -1108,6 +933,7 @@ mod tests {
             wait_timeout: 5000,
             no_wait: false,
             wait_for: &[],
+            wait_level: WaitLevel::Complete,
         }
     }
 
@@ -1115,83 +941,6 @@ mod tests {
     fn wait_after_nav_no_condition_returns_none() {
         let opts = default_wait_opts();
         assert!(!opts.has_condition());
-    }
-
-    // -----------------------------------------------------------------------
-    // urls_match_ignore_hash — same-URL navigate short-circuit (dogfood-49 #1)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn urls_match_identical() {
-        assert!(urls_match_ignore_hash(
-            "https://example.com/path",
-            "https://example.com/path"
-        ));
-    }
-
-    #[test]
-    fn urls_match_trailing_slash_only_on_one() {
-        assert!(urls_match_ignore_hash(
-            "https://example.com/",
-            "https://example.com"
-        ));
-        assert!(urls_match_ignore_hash(
-            "https://example.com/path/",
-            "https://example.com/path"
-        ));
-    }
-
-    #[test]
-    fn urls_match_hash_only_on_one() {
-        assert!(urls_match_ignore_hash(
-            "https://example.com/path#section",
-            "https://example.com/path"
-        ));
-        assert!(urls_match_ignore_hash(
-            "https://example.com/path#a",
-            "https://example.com/path#b"
-        ));
-    }
-
-    #[test]
-    fn urls_match_trailing_slash_and_hash() {
-        assert!(urls_match_ignore_hash(
-            "https://example.com/path/#section",
-            "https://example.com/path"
-        ));
-    }
-
-    #[test]
-    fn urls_do_not_match_different_paths() {
-        assert!(!urls_match_ignore_hash(
-            "https://example.com/a",
-            "https://example.com/b"
-        ));
-    }
-
-    #[test]
-    fn urls_do_not_match_different_queries() {
-        // Query strings are NOT normalised — different ?p=… is different page.
-        assert!(!urls_match_ignore_hash(
-            "https://news.ycombinator.com/?p=2",
-            "https://news.ycombinator.com/?p=3"
-        ));
-    }
-
-    #[test]
-    fn urls_do_not_match_different_schemes() {
-        assert!(!urls_match_ignore_hash(
-            "http://example.com/",
-            "https://example.com/"
-        ));
-    }
-
-    #[test]
-    fn urls_do_not_match_different_hosts() {
-        assert!(!urls_match_ignore_hash(
-            "https://a.example.com/",
-            "https://b.example.com/"
-        ));
     }
 
     #[test]
@@ -1249,29 +998,32 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Theme F: neterror detection
+    // Theme F / B: neterror detection + typed NavCause mapping
     // -----------------------------------------------------------------------
 
     #[test]
     fn classify_neterror_dns_not_found() {
         let url = "about:neterror?e=dnsNotFound&u=https%3A//bad.invalid/";
-        let (raw, typed) = classify_neterror(url).unwrap();
-        assert_eq!(raw, "dnsNotFound");
-        assert_eq!(typed, "dns_not_found");
+        let e_param = classify_neterror(url).unwrap();
+        assert_eq!(e_param, "dnsNotFound");
+        assert_eq!(NavCause::from_e_param(e_param), NavCause::DnsFail);
     }
 
     #[test]
     fn classify_neterror_connection_failure() {
         let url = "about:neterror?e=connectionFailure&u=foo";
-        let (_, typed) = classify_neterror(url).unwrap();
-        assert_eq!(typed, "connection_failed");
+        let e_param = classify_neterror(url).unwrap();
+        assert_eq!(NavCause::from_e_param(e_param), NavCause::ConnReset);
     }
 
     #[test]
     fn classify_neterror_unknown_code_passthrough() {
         let url = "about:neterror?e=someNewFirefoxCode&u=foo";
-        let (raw, typed) = classify_neterror(url).unwrap();
-        assert_eq!(raw, typed); // unknown codes are returned as-is
+        let e_param = classify_neterror(url).unwrap();
+        assert!(matches!(
+            NavCause::from_e_param(e_param),
+            NavCause::Unknown(_)
+        ));
     }
 
     #[test]
@@ -1392,21 +1144,27 @@ mod tests {
         // Build a ResourceCommand and an mpsc channel whose receiver we pass to
         // wait_for_doc_complete.  We pre-load the channel with many dom-loading
         // events so the inner drain loop has work to do on each iteration.
-        let (tx, rx) = std::sync::mpsc::channel::<Resource>();
-        let dom_loading = Resource::DocumentEvent(serde_json::json!({
+        let (tx, rx) = std::sync::mpsc::channel::<std::sync::Arc<Resource>>();
+        let dom_loading = std::sync::Arc::new(Resource::DocumentEvent(serde_json::json!({
             "name": "dom-loading",
             "url": "https://example.com/",
-        }));
+        })));
         // Send enough events to fill several drain batches.
         for _ in 0..1000 {
-            tx.send(dom_loading.clone()).unwrap();
+            tx.send(std::sync::Arc::clone(&dom_loading)).unwrap();
         }
 
         let watcher_actor = ff_rdp_core::ActorId::from("conn0/watcher1");
         let mut bus = ResourceCommand::new(watcher_actor);
 
         let started = Instant::now();
-        let result = wait_for_doc_complete(&mut transport, &mut bus, &rx, TIMEOUT_MS);
+        let result = wait_for_doc_complete(
+            &mut transport,
+            &mut bus,
+            &rx,
+            TIMEOUT_MS,
+            WaitLevel::Complete,
+        );
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         server_handle.join().unwrap();

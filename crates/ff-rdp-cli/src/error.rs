@@ -46,6 +46,19 @@ pub enum AppError {
     DaemonVersionMismatch { daemon: u32, cli: u32 },
     /// An actor has been destroyed (target navigated or closed) — exit 3.
     RdpActorDestroyed { actor: String },
+    /// Navigation failed with a typed DNS/network cause — deterministic exit codes.
+    ///
+    /// Exit codes:
+    /// - `DnsFail`       → 7
+    /// - `CertError`     → 8
+    /// - `ConnReset`     → 9
+    /// - `Timeout`       → 10
+    /// - `ContentBlocked`→ 11
+    /// - `Unknown`       → 12
+    Navigation {
+        cause: ff_rdp_core::NavCause,
+        url: String,
+    },
 }
 
 impl AppError {
@@ -63,6 +76,32 @@ impl AppError {
             Self::RdpRemoteClosed(_) => "RemoteClosed",
             Self::DaemonVersionMismatch { .. } => "daemon_version_mismatch",
             Self::RdpActorDestroyed { .. } => "actor_destroyed",
+            Self::Navigation { cause, .. } => match cause {
+                ff_rdp_core::NavCause::DnsFail => "nav_dns_fail",
+                ff_rdp_core::NavCause::CertError => "nav_cert_error",
+                ff_rdp_core::NavCause::ConnReset => "nav_conn_reset",
+                ff_rdp_core::NavCause::Timeout => "nav_timeout",
+                ff_rdp_core::NavCause::ContentBlocked => "nav_content_blocked",
+                ff_rdp_core::NavCause::Unknown(_) => "nav_unknown",
+            },
+        }
+    }
+
+    /// Return the process exit code for this error.
+    ///
+    /// Navigation errors use dedicated exit codes (7–12) so callers can branch
+    /// on them without parsing `error_type` strings.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Self::Navigation { cause, .. } => match cause {
+                ff_rdp_core::NavCause::DnsFail => 7,
+                ff_rdp_core::NavCause::CertError => 8,
+                ff_rdp_core::NavCause::ConnReset => 9,
+                ff_rdp_core::NavCause::Timeout => 10,
+                ff_rdp_core::NavCause::ContentBlocked => 11,
+                ff_rdp_core::NavCause::Unknown(_) => 12,
+            },
+            _ => 1,
         }
     }
 
@@ -147,6 +186,13 @@ impl fmt::Display for AppError {
                      hint: retry the command; ff-rdp will reconnect to the new target."
                 )
             }
+            Self::Navigation { cause, url } => {
+                write!(
+                    f,
+                    "navigate: navigation to '{url}' failed: {cause}\n\
+                     hint: check the URL, DNS, or network connectivity"
+                )
+            }
         }
     }
 }
@@ -188,6 +234,7 @@ impl From<ff_rdp_core::RdpError> for AppError {
             ff_rdp_core::RdpError::ActorDestroyed { actor } => Self::RdpActorDestroyed {
                 actor: actor.to_string(),
             },
+            ff_rdp_core::RdpError::Navigation { cause, url } => Self::Navigation { cause, url },
         }
     }
 }

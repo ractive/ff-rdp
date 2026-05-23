@@ -404,6 +404,7 @@ fn dispatch_inner(
             wait_timeout,
             no_wait,
             wait_for,
+            wait,
         } => {
             let wait_opts = commands::navigate::WaitAfterNav {
                 wait_text: wait_text.as_deref(),
@@ -411,6 +412,7 @@ fn dispatch_inner(
                 wait_timeout: *wait_timeout,
                 no_wait: *no_wait,
                 wait_for,
+                wait_level: commands::navigate::WaitLevel::from_str(wait),
             };
             if *with_network {
                 commands::navigate::run_with_network(cli, url, &wait_opts, *network_timeout)
