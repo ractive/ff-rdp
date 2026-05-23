@@ -42,6 +42,17 @@ Threat model focus: a malicious website rendered in a debugged Firefox attemptin
 - [ ] Surface as `RdpError::Transport{cause: BulkPacketUnsupported{actor, kind, length}}` so daemon dispatch logs it once and continues, rather than killing the connection.
 - [ ] Unit test against a synthetic bulk frame stream that the JSON parser keeps working after the skip.
 
+### E. LongString allocation cap hoist (post-61v audit, FINDING-N1)
+- [ ] `crates/ff-rdp-core/src/actors/string.rs:47`: replace `String::with_capacity(usize::try_from(length).unwrap_or(usize::MAX))` with a hard cap of `const MAX_FETCH: usize = 16 * 1024 * 1024;`.
+- [ ] On `length > MAX_FETCH` or `usize::try_from(length).is_err()`, return `RdpError::InvalidPacket` with the length in the message, before any allocation.
+- [ ] Update the three call sites that go through `LongStringActor::full_string` directly — `commands/page_text.rs:55`, `commands/computed.rs:120`, `commands/network_events.rs:350` — to map the new error to a user-facing "longstring too large" CLI message.
+- [ ] Unit test that `length = u64::MAX` returns the typed error and allocates zero bytes (use `cap-allocator`-style instrumentation or peak-RSS sampling).
+- [ ] Reconfirm that the typed `LongString::fetch_full` path at `specs/types.rs:82` still applies its own cap; the goal is two independent defenses.
+
+### F. wait_for_doc_complete deadline ordering (post-61v audit, FINDING-N4)
+- [ ] `crates/ff-rdp-cli/src/commands/navigate.rs:197`: move the `Instant::now() >= deadline` check to the top of the outer loop, before the channel drain.
+- [ ] Regression test: feed a stream of `dom-loading` events faster than the 100ms poll interval; assert that the deadline fires within `timeout_ms + 100ms`, not `timeout_ms + N × 100ms`.
+
 ### D. kb refresh
 - [ ] `kb/rdp/from-our-codebase/lessons-learned.md#async-eval-doesnt-resolve-promises`: rewrite — now misleading. The fix landed in iter-61r: `mapped: {await: true}` is sent on every `evaluateJSAsync`. Cross-link `evaluate-js.md`.
 - [ ] `kb/rdp/from-our-codebase/lessons-learned.md#screenshot-headless-chrome-scope`: annotate "closed in iter-61v, see `live_screenshot_full_page_dpr2`".
@@ -52,7 +63,7 @@ Threat model focus: a malicious website rendered in a debugged Firefox attemptin
 - [ ] Add new page `kb/rdp/from-our-codebase/wired-vs-primitive.md` with a current snapshot of which 61p/q/r primitives are actually load-bearing.
 - [ ] Update `kb/iterations/stability-roadmap.md` with the 61t..61w map and post-mortem of the 61m..61s deferrals.
 
-## Acceptance Criteria [0/10]
+## Acceptance Criteria [0/12]
 
 - [ ] `cargo audit` and `cargo deny check` remain clean after `subtle` dep add.
 - [ ] Statistical-timing test (1000 iterations) shows median timing for full-token comparison vs first-byte-mismatch comparison within 5% of each other.
@@ -62,6 +73,8 @@ Threat model focus: a malicious website rendered in a debugged Firefox attemptin
 - [ ] `FF_RDP_TRACE_RAW=1 ff-rdp ...` prints the warning on first line of stderr.
 - [ ] Poisoned-mutex injection test: the daemon dispatcher continues running and emits a `tracing::error!` event.
 - [ ] Synthetic bulk-frame test: subsequent JSON frames parse correctly after the bulk skip.
+- [ ] `test_longstring_actor_capped`: `length = u64::MAX` returns typed error with zero allocation; theme E AC.
+- [ ] `test_wait_for_doc_complete_deadline_strict`: 100 dom-loading events at 10ms interval do not extend timeout beyond `timeout_ms + 100ms`.
 - [ ] All kb pages listed in theme D updated; `hyalo find --property 'closed-in~=iter-' --format text` returns the expected set.
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
