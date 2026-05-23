@@ -82,6 +82,10 @@ Use this when you need to:
 Example:
 ```sh
 ff-rdp --format html dom "h1"
+# results: ["<h1>Example Domain</h1>"]
+# Since iter-61i, results is always an array — even for single matches.
+# Add --first to get the legacy single-string shape:
+ff-rdp --format html dom "h1" --first
 # results: "<h1>Example Domain</h1>"
 ```
 

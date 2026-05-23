@@ -176,7 +176,7 @@ auto-suppress hints (the intent is "raw value extraction").
 Every `eval` on HN (and Wikipedia per session 44/48, and the admin
 Wardrobe app per session 44/45) fails with:
 
-```
+```json
 {"message":"call to eval() blocked by CSP","name":"EvalError",...}
 ```
 

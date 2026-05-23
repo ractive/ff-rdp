@@ -91,11 +91,11 @@ fn dom_single_element_text() {
 }
 
 // ---------------------------------------------------------------------------
-// No match — returns null
+// No match — returns empty array (iter-61i; was null pre-iter-61i)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn dom_no_match_returns_null() {
+fn dom_no_match_returns_empty_array() {
     let server = dom_server("eval_result_dom_null.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
@@ -429,5 +429,92 @@ fn dom_jq_with_format_text_renders_text() {
     assert!(
         !stdout.trim().is_empty(),
         "expected non-empty output from --jq + --format text"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// iter-61i B2: --first escape hatch — legacy single-value shape
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dom_first_single_match_returns_scalar() {
+    let server = dom_server("eval_result_dom_text.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "dom".to_owned(),
+        "h1".to_owned(),
+        "--text".to_owned(),
+        "--first".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // --first returns the scalar value directly, not wrapped in an array.
+    assert_eq!(json["results"], "Example Domain");
+    assert_eq!(json["total"], 1);
+}
+
+#[test]
+fn dom_first_no_match_returns_null() {
+    let server = dom_server("eval_result_dom_null.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "dom".to_owned(),
+        ".nonexistent".to_owned(),
+        "--first".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // --first with no match: results is null, total is 0.
+    assert!(json["results"].is_null(), "expected null: {json}");
+    assert_eq!(json["total"], 0);
+}
+
+#[test]
+fn dom_first_conflicts_with_count() {
+    let server = dom_server("eval_result_dom_text.json");
+    let port = server.port();
+    let _handle = std::thread::spawn(move || {
+        // Server may or may not receive a request; if not, this thread just exits.
+        server.serve_one();
+    });
+
+    let mut args = base_args(port);
+    args.extend([
+        "dom".to_owned(),
+        "h1".to_owned(),
+        "--count".to_owned(),
+        "--first".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    // clap should reject this combination at parse time.
+    assert!(
+        !output.status.success(),
+        "--first + --count must be rejected; got success with stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
     );
 }

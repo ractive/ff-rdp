@@ -116,7 +116,7 @@ current single-`--prop`-or-empty behaviour is unchanged.
 
 
 
-#### C1. Multi-`--prop` repeatable [2/2]
+#### C1. Multi-`--prop` repeatable [0/2] _(deferred to iter-61j)_
 - [ ] In `crates/ff-rdp-cli/src/cli/args.rs`, change `Command::Computed`'s
   `prop` field from `Option<String>` to
   `Vec<String>` with `action = clap::ArgAction::Append` and
@@ -128,7 +128,7 @@ current single-`--prop`-or-empty behaviour is unchanged.
   fall back to today's "return the entire computed style table"
   behaviour.
 
-#### C2. Accept CSS custom-property names like `--bg-color` [1/1]
+#### C2. Accept CSS custom-property names like `--bg-color` [0/2] _(deferred to iter-61j)_
 - [ ] CSS custom properties start with `--`, which clap interprets as
   a flag prefix. Accept them via the `--prop=` form
   (`computed body --prop=--bg-color`) and document the workaround in
@@ -139,7 +139,7 @@ current single-`--prop`-or-empty behaviour is unchanged.
   case the lookup so the property is passed verbatim to
   `getPropertyValue` (no normalisation, no leading-dash stripping).
 
-#### C3. Snapshot-test the new shape [1/1]
+#### C3. Snapshot-test the new shape [0/1] _(deferred to iter-61j)_
 - [ ] Unit/snapshot test for the multi-prop output shape against a
   static `style.computed` JSON fixture.
 

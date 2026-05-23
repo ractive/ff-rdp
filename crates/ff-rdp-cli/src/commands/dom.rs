@@ -194,8 +194,9 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode, first: bool) -> Result<(
     let hint_ctx = HintContext::new(HintSource::Dom).with_selector(selector);
 
     if first {
-        // Legacy shape: return the first element as an object (or null when
-        // empty). `total` reflects the *post-limit* count, capped at 1.
+        // Legacy shape: return the first element as a single value (object
+        // in ARIA-tree mode, string in --text / --format html modes, null
+        // when no match). `total` reflects the *post-limit* count, capped at 1.
         let first = limited.into_iter().next().unwrap_or(Value::Null);
         let total = usize::from(!matches!(first, Value::Null));
         let envelope = output::envelope(&first, total, &meta);
