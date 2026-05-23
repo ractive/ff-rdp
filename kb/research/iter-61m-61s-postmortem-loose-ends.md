@@ -1,0 +1,101 @@
+---
+title: "Why 7 iterations (61m..61s) shipped with so many loose ends"
+type: postmortem
+date: 2026-05-23
+status: published
+tags: [process, ralph-loop, postmortem, iteration-design]
+applies_to: [iter-61m, iter-61n, iter-61o, iter-61p, iter-61q, iter-61r, iter-61s]
+related_iterations: [iter-61t, iter-61u, iter-61v, iter-61w]
+---
+
+# Postmortem: loose ends after iter-61m..61s
+
+The stability roadmap iter-61m..61s landed as 7 merged PRs in a single ralph-loop run. A cross-cutting review immediately afterwards turned up enough gaps to fill 4 follow-up iterations (61t..61w): a Registry that nothing imports, a ResourceCommand bus that the daemon doesn't subscribe to, a `ScopedGrip` primitive with zero call sites, a `resources-destroyed-array` event that a TODO comment in the dispatcher literally names but doesn't handle, spec divergences (`unwatchTargets` oneway, `startedListeners` rename, `value: String` vs `longstring`) that mock tests cannot catch, and the user-visible behavioral fixes (navigate via `document-event`, screenshot JS fallback deletion, DPR=2 live test) that were explicitly deferred inside the very iterations that promised them.
+
+Each piece looks like an oversight in isolation. The clustering is not — it's a process pattern. This page names the pattern so future roadmaps can be structured against it.
+
+## Root causes (in roughly descending contribution)
+
+### 1. The "carry-over notes" escape hatch
+
+Every iteration's AC table had room for "deferred to follow-up." Git log shows the trail: `docs(iter-61q): add carry-over notes from iter-61p`, `docs(iter-61o): note concrete refactor candidates from iter-61n`, etc. Once that mechanism exists, it gets used. The iter-61l "every AC must have a passing live test" mandate slowed it but didn't kill it because the deferral happened at AC-write time, not at AC-verify time.
+
+**Mitigation:** No AC may have a "deferred" or "carry-over" tick on the merging branch. Deferred work is filed as a new iteration plan *before* the current PR merges, with the carry-over commit blocking merge until the new plan exists.
+
+### 2. Primitive-without-wiring is the natural shape of layered roadmaps
+
+When iter-61p says "build Registry" and iter-61q says "use Registry via the bus", iter-61p legitimately ships green as just the primitive — wiring is "61q's problem." iter-61q then scopes itself, defers the wiring as "carry-over", and the loop never closes. No iteration was explicitly "integrate the previous three."
+
+**Mitigation:** Every iteration that introduces a primitive must include at least one production call site of that primitive, not just unit tests. CI greps for `use crate::<new_module>` from outside `tests/` or `#[cfg(test)]`; zero hits fails the build. The plan template should require a "First call site:" frontmatter field naming the file path.
+
+### 3. Mock-server tests don't catch wire-shape divergence
+
+The four spec bugs found in the review (`unwatchTargets` waiting for non-existent ACK, `listeners` vs `startedListeners` response key, `value: String` vs `longstring` for header values, `dpr: f64` vs `string`) would not fire against the mock server. The mock returns whatever shape ff-rdp expects, so the mock and the client agree by construction. Only live Firefox with a >10 KB `Set-Cookie`, a real `unwatchTargets` shutdown path, or strict protocol.js type-checking would have caught them.
+
+iter-61o was supposed to fix exactly this with the live-test substrate — but the substrate landed without the actual coverage of the paths that needed live testing. The capability shipped; the tests did not.
+
+**Mitigation:** For every typed spec method added in iter-61s-style iterations, a live test against headless Firefox is mandatory before merge. The acceptance criteria must cite the live test name and what it asserts on the wire (e.g. `live_unwatch_targets_no_hang: process exits within 200ms after daemon stop`).
+
+### 4. The implementer's incentive is "land green," not "land complete"
+
+Each cmux child runs implement → review → merge against a checklist. When something is hard (DPR=2 screenshot test on a 5000px page, document-event subscription with neterror detection, daemon buffer rewrite on top of the bus), the rational move is to tick what's done, file a carry-over note, and ship. The PR review (Copilot, CodeRabbit, local) checks code quality, naming, and obvious bugs — not roadmap fidelity.
+
+**Mitigation:** The implementer's review gate should include a step where the AC list is read aloud (by the agent, in PR description) with each item annotated `[verified live]`, `[verified unit]`, `[deferred — new plan: …]`. Reviewers and the orchestrator can then see deferrals explicitly. The current "I ticked the box" is too cheap.
+
+### 5. No automated "primitive exists, nothing imports it" check
+
+A 5-line CI script — for each new public module, count non-test usages, fail if zero — would have caught the dead-code Registry on its first merge. Nobody added it because nobody was thinking about it; you only add the check after the failure happens.
+
+**Mitigation:** Add a `cargo xtask check-dead-primitives` target that scans the workspace for `pub` modules introduced in the last N commits with zero non-test imports. Run it in CI. Output: a list of dead primitives, exit code 1 if non-empty. Easy to write; high signal.
+
+### 6. The TODO-comment-without-implementation pattern
+
+In `crates/ff-rdp-core/src/resources/command.rs:184-188`, the implementer wrote a comment block mentioning both `resources-updated-array` and `resources-destroyed-array`, but only implemented two of the three. The system knew the work wasn't done — there was a comment! — and nothing turned that knowledge into a blocker.
+
+**Mitigation:** A pre-commit hook scans the diff for new `TODO`, `FIXME`, `XXX`, or "and the X one" / "also handle Y" comment patterns. Each such pattern requires either (a) an issue link, or (b) explicit `// allow-todo: <reason>` annotation. Defaults to fail.
+
+### 7. Plans written from kb research, not from live-verification feedback
+
+The plans were good descriptions of what *should* exist. They assumed the implementer, while building it, would notice when something didn't actually work end-to-end against Firefox. In practice the implementer worked from the AC list. Once the AC list looked done, it was done — regardless of whether the dogfood path passed.
+
+**Mitigation:** Every iteration plan must include a "Dogfood path" section with a concrete command sequence the user would run after merge, and an expected JSON output. The implement-phase ends only when that command runs green against live Firefox, before opening the PR.
+
+### 8. Speed and scope
+
+Seven non-trivial iterations in one ralph-loop run, each ~30-45 min of agent work. Doing it that fast favors breadth over depth — and "depth" is exactly what wiring layers together needs.
+
+**Mitigation:** Cap ralph-loop runs at a depth that allows an integration iteration every 3-4 layers, and refuse to schedule another layer-building iteration without one. Or: lengthen the per-iteration timeout when the iteration is flagged `integration: true` in its frontmatter.
+
+## What this changes
+
+The 4 follow-up iterations (61t..61w) are roughly half "fix the bugs we should have caught" and half "wire the primitives we built." That ratio is the cost of the process gaps above. We can pay it once and call it learning; we should not pay it again on every roadmap.
+
+### Candidate changes to CLAUDE.md
+
+```diff
++ ## Iteration discipline
++
++ When writing or reviewing an iteration plan:
++ - Every new primitive must name its first non-test call site.
++ - Every spec method must cite a live Firefox test that exercises it.
++ - "Deferred to follow-up" requires a new iteration plan file to exist *before* the current PR merges.
++ - The AC list must include a dogfood command + expected JSON output.
++ - Pre-commit / CI runs `cargo xtask check-dead-primitives`.
+```
+
+### Candidate changes to the ralph-loop skill
+
+- After an iteration's implement-phase finishes, the orchestrator should grep the diff for new `pub mod` declarations in `core` and check that at least one non-test consumer exists in `cli` or `daemon`. If not, treat as a partial failure and ask the user before merging.
+- Each iteration's Phase 2 (review) should include "AC fidelity check": read the plan's AC list, confirm each item is verified, not just ticked.
+- Add a `--integration` flag that bumps the per-iteration timeout and requires the iteration plan to declare `integration: true` in frontmatter.
+
+## References
+
+- [[iter-61t-wire-the-foundations]] — wires Registry / bus / ScopedGrip / destroyed-array
+- [[iter-61u-spec-and-front-correctness]] — fixes the spec/Front divergences
+- [[iter-61v-navigate-and-screenshot-completion]] — closes the deferred user-visible work
+- [[iter-61w-security-hardening-and-cleanup]] — security + bulk packet + kb refresh
+- [[stability-roadmap]] — original roadmap that produced 61m..61s
+- [[ralph-loop-pattern]] — the orchestrator this ran in
+- [[ff-rdp-architecture-review]]
+- [[lessons-learned]]

@@ -25,16 +25,30 @@ pub enum Resource {
     ///
     /// Delivered as raw JSON until a typed `DocumentEvent` struct is needed.
     DocumentEvent(Value),
+
+    /// A resource that has been destroyed (`"resources-destroyed-array"`).
+    ///
+    /// Firefox emits this when a resource (e.g. a completed network event) is
+    /// removed from the server's registry.  Consumers should prune any local
+    /// store entries keyed on `resource_id`.
+    Destroyed {
+        /// The wire-format resource type string (e.g. `"network-event"`).
+        resource_type: String,
+        /// The opaque resource identifier matching a prior [`Resource::NetworkEvent`]
+        /// or similar variant's resource ID field.
+        resource_id: String,
+    },
 }
 
 impl Resource {
     /// Return the wire-format type name for this resource.
-    pub fn type_name(&self) -> &'static str {
+    pub fn type_name(&self) -> &str {
         match self {
             Self::NetworkEvent(_) | Self::NetworkUpdate(_) => "network-event",
             Self::ConsoleMessage(_) => "console-message",
             Self::ErrorMessage(_) => "error-message",
             Self::DocumentEvent(_) => "document-event",
+            Self::Destroyed { resource_type, .. } => resource_type.as_str(),
         }
     }
 }
@@ -94,6 +108,14 @@ mod tests {
         assert_eq!(
             Resource::DocumentEvent(serde_json::json!({"type": "dom-complete"})).type_name(),
             "document-event"
+        );
+        assert_eq!(
+            Resource::Destroyed {
+                resource_type: "network-event".into(),
+                resource_id: "42".into(),
+            }
+            .type_name(),
+            "network-event"
         );
     }
 }

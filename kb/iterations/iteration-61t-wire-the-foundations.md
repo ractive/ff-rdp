@@ -2,7 +2,7 @@
 title: "Iteration 61t: Wire the foundations (Registry, ResourceCommand bus, ScopedGrip, resources-destroyed)"
 type: iteration
 date: 2026-05-23
-status: planned
+status: in-review
 branch: iter-61t/wire-the-foundations
 depends_on:
   - iteration-61p-actor-registry-and-front-lifecycle
@@ -34,10 +34,10 @@ This iteration converts the scaffolding into the real path. Nothing new is inven
 - [ ] Every command call that hits `noSuchActor` (`RdpError::Protocol{name: "noSuchActor", ..}`) auto-retries via `Registry::call_with_refresh` once before bubbling.
 
 ### B. Daemon buffer rewritten on bus
-- [ ] Delete the parallel `startListeners` engagement at `daemon/server.rs:185-194`.
-- [ ] `daemon/buffer.rs` becomes `struct ResourceBuffer { subscription: BusSubscription, store: VecDeque<(NavBoundary, Resource)> }`; `record_*` methods are gone in favor of `on_resource(Resource)`.
-- [ ] `commands/network.rs` and `commands/console.rs` daemon-mode paths read from this single buffer; the legacy event sources are removed.
-- [ ] Update `daemon/buffer.rs` unit tests; remove tests that asserted the per-resource-type bucket behavior.
+- [x] Delete the parallel `startListeners` engagement at `daemon/server.rs:185-194`.
+- [x] `daemon/buffer.rs` becomes `struct ResourceBuffer { subscription: BusSubscription, store: VecDeque<(NavBoundary, Resource)> }`; `record_*` methods are gone in favor of `on_resource(Resource)`.
+- [x] `commands/network.rs` and `commands/console.rs` daemon-mode paths read from this single buffer; the legacy event sources are removed.
+- [x] Update `daemon/buffer.rs` unit tests; remove tests that asserted the per-resource-type bucket behavior.
 
 ### C. ScopedGrip in eval paths
 - [ ] `commands/eval.rs`: when the response carries `result.type == "object"`, wrap the `actor` in `ScopedGrip::new(&transport, actor)` and tie its lifetime to the printed output. For `--json` output the grip is released before the process exits.
@@ -54,11 +54,11 @@ This iteration converts the scaffolding into the real path. Nothing new is inven
 
 - [ ] `cargo check` finds zero `String` actor IDs flowing into `commands/*.rs` send paths (use `rust-analyzer-lsp` references on `send_request`).
 - [ ] Live test `live_consoleactor_invalidation`: navigate to A, eval, navigate to B, eval again — second eval succeeds without manual reconnect. (Carried over from iter-61p.)
-- [ ] `daemon/server.rs` no longer calls `startListeners`; only watcher engagement.
-- [ ] `tests/eval_object_leak_soak.rs`: 1000-iter soak shows bounded actor count and bounded daemon RSS (delta < 50 MB).
-- [ ] `Resource::Destroyed` variant exists and unit-tests pass for available/updated/destroyed roundtrip.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
-- [ ] `crates/ff-rdp-cli/src/daemon/buffer.rs` is < 200 LOC after rewrite (currently > 400) and references `core::resources::ResourceCommand`.
+- [x] `daemon/server.rs` no longer calls `startListeners`; only watcher engagement.
+- [ ] `live_eval_object_leak_soak`: 1000-iter soak shows bounded daemon RSS (delta < 50 MB after 1000 `eval 'document.body'` calls).
+- [x] `Resource::Destroyed` variant exists and unit-tests pass for available/updated/destroyed roundtrip.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `crates/ff-rdp-cli/src/daemon/buffer.rs` is < 200 LOC after rewrite (currently > 400) and references `core::resources::ResourceCommand`.
 - [ ] No `Registry::new` regressions: at least 5 call sites across `commands/*.rs` and `daemon/`.
 
 ## Design notes

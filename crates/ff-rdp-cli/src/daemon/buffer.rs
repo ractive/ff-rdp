@@ -1,342 +1,308 @@
 use std::collections::{HashMap, VecDeque};
 
-use serde_json::Value;
+use ff_rdp_core::{
+    ConsoleResource, NetworkResource, NetworkResourceUpdate, Resource, SubscriptionId,
+};
+use serde_json::{Value, json};
 
-const MAX_EVENTS_PER_TYPE: usize = 10_000;
+const MAX_EVENTS: usize = 50_000;
+const MAX_BOUNDARIES: usize = 1_000;
 
-/// A navigation boundary marker inserted into the network buffer when a new
-/// top-level navigation is detected.
-///
-/// Each navigation gets a monotonically-increasing sequence number.  The
-/// sequence doubles as the index into the `boundaries` vector in
-/// [`EventBuffer`] (sequence 0 = first navigation recorded, etc.).
+/// A navigation boundary recorded when `tabNavigated` fires.
 #[derive(Debug, Clone)]
 pub(crate) struct NavBoundary {
-    /// Monotonically-increasing navigation index (0-based).
     pub sequence: u64,
-    /// The top-level document URL at the time the boundary was recorded.
     pub url: String,
-    /// The offset into the `"network-event"` bucket at which this navigation
-    /// started.  All entries at indices >= `start_index` belong to this
-    /// navigation; entries before belong to earlier navigations.
-    pub start_index: usize,
+    /// Insertion index of the first store entry belonging to this navigation.
+    pub store_start: usize,
 }
 
-/// A ring-buffer-style event store keyed by resource type.
-///
-/// Each resource type has an independent cap of `MAX_EVENTS_PER_TYPE` entries.
-/// When the cap is reached the oldest event is evicted before inserting the new one,
-/// so the buffer never grows beyond the limit.
-///
-/// Internally uses `VecDeque` so front-eviction is O(1) instead of O(n).
-///
-/// Navigation boundaries are tracked separately (see [`NavBoundary`]).  The
-/// boundaries list grows without bound (capped at 1000 entries) so that
-/// `--since -2` etc. can look back into history.
-pub(crate) struct EventBuffer {
-    inner: HashMap<String, VecDeque<Value>>,
-    /// Navigation boundaries in order of insertion (oldest first).
+struct Entry {
+    resource_type: String,
+    resource_id: Option<String>,
+    data: Value,
+}
+
+/// Single-queue resource buffer populated from the `ResourceCommand` bus.
+pub(crate) struct ResourceBuffer {
+    #[allow(dead_code)]
+    subscription: SubscriptionId,
+    store: VecDeque<Entry>,
     boundaries: Vec<NavBoundary>,
-    /// Total number of `network-event` entries ever inserted (before eviction).
-    /// Used to derive `start_index` for each boundary.
-    network_total_inserted: usize,
-    /// Number of `network-event` entries that have been evicted (for index arithmetic).
-    network_evicted: usize,
-    /// Monotonically-increasing counter for navigation boundary sequences.
-    /// Tracked independently of `boundaries.len()` so sequence numbers remain
-    /// unique even after the `MAX_BOUNDARIES` ring-buffer truncation kicks in.
     next_nav_sequence: u64,
+    total_inserted: usize,
+    total_evicted: usize,
 }
 
-const MAX_BOUNDARIES: usize = 1000;
-
-impl EventBuffer {
-    pub(crate) fn new() -> Self {
+impl ResourceBuffer {
+    pub(crate) fn new(subscription: SubscriptionId) -> Self {
         Self {
-            inner: HashMap::new(),
+            subscription,
+            store: VecDeque::new(),
             boundaries: Vec::new(),
-            network_total_inserted: 0,
-            network_evicted: 0,
             next_nav_sequence: 0,
+            total_inserted: 0,
+            total_evicted: 0,
         }
     }
 
-    /// Insert an event for `resource_type`.  If the bucket is already at
-    /// `MAX_EVENTS_PER_TYPE` the oldest entry is evicted first (O(1)).
-    pub(crate) fn insert(&mut self, resource_type: &str, event: Value) {
-        let bucket = self.inner.entry(resource_type.to_owned()).or_default();
-        if resource_type == "network-event" {
-            if bucket.len() >= MAX_EVENTS_PER_TYPE {
-                bucket.pop_front();
-                self.network_evicted = self.network_evicted.saturating_add(1);
+    /// Ingest a typed resource; `Destroyed` prunes, all others append.
+    pub(crate) fn on_resource(&mut self, r: &Resource) {
+        match r {
+            Resource::Destroyed {
+                resource_type,
+                resource_id,
+            } => {
+                if let Some(pos) = self.store.iter().position(|e| {
+                    &e.resource_type == resource_type
+                        && e.resource_id.as_deref() == Some(resource_id.as_str())
+                }) {
+                    self.store.remove(pos);
+                }
             }
-            self.network_total_inserted = self.network_total_inserted.saturating_add(1);
-        } else if bucket.len() >= MAX_EVENTS_PER_TYPE {
-            bucket.pop_front();
+            Resource::NetworkEvent(n) => self.push(
+                "network-event",
+                Some(n.resource_id.to_string()),
+                net_to_val(n),
+            ),
+            Resource::NetworkUpdate(u) => self.push(
+                "network-event",
+                Some(u.resource_id.to_string()),
+                update_to_val(u),
+            ),
+            Resource::ConsoleMessage(c) => {
+                let rid = c.resource_id.map(|id| id.to_string());
+                self.push("console-message", rid, console_to_val(c));
+            }
+            Resource::ErrorMessage(c) => {
+                let rid = c.resource_id.map(|id| id.to_string());
+                self.push("error-message", rid, console_to_val(c));
+            }
+            Resource::DocumentEvent(v) => self.push("document-event", None, v.clone()),
         }
-        bucket.push_back(event);
     }
 
-    /// Record a navigation boundary for the `network-event` bucket.
-    ///
-    /// `url` is the top-level document URL of the new page.  The sequence
-    /// number is assigned from a monotonic counter (0, 1, 2, …), independent
-    /// of the bounded `boundaries` ring buffer, so it never wraps or repeats.
-    ///
-    /// Returns the assigned sequence number.
+    fn push(&mut self, resource_type: &str, resource_id: Option<String>, data: Value) {
+        if self.store.len() >= MAX_EVENTS {
+            self.store.pop_front();
+            self.total_evicted = self.total_evicted.saturating_add(1);
+        }
+        self.store.push_back(Entry {
+            resource_type: resource_type.to_owned(),
+            resource_id,
+            data,
+        });
+        self.total_inserted = self.total_inserted.saturating_add(1);
+    }
+
+    /// Insert a raw JSON value (for `store-events` IPC back-compat).
+    pub(crate) fn insert_raw(&mut self, resource_type: &str, data: Value) {
+        let resource_id = data.get("resourceId").map(|v| match v {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        });
+        self.push(resource_type, resource_id, data);
+    }
+
+    /// Record a navigation boundary.  Returns the assigned sequence number.
     pub(crate) fn record_nav_boundary(&mut self, url: String) -> u64 {
         let sequence = self.next_nav_sequence;
         self.next_nav_sequence = self.next_nav_sequence.saturating_add(1);
-        let start_index = self.network_total_inserted;
         if self.boundaries.len() >= MAX_BOUNDARIES {
             self.boundaries.remove(0);
         }
         self.boundaries.push(NavBoundary {
             sequence,
             url,
-            start_index,
+            store_start: self.total_inserted,
         });
         sequence
     }
 
-    /// Return a snapshot of all recorded navigation boundaries.
-    #[allow(dead_code)]
-    pub(crate) fn nav_boundaries(&self) -> &[NavBoundary] {
-        &self.boundaries
-    }
-
-    /// Drain events for `resource_type` that occurred after the boundary
-    /// identified by `since_nav_index`.
-    ///
-    /// - `since_nav_index == 0` (or `None`) returns the full buffer (same as [`drain`]).
-    /// - `since_nav_index == -1` returns only events from the most-recent navigation.
-    /// - `since_nav_index == -2` returns events from the second-most-recent, etc.
-    ///
-    /// When `resource_type` is not `"network-event"` or there are no boundaries,
-    /// falls back to draining the full bucket.
-    ///
-    /// Returns `(events, boundary_used)` where `boundary_used` is `Some` when a
-    /// boundary filtered the result.
+    /// Drain entries for `resource_type`, optionally filtered by nav boundary.
     pub(crate) fn drain_since(
         &mut self,
         resource_type: &str,
         since_nav_index: i64,
     ) -> (Vec<Value>, Option<NavBoundary>) {
-        // Index 0 / "all" → no boundary filtering.
-        if since_nav_index == 0 || resource_type != "network-event" || self.boundaries.is_empty() {
-            return (self.drain(resource_type), None);
+        let boundary = resolve_boundary(&self.boundaries, since_nav_index);
+        let skip = boundary
+            .as_ref()
+            .map_or(0, |b| b.store_start.saturating_sub(self.total_evicted));
+
+        let mut results = Vec::new();
+        let mut remaining = VecDeque::new();
+        for (pos, entry) in self.store.drain(..).enumerate() {
+            if entry.resource_type == resource_type && pos >= skip {
+                results.push(entry.data);
+            } else {
+                remaining.push_back(entry);
+            }
         }
-
-        // Resolve negative index relative to the end of the boundaries list.
-        let n_boundaries = self.boundaries.len();
-        let resolved: Option<usize> = if since_nav_index < 0 {
-            // -1 → last, -2 → second-to-last, etc.
-            let offset = usize::try_from(-since_nav_index).unwrap_or(usize::MAX);
-            n_boundaries.checked_sub(offset)
-        } else {
-            // 1-based positive index (uncommon path)
-            let idx = usize::try_from(since_nav_index).unwrap_or(usize::MAX);
-            idx.checked_sub(1)
-        };
-
-        let Some(resolved_idx) = resolved else {
-            // Asked for a boundary further back than we have — return all.
-            return (self.drain(resource_type), None);
-        };
-
-        if resolved_idx >= n_boundaries {
-            // Out-of-range positive index — return all.
-            return (self.drain(resource_type), None);
-        }
-
-        let boundary = self.boundaries[resolved_idx].clone();
-        // How many events currently in the buffer are from before this boundary?
-        let current_len = self.inner.get(resource_type).map_or(0, VecDeque::len);
-        let before_boundary = boundary.start_index;
-
-        // Events before the boundary that are still in the buffer:
-        // = total_inserted_before_boundary - evicted
-        let inserted_before = before_boundary.saturating_sub(self.network_evicted);
-        let skip = inserted_before.min(current_len);
-
-        let bucket = self.inner.entry(resource_type.to_owned()).or_default();
-        let events: Vec<Value> = bucket.drain(skip..).collect();
-
-        (events, Some(boundary))
+        self.store = remaining;
+        (results, boundary)
     }
 
-    /// Drain all events for `resource_type` and return them in insertion order.
-    ///
-    /// The bucket is left empty (but still present in the map).  Returns an
-    /// empty `Vec` if the type is unknown.
     pub(crate) fn drain(&mut self, resource_type: &str) -> Vec<Value> {
-        match self.inner.get_mut(resource_type) {
-            Some(bucket) => std::mem::take(bucket).into_iter().collect(),
-            None => Vec::new(),
-        }
+        self.drain_since(resource_type, 0).0
     }
 
-    /// Return the number of buffered events per resource type, omitting empty
-    /// buckets.
     pub(crate) fn sizes(&self) -> HashMap<String, usize> {
-        self.inner
-            .iter()
-            .filter(|(_, v)| !v.is_empty())
-            .map(|(k, v)| (k.clone(), v.len()))
-            .collect()
-    }
-
-    /// Returns `true` when every bucket is empty (or no buckets exist).
-    #[allow(dead_code)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.inner.values().all(VecDeque::is_empty)
+        let mut map = HashMap::new();
+        for e in &self.store {
+            *map.entry(e.resource_type.clone()).or_insert(0) += 1;
+        }
+        map
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+fn resolve_boundary(boundaries: &[NavBoundary], since_nav_index: i64) -> Option<NavBoundary> {
+    if since_nav_index == 0 || boundaries.is_empty() {
+        return None;
+    }
+    let n = boundaries.len();
+    let idx = if since_nav_index < 0 {
+        n.checked_sub(usize::try_from(-since_nav_index).unwrap_or(usize::MAX))?
+    } else {
+        let i = usize::try_from(since_nav_index).unwrap_or(usize::MAX);
+        i.checked_sub(1).filter(|&i| i < n)?
+    };
+    boundaries.get(idx).cloned()
+}
+
+fn net_to_val(n: &NetworkResource) -> Value {
+    json!({
+        "actor": n.actor.as_ref(), "resourceId": n.resource_id,
+        "method": n.method, "url": n.url, "isXHR": n.is_xhr,
+        "causeType": n.cause_type, "startedDateTime": n.started_date_time,
+        "timeStamp": n.timestamp,
+    })
+}
+
+fn update_to_val(u: &NetworkResourceUpdate) -> Value {
+    // Build the update object inline using Value::Object insertions.
+    let mut m = serde_json::Map::new();
+    m.insert("resourceId".into(), json!(u.resource_id));
+    let opt_str = [
+        ("status", u.status.as_deref()),
+        ("httpVersion", u.http_version.as_deref()),
+        ("mimeType", u.mime_type.as_deref()),
+        ("remoteAddress", u.remote_address.as_deref()),
+        ("securityState", u.security_state.as_deref()),
+    ];
+    for (k, v) in opt_str {
+        if let Some(v) = v {
+            m.insert(k.into(), json!(v));
+        }
+    }
+    let opt_u64 = [
+        ("totalTime", u.total_time),
+        ("contentSize", u.content_size),
+        ("transferredSize", u.transferred_size),
+    ];
+    for (k, v) in opt_u64 {
+        if let Some(v) = v {
+            m.insert(k.into(), json!(v));
+        }
+    }
+    if let Some(v) = u.from_cache {
+        m.insert("fromCache".into(), json!(v));
+    }
+    json!({ "resourceUpdates": [Value::Object(m)] })
+}
+
+fn console_to_val(c: &ConsoleResource) -> Value {
+    let mut v = json!({
+        "level": c.level, "message": c.message, "source": c.source,
+        "lineNumber": c.line, "columnNumber": c.column, "timeStamp": c.timestamp,
+    });
+    if let Some(rid) = c.resource_id {
+        v["resourceId"] = json!(rid);
+    }
+    v
+}
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
+    use ff_rdp_core::ActorId;
 
-    fn ev(n: u64) -> Value {
-        json!({ "seq": n })
+    fn sub() -> SubscriptionId {
+        // SAFETY: SubscriptionId is a newtype over u64; same size and alignment.
+        unsafe { std::mem::transmute(1_u64) }
+    }
+
+    fn net(id: u64, url: &str) -> Resource {
+        Resource::NetworkEvent(NetworkResource {
+            actor: ActorId::from("conn0/n1"),
+            method: "GET".into(),
+            url: url.into(),
+            is_xhr: false,
+            cause_type: "document".into(),
+            started_date_time: "2026-01-01T00:00:00Z".into(),
+            timestamp: 0.0,
+            resource_id: id,
+        })
     }
 
     #[test]
-    fn new_buffer_is_empty() {
-        let buf = EventBuffer::new();
-        assert!(buf.is_empty());
-        assert!(buf.sizes().is_empty());
+    fn append_and_drain() {
+        let mut buf = ResourceBuffer::new(sub());
+        buf.on_resource(&net(1, "https://a.com"));
+        buf.on_resource(&net(2, "https://b.com"));
+        let events = buf.drain("network-event");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["url"], "https://a.com");
+        assert_eq!(events[1]["url"], "https://b.com");
+        assert!(buf.drain("network-event").is_empty());
     }
 
     #[test]
-    fn insert_and_drain_roundtrip() {
-        let mut buf = EventBuffer::new();
-        buf.insert("network", ev(1));
-        buf.insert("network", ev(2));
-        buf.insert("css", ev(3));
-
-        assert!(!buf.is_empty());
-
-        let net = buf.drain("network");
-        assert_eq!(net, vec![ev(1), ev(2)]);
-
-        // After draining network, only css remains.
-        assert!(!buf.is_empty());
-
-        let css = buf.drain("css");
-        assert_eq!(css, vec![ev(3)]);
-
-        assert!(buf.is_empty());
+    fn destroyed_prunes_store() {
+        let mut buf = ResourceBuffer::new(sub());
+        buf.on_resource(&net(1, "https://a.com"));
+        buf.on_resource(&net(2, "https://b.com"));
+        buf.on_resource(&Resource::Destroyed {
+            resource_type: "network-event".into(),
+            resource_id: "1".into(),
+        });
+        let events = buf.drain("network-event");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["url"], "https://b.com");
     }
 
     #[test]
-    fn drain_clears_bucket() {
-        let mut buf = EventBuffer::new();
-        buf.insert("network", ev(1));
-        let first = buf.drain("network");
-        assert_eq!(first.len(), 1);
-
-        // Draining again must return empty.
-        let second = buf.drain("network");
-        assert!(second.is_empty());
+    fn drain_since_filters_by_nav_boundary() {
+        let mut buf = ResourceBuffer::new(sub());
+        buf.on_resource(&net(1, "https://before.com"));
+        buf.record_nav_boundary("https://after.com".into());
+        buf.on_resource(&net(2, "https://after.com/page"));
+        let (events, boundary) = buf.drain_since("network-event", -1);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["url"], "https://after.com/page");
+        assert!(boundary.is_some());
     }
 
     #[test]
-    fn drain_unknown_type_returns_empty() {
-        let mut buf = EventBuffer::new();
-        let result = buf.drain("nonexistent");
-        assert!(result.is_empty());
+    fn drain_since_zero_returns_all() {
+        let mut buf = ResourceBuffer::new(sub());
+        buf.on_resource(&net(1, "https://a.com"));
+        buf.record_nav_boundary("https://b.com".into());
+        buf.on_resource(&net(2, "https://b.com/page"));
+        let (events, boundary) = buf.drain_since("network-event", 0);
+        assert_eq!(events.len(), 2);
+        assert!(boundary.is_none());
     }
 
     #[test]
-    fn eviction_at_cap() {
-        let mut buf = EventBuffer::new();
-
-        // Fill to exactly the cap.
-        for i in 0..MAX_EVENTS_PER_TYPE {
-            buf.insert("t", ev(i as u64));
-        }
-
-        let sizes = buf.sizes();
-        assert_eq!(sizes["t"], MAX_EVENTS_PER_TYPE);
-
-        // Insert one more — oldest (seq=0) must be gone.
-        buf.insert("t", ev(MAX_EVENTS_PER_TYPE as u64));
-
-        let events = buf.drain("t");
-        assert_eq!(events.len(), MAX_EVENTS_PER_TYPE);
-        assert_eq!(events[0], ev(1), "oldest event should have been evicted");
-        assert_eq!(
-            events[MAX_EVENTS_PER_TYPE - 1],
-            ev(MAX_EVENTS_PER_TYPE as u64),
-            "newest event should be last"
+    fn insert_raw_back_compat() {
+        let mut buf = ResourceBuffer::new(sub());
+        buf.insert_raw(
+            "network-event",
+            json!({"resourceId": 99, "url": "https://x.com"}),
         );
-    }
-
-    #[test]
-    fn sizes_only_includes_non_empty() {
-        let mut buf = EventBuffer::new();
-        buf.insert("a", ev(1));
-        buf.insert("b", ev(2));
-        buf.insert("b", ev(3));
-
-        let sizes = buf.sizes();
-        assert_eq!(sizes.len(), 2);
-        assert_eq!(sizes["a"], 1);
-        assert_eq!(sizes["b"], 2);
-
-        // After draining "a" it must disappear from sizes.
-        buf.drain("a");
-        let sizes2 = buf.sizes();
-        assert!(!sizes2.contains_key("a"));
-        assert_eq!(sizes2["b"], 2);
-    }
-
-    #[test]
-    fn record_nav_boundary_returns_monotonic_sequence() {
-        let mut buf = EventBuffer::new();
-        let s0 = buf.record_nav_boundary("https://a/".into());
-        let s1 = buf.record_nav_boundary("https://b/".into());
-        let s2 = buf.record_nav_boundary("https://c/".into());
-        assert_eq!((s0, s1, s2), (0, 1, 2));
-        assert_eq!(buf.nav_boundaries().last().map(|b| b.sequence), Some(2));
-    }
-
-    #[test]
-    fn nav_boundary_sequence_does_not_wrap_after_cap() {
-        // Past the MAX_BOUNDARIES cap, sequences must keep incrementing even
-        // though the boundaries vector is truncated from the front.
-        let mut buf = EventBuffer::new();
-        for i in 0..(MAX_BOUNDARIES + 5) {
-            let seq = buf.record_nav_boundary(format!("https://example/{i}"));
-            assert_eq!(
-                usize::try_from(seq).ok(),
-                Some(i),
-                "sequence should equal insertion index"
-            );
-        }
-        // Ring buffer stays capped.
-        assert_eq!(buf.nav_boundaries().len(), MAX_BOUNDARIES);
-        // The most recent boundary's sequence reflects the total insertions.
-        let last_seq = buf.nav_boundaries().last().map(|b| b.sequence);
-        assert_eq!(last_seq, Some((MAX_BOUNDARIES + 4) as u64));
-        // The oldest retained boundary is not sequence 0 — it was evicted.
-        let first_seq = buf.nav_boundaries().first().map(|b| b.sequence);
-        assert_eq!(first_seq, Some(5_u64));
-    }
-
-    #[test]
-    fn is_empty_after_all_drained() {
-        let mut buf = EventBuffer::new();
-        buf.insert("x", ev(0));
-        assert!(!buf.is_empty());
-        buf.drain("x");
-        assert!(buf.is_empty());
+        let events = buf.drain("network-event");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["url"], "https://x.com");
     }
 }

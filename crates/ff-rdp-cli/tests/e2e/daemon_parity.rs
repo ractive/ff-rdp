@@ -146,8 +146,9 @@ fn navigate_with_network_daemon_server() -> MockRdpServer {
     MockRdpServer::new()
         // Both daemon startup and CLI-forwarded call use the same Fixed handler.
         .on("listTabs", load_fixture("list_tabs_response.json"))
-        // Daemon startup now calls getTarget to obtain the consoleActor and
-        // then startListeners to activate console event delivery.
+        // getTarget and startListeners are no longer called by the daemon
+        // (Theme B removed the startListeners engagement); kept as handlers
+        // so the mock server can respond if any legacy path still requests them.
         .on("getTarget", load_fixture("get_target_response.json"))
         .on(
             "startListeners",
@@ -185,8 +186,9 @@ fn navigate_with_network_daemon_server() -> MockRdpServer {
 fn network_daemon_server() -> MockRdpServer {
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
-        // Daemon startup now calls getTarget to obtain the consoleActor and
-        // then startListeners to activate console event delivery.
+        // getTarget and startListeners are no longer called by the daemon
+        // (Theme B removed the startListeners engagement); kept as handlers
+        // so the mock server can respond if any legacy path still requests them.
         .on("getTarget", load_fixture("get_target_response.json"))
         .on(
             "startListeners",

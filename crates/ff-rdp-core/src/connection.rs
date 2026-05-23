@@ -95,6 +95,14 @@ impl RdpConnection {
         self.firefox_version = version;
     }
 
+    /// Consume this connection and return the underlying [`RdpTransport`].
+    ///
+    /// The Firefox version metadata is discarded; callers that need it should
+    /// call [`firefox_version`](Self::firefox_version) before calling this.
+    pub fn into_transport(self) -> RdpTransport {
+        self.transport
+    }
+
     fn validate_greeting(greeting: &Value) -> Result<(), ProtocolError> {
         let app_type = greeting
             .get("applicationType")
