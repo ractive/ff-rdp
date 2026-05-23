@@ -92,10 +92,10 @@ mod tests {
 
     #[test]
     fn full_string_rejects_length_above_max_fetch_with_zero_allocation() {
-        // u64::MAX is far above MAX_FETCH; the error must be returned before
-        // any allocation or network I/O — demonstrated by using a port that
-        // nothing is listening on (no connect attempt should be made either,
-        // since we short-circuit in full_string before calling substring).
+        // Oversized lengths must be rejected before `full_string` issues any
+        // RDP substring request.  The transport connects to a listener that
+        // accepts but never reads/writes — if the guard fired late we would
+        // see a write or read attempt before the InvalidPacket error.
         use std::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -119,7 +119,9 @@ mod tests {
     #[test]
     fn full_string_rejects_u64_max_with_zero_allocation() {
         // u64::MAX cannot even be represented as usize on 32-bit platforms
-        // (usize::try_from will fail).  The check must fire before any alloc.
+        // (usize::try_from will fail).  The guard must reject the length
+        // before `full_string` issues any RDP substring request to the
+        // accept-only listener below.
         use std::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();

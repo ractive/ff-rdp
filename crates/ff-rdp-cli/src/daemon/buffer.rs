@@ -122,7 +122,13 @@ impl ResourceBuffer {
         // Truncate the URL to bound memory usage and prevent very long URLs
         // from being stored in the boundary log.
         let url = if url.len() > MAX_NAV_URL_LEN {
-            url.chars().take(MAX_NAV_URL_LEN).collect()
+            // Cut at a UTF-8 char boundary at or before MAX_NAV_URL_LEN bytes
+            // so the byte-length bound is actually honored even for non-ASCII URLs.
+            let mut end = MAX_NAV_URL_LEN;
+            while end > 0 && !url.is_char_boundary(end) {
+                end -= 1;
+            }
+            url[..end].to_owned()
         } else {
             url
         };

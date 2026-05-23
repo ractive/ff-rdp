@@ -24,8 +24,9 @@ use super::registry::{self, DaemonInfo};
 /// continue with potentially inconsistent data than to propagate a panic
 /// that would crash the entire daemon.
 ///
-/// Logs a `tracing::error!` **once** (guarded by `POISON_LOGGED`) so that
-/// the incident is visible in traces without flooding logs on every call.
+/// Logs a `tracing::error!` **once per call site** (guarded by a
+/// macro-local `POISON_LOGGED` static) so that the incident is visible in
+/// traces without flooding logs on every call.
 macro_rules! lock_or_recover {
     ($mutex:expr) => {{
         static POISON_LOGGED: std::sync::atomic::AtomicBool =
@@ -110,14 +111,20 @@ impl RefStore {
     /// Register a batch of `(id, resolver)` pairs.  Consumes the input so we
     /// avoid cloning each string into the storage map.
     ///
-    /// Silently drops the entire batch when the store is full
-    /// (len >= [`Self::MAX_REFS`]) or when any resolver string exceeds 4096
-    /// bytes, to bound memory usage and prevent injection of oversized payloads.
+    /// - Returns early without inserting anything when the store is already full
+    ///   (len >= [`Self::MAX_REFS`]).
+    /// - Individual entries whose resolver string exceeds 4096 bytes are
+    ///   silently skipped.
+    /// - The [`Self::MAX_REFS`] cap is enforced per-insert so a single batch
+    ///   cannot grow the store beyond the cap.
     fn register(&mut self, entries: Vec<(String, String)>) {
         if self.refs.len() >= Self::MAX_REFS {
             return;
         }
         for (id, resolver) in entries {
+            if self.refs.len() >= Self::MAX_REFS {
+                break;
+            }
             if resolver.len() > 4096 {
                 continue;
             }

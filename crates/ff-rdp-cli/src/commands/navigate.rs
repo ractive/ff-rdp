@@ -1363,9 +1363,10 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
 
-        // Spawn a server that sends many rapid dom-loading events but never
-        // sends dom-complete.  The events will flood the receiver channel so
-        // the old (post-drain) deadline check could be starved.
+        // Spawn a server that only sends the greeting and then idles, so
+        // every transport recv times out.  The dom-loading flood that
+        // exercises the deadline logic is pre-loaded into the mpsc channel
+        // below — the old (post-drain) deadline check could be starved by it.
         let server_handle = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let mut writer = stream.try_clone().unwrap();

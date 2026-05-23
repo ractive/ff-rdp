@@ -32,7 +32,7 @@ pub fn sanitize_for_terminal(s: &str) -> Cow<'_, str> {
         .map(|c| {
             // `is_ascii_control()` returns true for 0x00–0x1F and 0x7F.
             // We want to allow LF (0x0A) and TAB (0x09), so exclude those.
-            if c.is_ascii() && c != '\n' && c != '\t' && (c.is_ascii_control() || c == '\x7f') {
+            if c != '\n' && c != '\t' && c.is_ascii_control() {
                 '?'
             } else {
                 c
