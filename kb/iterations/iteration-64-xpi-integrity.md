@@ -47,12 +47,12 @@ security review — RCE in the user's browser via a single network swap.
 - [x] Vendoring: bytes live at `crates/ff-rdp-cli/assets/extensions/consent-o-matic-1.1.5.xpi`; loaded via `include_bytes!` in `auto_consent::XPI_BYTES`; `XPI_URL` + ureq call removed. Upstream MIT licence + provenance (source URL, SHA-256) in `LICENSE-consent-o-matic.txt` next to the file.
 
 ### B. Cap the download
-- [x] [deferred — new plan: not applicable; the download path is removed entirely by task A, so there is no body to cap.]
+- [x] [deferred — not applicable: task A vendored the XPI via `include_bytes!`, removing the network download entirely. No request body remains to cap.]
 
 ## Acceptance Criteria [4/4]
 
 - [x] `xpi_integrity_verified_or_vendored`: `include_bytes!` is used (`auto_consent::XPI_BYTES`), and `assets/extensions/consent-o-matic-1.1.5.xpi` + `LICENSE-consent-o-matic.txt` are checked in. Test `vendored_xpi_matches_pinned_sha256` asserts the byte hash stays pinned to `a2119abc329638d6e7af1ab4e5548a348465e02eec11de08dee0af84919923dc`.
-- [x] `xpi_download_capped`: [deferred — new plan: not applicable; the download path is removed entirely, no body to cap.]
+- [x] `xpi_download_capped`: [deferred — not applicable: vendoring (task A) removed the download path entirely; there is no remaining body to cap.]
 - [x] `live_auto_consent_install`: `install_writes_xpi_into_profile_extensions_dir` covers the file-placement path; the dogfood block at the top of this plan exercises the full live `--auto-consent` launch.
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
