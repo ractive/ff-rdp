@@ -1,8 +1,8 @@
 use serde_json::{Value, json};
 
 use crate::actor::actor_request;
-use crate::error::{ActorErrorKind, ProtocolError};
-use crate::transport::RdpTransport;
+use crate::error::ProtocolError;
+use crate::transport::{RdpTransport, recv_event_from, recv_reply_from};
 use crate::types::{ActorId, Grip};
 
 /// Result of a JavaScript evaluation.
@@ -132,29 +132,10 @@ impl WebConsoleActor {
         });
         transport.send(&request)?;
 
-        // Read packets until we get the direct reply from the console actor.
-        // The reply has no `type` field; push events (consoleAPICall, pageError,
-        // …) always do — skip them generically.
-        let immediate = loop {
-            let msg = transport.recv()?;
-            let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
-            if from == console_actor.as_ref() && msg.get("type").is_none() {
-                // Check for actor-level error response.
-                if let Some(error) = msg.get("error").and_then(Value::as_str) {
-                    return Err(ProtocolError::ActorError {
-                        actor: from.to_owned(),
-                        kind: ActorErrorKind::from_code(error),
-                        error: error.to_owned(),
-                        message: msg
-                            .get("message")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_owned(),
-                    });
-                }
-                break msg;
-            }
-        };
+        // The immediate ack is a reply (no `type` field) from the console
+        // actor; push events arriving in the gap are forwarded to the
+        // transport's event sink by `recv_reply_from`.
+        let immediate = recv_reply_from(transport, console_actor.as_ref())?;
 
         let result_id = immediate
             .get("resultID")
@@ -166,36 +147,31 @@ impl WebConsoleActor {
             })?
             .to_owned();
 
-        // Read messages until we find the evaluationResult with matching resultID.
-        // Safety: the underlying socket has a read timeout (set during connect), so
-        // this loop will eventually fail with a timeout error if Firefox stops responding.
-        loop {
-            let msg = transport.recv()?;
-            let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
-            let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
-
-            // Watch for navigation events that signal the eval result will never arrive.
-            // Only abort when the event originates from the evaluated console actor —
-            // unrelated actors on the same connection may emit similar events for tabs
-            // we don't care about.
-            if from == console_actor.as_ref()
-                && (msg_type == "tabNavigated" || msg_type == "willNavigate")
-            {
-                return Err(ProtocolError::EvalNavigatedDuringEval);
+        // Wait for the matching `evaluationResult`. The predicate also fires
+        // [`ProtocolError::EvalNavigatedDuringEval`] via a sentinel return when
+        // the page navigates away — we use a local control-flow flag because
+        // `recv_event_from` only signals "found it" via the predicate.
+        //
+        // Safety: the underlying socket has a read timeout (set during connect),
+        // so the helper will fail with a timeout if Firefox stops responding.
+        let mut nav_aborted = false;
+        let msg = recv_event_from(transport, console_actor.as_ref(), |m| {
+            let msg_type = m.get("type").and_then(Value::as_str).unwrap_or_default();
+            if msg_type == "tabNavigated" || msg_type == "willNavigate" {
+                nav_aborted = true;
+                return true;
             }
-
-            let msg_result_id = msg
+            let msg_result_id = m
                 .get("resultID")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            msg_type == "evaluationResult" && msg_result_id == result_id
+        })?;
 
-            if msg_type == "evaluationResult" && msg_result_id == result_id {
-                return Ok(Self::parse_eval_result(&msg));
-            }
-
-            // All other push events (consoleAPICall, pageError, tabListChanged, …)
-            // are silently discarded while waiting for the eval result.
+        if nav_aborted {
+            return Err(ProtocolError::EvalNavigatedDuringEval);
         }
+        Ok(Self::parse_eval_result(&msg))
     }
 
     fn parse_eval_result(msg: &Value) -> EvalResult {

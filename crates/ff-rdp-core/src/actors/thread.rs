@@ -2,7 +2,8 @@ use serde_json::Value;
 
 use crate::actor::actor_request;
 use crate::error::ProtocolError;
-use crate::transport::RdpTransport;
+use crate::transport::{RdpTransport, recv_event_from};
+use serde_json::json;
 
 /// Information about a loaded JavaScript/WASM source.
 #[derive(Debug, Clone)]
@@ -26,11 +27,25 @@ pub struct ThreadActor;
 
 impl ThreadActor {
     /// Attach to the thread actor, transitioning it from Detached to Paused.
+    ///
+    /// Per `kb/rdp/protocol/message-format.md` the `attach` reply has no `type`
+    /// field; the transition is announced separately via a `paused` event from
+    /// the thread actor. Older mock fixtures / legacy Firefox builds may emit
+    /// only the `paused` event without a preceding empty reply, so we wait for
+    /// the `paused` event using [`recv_event_from`] (which also tolerates a
+    /// real reply arriving first — it is silently skipped).
     pub fn attach(
         transport: &mut RdpTransport,
         thread_actor: &str,
     ) -> Result<Value, ProtocolError> {
-        actor_request(transport, thread_actor, "attach", None)
+        let request = json!({
+            "to": thread_actor,
+            "type": "attach",
+        });
+        transport.send(&request)?;
+        recv_event_from(transport, thread_actor, |m| {
+            m.get("type").and_then(Value::as_str) == Some("paused")
+        })
     }
 
     /// List all sources loaded in the thread.

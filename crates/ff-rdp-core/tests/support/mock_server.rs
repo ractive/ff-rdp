@@ -29,6 +29,10 @@ pub struct MockRdpServer {
     greeting: Value,
     /// Registered (method_type, response) pairs, matched in insertion order.
     handlers: Vec<(String, Value)>,
+    /// Optional follow-up packets queued per method; sent immediately after
+    /// the matching reply. One entry per `on_with_followup` registration; if
+    /// a method has multiple matches the followups are popped in order.
+    followups: Vec<(String, Value)>,
     /// Receiver end of the injection channel.  Packets placed here are written
     /// to the connected client between request polls.
     inject_rx: mpsc::Receiver<Value>,
@@ -49,6 +53,7 @@ impl MockRdpServer {
                 "traits": {}
             }),
             handlers: Vec::new(),
+            followups: Vec::new(),
             inject_rx,
             inject_tx,
         }
@@ -70,6 +75,17 @@ impl MockRdpServer {
     /// the first match wins.
     pub fn on(mut self, method: &str, response: Value) -> Self {
         self.handlers.push((method.to_owned(), response));
+        self
+    }
+
+    /// Register a handler whose reply is `response`, followed by an additional
+    /// push packet sent immediately after the reply.
+    ///
+    /// Useful for actors that reply with a typed-less ack and then emit a
+    /// typed event (e.g. `watchResources` → `resources-available-array`).
+    pub fn on_with_followup(mut self, method: &str, response: Value, followup: Value) -> Self {
+        self.handlers.push((method.to_owned(), response));
+        self.followups.push((method.to_owned(), followup));
         self
     }
 
@@ -100,7 +116,7 @@ impl MockRdpServer {
     ///
     /// Between request polls the server drains any packets queued via
     /// `MockServerHandle::inject_event` and writes them to the client.
-    pub fn serve_one(self) -> Vec<Value> {
+    pub fn serve_one(mut self) -> Vec<Value> {
         let (stream, _peer) = self.listener.accept().expect("accept");
 
         let mut writer = stream.try_clone().expect("try_clone");
@@ -154,6 +170,19 @@ impl MockRdpServer {
                     let json = serde_json::to_string(&reply).expect("response encode");
                     if writer.write_all(encode_frame(&json).as_bytes()).is_err() {
                         break;
+                    }
+
+                    // Pop & send a followup packet for this method, if any.
+                    if let Some(idx) = self.followups.iter().position(|(m, _)| m == method) {
+                        let (_, followup) = self.followups.remove(idx);
+                        let follow_json =
+                            serde_json::to_string(&followup).expect("followup encode");
+                        if writer
+                            .write_all(encode_frame(&follow_json).as_bytes())
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                 }
                 Err(ff_rdp_core::ProtocolError::RecvFailed(io_err))

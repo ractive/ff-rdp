@@ -2,7 +2,7 @@
 title: "Iteration 69: Reply-vs-event correctness + shared reply-loop helpers"
 type: iteration
 date: 2026-05-24
-status: planned
+status: in-review
 branch: iter-69/reply-vs-event
 depends_on:
   - iteration-61p-actor-registry-and-front-lifecycle
@@ -55,30 +55,30 @@ inherit the correct rule.
 ## Tasks
 
 ### A. Tighten reply matching
-- [ ] Change `actor.rs:62-68` to require `msg.get("type").is_none()`.
-- [ ] When a packet arrives that has the right `from` but is an event, route it through the existing event bus (`resources/command.rs` dispatcher) instead of dropping it.
-- [ ] Update the comment to cite the correct rule and link to `kb/rdp/protocol/message-format.md`.
+- [x] Change `actor.rs:62-68` to require `msg.get("type").is_none()`. (now lives in `transport::recv_reply_from`)
+- [x] When a packet arrives that has the right `from` but is an event, route it through the existing event bus (`resources/command.rs` dispatcher) instead of dropping it. (forwarded via `RdpTransport::set_event_sink`)
+- [x] Update the comment to cite the correct rule and link to `kb/rdp/protocol/message-format.md`.
 
 ### B. Shared helpers
-- [ ] Add `transport.rs::recv_reply_from(actor: &str) -> Result<Value>`.
-- [ ] Add `transport.rs::recv_event_from(actor: &str, mut predicate: impl FnMut(&Value) -> bool) -> Result<Value>`.
-- [ ] Migrate `actor_request` to `recv_reply_from`.
-- [ ] Migrate `actors/console.rs:138-157` (evaluate_js_async reply path) and `172-198` (evaluationResult event wait) to the helpers.
-- [ ] Audit other actor modules for similar open-coded loops and migrate.
+- [x] Add `transport.rs::recv_reply_from(actor: &str) -> Result<Value>`.
+- [x] Add `transport.rs::recv_event_from(actor: &str, mut predicate: impl FnMut(&Value) -> bool) -> Result<Value>`.
+- [x] Migrate `actor_request` to `recv_reply_from`.
+- [x] Migrate `actors/console.rs:138-157` (evaluate_js_async reply path) and `172-198` (evaluationResult event wait) to the helpers.
+- [x] Audit other actor modules for similar open-coded loops and migrate. (Thread::attach now uses `recv_event_from` for `paused`.)
 
 ### C. Error-code mapping
-- [ ] Extend `ActorErrorKind` in `crates/ff-rdp-core/src/error.rs:122-133` with the five new variants.
-- [ ] Update `is_transient` so `MissingParameter` and `BadParameterType` return `false` explicitly (currently true only by accident of falling into `Other`).
-- [ ] Add unit tests covering each new variant's parse path.
+- [x] Extend `ActorErrorKind` in `crates/ff-rdp-core/src/error.rs:122-133` with the five new variants. (added six: MissingParameter, BadParameterType, NotImplemented, WrongOrder, ProtocolError, UnknownError)
+- [x] Update `is_transient` so `MissingParameter` and `BadParameterType` return `false` explicitly (currently true only by accident of falling into `Other`).
+- [x] Add unit tests covering each new variant's parse path.
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [6/6]
 
-- [ ] `actor_request_routes_event_correctly`: feeding `[{from:A,type:"consoleAPICall",…}, {from:A,result:42}]` to a fake transport returns the second packet as the reply; the first is routed to the event channel.
-- [ ] `actor_request_rejects_typed_packet_as_reply`: a packet with `from == to && type == "paused"` is NOT picked as the reply.
-- [ ] `recv_reply_from_helper_extracted`: `actor_request` is a 3-line wrapper around `recv_reply_from`.
-- [ ] `console_evaluate_js_async_uses_helpers`: open-coded loops at `actors/console.rs:138-157, 172-198` are replaced by `recv_reply_from` / `recv_event_from` calls.
-- [ ] `actor_error_kind_terminal_for_param_errors`: `is_transient(ActorErrorKind::MissingParameter) == false`; same for `BadParameterType`.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `actor_request_routes_event_correctly`: feeding `[{from:A,type:"consoleAPICall",…}, {from:A,result:42}]` to a fake transport returns the second packet as the reply; the first is routed to the event channel. → `transport::tests::recv_reply_from_routes_event_to_sink`
+- [x] `actor_request_rejects_typed_packet_as_reply`: a packet with `from == to && type == "paused"` is NOT picked as the reply. → `transport::tests::recv_reply_from_rejects_typed_packet_as_reply`
+- [x] `recv_reply_from_helper_extracted`: `actor_request` is a 3-line wrapper around `recv_reply_from`. → see `crates/ff-rdp-core/src/actor.rs` `actor_request`
+- [x] `console_evaluate_js_async_uses_helpers`: open-coded loops at `actors/console.rs:138-157, 172-198` are replaced by `recv_reply_from` / `recv_event_from` calls. → see `crates/ff-rdp-core/src/actors/console.rs::evaluate_js_async`
+- [x] `actor_error_kind_terminal_for_param_errors`: `is_transient(ActorErrorKind::MissingParameter) == false`; same for `BadParameterType`. → `error::tests::actor_error_kind_terminal_for_param_errors`
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 

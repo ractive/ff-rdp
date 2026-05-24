@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 
-use crate::error::{ActorErrorKind, ProtocolError};
-use crate::transport::RdpTransport;
+use crate::error::ProtocolError;
+use crate::transport::{RdpTransport, recv_reply_from};
 
 /// Send a fire-and-forget request to a named actor without reading any reply.
 ///
@@ -45,47 +45,11 @@ pub fn actor_request(
 
     transport.send(&request)?;
 
-    // Read packets until we get one from the target actor, skipping
-    // unsolicited events (e.g. tabNavigated, tabListChanged) that Firefox
-    // may send between our request and the actual response.
-    //
-    // NOTE: We match only by `from == to` — NOT by requiring absence of a
-    // `type` field — because some Firefox actors return replies that include
-    // a `type` field (e.g. ThreadActor's `attach` returns `{"type":"paused"}`
-    // and WatcherActor's `watchResources` can be followed by push events that
-    // the mock server returns as the immediate reply fixture).  The new-protocol
-    // rule ("replies have no `type`") holds for the root and console actors but
-    // not for legacy thread-actor packets.
-    //
-    // For push-event–heavy actors (console, watcher) the individual call sites
-    // implement their own filtering on top of `actor_request`.
-    let response = loop {
-        let msg = transport.recv()?;
-        let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
-        if from == to {
-            break msg;
-        }
-    };
-
-    // Check for actor-level error responses.
-    if let Some(error) = response.get("error").and_then(Value::as_str) {
-        return Err(ProtocolError::ActorError {
-            actor: response
-                .get("from")
-                .and_then(Value::as_str)
-                .unwrap_or(to)
-                .to_owned(),
-            kind: ActorErrorKind::from_code(error),
-            error: error.to_owned(),
-            message: response
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned(),
-        });
-    }
-
-    Ok(response)
+    // Per `kb/rdp/protocol/message-format.md`: replies have no `type` field;
+    // any `from`+`type` packet is an event. `recv_reply_from` enforces that
+    // rule and routes stray events through the transport's event sink (see
+    // `RdpTransport::set_event_sink`) instead of mis-classifying them.
+    recv_reply_from(transport, to)
 }
 
 #[cfg(test)]
@@ -94,6 +58,7 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
 
     use super::*;
+    use crate::error::ActorErrorKind;
     use crate::transport::{encode_frame, recv_from};
 
     #[test]
@@ -164,7 +129,7 @@ mod tests {
                 message,
             } => {
                 assert_eq!(actor, "root");
-                assert_eq!(kind, ActorErrorKind::Other("unknownError".to_owned()));
+                assert_eq!(kind, ActorErrorKind::UnknownError);
                 assert_eq!(error, "unknownError");
                 assert_eq!(message, "something went wrong");
             }

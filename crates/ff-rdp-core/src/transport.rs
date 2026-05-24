@@ -1,10 +1,11 @@
 use std::io::{BufReader, Read, Write};
 use std::net::TcpStream;
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::error::ProtocolError;
+use crate::error::{ActorErrorKind, ProtocolError};
 
 // ---------------------------------------------------------------------------
 // Payload redactor
@@ -161,6 +162,14 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 pub struct RdpTransport {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
+    /// Optional sink for packets that arrive on the reply-channel but are in
+    /// fact server-pushed events (e.g. `consoleAPICall`, `tabNavigated`).
+    ///
+    /// Set via [`set_event_sink`](Self::set_event_sink); when unset, stray
+    /// events encountered by [`recv_reply_from`] are silently dropped (the
+    /// pre-iter-69 behaviour). See `kb/rdp/protocol/message-format.md` —
+    /// replies have no `type` field, every `from`+`type` packet is an event.
+    event_sink: Option<Sender<Value>>,
 }
 
 impl std::fmt::Debug for RdpTransport {
@@ -208,6 +217,7 @@ impl RdpTransport {
                     return Ok(Self {
                         reader,
                         writer: stream,
+                        event_sink: None,
                     });
                 }
                 Err(e) => {
@@ -250,7 +260,11 @@ impl RdpTransport {
     /// Useful in tests where you already have a connected `TcpStream`.
     #[cfg(test)]
     pub(crate) fn from_parts(reader: BufReader<TcpStream>, writer: TcpStream) -> Self {
-        Self { reader, writer }
+        Self {
+            reader,
+            writer,
+            event_sink: None,
+        }
     }
 
     /// Decompose into the underlying reader/writer halves.
@@ -258,6 +272,28 @@ impl RdpTransport {
     /// Called by [`split`](Self::split) to hand the halves to `FramedReader`/`FramedWriter`.
     fn into_parts(self) -> (BufReader<TcpStream>, TcpStream) {
         (self.reader, self.writer)
+    }
+
+    /// Install (or clear) the side-channel for stray events encountered by
+    /// [`recv_reply_from`].
+    ///
+    /// When a packet arrives with `from == actor` AND a `type` field (the
+    /// protocol marker for an event), the helper forwards it to this sender
+    /// instead of mis-classifying it as the reply. Pass `None` to disable.
+    ///
+    /// If the receiver has been dropped the event is silently discarded —
+    /// the reply loop must never block on a slow consumer.
+    pub fn set_event_sink(&mut self, sink: Option<Sender<Value>>) {
+        self.event_sink = sink;
+    }
+
+    /// Internal accessor used by [`recv_reply_from`] / [`recv_event_from`].
+    fn forward_event(&self, event: Value) {
+        if let Some(tx) = &self.event_sink {
+            // Ignore SendError: a dropped receiver just means the subscriber
+            // went away; the reply loop must continue regardless.
+            let _ = tx.send(event);
+        }
     }
 
     /// Split the transport into typed framed halves.
@@ -466,6 +502,76 @@ impl FramedWriter {
 // ---------------------------------------------------------------------------
 // Pure framing helpers — extracted so tests can exercise them without sockets.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Reply / event matching helpers (iter-69)
+// ---------------------------------------------------------------------------
+
+/// Read packets from `transport` until the **reply** from `actor` arrives.
+///
+/// A reply is identified per the Firefox RDP rule
+/// (`kb/rdp/protocol/message-format.md`): `from == actor` AND **no** `type`
+/// field. Any packet with `from == actor && type == Some(_)` is an event
+/// (e.g. `consoleAPICall`, `tabNavigated`); these are forwarded to the
+/// transport's event sink (see [`RdpTransport::set_event_sink`]) and the
+/// loop continues. Packets from other actors are ignored.
+///
+/// On `error`-bearing replies, the helper converts the packet into a
+/// [`ProtocolError::ActorError`] using [`ActorErrorKind::from_code`].
+pub fn recv_reply_from(transport: &mut RdpTransport, actor: &str) -> Result<Value, ProtocolError> {
+    loop {
+        let msg = transport.recv()?;
+        let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
+        if from != actor {
+            // Foreign packet — not ours to interpret; drop on the floor for
+            // now (callers that care set their own event_sink + use
+            // recv_event_from with a predicate).
+            continue;
+        }
+        if msg.get("type").is_some() {
+            // Right actor, but typed → this is a push event, not the reply.
+            // Forward to the side channel and keep waiting.
+            transport.forward_event(msg);
+            continue;
+        }
+        if let Some(error) = msg.get("error").and_then(Value::as_str) {
+            return Err(ProtocolError::ActorError {
+                actor: from.to_owned(),
+                kind: ActorErrorKind::from_code(error),
+                error: error.to_owned(),
+                message: msg
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned(),
+            });
+        }
+        return Ok(msg);
+    }
+}
+
+/// Read packets from `transport` until a packet `m` satisfies
+/// `from == actor && predicate(&m)`.
+///
+/// Designed for the `evaluationResult` / `tabNavigated` / `document-event`
+/// wait loops where the caller picks a specific event among the push stream
+/// from a known actor. Packets from other actors are skipped silently; events
+/// from `actor` that do not match the predicate are also skipped (they aren't
+/// forwarded to the event sink because the caller has explicit semantics for
+/// what counts as "their" event).
+pub fn recv_event_from(
+    transport: &mut RdpTransport,
+    actor: &str,
+    mut predicate: impl FnMut(&Value) -> bool,
+) -> Result<Value, ProtocolError> {
+    loop {
+        let msg = transport.recv()?;
+        let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
+        if from == actor && predicate(&msg) {
+            return Ok(msg);
+        }
+    }
+}
 
 /// Encode a JSON string as a Firefox RDP frame: `"{len}:{json}"`.
 pub fn encode_frame(json: &str) -> String {
@@ -872,7 +978,11 @@ mod tests {
 
         let writer = client_stream.try_clone().unwrap();
         let reader = BufReader::new(client_stream);
-        let mut transport = RdpTransport { reader, writer };
+        let mut transport = RdpTransport {
+            reader,
+            writer,
+            event_sink: None,
+        };
 
         let msg = serde_json::json!({"type": "listTabs", "to": "root"});
         transport.send(&msg).unwrap();
@@ -955,5 +1065,175 @@ mod tests {
             matches!(err, ProtocolError::BulkPacketUnsupported { length: 0, .. }),
             "expected BulkPacketUnsupported with length 0, got: {err:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // recv_reply_from / recv_event_from (iter-69)
+    // -----------------------------------------------------------------------
+
+    use std::io::Write as IoWrite;
+    use std::net::TcpListener;
+
+    fn make_transport_pair() -> (RdpTransport, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (server_stream, _) = listener.accept().unwrap();
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        (RdpTransport::from_parts(reader, writer), server_stream)
+    }
+
+    fn write_frame(stream: &TcpStream, msg: &Value) {
+        let json = serde_json::to_string(msg).unwrap();
+        IoWrite::write_all(
+            &mut stream.try_clone().unwrap(),
+            encode_frame(&json).as_bytes(),
+        )
+        .unwrap();
+    }
+
+    /// AC: `actor_request_routes_event_correctly` — a `consoleAPICall` from the
+    /// target actor arrives first; the reply (no `type`) arrives second. The
+    /// reply must be returned and the event must land on the event sink.
+    #[test]
+    fn recv_reply_from_routes_event_to_sink() {
+        let (mut transport, server) = make_transport_pair();
+        let (tx, rx) = std::sync::mpsc::channel::<Value>();
+        transport.set_event_sink(Some(tx));
+
+        let server_thread = std::thread::spawn(move || {
+            // First: a push event with the right `from` (the bug we are fixing
+            // misclassified this as the reply).
+            write_frame(
+                &server,
+                &serde_json::json!({
+                    "from": "actorA",
+                    "type": "consoleAPICall",
+                    "message": {"level": "log", "arguments": ["noise"]}
+                }),
+            );
+            // Second: the actual reply — same `from`, no `type`.
+            write_frame(
+                &server,
+                &serde_json::json!({"from": "actorA", "result": 42}),
+            );
+        });
+
+        let reply = recv_reply_from(&mut transport, "actorA").unwrap();
+        assert_eq!(reply["result"], 42);
+        assert!(reply.get("type").is_none(), "reply must not have a type");
+
+        let event = rx
+            .try_recv()
+            .expect("the misclassified event should be on the sink");
+        assert_eq!(event["type"], "consoleAPICall");
+
+        server_thread.join().unwrap();
+    }
+
+    /// AC: `actor_request_rejects_typed_packet_as_reply` — a typed packet
+    /// (e.g. `paused`) must NOT be returned even if `from == actor`.
+    #[test]
+    fn recv_reply_from_rejects_typed_packet_as_reply() {
+        let (mut transport, server) = make_transport_pair();
+
+        let server_thread = std::thread::spawn(move || {
+            // ThreadActor pseudo-`paused` event with the same `from`.
+            write_frame(
+                &server,
+                &serde_json::json!({"from": "thread1", "type": "paused", "why": {"type": "attached"}}),
+            );
+            // The real reply.
+            write_frame(
+                &server,
+                &serde_json::json!({"from": "thread1", "actor": "thread1"}),
+            );
+        });
+
+        let reply = recv_reply_from(&mut transport, "thread1").unwrap();
+        assert!(reply.get("type").is_none());
+        assert_eq!(reply["actor"], "thread1");
+
+        server_thread.join().unwrap();
+    }
+
+    /// `recv_reply_from` must skip foreign packets without forwarding them
+    /// (they aren't ours; the caller's event sink only sees packets from the
+    /// targeted actor).
+    #[test]
+    fn recv_reply_from_skips_foreign_packets() {
+        let (mut transport, server) = make_transport_pair();
+        let (tx, rx) = std::sync::mpsc::channel::<Value>();
+        transport.set_event_sink(Some(tx));
+
+        let server_thread = std::thread::spawn(move || {
+            write_frame(
+                &server,
+                &serde_json::json!({"from": "otherActor", "type": "tabListChanged"}),
+            );
+            write_frame(&server, &serde_json::json!({"from": "actorA", "ok": true}));
+        });
+
+        let reply = recv_reply_from(&mut transport, "actorA").unwrap();
+        assert_eq!(reply["ok"], true);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "foreign packets must NOT be forwarded to the event sink"
+        );
+        server_thread.join().unwrap();
+    }
+
+    /// `recv_reply_from` must surface actor `error` packets as
+    /// `ProtocolError::ActorError` with the typed kind.
+    #[test]
+    fn recv_reply_from_maps_error_packet() {
+        let (mut transport, server) = make_transport_pair();
+
+        let server_thread = std::thread::spawn(move || {
+            write_frame(
+                &server,
+                &serde_json::json!({
+                    "from": "actorA",
+                    "error": "missingParameter",
+                    "message": "required field 'url'"
+                }),
+            );
+        });
+
+        let err = recv_reply_from(&mut transport, "actorA").unwrap_err();
+        match err {
+            ProtocolError::ActorError { kind, message, .. } => {
+                assert_eq!(kind, ActorErrorKind::MissingParameter);
+                assert!(message.contains("required field 'url'"));
+            }
+            other => panic!("expected ActorError, got {other:?}"),
+        }
+        server_thread.join().unwrap();
+    }
+
+    /// `recv_event_from` matches the first packet that satisfies the predicate.
+    #[test]
+    fn recv_event_from_matches_predicate() {
+        let (mut transport, server) = make_transport_pair();
+
+        let server_thread = std::thread::spawn(move || {
+            write_frame(
+                &server,
+                &serde_json::json!({"from": "actorA", "type": "consoleAPICall"}),
+            );
+            write_frame(
+                &server,
+                &serde_json::json!({"from": "actorA", "type": "evaluationResult", "resultID": "x"}),
+            );
+        });
+
+        let msg = recv_event_from(&mut transport, "actorA", |m| {
+            m.get("type").and_then(Value::as_str) == Some("evaluationResult")
+        })
+        .unwrap();
+        assert_eq!(msg["resultID"], "x");
+        server_thread.join().unwrap();
     }
 }
