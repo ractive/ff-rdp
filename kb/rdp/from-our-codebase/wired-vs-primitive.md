@@ -81,9 +81,12 @@ is now invalidated automatically rather than after a manual `getTarget`.
   `live_screenshot_full_page_dpr2` (iter-61v).
 - `eval` sends `mapped: { await: true }` by default and surfaces
   `meta.eval_path: "await" | "plain"`.
-- `navigate` orchestrates `tabNavigated` + `document-event` resource waits
-  through the ResourceCommand bus; bad-DNS lands on `about:neterror` and
-  returns a structured error.
+- `navigate` waits on the `document-event` resource (specifically
+  `dom-interactive`) through the ResourceCommand bus; `tabNavigated` is
+  consumed only as an abort signal inside `evaluate_js_async`, not as a
+  navigate-completion signal.  Bad-DNS lands on `about:neterror` and returns
+  a structured error.  (Updated iter-70 — earlier doc claimed both were
+  awaited for navigate completion.)
 - Inspector's command coordination (`dom-walker` traversal, shadow-DOM piercing
   — see [[open-gaps#shadow-dom-piercing]]) is still imperative and does not
   ride the multi-actor Command primitive yet.

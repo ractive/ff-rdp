@@ -2,7 +2,7 @@
 title: "Iteration 70: Spec drift fixes — dpr-as-string, parent chain, kb refresh"
 type: iteration
 date: 2026-05-24
-status: planned
+status: in_progress
 branch: iter-70/spec-drift
 depends_on:
   - iteration-61u-spec-and-front-correctness
@@ -43,29 +43,29 @@ register against the walker's target, not the walker itself.
 ## Tasks
 
 ### A. `dpr` as string
-- [ ] At `crates/ff-rdp-core/src/actors/screenshot.rs:60-71`, send `prep.window_dpr.to_string()` (or `format!("{}", ...)` if precision matters) instead of the raw f64.
-- [ ] Update the unit-test fixture to assert the field is a JSON string.
-- [ ] Add a live test (gated on `FF_RDP_LIVE_TESTS=1`) that captures a screenshot and asserts no error from Firefox's spec validator.
+- [x] At `crates/ff-rdp-core/src/actors/screenshot.rs:60-71`, send `prep.window_dpr.to_string()` (or `format!("{}", ...)` if precision matters) instead of the raw f64.
+- [x] Update the unit-test fixture to assert the field is a JSON string.
+- [x] Add a live test (gated on `FF_RDP_LIVE_TESTS=1`) that captures a screenshot and asserts no error from Firefox's spec validator. — `live_screenshot_dpr_string_accepted`
 
 ### B. Parent-chain invalidation
-- [ ] Add `parent: Option<ActorId>` to `FrontState` in `crates/ff-rdp-core/src/registry.rs:46-71`.
-- [ ] Update `Registry::register` to accept an optional parent and store it.
-- [ ] Rewrite `invalidate_target` to BFS from the destroyed target through the parent graph: mark every descendant `alive = false`.
-- [ ] At inspector / walker registration sites, pass the parent walker actor as the parent.
-- [ ] Test: register `walker → nodeActor → nodeListActor`; invalidate `walker`; assert all three are dead.
+- [x] Add `parent: Option<ActorId>` to `FrontState` in `crates/ff-rdp-core/src/registry.rs:46-71`.
+- [x] Update `Registry::register` to accept an optional parent and store it. — done via additive `register_with_parent` to keep existing call sites unchanged.
+- [x] Rewrite `invalidate_target` to BFS from the destroyed target through the parent graph: mark every descendant `alive = false`.
+- [x] [deferred — new plan: kb/iterations/iteration-71-resource-and-session.md] Inspector/walker `nodeActor` registration sites — no inspector/node fronts exist yet; the BFS infra is in place for when they land.
+- [x] Test: register `walker → nodeActor → nodeListActor`; invalidate `walker`; assert all three are dead. — `registry_parent_chain_invalidation`
 
 ### C. kb refresh
-- [ ] Edit `kb/rdp/actors/screenshot.md:98` — note that ff-rdp now sends `dpr` as a string (closed; remove the warning).
-- [ ] Edit `kb/rdp/from-our-codebase/wired-vs-primitive.md:74-89` — correct the claim that navigate waits on `tabNavigated + document-event`; navigate waits on `document-event` only. `tabNavigated` is consumed only as an abort signal in `evaluate_js_async`.
-- [ ] Edit `kb/rdp/from-our-codebase/open-gaps.md:36-50` — refresh the status of `actor-leak-in-daemon` (still partial) and `legacy-startlisteners-coexistence` (closed by iter-71 if it lands before this iter).
+- [x] Edit `kb/rdp/actors/screenshot.md:98` — note that ff-rdp now sends `dpr` as a string (closed; remove the warning).
+- [x] Edit `kb/rdp/from-our-codebase/wired-vs-primitive.md:74-89` — correct the claim that navigate waits on `tabNavigated + document-event`; navigate waits on `document-event` only. `tabNavigated` is consumed only as an abort signal in `evaluate_js_async`.
+- [x] Edit `kb/rdp/from-our-codebase/open-gaps.md:36-50` — refresh the status of `actor-leak-in-daemon` (still partial) and `legacy-startlisteners-coexistence` (closed by iter-71 if it lands before this iter).
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
-- [ ] `screenshot_dpr_serialised_as_string`: outbound packet JSON has `dpr` as `Value::String`, not `Value::Number`.
-- [ ] `registry_parent_chain_invalidation`: BFS test with 3-deep chain → all three marked `alive = false` after root invalidation.
-- [ ] `kb_refresh_screenshot_dpr`: `hyalo find` shows the screenshot.md note updated.
-- [ ] `kb_refresh_wired_vs_primitive`: the navigate-wait claim is corrected.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `screenshot_dpr_serialised_as_string`: outbound packet JSON has `dpr` as `Value::String`, not `Value::Number`.
+- [x] `registry_parent_chain_invalidation`: BFS test with 3-deep chain → all three marked `alive = false` after root invalidation.
+- [x] `kb_refresh_screenshot_dpr`: `hyalo find` shows the screenshot.md note updated.
+- [x] `kb_refresh_wired_vs_primitive`: the navigate-wait claim is corrected.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 

@@ -95,7 +95,7 @@ So the "page width/height" is `innerWidth + scrollMaxX - scrollMinX − scrollba
 ## Gotchas for ff-rdp
 
 - **The full-page bug**: if your CLI computes a giant rect from `document.documentElement.scrollWidth/Height` but does not set the actor's `fullpage: true`, Firefox will still clip to the viewport. The fix is to either pass `fullpage: true` in the `capture` args or compute a rect from `scrollMax{X,Y}` and pass it to the screenshot-content actor.
-- `dpr` is typed as **string** in the spec. Pass it as a string ("2") not a number.
+- `dpr` is typed as **string** in the spec. ff-rdp serialises it as a JSON string (e.g. `"2"`) since iter-70 — see `crates/ff-rdp-core/src/actors/screenshot.rs::ScreenshotActor::capture`. Closed.
 - `browsingContextID` must be the **content browsing context** id (from TabDescriptor.form's `browsingContextID`), not the chrome window id.
 - `data:` URL can be huge — for the parent process actor there's no streaming, the whole base64 PNG comes back in one JSON packet. ff-rdp must be ready to receive multi-MB responses.
 - The screenshot util is in `browser/components/screenshots/`, **not** in devtools — Firefox UI screenshots share the same backend. Updates to clamping/DPR logic may land in the non-devtools path.
