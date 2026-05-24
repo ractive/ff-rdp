@@ -2,7 +2,7 @@
 title: "Iteration 64: XPI integrity — vendor or pin Consent-O-Matic"
 type: iteration
 date: 2026-05-24
-status: planned
+status: in-review
 branch: iter-64/xpi-integrity
 depends_on:
   - iteration-63-daemon-lockrecover-and-quick-sec-fixes
@@ -43,19 +43,18 @@ security review — RCE in the user's browser via a single network swap.
 ## Tasks
 
 ### A. Pin or vendor the XPI
-- [ ] Decide between (a) `include_bytes!` vendoring vs (b) SHA-256 pinning with download. Record the decision in `kb/decision-log.md`.
-- [ ] If vendoring: drop the bytes into `crates/ff-rdp-cli/assets/extensions/consent-o-matic-1.1.5.xpi`; load via `include_bytes!`; remove `XPI_URL` and the ureq call. Add the upstream licence next to the file.
-- [ ] If pinning: add `const XPI_SHA256: &str = "..."` next to `XPI_URL` (line 9); compute and verify after `read_to_vec()`; bail with a clear "hash mismatch" error if it differs.
+- [x] Decide between (a) `include_bytes!` vendoring vs (b) SHA-256 pinning with download. Record the decision in `kb/decision-log.md`. → [[decision-log#DEC-017]] picks (a) vendoring.
+- [x] Vendoring: bytes live at `crates/ff-rdp-cli/assets/extensions/consent-o-matic-1.1.5.xpi`; loaded via `include_bytes!` in `auto_consent::XPI_BYTES`; `XPI_URL` + ureq call removed. Upstream MIT licence + provenance (source URL, SHA-256) in `LICENSE-consent-o-matic.txt` next to the file.
 
 ### B. Cap the download
-- [ ] If keeping the download path: add `.with_limit(10 * 1024 * 1024)` (or current ureq equivalent) to the `read_to_vec()` call at `commands/auto_consent.rs:56`. Test that a 12 MiB body is rejected.
+- [x] [deferred — new plan: not applicable; the download path is removed entirely by task A, so there is no body to cap.]
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
-- [ ] `xpi_integrity_verified_or_vendored`: either (a) `include_bytes!` is used and the source file is checked in with its licence, or (b) `verify_xpi_hash` returns `Err` on a tampered byte array and `Ok` on the pinned bytes.
-- [ ] `xpi_download_capped`: if the download path is retained, `install_consent_o_matic` rejects a body > 10 MiB with a typed error.
-- [ ] `live_auto_consent_install`: `ff-rdp launch --temp-profile --auto-consent` still installs and the test page sees the banner dismissed (existing live test path).
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `xpi_integrity_verified_or_vendored`: `include_bytes!` is used (`auto_consent::XPI_BYTES`), and `assets/extensions/consent-o-matic-1.1.5.xpi` + `LICENSE-consent-o-matic.txt` are checked in. Test `vendored_xpi_matches_pinned_sha256` asserts the byte hash stays pinned to `a2119abc329638d6e7af1ab4e5548a348465e02eec11de08dee0af84919923dc`.
+- [x] `xpi_download_capped`: [deferred — new plan: not applicable; the download path is removed entirely, no body to cap.]
+- [x] `live_auto_consent_install`: `install_writes_xpi_into_profile_extensions_dir` covers the file-placement path; the dogfood block at the top of this plan exercises the full live `--auto-consent` launch.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 

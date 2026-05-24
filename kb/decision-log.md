@@ -252,3 +252,13 @@ Diffs `tools/ralph-loop/scripts/` against `~/.claude/skills/ralph-loop/scripts/`
 **Trade-off**: The regex-based extraction is conservative and biased toward false ✅ (per the iter-61z plan's design notes — a false fail blocks all merges). It catches the obvious cases (a `RdpError::Navigation` token claimed but absent from the code diff) without being a fully precise lint. The replay baselines defend against future drift.
 
 **Applies to**: `~/.claude/skills/ralph-loop/scripts/{claims-vs-code,ac-fidelity-check,run-iteration}.sh`, `tools/ralph-loop/`, `crates/xtask/src/check_discipline_regression.rs`, `.github/workflows/ci.yml`, `CLAUDE.md`.
+
+## DEC-017: Vendor Consent-O-Matic XPI rather than downloading at install time
+
+**Decision**: Embed the Consent-O-Matic 1.1.5 XPI at compile time via `include_bytes!` (`crates/ff-rdp-cli/assets/extensions/consent-o-matic-1.1.5.xpi`) and write the bytes into the launched profile's `extensions/` directory. Drop the AMO download path from `commands/auto_consent.rs`.
+
+**Why**: The pre-iter-64 implementation downloaded the XPI from `addons.mozilla.org` on every fresh launch with `--auto-consent`, with TLS as the only integrity guarantee — no SHA-256 pin, no signature verification, no download size cap. The 2026-05-24 security review (finding F-3) flagged this as the highest-impact issue: a hostile network, compromised CA, or AMO compromise could substitute a malicious WebExtension that runs in the user's Firefox with full WebExtension permissions (RCE). Vendoring removes the network call entirely, so the only way to swap the XPI is to ship a malicious release of ff-rdp itself — at which point the user has bigger problems.
+
+**Trade-off**: The crate gains a ~96 KB binary blob and we take on a manual re-vendor step when upstream releases a new Consent-O-Matic version. Consent-O-Matic is slow-moving (1.1.5 has been current since 2024), so the maintenance overhead is low. A pinned-SHA download was the alternative; vendoring is strictly safer because it also defends against AMO outages and against an attacker who can flip just the hash file.
+
+**Applies to**: `crates/ff-rdp-cli/src/commands/auto_consent.rs`, `crates/ff-rdp-cli/assets/extensions/{consent-o-matic-1.1.5.xpi,LICENSE-consent-o-matic.txt}`, iter-64.
