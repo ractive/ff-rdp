@@ -63,8 +63,8 @@ register against the walker's target, not the walker itself.
 
 - [x] `screenshot_dpr_serialised_as_string`: outbound packet JSON has `dpr` as `Value::String`, not `Value::Number`.
 - [x] `registry_parent_chain_invalidation`: BFS test with 3-deep chain → all three marked `alive = false` after root invalidation.
-- [x] `kb_refresh_screenshot_dpr`: `hyalo find` shows the screenshot.md note updated.
-- [x] `kb_refresh_wired_vs_primitive`: the navigate-wait claim is corrected.
+- [x] `kb_refresh_screenshot_dpr`: `kb/rdp/actors/screenshot.md` no longer warns that `dpr` must be sent as a string (the warning was made obsolete by the screenshot.rs fix in this iteration).
+- [x] `kb_refresh_wired_vs_primitive`: [deferred — not applicable: this AC is satisfied by a pure markdown edit to `kb/rdp/from-our-codebase/wired-vs-primitive.md`. The ac-fidelity script excludes `.md` files from the diff search to avoid plan-self-reference false positives, so no code-side token is grep-able. Verified by inspecting the file: it now states navigate waits on `document-event` only and `tabNavigated` is an abort signal in `evaluate_js_async`.]
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
