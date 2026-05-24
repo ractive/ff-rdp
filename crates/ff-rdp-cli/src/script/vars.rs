@@ -3,7 +3,7 @@
 //! Substitution syntax: `{{env.NAME}}`, `{{vars.NAME}}`, `{{steps[N].results.X}}`
 //! (N is 1-based step index).  Resolution happens at step execution time.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context as _, bail};
 use serde_json::Value;
@@ -17,6 +17,54 @@ pub struct VarContext<'a> {
     /// Show secrets in output (from `--show-secrets`). Reserved for future use.
     #[allow(dead_code)]
     pub show_secrets: bool,
+    /// Policy controlling which `{{env.X}}` references are allowed.
+    pub env_policy: &'a EnvPolicy,
+}
+
+/// Safe-default env vars that may be interpolated without an explicit
+/// allowlist entry. Picked to be ubiquitously needed and free of secret
+/// content on typical workstations / CI environments.
+pub const SAFE_DEFAULTS: &[&str] = &["HOME", "USER", "LANG", "LC_ALL", "TZ"];
+
+/// Policy for `{{env.X}}` resolution.
+///
+/// Fail-closed: a name must appear in [`SAFE_DEFAULTS`] or `allowlist`
+/// to be resolved. Names matching [`is_secret_name`] are refused
+/// unconditionally — even an explicit allowlist entry will not unlock
+/// them.
+#[derive(Debug, Default, Clone)]
+pub struct EnvPolicy {
+    /// Caller-supplied allowlist (typically from `--allow-env`).
+    pub allowlist: HashSet<String>,
+}
+
+impl EnvPolicy {
+    /// Build a policy from an iterator of names.
+    pub fn from_names<I, S>(names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            allowlist: names.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// Return `Ok` if `{{env.NAME}}` is allowed under this policy.
+    pub fn check(&self, name: &str) -> anyhow::Result<()> {
+        if is_secret_name(name) {
+            bail!(
+                "env var `{name}` refused: name matches secret-name pattern (cannot be allowlisted — rename the variable or pass the value via --vars instead)"
+            );
+        }
+        if SAFE_DEFAULTS.contains(&name) {
+            return Ok(());
+        }
+        if self.allowlist.contains(name) {
+            return Ok(());
+        }
+        bail!("env var `{name}` not in allowlist (use --allow-env {name})");
+    }
 }
 
 /// Variable names (case-insensitive check) that trigger secret redaction.
@@ -58,6 +106,7 @@ pub fn substitute(template: &str, ctx: &VarContext<'_>) -> anyhow::Result<String
 /// Resolve a single `{{...}}` expression to its string value.
 fn resolve_expr(expr: &str, ctx: &VarContext<'_>) -> anyhow::Result<String> {
     if let Some(name) = expr.strip_prefix("env.") {
+        ctx.env_policy.check(name)?;
         let val = std::env::var(name)
             .with_context(|| format!("environment variable `{name}` is not set"))?;
         return Ok(val);
@@ -222,11 +271,28 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    static EMPTY_POLICY: std::sync::LazyLock<EnvPolicy> =
+        std::sync::LazyLock::new(EnvPolicy::default);
+
     fn ctx<'a>(vars: &'a HashMap<String, String>, results: &'a [Value]) -> VarContext<'a> {
         VarContext {
             vars,
             step_results: results,
             show_secrets: false,
+            env_policy: &EMPTY_POLICY,
+        }
+    }
+
+    fn ctx_with_policy<'a>(
+        vars: &'a HashMap<String, String>,
+        results: &'a [Value],
+        policy: &'a EnvPolicy,
+    ) -> VarContext<'a> {
+        VarContext {
+            vars,
+            step_results: results,
+            show_secrets: false,
+            env_policy: policy,
         }
     }
 
@@ -308,6 +374,73 @@ mod tests {
         let mut vars = HashMap::new();
         vars.insert("email".to_owned(), "x@y.com".to_owned());
         check_undefined_vars("hello {{vars.email}}", &vars).unwrap();
+    }
+
+    #[test]
+    fn env_substitution_rejects_unallowed() {
+        // SAFETY: tests rely on a uniquely-named env var.
+        unsafe {
+            std::env::set_var("FFRDP_TEST_VAR_67A", "secret-value");
+        }
+        let vars = HashMap::new();
+        let ctx = ctx(&vars, &[]);
+        let err = substitute("{{env.FFRDP_TEST_VAR_67A}}", &ctx).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not in allowlist") && msg.contains("--allow-env"),
+            "unexpected error: {msg}"
+        );
+        unsafe {
+            std::env::remove_var("FFRDP_TEST_VAR_67A");
+        }
+    }
+
+    #[test]
+    fn env_substitution_allowlist_works() {
+        unsafe {
+            std::env::set_var("FFRDP_TEST_FOO_67", "foo-val");
+            std::env::set_var("FFRDP_TEST_BAR_67", "bar-val");
+        }
+        let vars = HashMap::new();
+        let policy = EnvPolicy::from_names(["FFRDP_TEST_FOO_67"]);
+        let ctx = ctx_with_policy(&vars, &[], &policy);
+        let out = substitute("hello {{env.FFRDP_TEST_FOO_67}}", &ctx).unwrap();
+        assert_eq!(out, "hello foo-val");
+
+        let err = substitute("{{env.FFRDP_TEST_BAR_67}}", &ctx).unwrap_err();
+        assert!(format!("{err:#}").contains("not in allowlist"));
+        unsafe {
+            std::env::remove_var("FFRDP_TEST_FOO_67");
+            std::env::remove_var("FFRDP_TEST_BAR_67");
+        }
+    }
+
+    #[test]
+    fn env_substitution_refuses_secret_names() {
+        // Even an explicit allowlist entry must not unlock secret-shaped names.
+        unsafe {
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", "leak-me");
+        }
+        let vars = HashMap::new();
+        let policy = EnvPolicy::from_names(["AWS_SECRET_ACCESS_KEY"]);
+        let ctx = ctx_with_policy(&vars, &[], &policy);
+        let err = substitute("{{env.AWS_SECRET_ACCESS_KEY}}", &ctx).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("secret-name pattern"), "{msg}");
+        unsafe {
+            std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+        }
+    }
+
+    #[test]
+    fn env_substitution_allows_safe_defaults() {
+        unsafe {
+            std::env::set_var("LANG", "C.UTF-8");
+        }
+        let vars = HashMap::new();
+        let ctx = ctx(&vars, &[]);
+        let out = substitute("{{env.LANG}}", &ctx).unwrap();
+        assert_eq!(out, "C.UTF-8");
     }
 
     #[test]

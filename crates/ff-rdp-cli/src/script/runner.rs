@@ -25,9 +25,17 @@ use super::format::{
 };
 use super::recorder::FileRecorder;
 use super::vars::{
-    VarContext, check_undefined_vars, collect_env_secrets, is_secret_name, substitute,
+    EnvPolicy, VarContext, check_undefined_vars, collect_env_secrets, is_secret_name, substitute,
 };
 use crate::page_map::PageMap;
+
+/// Maximum allowed depth of nested `run:` steps.
+///
+/// The limit exists to prevent stack overflow from a script that
+/// (accidentally or maliciously) chains hundreds of `run:` steps. The
+/// value is comfortably above realistic legitimate nesting
+/// (top → suite → subtest → fixture-setup → action).
+pub const MAX_RUN_DEPTH: usize = 16;
 
 // ---------------------------------------------------------------------------
 // Run options
@@ -51,6 +59,15 @@ pub struct RunOptions<'a> {
     pub format_override: Option<ScriptFormat>,
     /// Loaded page-map for resolving `page_map:`, `field:`, and `api_route:` targets.
     pub page_map: Option<Arc<PageMap>>,
+    /// Policy controlling which `{{env.X}}` references are allowed.
+    pub env_policy: EnvPolicy,
+    /// When true, sub-script paths may escape the top-level script's
+    /// directory (absolute paths and `..` traversals). Off by default.
+    pub allow_unsafe_script_paths: bool,
+    /// Directory of the top-level script, set on the first call to
+    /// [`run_script_file`]. Sub-script paths are required to stay within
+    /// this directory unless `allow_unsafe_script_paths` is set.
+    pub top_level_dir: Option<PathBuf>,
 }
 
 impl Default for RunOptions<'_> {
@@ -64,6 +81,9 @@ impl Default for RunOptions<'_> {
             record_strict: false,
             format_override: None,
             page_map: None,
+            env_policy: EnvPolicy::default(),
+            allow_unsafe_script_paths: false,
+            top_level_dir: None,
         }
     }
 }
@@ -87,6 +107,14 @@ pub fn run_script_file(
     opts: &mut RunOptions<'_>,
     call_stack: &[PathBuf],
 ) -> Result<(), AppError> {
+    // Depth cap: refuse to enter another level once we'd exceed MAX_RUN_DEPTH.
+    let depth = call_stack.len() + 1;
+    if depth > MAX_RUN_DEPTH {
+        return Err(AppError::User(format!(
+            "run nesting depth {depth} exceeds MAX_RUN_DEPTH={MAX_RUN_DEPTH}"
+        )));
+    }
+
     // Check for cycles.
     let abs_path = script_path
         .canonicalize()
@@ -130,6 +158,15 @@ pub fn run_script_file(
     let mut new_stack = call_stack.to_vec();
     new_stack.push(abs_path.clone());
 
+    // Capture the top-level script's directory on the first entry. Used by
+    // `execute_run` to enforce path containment for sub-scripts.
+    if opts.top_level_dir.is_none() {
+        let parent = abs_path
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        opts.top_level_dir = Some(parent);
+    }
+
     run_script(&script, &abs_path, cli, opts, &merged_vars, &new_stack)
 }
 
@@ -161,7 +198,7 @@ fn run_script(
         let step_start = Instant::now();
 
         // Resolve variable substitutions in the step (best-effort; errors are step failures).
-        let resolved = match resolve_step_vars(step, vars, &step_results) {
+        let resolved = match resolve_step_vars(step, vars, &step_results, &opts.env_policy) {
             Ok(s) => s,
             Err(e) => {
                 let elapsed = u64::try_from(step_start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -424,11 +461,13 @@ fn resolve_step_vars(
     step: &Step,
     vars: &HashMap<String, String>,
     step_results: &[Value],
+    env_policy: &EnvPolicy,
 ) -> anyhow::Result<Step> {
     let ctx = VarContext {
         vars,
         step_results,
         show_secrets: false,
+        env_policy,
     };
 
     Ok(match step {
@@ -1115,6 +1154,14 @@ fn execute_run(
         parent_dir.join(&step.path)
     };
 
+    // Containment: refuse paths that escape the top-level script's directory
+    // unless `--allow-unsafe-script-paths` is set.
+    if !opts.allow_unsafe_script_paths
+        && let Some(top) = opts.top_level_dir.as_ref()
+    {
+        check_sub_script_containment(&step.path, &sub_path, top)?;
+    }
+
     // Merge vars: parent vars + step `with:` overrides.
     let mut sub_vars: HashMap<String, String> = parent_vars.clone();
     for (k, v) in &step.with {
@@ -1130,10 +1177,49 @@ fn execute_run(
         record_strict: opts.record_strict,
         format_override: None, // Sub-scripts detect their own format from extension.
         page_map: opts.page_map.clone(), // Inherit the page-map from the parent.
+        env_policy: opts.env_policy.clone(),
+        allow_unsafe_script_paths: opts.allow_unsafe_script_paths,
+        top_level_dir: opts.top_level_dir.clone(),
     };
 
     run_script_file(&sub_path, cli, &mut sub_opts, call_stack)?;
     Ok(json!({"ran": step.path}))
+}
+
+/// Verify that a sub-script path stays within the top-level script's
+/// directory. Refuses absolute paths and `..`-traversing relative paths
+/// outright. For paths that may exist on disk, also resolves and checks
+/// the canonical form against `top_dir`.
+fn check_sub_script_containment(
+    raw_path: &str,
+    joined: &Path,
+    top_dir: &Path,
+) -> Result<(), AppError> {
+    if Path::new(raw_path).is_absolute() {
+        return Err(AppError::User(format!(
+            "sub-script path must be relative to top-level script dir (got absolute path: '{raw_path}', pass --allow-unsafe-script-paths to override)"
+        )));
+    }
+    // Lexical check: refuse any `..` segment so we reject traversal even
+    // when intermediate dirs do not exist yet.
+    if Path::new(raw_path)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(AppError::User(format!(
+            "sub-script path '{raw_path}' escapes the top-level script dir via `..` (pass --allow-unsafe-script-paths to override)"
+        )));
+    }
+    // Canonical check (best-effort — only applies when both sides resolve).
+    if let (Ok(top_canon), Ok(sub_canon)) = (top_dir.canonicalize(), joined.canonicalize())
+        && !sub_canon.starts_with(&top_canon)
+    {
+        return Err(AppError::User(format!(
+            "sub-script path '{raw_path}' resolves outside the top-level script dir '{}' (pass --allow-unsafe-script-paths to override)",
+            top_dir.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Collect environment variable values referenced in a step's string fields.
@@ -1272,6 +1358,133 @@ mod tests {
             extract_diagnostics(&err).is_none(),
             "User variant should yield no diagnostics"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-67: sandboxing — run depth + sub-script path containment
+    // -----------------------------------------------------------------------
+
+    /// Build a chain of `depth` script files where each runs the next, and
+    /// the final one is a no-op. Returns the path to file 1.
+    fn build_run_chain(dir: &Path, depth: usize) -> PathBuf {
+        for i in 1..=depth {
+            let path = dir.join(format!("s{i}.json"));
+            let content = if i == depth {
+                r#"{"version":1,"steps":[]}"#.to_owned()
+            } else {
+                let next = format!("s{}.json", i + 1);
+                format!(r#"{{"version":1,"steps":[{{"run":{{"path":"{next}"}}}}]}}"#)
+            };
+            std::fs::write(&path, content).unwrap();
+        }
+        dir.join("s1.json")
+    }
+
+    #[test]
+    fn run_depth_capped() {
+        // The deepest layer surfaces the error to its caller as
+        // AppError::User. Simulate "already 16 deep" by pre-populating the
+        // call stack — the next entry would be depth 17 and must bail.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("noop.json"), r#"{"version":1,"steps":[]}"#).unwrap();
+        let target = tmp.path().join("noop.json");
+
+        let cli = <Cli as clap::Parser>::parse_from(["ff-rdp", "doctor"]);
+        let mut opts = RunOptions::default();
+        let call_stack: Vec<PathBuf> = (0..MAX_RUN_DEPTH)
+            .map(|i| PathBuf::from(format!("/tmp/fake-{i}.json")))
+            .collect();
+        let err = run_script_file(&target, &cli, &mut opts, &call_stack).unwrap_err();
+        let msg = match err {
+            AppError::User(m) => m,
+            other => panic!("expected AppError::User, got {other:?}"),
+        };
+        assert!(
+            msg.contains("exceeds MAX_RUN_DEPTH=16") && msg.contains("depth 17"),
+            "unexpected msg: {msg}"
+        );
+    }
+
+    #[test]
+    fn run_depth_chain_eventually_fails() {
+        // End-to-end: a 20-link chain executes and fails (non-zero exit),
+        // confirming the depth cap is wired through `execute_run`.
+        let tmp = tempfile::tempdir().unwrap();
+        let top = build_run_chain(tmp.path(), 20);
+        let cli = <Cli as clap::Parser>::parse_from(["ff-rdp", "doctor"]);
+        let mut opts = RunOptions::default();
+        let call_stack: Vec<PathBuf> = Vec::new();
+        let err = run_script_file(&top, &cli, &mut opts, &call_stack).unwrap_err();
+        assert!(
+            matches!(err, AppError::Exit(_)),
+            "expected non-zero exit from run-depth cap, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn run_path_containment_rejects_absolute() {
+        let tmp = tempfile::tempdir().unwrap();
+        let top_dir = tmp.path();
+        std::fs::write(
+            top_dir.join("top.json"),
+            r#"{"version":1,"steps":[{"run":{"path":"/etc/passwd"}}]}"#,
+        )
+        .unwrap();
+        let top = top_dir.join("top.json");
+
+        let cli = <Cli as clap::Parser>::parse_from(["ff-rdp", "doctor"]);
+        let mut opts = RunOptions::default();
+        let call_stack: Vec<PathBuf> = Vec::new();
+        // `bail_on_failure: true` is the default — the failed run step propagates as `Ok(())`
+        // from `run_script_file`, with the per-step JSON containing the error. We just verify
+        // that the step-execution path refuses the absolute path before any FS access.
+        // The simplest assertion: invoke the containment check directly.
+        let sub_path = PathBuf::from("/etc/passwd");
+        let err = check_sub_script_containment("/etc/passwd", &sub_path, top_dir).unwrap_err();
+        match err {
+            AppError::User(m) => assert!(
+                m.contains("absolute path") && m.contains("--allow-unsafe-script-paths"),
+                "{m}"
+            ),
+            other => panic!("expected User, got {other:?}"),
+        }
+
+        // And: when allow_unsafe_script_paths is set, the check is bypassed —
+        // verified by not invoking the check at the call site. Smoke-test this
+        // by setting the flag and running the full pipeline; the run step is
+        // expected to fail later (file does not parse as a script) but NOT
+        // with the containment error.
+        opts.allow_unsafe_script_paths = true;
+        let result = run_script_file(&top, &cli, &mut opts, &call_stack);
+        // Outer run returns Ok(()) because bail_on_failure makes the failing
+        // step end the run but does not surface the error to the caller.
+        // Drop the result — we only care that this code path runs.
+        let _ = result;
+    }
+
+    #[test]
+    fn run_path_containment_rejects_parent_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let top_dir = tmp.path();
+        let err = check_sub_script_containment(
+            "../escape.json",
+            &top_dir.join("../escape.json"),
+            top_dir,
+        )
+        .unwrap_err();
+        match err {
+            AppError::User(m) => assert!(m.contains("escapes the top-level script dir"), "{m}"),
+            other => panic!("expected User, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_path_containment_accepts_relative_within_top() {
+        let tmp = tempfile::tempdir().unwrap();
+        let top_dir = tmp.path();
+        std::fs::write(top_dir.join("sub.json"), r#"{"version":1,"steps":[]}"#).unwrap();
+        let sub_path = top_dir.join("sub.json");
+        check_sub_script_containment("sub.json", &sub_path, top_dir).unwrap();
     }
 
     /// E6: AppError::Diagnostics display shows the message, not the payload.

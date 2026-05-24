@@ -1182,6 +1182,22 @@ Examples:
         /// Falls back to .ffrdp/page-map.json when this flag is not set and that file exists.
         #[arg(long = "page-map", value_name = "PATH")]
         page_map: Option<std::path::PathBuf>,
+        /// Comma-separated list of env var names that {{env.X}} references may resolve.
+        /// HOME/USER/LANG/LC_ALL/TZ are always allowed. Names matching the
+        /// secret-name pattern (*password*, *token*, *secret*, *key*) are always refused.
+        #[arg(
+            long = "allow-env",
+            value_name = "NAMES",
+            value_delimiter = ',',
+            num_args = 1..,
+            action = clap::ArgAction::Append
+        )]
+        allow_env: Vec<String>,
+        /// Allow sub-script `run:` paths that are absolute or escape the
+        /// top-level script's directory. Only enable when you author every
+        /// file in the include chain.
+        #[arg(long = "allow-unsafe-script-paths")]
+        allow_unsafe_script_paths: bool,
     },
 
     /// Record browser commands to a replayable script

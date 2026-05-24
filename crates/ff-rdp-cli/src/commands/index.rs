@@ -67,6 +67,8 @@ fn run_crawl(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
             record_strict: false,
             format_override: None,
             page_map_path: None,
+            allow_env: Vec::new(),
+            allow_unsafe_script_paths: false,
         };
         crate::commands::run::run(cli, &login_opts)
             .map_err(|e| AppError::User(format!("login script failed: {e}")))?;

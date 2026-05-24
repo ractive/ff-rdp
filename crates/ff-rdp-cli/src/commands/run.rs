@@ -9,6 +9,7 @@ use crate::cli::args::Cli;
 use crate::error::AppError;
 use crate::script::recorder::FileRecorder;
 use crate::script::runner::{RunOptions, run_script_file};
+use crate::script::vars::EnvPolicy;
 
 /// Options parsed from CLI flags for the `run` subcommand.
 pub struct RunCommandOpts<'a> {
@@ -23,6 +24,10 @@ pub struct RunCommandOpts<'a> {
     pub format_override: Option<&'a str>,
     /// Explicit page-map path (or None to try the default .ffrdp/page-map.json).
     pub page_map_path: Option<&'a Path>,
+    /// Env var names the user has opted into for `{{env.X}}` resolution.
+    pub allow_env: Vec<String>,
+    /// Allow sub-script `run:` paths to escape the top-level script's dir.
+    pub allow_unsafe_script_paths: bool,
 }
 
 /// Return `true` if any step in the script references a page-map target
@@ -95,6 +100,9 @@ pub fn run(cli: &Cli, opts: &RunCommandOpts<'_>) -> Result<(), AppError> {
         record_strict: opts.record_strict,
         format_override: fmt_override,
         page_map,
+        env_policy: EnvPolicy::from_names(opts.allow_env.iter().cloned()),
+        allow_unsafe_script_paths: opts.allow_unsafe_script_paths,
+        top_level_dir: None,
     };
 
     let call_stack: Vec<PathBuf> = Vec::new();
