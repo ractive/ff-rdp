@@ -343,7 +343,7 @@ impl ResourceCommand {
         let result = WatcherActor::unwatch_resources(transport, &self.watcher_actor, &wire_strs);
 
         match result {
-            Ok(_) => {
+            Ok(()) => {
                 // Wire send succeeded — clear pending list and remove zero-count
                 // map entries so long-lived buses don't accumulate stale entries.
                 self.pending_unwatch.clear();

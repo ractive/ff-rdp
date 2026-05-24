@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::actor::actor_request;
+use crate::actor::{actor_request, actor_send};
 use crate::error::ProtocolError;
 use crate::transport::RdpTransport;
 use crate::types::ActorId;
@@ -200,6 +200,21 @@ impl DomWalkerActor {
             max_chars,
             &mut char_count,
         )
+    }
+
+    /// Cancel any in-progress element picker.
+    ///
+    /// **Oneway** — `clearPicker` is declared `oneway: true` in
+    /// `devtools/shared/specs/walker.js:378-381`. Firefox does not send a reply.
+    ///
+    /// Note: `releaseNode` (`devtools/shared/specs/walker.js:127-133`) is
+    /// response-less but **not** marked `oneway` — it remains an
+    /// `actor_request` in our implementation per spec intent.
+    pub fn clear_picker(
+        transport: &mut RdpTransport,
+        walker_actor: &ActorId,
+    ) -> Result<(), ProtocolError> {
+        actor_send(transport, walker_actor.as_ref(), "clearPicker", None)
     }
 }
 

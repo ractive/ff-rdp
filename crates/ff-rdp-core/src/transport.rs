@@ -434,6 +434,37 @@ impl RdpTransport {
         self.send(message)?;
         self.recv()
     }
+
+    /// Send a fire-and-forget (oneway) typed packet to an actor.
+    ///
+    /// Builds `{"to": to, "type": type_, ...body}`, sends it, and returns
+    /// **without** reading any reply.  Use this for Firefox RDP methods declared
+    /// `oneway: true` in the spec (e.g. `unwatchTargets`, `clearResources`,
+    /// `reflow.start`).  Awaiting a reply for these methods would hang until the
+    /// socket read timeout because Firefox never sends one.
+    ///
+    /// `body` may be `Value::Null` or `Value::Object({})` for methods that take
+    /// no extra parameters.
+    pub fn actor_send_oneway(
+        &mut self,
+        to: &str,
+        type_: &str,
+        body: Value,
+    ) -> Result<(), ProtocolError> {
+        let mut packet = match body {
+            Value::Object(map) => Value::Object(map),
+            Value::Null => Value::Object(serde_json::Map::new()),
+            other => {
+                return Err(ProtocolError::InvalidPacket(format!(
+                    "actor_send_oneway: body must be an object or null, got: {other}"
+                )));
+            }
+        };
+        let obj = packet.as_object_mut().expect("ensured above");
+        obj.insert("to".into(), Value::String(to.to_owned()));
+        obj.insert("type".into(), Value::String(type_.to_owned()));
+        self.send(&packet)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +603,12 @@ impl FramedWriter {
 /// field. Any packet with `from == actor && type == Some(_)` is an event
 /// (e.g. `consoleAPICall`, `tabNavigated`); these are forwarded to the
 /// transport's event sink (see [`RdpTransport::set_event_sink`]) and the
-/// loop continues. Packets from other actors are ignored.
+/// loop continues.
+///
+/// Packets from **other** actors are also forwarded to the event sink (iter-74
+/// fix: sibling-actor packets must not be silently dropped — they may be
+/// watcher events, console events, or other push notifications that arrived
+/// while a request was in-flight).
 ///
 /// On `error`-bearing replies, the helper converts the packet into a
 /// [`ProtocolError::ActorError`] using [`ActorErrorKind::from_code`].
@@ -581,9 +617,10 @@ pub fn recv_reply_from(transport: &mut RdpTransport, actor: &str) -> Result<Valu
         let msg = transport.recv()?;
         let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
         if from != actor {
-            // Foreign packet — not ours to interpret; drop on the floor for
-            // now (callers that care set their own event_sink + use
-            // recv_event_from with a predicate).
+            // Sibling-actor packet — forward to the event sink so it isn't
+            // lost (e.g. watcher events that arrived while we awaited a reply
+            // on a different actor).
+            transport.forward_event(msg);
             continue;
         }
         if msg.get("type").is_some() {
@@ -613,10 +650,13 @@ pub fn recv_reply_from(transport: &mut RdpTransport, actor: &str) -> Result<Valu
 ///
 /// Designed for the `evaluationResult` / `tabNavigated` / `document-event`
 /// wait loops where the caller picks a specific event among the push stream
-/// from a known actor. Packets from other actors are skipped silently; events
-/// from `actor` that do not match the predicate are also skipped (they aren't
-/// forwarded to the event sink because the caller has explicit semantics for
-/// what counts as "their" event).
+/// from a known actor.
+///
+/// Packets from **other** actors are forwarded to the event sink (iter-74 fix:
+/// they must not be silently dropped — the same applies to events from the
+/// target actor that do not match the predicate, such as intermediate
+/// `consoleAPICall` packets that arrive between an `evaluateJSAsync`
+/// acknowledgement and the final `evaluationResult`).
 ///
 /// If the target actor emits an `error`-bearing reply (no `type` field, per
 /// the protocol) it is surfaced as [`ProtocolError::ActorError`] rather than
@@ -650,6 +690,13 @@ pub fn recv_event_from(
             if predicate(&msg) {
                 return Ok(msg);
             }
+            // Non-matching event from the target actor (e.g. an intermediate
+            // `consoleAPICall` while waiting for `evaluationResult`) — forward
+            // to the sink instead of discarding.
+            transport.forward_event(msg);
+        } else {
+            // Packet from a sibling actor — forward to the sink.
+            transport.forward_event(msg);
         }
     }
 }
@@ -1376,30 +1423,34 @@ mod tests {
         server_thread.join().unwrap();
     }
 
-    /// `recv_reply_from` must skip foreign packets without forwarding them
-    /// (they aren't ours; the caller's event sink only sees packets from the
-    /// targeted actor).
+    /// `recv_reply_from` must forward sibling-actor packets to the event sink
+    /// (iter-74: they must not be silently dropped).
+    ///
+    /// AC: `recv_reply_from_forwards_sibling_packet`
     #[test]
-    fn recv_reply_from_skips_foreign_packets() {
+    fn recv_reply_from_forwards_sibling_packet() {
         let (mut transport, server) = make_transport_pair();
         let (tx, rx) = std::sync::mpsc::channel::<Value>();
         transport.set_event_sink(Some(tx));
 
         let server_thread = std::thread::spawn(move || {
+            // Sibling-actor event that arrives while we await actorA's reply.
             write_frame(
                 &server,
                 &serde_json::json!({"from": "otherActor", "type": "tabListChanged"}),
             );
+            // The real reply from actorA.
             write_frame(&server, &serde_json::json!({"from": "actorA", "ok": true}));
         });
 
         let reply = recv_reply_from(&mut transport, "actorA").unwrap();
         assert_eq!(reply["ok"], true);
 
-        assert!(
-            rx.try_recv().is_err(),
-            "foreign packets must NOT be forwarded to the event sink"
-        );
+        // The sibling packet must have been forwarded to the event sink.
+        let sibling = rx
+            .try_recv()
+            .expect("sibling packet must be forwarded to the event sink");
+        assert_eq!(sibling["type"], "tabListChanged");
         server_thread.join().unwrap();
     }
 
@@ -1484,6 +1535,66 @@ mod tests {
         })
         .unwrap();
         assert_eq!(msg["resultID"], "x");
+        server_thread.join().unwrap();
+    }
+
+    /// AC: `recv_event_from_forwards_non_matching` — intermediate non-matching
+    /// events from the target actor (e.g. `consoleAPICall` while awaiting
+    /// `evaluationResult`) must be forwarded to the event sink, not dropped.
+    ///
+    /// Simulates the `evaluateJSAsync` sequence from
+    /// `devtools/server/actors/webconsole.js:761-870` where the console actor
+    /// emits `consoleAPICall` before the final `evaluationResult`.
+    #[test]
+    fn recv_event_from_forwards_non_matching() {
+        let (mut transport, server) = make_transport_pair();
+        let (tx, rx) = std::sync::mpsc::channel::<Value>();
+        transport.set_event_sink(Some(tx));
+
+        let server_thread = std::thread::spawn(move || {
+            // Intermediate console event (non-matching) — must reach the sink.
+            write_frame(
+                &server,
+                &serde_json::json!({
+                    "from": "consoleActor",
+                    "type": "consoleAPICall",
+                    "message": {"level": "log", "arguments": ["ping"]}
+                }),
+            );
+            // Also a sibling event from a different actor.
+            write_frame(
+                &server,
+                &serde_json::json!({"from": "watcherActor", "type": "target-available-form"}),
+            );
+            // The matching event.
+            write_frame(
+                &server,
+                &serde_json::json!({
+                    "from": "consoleActor",
+                    "type": "evaluationResult",
+                    "resultID": "r1",
+                    "result": 2
+                }),
+            );
+        });
+
+        let result = recv_event_from(&mut transport, "consoleActor", |m| {
+            m.get("type").and_then(Value::as_str) == Some("evaluationResult")
+        })
+        .unwrap();
+        assert_eq!(result["result"], 2);
+
+        // The consoleAPICall (non-matching from target actor) must be on the sink.
+        let forwarded: Vec<Value> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(
+            forwarded.len(),
+            2,
+            "expected 2 forwarded packets (consoleAPICall + target-available-form), got {}",
+            forwarded.len()
+        );
+        assert_eq!(forwarded[0]["type"], "consoleAPICall");
+        assert_eq!(forwarded[1]["type"], "target-available-form");
+
         server_thread.join().unwrap();
     }
 }

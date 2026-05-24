@@ -1,7 +1,8 @@
 use serde_json::{Value, json};
 
-use crate::actor::actor_request;
+use crate::actor::{actor_request, actor_send};
 use crate::error::ProtocolError;
+use crate::registry::Registry;
 use crate::transport::RdpTransport;
 use crate::types::ActorId;
 
@@ -35,17 +36,40 @@ impl WatcherActor {
     }
 
     /// Unsubscribe from one or more resource types.
+    ///
+    /// **Oneway** — `unwatchResources` is declared `oneway: true` in
+    /// `devtools/shared/specs/watcher.js:50-55`. Firefox does not send a reply;
+    /// calling `actor_request` here would hang until the socket timeout.
     pub fn unwatch_resources(
         transport: &mut RdpTransport,
         watcher_actor: &ActorId,
         resource_types: &[&str],
-    ) -> Result<Value, ProtocolError> {
+    ) -> Result<(), ProtocolError> {
         let types: Vec<Value> = resource_types.iter().map(|t| json!(t)).collect();
         let params = json!({ "resourceTypes": types });
-        actor_request(
+        actor_send(
             transport,
             watcher_actor.as_ref(),
             "unwatchResources",
+            Some(&params),
+        )
+    }
+
+    /// Clear all resources of the given types.
+    ///
+    /// **Oneway** — `clearResources` is declared `oneway: true` in
+    /// `devtools/shared/specs/watcher.js:57-62`. Firefox does not send a reply.
+    pub fn clear_resources(
+        transport: &mut RdpTransport,
+        watcher_actor: &ActorId,
+        resource_types: &[&str],
+    ) -> Result<(), ProtocolError> {
+        let types: Vec<Value> = resource_types.iter().map(|t| json!(t)).collect();
+        let params = json!({ "resourceTypes": types });
+        actor_send(
+            transport,
+            watcher_actor.as_ref(),
+            "clearResources",
             Some(&params),
         )
     }
@@ -72,19 +96,86 @@ impl WatcherActor {
     }
 
     /// Unsubscribe from target events of the given type.
+    ///
+    /// **Oneway** — `unwatchTargets` is declared `oneway: true` in
+    /// `devtools/shared/specs/watcher.js:23-32`. Firefox does not send a reply.
     pub fn unwatch_targets(
         transport: &mut RdpTransport,
         watcher_actor: &ActorId,
         target_type: &str,
-    ) -> Result<Value, ProtocolError> {
+    ) -> Result<(), ProtocolError> {
         let params = json!({ "targetType": target_type });
-        actor_request(
+        actor_send(
             transport,
             watcher_actor.as_ref(),
             "unwatchTargets",
             Some(&params),
         )
     }
+}
+
+/// Events emitted by the watcher actor on the transport's event stream.
+///
+/// Parsed from typed packets sent by the Firefox watcher actor after
+/// `watchTargets` / `watchResources` are called.
+#[derive(Debug, Clone)]
+pub enum WatcherEvent {
+    /// A new target became available (`target-available-form`).
+    TargetAvailable { target: TargetEvent },
+    /// An existing target was destroyed (`target-destroyed-form`).
+    ///
+    /// Per `devtools/shared/specs/watcher.js:100-113` the packet shape is:
+    /// `{"type": "target-destroyed-form", "target": {...}, "options": {...}}`.
+    /// The `options` field is forwarded verbatim for callers that need it.
+    TargetDestroyed {
+        /// The destroyed target, parsed the same way as `TargetAvailable`.
+        target: TargetEvent,
+        /// Raw `options` object from the packet (may be `null` or absent).
+        options: Value,
+    },
+    /// An unknown or unhandled watcher event type.
+    Other { type_: String, raw: Value },
+}
+
+impl WatcherEvent {
+    /// Parse a raw watcher-actor packet into a `WatcherEvent`.
+    ///
+    /// Returns `None` when the packet has no `type` field (i.e. it is a reply,
+    /// not an event).
+    pub fn from_packet(packet: &Value) -> Option<Self> {
+        let type_ = packet.get("type").and_then(Value::as_str)?;
+        match type_ {
+            "target-available-form" => {
+                let target = parse_target_event(packet)?;
+                Some(Self::TargetAvailable { target })
+            }
+            "target-destroyed-form" => {
+                let target = parse_target_event(packet)?;
+                let options = packet.get("options").cloned().unwrap_or(Value::Null);
+                Some(Self::TargetDestroyed { target, options })
+            }
+            other => Some(Self::Other {
+                type_: other.to_owned(),
+                raw: packet.clone(),
+            }),
+        }
+    }
+}
+
+/// Dispatch a watcher-actor packet through the registry lifecycle.
+///
+/// When the packet is a `target-destroyed-form`, the corresponding target
+/// and all its dependent fronts (inspector, walker, console) are invalidated
+/// in the registry via [`Registry::invalidate_target`].
+///
+/// Returns the parsed `WatcherEvent` for callers that want to inspect it
+/// further.  Returns `None` for non-event packets (no `type` field).
+pub fn dispatch_watcher_event(packet: &Value, registry: &Registry) -> Option<WatcherEvent> {
+    let event = WatcherEvent::from_packet(packet)?;
+    if let WatcherEvent::TargetDestroyed { ref target, .. } = event {
+        registry.invalidate_target(&target.actor);
+    }
+    Some(event)
 }
 
 /// A target event from a `target-available-form` or `target-destroyed-form` message.

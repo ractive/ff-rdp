@@ -566,6 +566,73 @@ mod tests {
         assert_eq!(result, Err(TestError::Gone));
     }
 
+    // ── iter-74: invalidate_target_removes_dependents ────────────────────────
+
+    /// AC: `registry_invalidate_target_removes_dependents` — calling
+    /// `invalidate_target` on a target actor marks the target itself dead
+    /// AND cascades to every dependent front (inspector, walker, console)
+    /// that has `target_root` pointing at it.  Unrelated fronts are unaffected.
+    #[test]
+    fn registry_invalidate_target_removes_dependents() {
+        let reg = Registry::new();
+        let target = make_id("conn0/windowGlobalTarget1");
+        let inspector = make_id("conn0/inspector1");
+        let walker = make_id("conn0/walker1");
+        let console = make_id("conn0/console1");
+        let unrelated_target = make_id("conn0/windowGlobalTarget2");
+        let unrelated_console = make_id("conn0/console2");
+
+        reg.register(target.clone(), FrontKind::Target, None);
+        reg.register(
+            inspector.clone(),
+            FrontKind::Other("inspector".into()),
+            Some(target.clone()),
+        );
+        reg.register(walker.clone(), FrontKind::Walker, Some(target.clone()));
+        reg.register(console.clone(), FrontKind::Console, Some(target.clone()));
+        reg.register(unrelated_target.clone(), FrontKind::Target, None);
+        reg.register(
+            unrelated_console.clone(),
+            FrontKind::Console,
+            Some(unrelated_target.clone()),
+        );
+
+        // All alive before invalidation.
+        for id in [
+            &target,
+            &inspector,
+            &walker,
+            &console,
+            &unrelated_target,
+            &unrelated_console,
+        ] {
+            assert!(
+                reg.assert_alive(id).is_ok(),
+                "{id:?} should be alive before invalidation"
+            );
+        }
+
+        reg.invalidate_target(&target);
+
+        // Target and its dependents are dead.
+        for id in [&target, &inspector, &walker, &console] {
+            assert!(
+                matches!(reg.assert_alive(id), Err(RdpError::ActorDestroyed { .. })),
+                "{id:?} should be dead after target invalidation"
+            );
+        }
+
+        // Unrelated fronts are unaffected.
+        assert!(
+            reg.assert_alive(&unrelated_target).is_ok(),
+            "unrelated target must still be alive"
+        );
+        assert!(
+            reg.assert_alive(&unrelated_console).is_ok(),
+            "unrelated console must still be alive"
+        );
+    }
+
     // ── performance bench ────────────────────────────────────────────────────
 
     #[test]

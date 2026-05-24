@@ -4,6 +4,7 @@ mod check_dead_primitives;
 mod check_discipline_regression;
 mod check_firefox_refs;
 mod check_iteration_plan;
+mod check_oneway_conformance;
 mod check_todo_annotations;
 
 use anyhow::Result;
@@ -34,6 +35,8 @@ enum Commands {
     CheckFirefoxRefs(check_firefox_refs::Args),
     /// Fail if an actor source file was changed without a corresponding kb/rdp/actors/*.md update.
     CheckActorKbSync(check_actor_kb_sync::Args),
+    /// Fail if any actor_request call targets a method declared oneway: true in the Firefox spec.
+    CheckOnewayConformance(check_oneway_conformance::Args),
 }
 
 fn main() -> Result<()> {
@@ -46,5 +49,6 @@ fn main() -> Result<()> {
         Commands::CheckDaemonLocks(args) => check_daemon_locks::run(args),
         Commands::CheckFirefoxRefs(args) => check_firefox_refs::run(args),
         Commands::CheckActorKbSync(args) => check_actor_kb_sync::run(args),
+        Commands::CheckOnewayConformance(args) => check_oneway_conformance::run(args),
     }
 }

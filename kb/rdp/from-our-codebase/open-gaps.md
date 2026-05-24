@@ -8,6 +8,7 @@ closed-in:
   - iter-61q
   - iter-61r
   - iter-61v
+  - iter-74
   - iter-61w
 ---
 
@@ -139,6 +140,40 @@ timeout heuristic with a deterministic wait on `dom-loading` /
 `dom-interactive` / `dom-complete` resources delivered through the
 ResourceCommand bus.  Throttle on the bus was set to zero so a fast
 cross-origin navigate cannot race the wait setup.
+
+### oneway-method-hangs
+
+closed-in: iter-74
+
+Methods declared `oneway: true` in Firefox specs never send a reply.
+Before iter-74, ff-rdp called `actor_request` on them, which blocked
+until the socket read timeout (≥10s). Fixed by routing all oneway
+calls through `actor_send`. Full list: `watcher.unwatchTargets`,
+`watcher.unwatchResources`, `watcher.clearResources`, `root.unwatchResources`,
+`root.clearResources`, `reflow.start`, `reflow.stop`, `walker.clearPicker`.
+The xtask `check-oneway-conformance` CI gate prevents regression.
+See [[rdp/protocol/message-format]] §"Oneway methods".
+
+### sibling-packet-loss
+
+closed-in: iter-74
+
+`recv_reply_from` and `recv_event_from` silently dropped packets from
+actors other than the one being awaited. This caused cross-actor events
+(WatcherActor resource batches, intermediate `consoleAPICall` events during
+`evaluateJSAsync`) to be lost. Fixed by forwarding all non-matching packets
+to the event sink. Transport invariant is now: no packet read off the wire
+is ever discarded. See [[rdp/protocol/message-format]] §"Transport invariant".
+
+### registry-lifecycle-on-target-destroyed
+
+closed-in: iter-74
+
+`target-destroyed-form` events from the WatcherActor were not cascaded to
+dependent fronts (inspector, walker, console) in the registry. Stale actor
+IDs remained alive, causing `ActorGone` errors on subsequent operations.
+Fixed by `dispatch_watcher_event` → `Registry::invalidate_target`, which
+BFS-cascades invalidation from the target root to all dependent fronts.
 
 ### locale-pin
 
