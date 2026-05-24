@@ -32,12 +32,12 @@ pub struct IndexOpts<'a> {
     pub format: &'a str,
     pub cross_origin: bool,
     pub ignore_robots: bool,
-    pub cookies_from: Option<&'a Path>,
-    pub bearer: Option<&'a str>,
     pub login_script: Option<&'a Path>,
     pub check: bool,
     pub page_map: Option<&'a Path>,
     pub report: Option<&'a Path>,
+    /// When true, suppress the crawl summary JSON line on stdout.
+    pub silent: bool,
 }
 
 /// Entry point for `ff-rdp index`.
@@ -203,16 +203,18 @@ fn run_crawl(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
     write_page_map_atomic(opts.out, &map, opts.format)
         .map_err(|e| AppError::User(format!("writing page-map: {e}")))?;
 
-    let result = serde_json::json!({
-        "results": {
-            "pages": page_count,
-            "forms": form_count,
-            "api_routes": 0,
-            "out": opts.out.display().to_string()
-        },
-        "total": 1
-    });
-    println!("{result}");
+    if !opts.silent {
+        let result = serde_json::json!({
+            "results": {
+                "pages": page_count,
+                "forms": form_count,
+                "api_routes": 0,
+                "out": opts.out.display().to_string()
+            },
+            "total": 1
+        });
+        println!("{result}");
+    }
     Ok(())
 }
 
@@ -227,10 +229,12 @@ fn run_check(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
         .map_err(|e| AppError::User(format!("loading page-map: {e}")))?;
 
     // Run a fresh crawl using the existing map's base_url.
+    // Write into a temp directory so write_page_map_atomic can persist the file
+    // there; tempdir cleanup happens when `tmp_dir` is dropped.
     let fresh_base = opts.base_url.unwrap_or(&existing.base_url).to_owned();
-    let tmp = tempfile::NamedTempFile::new()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("creating temp file: {e}")))?;
-    let tmp_path = tmp.path().to_path_buf();
+    let tmp_dir = tempfile::tempdir()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("creating temp dir: {e}")))?;
+    let tmp_path = tmp_dir.path().join("fresh.json");
 
     let crawl_opts = IndexOpts {
         base_url: Some(&fresh_base),
@@ -242,12 +246,11 @@ fn run_check(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
         format: "json",
         cross_origin: opts.cross_origin,
         ignore_robots: opts.ignore_robots,
-        cookies_from: opts.cookies_from,
-        bearer: opts.bearer,
         login_script: opts.login_script,
         check: false,
         page_map: None,
         report: None,
+        silent: true,
     };
     run_crawl(cli, &crawl_opts)?;
 
@@ -295,12 +298,26 @@ struct CrawledPage {
     auth_redirect: bool,
 }
 
+/// Known login-related path segments for the `is_login_url` heuristic.
+const LOGIN_SEGMENTS: &[&str] = &["login", "signin", "sign-in", "sso", "auth", "oauth"];
+
 /// Heuristic: does this URL look like a login/auth page?
+///
+/// Matches whole path segments (split on `/`) against known login segment names
+/// to avoid false positives from substrings (e.g. "author" containing "auth").
 fn is_login_url(url: &str) -> bool {
-    let lower = url.to_lowercase();
-    ["sign-in", "signin", "login", "auth", "/sso"]
-        .iter()
-        .any(|s| lower.contains(s))
+    // Extract just the path portion (strip scheme + host if present).
+    let path = if let Some(after_scheme) = url.find("://") {
+        let rest = &url[after_scheme + 3..];
+        rest.find('/').map_or(rest, |i| &rest[i..])
+    } else {
+        url
+    };
+    // Strip query and fragment.
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+
+    path.split('/')
+        .any(|seg| LOGIN_SEGMENTS.contains(&seg.to_lowercase().as_str()))
 }
 
 fn crawl_page(
@@ -582,9 +599,11 @@ fn parse_links_from_json(json_str: &str, base_url: &str) -> (Vec<Link>, Vec<Stri
             .and_then(Value::as_str)
             .map(str::to_owned);
 
-        // Enqueue same-origin URLs.
+        // Enqueue same-origin URLs, stripping fragments so the same path is not
+        // enqueued twice (e.g. `/page#section` and `/page` are the same page).
         if href.starts_with(base_url) {
-            outgoing.push(href.clone());
+            let href_no_frag = strip_query_fragment(&href).to_owned();
+            outgoing.push(href_no_frag);
         }
 
         let path = item
@@ -606,8 +625,18 @@ fn parse_links_from_json(json_str: &str, base_url: &str) -> (Vec<Link>, Vec<Stri
 // Utilities
 // ---------------------------------------------------------------------------
 
+/// Strip the query string and fragment from a URL, returning a borrow into the
+/// original string.
+fn strip_query_fragment(url: &str) -> &str {
+    url.split(['?', '#']).next().unwrap_or(url)
+}
+
 /// Convert a URL to a stable slug key (path-relative, slashes → dashes).
+///
+/// Query strings and fragments are stripped so that `/page?foo=1` and `/page`
+/// map to the same slug.
 fn url_to_slug(url: &str, base_url: &str) -> String {
+    let url = strip_query_fragment(url);
     let path = url.strip_prefix(base_url).unwrap_or(url);
     let path = path.trim_matches('/');
     if path.is_empty() {
@@ -620,25 +649,47 @@ fn url_to_slug(url: &str, base_url: &str) -> String {
 ///
 /// Returns an empty `Vec` on any error (fail-open: we don't want a missing
 /// robots.txt to block the crawl).
-fn fetch_disallowed_paths(base_url: &str) -> Vec<String> {
+///
+/// Returns `None` if the entire site is disallowed (`Disallow: /` or
+/// `Disallow: /*`).
+fn fetch_disallowed_paths_inner(base_url: &str) -> Option<Vec<String>> {
+    use std::io::Read as _;
     let robots_url = format!("{base_url}/robots.txt");
-    let Ok(resp) = ureq::get(&robots_url).call() else {
-        return Vec::new();
-    };
-    let Ok(body_str) = resp.into_body().read_to_string() else {
-        return Vec::new();
-    };
+    let resp = ureq::get(&robots_url).call().ok()?;
+    let mut limited = resp.into_body().into_reader().take(512 * 1024);
+    let mut body_str = String::new();
+    limited.read_to_string(&mut body_str).ok()?;
+
     let mut paths = Vec::new();
     for line in body_str.lines() {
         let line = line.trim();
         if let Some(path) = line.strip_prefix("Disallow:") {
             let p = path.trim();
-            if !p.is_empty() && p != "/" {
+            if p == "/" || p == "/*" {
+                // Entire site disallowed.
+                return None;
+            }
+            if !p.is_empty() {
                 paths.push(p.to_owned());
             }
         }
     }
-    paths
+    Some(paths)
+}
+
+/// Fetch disallowed paths from `robots.txt`, returning an empty `Vec` if the
+/// file is missing or unreadable, and an empty `Vec` if the entire site is
+/// disallowed (callers should check `disallowed_paths` against each URL path).
+///
+/// When `None` is returned the crawl should be skipped entirely; we represent
+/// "entire site blocked" as `None` internally and convert to empty vec here so
+/// the crawler simply skips every URL (since every path starts with `/`).
+fn fetch_disallowed_paths(base_url: &str) -> Vec<String> {
+    match fetch_disallowed_paths_inner(base_url) {
+        Some(paths) => paths,
+        // None means the entire site is disallowed — treat as blocking "/".
+        None => vec!["/".to_owned()],
+    }
 }
 
 /// Write a page-map atomically (write to temp file then rename).
@@ -651,9 +702,13 @@ pub fn write_page_map_atomic(path: &Path, map: &PageMap, format: &str) -> anyhow
             .with_context(|| format!("creating directory '{}'", parent.display()))?;
     }
 
-    let content = match format {
+    let format_lower = format.to_lowercase();
+    let content = match format_lower.as_str() {
         "yaml" | "yml" => serde_yaml::to_string(map).context("serialising page-map as YAML")?,
-        _ => serde_json::to_string_pretty(map).context("serialising page-map as JSON")?,
+        "json" => serde_json::to_string_pretty(map).context("serialising page-map as JSON")?,
+        other => {
+            anyhow::bail!("--format must be 'json', 'yaml', or 'yml', got: {other:?}");
+        }
     };
 
     write_atomic(path, content.as_bytes())

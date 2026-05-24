@@ -587,7 +587,7 @@ fn resolve_page_map_targets(
         verb: &str,
         step_num: usize,
     ) -> anyhow::Result<ElementTarget> {
-        if let Some(ref path) = target.page_map.clone() {
+        if let Some(ref path) = target.page_map {
             let pm = page_map.ok_or_else(|| {
                 anyhow::anyhow!(
                     "step {step_num} ({verb}): target uses `page_map: {path}` but no page-map is \
@@ -602,25 +602,24 @@ fn resolve_page_map_targets(
                 field: None,
             });
         }
-        if let Some(ref field_path) = target.field.clone() {
-            // `field:` is shorthand — the runner expands `pages.<page>.forms.<form>.fields.<name>`
-            // automatically if the path is already in dotted form; otherwise it wraps it.
-            let resolved_path = if field_path.starts_with("pages.") {
-                field_path.clone()
-            } else {
-                // Bare field name: not enough context; error with a hint.
+        if let Some(ref field_path) = target.field {
+            // `field:` requires a full dotted path like
+            // `pages.<page>.forms.<form>.fields.<name>`.  Bare field names
+            // (without a leading `pages.`) are rejected with an error — there
+            // is not enough context to expand them automatically.
+            if !field_path.starts_with("pages.") {
                 return Err(anyhow::anyhow!(
                     "step {step_num} ({verb}): `field: {field_path}` must be a full dotted path \
                      like `pages.<page>.forms.<form>.fields.<name>`"
                 ));
-            };
+            }
             let pm = page_map.ok_or_else(|| {
                 anyhow::anyhow!(
                     "step {step_num} ({verb}): target uses `field: {field_path}` but no page-map is \
                      loaded — pass `--page-map <path>` or place a map at `.ffrdp/page-map.json`"
                 )
             })?;
-            let selector = pm.resolve_target(&resolved_path)?;
+            let selector = pm.resolve_target(field_path)?;
             return Ok(ElementTarget {
                 selector: Some(selector),
                 ref_id: None,

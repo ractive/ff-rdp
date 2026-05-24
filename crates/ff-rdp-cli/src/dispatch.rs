@@ -966,8 +966,8 @@ fn dispatch_inner(
             format,
             cross_origin,
             ignore_robots,
-            cookies_from,
-            bearer,
+            cookies_from: _,
+            bearer: _,
             login_script,
             check,
             page_map,
@@ -983,12 +983,11 @@ fn dispatch_inner(
                 format,
                 cross_origin: *cross_origin,
                 ignore_robots: *ignore_robots,
-                cookies_from: cookies_from.as_deref(),
-                bearer: bearer.as_deref(),
                 login_script: login_script.as_deref(),
                 check: *check,
                 page_map: page_map.as_deref(),
                 report: report.as_deref(),
+                silent: false,
             };
             commands::index::run(cli, &opts)
         }

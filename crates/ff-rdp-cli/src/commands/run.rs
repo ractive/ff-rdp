@@ -25,6 +25,18 @@ pub struct RunCommandOpts<'a> {
     pub page_map_path: Option<&'a Path>,
 }
 
+/// Return `true` if any step in the script references a page-map target
+/// (`page_map:`, `field:`, or `api_route:`).
+fn script_needs_page_map(script: &crate::script::format::Script) -> bool {
+    use crate::script::format::Step;
+    script.steps.iter().any(|step| match step {
+        Step::Click(s) => s.target.page_map.is_some() || s.target.field.is_some(),
+        Step::Type(s) => s.target.page_map.is_some() || s.target.field.is_some(),
+        Step::AssertNetwork(s) => s.api_route.is_some(),
+        _ => false,
+    })
+}
+
 pub fn run(cli: &Cli, opts: &RunCommandOpts<'_>) -> Result<(), AppError> {
     let fmt_override = opts
         .format_override
@@ -39,14 +51,29 @@ pub fn run(cli: &Cli, opts: &RunCommandOpts<'_>) -> Result<(), AppError> {
         )));
     }
 
-    // Load page-map: explicit path wins; fall back to .ffrdp/page-map.json.
-    let page_map = match opts.page_map_path {
-        Some(path) => Some(
+    // Load page-map: explicit path wins; fall back to .ffrdp/page-map.json only
+    // when the script actually references page-map selectors.  If the default
+    // file is missing and the script doesn't need it, skip silently.
+    let page_map = if let Some(path) = opts.page_map_path {
+        Some(
             crate::page_map::PageMap::load(path)
                 .map_err(|e| AppError::User(format!("loading page-map: {e}")))?,
-        ),
-        None => crate::page_map::PageMap::load_default()
-            .map_err(|e| AppError::User(format!("loading default page-map: {e}")))?,
+        )
+    } else {
+        // Parse the script first to check if it needs a page-map.
+        // We do a lightweight parse here; run_script_file will parse again.
+        let script_fmt = crate::script::format::ScriptFormat::from_path(opts.script_path);
+        let script_content = std::fs::read_to_string(opts.script_path)
+            .map_err(|e| AppError::User(format!("reading script: {e}")))?;
+        let script = crate::script::format::parse_script_str(&script_content, script_fmt)
+            .map_err(|e| AppError::User(format!("parsing script: {e:#}")))?;
+
+        if script_needs_page_map(&script) {
+            crate::page_map::PageMap::load_default()
+                .map_err(|e| AppError::User(format!("loading default page-map: {e}")))?
+        } else {
+            None
+        }
     };
 
     let recorder = if let Some(out_path) = opts.record_output {

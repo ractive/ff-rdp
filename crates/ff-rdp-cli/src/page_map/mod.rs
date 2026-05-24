@@ -154,7 +154,7 @@ impl PageMap {
                 "page-map: api_route '{name}' not found — available: [{}]",
                 self.api_routes
                     .keys()
-                    .cloned()
+                    .map(String::as_str)
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -170,7 +170,11 @@ impl PageMap {
         self.flows.get(name).with_context(|| {
             format!(
                 "page-map: flow '{name}' not found — available: [{}]",
-                self.flows.keys().cloned().collect::<Vec<_>>().join(", ")
+                self.flows
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         })
     }
@@ -388,15 +392,6 @@ impl PageMapFormat {
         match path.extension().and_then(|e| e.to_str()) {
             Some("yaml" | "yml") => Self::Yaml,
             _ => Self::Json,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn from_str_hint(s: &str) -> Option<Self> {
-        match s {
-            "json" => Some(Self::Json),
-            "yaml" | "yml" => Some(Self::Yaml),
-            _ => None,
         }
     }
 }

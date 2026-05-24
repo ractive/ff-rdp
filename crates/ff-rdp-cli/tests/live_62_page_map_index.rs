@@ -8,9 +8,10 @@
 //!
 //! # Running
 //!
-//! Requires a running Firefox instance.  Gates on `FF_RDP_LIVE_TESTS=1`.
+//! Requires a running Firefox instance and network access.
+//! Gates on both `FF_RDP_LIVE_TESTS=1` AND `FF_RDP_LIVE_NETWORK_TESTS=1`.
 //!
-//!   FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live_62_page_map_index -- --nocapture
+//!   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo test -p ff-rdp-cli --test live_62_page_map_index -- --nocapture
 
 #[path = "common/mod.rs"]
 mod common;
@@ -31,10 +32,14 @@ use common::{LiveFirefox, base_args, ff_rdp_bin};
 /// - Output `map.json` parses and validates against `schemas/page-map.schema.json`.
 /// - At least one page entry is present.
 #[test]
-#[ignore = "requires Firefox and FF_RDP_LIVE_TESTS=1"]
+#[ignore = "requires Firefox and FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1"]
 fn live_index_local_fixture() {
-    if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
-        eprintln!("live_index_local_fixture: set FF_RDP_LIVE_TESTS=1 to run");
+    if std::env::var("FF_RDP_LIVE_TESTS").is_err()
+        || std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err()
+    {
+        eprintln!(
+            "live_index_local_fixture: set FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1 to run"
+        );
         return;
     }
 
@@ -69,7 +74,9 @@ fn live_index_local_fixture() {
     if !out.status.success() {
         // Fixture site may not be running — treat as soft skip.
         let stderr = String::from_utf8_lossy(&out.stderr);
-        if stderr.contains("Connection refused") || stderr.contains("navigate") {
+        if stderr.to_lowercase().contains("connection refused")
+            || stderr.to_lowercase().contains("failed to connect")
+        {
             eprintln!("live_index_local_fixture: fixture site not reachable — skipping");
             return;
         }
@@ -116,10 +123,14 @@ fn live_index_local_fixture() {
 /// - Exit code 0 (all three target forms resolve).
 /// - Stdout contains three step results.
 #[test]
-#[ignore = "requires Firefox and FF_RDP_LIVE_TESTS=1"]
+#[ignore = "requires Firefox and FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1"]
 fn live_runner_page_map_resolution() {
-    if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
-        eprintln!("live_runner_page_map_resolution: set FF_RDP_LIVE_TESTS=1 to run");
+    if std::env::var("FF_RDP_LIVE_TESTS").is_err()
+        || std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err()
+    {
+        eprintln!(
+            "live_runner_page_map_resolution: set FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1 to run"
+        );
         return;
     }
 
@@ -184,6 +195,10 @@ fn live_runner_page_map_resolution() {
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
+        out.status.success(),
+        "live_runner_page_map_resolution: ff-rdp run exited with non-zero status — stderr: {stderr}"
+    );
+    assert!(
         !stderr.contains("not yet implemented"),
         "live_runner_page_map_resolution: unexpected 'not yet implemented' error — stderr: {stderr}"
     );
@@ -200,10 +215,14 @@ fn live_runner_page_map_resolution() {
 /// - Exit code non-zero.
 /// - Stderr mentions "drift" or contains the drifted selector.
 #[test]
-#[ignore = "requires Firefox and FF_RDP_LIVE_TESTS=1"]
+#[ignore = "requires Firefox and FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1"]
 fn live_index_check_detects_drift() {
-    if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
-        eprintln!("live_index_check_detects_drift: set FF_RDP_LIVE_TESTS=1 to run");
+    if std::env::var("FF_RDP_LIVE_TESTS").is_err()
+        || std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err()
+    {
+        eprintln!(
+            "live_index_check_detects_drift: set FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1 to run"
+        );
         return;
     }
 
@@ -250,7 +269,9 @@ fn live_index_check_detects_drift() {
         .expect("ff-rdp index --check");
 
     let stderr = String::from_utf8_lossy(&out.stderr);
-    if stderr.contains("Connection refused") || stderr.contains("navigate") {
+    if stderr.to_lowercase().contains("connection refused")
+        || stderr.to_lowercase().contains("failed to connect")
+    {
         eprintln!("live_index_check_detects_drift: fixture site not reachable — skipping");
         return;
     }
