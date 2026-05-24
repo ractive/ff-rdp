@@ -44,7 +44,7 @@ use crate::actors::watcher::{
 use crate::error::ProtocolError;
 use crate::resources::resource::Resource;
 use crate::resources::resource_type::ResourceType;
-use crate::transport::RdpTransport;
+use crate::transport::{FramedWriter, RdpTransport};
 use crate::types::ActorId;
 
 // ---------------------------------------------------------------------------
@@ -217,6 +217,11 @@ impl ResourceCommand {
         if !to_unwatch.is_empty() {
             let wire_strs: Vec<&str> = to_unwatch.iter().map(|t| t.as_wire_str()).collect();
             WatcherActor::unwatch_resources(transport, &self.watcher_actor, &wire_strs)?;
+            // Remove zero-count entries so long-lived buses don't accumulate
+            // stale map entries for types that have been fully unwatched.
+            for t in &to_unwatch {
+                self.ref_counts.remove(t);
+            }
         }
 
         Ok(())
@@ -325,14 +330,104 @@ impl ResourceCommand {
             .filter(|t| self.ref_counts.get(*t).copied().unwrap_or(0) == 0)
             .copied()
             .collect();
-        self.pending_unwatch.clear();
 
         if to_unwatch.is_empty() {
+            // Nothing to flush — clear the deduplicated list (all had non-zero
+            // ref-counts, meaning new subscribers arrived before gc() ran).
+            self.pending_unwatch.clear();
             return Ok(());
         }
 
         let wire_strs: Vec<&str> = to_unwatch.iter().map(|t| t.as_wire_str()).collect();
-        WatcherActor::unwatch_resources(transport, &self.watcher_actor, &wire_strs).map(|_| ())
+        let result = WatcherActor::unwatch_resources(transport, &self.watcher_actor, &wire_strs);
+
+        match result {
+            Ok(_) => {
+                // Wire send succeeded — clear pending list and remove zero-count
+                // map entries so long-lived buses don't accumulate stale entries.
+                self.pending_unwatch.clear();
+                for t in &to_unwatch {
+                    self.ref_counts.remove(t);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                // Wire send failed — keep pending_unwatch so the caller can
+                // retry on the next gc() cycle.  Log so the failure is observable.
+                tracing::warn!(
+                    "gc: unwatchResources failed for {:?}: {e:#} — will retry on next gc() call",
+                    to_unwatch
+                        .iter()
+                        .map(|t| t.as_wire_str())
+                        .collect::<Vec<_>>()
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// Flush pending `unwatchResources` wire calls using a write-only transport.
+    ///
+    /// Like [`gc`](Self::gc) but uses a [`FramedWriter`] (write half of a split
+    /// transport) instead of a full [`RdpTransport`].  This is the correct API
+    /// for contexts where the transport has been split and only the write half is
+    /// available — e.g. the daemon's event-dispatcher thread.
+    ///
+    /// The packet is sent **fire-and-forget**: no reply is read.  Firefox will
+    /// send an `unwatchResources` acknowledgement but the daemon's reader thread
+    /// will consume it; we do not need to wait for it here.
+    ///
+    /// On success, `pending_unwatch` is cleared and zero-count `ref_counts`
+    /// entries are removed.  On failure, `pending_unwatch` is kept so the next
+    /// call can retry.
+    pub fn gc_fire_forget(&mut self, writer: &mut FramedWriter) {
+        if self.pending_unwatch.is_empty() {
+            return;
+        }
+
+        self.pending_unwatch
+            .sort_unstable_by_key(|t| t.as_wire_str());
+        self.pending_unwatch.dedup();
+        let to_unwatch: Vec<ResourceType> = self
+            .pending_unwatch
+            .iter()
+            .filter(|t| self.ref_counts.get(*t).copied().unwrap_or(0) == 0)
+            .copied()
+            .collect();
+
+        if to_unwatch.is_empty() {
+            self.pending_unwatch.clear();
+            return;
+        }
+
+        let types: Vec<serde_json::Value> = to_unwatch
+            .iter()
+            .map(|t| serde_json::json!(t.as_wire_str()))
+            .collect();
+        let packet = serde_json::json!({
+            "to": self.watcher_actor.as_ref(),
+            "type": "unwatchResources",
+            "resourceTypes": types,
+        });
+
+        match writer.send(&packet) {
+            Ok(()) => {
+                self.pending_unwatch.clear();
+                for t in &to_unwatch {
+                    self.ref_counts.remove(t);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "gc_fire_forget: failed to send unwatchResources for {:?}: {e:#}",
+                    to_unwatch
+                        .iter()
+                        .map(|t| t.as_wire_str())
+                        .collect::<Vec<_>>()
+                );
+                // Keep pending_unwatch for retry on next cycle.
+            }
+        }
     }
 
     /// Parse a `resources-available-array` event into typed [`Resource`] items.
@@ -855,6 +950,169 @@ mod tests {
             median_ns < BUDGET_NS,
             "bus fanout-4 median latency {median_ns} ns exceeds 5 ms budget — \
              Arc<Resource> clone overhead is too high"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-71b tests — ref_counts cleanup after gc() and unsubscribe()
+    // -----------------------------------------------------------------------
+
+    /// `gc_drops_flushed_ref_counts` (iter-71b AC):
+    /// After `gc()` flushes a type that was pruned via dead-channel detection,
+    /// `ref_counts` must no longer contain that key.  Long-lived daemons must
+    /// not accumulate stale zero-valued map entries.
+    #[test]
+    fn gc_drops_flushed_ref_counts() {
+        use std::io::{BufReader, Write as _};
+        use std::net::{TcpListener, TcpStream};
+
+        // Build a loopback transport so gc() can actually send the wire packet and
+        // receive the acknowledgement that actor_request requires.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        let mut transport = RdpTransport::from_parts(reader, writer);
+
+        // The server thread: read one request (unwatchResources) and reply with an ack.
+        // This prevents actor_request from failing with EOF.
+        let watcher_for_server = "conn0/watcher1".to_owned();
+        std::thread::spawn(move || {
+            let mut srv_reader = BufReader::new(server.try_clone().unwrap());
+            if let Ok(_req) = crate::transport::recv_from(&mut srv_reader) {
+                let ack = serde_json::json!({"from": watcher_for_server});
+                let frame = crate::transport::encode_frame(&serde_json::to_string(&ack).unwrap());
+                let _ = (&server).write_all(frame.as_bytes());
+            }
+        });
+
+        let watcher: ActorId = ActorId::from("conn0/watcher1");
+        let mut bus = ResourceCommand::new(watcher);
+
+        // Register a subscriber via add_subscriber_direct (no wire call).
+        let (tx, rx) = std::sync::mpsc::channel::<Arc<Resource>>();
+        bus.add_subscriber_direct(vec![ResourceType::NetworkEvent], tx);
+
+        // Verify ref-count is 1 after registration.
+        assert_eq!(bus.ref_count(ResourceType::NetworkEvent), 1);
+        assert!(
+            bus.ref_counts.contains_key(&ResourceType::NetworkEvent),
+            "ref_counts must contain the key before gc"
+        );
+
+        // Drop receiver to make the channel dead.
+        drop(rx);
+
+        // Dispatch an event — dead-channel pruning fires and queues NetworkEvent
+        // into pending_unwatch.
+        let packet = json!({
+            "type": "resources-available-array",
+            "array": [["network-event", [{
+                "actor": "conn0/netEvent1",
+                "method": "GET",
+                "url": "https://example.com/",
+                "isXHR": false,
+                "cause": {"type": "document"},
+                "startedDateTime": "2026-01-01T00:00:00Z",
+                "timeStamp": 1000.0,
+                "resourceId": 1_u64
+            }]]]
+        });
+        bus.dispatch_event(&packet);
+
+        assert_eq!(
+            bus.pending_unwatch_count(),
+            1,
+            "pending_unwatch should have 1 entry"
+        );
+        assert_eq!(
+            bus.ref_count(ResourceType::NetworkEvent),
+            0,
+            "ref-count should be 0 after prune"
+        );
+        assert!(
+            bus.ref_counts.contains_key(&ResourceType::NetworkEvent),
+            "ref_counts key still present before gc"
+        );
+
+        // gc() flushes the wire call and removes the zero-count entry.
+        let result = bus.gc(&mut transport);
+        assert!(
+            result.is_ok(),
+            "gc() must succeed with a responding mock server: {result:?}"
+        );
+
+        assert_eq!(
+            bus.pending_unwatch_count(),
+            0,
+            "pending_unwatch must be empty after gc"
+        );
+        assert!(
+            !bus.ref_counts.contains_key(&ResourceType::NetworkEvent),
+            "gc_drops_flushed_ref_counts: ref_counts must not contain NetworkEvent after gc"
+        );
+    }
+
+    /// After `unsubscribe()` drops the last subscriber for a type, the zero-
+    /// count entry is removed from `ref_counts` (iter-71b B5).
+    #[test]
+    fn unsubscribe_drops_zero_ref_count_entry() {
+        use std::io::{BufReader, Read, Write as _};
+        use std::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+
+        // Background thread to reply to watchResources + unwatchResources.
+        std::thread::spawn(move || {
+            use crate::transport::{encode_frame, recv_from};
+            let mut reader = BufReader::new(&server);
+            // Expect watchResources, reply with ack (no "type" field — actor replies
+            // must not carry a "type" field or recv_reply_from treats them as events).
+            if let Ok(req) = recv_from(&mut reader) {
+                let ack = serde_json::json!({"from": req["to"]});
+                let frame = encode_frame(&serde_json::to_string(&ack).unwrap());
+                let _ = (&server).write_all(frame.as_bytes());
+            }
+            // Expect unwatchResources, reply with ack.
+            if let Ok(req) = recv_from(&mut reader) {
+                let ack = serde_json::json!({"from": req["to"]});
+                let frame = encode_frame(&serde_json::to_string(&ack).unwrap());
+                let _ = (&server).write_all(frame.as_bytes());
+            }
+            // Drain remaining.
+            let _ = (&server).read_to_end(&mut Vec::new());
+        });
+
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        let mut transport = RdpTransport::from_parts(reader, writer);
+
+        let watcher: ActorId = ActorId::from("conn0/watcher1");
+        let mut bus = ResourceCommand::new(watcher);
+
+        // Subscribe — this sends watchResources on the wire.
+        let (sub_id, _rx) = bus
+            .subscribe(&mut transport, &[ResourceType::NetworkEvent])
+            .expect("subscribe");
+
+        assert_eq!(bus.ref_count(ResourceType::NetworkEvent), 1);
+        assert!(bus.ref_counts.contains_key(&ResourceType::NetworkEvent));
+
+        // Unsubscribe the last subscriber — should send unwatchResources and
+        // remove the zero-count entry.
+        bus.unsubscribe(&mut transport, sub_id)
+            .expect("unsubscribe");
+
+        assert_eq!(bus.ref_count(ResourceType::NetworkEvent), 0);
+        assert!(
+            !bus.ref_counts.contains_key(&ResourceType::NetworkEvent),
+            "unsubscribe_drops_zero_ref_count_entry: key must be removed after last unsubscribe"
         );
     }
 }

@@ -1195,7 +1195,17 @@ fn check_sub_script_containment(
     joined: &Path,
     top_dir: &Path,
 ) -> Result<(), AppError> {
-    if Path::new(raw_path).is_absolute() {
+    // Cross-platform absolute-path detection. `Path::is_absolute()` is host-
+    // sensitive: on Windows it does NOT treat `/etc/passwd` as absolute
+    // (Windows requires a drive letter or UNC prefix). For a script-runner
+    // security boundary, refuse the union of both conventions: anything that
+    // looks absolute on *either* Unix or Windows is rejected everywhere.
+    let starts_with_unix_root = raw_path.starts_with('/') || raw_path.starts_with('\\');
+    let starts_with_drive_letter = {
+        let bytes = raw_path.as_bytes();
+        bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    };
+    if Path::new(raw_path).is_absolute() || starts_with_unix_root || starts_with_drive_letter {
         return Err(AppError::User(format!(
             "sub-script path must be relative to top-level script dir (got absolute path: '{raw_path}', pass --allow-unsafe-script-paths to override)"
         )));

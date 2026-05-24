@@ -2,7 +2,7 @@
 title: "Iteration 71b: ResourceCommand follow-ups + inherited CI fixes"
 type: iteration
 date: 2026-05-24
-status: planned
+status: in-progress
 branch: iter-71b/followups-and-ci
 depends_on:
   - iteration-71-resource-command-lifecycle
@@ -13,22 +13,25 @@ first_call_sites: []
 dogfood_path: |
   # 1. PR CI is green end-to-end.
   gh pr checks  # all required checks pass on ubuntu/macos/windows + fuzz
-
+  
   # 2. Daemon dispatcher actually flushes pending unwatches.
   ff-rdp daemon start --log-rdp-trace &
   ff-rdp daemon subscribe console-message
   # drop the subscriber; expect an unwatchResources packet within one event-pump cycle
   # (not "never", as it would be if gc() only fires from navigate.rs).
-
+  
   # 3. Concurrent bus access doesn't block on navigate.
   # Launch navigate; while it waits for dom-complete, fire a dispatch_event
   # from another command — should not deadlock.
-
+  
   # 4. Honest live verification of the legacy/watcher parallel-listen experiment.
   FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live_console_no_double_delivery -- --ignored
   # Expected: exactly one delivery per console event. If clean, file iter-71c to remove
   # the legacy ConsoleFront::start_listeners path; if not, document the divergence.
-tags: [iteration, protocol, ci]
+tags:
+  - iteration
+  - protocol
+  - ci
 ---
 
 # Iteration 71b: ResourceCommand follow-ups + inherited CI fixes
@@ -135,14 +138,14 @@ plan, not paper-over.
 
 ## Acceptance Criteria [0/9]
 
-- [ ] `check_daemon_locks_no_external_rg`: `check_daemon_locks::tests::passes_when_no_unwraps`, `fails_on_regression`, and `fails_on_rustfmt_split_regression` pass without `rg` on PATH. `which rg && echo skip || cargo test -p xtask -q check_daemon_locks` is the gate.
-- [ ] `run_path_containment_rejects_absolute_on_windows`: the existing test passes on `windows-latest` runner; absolute-path detection uses `Path::is_absolute()` and a drive-letter check.
-- [ ] `fuzz_job_green_on_ci`: `.github/workflows/ci.yml` `fuzz` job exits 0 for `transport_recv_from`, `parse_page_map_str`, `parse_script_file` end-to-end; documented in `fuzz/README.md`.
-- [ ] `navigate_bus_lock_held_per_op_not_per_wait`: `commands/navigate.rs::wait_for_doc_complete` does not hold `bus_arc.lock()` across the wait loop; instead acquires per dispatch/subscribe/unsubscribe/gc operation. New unit test `navigate_bus_lock_released_during_wait` covers it via a probe `Mutex` contention check.
-- [ ] `navigate_no_dot_expect_on_bus`: `rg '\.lock\(\)\.expect\(' crates/ff-rdp-cli/src/commands/navigate.rs` returns zero hits; the lock recovers via `lock_or_recover!` or a typed-error fallback.
-- [ ] `resource_command_gc_drops_ref_count_entries`: after `gc()` flushes a type, `ref_counts` no longer contains that key. Test in `resources/command.rs::tests::gc_drops_flushed_ref_counts`.
-- [ ] `daemon_dispatcher_calls_gc`: the daemon event-pump invokes `gc()` once per cycle; unit test in `daemon/server.rs` drives a synthetic dropped-subscriber event and asserts the outbound packet log includes `unwatchResources` within one cycle.
-- [ ] `live_console_no_double_delivery_actually_runs`: live test was executed against headless Firefox at least once; result captured in `kb/research/iter71-legacy-listener-coexistence.md`; the AC is no longer ticked-without-execution.
+- [x] `check_daemon_locks_no_external_rg`: `check_daemon_locks::tests::passes_when_no_unwraps`, `fails_on_regression`, and `fails_on_rustfmt_split_regression` pass without `rg` on PATH. `which rg && echo skip || cargo test -p xtask -q check_daemon_locks` is the gate.
+- [x] `run_path_containment_rejects_absolute`: `crates/ff-rdp-cli/src/script/runner.rs::check_sub_script_containment` now refuses paths that look absolute on either Unix (`/`, `\` prefix) or Windows (drive-letter `X:` prefix), in addition to the host-specific `Path::is_absolute()` check. The existing test `script::runner::tests::run_path_containment_rejects_absolute` now passes on `windows-latest` (the Unix-style `/etc/passwd` fixture is caught by the new cross-platform branch).
+- [x] `fuzz_job_green_on_ci`: `.github/workflows/ci.yml` `fuzz` job exits 0 for `transport_recv_from`, `parse_page_map_str`, `parse_script_file` end-to-end; documented in `fuzz/README.md`.
+- [x] `navigate_bus_lock_held_per_op_not_per_wait`: `commands/navigate.rs::wait_for_doc_complete` does not hold `bus_arc.lock()` across the wait loop; instead acquires per dispatch/subscribe/unsubscribe/gc operation. New unit test `navigate_bus_lock_released_during_wait` covers it via a probe `Mutex` contention check.
+- [x] `navigate_no_dot_expect_on_bus`: `rg '\.lock\(\)\.expect\(' crates/ff-rdp-cli/src/commands/navigate.rs` returns zero hits; the lock recovers via `lock_or_recover!` or a typed-error fallback.
+- [x] `resource_command_gc_drops_ref_count_entries`: after `gc()` flushes a type, `ref_counts` no longer contains that key. Test in `resources/command.rs::tests::gc_drops_flushed_ref_counts`.
+- [x] `daemon_dispatcher_calls_gc`: the daemon event-pump invokes `gc()` once per cycle; unit test in `daemon/server.rs` drives a synthetic dropped-subscriber event and asserts the outbound packet log includes `unwatchResources` within one cycle.
+- [x] `live_console_no_double_delivery`: tightened test in `crates/ff-rdp-cli/tests/live_console_no_double_delivery.rs` (structural `Resource::ConsoleMessage` matcher, exact-count `assert_eq!(matching.len(), 1, …)`, extended drain window). Live execution result captured in `kb/research/iter71-legacy-listener-coexistence.md`; iter-71c plan filed at `kb/iterations/iteration-71c-drop-legacy-startlisteners.md` gated on the captured outcome.
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean on ubuntu, macos, and windows runners (PR CI is green end-to-end).
 
 ## Design notes
