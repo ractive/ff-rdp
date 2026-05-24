@@ -60,7 +60,7 @@ title: synthetic
 
 ## Acceptance Criteria
 
-- [x] `nonexistent_test_xyzzy_iter66`: this test was never written.
+- [x] `test_nonexistent_xyzzy_iter66`: this test was never written.
 ";
     let plan_path = dir.join("plan.md");
     fs::write(&plan_path, plan_text).unwrap();
@@ -86,10 +86,18 @@ title: synthetic
         "script should have failed for a non-existent test slug.\n\
          --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
+    let combined = format!("{stdout}{stderr}");
     assert!(
-        stdout.contains("nonexistent_test_xyzzy_iter66")
-            || stderr.contains("nonexistent_test_xyzzy_iter66"),
+        combined.contains("test_nonexistent_xyzzy_iter66"),
         "expected the missing-slug name in the failure output.\n\
+         --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    // Assert the strengthened iter-66 diagnostic specifically, so a future
+    // regression that swaps the slug-check for the generic backtick heuristic
+    // would be caught.
+    assert!(
+        combined.contains("no matching `fn` in the workspace"),
+        "expected the strengthened iter-66 'no matching `fn`' diagnostic.\n\
          --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
 }

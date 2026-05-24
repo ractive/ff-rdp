@@ -41,7 +41,7 @@ silently regressed.
 
 ### A. The four tests
 - [x] `test_refstore_capped` — lives in `crates/ff-rdp-cli/src/daemon/server.rs` alongside `RefStore`; inserts `MAX_REFS + 100` entries via `register()`, asserts the live count plateaus at `MAX_REFS` and a follow-up insert is dropped.
-- [x] `test_nav_boundary_url_truncated` — in `crates/ff-rdp-cli/src/daemon/buffer.rs`: feeds a 5000-char URL through `record_nav_boundary` and asserts the stored value is exactly 4096 bytes.
+- [x] `test_nav_boundary_url_truncated` — in `crates/ff-rdp-cli/src/daemon/buffer.rs`: feeds an over-long URL (`MAX_NAV_URL_LEN + 256` bytes, ending in a multi-byte emoji) through `record_nav_boundary` and asserts the stored value is `≤ MAX_NAV_URL_LEN` bytes and remains valid UTF-8 (truncation respects char boundaries).
 - [x] `test_token_comparison_constant_time` — rewritten as a structural assertion: extracts `compare_tokens()` from the inline auth path and verifies it returns bit-equivalent results to `subtle::ConstantTimeEq::ct_eq` across equal / first-byte-differ / last-byte-differ / length-mismatch / empty cases. No timing measurement.
 - [x] `daemon_poisoned_mutex_recovery` — poisons `state.buffer` by panicking while the lock is held, then drives `handle_daemon_message` with a `drain` request; asserts the dispatcher returns a normal `{"from": "daemon", "events": []}` response via `lock_or_recover!`.
 
@@ -52,10 +52,10 @@ silently regressed.
 ## Acceptance Criteria [6/6]
 
 - [x] `test_refstore_capped`: insert past `MAX_REFS` saturates the store at `MAX_REFS` and subsequent batches are dropped (`crates/ff-rdp-cli/src/daemon/server.rs`).
-- [x] `test_nav_boundary_url_truncated`: 5000-byte URL stored as exactly 4096 bytes (`crates/ff-rdp-cli/src/daemon/buffer.rs`).
+- [x] `test_nav_boundary_url_truncated`: over-long URL is stored at `≤ MAX_NAV_URL_LEN` bytes and remains valid UTF-8 (truncation respects char boundaries) (`crates/ff-rdp-cli/src/daemon/buffer.rs`).
 - [x] `test_token_comparison_constant_time`: structural assertion that `compare_tokens` is bit-equivalent to `subtle::ConstantTimeEq::ct_eq` across equal/differ/length-mismatch/empty inputs.
 - [x] `daemon_poisoned_mutex_recovery`: poisoned `state.buffer` → next `handle_daemon_message(drain)` returns a clean daemon response via `lock_or_recover!`.
-- [x] `ac_fidelity_check_validates_test_existence`: integration test in `crates/xtask/tests/ac_fidelity_check.rs` feeds a fake AC `- [x] nonexistent_test_xyzzy_iter66: …` to the script and asserts a non-zero exit; companion test confirms the happy path still passes.
+- [x] `ac_fidelity_check_validates_test_existence`: integration test in `crates/xtask/tests/ac_fidelity_check.rs` feeds a fake AC `- [x] test_nonexistent_xyzzy_iter66: …` to the script and asserts a non-zero exit plus the strengthened iter-66 diagnostic ("no matching `fn` in the workspace"); companion test confirms the happy path still passes.
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes

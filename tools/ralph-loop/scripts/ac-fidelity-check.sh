@@ -147,33 +147,36 @@ while IFS= read -r line; do
   # to opt out in environments where the source tree isn't available.
   slugs=$(printf '%s' "$text" | grep -oE '\b(live|test|bench)_[a-z0-9_]+' || true)
   if [[ -n "$slugs" ]]; then
-    slug_evidence=0
-    missing_slug=""
+    any_resolved=0
+    missing_slugs=()
     for slug in $slugs; do
-      if grep -qE "fn[[:space:]]+${slug}\b" "$DIFF_FILE"; then
-        slug_evidence=1
-        evidence_found=1
-        break
+      # Match added-or-context `fn <slug>` in the diff. Exclude removed lines
+      # (those starting with `-` but not `---`) so a deleted test cannot serve
+      # as evidence for an AC that names it.
+      if grep -E '^[+ ]' "$DIFF_FILE" | grep -qE "fn[[:space:]]+${slug}\b"; then
+        any_resolved=1
+        continue
       fi
       if [[ "$SKIP_TEST_EXISTENCE" != "1" ]] \
          && [[ -d crates ]] \
          && grep -rqE "fn[[:space:]]+${slug}\b" crates 2>/dev/null; then
-        # Pre-existing test in the workspace satisfies the AC — counts as
-        # evidence even if the branch diff didn't touch it.
-        slug_evidence=1
-        evidence_found=1
-        break
+        # Pre-existing test in the workspace satisfies this slug.
+        any_resolved=1
+        continue
       fi
-      missing_slug="$slug"
+      missing_slugs+=("$slug")
     done
-    # If a slug was named but resolves to no function anywhere, fail the AC
-    # immediately rather than letting later heuristics rescue it via a stray
-    # backtick match. This is the iter-66 tightening.
-    if [[ $slug_evidence -eq 0 ]] && [[ "$SKIP_TEST_EXISTENCE" != "1" ]]; then
-      echo "❌ ticked AC names test '$missing_slug' but no \`fn $missing_slug\` exists in the workspace: ${text}"
+    # iter-66 tightening: EVERY named slug must resolve. A single missing slug
+    # fails the AC even if a sibling slug was found — naming a non-existent
+    # test is the iter-61w failure mode.
+    if [[ ${#missing_slugs[@]} -gt 0 ]] && [[ "$SKIP_TEST_EXISTENCE" != "1" ]]; then
+      echo "❌ ticked AC names test(s) [${missing_slugs[*]}] with no matching \`fn\` in the workspace: ${text}"
       FAILED=$((FAILED + 1))
       FAILED_LINES+=("$line")
       continue
+    fi
+    if [[ $any_resolved -eq 1 ]]; then
+      evidence_found=1
     fi
   fi
 

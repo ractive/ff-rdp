@@ -45,11 +45,14 @@ macro_rules! lock_or_recover {
 
 /// Constant-time equality for auth-token bytes.
 ///
-/// Delegates to [`subtle::ConstantTimeEq`] so the comparison does not exit
-/// early on the first differing byte — preventing a length- or content-based
-/// timing oracle on the daemon's local auth token.  Centralised in one helper
-/// so the constant-time property is structurally testable (see
-/// `test_token_comparison_constant_time`).
+/// Delegates to [`subtle::ConstantTimeEq`] so the byte-comparison phase does
+/// not exit early on the first differing byte — preventing a *content-based*
+/// timing oracle on the daemon's local auth token.  Note that unequal-length
+/// inputs are still observable (the comparison returns `false` immediately
+/// for mismatched lengths), so this does not hide the stored token's length;
+/// length confidentiality is handled by the daemon's fixed-format auth
+/// handshake elsewhere.  Centralised in one helper so the delegation is
+/// structurally testable (see `test_token_comparison_constant_time`).
 fn compare_tokens(presented: &[u8], stored: &[u8]) -> bool {
     use subtle::ConstantTimeEq as _;
     presented.ct_eq(stored).into()
@@ -2441,20 +2444,27 @@ mod tests {
 
     // ── Theme I (iter-61x): iter-61w carry-over tests ────────────────────────
 
-    /// iter-66 AC: `compare_tokens` delegates to `subtle::ConstantTimeEq`.
+    /// iter-66 AC: `compare_tokens` is truth-table-equivalent to
+    /// `subtle::ConstantTimeEq::ct_eq` across representative input classes.
     ///
     /// This is a *structural* assertion, not a timing test.  Microbenchmark
     /// timing tests for constant-time comparators are flaky on shared CI hosts
-    /// (the original iter-61w version was deferred for exactly this reason) and
-    /// the real guarantee comes from the `subtle` crate, not from any wall-clock
-    /// measurement we can run in a `#[test]`.  Instead we verify the property
-    /// the API claims: that `compare_tokens(a, b)` is bit-equivalent to
-    /// `subtle::ConstantTimeEq::ct_eq` for every representative input class
-    /// (equal, first-byte differ, last-byte differ, length mismatch, empty).
-    /// If a future refactor silently swaps `ct_eq` for `==`, the equal-length
-    /// cases still pass but the length-mismatch cases would diverge from
-    /// `ct_eq`'s `false`-for-all-unequal-lengths contract — so this test
-    /// catches the regression deterministically.
+    /// (the original iter-61w version was deferred for exactly this reason)
+    /// and the real constant-time guarantee comes from the `subtle` crate
+    /// itself, not from any wall-clock measurement we can run in a `#[test]`.
+    ///
+    /// Honest scope: because `<[u8]>::eq` and `ct_eq` agree on every boolean
+    /// outcome, this test alone cannot distinguish a `compare_tokens` body
+    /// that uses `==` from one that uses `ct_eq`. What it pins down is (1)
+    /// the helper exists as a single named call site (so a code review can
+    /// audit "does this one helper use `ct_eq`?" rather than every caller),
+    /// and (2) its return value matches `ct_eq` for equal, single-byte-differ
+    /// (first and last), length-mismatch, and empty cases — catching common
+    /// buggy hand-rolled comparisons (e.g. truncating to the shorter length,
+    /// or treating empty-vs-empty as `false`).  The textual guarantee that
+    /// `compare_tokens` calls `ct_eq` lives in the function's source above
+    /// (`presented.ct_eq(stored).into()`); this test is the runtime safety
+    /// net under it.
     #[test]
     fn test_token_comparison_constant_time() {
         use subtle::ConstantTimeEq as _;
@@ -2478,7 +2488,7 @@ mod tests {
                 actual, expected,
                 "compare_tokens({a:?}, {b:?}) returned {actual}, but \
                  subtle::ConstantTimeEq::ct_eq returned {expected} — \
-                 compare_tokens must delegate to ct_eq, not `==`"
+                 truth-table divergence from ct_eq"
             );
         }
     }
@@ -2613,7 +2623,8 @@ mod tests {
         assert_eq!(
             resp["events"].as_array().map(Vec::len),
             Some(0),
-            "buffer was empty (and reset via poison recovery) so events should be []"
+            "test_state() starts with an empty buffer; the poison recovery \
+             returns the inner value as-is, so drain should yield []"
         );
     }
 }
