@@ -115,6 +115,25 @@ pub enum ActorErrorKind {
     /// This typically means the method was renamed or removed in a newer
     /// Firefox version (error code `"unrecognizedPacketType"`).
     UnrecognizedPacketType,
+    /// Required request parameter was missing (error code `"missingParameter"`).
+    ///
+    /// Terminal — a retry without fixing the request will hit the same error.
+    MissingParameter,
+    /// Request parameter had the wrong type (error code `"badParameterType"`).
+    ///
+    /// Terminal — a retry without fixing the request will hit the same error.
+    BadParameterType,
+    /// Method exists but is not implemented by this Firefox build
+    /// (error code `"notImplemented"`).
+    NotImplemented,
+    /// Calls were issued in the wrong order — e.g. `evaluateJSAsync` before
+    /// the console actor has finished `startListeners` (error code `"wrongOrder"`).
+    WrongOrder,
+    /// Generic protocol-level failure reported by Firefox
+    /// (error code `"protocolError"`).
+    ProtocolError,
+    /// Firefox could not classify the failure (error code `"unknownError"`).
+    UnknownError,
     /// An unrecognised error code — the raw string is preserved.
     Other(String),
 }
@@ -127,6 +146,12 @@ impl ActorErrorKind {
             "wrongState" => Self::WrongState,
             "threadWouldRun" => Self::ThreadWouldRun,
             "unrecognizedPacketType" => Self::UnrecognizedPacketType,
+            "missingParameter" => Self::MissingParameter,
+            "badParameterType" => Self::BadParameterType,
+            "notImplemented" => Self::NotImplemented,
+            "wrongOrder" => Self::WrongOrder,
+            "protocolError" => Self::ProtocolError,
+            "unknownError" => Self::UnknownError,
             _ => Self::Other(code.to_owned()),
         }
     }
@@ -139,6 +164,12 @@ impl std::fmt::Display for ActorErrorKind {
             Self::WrongState => write!(f, "wrongState"),
             Self::ThreadWouldRun => write!(f, "threadWouldRun"),
             Self::UnrecognizedPacketType => write!(f, "unrecognizedPacketType"),
+            Self::MissingParameter => write!(f, "missingParameter"),
+            Self::BadParameterType => write!(f, "badParameterType"),
+            Self::NotImplemented => write!(f, "notImplemented"),
+            Self::WrongOrder => write!(f, "wrongOrder"),
+            Self::ProtocolError => write!(f, "protocolError"),
+            Self::UnknownError => write!(f, "unknownError"),
             Self::Other(code) => write!(f, "{code}"),
         }
     }
@@ -243,20 +274,44 @@ impl ProtocolError {
     /// Terminal errors (retry would not help):
     /// - `ActorError { UnrecognizedPacketType }` — method does not exist.
     /// - `ActorError { WrongState | ThreadWouldRun }` — page or debugger state.
+    /// - `ActorError { MissingParameter | BadParameterType }` — the request
+    ///   itself is wrong; retrying the same payload will keep failing.
     /// - `InvalidPacket` / `FrameTooLarge` — protocol mismatch.
     /// - `ConnectionFailed` — Firefox is not listening; retry won't help until
     ///   the user starts Firefox.
     pub fn is_transient(&self) -> bool {
-        matches!(
-            self,
+        // The terminal-ActorError arm below is exhaustive over `ActorErrorKind`
+        // on purpose: when a new variant is added in `error.rs`, the compiler
+        // forces a decision here rather than letting the new variant fall
+        // through to a silent default.
+        match self {
             Self::Timeout
-                | Self::RecvFailed(_)
-                | Self::SendFailed(_)
-                | Self::ActorError {
-                    kind: ActorErrorKind::UnknownActor,
-                    ..
-                }
-        )
+            | Self::RecvFailed(_)
+            | Self::SendFailed(_)
+            | Self::ActorError {
+                kind: ActorErrorKind::UnknownActor,
+                ..
+            } => true,
+            Self::ActorError {
+                kind:
+                    ActorErrorKind::MissingParameter
+                    | ActorErrorKind::BadParameterType
+                    | ActorErrorKind::NotImplemented
+                    | ActorErrorKind::WrongOrder
+                    | ActorErrorKind::ProtocolError
+                    | ActorErrorKind::UnknownError
+                    | ActorErrorKind::UnrecognizedPacketType
+                    | ActorErrorKind::WrongState
+                    | ActorErrorKind::ThreadWouldRun
+                    | ActorErrorKind::Other(_),
+                ..
+            }
+            | Self::ConnectionFailed(_)
+            | Self::InvalidPacket(_)
+            | Self::EvalNavigatedDuringEval
+            | Self::FrameTooLarge { .. }
+            | Self::BulkPacketUnsupported { .. } => false,
+        }
     }
 }
 
@@ -539,6 +594,76 @@ mod tests {
             message: String::new(),
         };
         assert!(!err.is_transient());
+    }
+
+    // ── New ActorErrorKind variants (iter-69) ───────────────────────────────
+
+    #[test]
+    fn actor_error_kind_from_code_new_variants() {
+        assert_eq!(
+            ActorErrorKind::from_code("missingParameter"),
+            ActorErrorKind::MissingParameter
+        );
+        assert_eq!(
+            ActorErrorKind::from_code("badParameterType"),
+            ActorErrorKind::BadParameterType
+        );
+        assert_eq!(
+            ActorErrorKind::from_code("notImplemented"),
+            ActorErrorKind::NotImplemented
+        );
+        assert_eq!(
+            ActorErrorKind::from_code("wrongOrder"),
+            ActorErrorKind::WrongOrder
+        );
+        assert_eq!(
+            ActorErrorKind::from_code("protocolError"),
+            ActorErrorKind::ProtocolError
+        );
+        assert_eq!(
+            ActorErrorKind::from_code("unknownError"),
+            ActorErrorKind::UnknownError
+        );
+    }
+
+    #[test]
+    fn actor_error_kind_display_new_variants() {
+        assert_eq!(
+            ActorErrorKind::MissingParameter.to_string(),
+            "missingParameter"
+        );
+        assert_eq!(
+            ActorErrorKind::BadParameterType.to_string(),
+            "badParameterType"
+        );
+        assert_eq!(ActorErrorKind::NotImplemented.to_string(), "notImplemented");
+        assert_eq!(ActorErrorKind::WrongOrder.to_string(), "wrongOrder");
+        assert_eq!(ActorErrorKind::ProtocolError.to_string(), "protocolError");
+        assert_eq!(ActorErrorKind::UnknownError.to_string(), "unknownError");
+    }
+
+    /// AC: `actor_error_kind_terminal_for_param_errors`.
+    #[test]
+    fn actor_error_kind_terminal_for_param_errors() {
+        for kind in [
+            ActorErrorKind::MissingParameter,
+            ActorErrorKind::BadParameterType,
+            ActorErrorKind::NotImplemented,
+            ActorErrorKind::WrongOrder,
+            ActorErrorKind::ProtocolError,
+            ActorErrorKind::UnknownError,
+        ] {
+            let err = ProtocolError::ActorError {
+                actor: "conn0/actor1".to_owned(),
+                kind: kind.clone(),
+                error: kind.to_string(),
+                message: String::new(),
+            };
+            assert!(
+                !err.is_transient(),
+                "{kind:?} must NOT be classified as transient"
+            );
+        }
     }
 
     #[test]

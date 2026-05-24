@@ -19,8 +19,12 @@ fn cookies_server(store_objects_fixture: &str) -> MockRdpServer {
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
         .on("getWatcher", load_fixture("get_watcher_response.json"))
-        .on(
+        // Per the RDP spec, `watchResources` returns an empty (typed-less)
+        // reply; the `resources-available-array` event arrives separately as a
+        // push notification. The previous fixture conflated the two.
+        .on_with_followup(
             "watchResources",
+            load_fixture("watch_resources_response.json"),
             load_fixture("watch_resources_cookies_response.json"),
         )
         .on("getStoreObjects", load_fixture(store_objects_fixture))

@@ -271,6 +271,19 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
                     "{err} — the method is not supported by this Firefox version.\n\
                      hint: run `ff-rdp doctor` to check Firefox version compatibility."
                 )),
+                ff_rdp_core::ActorErrorKind::NotImplemented => Self::User(format!(
+                    "{err} — Firefox accepts this method name but has not implemented it.\n\
+                     hint: try a newer Firefox build, or report this as a missing feature."
+                )),
+                ff_rdp_core::ActorErrorKind::MissingParameter
+                | ff_rdp_core::ActorErrorKind::BadParameterType
+                | ff_rdp_core::ActorErrorKind::WrongOrder
+                | ff_rdp_core::ActorErrorKind::ProtocolError
+                | ff_rdp_core::ActorErrorKind::UnknownError => Self::RdpProtocol {
+                    actor: actor.clone(),
+                    name: error.clone(),
+                    message: message.clone(),
+                },
                 ff_rdp_core::ActorErrorKind::Other(_) => {
                     // Map to typed Protocol variant so callers get a deterministic exit code.
                     Self::RdpProtocol {

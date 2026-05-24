@@ -24,8 +24,11 @@ fn list_cookies_sends_session_string_in_get_store_objects() {
                 "actor": watcher_actor,
             }),
         )
-        .on(
+        // Real Firefox replies to `watchResources` with an empty (typed-less)
+        // packet first, then pushes `resources-available-array` events.
+        .on_with_followup(
             "watchResources",
+            json!({ "from": watcher_actor }),
             json!({
                 "from": watcher_actor,
                 "type": "resources-available-array",
