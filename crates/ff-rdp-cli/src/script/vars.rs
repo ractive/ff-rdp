@@ -434,6 +434,9 @@ mod tests {
 
     #[test]
     fn env_substitution_allows_safe_defaults() {
+        // Save & restore LANG so this test doesn't bleed into others that
+        // run in parallel and may read the variable.
+        let prev = std::env::var("LANG").ok();
         unsafe {
             std::env::set_var("LANG", "C.UTF-8");
         }
@@ -441,6 +444,12 @@ mod tests {
         let ctx = ctx(&vars, &[]);
         let out = substitute("{{env.LANG}}", &ctx).unwrap();
         assert_eq!(out, "C.UTF-8");
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("LANG", v),
+                None => std::env::remove_var("LANG"),
+            }
+        }
     }
 
     #[test]

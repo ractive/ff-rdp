@@ -138,9 +138,10 @@ Syntax: `{{env.NAME}}`, `{{vars.NAME}}`, `{{steps[N].results.FIELD}}`
   secret-name pattern (`*password*`, `*token*`, `*secret*`, `*key*`,
   `*passwd*`, `*pwd*`) are refused **unconditionally** — even an explicit
   allowlist entry will not unlock them; rename the variable or pass the
-  value via `--vars`.  Values from non-secret allowlisted env vars are
-  still substring-redacted from output when the variable name is
-  secret-shaped (legacy iter-61c behaviour).
+  value via `--vars`.  Output redaction for secret-shaped names continues
+  to apply to `vars.*` / `--vars` / `--vars-file` values (legacy
+  iter-61c behaviour); env interpolation for those names is blocked
+  outright by the policy above and never reaches output.
 - `vars.NAME` — reads from the script's `vars:` section or `--vars` /
   `--vars-file` overrides.  Secret-shaped names are auto-redacted.
 - `steps[N].results.FIELD` — reads a field from step N's result object

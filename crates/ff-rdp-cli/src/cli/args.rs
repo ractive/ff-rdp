@@ -1184,7 +1184,9 @@ Examples:
         page_map: Option<std::path::PathBuf>,
         /// Comma-separated list of env var names that {{env.X}} references may resolve.
         /// HOME/USER/LANG/LC_ALL/TZ are always allowed. Names matching the
-        /// secret-name pattern (*password*, *token*, *secret*, *key*) are always refused.
+        /// secret-name pattern (*password*, *passwd*, *pwd*, *token*, *secret*,
+        /// *key*) are refused unconditionally — even an explicit entry here will
+        /// not unlock them. Rename the variable or pass the value via --vars.
         #[arg(
             long = "allow-env",
             value_name = "NAMES",
