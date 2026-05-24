@@ -92,7 +92,7 @@ bundle because they're individually too small to justify a PR each.
 - [x] Update `deny.toml`: add `[advisories] yanked = "deny"` (currently absent or `warn`).
 - [ ] CI smoke: a dry-run job that runs `gh attestation verify` against the artifact on PR (using `actions/attest-build-provenance`'s preview verify flow, or a local cosign re-verify). [deferred — new plan: kb/iterations/iteration-75b-attestation-smoke.md]
 
-## Acceptance Criteria [8/8]
+## Acceptance Criteria [10/10]
 
 - [x] `live_bulk_frame_oversize_rejected`: `crates/ff-rdp-cli/tests/live_bulk_cap.rs::live_bulk_frame_oversize_rejected` — connects to a local mock that announces `bulk … length:<2*max_frame>`, asserts `BulkFrameTooLarge` returned promptly, no body bytes read.  Gated `FF_RDP_LIVE_TESTS=1` (uses mock server, not Firefox).
 - [x] `bulk_frame_cap_send_side`: `crates/ff-rdp-core/src/transport.rs::bulk_frame_cap_send_side` — unit test, `check_outbound_bulk_size` refuses an oversize length.
@@ -101,7 +101,9 @@ bundle because they're individually too small to justify a PR each.
 - [x] `core_lib_forbids_unsafe`: `crates/ff-rdp-core/src/lib.rs::core_lib_forbids_unsafe` — pinned via an `include_str!`-based test that asserts the `#![forbid(unsafe_code)]` attribute is present in `lib.rs`.
 - [x] `transport_rejects_deep_json`: `crates/ff-rdp-core/src/transport.rs::transport_rejects_deep_json` — 200-level nested input returns `InvalidPacket`, does not panic or stack-overflow.
 - [x] `tab_navigated_scheme_change_warns`: `crates/ff-rdp-core/src/actors/tab.rs::tab_navigated_scheme_change_warns` — synthetic `tabNavigated` with scheme delta exercises the warn-level branch in `note_tab_navigated_scheme_change`.
-- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean; release workflow gains `attest-build-provenance` + `cargo cyclonedx`; `deny.toml` now has `[advisories] yanked = "deny"`.
+- [x] `workspace_lint_and_test_clean`: `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` all pass cleanly on the branch tip.
+- [x] `release_yml_has_attest_and_sbom`: `.github/workflows/release.yml` contains `actions/attest-build-provenance@…` and `cargo cyclonedx` steps for non-cross matrix entries.
+- [x] `deny_toml_yanked_deny`: `deny.toml` `[advisories]` block contains `yanked = "deny"`.
 
 ## Design notes
 

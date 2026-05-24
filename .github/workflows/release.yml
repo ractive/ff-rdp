@@ -150,8 +150,16 @@ jobs:
         shell: bash
         run: |
           # Rename SBOMs to be co-discoverable with the binary archive.
+          # The CLI SBOM is required — the attestation step references it by
+          # path, so a missing file would silently break verification.
+          test -f sbom/ff-rdp-cli-${{ matrix.target }}.cdx.json || {
+            echo "missing CLI SBOM sbom/ff-rdp-cli-${{ matrix.target }}.cdx.json" >&2
+            exit 1
+          }
           cp sbom/ff-rdp-cli-${{ matrix.target }}.cdx.json \
-             ff-rdp-${{ matrix.target }}.cdx.json || true
+             ff-rdp-${{ matrix.target }}.cdx.json
+          # Core SBOM is best-effort: not every matrix entry builds the core
+          # crate as a top-level package, so a missing file is tolerated.
           cp sbom/ff-rdp-core-${{ matrix.target }}.cdx.json \
              ff-rdp-core-${{ matrix.target }}.cdx.json || true
           ls ff-rdp-${{ matrix.target }}.*
