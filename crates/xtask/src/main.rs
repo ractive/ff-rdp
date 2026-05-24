@@ -1,4 +1,5 @@
 mod check_dead_primitives;
+mod check_discipline_regression;
 mod check_iteration_plan;
 mod check_todo_annotations;
 
@@ -21,6 +22,9 @@ enum Commands {
     CheckTodoAnnotations(check_todo_annotations::Args),
     /// Validate an iteration plan's frontmatter and required sections.
     CheckIterationPlan(check_iteration_plan::Args),
+    /// Verify the ralph-loop skill scripts mirror is in sync and replay
+    /// baselines (iter-61v fails, iter-61t passes) still hold.
+    CheckDisciplineRegression(check_discipline_regression::Args),
 }
 
 fn main() -> Result<()> {
@@ -29,5 +33,6 @@ fn main() -> Result<()> {
         Commands::CheckDeadPrimitives(args) => check_dead_primitives::run(args),
         Commands::CheckTodoAnnotations(args) => check_todo_annotations::run(args),
         Commands::CheckIterationPlan(args) => check_iteration_plan::run(args),
+        Commands::CheckDisciplineRegression(args) => check_discipline_regression::run(args),
     }
 }

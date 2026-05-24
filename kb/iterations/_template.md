@@ -15,6 +15,10 @@ dogfood_path: |
   ff-rdp <command> <args>
   # expected output shape or observable behavior
 tags: [iteration]
+# Add `skill-edit` if this iteration modifies files under ~/.claude/skills/.
+# Skill-edit iterations cannot run through ralph-loop (the cmux child workspace
+# has no write access to ~/.claude/skills/). Drive them by hand in a regular
+# Claude session. See iter-61z for the canonical example.
 ---
 
 # Iteration NN: <short title>

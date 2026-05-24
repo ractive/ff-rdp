@@ -228,3 +228,27 @@ Every iteration plan that introduces new pub items must declare `first_call_site
 **Implementation**: All three checks live in `crates/xtask` (a `publish = false` workspace crate). A pre-commit hook in `.githooks/pre-commit` runs the TODO check locally. The same checks run in the CI `discipline` job on every PR. See `CONTRIBUTING.md` for developer instructions.
 
 **Applies to**: `crates/xtask/`, `.githooks/pre-commit`, `.github/workflows/ci.yml`, `CLAUDE.md`, `kb/iterations/_template.md`.
+
+## 2026-05-24: Discipline skill integration (iter-61z)
+
+**Context**: iter-61y landed the in-repo discipline tooling (dead-primitive, todo-annotation, iteration-plan-lint) but deferred the two checks that have to live inside the ralph-loop skill itself — Phase 2 "Claims vs code" PR-description diff and the AC-fidelity merge gate. The cmux child workspace cannot write to `~/.claude/skills/`, so those couldn't be done from the same loop. The postmortem ([[iter-61m-61s-postmortem-loose-ends]]) lists them as mitigations #4 and #5.
+
+**Decision**: Close the deferral by editing the skill directly (outside the cmux loop) and add a regression check that pins the behaviour.
+
+### `claims-vs-code.sh`
+Extracts code-shaped tokens from `git log main..<branch>` commit messages — verb+symbol pairs (`adds Foo`, `implements Bar`), `::`-qualified paths, `SCREAMING_SNAKE_CASE`, and known kebab-event prefixes (`dom-*`, `chrome-*`, `target-*`). For each, greps the branch diff (excluding `kb/` and `*.md` to avoid the plan file producing false ✅s). Emits a `## Claims vs code` markdown section with ✅/❌ rows. Exit 1 if any ❌ remains. Phase 2 appends the report to the PR body so reviewers see the gap surface.
+
+### `ac-fidelity-check.sh`
+Parses the iteration plan's `## Acceptance Criteria` block. For each ticked checkbox, looks for evidence in the diff: a test-function slug, a backtick-quoted symbol, a `::`-qualified ident, or a `[deferred — new plan: <path>]` annotation pointing to an existing follow-up plan. Build-process ACs (`cargo fmt && cargo clippy ...`) are whitelisted. Exit 1 if any ticked AC lacks evidence.
+
+### `run-iteration.sh --replay <iter-id>`
+New replay mode that re-runs both checks against an already-merged branch. Finds the merge commit on main, derives the branch-side diff via `<merge>^1..<merge>^2`, and writes a structured report to `$RALPH_CACHE_DIR/replay-<iter-id>.txt`. Used as the regression baseline: `--replay 61v` fails (the dom-interactive / chrome-context tokens didn't actually land in iter-61v's code; iter-61x cleaned them up); `--replay 61t` passes.
+
+### `cargo xtask check-discipline-regression`
+Diffs `tools/ralph-loop/scripts/` against `~/.claude/skills/ralph-loop/scripts/` and bails on drift, then runs both replay baselines. Wired into the CI `discipline` job — on CI runners the skill dir is absent so the mirror-sync half is skipped, but the replay half still runs against the checked-in mirror. The two combined ensure the heuristics can't silently regress and the mirror can't go stale.
+
+**Motivation**: iter-61t..v had ticked ACs and confident commit messages for code that hadn't actually landed. The pattern was only caught retroactively in iter-61x's "honest commits" cleanup. Mechanical PR-time + merge-time gates make the gap visible while the implementing agent is still in context to fix it.
+
+**Trade-off**: The regex-based extraction is conservative and biased toward false ✅ (per the iter-61z plan's design notes — a false fail blocks all merges). It catches the obvious cases (a `RdpError::Navigation` token claimed but absent from the code diff) without being a fully precise lint. The replay baselines defend against future drift.
+
+**Applies to**: `~/.claude/skills/ralph-loop/scripts/{claims-vs-code,ac-fidelity-check,run-iteration}.sh`, `tools/ralph-loop/`, `crates/xtask/src/check_discipline_regression.rs`, `.github/workflows/ci.yml`, `CLAUDE.md`.
