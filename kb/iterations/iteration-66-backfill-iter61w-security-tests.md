@@ -55,7 +55,7 @@ silently regressed.
 - [x] `test_nav_boundary_url_truncated`: a > `MAX_NAV_URL_LEN` URL with a trailing multi-byte char is stored at ≤ 4096 bytes and remains valid UTF-8. (`crates/ff-rdp-cli/src/daemon/buffer.rs:377`)
 - [x] `test_token_comparison_constant_time`: test exercises `.ct_eq()` from `subtle::ConstantTimeEq` on matching/mismatching tokens, asserting timing parity within 10× as a regression guard that the call still routes through the CT comparator. (`crates/ff-rdp-cli/src/daemon/server.rs:2447`)
 - [x] `daemon_poisoned_mutex_recovery`: spawning a thread that panics while holding `state.ref_store`'s lock leaves the mutex poisoned; the next `handle_daemon_message("resolve-ref")` succeeds via `lock_or_recover!` and returns the pre-poison resolver. (`crates/ff-rdp-cli/src/daemon/server.rs`)
-- [x] `ac_fidelity_rejects_nonexistent_test_slug`: feeding a fabricated AC `- [x] test_nonexistent_xyzzy_iter66_guard: …` to the script returns non-zero with a message naming the missing slug. (`crates/xtask/tests/ac_fidelity_test_existence.rs`)
+- [x] `ac_fidelity_rejects_nonexistent_test_slug`: feeding a fabricated AC whose named slug does not exist as `fn <slug>` anywhere under `crates/` returns non-zero with a message naming the missing slug. Fixture and assertion live in `crates/xtask/tests/ac_fidelity_test_existence.rs`.
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
