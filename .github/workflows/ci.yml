@@ -126,3 +126,14 @@ jobs:
         # replay baselines run against the in-repo tools/ralph-loop/scripts
         # copy and validate that iter-61v fails / iter-61t passes.
         run: cargo run -p xtask -- check-discipline-regression
+      - name: Check actor ↔ kb sync
+        # Fails if an actor .rs file was changed without a kb/rdp/actors/*.md update.
+        # Plans with no firefox_refs key are accepted silently.
+        run: cargo run -p xtask -- check-actor-kb-sync --since origin/main
+      - name: Check firefox_refs (no-op in CI — no Firefox checkout)
+        # check-firefox-refs validates line ranges against the local Firefox checkout.
+        # CI runners don't have the checkout, so we run only against a plan that has
+        # no firefox_refs (iter-73 itself), which is accepted silently.
+        run: >
+          cargo run -p xtask -- check-firefox-refs
+          kb/iterations/iteration-73-spec-fidelity-gates.md

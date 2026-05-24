@@ -57,6 +57,46 @@ This validates:
   with `primitive` and `site` keys per entry
 - A `dogfood_path` frontmatter key or a `## Dogfood path` body section is present
 
+### Validate firefox_refs in an iteration plan
+
+If a plan has a `firefox_refs:` frontmatter key, validate that the cited line ranges
+exist in the local Firefox checkout:
+
+```sh
+FF_RDP_FIREFOX_PATH=/Users/james/devel/firefox \
+  cargo run -p xtask -- check-firefox-refs kb/iterations/iteration-NN-slug.md
+```
+
+Set `FF_RDP_FIREFOX_PATH` to your Firefox source tree. The default is `/Users/james/devel/firefox`.
+Plans with no `firefox_refs:` key are accepted silently. Added in iter-73.
+
+### Check actor ↔ kb sync
+
+If any `crates/ff-rdp-core/src/actors/<X>.rs` was changed, the corresponding
+`kb/rdp/actors/<X>.md` must also be updated (or a `// allow-actor-kb-skip: <reason>`
+annotation added to the first 20 lines of the actor file):
+
+```sh
+cargo run -p xtask -- check-actor-kb-sync --since origin/main
+```
+
+Added in iter-73. See the ACTOR_KB_MAP constant in `crates/xtask/src/check_actor_kb_sync.rs`
+for the full actor → kb path mapping.
+
+### rdp-spec-reviewer agent
+
+A `rdp-spec-reviewer` subagent is installed at `~/.claude/agents/rdp-spec-reviewer.md`
+(mirrored from `tools/agents/rdp-spec-reviewer.md`). When a PR touches actor files, the
+`/create-pr` skill invokes it and appends a `## Spec drift` section to the PR body.
+
+To invoke manually:
+```sh
+claude --agent rdp-spec-reviewer --input tools/agents/fixtures/synthetic-watcher-diff.patch
+```
+
+The agent mirror follows the same pattern as the ralph-loop scripts mirror: edit both
+`~/.claude/agents/rdp-spec-reviewer.md` and `tools/agents/rdp-spec-reviewer.md` in sync.
+
 ## Pre-commit hook
 
 A pre-commit hook that enforces the TODO annotation rules is included in `.githooks/`.

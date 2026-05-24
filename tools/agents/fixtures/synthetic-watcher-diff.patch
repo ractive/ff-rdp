@@ -1,0 +1,28 @@
+diff --git a/crates/ff-rdp-core/src/actors/watcher.rs b/crates/ff-rdp-core/src/actors/watcher.rs
+index abc1234..def5678 100644
+--- a/crates/ff-rdp-core/src/actors/watcher.rs
++++ b/crates/ff-rdp-core/src/actors/watcher.rs
+@@ -23,7 +23,7 @@ impl WatcherActor {
+     ///
+     /// Resource types: `"network-event"`, `"console-message"`, `"error-message"`, etc.
+     pub fn watch_resources(
+         transport: &mut RdpTransport,
+         watcher_actor: &ActorId,
+-        resource_types: &[&str],
++        resources: &[&str],
+     ) -> Result<Value, ProtocolError> {
+-        let types: Vec<Value> = resource_types.iter().map(|t| json!(t)).collect();
++        let types: Vec<Value> = resources.iter().map(|t| json!(t)).collect();
+         let params = json!({ "resourceTypes": types });
+@@ -57,9 +57,7 @@ impl WatcherActor {
+     /// Target types: `"frame"`, `"worker"`, `"process"`, etc.
+     pub fn watch_targets(
+         transport: &mut RdpTransport,
+         watcher_actor: &ActorId,
+         target_type: &str,
+     ) -> Result<Value, ProtocolError> {
+-        // oneway: true — Firefox does not reply to watchTargets; events arrive asynchronously
+-        // See devtools/shared/specs/watcher.js watchTargets method
+         let params = json!({ "targetType": target_type });
+         actor_request(
+             transport,
