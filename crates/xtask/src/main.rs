@@ -1,3 +1,4 @@
+mod check_daemon_locks;
 mod check_dead_primitives;
 mod check_discipline_regression;
 mod check_iteration_plan;
@@ -25,6 +26,8 @@ enum Commands {
     /// Verify the ralph-loop skill scripts mirror is in sync and replay
     /// baselines (iter-61v fails, iter-61t passes) still hold.
     CheckDisciplineRegression(check_discipline_regression::Args),
+    /// Fail if `.lock().unwrap()` remains in the daemon (must use `lock_or_recover!`).
+    CheckDaemonLocks(check_daemon_locks::Args),
 }
 
 fn main() -> Result<()> {
@@ -34,5 +37,6 @@ fn main() -> Result<()> {
         Commands::CheckTodoAnnotations(args) => check_todo_annotations::run(args),
         Commands::CheckIterationPlan(args) => check_iteration_plan::run(args),
         Commands::CheckDisciplineRegression(args) => check_discipline_regression::run(args),
+        Commands::CheckDaemonLocks(args) => check_daemon_locks::run(args),
     }
 }

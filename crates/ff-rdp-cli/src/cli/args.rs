@@ -260,6 +260,13 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub allow_unsafe_urls: bool,
 
+    /// Allow file:// URL schemes for `navigate` and `perf compare` (off by
+    /// default; local files become exfiltratable via subsequent page-text /
+    /// eval / screenshot). Independent of --allow-unsafe-urls — that flag
+    /// only opens javascript:/data:, not file:.
+    #[arg(long, global = true)]
+    pub allow_file_urls: bool,
+
     /// Limit number of results returned (per-command defaults apply)
     #[arg(long, global = true)]
     pub limit: Option<usize>,

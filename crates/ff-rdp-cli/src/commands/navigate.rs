@@ -21,7 +21,7 @@ use super::network_events::{
     build_network_entries, drain_network_events_timed, drain_network_from_daemon, merge_updates,
     serialize_network_resources_for_buffer,
 };
-use super::url_validation::validate_url;
+use super::url_validation::validate_url_with_opts;
 
 /// Restore the socket read timeout to the value established at connect time.
 ///
@@ -391,9 +391,7 @@ pub fn run_core(
     url: &str,
     wait_opts: &WaitAfterNav<'_>,
 ) -> Result<serde_json::Value, AppError> {
-    if !cli.allow_unsafe_urls {
-        validate_url(url)?;
-    }
+    validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
     let tab_actor = ctx.target_tab_actor().clone();
@@ -514,9 +512,7 @@ pub fn run_with_network(
     wait_opts: &WaitAfterNav<'_>,
     network_timeout_ms: u64,
 ) -> Result<(), AppError> {
-    if !cli.allow_unsafe_urls {
-        validate_url(url)?;
-    }
+    validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
 

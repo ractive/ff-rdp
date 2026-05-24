@@ -254,11 +254,15 @@ fn render_table(rows: &[Value]) {
         }
     }
 
-    // Print header row.
+    // Print header row.  Object keys can be attacker-influenced (e.g. cookie
+    // names, header names), so sanitize before formatting.
     let header: Vec<String> = columns
         .iter()
         .enumerate()
-        .map(|(i, col)| format!("{col:<width$}", width = widths[i]))
+        .map(|(i, col)| {
+            let safe = ff_rdp_core::sanitize_for_terminal(col);
+            format!("{safe:<width$}", width = widths[i])
+        })
         .collect();
     println!("{}", header.join("  "));
 
@@ -282,24 +286,35 @@ fn render_table(rows: &[Value]) {
 
 /// Render a flat JSON object as a key-value list.
 ///
-/// Keys are right-padded to align values.
+/// Keys are sanitized before width is computed so alignment uses the
+/// rendered widths, not the raw (possibly attacker-controlled) keys.
 fn render_kv(map: &serde_json::Map<String, Value>) {
-    let max_key = map.keys().map(String::len).max().unwrap_or(0);
-    for (key, val) in map {
+    let sanitized: Vec<(String, &Value)> = map
+        .iter()
+        .map(|(k, v)| (ff_rdp_core::sanitize_for_terminal(k).into_owned(), v))
+        .collect();
+    let max_key = sanitized.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    for (key, val) in &sanitized {
         let cell = value_to_cell(val);
         println!("{key:<max_key$}  {cell}");
     }
 }
 
 /// Convert a JSON value to a display string suitable for table cells.
+///
+/// Attacker-influenced strings (cookie names, page titles, console output)
+/// can contain ANSI escape sequences that would otherwise reposition the
+/// cursor or clear the screen when printed; route everything through
+/// [`sanitize_for_terminal`] at this boundary.
 fn value_to_cell(val: &Value) -> String {
     match val {
-        Value::String(s) => s.clone(),
+        Value::String(s) => ff_rdp_core::sanitize_for_terminal(s).into_owned(),
         Value::Null => String::new(),
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
-        // For arrays / nested objects fall back to compact JSON.
-        other => other.to_string(),
+        // For arrays / nested objects fall back to compact JSON — also
+        // sanitized because nested strings may contain attacker data.
+        other => ff_rdp_core::sanitize_for_terminal(&other.to_string()).into_owned(),
     }
 }
 
@@ -430,5 +445,31 @@ mod tests {
         let envelope = json!({"results": [{"url": "https://a.com"}], "total": 1});
         // Should not error — jq+text combination is now valid.
         assert!(pipeline.finalize(&envelope).is_ok());
+    }
+
+    // ── iter-63 AC: ANSI escapes in table cells are sanitized ────────────────
+
+    #[test]
+    fn value_to_cell_strips_ansi_escapes_from_strings() {
+        let hostile = Value::String("foo\x1b[2Jbar".to_string());
+        let rendered = value_to_cell(&hostile);
+        assert!(
+            !rendered.as_bytes().contains(&0x1b),
+            "rendered cell must not contain raw ESC bytes, got: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("foo") && rendered.contains("bar"),
+            "non-escape content must survive sanitization, got: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn value_to_cell_strips_ansi_from_nested_objects() {
+        let hostile = json!({ "name": "evil\x1b[31m" });
+        let rendered = value_to_cell(&hostile);
+        assert!(
+            !rendered.as_bytes().contains(&0x1b),
+            "nested JSON must also be sanitized, got: {rendered:?}"
+        );
     }
 }
