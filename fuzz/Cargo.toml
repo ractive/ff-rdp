@@ -1,0 +1,47 @@
+[package]
+name = "ff-rdp-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Standalone crate — keep out of the main workspace so stable `cargo test
+# --workspace` does not try to build it (libfuzzer-sys needs nightly).
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ff-rdp-core = { path = "../crates/ff-rdp-core" }
+
+# Pulled in by the included parser modules.
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "transport_recv_from"
+path = "fuzz_targets/transport_recv_from.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_page_map_str"
+path = "fuzz_targets/parse_page_map_str.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_script_file"
+path = "fuzz_targets/parse_script_file.rs"
+test = false
+doc = false
+bench = false

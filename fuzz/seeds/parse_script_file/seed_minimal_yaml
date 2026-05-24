@@ -1,0 +1,4 @@
+version: 1
+steps:
+  - navigate:
+      url: https://example.com

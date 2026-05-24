@@ -2,7 +2,7 @@
 title: "Iteration 68: Supply-chain CI gates + parser fuzz harnesses"
 type: iteration
 date: 2026-05-24
-status: planned
+status: in-review
 branch: iter-68/supply-chain-and-fuzz
 depends_on:
   - iteration-63-daemon-lockrecover-and-quick-sec-fixes
@@ -41,29 +41,29 @@ Rust-2026 hygiene; close them together.
 ## Tasks
 
 ### A. PR-time supply-chain checks
-- [ ] Add a `cargo audit` step to `.github/workflows/ci.yml` (or whichever PR workflow runs `cargo test`). Required check.
-- [ ] Add a `cargo deny check` step (advisories + licences + bans). Required check.
-- [ ] Document the policy in `CONTRIBUTING.md`: how to handle a new advisory (yank vs pin vs ignore-with-reason).
+- [x] Add a `cargo audit` step to `.github/workflows/ci.yml` (or whichever PR workflow runs `cargo test`). Required check.
+- [x] Add a `cargo deny check` step (advisories + licences + bans). Required check.
+- [x] Document the policy in `CONTRIBUTING.md`: how to handle a new advisory (yank vs pin vs ignore-with-reason).
 
 ### B. Fuzz harnesses
-- [ ] `cargo install cargo-fuzz` documented in `CONTRIBUTING.md`.
-- [ ] `fuzz/Cargo.toml` + `fuzz/fuzz_targets/transport_recv_from.rs` wrapping `crates/ff-rdp-core/src/transport.rs::recv_from` with `libfuzzer_sys::fuzz_target!`.
-- [ ] `fuzz/fuzz_targets/parse_page_map_str.rs` wrapping the public page-map parser entry point.
-- [ ] `fuzz/fuzz_targets/parse_script_file.rs` wrapping the script-format parser.
-- [ ] A seed corpus per harness (small valid examples checked in).
+- [x] `cargo install cargo-fuzz` documented in `CONTRIBUTING.md`.
+- [x] `fuzz/Cargo.toml` + `fuzz/fuzz_targets/transport_recv_from.rs` wrapping `crates/ff-rdp-core/src/transport.rs::recv_from` with `libfuzzer_sys::fuzz_target!`.
+- [x] `fuzz/fuzz_targets/parse_page_map_str.rs` wrapping the public page-map parser entry point.
+- [x] `fuzz/fuzz_targets/parse_script_file.rs` wrapping the script-format parser.
+- [x] A seed corpus per harness (small valid examples checked in under `fuzz/seeds/`).
 
 ### C. CI fuzz run
-- [ ] PR workflow job that runs each harness for 60 s (`-max_total_time=60`). Fails on panic / sanitizer hit.
-- [ ] Document recovery procedure when a fuzz finding lands (open issue with minimised crash input).
+- [x] PR workflow job that runs each harness for 60 s (`-max_total_time=60`). Fails on panic / sanitizer hit.
+- [x] Document recovery procedure when a fuzz finding lands (open issue with minimised crash input).
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [6/6]
 
-- [ ] `pr_workflow_runs_cargo_audit`: CI workflow has a `cargo audit` step gated as required.
-- [ ] `pr_workflow_runs_cargo_deny`: CI workflow has a `cargo deny check` step gated as required.
-- [ ] `fuzz_transport_recv_from`: harness exists, builds, runs ≥60 s with seed corpus.
-- [ ] `fuzz_parse_page_map_str`: harness exists, builds, runs ≥60 s with seed corpus.
-- [ ] `fuzz_parse_script_file`: harness exists, builds, runs ≥60 s with seed corpus.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `pr_workflow_runs_cargo_audit`: CI workflow has a `cargo audit` step gated as required (`.github/workflows/ci.yml` `supply-chain` job).
+- [x] `pr_workflow_runs_cargo_deny`: CI workflow has a `cargo deny check` step gated as required (`.github/workflows/ci.yml` `supply-chain` job).
+- [x] `fuzz_transport_recv_from`: harness exists at `fuzz/fuzz_targets/transport_recv_from.rs`, builds (verified with `cargo check`), seed corpus in `fuzz/seeds/transport_recv_from/`; CI `fuzz` job runs ≥60 s.
+- [x] `fuzz_parse_page_map_str`: harness exists at `fuzz/fuzz_targets/parse_page_map_str.rs`, builds, seed corpus in `fuzz/seeds/parse_page_map_str/`; CI `fuzz` job runs ≥60 s.
+- [x] `fuzz_parse_script_file`: harness exists at `fuzz/fuzz_targets/parse_script_file.rs`, builds, seed corpus in `fuzz/seeds/parse_script_file/`; CI `fuzz` job runs ≥60 s.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 

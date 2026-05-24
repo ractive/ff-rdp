@@ -1,0 +1,3 @@
+version: 1
+base_url: https://example.com
+pages: {}

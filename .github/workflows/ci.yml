@@ -50,6 +50,53 @@ jobs:
       - name: Verify CLI runs
         run: cargo run -p ff-rdp-cli -- --help
 
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install cargo-audit and cargo-deny
+        uses: taiki-e/install-action@a1df9120380005ebdc788c62449b841b205541dd # v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - name: cargo audit
+        run: cargo audit
+      - name: cargo deny check
+        run: cargo deny check
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # nightly
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@a1df9120380005ebdc788c62449b841b205541dd # v2
+        with:
+          tool: cargo-fuzz
+      - name: Fuzz transport_recv_from (60 s)
+        working-directory: fuzz
+        run: cargo +nightly fuzz run transport_recv_from seeds/transport_recv_from -- -max_total_time=60
+      - name: Fuzz parse_page_map_str (60 s)
+        working-directory: fuzz
+        run: cargo +nightly fuzz run parse_page_map_str seeds/parse_page_map_str -- -max_total_time=60
+      - name: Fuzz parse_script_file (60 s)
+        working-directory: fuzz
+        run: cargo +nightly fuzz run parse_script_file seeds/parse_script_file -- -max_total_time=60
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts
+          path: |
+            fuzz/artifacts/
+            fuzz/corpus/
+
   discipline:
     runs-on: ubuntu-latest
     steps:
