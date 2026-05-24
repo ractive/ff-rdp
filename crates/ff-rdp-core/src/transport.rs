@@ -559,6 +559,11 @@ pub fn recv_reply_from(transport: &mut RdpTransport, actor: &str) -> Result<Valu
 /// from `actor` that do not match the predicate are also skipped (they aren't
 /// forwarded to the event sink because the caller has explicit semantics for
 /// what counts as "their" event).
+///
+/// If the target actor emits an `error`-bearing reply (no `type` field, per
+/// the protocol) it is surfaced as [`ProtocolError::ActorError`] rather than
+/// silently skipped — otherwise callers like [`ThreadActor::attach`] would
+/// block until the socket timeout instead of seeing the real failure.
 pub fn recv_event_from(
     transport: &mut RdpTransport,
     actor: &str,
@@ -567,8 +572,26 @@ pub fn recv_event_from(
     loop {
         let msg = transport.recv()?;
         let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
-        if from == actor && predicate(&msg) {
-            return Ok(msg);
+        if from == actor {
+            // A typed-less packet carrying `error` is an error reply from the
+            // actor — terminal, never a transient event to skip.
+            if msg.get("type").is_none()
+                && let Some(error) = msg.get("error").and_then(Value::as_str)
+            {
+                return Err(ProtocolError::ActorError {
+                    actor: from.to_owned(),
+                    kind: ActorErrorKind::from_code(error),
+                    error: error.to_owned(),
+                    message: msg
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned(),
+                });
+            }
+            if predicate(&msg) {
+                return Ok(msg);
+            }
         }
     }
 }
@@ -1207,6 +1230,38 @@ mod tests {
             ProtocolError::ActorError { kind, message, .. } => {
                 assert_eq!(kind, ActorErrorKind::MissingParameter);
                 assert!(message.contains("required field 'url'"));
+            }
+            other => panic!("expected ActorError, got {other:?}"),
+        }
+        server_thread.join().unwrap();
+    }
+
+    /// `recv_event_from` must surface an error reply from the target actor
+    /// instead of silently skipping it — otherwise callers like
+    /// `ThreadActor::attach` would hang until the socket timeout.
+    #[test]
+    fn recv_event_from_surfaces_error_reply() {
+        let (mut transport, server) = make_transport_pair();
+
+        let server_thread = std::thread::spawn(move || {
+            write_frame(
+                &server,
+                &serde_json::json!({
+                    "from": "thread1",
+                    "error": "wrongState",
+                    "message": "thread already attached"
+                }),
+            );
+        });
+
+        let err = recv_event_from(&mut transport, "thread1", |m| {
+            m.get("type").and_then(Value::as_str) == Some("paused")
+        })
+        .unwrap_err();
+        match err {
+            ProtocolError::ActorError { kind, message, .. } => {
+                assert_eq!(kind, ActorErrorKind::WrongState);
+                assert!(message.contains("already attached"));
             }
             other => panic!("expected ActorError, got {other:?}"),
         }

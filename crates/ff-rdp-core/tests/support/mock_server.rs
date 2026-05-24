@@ -27,17 +27,26 @@ use serde_json::Value;
 pub struct MockRdpServer {
     listener: TcpListener,
     greeting: Value,
-    /// Registered (method_type, response) pairs, matched in insertion order.
-    handlers: Vec<(String, Value)>,
-    /// Optional follow-up packets queued per method; sent immediately after
-    /// the matching reply. One entry per `on_with_followup` registration; if
-    /// a method has multiple matches the followups are popped in order.
-    followups: Vec<(String, Value)>,
+    /// Registered handlers, matched in insertion order; the first match wins.
+    handlers: Vec<Handler>,
     /// Receiver end of the injection channel.  Packets placed here are written
     /// to the connected client between request polls.
     inject_rx: mpsc::Receiver<Value>,
     /// Sender end kept so we can hand out a `MockServerHandle`.
     inject_tx: mpsc::Sender<Value>,
+}
+
+/// A single registered handler entry: the matching method `type`, the reply
+/// to send, and an optional follow-up packet bound to *this* registration.
+///
+/// Binding the followup to the handler entry (rather than keying by method
+/// name) prevents desynchronisation when a test registers multiple handlers
+/// for the same method: each reply emits exactly the followup that was
+/// registered with it.
+struct Handler {
+    method: String,
+    response: Value,
+    followup: Option<Value>,
 }
 
 impl MockRdpServer {
@@ -53,7 +62,6 @@ impl MockRdpServer {
                 "traits": {}
             }),
             handlers: Vec::new(),
-            followups: Vec::new(),
             inject_rx,
             inject_tx,
         }
@@ -74,7 +82,11 @@ impl MockRdpServer {
     /// respond with `response`. Handlers are matched in insertion order;
     /// the first match wins.
     pub fn on(mut self, method: &str, response: Value) -> Self {
-        self.handlers.push((method.to_owned(), response));
+        self.handlers.push(Handler {
+            method: method.to_owned(),
+            response,
+            followup: None,
+        });
         self
     }
 
@@ -83,9 +95,16 @@ impl MockRdpServer {
     ///
     /// Useful for actors that reply with a typed-less ack and then emit a
     /// typed event (e.g. `watchResources` → `resources-available-array`).
+    ///
+    /// The followup is bound to this specific registration: if a test
+    /// registers multiple handlers for the same method, only this entry's
+    /// reply will be paired with this followup.
     pub fn on_with_followup(mut self, method: &str, response: Value, followup: Value) -> Self {
-        self.handlers.push((method.to_owned(), response));
-        self.followups.push((method.to_owned(), followup));
+        self.handlers.push(Handler {
+            method: method.to_owned(),
+            response,
+            followup: Some(followup),
+        });
         self
     }
 
@@ -149,22 +168,26 @@ impl MockRdpServer {
                         .and_then(Value::as_str)
                         .unwrap_or_default();
 
-                    let response = self
-                        .handlers
-                        .iter()
-                        .find(|(m, _)| m == method)
-                        .map(|(_, r)| r.clone());
+                    // Find the first handler whose method matches. Handlers
+                    // remain registered (so repeated requests get repeated
+                    // replies), but their bound followup is `take()`n on first
+                    // match so it can never be reused against a different
+                    // handler registered for the same method.
+                    let matched = self.handlers.iter_mut().find(|h| h.method == method);
 
-                    let reply = if let Some(resp) = response {
-                        resp
+                    let (reply, followup) = if let Some(h) = matched {
+                        (h.response.clone(), h.followup.take())
                     } else {
                         // No handler matched — send a generic actor error so the
                         // client gets a reply and doesn't hang.
-                        serde_json::json!({
-                            "from": "root",
-                            "error": "unknownMethod",
-                            "message": format!("no handler for type={method:?}")
-                        })
+                        (
+                            serde_json::json!({
+                                "from": "root",
+                                "error": "unknownMethod",
+                                "message": format!("no handler for type={method:?}")
+                            }),
+                            None,
+                        )
                     };
 
                     let json = serde_json::to_string(&reply).expect("response encode");
@@ -172,9 +195,7 @@ impl MockRdpServer {
                         break;
                     }
 
-                    // Pop & send a followup packet for this method, if any.
-                    if let Some(idx) = self.followups.iter().position(|(m, _)| m == method) {
-                        let (_, followup) = self.followups.remove(idx);
+                    if let Some(followup) = followup {
                         let follow_json =
                             serde_json::to_string(&followup).expect("followup encode");
                         if writer
