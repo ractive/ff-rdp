@@ -1081,6 +1081,7 @@ fn execute_screenshot(step: &ScreenshotStep, cli: &Cli) -> Result<Value, AppErro
         base64_mode: step.base64,
         full_page: step.full_page,
         viewport_height: None,
+        output_root: None,
     };
     screenshot_run_core(cli, &opts)
 }

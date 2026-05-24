@@ -707,6 +707,7 @@ fn dispatch_inner(
             base64,
             full_page,
             viewport_height,
+            output_root,
         } => commands::screenshot::run(
             cli,
             &commands::screenshot::ScreenshotOpts {
@@ -714,6 +715,7 @@ fn dispatch_inner(
                 base64_mode: *base64,
                 full_page: *full_page,
                 viewport_height: *viewport_height,
+                output_root: output_root.as_deref(),
             },
         ),
         Command::Launch {
@@ -972,6 +974,7 @@ fn dispatch_inner(
             check,
             page_map,
             report,
+            output_root,
         } => {
             let opts = IndexOpts {
                 base_url: base_url.as_deref(),
@@ -988,6 +991,7 @@ fn dispatch_inner(
                 page_map: page_map.as_deref(),
                 report: report.as_deref(),
                 silent: false,
+                output_root: output_root.as_deref(),
             };
             commands::index::run(cli, &opts)
         }

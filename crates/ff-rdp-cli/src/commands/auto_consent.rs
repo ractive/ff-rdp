@@ -1,6 +1,8 @@
+use std::io::Write as _;
 use std::path::Path;
 
 use crate::error::AppError;
+use crate::util::safe_io::safe_create;
 
 /// Extension ID used by Consent-O-Matic on AMO.
 const EXTENSION_ID: &str = "gdpr@cavi.au.dk";
@@ -46,13 +48,24 @@ pub(crate) fn install(profile_dir: &Path) -> Result<(), AppError> {
 
     // Write atomically: write to a per-process temp file then rename, so
     // concurrent launches don't race on the destination path.
+    // Use safe_create (O_EXCL) because the tmp path is freshly randomized;
+    // if it already exists something unexpected happened and we should fail fast.
     let tmp_path = dest.with_extension(format!("xpi.tmp.{}", std::process::id()));
-    std::fs::write(&tmp_path, XPI_BYTES).map_err(|e| {
+    let mut tmp_file = safe_create(&tmp_path).map_err(|e| {
+        AppError::User(format!(
+            "failed to create temp file for Consent-O-Matic at {}: {e}",
+            tmp_path.display()
+        ))
+    })?;
+    tmp_file.write_all(XPI_BYTES).map_err(|e| {
         AppError::User(format!(
             "failed to write Consent-O-Matic to {}: {e}",
             tmp_path.display()
         ))
     })?;
+    // Close the file handle before renaming — Windows refuses to rename a file
+    // that still has an open handle in the current process.
+    drop(tmp_file);
     std::fs::rename(&tmp_path, &dest).map_err(|e| {
         AppError::User(format!(
             "failed to install Consent-O-Matic to {}: {e}",

@@ -14,6 +14,7 @@ mod page_map;
 mod port_owner;
 mod script;
 mod tab_target;
+mod util;
 
 use cli::Cli;
 use error::AppError;

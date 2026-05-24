@@ -422,6 +422,7 @@ dependencies = [
  "sha2",
  "subtle",
  "tempfile",
+ "thiserror",
  "tracing",
  "tracing-subscriber",
  "ureq",
