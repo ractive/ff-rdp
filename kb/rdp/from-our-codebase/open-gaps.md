@@ -35,6 +35,8 @@ Catalog of known RDP-layer gaps as of 2026-05-23, drawn from dogfooding sessions
 
 ## actor-leak-in-daemon
 
+**Status (iter-70)**: still partial. `ScopedGrip` is used in `commands/eval.rs:295` for daemon eval grips, but other grip-consuming call sites (inspector, network response body) still leak.  No soak test has been added.
+
 **Symptom**: Each `evaluateJSAsync` returning an object/longString allocates server-side actor IDs that are never released in long-running daemons. iter-54 task 4 landed `ObjectActor::release` + `ScopedGrip` wrapper as building blocks but didn't wire them into daemon-mode call sites or add a soak test.
 
 **Protocol layer**: We never send `release` to grip actors. Firefox's per-connection actor pool grows without bound.
@@ -42,6 +44,8 @@ Catalog of known RDP-layer gaps as of 2026-05-23, drawn from dogfooding sessions
 **Sessions**: surfaced in [[iteration-54-protocol-correctness]] task 4 (deferred sub-tasks 2 & 3); no dogfooding session has reproduced an OOM yet but a 1000-eval soak test was planned.
 
 ## legacy-startlisteners-coexistence
+
+**Status (iter-70)**: still open pending iter-71 deduplication work — no parallel-listen experiment has merged yet.
 
 **Symptom**: Console flow uses both `WebConsoleActor.startListeners(["PageError", "ConsoleAPI"])` *and* `WatcherActor.watchResources(["console-message", "error-message"])`. Running both risks double-delivery; iter-54 task 6 wanted to drop the legacy path.
 

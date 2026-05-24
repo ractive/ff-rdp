@@ -54,19 +54,23 @@ impl ScreenshotActor {
         prep: &PrepareCapture,
     ) -> Result<String, ProtocolError> {
         let snapshot_scale = prep.window_dpr * prep.window_zoom;
+        // The Firefox spec at devtools/shared/specs/screenshot.js:18 types
+        // `dpr` as `nullable:string`.  Serialise as a JSON string so the
+        // server-side typed-protocol validator accepts the request.
+        let dpr_str = format!("{}", prep.window_dpr);
 
         let mut args = if (snapshot_scale - 1.0).abs() < 1e-6 {
             // Omit snapshotScale when it equals the server default (1.0).
             json!({
                 "browsingContextID": browsing_context_id,
                 "fullpage": full_page,
-                "dpr": prep.window_dpr,
+                "dpr": dpr_str,
             })
         } else {
             json!({
                 "browsingContextID": browsing_context_id,
                 "fullpage": full_page,
-                "dpr": prep.window_dpr,
+                "dpr": dpr_str,
                 "snapshotScale": snapshot_scale,
             })
         };
@@ -192,6 +196,13 @@ mod tests {
             let args = &req["args"];
             assert_eq!(args["browsingContextID"], 42);
             assert_eq!(args["fullpage"], false);
+            // Spec types dpr as `nullable:string` — must be a JSON string.
+            assert!(
+                args["dpr"].is_string(),
+                "dpr must be a JSON string, got {:?}",
+                args["dpr"]
+            );
+            assert_eq!(args["dpr"].as_str().unwrap(), "1");
 
             server_reply(
                 &server,
@@ -317,6 +328,42 @@ mod tests {
         t.join().unwrap();
     }
 
+    /// iter-70 AC: outbound packet JSON has `dpr` as `Value::String`, not
+    /// `Value::Number`.  The Firefox spec at
+    /// `devtools/shared/specs/screenshot.js:18` types it as `nullable:string`.
+    #[test]
+    fn screenshot_dpr_serialised_as_string() {
+        let (mut transport, server) = make_transport_pair();
+        let actor_id = ActorId::from("server1.conn0.screenshotActor7");
+
+        let t = std::thread::spawn(move || {
+            let req = server_read(&server);
+            let args = &req["args"];
+            assert!(
+                matches!(args["dpr"], serde_json::Value::String(_)),
+                "dpr must be a JSON string per spec, got {:?}",
+                args["dpr"]
+            );
+            assert_eq!(args["dpr"].as_str().unwrap(), "1.5");
+
+            server_reply(
+                &server,
+                json!({
+                    "from": "server1.conn0.screenshotActor7",
+                    "value": { "data": "data:image/png;base64,x" }
+                }),
+            );
+        });
+
+        let prep = PrepareCapture {
+            window_dpr: 1.5,
+            window_zoom: 1.0,
+            rect: None,
+        };
+        ScreenshotActor::capture(&mut transport, &actor_id, 1, false, &prep).unwrap();
+        t.join().unwrap();
+    }
+
     #[test]
     fn capture_snapshot_scale_is_dpr_times_zoom() {
         let (mut transport, server) = make_transport_pair();
@@ -326,7 +373,8 @@ mod tests {
             let req = server_read(&server);
             let args = &req["args"];
             // dpr=2.0, zoom=1.5 → snapshotScale=3.0
-            assert_eq!(args["dpr"], 2.0);
+            // dpr is sent as a JSON string per the Firefox spec.
+            assert_eq!(args["dpr"], "2");
             assert!((args["snapshotScale"].as_f64().unwrap() - 3.0).abs() < f64::EPSILON);
 
             server_reply(

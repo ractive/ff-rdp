@@ -135,6 +135,71 @@ fn live_screenshot_full_page() {
 }
 
 // ---------------------------------------------------------------------------
+// iter-70: live_screenshot_dpr_string_accepted
+// ---------------------------------------------------------------------------
+
+/// `live_screenshot_dpr_string_accepted`:
+/// Take a screenshot and assert that Firefox does not return a spec-validator
+/// error for the `dpr` argument.  This pins the iter-70 fix where `dpr` is
+/// serialised as a JSON string (`nullable:string` per
+/// `devtools/shared/specs/screenshot.js:18`) rather than a JSON number.
+///
+/// AC: `live_screenshot_dpr_string_accepted` — screenshot succeeds end-to-end
+/// against live Firefox (which silently confirms the spec validator accepted
+/// the request).
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_screenshot_dpr_string_accepted() {
+    if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
+        eprintln!("live_screenshot_dpr_string_accepted: set FF_RDP_LIVE_TESTS=1 to run");
+        return;
+    }
+
+    let Some(ff) = LiveFirefox::headless_on_random_port() else {
+        eprintln!("live_screenshot_dpr_string_accepted: Firefox not available — skipping");
+        return;
+    };
+
+    let ff_args = || base_args(ff.port());
+
+    let nav = Command::new(ff_rdp_bin())
+        .args(ff_args())
+        .args(["navigate", "about:blank"])
+        .output()
+        .expect("navigate to about:blank");
+    assert!(
+        nav.status.success(),
+        "navigate failed — {}",
+        String::from_utf8_lossy(&nav.stderr)
+    );
+
+    let out = Command::new(ff_rdp_bin())
+        .args(ff_args())
+        .args(["screenshot", "--base64"])
+        .output()
+        .expect("screenshot --base64");
+
+    assert!(
+        out.status.success(),
+        "live_screenshot_dpr_string_accepted: screenshot exited non-zero — \
+         Firefox spec validator may have rejected dpr; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("invalid type") && !stderr.contains("validator"),
+        "stderr mentions a validator error: {stderr}"
+    );
+
+    let json = parse_json(&out);
+    assert!(
+        json["results"]["base64"].as_str().is_some(),
+        "screenshot should produce a base64 result"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Theme D (iter-61x): live_screenshot_full_page_dpr2 — 3rd attempt
 // ---------------------------------------------------------------------------
 

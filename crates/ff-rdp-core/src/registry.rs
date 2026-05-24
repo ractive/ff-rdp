@@ -10,6 +10,7 @@
 //!
 //! Subsequent calls on a dead front return [`RdpError::ActorDestroyed`].
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -51,6 +52,12 @@ pub struct FrontState {
     /// target is destroyed, all fronts with a matching `target_root` are
     /// invalidated atomically.
     pub target_root: Option<ActorId>,
+    /// Direct parent actor for chain-based invalidation.  When the parent is
+    /// destroyed, this front (and any of its own descendants) are invalidated
+    /// via BFS through the parent graph.  Used for actors that aren't owned by
+    /// a single target — e.g. `nodeActor`s created by a walker live under the
+    /// walker's lifetime, not the target's.
+    pub(crate) parent: Option<ActorId>,
     /// Whether the actor is still alive.  Set to `false` by [`Registry::invalidate_target`].
     pub alive: AtomicBool,
 }
@@ -60,6 +67,22 @@ impl FrontState {
         Self {
             kind,
             target_root,
+            parent: None,
+            alive: AtomicBool::new(true),
+        }
+    }
+
+    /// Create a new state with both `target_root` and an explicit `parent` actor.
+    #[cfg(test)]
+    pub(crate) fn with_parent(
+        kind: FrontKind,
+        target_root: Option<ActorId>,
+        parent: Option<ActorId>,
+    ) -> Self {
+        Self {
+            kind,
+            target_root,
+            parent,
             alive: AtomicBool::new(true),
         }
     }
@@ -96,6 +119,25 @@ impl Registry {
         self.inner.insert(id, FrontState::new(kind, target_root));
     }
 
+    /// Register an actor with an explicit parent for chain-based invalidation.
+    ///
+    /// Use this when the actor's lifetime is bounded by another actor (the
+    /// parent) rather than the top-level target — e.g. `nodeActor`s created
+    /// by a walker.  When the parent is destroyed via
+    /// [`Registry::invalidate_target`], every descendant reachable through
+    /// `parent` links is also marked dead.
+    #[cfg(test)]
+    pub(crate) fn register_with_parent(
+        &self,
+        id: ActorId,
+        kind: FrontKind,
+        target_root: Option<ActorId>,
+        parent: Option<ActorId>,
+    ) {
+        self.inner
+            .insert(id, FrontState::with_parent(kind, target_root, parent));
+    }
+
     /// Remove an actor from the registry.
     pub fn remove(&self, id: &ActorId) {
         self.inner.remove(id);
@@ -115,28 +157,52 @@ impl Registry {
         Ok(())
     }
 
-    /// Invalidate all fronts whose `target_root` matches `destroyed_target`.
+    /// Invalidate `actor` and every front transitively reachable from it via
+    /// `target_root` or `parent` links.
     ///
-    /// Sets their `alive` flag to `false` atomically.  Subsequent calls
-    /// through those fronts will return [`RdpError::ActorDestroyed`].
+    /// `actor` may be any registered actor ID — a TargetFront, a walker, or
+    /// any other front that owns descendants through `target_root`/`parent`.
     ///
-    /// Also invalidates the target front itself if it is registered.
-    pub fn invalidate_target(&self, destroyed_target: &ActorId) {
-        // Invalidate the target's own entry.
-        if let Some(state) = self.inner.get(destroyed_target) {
-            state.alive.store(false, Ordering::Release);
-        }
+    /// Implementation is BFS: starting from `actor`, mark all matching
+    /// entries dead, then sweep again with the newly-killed set as roots
+    /// until the frontier is empty.  This catches multi-level chains such as
+    /// `walker → nodeActor → nodeListActor` where intermediate actors would
+    /// be missed by a single-level sweep.
+    ///
+    /// Subsequent calls through invalidated fronts will return
+    /// [`RdpError::ActorDestroyed`].
+    pub fn invalidate_target(&self, actor: &ActorId) {
+        let mut frontier: HashSet<ActorId> = HashSet::new();
+        frontier.insert(actor.clone());
 
-        // Cascade to all fronts owned by this target.
-        for entry in self.inner.iter() {
-            if entry
-                .value()
-                .target_root
-                .as_ref()
-                .is_some_and(|root| root == destroyed_target)
-            {
-                entry.value().alive.store(false, Ordering::Release);
+        while !frontier.is_empty() {
+            // Mark every entry in the current frontier dead (idempotent).
+            for id in &frontier {
+                if let Some(state) = self.inner.get(id) {
+                    state.alive.store(false, Ordering::Release);
+                }
             }
+
+            // Find entries whose target_root or parent points at anything in
+            // the current frontier and weren't already dead — those become
+            // the next frontier.  Use a HashSet for O(1) membership and to
+            // dedupe `next`.
+            let mut next: HashSet<ActorId> = HashSet::new();
+            for entry in self.inner.iter() {
+                let state = entry.value();
+                if !state.is_alive() {
+                    continue;
+                }
+                let parent_match = state.parent.as_ref().is_some_and(|p| frontier.contains(p));
+                let root_match = state
+                    .target_root
+                    .as_ref()
+                    .is_some_and(|r| frontier.contains(r));
+                if parent_match || root_match {
+                    next.insert(entry.key().clone());
+                }
+            }
+            frontier = next;
         }
     }
 
@@ -331,6 +397,44 @@ mod tests {
             ),
             "walker owned by target must be dead"
         );
+    }
+
+    #[test]
+    fn registry_parent_chain_invalidation() {
+        // walker → nodeActor → nodeListActor: each linked via `parent`, none
+        // share a `target_root` with the walker.  Invalidating the walker
+        // must cascade through the parent chain to mark all three dead.
+        let reg = Registry::new();
+        let walker = make_id("walker1");
+        let node = make_id("node1");
+        let node_list = make_id("nodeList1");
+
+        reg.register(walker.clone(), FrontKind::Walker, None);
+        reg.register_with_parent(
+            node.clone(),
+            FrontKind::Other("nodeActor".into()),
+            None,
+            Some(walker.clone()),
+        );
+        reg.register_with_parent(
+            node_list.clone(),
+            FrontKind::Other("nodeListActor".into()),
+            None,
+            Some(node.clone()),
+        );
+
+        assert!(reg.assert_alive(&walker).is_ok());
+        assert!(reg.assert_alive(&node).is_ok());
+        assert!(reg.assert_alive(&node_list).is_ok());
+
+        reg.invalidate_target(&walker);
+
+        for id in [&walker, &node, &node_list] {
+            assert!(
+                matches!(reg.assert_alive(id), Err(RdpError::ActorDestroyed { .. })),
+                "{id:?} must be dead after walker invalidation",
+            );
+        }
     }
 
     #[test]
