@@ -2,7 +2,7 @@
 title: "Iteration 62: Page-map index (crawl, extract, emit JSON)"
 type: iteration
 date: 2026-05-24
-status: in-progress
+status: completed
 branch: iter-62/page-map-index
 depends_on:
   - iteration-61-script-runner-recorder
