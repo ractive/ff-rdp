@@ -2,27 +2,29 @@
 title: "Iteration 69: Reply-vs-event correctness + shared reply-loop helpers"
 type: iteration
 date: 2026-05-24
-status: in-review
+status: completed
 branch: iter-69/reply-vs-event
 depends_on:
   - iteration-61p-actor-registry-and-front-lifecycle
   - iteration-61q-resource-command-bus
 first_call_sites:
-  - primitive: "ff_rdp_core::transport::recv_reply_from"
-    site: "crates/ff-rdp-core/src/actor.rs::actor_request (replaces the inline loop)"
-  - primitive: "ff_rdp_core::transport::recv_event_from"
-    site: "crates/ff-rdp-core/src/actors/console.rs::evaluate_js_async + parse_eval_result"
+  - primitive: ff_rdp_core::transport::recv_reply_from
+    site: crates/ff-rdp-core/src/actor.rs::actor_request (replaces the inline loop)
+  - primitive: ff_rdp_core::transport::recv_event_from
+    site: crates/ff-rdp-core/src/actors/console.rs::evaluate_js_async + parse_eval_result
 dogfood_path: |
   # 1. Trigger an interleaved console event during an unrelated actor call.
   # The reply-loop must NOT pick the consoleAPICall packet as the reply.
   ff-rdp eval 'console.log("noise"); setTimeout(() => console.log("late"), 100); 42'
   # Expected: result == 42 (not 'undefined' or an Err from misclassified event).
-
+  
   # 2. ThreadActor.attach (the case the old comment cited as justification for the relaxed match).
   # Verify the new code routes 'paused' as an event and 'attach' reply as a reply.
   ff-rdp debug attach   # (or equivalent)
   # Expected: clean attach, 'paused' delivered via the event channel.
-tags: [iteration, protocol]
+tags:
+  - iteration
+  - protocol
 ---
 
 # Iteration 69: Reply-vs-event correctness + shared reply-loop helpers
