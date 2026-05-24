@@ -1,3 +1,9 @@
+// Security: forbid any `unsafe` block in the core library.  All FFI / OS-level
+// work lives in the CLI crate (daemon process management, script vars).  If a
+// dependency or generated code ever introduces an `unsafe` here the build
+// fails — see iter-75 (L-9).
+#![forbid(unsafe_code)]
+
 pub(crate) mod actor;
 pub(crate) mod actors;
 pub mod connection;
@@ -34,7 +40,7 @@ pub use actors::screenshot_content::{
 };
 pub use actors::storage::{CookieInfo, StorageActor};
 pub use actors::string::LongStringActor;
-pub use actors::tab::{TabActor, TabInfo, TargetInfo};
+pub use actors::tab::{TabActor, TabInfo, TargetInfo, note_tab_navigated_scheme_change};
 pub use actors::target::WindowGlobalTarget;
 pub use actors::thread::{SourceInfo, ThreadActor};
 pub use actors::watcher::{
@@ -55,3 +61,19 @@ pub use session::Session;
 pub use transport::{FramedReader, FramedWriter, RdpTransport};
 pub use types::{ActorId, Grip};
 pub use util::terminal::sanitize_for_terminal;
+
+#[cfg(test)]
+mod lib_attrs {
+    /// AC: `core_lib_forbids_unsafe` — the `#![forbid(unsafe_code)]` attribute
+    /// must be present at the top of `lib.rs`.  We pin it via a test that
+    /// reads the source so a casual reformat or refactor cannot silently
+    /// drop the guarantee.
+    #[test]
+    fn core_lib_forbids_unsafe() {
+        let src = include_str!("lib.rs");
+        assert!(
+            src.contains("#![forbid(unsafe_code)]"),
+            "lib.rs must contain `#![forbid(unsafe_code)]` (iter-75 L-9)"
+        );
+    }
+}

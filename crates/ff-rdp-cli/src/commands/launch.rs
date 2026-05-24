@@ -243,12 +243,23 @@ pub(crate) fn build_command(
         //
         // `into_path()` persists the directory so Firefox can read it; the
         // existing cleanup path on process exit remains in effect.
+        // iter-75 H-1: place the temp profile under the per-user state
+        // directory (`~/.local/state/ff-rdp/profiles` on Linux,
+        // `~/Library/Application Support/ff-rdp/profiles` on macOS,
+        // `%LOCALAPPDATA%\ff-rdp\profiles` on Windows) instead of the
+        // world-writable system temp directory.  See
+        // `crate::util::profile_dir::secure_profile_root` for the threat
+        // model and Windows ACL rationale.
+        let profile_root = crate::util::profile_dir::secure_profile_root()?;
         let tmp = tempfile::Builder::new()
             .prefix("ff-rdp-profile-")
             .rand_bytes(16)
-            .tempdir_in(std::env::temp_dir())
+            .tempdir_in(&profile_root)
             .map_err(|e| {
-                AppError::User(format!("failed to create temporary profile directory: {e}"))
+                AppError::User(format!(
+                    "failed to create temporary profile directory under {}: {e}",
+                    profile_root.display()
+                ))
             })?
             .keep();
         std::fs::write(tmp.join("user.js"), USER_JS).map_err(|e| {

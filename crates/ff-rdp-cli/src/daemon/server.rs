@@ -571,6 +571,14 @@ fn dispatch_firefox_message(
                     .to_owned();
                 let sequence = {
                     let mut buf = lock_or_recover!(state.buffer);
+                    // iter-75 E: warn when the new URL's scheme differs from
+                    // the previous boundary's scheme (http→file, https→
+                    // javascript, etc.).  Firefox already blocks the
+                    // dangerous transitions; this is observability so
+                    // scripted automation notices.
+                    if let Some(prev) = buf.last_nav_url() {
+                        ff_rdp_core::note_tab_navigated_scheme_change(msg, prev);
+                    }
                     buf.record_nav_boundary(nav_url.clone())
                 };
                 // Forward a synthetic navigation event to any stream

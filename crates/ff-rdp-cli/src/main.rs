@@ -216,7 +216,7 @@ fn error_exit_code(err: &AppError) -> i32 {
         | AppError::Internal(_)
         | AppError::Diagnostics { .. }
         | AppError::DaemonVersionMismatch { .. } => 1,
-        AppError::Navigation { .. } => err.exit_code(),
+        AppError::Navigation { .. } | AppError::RdpBulkOversize { .. } => err.exit_code(),
         AppError::Exit(code) => *code,
     }
 }

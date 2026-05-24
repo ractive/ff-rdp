@@ -5,6 +5,10 @@
 
 [advisories]
 ignore = []
+# iter-75 Hg-2: refuse to ship a release if a dependency has been yanked from
+# crates.io.  Yanks usually flag a security issue or a broken build, so they
+# should fail CI rather than silently downgrade to a warning.
+yanked = "deny"
 
 [licenses]
 allow = [

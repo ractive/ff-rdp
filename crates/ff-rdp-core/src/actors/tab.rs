@@ -57,6 +57,49 @@ pub struct TargetInfo {
     pub browsing_context_id: Option<u64>,
 }
 
+/// Inspect a `tabNavigated` push packet and emit a `tracing::warn!` when the
+/// scheme of the new URL differs from the scheme of `previous_url`.
+///
+/// This is observability, not enforcement: Firefox already blocks dangerous
+/// transitions like `http→file` and `https→javascript`.  The warning exists
+/// so that a user driving ff-rdp from a script notices that a redirect
+/// crossed a scheme boundary — their automation may not expect a
+/// `https://example.com/foo` request to land on `about:neterror` or `file:`.
+///
+/// Returns `true` when a scheme change was detected and the warning was
+/// emitted; `false` otherwise (no URL in the packet, no previous URL, or
+/// schemes match).  The boolean lets unit tests assert the behaviour without
+/// installing a `tracing` subscriber.
+pub fn note_tab_navigated_scheme_change(packet: &Value, previous_url: &str) -> bool {
+    let Some(new_url) = packet.get("url").and_then(Value::as_str) else {
+        return false;
+    };
+    let new_scheme = scheme_of(new_url);
+    let old_scheme = scheme_of(previous_url);
+    if new_scheme.is_empty() || old_scheme.is_empty() || new_scheme == old_scheme {
+        return false;
+    }
+    tracing::warn!(
+        target: "ff_rdp_core::actors::tab",
+        event = "tabNavigated.scheme_changed",
+        from_scheme = %old_scheme,
+        to_scheme = %new_scheme,
+        from_url = %previous_url,
+        to_url = %new_url,
+        "tabNavigated: scheme changed across redirect — script automation may not expect this transition",
+    );
+    true
+}
+
+/// Extract the lower-cased scheme of a URL by taking everything before the
+/// first `':'`.  Returns an empty slice when no colon is present.
+fn scheme_of(url: &str) -> String {
+    match url.find(':') {
+        Some(i) => url[..i].to_ascii_lowercase(),
+        None => String::new(),
+    }
+}
+
 /// Operations on a tab descriptor actor.
 pub struct TabActor;
 
@@ -416,6 +459,48 @@ mod tests {
             err.to_string().contains("'process'"),
             "error should mention 'process': {err}"
         );
+    }
+
+    // --- note_tab_navigated_scheme_change (iter-75 E) ---
+
+    /// AC: `tab_navigated_scheme_change_warns` — synthetic `tabNavigated`
+    /// crossing a scheme boundary (`https→file`) must fire the helper's
+    /// scheme-change branch.  Unit-level: we don't install a subscriber, we
+    /// only assert the return value tracks the detection logic.
+    #[test]
+    fn tab_navigated_scheme_change_warns() {
+        let pkt = json!({
+            "from": "server1.conn0.child0/tab0",
+            "type": "tabNavigated",
+            "url": "file:///tmp/leak.txt"
+        });
+        assert!(
+            note_tab_navigated_scheme_change(&pkt, "https://example.com/redirect"),
+            "https→file scheme change must be flagged"
+        );
+        assert!(
+            note_tab_navigated_scheme_change(&pkt, "http://example.com/r"),
+            "http→file scheme change must be flagged"
+        );
+
+        // Same scheme — no warning expected.
+        let same_scheme = json!({
+            "from": "server1.conn0.child0/tab0",
+            "type": "tabNavigated",
+            "url": "https://example.com/landing"
+        });
+        assert!(
+            !note_tab_navigated_scheme_change(&same_scheme, "https://example.com/start"),
+            "same scheme must not warn"
+        );
+
+        // No url field — silent no-op (Firefox sometimes emits the event
+        // without a URL during early initialization).
+        let no_url = json!({"from": "tab0", "type": "tabNavigated"});
+        assert!(!note_tab_navigated_scheme_change(
+            &no_url,
+            "https://example.com/"
+        ));
     }
 
     #[test]
