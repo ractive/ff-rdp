@@ -321,6 +321,23 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "LEVEL")]
     pub log_level: Option<LogLevel>,
 
+    /// Maximum Firefox RDP frame payload size in mebibytes (1 MiB = 1024 × 1024 B).
+    ///
+    /// Default is 256 MiB, which accommodates heap-snapshot dumps and large
+    /// network response bodies.  Lower to harden against malformed peers;
+    /// raise to receive larger legitimate frames.  Applied once at startup.
+    #[arg(long, global = true, value_name = "MB", default_value_t = 256)]
+    pub max_frame_mb: usize,
+
+    /// Threshold in bytes above which un-keyed string values in trace output
+    /// are replaced with `<redacted len=N>`.
+    ///
+    /// Sensitive-keyed values (cookie, authorization, set-cookie, password,
+    /// auth-token, x-auth-token, text, expression) are always redacted
+    /// regardless of this setting.  Default 256.
+    #[arg(long, global = true, value_name = "BYTES", default_value_t = 256)]
+    pub redact_threshold: usize,
+
     #[command(subcommand)]
     pub command: Command,
 }

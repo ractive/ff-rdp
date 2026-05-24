@@ -130,6 +130,12 @@ fn main() {
 
     init_tracing(&cli);
 
+    // Apply transport knobs from the CLI before opening any RDP connection.
+    // --max-frame-mb caps the receive frame size; --redact-threshold tunes
+    // how aggressively long non-sensitive strings are truncated in traces.
+    ff_rdp_core::transport::set_max_frame_bytes(cli.max_frame_mb.saturating_mul(1024 * 1024));
+    ff_rdp_core::transport::set_redact_threshold(cli.redact_threshold);
+
     // Warn operators when raw (unredacted) trace mode is active so that
     // credentials and payloads visible in the trace output are not overlooked.
     if matches!(std::env::var("FF_RDP_TRACE_RAW").as_deref(), Ok(s) if !s.is_empty()) {

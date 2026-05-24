@@ -211,14 +211,24 @@ pub fn parse_network_resources(event: &Value) -> Vec<NetworkResource> {
             continue;
         };
 
-        for item in items {
-            if let Some(res) = parse_single_network_resource(item) {
-                resources.push(res);
-            }
-        }
+        resources.extend(parse_network_resources_from_items(items));
     }
 
     resources
+}
+
+/// Parse network resources directly from the inner `[items]` slice of a
+/// `("network-event", [items])` tuple — avoids the `json!({"array": …})`
+/// rewrap on the daemon's hot fan-out path.
+///
+/// Equivalent to extracting `event["array"][i][1]` from
+/// [`parse_network_resources`] but takes the slice by reference so no
+/// allocation is performed.
+pub fn parse_network_resources_from_items(items: &[Value]) -> Vec<NetworkResource> {
+    items
+        .iter()
+        .filter_map(parse_single_network_resource)
+        .collect()
 }
 
 /// Parse network resource updates from a `resources-updated-array` event.
@@ -332,14 +342,20 @@ pub fn parse_console_resources(event: &Value) -> Vec<ConsoleResource> {
             continue;
         };
 
-        for item in items {
-            if let Some(res) = parse_single_console_resource(item) {
-                resources.push(res);
-            }
-        }
+        resources.extend(parse_console_resources_from_items(items));
     }
 
     resources
+}
+
+/// Parse console / error resources directly from the inner `[items]` slice
+/// of a `("console-message" | "error-message", [items])` tuple — avoids the
+/// `json!({"array": …})` rewrap on the daemon's hot fan-out path.
+pub fn parse_console_resources_from_items(items: &[Value]) -> Vec<ConsoleResource> {
+    items
+        .iter()
+        .filter_map(parse_single_console_resource)
+        .collect()
 }
 
 fn parse_single_console_resource(item: &Value) -> Option<ConsoleResource> {
