@@ -260,6 +260,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub allow_unsafe_urls: bool,
 
+    /// Allow file:// URL schemes in navigate (off by default; local files are
+    /// exfiltratable via subsequent page-text/eval/screenshot)
+    #[arg(long, global = true)]
+    pub allow_file_urls: bool,
+
     /// Limit number of results returned (per-command defaults apply)
     #[arg(long, global = true)]
     pub limit: Option<usize>,

@@ -2,7 +2,7 @@
 title: "Iteration 63: Daemon lock-recover sweep + file:// gating + table sanitization"
 type: iteration
 date: 2026-05-24
-status: planned
+status: in-review
 branch: iter-63/quick-sec-fixes
 depends_on:
   - iteration-61w-security-hardening-and-cleanup
@@ -47,28 +47,28 @@ lands.
 ## Tasks
 
 ### A. Daemon lock recovery
-- [ ] Audit `crates/ff-rdp-cli/src/daemon/server.rs` for every `.lock().unwrap()` (currently ~15 sites in `accept_loop`, `handle_client`, stream/ref/last_activity helpers).
-- [ ] Replace each with `lock_or_recover!` (the macro defined at `server.rs:30-44`).
-- [ ] Add `crates/xtask/src/main.rs` subcommand `check-daemon-locks` that fails if `rg '\.lock\(\)\.unwrap\(\)' crates/ff-rdp-cli/src/daemon/` returns any hits. Wire into CI.
+- [x] Audit `crates/ff-rdp-cli/src/daemon/server.rs` for every `.lock().unwrap()` (currently ~15 sites in `accept_loop`, `handle_client`, stream/ref/last_activity helpers).
+- [x] Replace each with `lock_or_recover!` (the macro defined at `server.rs:30-44`).
+- [x] Add `crates/xtask/src/main.rs` subcommand `check-daemon-locks` that fails if `rg '\.lock\(\)\.unwrap\(\)' crates/ff-rdp-cli/src/daemon/` returns any hits. Wire into CI.
 
 ### B. `file://` gating
-- [ ] Remove `"file"` from `ALLOWED_SCHEMES` in `crates/ff-rdp-cli/src/commands/url_validation.rs:3`.
-- [ ] Add `--allow-file-urls` CLI flag (mirror the pattern of `--allow-unsafe-urls`); thread it through `commands/navigate.rs:394, 517` and any other caller of `validate_url`.
-- [ ] Update the existing test at `url_validation.rs:41` that asserts `file://` is allowed by default — invert the assertion and add a paired test for the gated path.
-- [ ] Document the threat model in the URL-validation module docstring (file:// → exfil via subsequent page_text/eval/screenshot).
+- [x] Remove `"file"` from `ALLOWED_SCHEMES` in `crates/ff-rdp-cli/src/commands/url_validation.rs:3`.
+- [x] Add `--allow-file-urls` CLI flag (mirror the pattern of `--allow-unsafe-urls`); thread it through `commands/navigate.rs:394, 517` and any other caller of `validate_url`.
+- [x] Update the existing test at `url_validation.rs:41` that asserts `file://` is allowed by default — invert the assertion and add a paired test for the gated path.
+- [x] Document the threat model in the URL-validation module docstring (file:// → exfil via subsequent page_text/eval/screenshot).
 
 ### C. Output sanitization
-- [ ] Wrap the string branch of `value_to_cell` (`crates/ff-rdp-cli/src/output_pipeline.rs:295`) with `sanitize_for_terminal`.
-- [ ] Audit every `println!` in `output_pipeline.rs` for un-sanitized attacker-influenced data; apply the wrapper at the cell-formatting boundary (lines 263, 267, 279, 290).
-- [ ] Add a unit test asserting `\x1b[2J` in a cookie name renders as `?[2J` (or whatever the sanitizer emits) under `--format table`.
+- [x] Wrap the string branch of `value_to_cell` (`crates/ff-rdp-cli/src/output_pipeline.rs:295`) with `sanitize_for_terminal`.
+- [x] Audit every `println!` in `output_pipeline.rs` for un-sanitized attacker-influenced data; apply the wrapper at the cell-formatting boundary (lines 263, 267, 279, 290).
+- [x] Add a unit test asserting `\x1b[2J` in a cookie name renders as `?[2J` (or whatever the sanitizer emits) under `--format table`.
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
-- [ ] `daemon_lock_or_recover_sweep`: `rg '\.lock\(\)\.unwrap\(\)' crates/ff-rdp-cli/src/daemon/` returns zero hits.
-- [ ] `xtask_check_daemon_locks_fails_on_regression`: synthetic `.lock().unwrap()` injected via fixture → xtask exits non-zero.
-- [ ] `url_validation_rejects_file_scheme_by_default`: `validate_url("file:///etc/passwd")` returns `Err`; with `--allow-file-urls` returns `Ok`.
-- [ ] `output_table_sanitizes_ansi_escapes`: rendering a cookie named `"foo\x1b[2Jbar"` under `--format table` produces no raw `0x1b` bytes.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `daemon_lock_or_recover_sweep`: `rg '\.lock\(\)\.unwrap\(\)' crates/ff-rdp-cli/src/daemon/` returns zero hits (verified by `cargo run -p xtask -- check-daemon-locks`).
+- [x] `xtask_check_daemon_locks_fails_on_regression`: synthetic `.lock().unwrap()` injected via fixture → xtask exits non-zero (test `check_daemon_locks::tests::fails_on_regression`).
+- [x] `url_validation_rejects_file_scheme_by_default`: `validate_url("file:///etc/passwd")` returns `Err`; with `--allow-file-urls` returns `Ok` (tests `rejects_file_by_default` + `allows_file_when_opted_in` in `url_validation.rs`).
+- [x] `output_table_sanitizes_ansi_escapes`: rendering a cookie named `"foo\x1b[2Jbar"` under `--format table` produces no raw `0x1b` bytes (test `value_to_cell_strips_ansi_escapes_from_strings` in `output_pipeline.rs`).
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 

@@ -66,6 +66,8 @@ jobs:
         run: cargo run -p xtask -- check-dead-primitives --since origin/main
       - name: Check TODO annotations
         run: cargo run -p xtask -- check-todo-annotations --since origin/main
+      - name: Check daemon lock recovery
+        run: cargo run -p xtask -- check-daemon-locks
       - name: Check discipline regression (mirror + replay baselines)
         # The skill scripts at ~/.claude/skills/ralph-loop are not present in
         # CI runners, so the mirror-sync half is automatically skipped. The

@@ -402,7 +402,7 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
             Ok(msg) => {
                 // unwrap: poisoned mutex means a thread panicked — the daemon
                 // is in an inconsistent state and crashing is the right action.
-                *state.last_activity.lock().unwrap() = Instant::now();
+                *lock_or_recover!(state.last_activity) = Instant::now();
 
                 // Push to dispatcher.  Use blocking `send` (not `try_send`) so
                 // that RDP responses are never dropped on transient dispatcher
@@ -874,7 +874,7 @@ fn accept_loop(
 
         // Idle timeout: checked when no client is connected.
         {
-            let last = *state.last_activity.lock().unwrap();
+            let last = *lock_or_recover!(state.last_activity);
             if last.elapsed() > idle_timeout {
                 eprintln!("daemon: idle timeout ({idle_timeout:?}), shutting down");
                 return Ok(());
@@ -883,7 +883,7 @@ fn accept_loop(
 
         match listener.accept() {
             Ok((stream, _addr)) => {
-                *state.last_activity.lock().unwrap() = Instant::now();
+                *lock_or_recover!(state.last_activity) = Instant::now();
                 let state_clone = Arc::clone(state);
                 let writer_clone = Arc::clone(firefox_writer);
                 thread::Builder::new()
@@ -892,7 +892,7 @@ fn accept_loop(
                         if let Err(e) = handle_client(&state_clone, stream, &writer_clone) {
                             eprintln!("daemon: client session error: {e:#}");
                         }
-                        *state_clone.last_activity.lock().unwrap() = Instant::now();
+                        *lock_or_recover!(state_clone.last_activity) = Instant::now();
                     })
                     .context("spawning client handler thread")?;
             }
@@ -1014,7 +1014,7 @@ fn handle_client(
                 .try_clone()
                 .context("cloning client stream for RPC forwarding")?,
         );
-        let mut guard = state.rpc_writer.lock().unwrap();
+        let mut guard = lock_or_recover!(state.rpc_writer);
         *guard = Some((client_id, rpc_writer));
     }
 
@@ -1027,7 +1027,7 @@ fn handle_client(
 
         match reader.recv() {
             Ok(msg) => {
-                *state.last_activity.lock().unwrap() = Instant::now();
+                *lock_or_recover!(state.last_activity) = Instant::now();
 
                 let to = msg.get("to").and_then(Value::as_str).unwrap_or_default();
                 if to == "daemon" {
@@ -1043,7 +1043,7 @@ fn handle_client(
                         serde_json::to_string(&response).context("serialising daemon response")?;
                     // Write through the rpc_writer mutex to prevent interleaving
                     // with forward_to_rpc_client on the firefox-reader thread.
-                    let mut guard = state.rpc_writer.lock().unwrap();
+                    let mut guard = lock_or_recover!(state.rpc_writer);
                     if let Some((_id, w)) = guard.as_mut() {
                         w.send_raw(&resp_json).map_err(|e| {
                             anyhow::anyhow!("sending daemon response to CLI client: {e}")
@@ -1078,7 +1078,7 @@ fn handle_client(
     // Unregister this client as RPC target only if it is still the current one
     // (another client may have already taken over).
     {
-        let mut guard = state.rpc_writer.lock().unwrap();
+        let mut guard = lock_or_recover!(state.rpc_writer);
         // Compare by the stored identity (taken from the original stream,
         // not from the try_clone'd writer whose OS handle differs).
         if guard.as_ref().is_some_and(|(id, _)| *id == client_id) {
@@ -1209,7 +1209,7 @@ fn handle_daemon_message(
 
             // Add this resource type to the client's subscriber entry.
             // If the client is not yet a subscriber, add it now.
-            let mut subs = state.stream_subs.lock().unwrap();
+            let mut subs = lock_or_recover!(state.stream_subs);
             if let Some(sub) = subs.iter_mut().find(|s| s.id == client_id) {
                 sub.types.insert(resource_type.to_owned());
             } else if let Some(writer) = client_writer {
@@ -1241,7 +1241,7 @@ fn handle_daemon_message(
                     "error": "stop-stream requires a non-empty resourceType field",
                 });
             };
-            let mut subs = state.stream_subs.lock().unwrap();
+            let mut subs = lock_or_recover!(state.stream_subs);
             if let Some(sub) = subs.iter_mut().find(|s| s.id == client_id) {
                 sub.types.remove(resource_type);
             }
@@ -1276,7 +1276,7 @@ fn handle_daemon_message(
                     "error": "alloc-refs requires count > 0",
                 });
             }
-            let start = state.ref_store.lock().unwrap().alloc(count);
+            let start = lock_or_recover!(state.ref_store).alloc(count);
             let nav_gen = state.nav_generation.load(Ordering::Relaxed);
             json!({
                 "from": "daemon",
@@ -1329,7 +1329,7 @@ fn handle_daemon_message(
                 .collect();
 
             let registered = entries.len();
-            state.ref_store.lock().unwrap().register(entries);
+            lock_or_recover!(state.ref_store).register(entries);
 
             json!({
                 "from": "daemon",
@@ -1355,7 +1355,7 @@ fn handle_daemon_message(
                 });
             };
 
-            let store = state.ref_store.lock().unwrap();
+            let store = lock_or_recover!(state.ref_store);
             if let Some(resolver) = store.resolve(id) {
                 json!({
                     "from": "daemon",
@@ -1439,7 +1439,7 @@ fn handle_daemon_message(
         "status" => {
             let uptime = state.start_time.elapsed().as_secs();
             let sizes = state.buffer.lock().expect("buffer lock").sizes();
-            let subscriber_count = state.stream_subs.lock().unwrap().len();
+            let subscriber_count = lock_or_recover!(state.stream_subs).len();
             let target_count = state.target_count.load(Ordering::Relaxed);
             json!({
                 "from": "daemon",
@@ -1947,7 +1947,7 @@ mod tests {
         let (server_side, mut client_side) = loopback_pair();
 
         // Register a stream subscriber for "console-message".
-        state.stream_subs.lock().unwrap().push(StreamSubscriber {
+        lock_or_recover!(state.stream_subs).push(StreamSubscriber {
             id: 1,
             writer: FramedWriter::from_stream(server_side),
             types: {
@@ -1998,7 +1998,7 @@ mod tests {
         let (server_side, mut client_side) = loopback_pair();
 
         // Register a stream subscriber for "error-message".
-        state.stream_subs.lock().unwrap().push(StreamSubscriber {
+        lock_or_recover!(state.stream_subs).push(StreamSubscriber {
             id: 2,
             writer: FramedWriter::from_stream(server_side),
             types: {
@@ -2047,7 +2047,7 @@ mod tests {
         let (server_side, mut client_side) = loopback_pair();
 
         // Register subscriber for "network-event" only — NOT console-message.
-        state.stream_subs.lock().unwrap().push(StreamSubscriber {
+        lock_or_recover!(state.stream_subs).push(StreamSubscriber {
             id: 3,
             writer: FramedWriter::from_stream(server_side),
             types: {
@@ -2310,7 +2310,7 @@ mod tests {
         let state = test_state();
 
         // Register a ref directly into the store.
-        state.ref_store.lock().unwrap().register(vec![(
+        lock_or_recover!(state.ref_store).register(vec![(
             "e1".to_owned(),
             "document.querySelector('h1')".to_owned(),
         )]);
@@ -2321,7 +2321,7 @@ mod tests {
 
         // Manually trigger what firefox_reader_loop does.
         state.nav_generation.fetch_add(1, Ordering::Relaxed);
-        state.ref_store.lock().unwrap().clear();
+        lock_or_recover!(state.ref_store).clear();
 
         // e1 must now be gone.
         let resp = handle_daemon_message(
@@ -2573,7 +2573,7 @@ mod tests {
 
         // Poison the mutex: panic while holding the lock.
         let handle = std::thread::spawn(move || {
-            let _guard = mutex_clone.lock().unwrap();
+            let _guard = lock_or_recover!(mutex_clone);
             panic!("intentional test panic to poison the mutex");
         });
         // Wait for the panic to complete.

@@ -14,7 +14,7 @@ use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::perf::{
     compute_cls, compute_fcp, compute_lcp, compute_tbt, compute_ttfb, is_lcp_approximate, round2,
 };
-use super::url_validation::validate_url;
+use super::url_validation::validate_url_with_opts;
 
 const POLL_INTERVAL_MS: u64 = 100;
 
@@ -322,7 +322,7 @@ pub fn run(cli: &Cli, urls: &[String], labels: Option<&[String]>) -> Result<(), 
     // Validate all URLs before connecting.
     if !cli.allow_unsafe_urls {
         for url in urls {
-            validate_url(url)?;
+            validate_url_with_opts(url, cli.allow_file_urls)?;
         }
     }
 
