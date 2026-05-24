@@ -326,6 +326,10 @@ pub struct Cli {
     /// Default is 256 MiB, which accommodates heap-snapshot dumps and large
     /// network response bodies.  Lower to harden against malformed peers;
     /// raise to receive larger legitimate frames.  Applied once at startup.
+    /// Must be ≥ 1 — `0` is rejected (see `validate()` on this struct) so
+    /// the OOM guard can't be silently disabled by an operator typo
+    /// (`set_max_frame_bytes(0)` resets to the default rather than
+    /// rejecting all frames).
     #[arg(long, global = true, value_name = "MB", default_value_t = 256)]
     pub max_frame_mb: usize,
 
@@ -334,7 +338,9 @@ pub struct Cli {
     ///
     /// Sensitive-keyed values (cookie, authorization, set-cookie, password,
     /// auth-token, x-auth-token, text, expression) are always redacted
-    /// regardless of this setting.  Default 256.
+    /// regardless of this setting.  Default 256.  Must be ≥ 1 — `0` is
+    /// rejected because `set_redact_threshold(0)` resets to the default
+    /// rather than redacting every string.
     #[arg(long, global = true, value_name = "BYTES", default_value_t = 256)]
     pub redact_threshold: usize,
 

@@ -848,6 +848,56 @@ mod tests {
     /// manipulating redaction state don't race with each other.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Module-level lock shared by every test that mutates the global
+    /// `MAX_FRAME_BYTES_CELL` cap.  Combined with [`FrameCapGuard`] this
+    /// guarantees both serialization and panic-safe restoration.
+    static FRAME_CAP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Module-level lock shared by every test that mutates the global
+    /// `REDACT_THRESHOLD`.  Combined with [`RedactThresholdGuard`] this
+    /// guarantees both serialization and panic-safe restoration.
+    static REDACT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// RAII guard that snapshots the current frame-size cap on construction
+    /// and restores it on drop, even if the test panics mid-way.
+    struct FrameCapGuard {
+        prev: usize,
+    }
+
+    impl FrameCapGuard {
+        fn new() -> Self {
+            Self {
+                prev: MAX_FRAME_BYTES_CELL.load(Ordering::Relaxed),
+            }
+        }
+    }
+
+    impl Drop for FrameCapGuard {
+        fn drop(&mut self) {
+            MAX_FRAME_BYTES_CELL.store(self.prev, Ordering::Relaxed);
+        }
+    }
+
+    /// RAII guard that snapshots the current redaction threshold on
+    /// construction and restores it on drop, even if the test panics.
+    struct RedactThresholdGuard {
+        prev: usize,
+    }
+
+    impl RedactThresholdGuard {
+        fn new() -> Self {
+            Self {
+                prev: REDACT_THRESHOLD.load(Ordering::Relaxed),
+            }
+        }
+    }
+
+    impl Drop for RedactThresholdGuard {
+        fn drop(&mut self) {
+            REDACT_THRESHOLD.store(self.prev, Ordering::Relaxed);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // encode_frame — pure, no I/O
     // -----------------------------------------------------------------------
@@ -977,9 +1027,10 @@ mod tests {
     /// nothing meaningful.
     #[test]
     fn max_frame_mb_knob_works() {
-        // Serialise so the tests don't fight over the global cap.
-        static FRAME_CAP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        // Serialise so the tests don't fight over the global cap, and
+        // restore it on drop even if an assertion below panics.
         let _g = FRAME_CAP_LOCK.lock().unwrap();
+        let _restore = FrameCapGuard::new();
 
         // Lower the cap to 1024 bytes — 2000 bytes must be rejected.
         set_max_frame_bytes(1024);
@@ -1010,8 +1061,7 @@ mod tests {
             "raising the cap must allow the frame past the size check, got {err:?}"
         );
 
-        // Reset to default so other tests see the documented behaviour.
-        set_max_frame_bytes(0);
+        // FrameCapGuard restores the previous value on drop.
     }
 
     /// AC: `redact_threshold_tunable`.  A long non-sensitive string passes
@@ -1019,8 +1069,9 @@ mod tests {
     /// redact regardless.
     #[test]
     fn redact_threshold_tunable() {
-        static REDACT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        // Serialise + restore on panic.
         let _g = REDACT_LOCK.lock().unwrap();
+        let _restore = RedactThresholdGuard::new();
 
         let long_url =
             "https://example.com/path?utm_source=newsletter&utm_campaign=spring&q=very+long+search";
@@ -1050,8 +1101,7 @@ mod tests {
             "tight threshold must redact long URL: {url2}"
         );
 
-        // Reset to default for other tests.
-        set_redact_threshold(0);
+        // RedactThresholdGuard restores the previous value on drop.
     }
 
     // -----------------------------------------------------------------------
@@ -1076,6 +1126,9 @@ mod tests {
 
     #[test]
     fn redact_long_string_replaces_value() {
+        // Serialise with other tests that mutate REDACT_THRESHOLD so that
+        // the read+redact pair sees a stable cap.
+        let _g = REDACT_LOCK.lock().unwrap();
         let long = "x".repeat(redact_threshold() + 1);
         let v = serde_json::json!({"data": long});
         let r = redact(&v);

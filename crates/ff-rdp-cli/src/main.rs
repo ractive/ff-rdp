@@ -133,7 +133,30 @@ fn main() {
     // Apply transport knobs from the CLI before opening any RDP connection.
     // --max-frame-mb caps the receive frame size; --redact-threshold tunes
     // how aggressively long non-sensitive strings are truncated in traces.
-    ff_rdp_core::transport::set_max_frame_bytes(cli.max_frame_mb.saturating_mul(1024 * 1024));
+    //
+    // Reject 0 for either flag — `set_*(0)` resets the underlying global
+    // to its default, so accepting 0 here would silently invert operator
+    // intent ("disable") into "use the default".
+    if cli.max_frame_mb == 0 {
+        eprintln!("error: --max-frame-mb must be ≥ 1 (0 would silently reset to the default cap)");
+        std::process::exit(2);
+    }
+    if cli.redact_threshold == 0 {
+        eprintln!(
+            "error: --redact-threshold must be ≥ 1 (0 would silently reset to the default threshold)"
+        );
+        std::process::exit(2);
+    }
+    // checked_mul: an overflowing MB value would otherwise saturate to
+    // usize::MAX and effectively disable the OOM guard in recv_from.
+    let Some(max_frame_bytes) = cli.max_frame_mb.checked_mul(1024 * 1024) else {
+        eprintln!(
+            "error: --max-frame-mb {} overflows usize when converted to bytes; pick a smaller value",
+            cli.max_frame_mb
+        );
+        std::process::exit(2);
+    };
+    ff_rdp_core::transport::set_max_frame_bytes(max_frame_bytes);
     ff_rdp_core::transport::set_redact_threshold(cli.redact_threshold);
 
     // Warn operators when raw (unredacted) trace mode is active so that

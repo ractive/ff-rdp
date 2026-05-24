@@ -211,7 +211,7 @@ pub fn parse_network_resources(event: &Value) -> Vec<NetworkResource> {
             continue;
         };
 
-        resources.extend(parse_network_resources_from_items(items));
+        resources.extend(items.iter().filter_map(parse_single_network_resource));
     }
 
     resources
@@ -219,11 +219,12 @@ pub fn parse_network_resources(event: &Value) -> Vec<NetworkResource> {
 
 /// Parse network resources directly from the inner `[items]` slice of a
 /// `("network-event", [items])` tuple — avoids the `json!({"array": …})`
-/// rewrap on the daemon's hot fan-out path.
+/// rewrap (and per-item `Value::clone`) on the daemon's hot fan-out path.
 ///
-/// Equivalent to extracting `event["array"][i][1]` from
-/// [`parse_network_resources`] but takes the slice by reference so no
-/// allocation is performed.
+/// Returns an owned `Vec<NetworkResource>`; callers that already own a
+/// destination buffer should prefer extending from
+/// `items.iter().filter_map(parse_single_network_resource)` directly to
+/// avoid the intermediate allocation (as [`parse_network_resources`] does).
 pub fn parse_network_resources_from_items(items: &[Value]) -> Vec<NetworkResource> {
     items
         .iter()
@@ -342,7 +343,7 @@ pub fn parse_console_resources(event: &Value) -> Vec<ConsoleResource> {
             continue;
         };
 
-        resources.extend(parse_console_resources_from_items(items));
+        resources.extend(items.iter().filter_map(parse_single_console_resource));
     }
 
     resources
@@ -350,7 +351,11 @@ pub fn parse_console_resources(event: &Value) -> Vec<ConsoleResource> {
 
 /// Parse console / error resources directly from the inner `[items]` slice
 /// of a `("console-message" | "error-message", [items])` tuple — avoids the
-/// `json!({"array": …})` rewrap on the daemon's hot fan-out path.
+/// `json!({"array": …})` rewrap (and per-item `Value::clone`) on the
+/// daemon's hot fan-out path.  Returns an owned `Vec<ConsoleResource>`;
+/// callers with their own destination buffer should extend directly from
+/// `items.iter().filter_map(parse_single_console_resource)` to skip the
+/// intermediate allocation.
 pub fn parse_console_resources_from_items(items: &[Value]) -> Vec<ConsoleResource> {
     items
         .iter()

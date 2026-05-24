@@ -2,7 +2,7 @@
 title: "Iteration 72: Transport polish — frame-size knob, dispatch allocations, redact threshold"
 type: iteration
 date: 2026-05-24
-status: in-progress
+status: completed
 branch: iter-72/transport-polish
 depends_on:
   - iteration-61q-resource-command-bus
