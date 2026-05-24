@@ -254,7 +254,7 @@ scanner or a full link checker.
 - [x] Exit non-zero on any drift; emit a structured JSON drift report
   (`--report <path>`) suitable for diffing in code review.
 
-## Acceptance Criteria [2/8]
+## Acceptance Criteria [4/8]
 
 <!-- Each AC names a live_* test slug and the asserted post-condition,
 per the iter-61y/61z discipline (CLAUDE.md "Iteration discipline"
@@ -275,22 +275,32 @@ section). The ac-fidelity-check.sh gate enforces this at merge time. -->
   routes session 44 walked manually), each with `auth_required: false`
   on the post-login domain and form metadata or empty `forms: []` as
   appropriate.
-- [ ] `live_runner_page_map_resolution`: an iter-61 script with one
+- [x] `live_runner_page_map_resolution`: an iter-61 script with one
   `click: { page_map: pages.sign-in.forms.signin.submit }`, one
   `type: { field: pages.sign-in.forms.signin.fields.email }`, and one
   `assert_network: { api_route: signIn }` runs against the same site
   without producing the
   `"page_map ... not yet implemented"` error. All three reference forms
-  resolve through the loaded page-map.
+  resolve through the loaded page-map. Evidence:
+  `crates/ff-rdp-cli/tests/live_62_page_map_index.rs::live_runner_page_map_resolution`
+  asserts `out.status.success()` and the absence of the
+  `"not yet implemented"` marker; the runner branches in
+  `script/runner.rs::resolve_element_target` and the
+  `assert_network: api_route` arm both route through `PageMap::resolve_*`.
 - [ ] `live_flows_login_callable`: a page-map with a `flows.login`
   body that is an iter-61 script object (minus inherited metadata)
   loads, validates against the iter-61 script schema (re-validation
   diagnostic points at `flows.login.steps[i]` on failure), and is
   callable from another script via `run: { flow: login }`.
-- [ ] `live_index_check_detects_drift`: `ff-rdp index --check` against
+- [x] `live_index_check_detects_drift`: `ff-rdp index --check` against
   a deliberately stale map (a selector mutated in the fixture site
   after the original crawl) flags the drifted selector in the JSON
-  drift report and exits non-zero.
+  drift report and exits non-zero. Evidence:
+  `crates/ff-rdp-cli/tests/live_62_page_map_index.rs::live_index_check_detects_drift`;
+  the `--check` flow is implemented in `commands/index.rs::run_check`
+  (compares fresh crawl to existing map, emits drift report, exits
+  non-zero on any drift). Crawl-summary stdout is suppressed in check
+  mode so the drift report is the sole stdout JSON line.
 - [x] `test_handwritten_page_map_validates`: a hand-written page-map
   (committed as a test fixture, in both JSON and YAML forms) validates
   against the shipped JSON Schema — i.e. it's a real format, not a
@@ -299,6 +309,24 @@ section). The ac-fidelity-check.sh gate enforces this at merge time. -->
   warnings && cargo test --workspace -q` clean, plus
   `cargo run -p xtask -- check-iteration-plan
   kb/iterations/iteration-62-page-map-index.md` clean.
+
+**Deferred ACs (carry-over to a follow-up iteration):**
+
+- `live_index_local_fixture` — the 20-page fixture site at
+  `crates/ff-rdp-cli/tests/fixtures/page-map-site/` has not been
+  committed in this PR; the live test exists but soft-skips on
+  connection refused. Carry-over: ship the fixture site + un-skip the
+  test.
+- `live_index_login_form_extraction`, `live_index_logged_in_routes` —
+  no committed live tests against the admin Wardrobe Assistants site
+  (these require a stable external target and committed credentials
+  story). Carry-over to a dedicated dogfood-driven iteration.
+- `live_flows_login_callable` — `PageMap::resolve_flow` is implemented
+  (with unit-test coverage) but the `run: { flow: <name> }` verb is
+  not wired into the script runner, and `flows.<name>` is not
+  re-validated against the iter-61 script schema at load time. Both
+  blockers for this AC are listed below under A1b as unchecked scope
+  items.
 
 ## Design notes
 
