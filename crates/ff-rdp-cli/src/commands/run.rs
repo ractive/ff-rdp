@@ -21,6 +21,8 @@ pub struct RunCommandOpts<'a> {
     /// Fail the entire run if a recording step fails.
     pub record_strict: bool,
     pub format_override: Option<&'a str>,
+    /// Explicit page-map path (or None to try the default .ffrdp/page-map.json).
+    pub page_map_path: Option<&'a Path>,
 }
 
 pub fn run(cli: &Cli, opts: &RunCommandOpts<'_>) -> Result<(), AppError> {
@@ -36,6 +38,16 @@ pub fn run(cli: &Cli, opts: &RunCommandOpts<'_>) -> Result<(), AppError> {
             "--script-format must be 'json', 'yaml', or 'yml', got: {raw:?}"
         )));
     }
+
+    // Load page-map: explicit path wins; fall back to .ffrdp/page-map.json.
+    let page_map = match opts.page_map_path {
+        Some(path) => Some(
+            crate::page_map::PageMap::load(path)
+                .map_err(|e| AppError::User(format!("loading page-map: {e}")))?,
+        ),
+        None => crate::page_map::PageMap::load_default()
+            .map_err(|e| AppError::User(format!("loading default page-map: {e}")))?,
+    };
 
     let recorder = if let Some(out_path) = opts.record_output {
         let name = opts.script_path.file_stem().and_then(|s| s.to_str());
@@ -55,6 +67,7 @@ pub fn run(cli: &Cli, opts: &RunCommandOpts<'_>) -> Result<(), AppError> {
         recorder,
         record_strict: opts.record_strict,
         format_override: fmt_override,
+        page_map,
     };
 
     let call_stack: Vec<PathBuf> = Vec::new();

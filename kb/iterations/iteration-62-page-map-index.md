@@ -2,21 +2,19 @@
 title: "Iteration 62: Page-map index (crawl, extract, emit JSON)"
 type: iteration
 date: 2026-05-24
-status: planned
+status: in-progress
 branch: iter-62/page-map-index
 depends_on:
   - iteration-61-script-runner-recorder
   - iteration-61w-security-hardening-and-cleanup
   - iteration-61z-discipline-skill-integration
-# Required by check-iteration-plan when the body introduces new pub items.
-# Filled in once the resolver/crawler module boundaries are decided during
-# implementation — initial set targets the runner stubs that already exist
-# in crates/ff-rdp-cli/src/script/runner.rs.
 first_call_sites:
-  - primitive: "PageMap"
-    site: "crates/ff-rdp-cli/src/script/runner.rs::resolve_target (replaces the iter-62-not-yet-implemented branch at runner.rs:573-585)"
-  - primitive: "ff_rdp_cli::commands::index::run"
-    site: "crates/ff-rdp-cli/src/main.rs (Cli::Index dispatch)"
+  - primitive: PageMap
+    site: >-
+      crates/ff-rdp-cli/src/script/runner.rs::resolve_target (replaces the
+      iter-62-not-yet-implemented branch at runner.rs:573-585)
+  - primitive: ff_rdp_cli::commands::index::run
+    site: crates/ff-rdp-cli/src/main.rs (Cli::Index dispatch)
 dogfood_path: |
   # 1. Crawl the admin Wardrobe Assistants login page (logged out).
   ff-rdp index https://admin.wardrobe-assistants.ch/sign-in \
@@ -24,12 +22,12 @@ dogfood_path: |
   jq '.pages[] | {path, forms: [.forms[].id]}' /tmp/wa.page-map.json
   # Expected: a `sign-in` page with one form whose fields[] include `email`
   # and `password`, and `submit.posts_to == "/api/auth/sign-in/email"`.
-
+  
   # 2. Run an iter-61 script that uses `page_map:` to drive the same form.
   ff-rdp run kb/scripts/login.script.json --page-map /tmp/wa.page-map.json
   # Expected: the runner resolves `page_map: pages.sign-in.forms.signin.submit`
   # to a CSS selector and clicks it — no "iter-62 not-yet-implemented" error.
-
+  
   # 3. Verify drift detection.
   ff-rdp index --check --page-map /tmp/wa.page-map.json \
       https://admin.wardrobe-assistants.ch/sign-in
@@ -120,27 +118,27 @@ scanner or a full link checker.
 
 ### A. Format
 
-#### A1. Schema [0/3]
-- [ ] Top-level keys: `$schema:
+#### A1. Schema [3/3]
+- [x] Top-level keys: `$schema:
   "https://ff-rdp.dev/schemas/page-map/v1.json"` (required, literal
   discriminator — not fetched), `version: 1`, `generated_at`,
   `base_url`, `pages`, `api_routes` (optional, each entry:
   `{name, method, path, request?, response?}` — `name` is the
   dotted-path key scripts use as `api_route: <name>`),
   `flows` (optional, named reusable iter-61 script bodies).
-- [ ] Each page entry: `path`, `title`, `auth_required`, `landmarks`
+- [x] Each page entry: `path`, `title`, `auth_required`, `landmarks`
   (named regions of the page with their key interactive elements),
   `forms` (per-form: `id`, `selector`, `fields[]`, `submit`), `links`
   (a curated list of important outgoing routes, not every `<a>` on the
   page).
-- [ ] Each field entry: `name`, `selector`, `type`, `required`,
+- [x] Each field entry: `name`, `selector`, `type`, `required`,
   `placeholder?`, `validation?`. `type` maps to HTML input types plus
   inferred semantic types (email, password, date). The dotted path
   `pages.<page>.forms.<form>.fields.<name>` is the canonical address
   used by iter-61 scripts via `field: …`.
 
-#### A1b. `flows` reuses the iter-61 script body [0/5]
-- [ ] Each `flows.<name>` value is an iter-61 script object **minus**
+#### A1b. `flows` reuses the iter-61 script body [2/5]
+- [x] Each `flows.<name>` value is an iter-61 script object **minus**
   the top-level metadata (`$schema`, `version`, `name`, `base_url`,
   `page_map` are inherited from the containing page-map). Required
   fields: `steps`. Optional: `vars`, `metadata`.
@@ -152,7 +150,7 @@ scanner or a full link checker.
 - [ ] A script can call a flow via the existing `run: <ref>` verb with
   `flow: <name>` form, which resolves through the loaded page-map's
   `flows[]` map.
-- [ ] Ship a real JSON Schema (`draft-2020-12`) at
+- [x] Ship a real JSON Schema (`draft-2020-12`) at
   `crates/ff-rdp-cli/schemas/page-map.schema.json`, sibling to the
   existing `script.schema.json`. Crawler emits files that validate;
   runner (iter-61) and `--check` mode reject malformed maps with a
@@ -161,34 +159,34 @@ scanner or a full link checker.
   worked example for `admin.wardrobe-assistants.ch` (the site used in
   dogfooding sessions 42 and 44).
 
-#### A2. Versioning + schema migration policy [0/1]
-- [ ] `version: 1` is mandatory. `ff-rdp` rejects unknown major
+#### A2. Versioning + schema migration policy [1/1]
+- [x] `version: 1` is mandatory. `ff-rdp` rejects unknown major
   versions with a clear "regenerate the map" error. Minor-version-bump
   fields are tolerated (forward compatibility within a major).
 
-#### A3. Accept YAML input [0/1]
-- [ ] `ff-rdp index --out page-map.json` is the default. Loaders for
+#### A3. Accept YAML input [1/1]
+- [x] `ff-rdp index --out page-map.json` is the default. Loaders for
   `--page-map` references in scripts (iter-61) also accept `.yaml`/`.yml`
   files — same `serde::Deserialize` impl, same in-memory shape.
 
 ### B. Crawler
 
-#### B1. `ff-rdp index` subcommand [0/3]
-- [ ] Args: optional base URL (defaults to the current tab's origin
+#### B1. `ff-rdp index` subcommand [3/3]
+- [x] Args: optional base URL (defaults to the current tab's origin
   via the daemon), `--out <path>` (defaults to
   `./.ffrdp/page-map.json`), `--depth <n>` (default 2),
   `--max-pages <n>` (default 50), `--include <regex>`,
   `--exclude <regex>`, `--format json|yaml` (default `json`).
-- [ ] BFS from the base URL. Same-origin only by default;
+- [x] BFS from the base URL. Same-origin only by default;
   `--cross-origin` opt-in. Respect `robots.txt` (skip disallowed
   paths), with `--ignore-robots` for closed/internal admin tools.
-- [ ] Per-page: navigate (reusing iter-61v's document-event gated
+- [x] Per-page: navigate (reusing iter-61v's document-event gated
   navigate), `settle_page` (iter-59), capture the ARIA tree
   (iter-60's `aria_tree_js_template` from `commands/dom.rs`), extract
   forms (see B2), follow links queued for the next depth level.
 
-#### B2. Form extraction details [0/2]
-- [ ] For each `<form>`: `action` → `submit.posts_to`; observed `method`
+#### B2. Form extraction details [1/2]
+- [x] For each `<form>`: `action` → `submit.posts_to`; observed `method`
   attribute or fallback to "POST"; each input gets `name`, `type`,
   `required` (from `required` attr or `aria-required`), `placeholder`,
   `value` if pre-filled.
@@ -197,66 +195,66 @@ scanner or a full link checker.
   levels), submit button by `type="submit"` or the only obvious CTA in
   the group.
 
-#### B3. Landmarks [0/1]
-- [ ] Emit named landmarks for ARIA-tagged regions: `navigation`,
+#### B3. Landmarks [1/1]
+- [x] Emit named landmarks for ARIA-tagged regions: `navigation`,
   `main`, `complementary`, header `banner`, `contentinfo` (footer),
   `search`. Each landmark lists its top-N interactive elements with
   refs and labels.
 
-#### B4. Streaming progress [0/1]
-- [ ] Long crawls emit progress to stderr: `[crawler] visited 12/50
+#### B4. Streaming progress [1/1]
+- [x] Long crawls emit progress to stderr: `[crawler] visited 12/50
   pages, queue=8`. Final JSON written atomically (write-temp +
   rename).
 
 ### C. Auth-aware crawling
 
-#### C1. Reuse current session cookies [0/2]
-- [ ] Default: if a daemon is connected to Firefox and the user has
+#### C1. Reuse current session cookies [2/2]
+- [x] Default: if a daemon is connected to Firefox and the user has
   already logged in, reuse the live session — the crawler navigates in
   the existing tab so cookies just work (no separate cookie-jar
   plumbing; iter-61w bounded cookie scoping is already in place).
-- [ ] Detect auth-redirect mismatches: if a target URL responds with a
+- [x] Detect auth-redirect mismatches: if a target URL responds with a
   login redirect (detected via `RdpError::Navigation` + the navigate
   state machine landed in iter-61v), mark the page
   `auth_required: true` and skip it (unless the crawler has been
   authorised).
 
-#### C2. Explicit credentials [0/3]
-- [ ] `--cookies-from <path>`: load Netscape-format cookie jar before
+#### C2. Explicit credentials [3/3]
+- [x] `--cookies-from <path>`: load Netscape-format cookie jar before
   crawling (useful when running headless from CI).
-- [ ] `--bearer <token>`: inject `Authorization` header on each
+- [x] `--bearer <token>`: inject `Authorization` header on each
   navigate via the network actor's request-intercept hook (if
   available on this Firefox version; else error out clearly).
-- [ ] `--login-script <path>`: run an iter-61 script first that
+- [x] `--login-script <path>`: run an iter-61 script first that
   performs login, then crawl. Accepts either JSON or YAML script
   files. This is the most-likely-used path for SPA admins.
 
 ### D. Runner integration
 
-#### D1. Wire the iter-62-deferred branches [0/3]
-- [ ] Replace the
+#### D1. Wire the iter-62-deferred branches [3/3]
+- [x] Replace the
   `"page_map and field target selectors require iter-62 page-map
   support (not yet implemented)"` branch in `runner.rs:573-585` with a
   real `PageMap::resolve_target` call that converts
   `page_map: <dotted.path>` and `field: <dotted.path>` to a concrete
   CSS selector.
-- [ ] Replace the matching `assert_network` branch
+- [x] Replace the matching `assert_network` branch
   (runner.rs:946-948) with `PageMap::resolve_api_route` that maps
   `api_route: <name>` to a method+path pair the network assertion
   checks against.
-- [ ] Loader: the runner accepts `--page-map <path>` (CLI flag) or
+- [x] Loader: the runner accepts `--page-map <path>` (CLI flag) or
   falls back to `./.ffrdp/page-map.json` when present. Each unresolved
   `page_map:`/`field:`/`api_route:` reference produces a parse-time
   diagnostic pointing at the script line.
 
-#### D2. `ff-rdp index --check` [0/2]
-- [ ] Re-crawl in "verify" mode against an existing page-map. Report
+#### D2. `ff-rdp index --check` [2/2]
+- [x] Re-crawl in "verify" mode against an existing page-map. Report
   which selectors/refs/forms have drifted. Useful in CI to catch when
   the UI has changed under existing scripts.
-- [ ] Exit non-zero on any drift; emit a structured JSON drift report
+- [x] Exit non-zero on any drift; emit a structured JSON drift report
   (`--report <path>`) suitable for diffing in code review.
 
-## Acceptance Criteria [0/8]
+## Acceptance Criteria [2/8]
 
 <!-- Each AC names a live_* test slug and the asserted post-condition,
 per the iter-61y/61z discipline (CLAUDE.md "Iteration discipline"
@@ -293,11 +291,11 @@ section). The ac-fidelity-check.sh gate enforces this at merge time. -->
   a deliberately stale map (a selector mutated in the fixture site
   after the original crawl) flags the drifted selector in the JSON
   drift report and exits non-zero.
-- [ ] `test_handwritten_page_map_validates`: a hand-written page-map
+- [x] `test_handwritten_page_map_validates`: a hand-written page-map
   (committed as a test fixture, in both JSON and YAML forms) validates
   against the shipped JSON Schema — i.e. it's a real format, not a
-  documentation suggestion.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D
+  documentation suggestion. Evidence: `page_map::tests::test_handwritten_page_map_validates_json` and `test_handwritten_page_map_validates_yaml` passing in cargo test.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D
   warnings && cargo test --workspace -q` clean, plus
   `cargo run -p xtask -- check-iteration-plan
   kb/iterations/iteration-62-page-map-index.md` clean.

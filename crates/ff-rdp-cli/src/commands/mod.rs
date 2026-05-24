@@ -12,6 +12,7 @@ pub(crate) mod dom;
 pub(crate) mod dom_tree;
 pub(crate) mod eval;
 pub(crate) mod geometry;
+pub(crate) mod index;
 pub(crate) mod inspect;
 pub(crate) mod install_skill;
 pub(crate) mod js_helpers;
