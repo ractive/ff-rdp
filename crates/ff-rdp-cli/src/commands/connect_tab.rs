@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ff_rdp_core::{
     ActorId, DeviceActor, FrontKind, ProtocolError, RdpConnection, RdpTransport, Registry,
-    RootActor, Session, TabActor, TargetInfo,
+    ResourceCommand, RootActor, Session, TabActor, TargetInfo,
 };
 use serde_json::json;
 
@@ -275,6 +275,24 @@ impl ConnectedTab {
 
     pub fn target_tab_actor(&self) -> &ActorId {
         &self.tab_actor
+    }
+
+    /// Return the attached [`ResourceCommand`] bus, or create-and-attach one
+    /// if none exists yet.
+    ///
+    /// This helper centralises the "lazily construct the bus once and reuse"
+    /// pattern used by navigate and other commands.  The created bus is stored
+    /// on the session so subsequent calls return the same instance.
+    pub fn get_or_init_resource_command(
+        &mut self,
+        watcher_actor: ActorId,
+    ) -> Arc<Mutex<ResourceCommand>> {
+        if let Some(existing) = self.session.resource_command() {
+            return Arc::clone(existing);
+        }
+        let rc = Arc::new(Mutex::new(ResourceCommand::new(watcher_actor)));
+        self.session.set_resource_command(Arc::clone(&rc));
+        rc
     }
 
     /// Re-resolve the target actors (consoleActor, etc.) from Firefox.

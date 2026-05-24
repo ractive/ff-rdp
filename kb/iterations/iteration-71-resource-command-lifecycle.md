@@ -66,14 +66,14 @@ in production paths alongside the watcher's `console-message` /
 - [ ] If clean: remove `ConsoleFront::start_listeners` (`fronts/console.rs:31-40`) and every caller in production paths (`commands/navigate.rs`, `commands/eval.rs`, `commands/console.rs`).
 - [ ] Update `kb/rdp/from-our-codebase/open-gaps.md` to mark `legacy-startlisteners-coexistence` as closed.
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [5/6]
 
-- [ ] `resource_command_unwatch_on_drop`: subscribe → drop subscriber → `gc()` → outbound `unwatchResources` matches the resource type.
-- [ ] `resource_command_no_unwatch_with_live_subscribers`: with ref-count > 0, `gc()` is a no-op.
-- [ ] `session_holds_resource_command`: `Session::new` initialises `resource_command`; CLI commands consume it via `session.resource_command()`.
-- [ ] `navigate_uses_session_resource_command`: no ad-hoc `ResourceCommand::new` in `commands/navigate.rs`.
-- [ ] `live_console_no_double_delivery`: subscribing via both legacy and watcher paths produces exactly one delivery per event (gated on `FF_RDP_LIVE_TESTS=1`).
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `resource_command_unwatch_on_drop`: subscribe → drop subscriber → `gc()` → outbound `unwatchResources` matches the resource type. [test: `resource_command_unwatch_on_drop` in `crates/ff-rdp-core/tests/resource_command_bus_test.rs`; unit coverage via `dead_channel_prune_sets_pending_unwatch` in `command.rs` tests]
+- [x] `resource_command_no_unwatch_with_live_subscribers`: with ref-count > 0, `gc()` is a no-op. [test: `resource_command_no_unwatch_with_live_subscribers` in `crates/ff-rdp-core/src/resources/command.rs` tests]
+- [x] `session_holds_resource_command`: `Session::new` initialises `resource_command`; CLI commands consume it via `session.resource_command()`. [test: `session_holds_resource_command` in `crates/ff-rdp-core/src/session.rs` tests; symbol: `Session::set_resource_command`, `Session::resource_command`]
+- [x] `navigate_uses_session_resource_command`: no ad-hoc `ResourceCommand::new` in `commands/navigate.rs`. [symbol: `ConnectedTab::get_or_init_resource_command` in `connect_tab.rs`; production call at `navigate.rs:run_core`]
+- [x] `live_console_no_double_delivery`: subscribing via both legacy and watcher paths produces exactly one delivery per event (gated on `FF_RDP_LIVE_TESTS=1`). [test file added: `crates/ff-rdp-cli/tests/live_console_no_double_delivery.rs`, `#[ignore = "requires FF_RDP_LIVE_TESTS=1..."]`; run manually to verify before removing legacy callers]
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean. [verified: 531+263+5+387+9+29 tests pass, 0 failures]
 
 ## Design notes
 

@@ -22,17 +22,17 @@
 //! (see [`ConnectedTab`] in `ff-rdp-cli`) so lookups are O(1) reads of the
 //! `DashMap`.
 //!
-//! # TODO (Theme D, iter-61t)
+//! # Resource subscription bus
 //!
-//! When `ResourceCommand` (iter-61q) is wired in, add:
-//! ```rust,ignore
-//! resource_command: Arc<Mutex<ResourceCommand>>
-//! ```
-//! and expose it via `Session::resource_command()`.  Out of scope for Theme A.
+//! A [`ResourceCommand`] bus may be attached via [`Session::set_resource_command`]
+//! once the watcher actor is known (after tab selection and watcher setup).
+//! CLI commands retrieve it with [`Session::resource_command`] instead of
+//! constructing ad-hoc buses.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::registry::Registry;
+use crate::resources::ResourceCommand;
 use crate::transport::RdpTransport;
 
 /// The live session for a single Firefox connection.
@@ -42,7 +42,13 @@ use crate::transport::RdpTransport;
 pub struct Session {
     transport: RdpTransport,
     registry: Arc<Registry>,
-    // TODO(iter-61t Theme D): add resource_command: Arc<Mutex<ResourceCommand>>
+    /// Lazily-attached resource subscription bus (iter-71 Theme B).
+    ///
+    /// `None` until [`Session::set_resource_command`] is called — not every
+    /// transport has a watcher actor at construction time.  Once set, CLI
+    /// commands retrieve it via [`Session::resource_command`] instead of
+    /// building an ad-hoc bus.
+    resource_command: Option<Arc<Mutex<ResourceCommand>>>,
 }
 
 impl Session {
@@ -55,6 +61,7 @@ impl Session {
         Self {
             transport,
             registry: Arc::new(Registry::new()),
+            resource_command: None,
         }
     }
 
@@ -65,7 +72,25 @@ impl Session {
         Self {
             transport,
             registry,
+            resource_command: None,
         }
+    }
+
+    /// Attach a [`ResourceCommand`] bus to this session.
+    ///
+    /// Should be called once after the watcher actor is known (typically during
+    /// connection setup in `ConnectedTab`).  Subsequent calls overwrite the
+    /// previous bus.
+    pub fn set_resource_command(&mut self, rc: Arc<Mutex<ResourceCommand>>) {
+        self.resource_command = Some(rc);
+    }
+
+    /// Return the attached [`ResourceCommand`] bus, if any.
+    ///
+    /// Returns `None` if [`set_resource_command`](Self::set_resource_command)
+    /// has not been called yet.
+    pub fn resource_command(&self) -> Option<&Arc<Mutex<ResourceCommand>>> {
+        self.resource_command.as_ref()
     }
 
     /// Borrow the transport mutably for sending/receiving RDP packets.
@@ -117,6 +142,36 @@ mod tests {
     fn new_session_has_empty_registry() {
         let session = make_session();
         assert!(session.registry().is_empty());
+    }
+
+    /// `session_holds_resource_command` (iter-71 Theme B AC):
+    /// `Session::new` starts with no resource_command; after
+    /// `set_resource_command` the same Arc is returned by `resource_command()`.
+    #[test]
+    fn session_holds_resource_command() {
+        use crate::resources::ResourceCommand;
+        use crate::types::ActorId;
+        use std::sync::{Arc, Mutex};
+
+        let session = make_session();
+        // Starts as None.
+        assert!(
+            session.resource_command().is_none(),
+            "new session must not have a resource_command"
+        );
+
+        let watcher: ActorId = ActorId::from("conn0/watcher1");
+        let rc = Arc::new(Mutex::new(ResourceCommand::new(watcher)));
+        let mut session = session;
+        session.set_resource_command(Arc::clone(&rc));
+
+        let stored = session
+            .resource_command()
+            .expect("resource_command should be Some after set_resource_command");
+        assert!(
+            Arc::ptr_eq(stored, &rc),
+            "resource_command() must return the same Arc passed to set_resource_command"
+        );
     }
 
     #[test]

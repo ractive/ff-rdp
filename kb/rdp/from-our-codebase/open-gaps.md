@@ -45,7 +45,12 @@ Catalog of known RDP-layer gaps as of 2026-05-23, drawn from dogfooding sessions
 
 ## legacy-startlisteners-coexistence
 
-**Status (iter-70)**: still open pending iter-71 deduplication work — no parallel-listen experiment has merged yet.
+**Status (iter-71)**: experimental test added; removal deferred pending live verification.
+`crates/ff-rdp-cli/tests/live_console_no_double_delivery.rs` implements the
+parallel-listen experiment (`live_console_no_double_delivery`, gated on
+`FF_RDP_LIVE_TESTS=1`, `#[ignore]`).  Run manually to verify no double-delivery
+before removing the legacy `WebConsoleActor::start_listeners` call sites in
+`commands/console.rs`.
 
 **Symptom**: Console flow uses both `WebConsoleActor.startListeners(["PageError", "ConsoleAPI"])` *and* `WatcherActor.watchResources(["console-message", "error-message"])`. Running both risks double-delivery; iter-54 task 6 wanted to drop the legacy path.
 

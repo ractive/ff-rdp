@@ -78,6 +78,10 @@ struct Subscriber {
 /// event-receive loop to fan out each incoming `resources-available-array` /
 /// `resources-updated-array` packet to all matching subscribers.
 ///
+/// Call [`gc`](Self::gc) periodically (e.g. after each event loop cycle) to
+/// flush pending `unwatchResources` packets that were scheduled when dead
+/// subscriber channels were detected during [`dispatch_event`].
+///
 /// # Thread safety
 ///
 /// `ResourceCommand` is designed to be owned by a single thread; all methods
@@ -93,6 +97,11 @@ pub struct ResourceCommand {
     /// Reference-count per resource type.  When > 0 the type is subscribed on
     /// the wire; when it drops to 0 we call `unwatchResources`.
     ref_counts: HashMap<ResourceType, u32>,
+    /// Resource types whose ref-count just dropped to zero via dead-channel
+    /// pruning in `dispatch_event`.  These need an `unwatchResources` wire call
+    /// but we can't send it from inside `dispatch_event` (no transport access),
+    /// so we defer to the next `gc()` call.
+    pending_unwatch: Vec<ResourceType>,
 }
 
 impl ResourceCommand {
@@ -103,6 +112,7 @@ impl ResourceCommand {
             next_sub_id: 1,
             subscribers: Vec::new(),
             ref_counts: HashMap::new(),
+            pending_unwatch: Vec::new(),
         }
     }
 
@@ -258,6 +268,11 @@ impl ResourceCommand {
         // Prune dead channels.  We must also decrement ref-counts for the
         // pruned subscribers' types so that wire subscriptions don't leak and
         // subsequent `unsubscribe` calls can still send `unwatchResources`.
+        //
+        // Types whose ref-count reaches zero here are pushed onto
+        // `pending_unwatch`; the caller must invoke `gc()` to flush the
+        // corresponding `unwatchResources` wire call (we can't send it here
+        // because `dispatch_event` has no transport access).
         if !dead.is_empty() {
             dead.sort_unstable_by_key(|id| id.0);
             dead.dedup();
@@ -269,6 +284,9 @@ impl ResourceCommand {
                     for t in &removed.types {
                         let count = self.ref_counts.entry(*t).or_insert(0);
                         *count = count.saturating_sub(1);
+                        if *count == 0 {
+                            self.pending_unwatch.push(*t);
+                        }
                     }
                     // Don't advance i — the swap put a new element at position i.
                 } else {
@@ -276,6 +294,45 @@ impl ResourceCommand {
                 }
             }
         }
+    }
+
+    /// Flush pending `unwatchResources` wire calls for resource types whose
+    /// last subscriber was pruned via dead-channel detection in
+    /// [`dispatch_event`].
+    ///
+    /// Call this periodically — e.g. after each event-loop cycle in the daemon,
+    /// or before returning from a CLI helper — to ensure Firefox is informed
+    /// that we no longer want events for abandoned types.
+    ///
+    /// Types whose ref-count has climbed back above zero (because a new
+    /// subscriber arrived since the pruning) are skipped silently.
+    ///
+    /// Returns `Ok(())` if there are no pending types to unwatch or all wire
+    /// calls succeed.  Wire errors are returned but the pending list is
+    /// cleared regardless (the subscription is already gone in-process).
+    pub fn gc(&mut self, transport: &mut RdpTransport) -> Result<(), ProtocolError> {
+        if self.pending_unwatch.is_empty() {
+            return Ok(());
+        }
+
+        // Deduplicate and keep only types still at zero.
+        self.pending_unwatch
+            .sort_unstable_by_key(|t| t.as_wire_str());
+        self.pending_unwatch.dedup();
+        let to_unwatch: Vec<ResourceType> = self
+            .pending_unwatch
+            .iter()
+            .filter(|t| self.ref_counts.get(*t).copied().unwrap_or(0) == 0)
+            .copied()
+            .collect();
+        self.pending_unwatch.clear();
+
+        if to_unwatch.is_empty() {
+            return Ok(());
+        }
+
+        let wire_strs: Vec<&str> = to_unwatch.iter().map(|t| t.as_wire_str()).collect();
+        WatcherActor::unwatch_resources(transport, &self.watcher_actor, &wire_strs).map(|_| ())
     }
 
     /// Parse a `resources-available-array` event into typed [`Resource`] items.
@@ -396,6 +453,14 @@ impl ResourceCommand {
     pub fn watcher_actor(&self) -> &ActorId {
         &self.watcher_actor
     }
+
+    /// Return the number of resource types pending an `unwatchResources` flush.
+    ///
+    /// Non-zero means `gc()` has not yet been called after a dead-channel prune.
+    /// Primarily for testing and diagnostics.
+    pub fn pending_unwatch_count(&self) -> usize {
+        self.pending_unwatch.len()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +490,101 @@ mod tests {
             .or_insert(0) += 1;
 
         (bus, rx)
+    }
+
+    // -----------------------------------------------------------------------
+    // Theme A (iter-71) tests — unwatch on last-subscriber-drop via gc()
+    // -----------------------------------------------------------------------
+
+    /// `resource_command_unwatch_on_drop` (unit portion):
+    /// After a dead-channel prune, `pending_unwatch_count()` is non-zero and
+    /// `gc()` clears it.  The wire call is verified in the mock-server test.
+    #[test]
+    fn dead_channel_prune_sets_pending_unwatch() {
+        let watcher: ActorId = ActorId::from("conn0/watcher1");
+        let mut bus = ResourceCommand::new(watcher);
+
+        let (tx, rx) = std::sync::mpsc::channel::<Arc<Resource>>();
+        bus.add_subscriber_direct(vec![ResourceType::NetworkEvent], tx);
+
+        // Drop the receiver so the channel is dead.
+        drop(rx);
+
+        assert_eq!(
+            bus.pending_unwatch_count(),
+            0,
+            "pending_unwatch starts empty"
+        );
+
+        // Dispatch an event — dead-channel pruning fires, pushing to pending_unwatch.
+        let packet = json!({
+            "type": "resources-available-array",
+            "array": [
+                ["network-event", [{
+                    "actor": "conn0/netEvent1",
+                    "method": "GET",
+                    "url": "https://example.com/",
+                    "isXHR": false,
+                    "cause": {"type": "document"},
+                    "startedDateTime": "2026-01-01T00:00:00Z",
+                    "timeStamp": 1000.0,
+                    "resourceId": 1_u64
+                }]]
+            ]
+        });
+        bus.dispatch_event(&packet);
+
+        assert_eq!(
+            bus.pending_unwatch_count(),
+            1,
+            "pending_unwatch should have 1 entry after dead-channel prune"
+        );
+        assert_eq!(
+            bus.ref_count(ResourceType::NetworkEvent),
+            0,
+            "ref-count must be 0 after prune"
+        );
+    }
+
+    /// `resource_command_no_unwatch_with_live_subscribers`:
+    /// With ref-count > 0 (live subscriber), `gc()` is a no-op — nothing is
+    /// pushed to `pending_unwatch` and no wire packet would be sent.
+    #[test]
+    fn resource_command_no_unwatch_with_live_subscribers() {
+        let watcher: ActorId = ActorId::from("conn0/watcher1");
+        let mut bus = ResourceCommand::new(watcher);
+
+        let (tx, _rx) = std::sync::mpsc::channel::<Arc<Resource>>();
+        // Keep _rx alive so the channel is not dead.
+        bus.add_subscriber_direct(vec![ResourceType::NetworkEvent], tx);
+
+        let packet = json!({
+            "type": "resources-available-array",
+            "array": [
+                ["network-event", [{
+                    "actor": "conn0/netEvent1",
+                    "method": "GET",
+                    "url": "https://example.com/",
+                    "isXHR": false,
+                    "cause": {"type": "document"},
+                    "startedDateTime": "2026-01-01T00:00:00Z",
+                    "timeStamp": 1000.0,
+                    "resourceId": 1_u64
+                }]]
+            ]
+        });
+        bus.dispatch_event(&packet);
+
+        assert_eq!(
+            bus.pending_unwatch_count(),
+            0,
+            "no pending_unwatch when subscriber is still live"
+        );
+        assert_eq!(
+            bus.ref_count(ResourceType::NetworkEvent),
+            1,
+            "ref-count unchanged with live subscriber"
+        );
     }
 
     /// Theme D AC: `resources-destroyed-array` is dispatched as
