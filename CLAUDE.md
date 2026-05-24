@@ -71,7 +71,24 @@ An AC without a named test is not done.
 - Carry-over work must be filed as a new iteration plan BEFORE the current PR merges.
 - AC checkboxes must be paired with test evidence or a `[deferred — new plan: …]` annotation.
   An AC without a named test is not done — do not tick it.
+  The ralph-loop skill enforces this at merge time via `ac-fidelity-check.sh`:
+  every ticked AC must reference a test slug, a code symbol that appears in the
+  diff, or the `[deferred — new plan: <path>]` form. See iter-61z.
+- Commit-message claims (`adds Foo::Bar`, "subscribes to dom-interactive",
+  "implements RdpError::Navigation") must be backed by the branch diff. The
+  ralph-loop skill emits a `## Claims vs code` PR-description section via
+  `claims-vs-code.sh`; unmatched claims become ❌ rows the reviewer sees. Add
+  `// allow-claim-miss: <symbol>` near the relevant code if a claim is
+  legitimately untestable.
 - Iteration plans must include `dogfood_path` and `first_call_sites` (if new pub items).
   Validate with: `cargo run -p xtask -- check-iteration-plan kb/iterations/iteration-NN-slug.md`
-- `cargo xtask check-dead-primitives` and `check-todo-annotations` run in CI as required checks.
+- `cargo xtask check-dead-primitives`, `check-todo-annotations`, and
+  `check-discipline-regression` run in CI as required checks. The latter pins
+  the iter-61v (FAIL) and iter-61t (PASS) replay baselines so the heuristics
+  in `claims-vs-code.sh` / `ac-fidelity-check.sh` don't silently regress.
+- The ralph-loop skill scripts live in `~/.claude/skills/ralph-loop/scripts/`;
+  a mirror is checked in at `tools/ralph-loop/scripts/` so changes are
+  reviewable. Edit both. `check-discipline-regression` catches drift.
+- Skill-edit iterations (those that modify `~/.claude/skills/`) cannot run
+  through ralph-loop itself — drive them by hand in a regular Claude session.
 - See `CONTRIBUTING.md` for full details and install instructions for the pre-commit hook.
