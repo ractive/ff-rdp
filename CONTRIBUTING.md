@@ -102,6 +102,55 @@ The plan linter (`cargo xtask check-iteration-plan`) enforces these fields.
 - The `discipline` CI job runs `check-dead-primitives` and `check-todo-annotations` on
   every PR
 
+## Supply-chain checks
+
+`cargo audit` (RustSec advisory DB) and `cargo deny check` (advisories +
+licences + bans + sources) run on every PR via the `supply-chain` job in
+`.github/workflows/ci.yml`. They are required checks.
+
+When a new advisory lands and breaks CI, choose one path:
+
+1. **Yank-and-upgrade (preferred).** Run `cargo update -p <crate>` to a
+   patched version, regenerate `Cargo.lock`, commit.
+2. **Pin a working version.** If the maintainer hasn't released a fix yet
+   but a known-good prior version exists, pin it with
+   `<crate> = "=X.Y.Z"` in `Cargo.toml` and link the upstream issue.
+3. **Ignore with reason.** If the advisory does not apply to our use of
+   the crate (e.g. a `dev-dependency`, or a code path we never invoke),
+   add the advisory ID to `[advisories].ignore` in `deny.toml` *with* a
+   `# advisory ID — short justification, link to upstream issue` comment.
+   Never ignore without a written reason.
+
+License or ban regressions follow the same rule of thumb: prefer
+removing the offending dep; only widen the allow-list if the licence is
+genuinely compatible.
+
+## Fuzzing
+
+Parser-surface fuzz harnesses live in `fuzz/` (`transport_recv_from`,
+`parse_page_map_str`, `parse_script_file`). They run for 60 s each on
+every PR via the `fuzz` job.
+
+Local setup (nightly only):
+
+```sh
+rustup install nightly
+cargo install cargo-fuzz
+cd fuzz
+cargo +nightly fuzz run transport_recv_from seeds/transport_recv_from -- -max_total_time=60
+```
+
+When CI reports a fuzz crash:
+
+1. Download the minimised input from the failed job's artifacts.
+2. Reproduce locally with `cargo +nightly fuzz run <target> <input>`.
+3. Open a GitHub issue tagged `fuzz-finding` with the minimised input
+   attached.
+4. Fix the parser, then check the input into `fuzz/seeds/<target>/` as a
+   permanent regression seed.
+
+See `fuzz/README.md` for the full target list.
+
 ## ralph-loop (automated iteration runs)
 
 When running iterations via the ralph-loop skill, each agent also runs the xtask discipline
