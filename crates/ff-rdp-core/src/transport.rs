@@ -1,5 +1,6 @@
 use std::io::{BufReader, Read, Write};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
@@ -25,19 +26,45 @@ const SENSITIVE_KEYS: &[&str] = &[
 /// redacted to avoid leaking eval payloads in traces.
 const SOURCE_KEYS: &[&str] = &["text", "expression"];
 
-/// Maximum string length (in bytes) allowed through the redactor for ad-hoc
-/// string values that aren't explicitly listed in `SENSITIVE_KEYS`.
+/// Default maximum string length (in bytes) allowed through the redactor for
+/// ad-hoc string values that aren't explicitly listed in `SENSITIVE_KEYS` or
+/// `SOURCE_KEYS`.
 ///
-/// Any string exceeding this threshold inside a traced packet is replaced with
-/// `<redacted len=N>`.
-const MAX_INLINE_STR: usize = 32;
+/// Long URLs, query strings, and non-sensitive payload fragments commonly
+/// exceed the legacy 32-byte threshold; 256 keeps traces readable while still
+/// truncating runaway blobs.  Override at runtime with
+/// [`set_redact_threshold`].
+pub const DEFAULT_REDACT_THRESHOLD: usize = 256;
+
+/// Runtime-configurable redaction threshold.  `0` means "unset, use the
+/// [`DEFAULT_REDACT_THRESHOLD`]".  See [`set_redact_threshold`] /
+/// [`redact_threshold`].
+static REDACT_THRESHOLD: AtomicUsize = AtomicUsize::new(0);
+
+/// Set the redactor's threshold for un-keyed long strings.
+///
+/// Sensitive-keyed values (`cookie`, `authorization`, `text`, etc.) are still
+/// redacted unconditionally — the threshold only affects the
+/// "long-string-anywhere-in-the-tree" rule.
+///
+/// `bytes = 0` resets to [`DEFAULT_REDACT_THRESHOLD`].
+pub fn set_redact_threshold(bytes: usize) {
+    REDACT_THRESHOLD.store(bytes, Ordering::Relaxed);
+}
+
+/// Current redaction threshold in bytes (default
+/// [`DEFAULT_REDACT_THRESHOLD`] when [`set_redact_threshold`] was not called).
+pub fn redact_threshold() -> usize {
+    let v = REDACT_THRESHOLD.load(Ordering::Relaxed);
+    if v == 0 { DEFAULT_REDACT_THRESHOLD } else { v }
+}
 
 /// Redact a JSON value and return a redacted clone for safe trace output.
 ///
 /// - All values of keys matching [`SENSITIVE_KEYS`] are replaced.
 /// - All values of keys matching [`SOURCE_KEYS`] are replaced.
-/// - String values exceeding [`MAX_INLINE_STR`] anywhere in the tree are
-///   replaced.
+/// - String values exceeding the [`redact_threshold`] anywhere in the tree
+///   are replaced.
 ///
 /// When the `FF_RDP_TRACE_RAW=1` environment variable is set, redaction is
 /// skipped and the value is returned as a clone.  This allows local debugging
@@ -107,7 +134,7 @@ fn redact_inner(value: &Value) -> Value {
         }
         Value::Array(arr) => Value::Array(arr.iter().map(redact_inner).collect()),
         Value::String(s) => {
-            if s.len() > MAX_INLINE_STR {
+            if s.len() > redact_threshold() {
                 Value::String(format!("<redacted len={}>", s.len()))
             } else {
                 value.clone()
@@ -145,13 +172,44 @@ fn packet_kind(packet: &Value) -> &str {
     packet.get("type").and_then(Value::as_str).unwrap_or("-")
 }
 
-/// Maximum frame payload size accepted from a Firefox RDP peer.
+/// Default cap on frame payload size accepted from a Firefox RDP peer.
 ///
-/// 64 MiB comfortably exceeds the largest legitimate frame observed in the
-/// wild (full-page screenshot data URLs).  Frames declaring a larger length
-/// are rejected before any allocation is attempted — this prevents a
-/// malformed or malicious peer from causing an immediate OOM abort.
-pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+/// 256 MiB comfortably accommodates heap-snapshot dumps and other large
+/// legitimate transfers (full-page screenshot data URLs are ≪ this).  Frames
+/// declaring a larger length are rejected before any allocation is
+/// attempted, preventing a malformed or malicious peer from causing an
+/// immediate OOM abort.  Override at runtime with [`set_max_frame_bytes`].
+///
+/// Note: the receive parser checks the declared length against this cap
+/// **before** allocating the body buffer, so an oversized declaration costs
+/// only a few bytes of length-prefix parsing.
+pub const DEFAULT_MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
+
+/// Runtime-configurable frame-size cap.  `0` means "unset, use the
+/// [`DEFAULT_MAX_FRAME_BYTES`]".
+static MAX_FRAME_BYTES_CELL: AtomicUsize = AtomicUsize::new(0);
+
+/// Set the maximum frame payload size in bytes accepted by [`recv_from`].
+///
+/// Intended to be called once at process startup (e.g. from the CLI front
+/// end after parsing `--max-frame-mb`).  Calling at runtime is safe — the
+/// new cap applies to the next frame read — but typically not needed.
+///
+/// `bytes = 0` resets to [`DEFAULT_MAX_FRAME_BYTES`].
+pub fn set_max_frame_bytes(bytes: usize) {
+    MAX_FRAME_BYTES_CELL.store(bytes, Ordering::Relaxed);
+}
+
+/// Current cap on frame payload size in bytes.
+pub fn max_frame_bytes() -> usize {
+    let v = MAX_FRAME_BYTES_CELL.load(Ordering::Relaxed);
+    if v == 0 { DEFAULT_MAX_FRAME_BYTES } else { v }
+}
+
+/// Legacy alias for the default frame-size cap.  Prefer
+/// [`max_frame_bytes`] in new code so the runtime knob is honoured.
+#[deprecated(note = "use max_frame_bytes() to honour the --max-frame-mb runtime knob")]
+pub const MAX_FRAME_BYTES: usize = DEFAULT_MAX_FRAME_BYTES;
 
 /// Low-level transport for the Firefox Remote Debugging Protocol.
 ///
@@ -671,11 +729,12 @@ pub fn recv_from(reader: &mut impl Read) -> Result<Value, ProtocolError> {
         .map_err(|e| ProtocolError::InvalidPacket(format!("length parse error: {e}")))?;
 
     // Reject oversized frames before allocating.  A peer that announces more
-    // than MAX_FRAME_BYTES is either corrupted or malicious.
-    if length > MAX_FRAME_BYTES {
+    // than the configured cap is either corrupted or malicious.
+    let cap = max_frame_bytes();
+    if length > cap {
         return Err(ProtocolError::FrameTooLarge {
             declared: length,
-            max: MAX_FRAME_BYTES,
+            max: cap,
         });
     }
 
@@ -789,6 +848,56 @@ mod tests {
     /// manipulating redaction state don't race with each other.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Module-level lock shared by every test that mutates the global
+    /// `MAX_FRAME_BYTES_CELL` cap.  Combined with [`FrameCapGuard`] this
+    /// guarantees both serialization and panic-safe restoration.
+    static FRAME_CAP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Module-level lock shared by every test that mutates the global
+    /// `REDACT_THRESHOLD`.  Combined with [`RedactThresholdGuard`] this
+    /// guarantees both serialization and panic-safe restoration.
+    static REDACT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// RAII guard that snapshots the current frame-size cap on construction
+    /// and restores it on drop, even if the test panics mid-way.
+    struct FrameCapGuard {
+        prev: usize,
+    }
+
+    impl FrameCapGuard {
+        fn new() -> Self {
+            Self {
+                prev: MAX_FRAME_BYTES_CELL.load(Ordering::Relaxed),
+            }
+        }
+    }
+
+    impl Drop for FrameCapGuard {
+        fn drop(&mut self) {
+            MAX_FRAME_BYTES_CELL.store(self.prev, Ordering::Relaxed);
+        }
+    }
+
+    /// RAII guard that snapshots the current redaction threshold on
+    /// construction and restores it on drop, even if the test panics.
+    struct RedactThresholdGuard {
+        prev: usize,
+    }
+
+    impl RedactThresholdGuard {
+        fn new() -> Self {
+            Self {
+                prev: REDACT_THRESHOLD.load(Ordering::Relaxed),
+            }
+        }
+    }
+
+    impl Drop for RedactThresholdGuard {
+        fn drop(&mut self) {
+            REDACT_THRESHOLD.store(self.prev, Ordering::Relaxed);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // encode_frame — pure, no I/O
     // -----------------------------------------------------------------------
@@ -890,12 +999,12 @@ mod tests {
 
     #[test]
     fn recv_rejects_frame_exceeding_max_size() {
-        // Declare a 100 MB frame (> MAX_FRAME_BYTES = 64 MiB).  No allocation
+        // Declare a 400 MB frame (> default 256 MiB cap).  No allocation
         // should happen — the error must be returned before reading the body.
         // We only send the length prefix followed by a colon; the cursor has
         // no body bytes, so if recv_from tried to allocate and read we would
         // get a RecvFailed instead of FrameTooLarge.
-        let declared = 100_000_000usize;
+        let declared = 400_000_000usize;
         let prefix = format!("{declared}:");
         let mut cursor = Cursor::new(prefix.into_bytes());
 
@@ -904,12 +1013,95 @@ mod tests {
             matches!(
                 err,
                 ProtocolError::FrameTooLarge {
-                    declared: 100_000_000,
+                    declared: 400_000_000,
                     max: _
                 }
             ),
             "expected FrameTooLarge, got {err:?}"
         );
+    }
+
+    /// AC: `max_frame_mb_knob_works`.  Raising the runtime cap allows a frame
+    /// that the lower cap would reject.  Lowering the cap back rejects the
+    /// same frame.  We use a small declared length so the test allocates
+    /// nothing meaningful.
+    #[test]
+    fn max_frame_mb_knob_works() {
+        // Serialise so the tests don't fight over the global cap, and
+        // restore it on drop even if an assertion below panics.
+        let _g = FRAME_CAP_LOCK.lock().unwrap();
+        let _restore = FrameCapGuard::new();
+
+        // Lower the cap to 1024 bytes — 2000 bytes must be rejected.
+        set_max_frame_bytes(1024);
+        let prefix = b"2000:".to_vec();
+        let mut cursor = Cursor::new(prefix);
+        let err = recv_from(&mut cursor).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ProtocolError::FrameTooLarge {
+                    declared: 2000,
+                    max: 1024
+                }
+            ),
+            "expected FrameTooLarge {{declared:2000, max:1024}}, got {err:?}"
+        );
+
+        // Raise the cap to 4096 bytes — same declared length is no longer
+        // rejected at the cap check (it then fails at body read since there
+        // is no body in the cursor, which is fine — we only care that the
+        // FrameTooLarge branch did NOT fire).
+        set_max_frame_bytes(4096);
+        let prefix = b"2000:".to_vec();
+        let mut cursor = Cursor::new(prefix);
+        let err = recv_from(&mut cursor).unwrap_err();
+        assert!(
+            !matches!(err, ProtocolError::FrameTooLarge { .. }),
+            "raising the cap must allow the frame past the size check, got {err:?}"
+        );
+
+        // FrameCapGuard restores the previous value on drop.
+    }
+
+    /// AC: `redact_threshold_tunable`.  A long non-sensitive string passes
+    /// through after raising the threshold; sensitive-keyed values still
+    /// redact regardless.
+    #[test]
+    fn redact_threshold_tunable() {
+        // Serialise + restore on panic.
+        let _g = REDACT_LOCK.lock().unwrap();
+        let _restore = RedactThresholdGuard::new();
+
+        let long_url =
+            "https://example.com/path?utm_source=newsletter&utm_campaign=spring&q=very+long+search";
+        assert!(long_url.len() > 64);
+
+        // With a generous threshold, the URL renders in full.
+        set_redact_threshold(512);
+        let v = serde_json::json!({"url": long_url, "authorization": "Bearer abc"});
+        let r = redact(&v);
+        assert_eq!(
+            r["url"].as_str().unwrap(),
+            long_url,
+            "long URL must pass through when threshold > url.len()"
+        );
+        let auth = r["authorization"].as_str().unwrap();
+        assert!(
+            auth.starts_with("<redacted"),
+            "sensitive key must still redact regardless of threshold: {auth}"
+        );
+
+        // With a tight threshold, the same URL is redacted.
+        set_redact_threshold(16);
+        let r2 = redact(&v);
+        let url2 = r2["url"].as_str().unwrap();
+        assert!(
+            url2.starts_with("<redacted"),
+            "tight threshold must redact long URL: {url2}"
+        );
+
+        // RedactThresholdGuard restores the previous value on drop.
     }
 
     // -----------------------------------------------------------------------
@@ -934,7 +1126,10 @@ mod tests {
 
     #[test]
     fn redact_long_string_replaces_value() {
-        let long = "x".repeat(MAX_INLINE_STR + 1);
+        // Serialise with other tests that mutate REDACT_THRESHOLD so that
+        // the read+redact pair sees a stable cap.
+        let _g = REDACT_LOCK.lock().unwrap();
+        let long = "x".repeat(redact_threshold() + 1);
         let v = serde_json::json!({"data": long});
         let r = redact(&v);
         let s = r["data"].as_str().unwrap();

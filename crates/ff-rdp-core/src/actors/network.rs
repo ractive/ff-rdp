@@ -3,7 +3,7 @@ use serde_json::Value;
 use crate::actor::actor_request;
 use crate::actors::string::LongStringActor;
 use crate::error::ProtocolError;
-use crate::transport::{MAX_FRAME_BYTES, RdpTransport};
+use crate::transport::{RdpTransport, max_frame_bytes};
 use crate::types::ActorId;
 
 /// An HTTP header name-value pair.
@@ -23,7 +23,8 @@ pub struct ResponseContent {
     pub size: u64,
     /// Response body text (may be absent for binary content).
     pub text: Option<String>,
-    /// True when the body was truncated at [`MAX_FRAME_BYTES`] due to size limits.
+    /// True when the body was truncated at the configured frame-size cap
+    /// (see [`max_frame_bytes`]) due to size limits.
     pub truncated: bool,
 }
 
@@ -71,8 +72,9 @@ impl NetworkEventActor {
     /// grip (`{type:"longString", actor, initial, length}`) for large bodies.
     /// When a `longString` grip is detected, the full content is fetched via
     /// [`LongStringActor::full_string`] in chunks, capped at
-    /// [`MAX_FRAME_BYTES`].  Bodies exceeding the cap are truncated and
-    /// `truncated` is set to `true` in the result.
+    /// the current frame-size cap (see [`max_frame_bytes`]).  Bodies
+    /// exceeding the cap are truncated and `truncated` is set to `true` in
+    /// the result.
     pub fn get_response_content(
         transport: &mut RdpTransport,
         actor: &ActorId,
@@ -97,8 +99,9 @@ impl NetworkEventActor {
             text_value.get("actor").and_then(Value::as_str),
             text_value.get("length").and_then(Value::as_u64),
         ) {
-            // longString grip — fetch the full body, capped at MAX_FRAME_BYTES.
-            let cap = u64::try_from(MAX_FRAME_BYTES).unwrap_or(u64::MAX);
+            // longString grip — fetch the full body, capped at the
+            // configured maximum frame size.
+            let cap = u64::try_from(max_frame_bytes()).unwrap_or(u64::MAX);
             let fetch_len = declared_len.min(cap);
             let body = LongStringActor::full_string(transport, long_actor, fetch_len)?;
             let truncated = declared_len > cap;

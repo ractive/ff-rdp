@@ -204,7 +204,7 @@ pub enum ProtocolError {
     /// Frame declared too large to be a valid Firefox RDP packet.
     ///
     /// Firefox frames are length-prefixed JSON.  A declared length exceeding
-    /// [`MAX_FRAME_BYTES`](crate::transport::MAX_FRAME_BYTES) is either a
+    /// [`max_frame_bytes`](crate::transport::max_frame_bytes) is either a
     /// malformed stream or a memory-exhaustion attempt and is rejected before
     /// any allocation is made.
     #[error("RDP frame too large: declared {declared} bytes, max {max} bytes")]

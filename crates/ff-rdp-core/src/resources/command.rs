@@ -39,7 +39,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use serde_json::Value;
 
 use crate::actors::watcher::{
-    WatcherActor, parse_console_resources, parse_network_resource_updates, parse_network_resources,
+    WatcherActor, parse_console_resources_from_items, parse_network_resource_updates,
+    parse_network_resources_from_items,
 };
 use crate::error::ProtocolError;
 use crate::resources::resource::Resource;
@@ -446,34 +447,33 @@ impl ResourceCommand {
 
             let resource_type_str = sub_arr[0].as_str().unwrap_or_default();
 
+            // Hot path on the daemon's fan-out — pass the inner items slice
+            // directly to the typed parsers (iter-72 Theme B); the previous
+            // implementation rewrapped each sub-array, allocating a Map +
+            // Vec per resource on every event.
+            let Some(items) = sub_arr[1].as_array() else {
+                continue;
+            };
+
             match resource_type_str {
                 "network-event" => {
-                    // Re-wrap for the existing parser.
-                    let wrapped =
-                        serde_json::json!({"array": [["network-event", sub_arr[1].clone()]]});
-                    for r in parse_network_resources(&wrapped) {
+                    for r in parse_network_resources_from_items(items) {
                         out.push(Resource::NetworkEvent(r));
                     }
                 }
                 "console-message" => {
-                    let wrapped =
-                        serde_json::json!({"array": [["console-message", sub_arr[1].clone()]]});
-                    for r in parse_console_resources(&wrapped) {
+                    for r in parse_console_resources_from_items(items) {
                         out.push(Resource::ConsoleMessage(r));
                     }
                 }
                 "error-message" => {
-                    let wrapped =
-                        serde_json::json!({"array": [["error-message", sub_arr[1].clone()]]});
-                    for r in parse_console_resources(&wrapped) {
+                    for r in parse_console_resources_from_items(items) {
                         out.push(Resource::ErrorMessage(r));
                     }
                 }
                 "document-event" => {
-                    if let Some(items) = sub_arr[1].as_array() {
-                        for item in items {
-                            out.push(Resource::DocumentEvent(item.clone()));
-                        }
+                    for item in items {
+                        out.push(Resource::DocumentEvent(item.clone()));
                     }
                 }
                 _ => {}
@@ -827,6 +827,51 @@ mod tests {
             }
             other => panic!("second event should be Destroyed, got {other:?}"),
         }
+    }
+
+    /// AC (iter-72): `dispatch_no_per_resource_json_alloc` — structural
+    /// regression test for the Theme B refactor.  The fan-out path used to
+    /// `json!({"array": [[type, sub_arr[1].clone()]]})` once per resource
+    /// before delegating to the typed parser; now it passes the inner items
+    /// slice directly.  We can't observe a missing allocation from inside
+    /// safe Rust, so this test pins the source: the `command.rs`
+    /// `parse_available_resources` function must not contain `json!(` (the
+    /// per-resource wrap was the only call in this fn).  If a future change
+    /// reintroduces it, this test fails and the author can confirm the
+    /// allocation is intentional.
+    #[test]
+    fn dispatch_no_per_resource_json_alloc() {
+        let src = include_str!("command.rs");
+        let fn_start = src
+            .find("fn parse_available_resources(")
+            .expect("parse_available_resources fn must exist");
+        // Find the matching closing brace for the function body.  Cheap
+        // bracket counter: starts at first `{` after the signature.
+        let body_start = src[fn_start..]
+            .find('{')
+            .map(|i| fn_start + i)
+            .expect("fn body must have an opening brace");
+        let mut depth = 0i32;
+        let mut body_end = body_start;
+        for (i, c) in src[body_start..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        body_end = body_start + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &src[body_start..body_end];
+        assert!(
+            !body.contains("json!("),
+            "parse_available_resources must not call json!() per-resource — \
+             pass the inner items slice to parse_*_from_items() instead"
+        );
     }
 
     /// Micro-benchmark: a single `resources-available-array` event must fan

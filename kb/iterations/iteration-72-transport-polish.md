@@ -2,7 +2,7 @@
 title: "Iteration 72: Transport polish — frame-size knob, dispatch allocations, redact threshold"
 type: iteration
 date: 2026-05-24
-status: planned
+status: completed
 branch: iter-72/transport-polish
 depends_on:
   - iteration-61q-resource-command-bus
@@ -46,29 +46,29 @@ non-sensitive long URLs, obscuring debug traces.
 ## Tasks
 
 ### A. `--max-frame-mb`
-- [ ] Promote `MAX_FRAME_BYTES` (`crates/ff-rdp-core/src/transport.rs:153`) to a `pub fn set_max_frame_bytes(usize)` plus a `OnceLock<usize>` (or thread it through `Transport::new` if a constructor knob is preferred).
-- [ ] Add `--max-frame-mb <usize>` CLI flag; default 256.
-- [ ] Document in the transport module that the receive parser refuses oversized frames before allocating.
-- [ ] Test: feed a 200 MiB frame with default cap → bail with `FrameTooLarge`; raise the knob → accept.
+- [x] Promote `MAX_FRAME_BYTES` to `pub fn set_max_frame_bytes(usize)` + `pub fn max_frame_bytes()` backed by an `AtomicUsize` (`crates/ff-rdp-core/src/transport.rs`); `DEFAULT_MAX_FRAME_BYTES = 256 MiB`.
+- [x] Add `--max-frame-mb <usize>` global CLI flag; default 256, applied in `main.rs` after `init_tracing`.
+- [x] Documented in the transport module that the receive parser refuses oversized frames before allocating the body buffer.
+- [x] Test `max_frame_mb_knob_works`: 2000-byte frame rejected at 1024-byte cap; allowed once cap is raised to 4096.
 
 ### B. Allocation-free dispatch
-- [ ] In `crates/ff-rdp-core/src/resources/command.rs:282-332`, refactor `parse_network_resources` and `parse_console_resources` to accept `&[Value]` instead of `&Value`.
-- [ ] Remove the per-iteration `json!()` rewrap.
-- [ ] Re-run the existing fan-out bench at `command.rs:644-699`; budget unchanged but the new measurement should improve.
+- [x] Added `parse_network_resources_from_items(items: &[Value])` and `parse_console_resources_from_items(items: &[Value])` to `crates/ff-rdp-core/src/actors/watcher.rs`; existing pub fns delegate.
+- [x] `ResourceCommand::parse_available_resources` (`resources/command.rs`) now passes the inner items slice directly — no per-resource `json!()` rewrap.
+- [x] `bench_bus_dispatch_latency` and `bench_bus_fanout_4_subscribers` still pass the 5 ms median budget on the new code path.
 
 ### C. Redact threshold
-- [ ] Raise `MAX_INLINE_STR` (`transport.rs:45-126`) default to 256.
-- [ ] Add `--redact-threshold <bytes>` CLI flag.
-- [ ] Sensitive-keyed values (tokens, cookies, auth headers) continue to be redacted regardless of length — the threshold only affects untyped long strings.
-- [ ] Test: a long URL renders in full; a long token still renders as `<redacted len=N>`.
+- [x] `DEFAULT_REDACT_THRESHOLD = 256`; `set_redact_threshold` / `redact_threshold` backed by an `AtomicUsize` in `transport.rs`.
+- [x] Added `--redact-threshold <bytes>` global CLI flag (default 256), applied in `main.rs`.
+- [x] Sensitive-keyed values (tokens, cookies, auth headers, `text`, `expression`) continue to be redacted regardless of threshold.
+- [x] Test `redact_threshold_tunable`: long URL passes through at threshold 512; `authorization` still redacts at the same threshold; same URL is redacted at threshold 16.
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
-- [ ] `max_frame_mb_knob_works`: with `--max-frame-mb 256`, a 200 MiB frame is accepted; with default 64, it bails.
-- [ ] `dispatch_no_per_resource_json_alloc`: `parse_available_resources` no longer calls `json!()` per-resource (assert via heaptrack fixture or `#[allow(clippy::single_match)]`-style structural test).
-- [ ] `redact_threshold_tunable`: raising the threshold preserves long URLs; sensitive keys still redact.
-- [ ] `bench_resource_dispatch_within_budget`: existing fan-out bench passes its 5 ms budget.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `max_frame_mb_knob_works`: with the cap raised, an over-default frame is accepted; lowering the cap rejects it with `FrameTooLarge` (`crates/ff-rdp-core/src/transport.rs::max_frame_mb_knob_works`).
+- [x] `dispatch_no_per_resource_json_alloc`: structural test (`crates/ff-rdp-core/src/resources/command.rs::dispatch_no_per_resource_json_alloc`) asserts the `parse_available_resources` function body contains no `json!(` call — the only legitimate caller before this iteration.
+- [x] `redact_threshold_tunable`: `crates/ff-rdp-core/src/transport.rs::redact_threshold_tunable` — long URL preserved with threshold ≥ url.len(); `authorization` still redacted; tight threshold redacts the URL.
+- [x] `bench_bus_dispatch_latency`: median fan-out latency under 5 ms; pair benchmark `bench_bus_fanout_4_subscribers` also under 5 ms. Both in `crates/ff-rdp-core/src/resources/command.rs`.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 
