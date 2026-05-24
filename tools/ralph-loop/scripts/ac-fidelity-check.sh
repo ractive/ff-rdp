@@ -15,6 +15,7 @@ PLAN=""
 BRANCH=""
 BASE="main"
 RANGE=""
+SKIP_TEST_EXISTENCE="${AC_FIDELITY_SKIP_TEST_EXISTENCE:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -22,6 +23,7 @@ while [[ $# -gt 0 ]]; do
     --branch) BRANCH="$2"; shift 2 ;;
     --base)   BASE="$2"; shift 2 ;;
     --range)  RANGE="$2"; shift 2 ;;
+    --skip-test-existence) SKIP_TEST_EXISTENCE=1; shift ;;
     -h|--help) sed -n '3,12p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -136,12 +138,44 @@ while IFS= read -r line; do
   fi
 
   # Heuristic 1: test-function slug (live_* or test_*).
-  for slug in $(printf '%s' "$text" | grep -oE '\b(live|test|bench)_[a-z0-9_]+' || true); do
-    if grep -qE "fn[[:space:]]+${slug}\b" "$DIFF_FILE"; then
-      evidence_found=1
-      break
+  #
+  # iter-66 strengthening: when an AC names a test slug, the slug MUST resolve
+  # to an `fn <slug>` somewhere in the workspace tree — either in the branch
+  # diff (newly added/modified) OR pre-existing under crates/. Naming a test
+  # that doesn't exist anywhere is the iter-61w failure mode this iteration
+  # pays down.  Use --skip-test-existence (or AC_FIDELITY_SKIP_TEST_EXISTENCE=1)
+  # to opt out in environments where the source tree isn't available.
+  slugs=$(printf '%s' "$text" | grep -oE '\b(live|test|bench)_[a-z0-9_]+' || true)
+  if [[ -n "$slugs" ]]; then
+    slug_evidence=0
+    missing_slug=""
+    for slug in $slugs; do
+      if grep -qE "fn[[:space:]]+${slug}\b" "$DIFF_FILE"; then
+        slug_evidence=1
+        evidence_found=1
+        break
+      fi
+      if [[ "$SKIP_TEST_EXISTENCE" != "1" ]] \
+         && [[ -d crates ]] \
+         && grep -rqE "fn[[:space:]]+${slug}\b" crates 2>/dev/null; then
+        # Pre-existing test in the workspace satisfies the AC — counts as
+        # evidence even if the branch diff didn't touch it.
+        slug_evidence=1
+        evidence_found=1
+        break
+      fi
+      missing_slug="$slug"
+    done
+    # If a slug was named but resolves to no function anywhere, fail the AC
+    # immediately rather than letting later heuristics rescue it via a stray
+    # backtick match. This is the iter-66 tightening.
+    if [[ $slug_evidence -eq 0 ]] && [[ "$SKIP_TEST_EXISTENCE" != "1" ]]; then
+      echo "❌ ticked AC names test '$missing_slug' but no \`fn $missing_slug\` exists in the workspace: ${text}"
+      FAILED=$((FAILED + 1))
+      FAILED_LINES+=("$line")
+      continue
     fi
-  done
+  fi
 
   # Heuristic 2: backtick-quoted symbol(s) — strip the backticks and look in
   # the diff. Allow trailing punctuation in the captured group.
