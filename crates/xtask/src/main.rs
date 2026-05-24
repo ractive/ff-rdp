@@ -1,6 +1,8 @@
+mod check_actor_kb_sync;
 mod check_daemon_locks;
 mod check_dead_primitives;
 mod check_discipline_regression;
+mod check_firefox_refs;
 mod check_iteration_plan;
 mod check_todo_annotations;
 
@@ -28,6 +30,10 @@ enum Commands {
     CheckDisciplineRegression(check_discipline_regression::Args),
     /// Fail if `.lock().unwrap()` remains in the daemon (must use `lock_or_recover!`).
     CheckDaemonLocks(check_daemon_locks::Args),
+    /// Validate firefox_refs line ranges in an iteration plan against the local Firefox checkout.
+    CheckFirefoxRefs(check_firefox_refs::Args),
+    /// Fail if an actor source file was changed without a corresponding kb/rdp/actors/*.md update.
+    CheckActorKbSync(check_actor_kb_sync::Args),
 }
 
 fn main() -> Result<()> {
@@ -38,5 +44,7 @@ fn main() -> Result<()> {
         Commands::CheckIterationPlan(args) => check_iteration_plan::run(args),
         Commands::CheckDisciplineRegression(args) => check_discipline_regression::run(args),
         Commands::CheckDaemonLocks(args) => check_daemon_locks::run(args),
+        Commands::CheckFirefoxRefs(args) => check_firefox_refs::run(args),
+        Commands::CheckActorKbSync(args) => check_actor_kb_sync::run(args),
     }
 }

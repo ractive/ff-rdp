@@ -82,10 +82,15 @@ An AC without a named test is not done.
   legitimately untestable.
 - Iteration plans must include `dogfood_path` and `first_call_sites` (if new pub items).
   Validate with: `cargo run -p xtask -- check-iteration-plan kb/iterations/iteration-NN-slug.md`
-- `cargo xtask check-dead-primitives`, `check-todo-annotations`, and
-  `check-discipline-regression` run in CI as required checks. The latter pins
-  the iter-61v (FAIL) and iter-61t (PASS) replay baselines so the heuristics
-  in `claims-vs-code.sh` / `ac-fidelity-check.sh` don't silently regress.
+- `cargo xtask check-dead-primitives`, `check-todo-annotations`,
+  `check-discipline-regression`, `check-firefox-refs`, and `check-actor-kb-sync`
+  run in CI as required checks. The latter two were added in iter-73 (spec-fidelity-gates):
+  - `check-firefox-refs <plan>` — validates `firefox_refs:` line ranges in an iteration plan
+    against the local Firefox checkout (`FF_RDP_FIREFOX_PATH`).
+  - `check-actor-kb-sync --since origin/main` — fails if an actor `.rs` file was changed
+    without a corresponding `kb/rdp/actors/*.md` update.
+  `check-discipline-regression` pins the iter-61v (FAIL) and iter-61t (PASS) replay baselines
+  so the heuristics in `claims-vs-code.sh` / `ac-fidelity-check.sh` don't silently regress.
 - The ralph-loop skill scripts live in `~/.claude/skills/ralph-loop/scripts/`;
   a mirror is checked in at `tools/ralph-loop/scripts/` so changes are
   reviewable. Edit both. `check-discipline-regression` catches drift.
