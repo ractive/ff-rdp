@@ -319,11 +319,11 @@ fn collect_page_perf(ctx: &mut ConnectedTab, label: &str) -> Result<Value, AppEr
 pub fn run(cli: &Cli, urls: &[String], labels: Option<&[String]>) -> Result<(), AppError> {
     validate_labels(urls, labels)?;
 
-    // Validate all URLs before connecting.
-    if !cli.allow_unsafe_urls {
-        for url in urls {
-            validate_url_with_opts(url, cli.allow_file_urls)?;
-        }
+    // Validate all URLs before connecting. The validator enforces the
+    // file:// gate independently of --allow-unsafe-urls — see
+    // `url_validation` module docs.
+    for url in urls {
+        validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     }
 
     let mut ctx = connect_and_get_target(cli)?;

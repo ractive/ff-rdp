@@ -254,11 +254,15 @@ fn render_table(rows: &[Value]) {
         }
     }
 
-    // Print header row.
+    // Print header row.  Object keys can be attacker-influenced (e.g. cookie
+    // names, header names), so sanitize before formatting.
     let header: Vec<String> = columns
         .iter()
         .enumerate()
-        .map(|(i, col)| format!("{col:<width$}", width = widths[i]))
+        .map(|(i, col)| {
+            let safe = ff_rdp_core::sanitize_for_terminal(col);
+            format!("{safe:<width$}", width = widths[i])
+        })
         .collect();
     println!("{}", header.join("  "));
 
@@ -282,11 +286,15 @@ fn render_table(rows: &[Value]) {
 
 /// Render a flat JSON object as a key-value list.
 ///
-/// Keys are right-padded to align values.
+/// Keys are sanitized before width is computed so alignment uses the
+/// rendered widths, not the raw (possibly attacker-controlled) keys.
 fn render_kv(map: &serde_json::Map<String, Value>) {
-    let max_key = map.keys().map(String::len).max().unwrap_or(0);
-    for (key, val) in map {
-        let key = ff_rdp_core::sanitize_for_terminal(key);
+    let sanitized: Vec<(String, &Value)> = map
+        .iter()
+        .map(|(k, v)| (ff_rdp_core::sanitize_for_terminal(k).into_owned(), v))
+        .collect();
+    let max_key = sanitized.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    for (key, val) in &sanitized {
         let cell = value_to_cell(val);
         println!("{key:<max_key$}  {cell}");
     }

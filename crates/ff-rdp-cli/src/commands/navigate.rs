@@ -391,9 +391,7 @@ pub fn run_core(
     url: &str,
     wait_opts: &WaitAfterNav<'_>,
 ) -> Result<serde_json::Value, AppError> {
-    if !cli.allow_unsafe_urls {
-        validate_url_with_opts(url, cli.allow_file_urls)?;
-    }
+    validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
     let tab_actor = ctx.target_tab_actor().clone();
@@ -514,9 +512,7 @@ pub fn run_with_network(
     wait_opts: &WaitAfterNav<'_>,
     network_timeout_ms: u64,
 ) -> Result<(), AppError> {
-    if !cli.allow_unsafe_urls {
-        validate_url_with_opts(url, cli.allow_file_urls)?;
-    }
+    validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
 

@@ -11,20 +11,29 @@
 //! `file://` URL, so the validator runs on every `--url` argument, not just
 //! interactive input.
 //!
-//! `javascript:` and `data:` remain behind `--allow-unsafe-urls` (XSS /
-//! arbitrary-content vectors); `vbscript:` and other schemes are always
-//! rejected.
+//! `javascript:` and `data:` are gated by `--allow-unsafe-urls` (XSS /
+//! arbitrary-content vectors). `file:` has its own dedicated opt-in
+//! (`--allow-file-urls`) and is NOT widened by `--allow-unsafe-urls` — the
+//! two flags are independent so a user opting into JS evaluation does not
+//! implicitly also expose the local filesystem. `vbscript:` and other
+//! unknown schemes are always rejected, regardless of either flag.
 
 use crate::error::AppError;
 
-const ALLOWED_SCHEMES: &[&str] = &["http", "https", "about"];
+const ALWAYS_ALLOWED_SCHEMES: &[&str] = &["http", "https", "about"];
 const FILE_SCHEME: &str = "file";
+const UNSAFE_SCHEMES: &[&str] = &["javascript", "data"];
 
-/// Validate that `url`'s scheme is on the allow list.
+/// Validate that `url`'s scheme is permitted by the current flag combination.
 ///
-/// `allow_file_urls` opts into `file://` URLs (off by default — see the
-/// module-level threat model).
-pub fn validate_url_with_opts(url: &str, allow_file_urls: bool) -> Result<(), AppError> {
+/// `allow_file_urls` opts into `file://`; `allow_unsafe_urls` opts into
+/// `javascript:` and `data:`. The two flags are orthogonal — see the
+/// module-level threat model.
+pub fn validate_url_with_opts(
+    url: &str,
+    allow_file_urls: bool,
+    allow_unsafe_urls: bool,
+) -> Result<(), AppError> {
     let colon_pos = url
         .find(':')
         .ok_or_else(|| AppError::User(format!("invalid URL (no scheme): {url}")))?;
@@ -33,6 +42,10 @@ pub fn validate_url_with_opts(url: &str, allow_file_urls: bool) -> Result<(), Ap
 
     if scheme.is_empty() {
         return Err(AppError::User(format!("invalid URL (empty scheme): {url}")));
+    }
+
+    if ALWAYS_ALLOWED_SCHEMES.contains(&scheme.as_str()) {
+        return Ok(());
     }
 
     if scheme == FILE_SCHEME {
@@ -44,19 +57,24 @@ pub fn validate_url_with_opts(url: &str, allow_file_urls: bool) -> Result<(), Ap
         ));
     }
 
-    if !ALLOWED_SCHEMES.contains(&scheme.as_str()) {
+    if UNSAFE_SCHEMES.contains(&scheme.as_str()) {
+        if allow_unsafe_urls {
+            return Ok(());
+        }
         return Err(AppError::User(format!(
-            "URL scheme '{scheme}:' is not allowed; permitted schemes: http, https, about. Use --allow-file-urls for file:, or --allow-unsafe-urls for javascript:/data:"
+            "URL scheme '{scheme}:' is not allowed by default; pass --allow-unsafe-urls to opt in"
         )));
     }
 
-    Ok(())
+    Err(AppError::User(format!(
+        "URL scheme '{scheme}:' is not allowed; permitted schemes: http, https, about. Use --allow-file-urls for file:, or --allow-unsafe-urls for javascript:/data:"
+    )))
 }
 
-/// Back-compat wrapper for call sites that don't gate `file://`.
+/// Back-compat wrapper for tests that use the default-locked-down policy.
 #[cfg(test)]
 fn validate_url(url: &str) -> Result<(), AppError> {
-    validate_url_with_opts(url, false)
+    validate_url_with_opts(url, false, false)
 }
 
 #[cfg(test)]
@@ -82,7 +100,38 @@ mod tests {
 
     #[test]
     fn allows_file_when_opted_in() {
-        assert!(validate_url_with_opts("file:///tmp/index.html", true).is_ok());
+        assert!(validate_url_with_opts("file:///tmp/index.html", true, false).is_ok());
+    }
+
+    #[test]
+    fn allow_unsafe_urls_does_not_widen_file_scheme() {
+        // Regression guard: --allow-unsafe-urls must NOT silently grant file://.
+        // Only --allow-file-urls may.
+        let err = validate_url_with_opts("file:///etc/passwd", false, true).unwrap_err();
+        assert!(err.to_string().contains("--allow-file-urls"));
+    }
+
+    #[test]
+    fn allows_javascript_when_unsafe_urls_set() {
+        assert!(validate_url_with_opts("javascript:alert(1)", false, true).is_ok());
+    }
+
+    #[test]
+    fn allows_data_when_unsafe_urls_set() {
+        assert!(validate_url_with_opts("data:text/html,<h1>hi</h1>", false, true).is_ok());
+    }
+
+    #[test]
+    fn allow_file_urls_does_not_widen_javascript() {
+        // Symmetric regression: --allow-file-urls must NOT grant javascript:.
+        let err = validate_url_with_opts("javascript:alert(1)", true, false).unwrap_err();
+        assert!(err.to_string().contains("--allow-unsafe-urls"));
+    }
+
+    #[test]
+    fn vbscript_always_rejected_even_with_both_flags() {
+        let err = validate_url_with_opts("vbscript:MsgBox(1)", true, true).unwrap_err();
+        assert!(matches!(err, AppError::User(_)));
     }
 
     #[test]
@@ -130,7 +179,7 @@ mod tests {
         // File scheme is case-insensitive too.
         let err = validate_url("FILE:///tmp/x").unwrap_err();
         assert!(err.to_string().contains("--allow-file-urls"));
-        assert!(validate_url_with_opts("FILE:///tmp/x", true).is_ok());
+        assert!(validate_url_with_opts("FILE:///tmp/x", true, false).is_ok());
     }
 
     #[test]

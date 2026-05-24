@@ -504,7 +504,7 @@ fn dispatch_firefox_message(
         // Skipping the buffer prune would leave stale entries in the buffer
         // indefinitely.
         resource_bus.dispatch_event(msg);
-        let mut buf = state.buffer.lock().expect("buffer lock");
+        let mut buf = lock_or_recover!(state.buffer);
         for resource in resource_rx.try_iter() {
             let is_destroyed = matches!(resource.as_ref(), ff_rdp_core::Resource::Destroyed { .. });
             if is_destroyed || !streamed_types.contains(resource.type_name().as_ref()) {
@@ -539,7 +539,7 @@ fn dispatch_firefox_message(
                     .unwrap_or("")
                     .to_owned();
                 let sequence = {
-                    let mut buf = state.buffer.lock().expect("buffer lock");
+                    let mut buf = lock_or_recover!(state.buffer);
                     buf.record_nav_boundary(nav_url.clone())
                 };
                 // Forward a synthetic navigation event to any stream
@@ -1051,9 +1051,7 @@ fn handle_client(
                     }
                 } else {
                     // Forward to Firefox.
-                    firefox_writer
-                        .lock()
-                        .unwrap()
+                    lock_or_recover!(firefox_writer)
                         .send(&msg)
                         .context("forwarding CLI message to Firefox")?;
                 }
@@ -1069,11 +1067,7 @@ fn handle_client(
     }
 
     // Remove this client from the stream-subscriber list.
-    state
-        .stream_subs
-        .lock()
-        .unwrap()
-        .retain(|s| s.id != client_id);
+    lock_or_recover!(state.stream_subs).retain(|s| s.id != client_id);
 
     // Unregister this client as RPC target only if it is still the current one
     // (another client may have already taken over).
@@ -1165,11 +1159,8 @@ fn handle_daemon_message(
                 .get("sinceNavIndex")
                 .and_then(Value::as_i64)
                 .unwrap_or(0);
-            let (events, boundary) = state
-                .buffer
-                .lock()
-                .unwrap()
-                .drain_since(resource_type, since_nav_index);
+            let (events, boundary) =
+                lock_or_recover!(state.buffer).drain_since(resource_type, since_nav_index);
             let mut resp = json!({
                 "from": "daemon",
                 "events": events,
@@ -1201,11 +1192,7 @@ fn handle_daemon_message(
             }
             // Clear existing buffered events for this type so the client
             // only receives events from this point forward.
-            let _discarded = state
-                .buffer
-                .lock()
-                .expect("buffer lock")
-                .drain(resource_type);
+            let _discarded = lock_or_recover!(state.buffer).drain(resource_type);
 
             // Add this resource type to the client's subscriber entry.
             // If the client is not yet a subscriber, add it now.
@@ -1423,7 +1410,7 @@ fn handle_daemon_message(
                 });
             };
 
-            let mut buf = state.buffer.lock().expect("buffer lock");
+            let mut buf = lock_or_recover!(state.buffer);
             let n = events_arr.len();
             for ev in events_arr {
                 buf.insert_raw(resource_type, ev.clone());
@@ -1438,7 +1425,7 @@ fn handle_daemon_message(
 
         "status" => {
             let uptime = state.start_time.elapsed().as_secs();
-            let sizes = state.buffer.lock().expect("buffer lock").sizes();
+            let sizes = lock_or_recover!(state.buffer).sizes();
             let subscriber_count = lock_or_recover!(state.stream_subs).len();
             let target_count = state.target_count.load(Ordering::Relaxed);
             json!({
