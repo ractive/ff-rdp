@@ -2,7 +2,7 @@
 title: "Iteration 70: Spec drift fixes — dpr-as-string, parent chain, kb refresh"
 type: iteration
 date: 2026-05-24
-status: in-review
+status: completed
 branch: iter-70/spec-drift
 depends_on:
   - iteration-61u-spec-and-front-correctness
@@ -13,11 +13,13 @@ dogfood_path: |
   ff-rdp --log-rdp-trace screenshot https://example.com /tmp/x.png
   grep '"dpr":"' ~/.cache/ff-rdp/rdp-trace.log    # expect string-quoted dpr
   ! grep '"dpr":[0-9]' ~/.cache/ff-rdp/rdp-trace.log    # expect no numeric dpr
-
+  
   # 2. Walker → nodeActor invalidation cascade.
   # When the walker's target is destroyed, child node actors must be invalidated too.
   ff-rdp dom query 'body' --json | jq .    # then navigate; second query must re-derive.
-tags: [iteration, protocol]
+tags:
+  - iteration
+  - protocol
 ---
 
 # Iteration 70: Spec drift fixes — dpr-as-string, parent chain, kb refresh
