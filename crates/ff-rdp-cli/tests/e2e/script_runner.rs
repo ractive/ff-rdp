@@ -282,26 +282,25 @@ fn typo_field_rejected_at_parse_time() {
 }
 
 // ---------------------------------------------------------------------------
-// Dry-run deferred iter-62 features
+// Dry-run with page_map target — iter-62 wired up
 // ---------------------------------------------------------------------------
 
 #[test]
-fn dry_run_deferred_page_map_fails_early() {
+fn dry_run_page_map_target_is_valid_format() {
+    // iter-62: page_map targets are now a valid targeting form (parsed correctly).
+    // Dry-run succeeds because format validation passes; the actual page-map
+    // lookup happens at execution time (not at parse/dry-run time).
     let script = r#"{
         "version": 1,
         "steps": [
-            {"click": {"page_map": "pages.login.submit_button"}}
+            {"click": {"page_map": "pages.login.forms.signin.submit"}}
         ]
     }"#;
     let output = run_dry(script, &[]);
     assert!(
-        !output.status.success(),
-        "expected failure for page_map in dry-run"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("page_map") || stderr.contains("iter-62"),
-        "stderr should mention page_map or iter-62: {stderr}"
+        output.status.success(),
+        "page_map target should be valid format in dry-run; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

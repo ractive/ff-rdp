@@ -10,6 +10,7 @@ mod hints;
 mod output;
 mod output_controls;
 mod output_pipeline;
+mod page_map;
 mod port_owner;
 mod script;
 mod tab_target;

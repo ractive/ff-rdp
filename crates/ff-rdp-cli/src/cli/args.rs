@@ -1168,6 +1168,10 @@ Examples:
         /// Force a specific input format (json|yaml), overriding file extension detection
         #[arg(long = "script-format", value_name = "FORMAT")]
         script_format: Option<String>,
+        /// Page-map file for resolving page_map:/field:/api_route: targets.
+        /// Falls back to .ffrdp/page-map.json when this flag is not set and that file exists.
+        #[arg(long = "page-map", value_name = "PATH")]
+        page_map: Option<std::path::PathBuf>,
     },
 
     /// Record browser commands to a replayable script
@@ -1186,6 +1190,92 @@ Examples:
     Record {
         #[command(subcommand)]
         record_command: RecordCommand,
+    },
+
+    /// Crawl a site and produce a page-map index (JSON) for use by scripts
+    #[command(long_about = "Crawl a site from a base URL and emit a page-map index.
+
+The page-map is a pre-computed site index that lets an agent skip the
+\"discovery\" turns (what's on this page? what forms are here?) by reading
+a single JSON file before starting a script run.
+
+The crawl reuses the current daemon tab's session cookies so logged-in
+areas are crawled automatically. For CI or headless flows, supply
+--login-script to authenticate first.
+
+`ff-rdp index --check` re-crawls and reports drifted selectors/routes
+against an existing map — useful in CI to detect UI changes.
+
+Examples:
+  ff-rdp index                                     # crawl current tab origin
+  ff-rdp index https://example.com --depth 3
+  ff-rdp index --out map.json --max-pages 100
+  ff-rdp index --login-script login.json
+  ff-rdp index --check --page-map .ffrdp/page-map.json --report drift.json
+  ff-rdp index --format yaml --out map.yaml
+
+Output: writes page-map JSON/YAML to --out (default: .ffrdp/page-map.json)
+        and emits a summary to stdout:
+        {\"results\": {\"pages\": N, \"forms\": N, \"api_routes\": N, \"out\": \"...\"}}")]
+    Index {
+        /// Base URL to crawl (defaults to the current daemon tab's origin)
+        base_url: Option<String>,
+
+        /// Output path for the page-map file
+        #[arg(long, default_value = ".ffrdp/page-map.json")]
+        out: std::path::PathBuf,
+
+        /// Maximum crawl depth from the base URL
+        #[arg(long, default_value_t = 2)]
+        depth: u32,
+
+        /// Maximum number of pages to crawl
+        #[arg(long = "max-pages", default_value_t = 50)]
+        max_pages: usize,
+
+        /// Only crawl URLs matching this regex
+        #[arg(long)]
+        include: Option<String>,
+
+        /// Skip URLs matching this regex
+        #[arg(long)]
+        exclude: Option<String>,
+
+        /// Output format: json (default) or yaml
+        #[arg(long, default_value = "json")]
+        format: String,
+
+        /// Also crawl cross-origin links (default: same-origin only)
+        #[arg(long)]
+        cross_origin: bool,
+
+        /// Ignore robots.txt (useful for internal admin tools)
+        #[arg(long)]
+        ignore_robots: bool,
+
+        /// Load Netscape-format cookie jar before crawling
+        #[arg(long, value_name = "PATH")]
+        cookies_from: Option<std::path::PathBuf>,
+
+        /// Inject Authorization: Bearer <token> on each navigate
+        #[arg(long, value_name = "TOKEN")]
+        bearer: Option<String>,
+
+        /// Run this iter-61 script before crawling (for authentication)
+        #[arg(long, value_name = "PATH")]
+        login_script: Option<std::path::PathBuf>,
+
+        /// Check mode: re-crawl and report drifted selectors vs. an existing map
+        #[arg(long, conflicts_with_all = ["out", "format"])]
+        check: bool,
+
+        /// Existing page-map to check against (--check mode only)
+        #[arg(long, value_name = "PATH", requires = "check")]
+        page_map: Option<std::path::PathBuf>,
+
+        /// Write drift report to this file (--check mode only, default: stdout)
+        #[arg(long, value_name = "PATH", requires = "check")]
+        report: Option<std::path::PathBuf>,
     },
 }
 

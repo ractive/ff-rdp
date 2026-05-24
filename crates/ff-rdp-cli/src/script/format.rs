@@ -160,7 +160,8 @@ impl ElementTarget {
         }
     }
 
-    /// Check if a page-map or field target is used (iter-62 deferred).
+    /// Check if a page-map or field target is used (requires a loaded PageMap to resolve).
+    #[allow(dead_code)]
     pub fn uses_deferred_iter62(&self) -> bool {
         self.page_map.is_some() || self.field.is_some()
     }

@@ -2,6 +2,7 @@ use crate::cli::args::{
     A11yCommand, Cli, Command, DaemonCommand, DomCommand, PerfCommand, RecordCommand, ScrollCommand,
 };
 use crate::commands;
+use crate::commands::index::IndexOpts;
 use crate::commands::js_helpers::DispatchMode;
 use crate::commands::nav_action::NavAction;
 use crate::daemon::registry;
@@ -333,7 +334,8 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         | Command::Run { .. }
         | Command::Daemon { .. }
         | Command::DaemonInternal
-        | Command::InstallSkill(_) => None,
+        | Command::InstallSkill(_)
+        | Command::Index { .. } => None,
     }
 }
 
@@ -867,6 +869,7 @@ fn dispatch_inner(
             record,
             record_strict,
             script_format,
+            page_map,
         } => {
             // Parse --vars KEY=VALUE flags.
             let mut extra_vars: std::collections::HashMap<String, String> =
@@ -934,6 +937,7 @@ fn dispatch_inner(
                 record_output: record.as_deref(),
                 record_strict: *record_strict,
                 format_override: script_format.as_deref(),
+                page_map_path: page_map.as_deref(),
             };
             commands::run::run(cli, &opts)
         }
@@ -951,6 +955,41 @@ fn dispatch_inner(
                 ));
             }
             commands::install_skill::run(cli, args)
+        }
+        Command::Index {
+            base_url,
+            out,
+            depth,
+            max_pages,
+            include,
+            exclude,
+            format,
+            cross_origin,
+            ignore_robots,
+            cookies_from: _,
+            bearer: _,
+            login_script,
+            check,
+            page_map,
+            report,
+        } => {
+            let opts = IndexOpts {
+                base_url: base_url.as_deref(),
+                out,
+                depth: *depth,
+                max_pages: *max_pages,
+                include: include.as_deref(),
+                exclude: exclude.as_deref(),
+                format,
+                cross_origin: *cross_origin,
+                ignore_robots: *ignore_robots,
+                login_script: login_script.as_deref(),
+                check: *check,
+                page_map: page_map.as_deref(),
+                report: report.as_deref(),
+                silent: false,
+            };
+            commands::index::run(cli, &opts)
         }
     }
 }

@@ -17,6 +17,8 @@ use serde_json::{Value, json};
 use crate::cli::args::Cli;
 use crate::error::AppError;
 
+use std::sync::Arc;
+
 use super::format::{
     AssertNetworkStep, AssertNoConsoleErrorsStep, AssertTextStep, AssertUrlStep, EvalStep,
     NavigateStep, RunStep, ScreenshotStep, Script, ScriptFormat, Step, TypeStep, WaitStep,
@@ -25,6 +27,7 @@ use super::recorder::FileRecorder;
 use super::vars::{
     VarContext, check_undefined_vars, collect_env_secrets, is_secret_name, substitute,
 };
+use crate::page_map::PageMap;
 
 // ---------------------------------------------------------------------------
 // Run options
@@ -46,6 +49,8 @@ pub struct RunOptions<'a> {
     pub record_strict: bool,
     /// Force a specific script format instead of detecting from file extension.
     pub format_override: Option<ScriptFormat>,
+    /// Loaded page-map for resolving `page_map:`, `field:`, and `api_route:` targets.
+    pub page_map: Option<Arc<PageMap>>,
 }
 
 impl Default for RunOptions<'_> {
@@ -58,6 +63,7 @@ impl Default for RunOptions<'_> {
             recorder: None,
             record_strict: false,
             format_override: None,
+            page_map: None,
         }
     }
 }
@@ -177,25 +183,29 @@ fn run_script(
             }
         };
 
-        // Check for deferred iter-62 features.
-        if let Some(err) = deferred_iter62_check(&resolved) {
-            let elapsed = u64::try_from(step_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let line = json!({
-                "step": step_num,
-                "verb": verb,
-                "ok": false,
-                "error": err,
-                "elapsed_ms": elapsed,
-            });
-            writeln!(out, "{line}").ok();
-            out.flush().ok();
-            failed += 1;
-            if opts.bail_on_failure {
-                break;
+        // Resolve iter-62 page-map targets (page_map:, field:, api_route:).
+        let resolved = match resolve_page_map_targets(resolved, opts.page_map.as_deref(), step_num)
+        {
+            Ok(s) => s,
+            Err(e) => {
+                let elapsed = u64::try_from(step_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let line = json!({
+                    "step": step_num,
+                    "verb": verb,
+                    "ok": false,
+                    "error": format!("{e}"),
+                    "elapsed_ms": elapsed,
+                });
+                writeln!(out, "{line}").ok();
+                out.flush().ok();
+                failed += 1;
+                if opts.bail_on_failure {
+                    break;
+                }
+                step_results.push(Value::Null);
+                continue;
             }
-            step_results.push(Value::Null);
-            continue;
-        }
+        };
 
         // Only count as executed once we are actually about to run the step —
         // variable-resolution failures and deferred-feature rejections above
@@ -297,16 +307,10 @@ fn run_dry(
     vars: &HashMap<String, String>,
     out: &mut impl std::io::Write,
 ) -> Result<(), AppError> {
-    // Check all vars referenced in the steps exist, and check for deferred features.
+    // Check all vars referenced in the steps exist.
     for (idx, step) in script.steps.iter().enumerate() {
         let step_num = idx + 1;
         check_step_vars_defined(step_num, step, vars)?;
-        if let Some(err) = deferred_iter62_check(step) {
-            return Err(AppError::User(format!(
-                "step {step_num} ({}): {err}",
-                step.verb()
-            )));
-        }
     }
 
     // Print the resolved steps.
@@ -563,27 +567,99 @@ fn resolve_target(
     })
 }
 
-/// Check whether a step uses any iter-62 deferred features.
-fn deferred_iter62_check(step: &Step) -> Option<String> {
-    let deferred_target = match step {
-        Step::Click(s) => s.target.uses_deferred_iter62(),
-        Step::Type(s) => s.target.uses_deferred_iter62(),
-        _ => false,
-    };
-    if deferred_target {
-        return Some(
-            "page_map and field target selectors require iter-62 page-map support (not yet implemented)".to_owned(),
-        );
+/// Resolve any `page_map:`, `field:`, or `api_route:` targets in a step by
+/// looking them up in the loaded `PageMap`.
+///
+/// Returns an error when:
+/// - The step references a page-map target but no page-map is loaded.
+/// - The dotted path does not resolve to a known selector / route.
+fn resolve_page_map_targets(
+    step: Step,
+    page_map: Option<&PageMap>,
+    step_num: usize,
+) -> anyhow::Result<Step> {
+    use super::format::{AssertNetworkStep, ElementStep, ElementTarget, TypeStep};
+
+    /// Materialise a page-map or field target into a `selector`.
+    fn resolve_element_target(
+        target: ElementTarget,
+        page_map: Option<&PageMap>,
+        verb: &str,
+        step_num: usize,
+    ) -> anyhow::Result<ElementTarget> {
+        if let Some(ref path) = target.page_map {
+            let pm = page_map.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "step {step_num} ({verb}): target uses `page_map: {path}` but no page-map is \
+                     loaded — pass `--page-map <path>` or place a map at `.ffrdp/page-map.json`"
+                )
+            })?;
+            let selector = pm.resolve_target(path)?;
+            return Ok(ElementTarget {
+                selector: Some(selector),
+                ref_id: None,
+                page_map: None,
+                field: None,
+            });
+        }
+        if let Some(ref field_path) = target.field {
+            // `field:` requires a full dotted path like
+            // `pages.<page>.forms.<form>.fields.<name>`.  Bare field names
+            // (without a leading `pages.`) are rejected with an error — there
+            // is not enough context to expand them automatically.
+            if !field_path.starts_with("pages.") {
+                return Err(anyhow::anyhow!(
+                    "step {step_num} ({verb}): `field: {field_path}` must be a full dotted path \
+                     like `pages.<page>.forms.<form>.fields.<name>`"
+                ));
+            }
+            let pm = page_map.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "step {step_num} ({verb}): target uses `field: {field_path}` but no page-map is \
+                     loaded — pass `--page-map <path>` or place a map at `.ffrdp/page-map.json`"
+                )
+            })?;
+            let selector = pm.resolve_target(field_path)?;
+            return Ok(ElementTarget {
+                selector: Some(selector),
+                ref_id: None,
+                page_map: None,
+                field: None,
+            });
+        }
+        Ok(target)
     }
-    if let Step::AssertNetwork(s) = step
-        && s.api_route.is_some()
-    {
-        return Some(
-            "assert_network api_route requires iter-62 page-map support (not yet implemented)"
-                .to_owned(),
-        );
+
+    match step {
+        Step::Click(s) => {
+            let target = resolve_element_target(s.target, page_map, "click", step_num)?;
+            Ok(Step::Click(ElementStep { target, ..s }))
+        }
+        Step::Type(s) => {
+            let target = resolve_element_target(s.target, page_map, "type", step_num)?;
+            Ok(Step::Type(TypeStep { target, ..s }))
+        }
+        Step::AssertNetwork(s) => {
+            if let Some(ref route_name) = s.api_route {
+                let pm = page_map.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "step {step_num} (assert_network): `api_route: {route_name}` requires a \
+                         page-map — pass `--page-map <path>` or place a map at `.ffrdp/page-map.json`"
+                    )
+                })?;
+                let (method, path) = pm.resolve_api_route(route_name)?;
+                Ok(Step::AssertNetwork(AssertNetworkStep {
+                    url_contains: Some(path.to_owned()),
+                    method: Some(method.to_owned()),
+                    api_route: None,
+                    ..s
+                }))
+            } else {
+                Ok(Step::AssertNetwork(s))
+            }
+        }
+        other => Ok(other),
     }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -943,12 +1019,9 @@ fn execute_assert_network(
     // Use the network command to get buffered events.
     use crate::commands::network::run_get_events;
 
-    if step.api_route.is_some() {
-        return Err(AppError::User(
-            "assert_network api_route requires iter-62 page-map support (not yet implemented)"
-                .to_owned(),
-        ));
-    }
+    // Note: api_route targets are resolved to url_contains+method by
+    // resolve_page_map_targets before reaching here, so step.api_route is
+    // always None at this point.
 
     // Use step timeout, then script default, then CLI default.
     let effective_timeout = step.timeout.or(default_timeout_ms);
@@ -1055,6 +1128,7 @@ fn execute_run(
         recorder: None, // Recorder is not inherited by sub-scripts.
         record_strict: opts.record_strict,
         format_override: None, // Sub-scripts detect their own format from extension.
+        page_map: opts.page_map.clone(), // Inherit the page-map from the parent.
     };
 
     run_script_file(&sub_path, cli, &mut sub_opts, call_stack)?;
@@ -1124,20 +1198,30 @@ mod tests {
     }
 
     #[test]
-    fn deferred_iter62_check_fires_for_page_map() {
+    fn page_map_target_errors_without_loaded_map() {
         let step = Step::Click(super::super::format::ElementStep {
             target: super::super::format::ElementTarget {
-                page_map: Some("pages.login.submit".to_owned()),
+                page_map: Some("pages.login.forms.signin.submit".to_owned()),
                 ..Default::default()
             },
             wait_for_text: None,
             wait_for_selector: None,
         });
-        assert!(deferred_iter62_check(&step).is_some());
+        // No page-map loaded → should fail with a helpful message.
+        let result = resolve_page_map_targets(step, None, 1);
+        assert!(
+            result.is_err(),
+            "should err when page_map target but no map loaded"
+        );
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("page_map") || msg.contains("page-map"),
+            "error should mention page-map"
+        );
     }
 
     #[test]
-    fn deferred_iter62_check_passes_for_selector() {
+    fn selector_target_passes_through_without_map() {
         let step = Step::Click(super::super::format::ElementStep {
             target: super::super::format::ElementTarget {
                 selector: Some("button".to_owned()),
@@ -1146,7 +1230,9 @@ mod tests {
             wait_for_text: None,
             wait_for_selector: None,
         });
-        assert!(deferred_iter62_check(&step).is_none());
+        // Plain selector: no page-map needed.
+        let result = resolve_page_map_targets(step, None, 1);
+        assert!(result.is_ok(), "selector-only step should pass through");
     }
 
     #[test]

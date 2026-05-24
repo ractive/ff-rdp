@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ff-rdp.dev/schemas/page-map/v1.json",
+  "title": "ff-rdp page-map v1",
+  "description": "Pre-computed site index produced by `ff-rdp index`. Consumed by the script runner to resolve dotted-path target references to CSS selectors.",
+  "type": "object",
+  "required": ["version", "base_url"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "const": "https://ff-rdp.dev/schemas/page-map/v1.json"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Format version — must be 1. Unknown major versions are rejected."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the map was generated."
+    },
+    "base_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Base URL the map was crawled from."
+    },
+    "pages": {
+      "type": "object",
+      "description": "Pages keyed by a stable slug (e.g. 'sign-in', 'users').",
+      "additionalProperties": { "$ref": "#/$defs/Page" }
+    },
+    "api_routes": {
+      "type": "object",
+      "description": "Named API routes used by assert_network: {api_route: <name>}.",
+      "additionalProperties": { "$ref": "#/$defs/ApiRoute" }
+    },
+    "flows": {
+      "type": "object",
+      "description": "Named reusable script bodies (iter-61 steps minus top-level metadata).",
+      "additionalProperties": { "$ref": "#/$defs/FlowBody" }
+    }
+  },
+  "$defs": {
+    "Page": {
+      "type": "object",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "URL path for this page (e.g. '/sign-in')."
+        },
+        "title": {
+          "type": "string",
+          "description": "Document title or inferred heading."
+        },
+        "auth_required": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether this page requires authentication."
+        },
+        "landmarks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Landmark" },
+          "default": []
+        },
+        "forms": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Form" },
+          "default": []
+        },
+        "links": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Link" },
+          "default": []
+        }
+      }
+    },
+    "Landmark": {
+      "type": "object",
+      "required": ["name", "region"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "ARIA role name (e.g. 'navigation', 'main')."
+        },
+        "region": {
+          "type": "string",
+          "description": "CSS selector for the landmark element."
+        },
+        "elements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/LandmarkElement" },
+          "default": []
+        }
+      }
+    },
+    "LandmarkElement": {
+      "type": "object",
+      "required": ["label", "selector"],
+      "additionalProperties": false,
+      "properties": {
+        "label": { "type": "string" },
+        "selector": { "type": "string" },
+        "role": { "type": "string" }
+      }
+    },
+    "Form": {
+      "type": "object",
+      "required": ["selector", "submit"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable identifier used in dotted-path references."
+        },
+        "selector": {
+          "type": "string",
+          "description": "CSS selector for the form element or its closest container."
+        },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Field" },
+          "default": []
+        },
+        "submit": { "$ref": "#/$defs/Submit" }
+      }
+    },
+    "Field": {
+      "type": "object",
+      "required": ["name", "selector", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Field name attribute or inferred identifier."
+        },
+        "selector": {
+          "type": "string",
+          "description": "CSS selector for the input element."
+        },
+        "type": {
+          "type": "string",
+          "description": "HTML input type (email, password, text, etc.)."
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        },
+        "placeholder": {
+          "type": "string"
+        },
+        "validation": {
+          "type": "string",
+          "description": "Validation hint (pattern, min/max, etc.)."
+        }
+      }
+    },
+    "Submit": {
+      "type": "object",
+      "required": ["selector"],
+      "additionalProperties": false,
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "CSS selector for the submit button."
+        },
+        "posts_to": {
+          "type": "string",
+          "description": "URL the form posts to."
+        },
+        "method": {
+          "type": "string",
+          "description": "HTTP method (default POST)."
+        }
+      }
+    },
+    "Link": {
+      "type": "object",
+      "required": ["label", "href"],
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "Link text or ARIA label."
+        },
+        "href": {
+          "type": "string",
+          "description": "Destination URL path."
+        },
+        "selector": {
+          "type": "string",
+          "description": "CSS selector for the link element."
+        }
+      }
+    },
+    "ApiRoute": {
+      "type": "object",
+      "required": ["method", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Human-readable name (redundant with the map key)."
+        },
+        "method": {
+          "type": "string",
+          "description": "HTTP method (GET, POST, PUT, PATCH, DELETE, etc.)."
+        },
+        "path": {
+          "type": "string",
+          "description": "URL path (e.g. '/api/auth/sign-in/email')."
+        },
+        "request": {
+          "description": "Optional request shape description (opaque)."
+        },
+        "response": {
+          "description": "Optional response shape description (opaque)."
+        }
+      }
+    },
+    "FlowBody": {
+      "type": "object",
+      "required": ["steps"],
+      "additionalProperties": false,
+      "properties": {
+        "steps": {
+          "type": "array",
+          "description": "Steps to execute (same shape as iter-61 script steps).",
+          "items": { "type": "object" },
+          "minItems": 1
+        },
+        "vars": {
+          "type": "object",
+          "description": "Default variable values overridable by the caller.",
+          "additionalProperties": { "type": "string" }
+        },
+        "metadata": {
+          "description": "Opaque metadata (not interpreted by the runner)."
+        }
+      }
+    }
+  }
+}
