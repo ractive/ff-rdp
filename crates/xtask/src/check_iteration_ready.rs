@@ -38,7 +38,7 @@ fn run_xtask(subcommand: &str, extra_args: &[&str]) -> (bool, String) {
     let exe = std::env::current_exe().unwrap_or_default();
     let exe_name = exe.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
 
-    let output = if exe_name == "xtask" || exe_name.starts_with("xtask-") {
+    let output = if exe_name == "xtask" {
         Command::new(&exe).arg(subcommand).args(extra_args).output()
     } else {
         Command::new("cargo")

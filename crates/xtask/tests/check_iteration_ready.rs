@@ -184,6 +184,18 @@ dogfood_path: |
         combined.contains("ac-fidelity"),
         "expected 'ac-fidelity' in the failure output.\n--- combined ---\n{combined}"
     );
+    // Non-short-circuit: every sub-check header `[N/6]` must appear, proving
+    // the aggregator continued past the failing sub-check rather than bailing
+    // on the first one. This is the iter-74 regression's "see every issue at
+    // once" requirement.
+    for i in 1..=6 {
+        let header = format!("[{i}/6]");
+        assert!(
+            combined.contains(&header),
+            "expected sub-check header {header} in output (non-short-circuit).\n\
+             --- combined ---\n{combined}"
+        );
+    }
 }
 
 /// Aggregation test: when a plan has a ticked AC naming a non-existent test

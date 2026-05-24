@@ -2,6 +2,12 @@ use anyhow::{Result, anyhow, bail};
 use clap::Args as ClapArgs;
 use regex::Regex;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+fn iter_branch_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^iter-([0-9]+[a-z]?)/").unwrap())
+}
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -16,15 +22,15 @@ pub struct Args {
 
 /// Parse `iter-<N>/...` or `iter-<N[a-z]>/...` from a branch name.
 /// Returns the iteration ID string (e.g. `"75b"`, `"77"`) on success.
-pub fn parse_iter_id(branch: &str) -> Option<String> {
-    // Compile once — this is called at most once per binary invocation.
-    let re = Regex::new(r"^iter-([0-9]+[a-z]?)/").expect("static regex");
-    re.captures(branch).map(|caps| caps[1].to_owned())
+pub(crate) fn parse_iter_id(branch: &str) -> Option<String> {
+    iter_branch_re()
+        .captures(branch)
+        .map(|caps| caps[1].to_owned())
 }
 
 /// Resolve the plan file for the given iteration ID under `repo_root/kb/iterations/`.
 /// Returns the absolute path if exactly one match is found.
-pub fn resolve_plan(iter_id: &str, repo_root: &std::path::Path) -> Result<PathBuf> {
+pub(crate) fn resolve_plan(iter_id: &str, repo_root: &std::path::Path) -> Result<PathBuf> {
     let iterations_dir = repo_root.join("kb").join("iterations");
     if !iterations_dir.is_dir() {
         bail!(
