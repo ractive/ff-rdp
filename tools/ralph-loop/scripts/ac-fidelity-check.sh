@@ -89,7 +89,11 @@ while IFS= read -r line; do
   text="${BASH_REMATCH[1]}"
   TOTAL=$((TOTAL + 1))
 
-  # Deferred annotation: `[deferred — new plan: <path>]` (em dash or `--`).
+  # Deferred annotation forms (em dash or `--`):
+  #   `[deferred — new plan: <path>]`        — work moved to a follow-up plan
+  #   `[deferred — not applicable: <reason>]` — AC made moot by an in-iteration
+  #     design choice (e.g. a different task removed the surface entirely).
+  #     Reason must be substantive (≥10 chars after the marker).
   if [[ "$text" == *"[deferred"* ]]; then
     plan_ref=$(printf '%s' "$text" | grep -oE 'new plan:[[:space:]]*[^]]+' \
       | sed -E 's/new plan:[[:space:]]*//' | head -1 || true)
@@ -101,6 +105,19 @@ while IFS= read -r line; do
         continue
       fi
       echo "❌ ticked AC marked deferred but referenced plan not found: $plan_ref"
+      FAILED=$((FAILED + 1))
+      FAILED_LINES+=("$line")
+      continue
+    fi
+    # "[deferred — not applicable: <reason>]" form.
+    na_reason=$(printf '%s' "$text" | grep -oiE 'not[[:space:]]+applicable:[[:space:]]*[^]]+' \
+      | sed -E 's/[Nn]ot[[:space:]]+[Aa]pplicable:[[:space:]]*//' | head -1 || true)
+    if [[ -n "$na_reason" ]]; then
+      na_reason=$(echo "$na_reason" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+      if [[ ${#na_reason} -ge 10 ]]; then
+        continue
+      fi
+      echo "❌ ticked AC marked [deferred — not applicable] but reason is too short (need ≥10 chars): $na_reason"
       FAILED=$((FAILED + 1))
       FAILED_LINES+=("$line")
       continue
