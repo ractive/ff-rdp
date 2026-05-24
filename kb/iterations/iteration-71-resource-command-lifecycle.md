@@ -2,25 +2,29 @@
 title: "Iteration 71: ResourceCommand lifecycle — unwatch + Session integration + drop legacy startListeners"
 type: iteration
 date: 2026-05-24
-status: planned
+status: completed
 branch: iter-71/resource-lifecycle
 depends_on:
   - iteration-61q-resource-command-bus
   - iteration-61t-wire-the-foundations
 first_call_sites:
-  - primitive: "ff_rdp_core::Session::resource_command"
-    site: "crates/ff-rdp-cli/src/commands/navigate.rs (replaces ad-hoc bus construction at line 564)"
+  - primitive: ff_rdp_core::Session::resource_command
+    site: >-
+      crates/ff-rdp-cli/src/commands/navigate.rs (replaces ad-hoc bus construction at
+      line 564)
 dogfood_path: |
   # 1. Subscribe → drop subscriber → wire subscription is released.
   # Verify by RDP trace: an unwatchResources packet for the dropped resource type.
   ff-rdp --log-rdp-trace daemon start &
   ff-rdp daemon subscribe console-message
   # then disconnect; expect unwatchResources in the trace.
-
+  
   # 2. ConsoleFront no longer double-delivers.
   ff-rdp console --tail   # spawn a page that fires console.log
   # Expected: exactly one delivery per event, not two.
-tags: [iteration, protocol]
+tags:
+  - iteration
+  - protocol
 ---
 
 # Iteration 71: ResourceCommand lifecycle — unwatch + Session integration + drop legacy startListeners
