@@ -10,6 +10,7 @@
 //!
 //! Subsequent calls on a dead front return [`RdpError::ActorDestroyed`].
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -56,7 +57,7 @@ pub struct FrontState {
     /// via BFS through the parent graph.  Used for actors that aren't owned by
     /// a single target — e.g. `nodeActor`s created by a walker live under the
     /// walker's lifetime, not the target's.
-    pub parent: Option<ActorId>,
+    pub(crate) parent: Option<ActorId>,
     /// Whether the actor is still alive.  Set to `false` by [`Registry::invalidate_target`].
     pub alive: AtomicBool,
 }
@@ -72,7 +73,8 @@ impl FrontState {
     }
 
     /// Create a new state with both `target_root` and an explicit `parent` actor.
-    pub fn with_parent(
+    #[cfg(test)]
+    pub(crate) fn with_parent(
         kind: FrontKind,
         target_root: Option<ActorId>,
         parent: Option<ActorId>,
@@ -124,7 +126,8 @@ impl Registry {
     /// by a walker.  When the parent is destroyed via
     /// [`Registry::invalidate_target`], every descendant reachable through
     /// `parent` links is also marked dead.
-    pub fn register_with_parent(
+    #[cfg(test)]
+    pub(crate) fn register_with_parent(
         &self,
         id: ActorId,
         kind: FrontKind,
@@ -154,19 +157,23 @@ impl Registry {
         Ok(())
     }
 
-    /// Invalidate `destroyed_target` and every front transitively reachable
-    /// from it via `target_root` or `parent` links.
+    /// Invalidate `actor` and every front transitively reachable from it via
+    /// `target_root` or `parent` links.
     ///
-    /// Implementation is BFS: starting from `destroyed_target`, mark all
-    /// matching entries dead, then sweep again with the newly-killed set as
-    /// roots until the frontier is empty.  This catches multi-level chains
-    /// such as `walker → nodeActor → nodeListActor` where intermediate actors
-    /// would be missed by a single-level sweep.
+    /// `actor` may be any registered actor ID — a TargetFront, a walker, or
+    /// any other front that owns descendants through `target_root`/`parent`.
+    ///
+    /// Implementation is BFS: starting from `actor`, mark all matching
+    /// entries dead, then sweep again with the newly-killed set as roots
+    /// until the frontier is empty.  This catches multi-level chains such as
+    /// `walker → nodeActor → nodeListActor` where intermediate actors would
+    /// be missed by a single-level sweep.
     ///
     /// Subsequent calls through invalidated fronts will return
     /// [`RdpError::ActorDestroyed`].
-    pub fn invalidate_target(&self, destroyed_target: &ActorId) {
-        let mut frontier: Vec<ActorId> = vec![destroyed_target.clone()];
+    pub fn invalidate_target(&self, actor: &ActorId) {
+        let mut frontier: HashSet<ActorId> = HashSet::new();
+        frontier.insert(actor.clone());
 
         while !frontier.is_empty() {
             // Mark every entry in the current frontier dead (idempotent).
@@ -178,23 +185,21 @@ impl Registry {
 
             // Find entries whose target_root or parent points at anything in
             // the current frontier and weren't already dead — those become
-            // the next frontier.
-            let mut next: Vec<ActorId> = Vec::new();
+            // the next frontier.  Use a HashSet for O(1) membership and to
+            // dedupe `next`.
+            let mut next: HashSet<ActorId> = HashSet::new();
             for entry in self.inner.iter() {
                 let state = entry.value();
                 if !state.is_alive() {
                     continue;
                 }
-                let parent_match = state
-                    .parent
-                    .as_ref()
-                    .is_some_and(|p| frontier.iter().any(|f| f == p));
+                let parent_match = state.parent.as_ref().is_some_and(|p| frontier.contains(p));
                 let root_match = state
                     .target_root
                     .as_ref()
-                    .is_some_and(|r| frontier.iter().any(|f| f == r));
+                    .is_some_and(|r| frontier.contains(r));
                 if parent_match || root_match {
-                    next.push(entry.key().clone());
+                    next.insert(entry.key().clone());
                 }
             }
             frontier = next;
