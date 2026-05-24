@@ -16,6 +16,13 @@ pub struct Args {
     /// Git ref to diff against (default: origin/main).
     #[arg(long, default_value = "origin/main")]
     pub base: String,
+
+    /// Sub-check names to skip (repeatable). Used in synthetic-plan
+    /// integration tests to bypass `check-discipline-regression` when
+    /// the local checkout lacks the full main history required by its
+    /// replay baselines. Not meant for production /create-pr use.
+    #[arg(long = "skip")]
+    pub skip: Vec<String>,
 }
 
 struct SubcheckResult {
@@ -146,6 +153,7 @@ pub fn run(args: Args) -> Result<()> {
     let repo_root = locate_repo_root()?;
     let plan = args.plan.clone();
     let base = args.base.clone();
+    let skip: std::collections::HashSet<String> = args.skip.into_iter().collect();
 
     // Resolve plan path for display and shell invocations.
     let plan_display = plan.to_string_lossy().into_owned();
@@ -153,65 +161,52 @@ pub fn run(args: Args) -> Result<()> {
 
     let mut results: Vec<SubcheckResult> = Vec::new();
 
+    let run_or_skip = |name: &str, runner: &mut dyn FnMut() -> (bool, String)| -> SubcheckResult {
+        if skip.contains(name) {
+            SubcheckResult {
+                name: name.to_owned(),
+                passed: true,
+                output: format!("(skipped via --skip {name})"),
+            }
+        } else {
+            let (passed, output) = runner();
+            SubcheckResult {
+                name: name.to_owned(),
+                passed,
+                output,
+            }
+        }
+    };
+
     // --- 1. check-dead-primitives
-    {
-        let (passed, output) = run_xtask("check-dead-primitives", &["--since", base_str]);
-        results.push(SubcheckResult {
-            name: "check-dead-primitives".to_owned(),
-            passed,
-            output,
-        });
-    }
+    results.push(run_or_skip("check-dead-primitives", &mut || {
+        run_xtask("check-dead-primitives", &["--since", base_str])
+    }));
 
     // --- 2. check-todo-annotations
-    {
-        let (passed, output) = run_xtask("check-todo-annotations", &["--since", base_str]);
-        results.push(SubcheckResult {
-            name: "check-todo-annotations".to_owned(),
-            passed,
-            output,
-        });
-    }
+    results.push(run_or_skip("check-todo-annotations", &mut || {
+        run_xtask("check-todo-annotations", &["--since", base_str])
+    }));
 
     // --- 3. check-actor-kb-sync
-    {
-        let (passed, output) = run_xtask("check-actor-kb-sync", &["--since", base_str]);
-        results.push(SubcheckResult {
-            name: "check-actor-kb-sync".to_owned(),
-            passed,
-            output,
-        });
-    }
+    results.push(run_or_skip("check-actor-kb-sync", &mut || {
+        run_xtask("check-actor-kb-sync", &["--since", base_str])
+    }));
 
     // --- 4. check-firefox-refs
-    {
-        let (passed, output) = run_xtask("check-firefox-refs", &[&plan_display]);
-        results.push(SubcheckResult {
-            name: "check-firefox-refs".to_owned(),
-            passed,
-            output,
-        });
-    }
+    results.push(run_or_skip("check-firefox-refs", &mut || {
+        run_xtask("check-firefox-refs", &[&plan_display])
+    }));
 
     // --- 5. check-discipline-regression
-    {
-        let (passed, output) = run_xtask("check-discipline-regression", &[]);
-        results.push(SubcheckResult {
-            name: "check-discipline-regression".to_owned(),
-            passed,
-            output,
-        });
-    }
+    results.push(run_or_skip("check-discipline-regression", &mut || {
+        run_xtask("check-discipline-regression", &[])
+    }));
 
     // --- 6. ac-fidelity-check.sh
-    {
-        let (passed, output) = run_ac_fidelity(&plan, base_str, &repo_root);
-        results.push(SubcheckResult {
-            name: "ac-fidelity-check".to_owned(),
-            passed,
-            output,
-        });
-    }
+    results.push(run_or_skip("ac-fidelity-check", &mut || {
+        run_ac_fidelity(&plan, base_str, &repo_root)
+    }));
 
     let total = results.len();
     for (i, result) in results.iter().enumerate() {
