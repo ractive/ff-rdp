@@ -41,11 +41,13 @@ flipping the gate we need to:
 
 ## Acceptance Criteria [0/3]
 
-- [ ] Replay across the last 8 merged iterations classifies fewer than 1
-      false-❌ per iteration on average.
-- [ ] `check_iteration_discipline` returns non-zero when claims-vs-code
-      reports any ❌ that isn't whitelisted, and a smoke replay against
-      iter-61v still fails (as expected).
+- [ ] `test_replay_false_positive_rate`: replay across iter-61t..iter-61y
+      classifies fewer than 1 false-❌ per iteration on average (manually
+      audited; record findings in this plan before flipping the gate).
+- [ ] `test_check_iteration_discipline_claims_gate`: with the gate flipped to
+      hard-fail, `check_iteration_discipline` returns non-zero whenever
+      `claims-vs-code.sh` reports any unwhitelisted ❌, and the smoke replay
+      against iter-61v still exits 1 with the expected ❌ rows.
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## References

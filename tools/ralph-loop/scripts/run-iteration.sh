@@ -18,15 +18,42 @@ set -euo pipefail
 # --- Replay mode (no Phase 1/2; just run discipline checks against a merged branch).
 if [[ "${1:-}" == "--replay" ]]; then
   REPLAY_ITER="${2:?Usage: run-iteration.sh --replay <iter-id>}"
+  # Accept both `61v` and `iter-61v` so docs that quote either form work.
+  REPLAY_ITER="${REPLAY_ITER#iter-}"
   SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  # Anchor to the repo root so `git log`/`git ls-tree` work regardless of
+  # which directory the caller invoked the script from.
+  REPO_ROOT_REPLAY=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  cd "$REPO_ROOT_REPLAY"
   CACHE_DIR="${RALPH_CACHE_DIR:-$(mktemp -d -t ralph-replay.XXXXXX)}"
   mkdir -p "$CACHE_DIR"
   OUT="$CACHE_DIR/replay-${REPLAY_ITER}.txt"
 
-  # Find the merge commit for this iter on main.
-  MERGE_COMMIT=$(git log --merges --grep="iter-${REPLAY_ITER}" --format=%H main 2>/dev/null | head -1)
+  # Find the merge commit for this iter on main. On CI the local `main`
+  # branch may not exist (detached HEAD on the PR commit) — fall back to
+  # `origin/main`. Use `-1` instead of `| head -1` so SIGPIPE under
+  # `set -o pipefail` can't kill the assignment.
+  MAIN_REF=main
+  if ! git rev-parse --verify --quiet main >/dev/null 2>&1; then
+    if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+      MAIN_REF=origin/main
+    fi
+  fi
+  # Match `iter-NN/` (branch slug) or `iter-NN)` (commit subject) so e.g.
+  # `iter-61v` doesn't substring-match `iter-61va`. Suffix the grep with a
+  # non-alphanumeric boundary by alternating both forms.
+  MERGE_COMMIT=$(git log -1 --merges \
+    --grep="iter-${REPLAY_ITER}/" \
+    --format=%H "$MAIN_REF" 2>/dev/null || true)
   if [[ -z "$MERGE_COMMIT" ]]; then
-    echo "ERROR: no merge commit found on main matching iter-${REPLAY_ITER}" >&2
+    # Fall back to the looser match for legacy commit subjects that don't
+    # include the slash.
+    MERGE_COMMIT=$(git log -1 --merges \
+      --grep="iter-${REPLAY_ITER}" \
+      --format=%H "$MAIN_REF" 2>/dev/null || true)
+  fi
+  if [[ -z "$MERGE_COMMIT" ]]; then
+    echo "ERROR: no merge commit found on $MAIN_REF matching iter-${REPLAY_ITER}" >&2
     exit 1
   fi
   RANGE="${MERGE_COMMIT}^1..${MERGE_COMMIT}^2"
@@ -34,7 +61,7 @@ if [[ "${1:-}" == "--replay" ]]; then
   # Find the plan file as of the merge commit. The plan name follows
   # `kb/iterations/iteration-<id>-<slug>.md`.
   PLAN_REL=$(git ls-tree -r "${MERGE_COMMIT}^2" --name-only -- kb/iterations 2>/dev/null \
-    | grep -E "iteration-${REPLAY_ITER}-[^/]+\.md$" | head -1)
+    | grep -E "iteration-${REPLAY_ITER}-[^/]+\.md$" | head -1 || true)
   if [[ -z "$PLAN_REL" ]]; then
     echo "WARN: no plan file found on iter-${REPLAY_ITER} branch — ac-fidelity will be skipped" >&2
     PLAN_PATH_REPLAY=""

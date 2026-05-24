@@ -94,18 +94,19 @@ pub fn run(args: Args) -> Result<()> {
         bail!("run-iteration.sh not found at {}", run_script.display());
     }
 
-    check_replay(&run_script, "61v", false /* expect FAIL */)?;
-    check_replay(&run_script, "61t", true /* expect PASS */)?;
+    check_replay(&run_script, "61v", false /* expect FAIL */, &repo_root)?;
+    check_replay(&run_script, "61t", true /* expect PASS */, &repo_root)?;
 
     eprintln!("check-discipline-regression: replay baselines OK (61v=FAIL, 61t=PASS)");
     Ok(())
 }
 
-fn check_replay(run_script: &Path, iter: &str, expect_pass: bool) -> Result<()> {
+fn check_replay(run_script: &Path, iter: &str, expect_pass: bool, repo_root: &Path) -> Result<()> {
     let output = Command::new("bash")
         .arg(run_script)
         .arg("--replay")
         .arg(iter)
+        .current_dir(repo_root)
         .output()
         .with_context(|| format!("running replay for iter-{iter}"))?;
 
@@ -137,5 +138,10 @@ fn locate_repo_root() -> Result<PathBuf> {
 }
 
 fn default_skill_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude/skills/ralph-loop/scripts"))
+    // `HOME` on Unix, `USERPROFILE` on Windows. The skill itself is
+    // Unix-only (bash scripts), but we keep the lookup cross-platform so a
+    // Windows CI run skips the mirror-sync check cleanly rather than
+    // crashing.
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(PathBuf::from(home).join(".claude/skills/ralph-loop/scripts"))
 }

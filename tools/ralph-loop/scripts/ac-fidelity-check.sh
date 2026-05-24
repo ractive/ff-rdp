@@ -54,12 +54,14 @@ DIFF_FILE=$(mktemp -t ac-fidelity.XXXXXX)
 trap 'rm -f "$DIFF_FILE"' EXIT
 # Exclude kb/ and *.md so tokens that appear in the plan itself (which is in
 # the diff) don't produce false ✅ evidence for code-bearing ACs.
+#
+# We do NOT fall back to the full diff when this is empty — that would let
+# a ticked AC be "backed" by text in its own plan (CodeRabbit caught this
+# in PR #91). A docs-only branch will fail this check unless every ticked
+# AC is marked `[deferred — new plan: <path>]` or removed.
 git diff "$RANGE" -- \
   ':(exclude)kb/' ':(exclude)*.md' ':(exclude)CHANGELOG*' \
   > "$DIFF_FILE" 2>/dev/null || true
-if [[ ! -s "$DIFF_FILE" ]]; then
-  git diff "$RANGE" > "$DIFF_FILE" 2>/dev/null || true
-fi
 
 # Extract the ## Acceptance Criteria block. We start at the heading and stop
 # at the next H2 (or EOF). Tolerate trailing "[N/M]" counters on the heading.
@@ -88,7 +90,7 @@ while IFS= read -r line; do
   TOTAL=$((TOTAL + 1))
 
   # Deferred annotation: `[deferred — new plan: <path>]` (em dash or `--`).
-  if [[ "$text" == *"[deferred"* ]] || [[ "$text" == *"[deferred"* ]]; then
+  if [[ "$text" == *"[deferred"* ]]; then
     plan_ref=$(printf '%s' "$text" | grep -oE 'new plan:[[:space:]]*[^]]+' \
       | sed -E 's/new plan:[[:space:]]*//' | head -1 || true)
     if [[ -n "$plan_ref" ]]; then

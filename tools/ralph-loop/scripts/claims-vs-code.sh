@@ -82,17 +82,19 @@ DIFF_FILE=$(mktemp -t claims-vs-code.XXXXXX)
 trap 'rm -f "$DIFF_FILE"' EXIT
 # Restrict to actual code (exclude kb/ markdown and the plan itself, where
 # claim-tokens appear as documentation and would produce false ✅s).
+#
+# We do NOT fall back to the full diff when this is empty — falling back
+# would re-include kb/ docs and let commit claims match their own plan text
+# (CodeRabbit caught this in PR #91). Docs-only branches will report every
+# claim as ❌; that's the honest signal. If a docs-only iteration is
+# legitimate, soften the commit message or add an `allow-claim-miss`
+# annotation.
 git diff "$REV_RANGE" -- \
   ':(exclude)kb/' ':(exclude)*.md' ':(exclude)CHANGELOG*' \
   > "$DIFF_FILE" 2>/dev/null || true
-# If that produced an empty diff (e.g. docs-only branch), fall back to the
-# full diff so we still report something rather than silently passing.
-if [[ ! -s "$DIFF_FILE" ]]; then
-  git diff "$REV_RANGE" > "$DIFF_FILE" 2>/dev/null || true
-fi
 
 # Extract `// allow-claim-miss: <symbol>` whitelist lines from the diff.
-WHITELIST=$(grep -oE 'allow-claim-miss:[[:space:]]*[A-Za-z0-9_:#.]+' "$DIFF_FILE" 2>/dev/null \
+WHITELIST=$(grep -oE 'allow-claim-miss:[[:space:]]*[A-Za-z0-9_:#.-]+' "$DIFF_FILE" 2>/dev/null \
   | sed -E 's/.*allow-claim-miss:[[:space:]]*//' | sort -u || true)
 
 # Extract distinctive code-shaped tokens from commit messages. We catch:
@@ -162,7 +164,7 @@ for symbol in "${CLAIMS[@]}"; do
   fi
 
   # Whitelisted?
-  if [[ $ok -eq 0 ]] && [[ -n "$WHITELIST" ]] && printf '%s\n' "$WHITELIST" | { grep -qxF "$symbol" || false; }; then
+  if [[ $ok -eq 0 ]] && [[ -n "$WHITELIST" ]] && printf '%s\n' "$WHITELIST" | grep -qxF "$symbol"; then
     printf -- '- `%s` → ⚠️ no match in diff (whitelisted via `allow-claim-miss`)\n' "$symbol"
     continue
   fi
