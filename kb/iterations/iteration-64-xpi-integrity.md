@@ -2,7 +2,7 @@
 title: "Iteration 64: XPI integrity — vendor or pin Consent-O-Matic"
 type: iteration
 date: 2026-05-24
-status: in-review
+status: completed
 branch: iter-64/xpi-integrity
 depends_on:
   - iteration-63-daemon-lockrecover-and-quick-sec-fixes
@@ -11,20 +11,22 @@ dogfood_path: |
   # 1. Auto-consent install still works end-to-end with the vendored XPI.
   ff-rdp launch --temp-profile --auto-consent
   ff-rdp navigate https://www.theguardian.com/   # consent banner dismissed
-
+  
   # 2. No AMO network call happens at launch time (the vendored bytes are
   #    embedded via include_bytes!). Confirm with a network monitor or by
   #    running offline:
   ff-rdp launch --temp-profile --auto-consent    # succeeds with no internet
   # The installed file is the vendored XPI:
   ls "$(ff-rdp profile path)/extensions/gdpr@cavi.au.dk.xpi"
-
+  
   # 3. Tamper-detection is now compile-time: editing the vendored asset on
   #    disk without updating XPI_SHA256_HEX fails
   #    `vendored_xpi_matches_pinned_sha256`, and editing it without
   #    updating LICENSE-consent-o-matic.txt fails
   #    `vendored_xpi_provenance_file_is_in_sync`. Both run in `cargo test`.
-tags: [iteration, security]
+tags:
+  - iteration
+  - security
 ---
 
 # Iteration 64: XPI integrity — vendor or pin Consent-O-Matic
