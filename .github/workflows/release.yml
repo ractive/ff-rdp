@@ -6,6 +6,10 @@ on:
 
 permissions:
   contents: write
+  # iter-75 Hg-3: sign release artifacts with build provenance via
+  # actions/attest-build-provenance.  Requires id-token + attestations.
+  id-token: write
+  attestations: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -117,6 +121,53 @@ jobs:
           cd target/${{ matrix.target }}/release
           7z a ../../../ff-rdp-${{ matrix.target }}.zip ff-rdp.exe
           cd ../../..
+
+      # iter-75 Hg-2: per-platform CycloneDX SBOM alongside the artifact.
+      # `cargo-cyclonedx` is hosted by the CycloneDX project (Rust subproject).
+      # `--format json` keeps the file stable for downstream tooling; we name
+      # the SBOM after the artifact so the release assets stay sortable.
+      - name: Install cargo-cyclonedx
+        if: '!matrix.cross'
+        uses: taiki-e/install-action@a1df9120380005ebdc788c62449b841b205541dd # v2
+        with:
+          tool: cargo-cyclonedx
+
+      - name: Generate CycloneDX SBOM
+        if: '!matrix.cross'
+        shell: bash
+        run: |
+          cargo cyclonedx --format json --target ${{ matrix.target }}
+          # cargo-cyclonedx writes one SBOM per package next to its
+          # Cargo.toml; collect them into a single per-target file.
+          mkdir -p sbom
+          find . -path './target' -prune -o -name '*.cdx.json' -print | while read -r f; do
+            cp "$f" "sbom/$(basename "$(dirname "$f")")-${{ matrix.target }}.cdx.json"
+          done
+          ls -la sbom
+
+      - name: Bundle SBOMs with artifact
+        if: '!matrix.cross'
+        shell: bash
+        run: |
+          # Rename SBOMs to be co-discoverable with the binary archive.
+          cp sbom/ff-rdp-cli-${{ matrix.target }}.cdx.json \
+             ff-rdp-${{ matrix.target }}.cdx.json || true
+          cp sbom/ff-rdp-core-${{ matrix.target }}.cdx.json \
+             ff-rdp-core-${{ matrix.target }}.cdx.json || true
+          ls ff-rdp-${{ matrix.target }}.*
+
+      # iter-75 Hg-3: build provenance attestation via Sigstore-backed
+      # transparency log.  Verifiable with `gh attestation verify <file>
+      # --owner ractive`.  Runs only for non-cross builds since cross
+      # containers don't expose the OIDC token.
+      - name: Attest build provenance
+        if: '!matrix.cross'
+        uses: actions/attest-build-provenance@619dbb2e03d83bf3e96250d6a4257f4a551a1b80 # v2.6.0
+        with:
+          subject-path: |
+            ff-rdp-${{ matrix.target }}.tar.gz
+            ff-rdp-${{ matrix.target }}.zip
+            ff-rdp-${{ matrix.target }}.cdx.json
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

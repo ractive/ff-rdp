@@ -112,6 +112,15 @@ impl ResourceBuffer {
         self.push(resource_type, resource_id, data);
     }
 
+    /// URL of the most recent recorded navigation boundary, if any.
+    ///
+    /// Used by the daemon to compare against the URL on an incoming
+    /// `tabNavigated` event so it can emit a warning when the redirect
+    /// crossed a scheme boundary (iter-75 E / Hg-8).
+    pub(crate) fn last_nav_url(&self) -> Option<&str> {
+        self.boundaries.last().map(|b| b.url.as_str())
+    }
+
     /// Record a navigation boundary.  Returns the assigned sequence number.
     pub(crate) fn record_nav_boundary(&mut self, url: String) -> u64 {
         let sequence = self.next_nav_sequence;

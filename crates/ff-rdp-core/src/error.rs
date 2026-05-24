@@ -210,6 +210,16 @@ pub enum ProtocolError {
     #[error("RDP frame too large: declared {declared} bytes, max {max} bytes")]
     FrameTooLarge { declared: usize, max: usize },
 
+    /// A `bulk` frame declared a payload larger than the configured cap.
+    ///
+    /// The Firefox RDP transport.js receiver does **not** enforce an upper
+    /// bound on the announced bulk-frame length, so a malicious or buggy peer
+    /// could pin our memory by streaming a multi-GB body.  Detected before the
+    /// body is read so the stream becomes unreadable but no allocation has
+    /// been attempted.
+    #[error("RDP bulk frame too large: announced {announced} bytes, max {max} bytes")]
+    BulkFrameTooLarge { announced: u64, max: u64 },
+
     /// Firefox sent a `bulk` binary frame that this implementation cannot process.
     ///
     /// The frame has been consumed from the stream (all `length` bytes skipped)
@@ -310,6 +320,7 @@ impl ProtocolError {
             | Self::InvalidPacket(_)
             | Self::EvalNavigatedDuringEval
             | Self::FrameTooLarge { .. }
+            | Self::BulkFrameTooLarge { .. }
             | Self::BulkPacketUnsupported { .. } => false,
         }
     }

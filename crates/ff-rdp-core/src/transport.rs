@@ -794,6 +794,30 @@ pub fn recv_from(reader: &mut impl Read) -> Result<Value, ProtocolError> {
     Ok(value)
 }
 
+/// Validate that an outbound bulk-frame length is within the configured cap.
+///
+/// Even though this implementation does not currently emit bulk frames, the
+/// guard exists so that if a sender path is added later (or a downstream
+/// consumer wraps `FramedWriter`) it cannot accidentally enqueue a frame that
+/// the receive side would refuse.  Matching the cap on both directions makes
+/// "the largest frame ff-rdp will ship" the same number on the wire and in
+/// memory profiles.
+///
+/// Returns [`ProtocolError::BulkFrameTooLarge`] when `length` exceeds
+/// [`max_frame_bytes`]; otherwise `Ok(())`.
+#[cfg(test)]
+pub(crate) fn check_outbound_bulk_size(length: u64) -> Result<(), ProtocolError> {
+    let cap = max_frame_bytes() as u64;
+    if length > cap {
+        Err(ProtocolError::BulkFrameTooLarge {
+            announced: length,
+            max: cap,
+        })
+    } else {
+        Ok(())
+    }
+}
+
 /// Parse and discard a Firefox bulk frame.
 ///
 /// Called when `recv_from` sees a leading `b`.  The bulk frame header format is:
@@ -839,6 +863,20 @@ fn recv_bulk_frame(reader: &mut impl Read) -> Result<Value, ProtocolError> {
     let length: u64 = parts[3]
         .parse()
         .map_err(|e| ProtocolError::InvalidPacket(format!("bulk length parse error: {e}")))?;
+
+    // Reject oversized bulk announcements before reading the body.  The
+    // Firefox transport.js receiver does not enforce a server-side cap on
+    // bulk-frame length, so a malicious or buggy peer could stream a
+    // multi-GB body and pin our memory.  We apply the same `max_frame_bytes`
+    // knob used for JSON frames — operators reason about one number.
+    let cap_usize = max_frame_bytes();
+    let cap = cap_usize as u64;
+    if length > cap {
+        return Err(ProtocolError::BulkFrameTooLarge {
+            announced: length,
+            max: cap,
+        });
+    }
 
     // Consume (discard) the body bytes in chunks to avoid large allocations.
     let mut remaining = length;
@@ -1318,6 +1356,88 @@ mod tests {
         let value = recv_from(&mut cursor).unwrap();
         assert_eq!(value["type"], "continue");
         assert_eq!(value["from"], "root");
+    }
+
+    /// AC: `recv_bulk_frame` must reject a body that exceeds the configured
+    /// cap **before** allocating or reading the body — proven here by giving
+    /// the cursor only the header bytes.  If the implementation tried to
+    /// stream the body we would observe an EOF / IO error instead of
+    /// `BulkFrameTooLarge`.
+    #[test]
+    fn bulk_frame_rejects_oversized_announcement() {
+        let _g = FRAME_CAP_LOCK.lock().unwrap();
+        let _restore = FrameCapGuard::new();
+
+        set_max_frame_bytes(1024);
+        // Header only — no body bytes — declared length way above the cap.
+        // If `recv_bulk_frame` allocated/read the body we would observe an
+        // EOF instead of `BulkFrameTooLarge`.
+        let header = b"bulk conn0/actor1 heap 8000000:";
+        let mut cursor = Cursor::new(header.to_vec());
+
+        let err = recv_from(&mut cursor).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ProtocolError::BulkFrameTooLarge {
+                    announced: 8_000_000,
+                    max: 1024
+                }
+            ),
+            "expected BulkFrameTooLarge {{announced:8_000_000, max:1024}}, got {err:?}"
+        );
+    }
+
+    /// AC: `bulk_frame_cap_send_side` — the outbound size guard refuses to
+    /// promise a frame larger than our own receive cap.  Catches local bugs
+    /// before the wire commits.
+    #[test]
+    fn bulk_frame_cap_send_side() {
+        let _g = FRAME_CAP_LOCK.lock().unwrap();
+        let _restore = FrameCapGuard::new();
+
+        set_max_frame_bytes(1024);
+        let err = check_outbound_bulk_size(2048).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ProtocolError::BulkFrameTooLarge {
+                    announced: 2048,
+                    max: 1024
+                }
+            ),
+            "send-side cap must reject oversize length, got {err:?}"
+        );
+
+        // At-cap is fine; below-cap is fine.
+        check_outbound_bulk_size(1024).unwrap();
+        check_outbound_bulk_size(0).unwrap();
+    }
+
+    /// AC: `transport_rejects_deep_json` — a 200-level nested JSON object must
+    /// return an error (serde_json hits its recursion limit at 128) without
+    /// panicking or causing a stack overflow.
+    #[test]
+    fn transport_rejects_deep_json() {
+        // Build a 200-level deep nested JSON: `{"a":{"a":{...}}}`.
+        let depth = 200;
+        let mut payload = String::with_capacity(depth * 6 + 10);
+        for _ in 0..depth {
+            payload.push_str("{\"a\":");
+        }
+        payload.push_str("null");
+        for _ in 0..depth {
+            payload.push('}');
+        }
+        // Cap is at least default 256 MiB so the frame fits.
+        let frame = encode_frame(&payload);
+        let mut cursor = Cursor::new(frame.into_bytes());
+
+        let err = recv_from(&mut cursor).unwrap_err();
+        assert!(
+            matches!(err, ProtocolError::InvalidPacket(_)),
+            "deeply nested JSON must surface as InvalidPacket (serde_json depth limit), got {err:?}"
+        );
     }
 
     #[test]

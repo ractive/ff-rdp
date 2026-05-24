@@ -59,6 +59,10 @@ pub enum AppError {
         cause: ff_rdp_core::NavCause,
         url: String,
     },
+    /// Bulk-frame announcement exceeded the configured `--max-frame-mb` cap —
+    /// exit 78 (`EX_CONFIG` in BSD sysexits, "configuration error" — the
+    /// remote announced a frame larger than ff-rdp is willing to accept).
+    RdpBulkOversize { announced: u64, max: u64 },
 }
 
 impl AppError {
@@ -84,6 +88,7 @@ impl AppError {
                 ff_rdp_core::NavCause::ContentBlocked => "nav_content_blocked",
                 ff_rdp_core::NavCause::Unknown(_) => "nav_unknown",
             },
+            Self::RdpBulkOversize { .. } => "rdp_bulk_oversize",
         }
     }
 
@@ -101,6 +106,7 @@ impl AppError {
                 ff_rdp_core::NavCause::ContentBlocked => 11,
                 ff_rdp_core::NavCause::Unknown(_) => 12,
             },
+            Self::RdpBulkOversize { .. } => 78,
             _ => 1,
         }
     }
@@ -191,6 +197,13 @@ impl fmt::Display for AppError {
                     f,
                     "navigate: navigation to '{url}' failed: {cause}\n\
                      hint: check the URL, DNS, or network connectivity"
+                )
+            }
+            Self::RdpBulkOversize { announced, max } => {
+                write!(
+                    f,
+                    "RDP bulk frame too large: announced {announced} bytes, cap {max} bytes.\n\
+                     hint: raise --max-frame-mb if the peer is trusted and the transfer is legitimate (e.g. a large heap-snapshot)."
                 )
             }
         }
@@ -307,6 +320,15 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
                 expected: format!("<= {max} bytes"),
                 got: format!("{declared} bytes"),
             },
+            // iter-75 M-1: oversize bulk-frame announcements map to a
+            // dedicated variant so the CLI exits with EX_CONFIG (78) and a
+            // hint pointing at --max-frame-mb.
+            ff_rdp_core::ProtocolError::BulkFrameTooLarge { announced, max } => {
+                Self::RdpBulkOversize {
+                    announced: *announced,
+                    max: *max,
+                }
+            }
             // EvalNavigatedDuringEval and BulkPacketUnsupported remain Internal.
             // Bulk frames are not something the CLI handles; they are skipped
             // by the daemon and surfaced as Internal for direct-connect callers.
