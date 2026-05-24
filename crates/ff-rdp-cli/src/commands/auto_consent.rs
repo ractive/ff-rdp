@@ -63,6 +63,9 @@ pub(crate) fn install(profile_dir: &Path) -> Result<(), AppError> {
             tmp_path.display()
         ))
     })?;
+    // Close the file handle before renaming — Windows refuses to rename a file
+    // that still has an open handle in the current process.
+    drop(tmp_file);
     std::fs::rename(&tmp_path, &dest).map_err(|e| {
         AppError::User(format!(
             "failed to install Consent-O-Matic to {}: {e}",

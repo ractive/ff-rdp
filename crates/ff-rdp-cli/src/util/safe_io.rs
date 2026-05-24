@@ -17,6 +17,16 @@
 //! Deep traversal via `openat2(RESOLVE_NO_SYMLINKS)` is out of scope; see the
 //! design notes in `kb/iterations/iteration-65-safe-write-and-path-traversal-hardening.md`.
 //!
+//! # Windows caveat
+//!
+//! The Windows implementation pre-checks `path.is_symlink()` and then opens
+//! normally, so a TOCTOU window exists between the check and the open. A
+//! determined attacker on the same machine could swap in a symlink/reparse
+//! point during that window. Hardening this to be race-free would require
+//! Win32 `CreateFileW` with `FILE_FLAG_OPEN_REPARSE_POINT` plus a post-open
+//! reparse-tag inspection; that is tracked as follow-up work and is not in
+//! scope for iter-65. The Unix path is race-free via `O_NOFOLLOW`.
+//!
 //! # Note on `install_skill` and `recorder`
 //!
 //! `install_skill.rs` derives its write destinations by joining a resolved
@@ -102,29 +112,14 @@ pub fn ensure_within_root(path: &Path, root: &Path) -> Result<PathBuf, SafeIoErr
         ))
     })?;
 
-    // Canonicalize the path. If the file doesn't exist yet, canonicalize the
-    // parent and append the file name.
+    // Canonicalize the deepest existing ancestor (so callers can target a
+    // not-yet-created subdirectory like the default `.ffrdp/page-map.json`),
+    // then logically join the remaining components, resolving `.` and `..`
+    // without ever escaping that anchor.
     let canonical_path = if path.exists() {
         path.canonicalize()?
     } else {
-        let parent = path.parent().unwrap_or(Path::new("."));
-        let file_name = path.file_name().ok_or_else(|| {
-            SafeIoError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("path '{}' has no file name", path.display()),
-            ))
-        })?;
-        let canonical_parent = if parent.as_os_str().is_empty() {
-            std::env::current_dir()?
-        } else {
-            parent.canonicalize().map_err(|e| {
-                SafeIoError::Io(std::io::Error::new(
-                    e.kind(),
-                    format!("parent dir '{}': {e}", parent.display()),
-                ))
-            })?
-        };
-        canonical_parent.join(file_name)
+        canonicalize_via_existing_ancestor(path)?
     };
 
     if canonical_path.starts_with(&canonical_root) {
@@ -135,6 +130,40 @@ pub fn ensure_within_root(path: &Path, root: &Path) -> Result<PathBuf, SafeIoErr
             root: canonical_root,
         })
     }
+}
+
+/// Canonicalize the deepest existing ancestor of `path`, then logically join
+/// the remaining components — resolving `.` and `..` against that anchor so
+/// traversal attempts still surface as paths outside `root`.
+fn canonicalize_via_existing_ancestor(path: &Path) -> Result<PathBuf, SafeIoError> {
+    let mut anchor = path.to_path_buf();
+    let mut trailing: Vec<std::ffi::OsString> = Vec::new();
+    while !anchor.exists() {
+        let name = anchor.file_name().map(std::ffi::OsString::from);
+        if !anchor.pop() || name.is_none() {
+            // Reached the root without finding any existing ancestor — fall
+            // back to the current working directory.
+            anchor = std::env::current_dir()?;
+            break;
+        }
+        trailing.push(name.expect("file_name set above"));
+    }
+    let mut resolved = anchor.canonicalize().map_err(|e| {
+        SafeIoError::Io(std::io::Error::new(
+            e.kind(),
+            format!("ancestor '{}': {e}", anchor.display()),
+        ))
+    })?;
+    for component in trailing.into_iter().rev() {
+        match component.as_os_str().to_str() {
+            Some(".") => {}
+            Some("..") => {
+                resolved.pop();
+            }
+            _ => resolved.push(&component),
+        }
+    }
+    Ok(resolved)
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +344,45 @@ mod tests {
         // which is outside `<tmp>/maps`.
         let escaped = root.join("..").join("secret").join("creds.txt");
 
+        let result = ensure_within_root(&escaped, &root);
+        assert!(
+            matches!(result, Err(SafeIoError::OutsideRoot { .. })),
+            "expected OutsideRoot, got {result:?}"
+        );
+    }
+
+    /// ensure_within_root accepts a child path whose parent does not yet exist
+    /// (regression: default `.ffrdp/page-map.json` when `.ffrdp/` is missing).
+    #[test]
+    fn ensure_within_root_accepts_missing_parent() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        // Neither subdir nor file exists yet.
+        let nested = root.join("subdir").join("page-map.json");
+        let canonical =
+            ensure_within_root(&nested, &root).expect("missing parent should be accepted");
+        assert!(
+            canonical.starts_with(root.canonicalize().expect("canon root")),
+            "canonical path {canonical:?} should start with the root"
+        );
+    }
+
+    /// ensure_within_root still rejects traversal even when intermediate
+    /// directories don't exist.
+    #[test]
+    fn ensure_within_root_rejects_traversal_with_missing_parent() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path().join("maps");
+        let sibling = dir.path().join("secret");
+        std::fs::create_dir_all(&root).expect("mkdir maps");
+        std::fs::create_dir_all(&sibling).expect("mkdir secret");
+        // Traversal where the leaf path (and its parent) don't exist yet.
+        let escaped = root
+            .join("nope")
+            .join("..")
+            .join("..")
+            .join("secret")
+            .join("creds.txt");
         let result = ensure_within_root(&escaped, &root);
         assert!(
             matches!(result, Err(SafeIoError::OutsideRoot { .. })),

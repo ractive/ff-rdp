@@ -2,7 +2,7 @@
 title: "Iteration 65: Safe-write helper + path-traversal hardening"
 type: iteration
 date: 2026-05-24
-status: in-progress
+status: completed
 branch: iter-65/safe-write
 depends_on:
   - iteration-63-daemon-lockrecover-and-quick-sec-fixes
@@ -80,7 +80,7 @@ an optional `--output-root` containment flag.
 - [x] `safe_write_rejects_symlink`: writing through a pre-existing symlink returns `Err(SafeIoError::SymlinkRefused)` — test `util::safe_io::tests::safe_write_rejects_symlink` passes.
 - [x] `safe_write_succeeds_on_regular_file`: ordinary write path still works on a fresh file and on overwriting a regular file — test `util::safe_io::tests::safe_write_succeeds_on_regular_file` passes.
 - [x] `screenshot_safe_write_wired`: `commands/screenshot.rs` uses `safe_write` (no `fs::write` left in the module) — confirmed by grep; test `safe_write_succeeds_on_regular_file` covers the write path.
-- [x] `index_safe_write_wired`: `commands/index.rs::write_page_map` uses `safe_write` — `write_page_map_atomic` now calls `crate::util::safe_io::safe_write`.
+- [x] `index_safe_write_wired`: `commands/index.rs::write_page_map` uses `safe_write` — `write_page_map` (renamed from `write_page_map_atomic` after review since the rename-based atomicity was dropped) calls `crate::util::safe_io::safe_write`.
 - [x] `output_root_rejects_traversal`: with `--output-root /tmp/maps`, `--output ../etc/foo.json` exits non-zero with a typed error — unit test `util::safe_io::tests::ensure_within_root_rejects_traversal` passes.
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean — all three gates passed.
 
