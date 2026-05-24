@@ -132,9 +132,16 @@ inspection commands produce no step in the recording.
 
 Syntax: `{{env.NAME}}`, `{{vars.NAME}}`, `{{steps[N].results.FIELD}}`
 
-- `env.NAME` — reads an environment variable.  Values from env vars with
-  secret-shaped names (matching `*password*`, `*token*`, `*secret*`, etc.)
-  are automatically redacted from step output.
+- `env.NAME` — reads an environment variable.  Resolution is **fail-closed**
+  (iter-67): `NAME` must be one of `HOME`, `USER`, `LANG`, `LC_ALL`, `TZ`,
+  or appear in `--allow-env <name1,name2,...>`.  Names matching the
+  secret-name pattern (`*password*`, `*token*`, `*secret*`, `*key*`,
+  `*passwd*`, `*pwd*`) are refused **unconditionally** — even an explicit
+  allowlist entry will not unlock them; rename the variable or pass the
+  value via `--vars`.  Output redaction for secret-shaped names continues
+  to apply to `vars.*` / `--vars` / `--vars-file` values (legacy
+  iter-61c behaviour); env interpolation for those names is blocked
+  outright by the policy above and never reaches output.
 - `vars.NAME` — reads from the script's `vars:` section or `--vars` /
   `--vars-file` overrides.  Secret-shaped names are auto-redacted.
 - `steps[N].results.FIELD` — reads a field from step N's result object
@@ -193,6 +200,20 @@ support (beyond the error) is deferred to iter-62.
 ```
 
 The runner detects cycles and errors out cleanly (no stack overflow).
+
+**Depth cap (iter-67):** nested `run:` calls are capped at 16 levels
+deep — a script that recurses past that bails with `run nesting depth 17
+exceeds MAX_RUN_DEPTH=16`. The cap is intentionally above any realistic
+legitimate nesting (top → suite → subtest → fixture-setup → action).
+
+**Path containment (iter-67):** by default, sub-script paths must be
+relative and stay within the top-level script's directory. Absolute
+paths and `..`-traversing relative paths are refused. Pass
+`--allow-unsafe-script-paths` only when you author every file in the
+include chain — e.g. when developing a shared lib under
+`~/scripts/lib/`. The flag opens the runner to reading any file the
+process can `open(2)`, so do not enable it for scripts received from
+untrusted sources.
 
 ## Assertions
 

@@ -2,12 +2,20 @@
 title: "Iteration 67: Script runner sandboxing — env allowlist + run depth + path containment"
 type: iteration
 date: 2026-05-24
-status: planned
+status: done
 branch: iter-67/script-sandboxing
 depends_on:
   - iteration-61-script-runner-recorder
   - iteration-65-safe-write-and-path-traversal-hardening
-first_call_sites: []
+first_call_sites:
+  - primitive: ff_rdp_cli::script::vars::EnvPolicy
+    site: >-
+      crates/ff-rdp-cli/src/script/runner.rs::resolve_step_vars (gates
+      `{{env.X}}` resolution via `opts.env_policy.check`)
+  - primitive: ff_rdp_cli::script::runner::MAX_RUN_DEPTH
+    site: >-
+      crates/ff-rdp-cli/src/script/runner.rs::run_script_file (refuses entry
+      when `call_stack.len() + 1` exceeds the cap)
 dogfood_path: |
   # 1. Untrusted env var resolution is refused by default.
   echo '{"steps":[{"navigate":"https://x/{{env.AWS_SECRET_ACCESS_KEY}}"}]}' > /tmp/evil.json
@@ -52,26 +60,26 @@ arbitrary readable files).
 ## Tasks
 
 ### A. Env-var allowlist
-- [ ] In `crates/ff-rdp-cli/src/script/vars.rs:60-64`, gate `std::env::var(name)` on an `EnvPolicy { allowlist: HashSet<String>, defaults: &[...] }`.
-- [ ] Define `SAFE_DEFAULTS: &[&str] = &["HOME", "USER", "LANG", "LC_ALL", "TZ"]`.
-- [ ] Unconditionally refuse any name matched by `is_secret_name` (already defined nearby), even if explicitly allowlisted — fail closed.
-- [ ] Add `--allow-env <comma-list>` CLI flag on `ff-rdp run`; thread through.
-- [ ] Update the substitution error to name the variable and suggest the flag.
+- [x] In `crates/ff-rdp-cli/src/script/vars.rs`, gate `std::env::var(name)` on an `EnvPolicy { allowlist: HashSet<String> }`.
+- [x] Define `SAFE_DEFAULTS: &[&str] = &["HOME", "USER", "LANG", "LC_ALL", "TZ"]`.
+- [x] Unconditionally refuse any name matched by `is_secret_name` (already defined nearby), even if explicitly allowlisted — fail closed.
+- [x] Add `--allow-env <comma-list>` CLI flag on `ff-rdp run`; thread through.
+- [x] Update the substitution error to name the variable and suggest the flag.
 
 ### B. Sub-script depth + containment
-- [ ] Add `const MAX_RUN_DEPTH: usize = 16;` at the top of `crates/ff-rdp-cli/src/script/runner.rs`.
-- [ ] In `run_script_file`, bail with a typed error if `call_stack.len() >= MAX_RUN_DEPTH` (line 1101 area).
-- [ ] At the path-resolution site (1101-1135), reject absolute paths and `..`-traversing relative paths unless `--allow-unsafe-script-paths` is set. Containment ancestor = top-level script's parent dir.
-- [ ] Plumb the flag through `Cli` into the runner context.
+- [x] Add `const MAX_RUN_DEPTH: usize = 16;` at the top of `crates/ff-rdp-cli/src/script/runner.rs`.
+- [x] In `run_script_file`, bail with a typed error when `call_stack.len() + 1 > MAX_RUN_DEPTH`.
+- [x] At the path-resolution site in `execute_run`, reject absolute paths and `..`-traversing relative paths unless `--allow-unsafe-script-paths` is set. Containment ancestor = top-level script's parent dir.
+- [x] Plumb the flag through `Cli` into the runner context.
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [6/6]
 
-- [ ] `env_substitution_rejects_unallowed`: `{{env.AWS_SECRET_ACCESS_KEY}}` returns `Err(EnvNotAllowed("AWS_SECRET_ACCESS_KEY"))` with no allowlist.
-- [ ] `env_substitution_allowlist_works`: with `--allow-env FOO`, `{{env.FOO}}` resolves; `{{env.BAR}}` still fails.
-- [ ] `env_substitution_refuses_secret_names`: `{{env.AWS_SECRET_ACCESS_KEY}}` fails even when allowlisted (secret-name policy is unconditional).
-- [ ] `run_depth_capped`: a 20-deep run chain bails at depth 16 with `RunDepthExceeded`.
-- [ ] `run_path_containment`: `run: { path: "/etc/passwd" }` refuses without flag; resolves with `--allow-unsafe-script-paths`.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `env_substitution_rejects_unallowed`: a `{{env.FFRDP_TEST_VAR_67A}}` reference with no allowlist returns `Err("env var ... not in allowlist (use --allow-env ...)")`. (`crates/ff-rdp-cli/src/script/vars.rs::tests::env_substitution_rejects_unallowed`)
+- [x] `env_substitution_allowlist_works`: with `EnvPolicy::from_names(["FFRDP_TEST_FOO_67"])`, `{{env.FFRDP_TEST_FOO_67}}` resolves; `{{env.FFRDP_TEST_BAR_67}}` still fails. (`tests::env_substitution_allowlist_works`)
+- [x] `env_substitution_refuses_secret_names`: `{{env.AWS_SECRET_ACCESS_KEY}}` fails even when allowlisted (secret-name policy is unconditional). (`tests::env_substitution_refuses_secret_names`)
+- [x] `run_depth_capped`: pre-populating the call-stack with 16 entries causes the next `run_script_file` entry to bail with `AppError::User("run nesting depth 17 exceeds MAX_RUN_DEPTH=16")`. End-to-end coverage via `run_depth_chain_eventually_fails`. (`crates/ff-rdp-cli/src/script/runner.rs::tests::run_depth_capped` + `tests::run_depth_chain_eventually_fails`)
+- [x] `run_path_containment`: `check_sub_script_containment("/etc/passwd", …)` refuses absolute paths and `..` traversal; `--allow-unsafe-script-paths` skips the check (`tests::run_path_containment_rejects_absolute`, `tests::run_path_containment_rejects_parent_traversal`, `tests::run_path_containment_accepts_relative_within_top`).
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 

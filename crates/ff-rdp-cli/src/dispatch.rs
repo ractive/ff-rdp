@@ -872,6 +872,8 @@ fn dispatch_inner(
             record_strict,
             script_format,
             page_map,
+            allow_env,
+            allow_unsafe_script_paths,
         } => {
             // Parse --vars KEY=VALUE flags.
             let mut extra_vars: std::collections::HashMap<String, String> =
@@ -940,6 +942,8 @@ fn dispatch_inner(
                 record_strict: *record_strict,
                 format_override: script_format.as_deref(),
                 page_map_path: page_map.as_deref(),
+                allow_env: allow_env.clone(),
+                allow_unsafe_script_paths: *allow_unsafe_script_paths,
             };
             commands::run::run(cli, &opts)
         }
