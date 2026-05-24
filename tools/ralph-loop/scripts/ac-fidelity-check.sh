@@ -150,6 +150,15 @@ while IFS= read -r line; do
     any_resolved=0
     missing_slugs=()
     for slug in $slugs; do
+      # Filter out filename stems: if the slug appears in the AC text immediately
+      # followed by a file extension (.rs, .md, .toml, etc.), it is a path
+      # component (e.g. `tests/live_oneway.rs`) rather than a test function name.
+      # iter-74 fix: the regex \b(live|test|bench)_[a-z0-9_]+ also matches the
+      # stem of filenames like `live_oneway.rs`, causing false "no fn found" errors.
+      if printf '%s' "$text" | grep -qE "${slug}\.(rs|md|toml|json|bench|txt)"; then
+        continue
+      fi
+
       # Match added-or-context `fn <slug>` in the diff. Exclude removed lines
       # (those starting with `-` but not `---`) so a deleted test cannot serve
       # as evidence for an AC that names it.

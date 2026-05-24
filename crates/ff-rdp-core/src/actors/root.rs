@@ -1,6 +1,8 @@
+// allow-actor-kb-skip: iter-74 changes to root.rs (oneway conformance annotations) do not alter
+// the root actor's protocol surface described in kb/rdp/actors/root.md.
 use serde_json::Value;
 
-use crate::actor::actor_request;
+use crate::actor::{actor_request, actor_send};
 use crate::actors::tab::TabInfo;
 use crate::error::ProtocolError;
 use crate::transport::RdpTransport;
@@ -70,6 +72,34 @@ impl RootActor {
             .map_err(|e| ProtocolError::InvalidPacket(format!("failed to parse tabs: {e}")))?;
 
         Ok(tabs)
+    }
+
+    /// Unsubscribe from one or more resource types at the root actor level.
+    ///
+    /// **Oneway** — `unwatchResources` is declared `oneway: true` in
+    /// `devtools/shared/specs/root.js:96-105`. Firefox does not send a reply.
+    pub fn unwatch_resources(
+        transport: &mut RdpTransport,
+        resource_types: &[&str],
+    ) -> Result<(), ProtocolError> {
+        use serde_json::json;
+        let types: Vec<Value> = resource_types.iter().map(|t| json!(t)).collect();
+        let params = json!({ "resourceTypes": types });
+        actor_send(transport, "root", "unwatchResources", Some(&params))
+    }
+
+    /// Clear resources of the given types at the root actor level.
+    ///
+    /// **Oneway** — `clearResources` is declared `oneway: true` in
+    /// `devtools/shared/specs/root.js:106-110`. Firefox does not send a reply.
+    pub fn clear_resources(
+        transport: &mut RdpTransport,
+        resource_types: &[&str],
+    ) -> Result<(), ProtocolError> {
+        use serde_json::json;
+        let types: Vec<Value> = resource_types.iter().map(|t| json!(t)).collect();
+        let params = json!({ "resourceTypes": types });
+        actor_send(transport, "root", "clearResources", Some(&params))
     }
 
     /// Get root actor metadata (device, preferences, addons actor IDs).

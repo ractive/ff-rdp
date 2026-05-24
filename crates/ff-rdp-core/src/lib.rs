@@ -25,6 +25,7 @@ pub use actors::object::{
 pub use actors::page_style::{
     AppliedRule, BoxModelLayout, BoxSides, ComputedProperty, PageStyleActor, RuleProperty,
 };
+pub use actors::reflow::ReflowActor;
 pub use actors::responsive::ResponsiveActor;
 pub use actors::root::{ProcessInfo, RootActor};
 pub use actors::screenshot::ScreenshotActor;
@@ -38,8 +39,8 @@ pub use actors::target::WindowGlobalTarget;
 pub use actors::thread::{SourceInfo, ThreadActor};
 pub use actors::watcher::{
     ConsoleResource, NetworkResource, NetworkResourceUpdate, TargetEvent, WatcherActor,
-    parse_console_resources, parse_network_resource_updates, parse_network_resources,
-    parse_target_event,
+    WatcherEvent, dispatch_watcher_event, parse_console_resources, parse_network_resource_updates,
+    parse_network_resources, parse_target_event,
 };
 pub use connection::{COMPATIBLE_FIREFOX_MAX, COMPATIBLE_FIREFOX_MIN, RdpConnection};
 pub use error::{ActorErrorKind, NavCause, ProtocolError, RdpError, RdpResult};

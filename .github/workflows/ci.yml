@@ -137,3 +137,7 @@ jobs:
         run: >
           cargo run -p xtask -- check-firefox-refs
           kb/iterations/iteration-73-spec-fidelity-gates.md
+      - name: Check oneway conformance (no-op in CI — no Firefox checkout)
+        # check-oneway-conformance requires FF_RDP_FIREFOX_PATH; it skips gracefully
+        # when neither the env var nor ~/devel/firefox are present.
+        run: cargo run -p xtask -- check-oneway-conformance

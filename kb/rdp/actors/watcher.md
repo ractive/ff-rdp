@@ -101,6 +101,23 @@ State of the `WatcherFront` (`crates/ff-rdp-core/src/fronts/watcher.rs`) after i
 
 See [[from-our-codebase/wired-vs-primitive]] for the broader wired-vs-primitive snapshot across iter-61p..61u landings.
 
+## Oneway methods — important protocol constraint (iter-74)
+
+`unwatchTargets`, `unwatchResources`, and `clearResources` are all declared `oneway: true` in `devtools/shared/specs/watcher.js`. Firefox **never** sends a reply packet for these. Calling `actor_request` on them would hang until the socket read timeout.
+
+In ff-rdp these are now routed through `actor_send` (which writes the packet and returns immediately). The `WatcherActor::unwatch_resources`, `unwatch_targets`, and `clear_resources` methods all return `Result<(), ProtocolError>` — no `Value` reply.
+
+Contrast with `walker.releaseNode` (`devtools/shared/specs/walker.js:127-133`): it is response-less in practice but is **not** declared `oneway: true` in the spec, so it correctly remains an `actor_request`. Do not conflate "no useful reply value" with "oneway" — only the spec annotation determines oneway status.
+
+## target-destroyed-form — registry invalidation (iter-74)
+
+When the watcher emits `target-destroyed-form`, ff-rdp calls `Registry::invalidate_target` on the target actor, which cascades to all dependent fronts (inspector, walker, console) registered with that `target_root`. This prevents stale-actor errors on subsequent operations.
+
+The Rust entry points are:
+- `WatcherEvent::TargetDestroyed { target, options }` — parsed from the packet
+- `dispatch_watcher_event(packet, registry)` — combines parsing + registry invalidation
+- Called in `daemon/server.rs::handle_target_event`
+
 ## Gotchas for ff-rdp
 
 - **Iframe-before-top-level race**: bfcache navigations can deliver iframe targets before the top target. `_earlyIframeTargets` caches them until the top arrives (see comment block ~L123).

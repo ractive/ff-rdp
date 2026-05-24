@@ -10,8 +10,8 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 use ff_rdp_core::{
-    ActorId, FramedReader, FramedWriter, FrontKind, ProtocolError, RdpTransport, Registry,
-    ResourceCommand, ResourceType, RootActor, TabActor, WatcherActor,
+    FramedReader, FramedWriter, FrontKind, ProtocolError, RdpTransport, Registry, ResourceCommand,
+    ResourceType, RootActor, TabActor, WatcherActor, WatcherEvent, dispatch_watcher_event,
 };
 
 use super::buffer::ResourceBuffer;
@@ -653,13 +653,13 @@ fn is_target_event(msg: &Value) -> bool {
     )
 }
 
-/// Log a target lifecycle event and update `state.target_count`.
+/// Log a target lifecycle event, update `state.target_count`, and drive
+/// registry lifecycle via [`dispatch_watcher_event`].
 ///
 /// Only `target-available-form` increments the counter; `target-destroyed-form`
-/// is logged but does not change the count (it signals a target going away, not
-/// a new one appearing).  Full Front-actor invalidation is deferred to iter-61p.
+/// signals a target going away and invalidates it in the registry (including
+/// all dependent fronts — inspector, walker, console scoped to that target).
 fn handle_target_event(state: &SharedState, msg: &Value) {
-    let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
     let target_obj = msg.get("target");
     let url = target_obj
         .and_then(|t| t.get("url"))
@@ -670,37 +670,34 @@ fn handle_target_event(state: &SharedState, msg: &Value) {
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    // Extract the target actor ID from the event payload.
-    //
-    // Firefox encodes the actor as `target.actor` in `target-available-form`
-    // and `target-destroyed-form`.  We register/invalidate it in the shared
-    // registry so command paths can detect stale fronts without a round-trip.
-    let target_actor_id = target_obj
-        .and_then(|t| t.get("actor"))
-        .and_then(Value::as_str)
-        .map(ActorId::from);
-
-    if msg_type == "target-available-form" {
-        state.target_count.fetch_add(1, Ordering::Relaxed);
-        if let Some(id) = target_actor_id {
-            state.actor_registry.register(id, FrontKind::Target, None);
+    // `dispatch_watcher_event` handles registry invalidation for
+    // `target-destroyed-form` and returns the parsed event.
+    match dispatch_watcher_event(msg, &state.actor_registry) {
+        Some(WatcherEvent::TargetAvailable { ref target }) => {
+            state.target_count.fetch_add(1, Ordering::Relaxed);
+            state
+                .actor_registry
+                .register(target.actor.clone(), FrontKind::Target, None);
+            tracing::info!(
+                event = "target-available-form",
+                url,
+                is_top_level,
+                "daemon: target available"
+            );
         }
-        tracing::info!(
-            event = "target-available-form",
-            url,
-            is_top_level,
-            "daemon: target available"
-        );
-    } else {
-        if let Some(ref id) = target_actor_id {
-            state.actor_registry.invalidate_target(id);
+        Some(WatcherEvent::TargetDestroyed { .. }) => {
+            // Registry invalidation already performed by dispatch_watcher_event.
+            tracing::info!(
+                event = "target-destroyed-form",
+                url,
+                is_top_level,
+                "daemon: target destroyed"
+            );
         }
-        tracing::info!(
-            event = "target-destroyed-form",
-            url,
-            is_top_level,
-            "daemon: target destroyed"
-        );
+        Some(WatcherEvent::Other { .. }) | None => {
+            // Non-target event in the target-event path — log and continue.
+            tracing::debug!("handle_target_event: unexpected packet type");
+        }
     }
 }
 
@@ -1489,6 +1486,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::time::Instant;
 
+    use ff_rdp_core::ActorId;
     use serde_json::json;
 
     use super::*;

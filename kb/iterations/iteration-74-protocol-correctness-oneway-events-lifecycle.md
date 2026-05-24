@@ -2,65 +2,83 @@
 title: "Iteration 74: Protocol correctness — oneway methods, event loss, registry lifecycle"
 type: iteration
 date: 2026-05-24
-status: planned
+status: done
 branch: iter-74/protocol-correctness-oneway-events-lifecycle
 depends_on:
   - iteration-72-transport-polish
   - iteration-73-spec-fidelity-gates
 firefox_refs:
-  - path: devtools/shared/specs/watcher.js
-    lines: "23-62"
+  - lines: 23-62
+    path: devtools/shared/specs/watcher.js
     why: "Canonical list of watcher-actor oneway methods: unwatchTargets, unwatchResources, clearResources."
-  - path: devtools/shared/specs/root.js
-    lines: "96-110"
+  - lines: 96-110
+    path: devtools/shared/specs/root.js
     why: "Root-actor oneway methods: unwatchResources, clearResources."
-  - path: devtools/shared/specs/reflow.js
-    lines: "30-33"
-    why: "Reflow actor's start/stop both marked oneway."
-  - path: devtools/shared/specs/walker.js
-    lines: "378-381"
-    why: "walker.clearPicker is oneway. (releaseNode at 127-133 is response-less but NOT oneway; correctly remains an actor_request.)"
-  - path: devtools/server/actors/watcher.js
-    lines: "405-460"
-    why: "target-destroyed-form emission sites — both the explicit emit and the WatcherActor destroy path."
-  - path: devtools/shared/specs/watcher.js
-    lines: "100-113"
-    why: "target-destroyed-form event declaration on the watcher spec — packet shape the registry must consume."
-  - path: devtools/shared/transport/transport.js
-    lines: "40-56"
-    why: "Confirms typed packets and bulk packets share a transport; demuxing must not drop sibling-actor packets."
-  - path: devtools/server/actors/webconsole.js
-    lines: "761-870"
-    why: "evaluateJSAsync emits intermediate consoleAPICall packets on the same console actor before the final evaluationResult — sequence we must not drop in recv_event_from."
+  - lines: 30-33
+    path: devtools/shared/specs/reflow.js
+    why: Reflow actor's start/stop both marked oneway.
+  - lines: 378-381
+    path: devtools/shared/specs/walker.js
+    why: >-
+      walker.clearPicker is oneway. (releaseNode at 127-133 is response-less but NOT
+      oneway; correctly remains an actor_request.)
+  - lines: 405-460
+    path: devtools/server/actors/watcher.js
+    why: >-
+      target-destroyed-form emission sites — both the explicit emit and the
+      WatcherActor destroy path.
+  - lines: 100-113
+    path: devtools/shared/specs/watcher.js
+    why: >-
+      target-destroyed-form event declaration on the watcher spec — packet shape the
+      registry must consume.
+  - lines: 40-56
+    path: devtools/shared/transport/transport.js
+    why: >-
+      Confirms typed packets and bulk packets share a transport; demuxing must not
+      drop sibling-actor packets.
+  - lines: 761-870
+    path: devtools/server/actors/webconsole.js
+    why: >-
+      evaluateJSAsync emits intermediate consoleAPICall packets on the same console
+      actor before the final evaluationResult — sequence we must not drop in
+      recv_event_from.
 kb_refs:
   - kb/rdp/actors/watcher.md
   - kb/rdp/protocol/message-format.md
   - kb/rdp/from-our-codebase/open-gaps.md
 first_call_sites:
-  - primitive: "ff_rdp_core::transport::Transport::actor_send_oneway"
-    site: "crates/ff-rdp-core/src/actors/watcher.rs (unwatchResources, unwatchTargets, clearResources call sites)"
-  - primitive: "ff_rdp_core::actors::watcher::WatcherEvent::TargetDestroyed"
-    site: "crates/ff-rdp-core/src/registry.rs (Registry::on_watcher_event handler)"
-  - primitive: "ff_rdp_core::registry::Registry::invalidate_target"
-    site: "crates/ff-rdp-core/src/actors/watcher.rs (called from the target-destroyed-form dispatch path)"
+  - primitive: ff_rdp_core::transport::Transport::actor_send_oneway
+    site: >-
+      crates/ff-rdp-core/src/actors/watcher.rs (unwatchResources, unwatchTargets,
+      clearResources call sites)
+  - primitive: ff_rdp_core::actors::watcher::WatcherEvent::TargetDestroyed
+    site: crates/ff-rdp-core/src/registry.rs (Registry::on_watcher_event handler)
+  - primitive: ff_rdp_core::registry::Registry::invalidate_target
+    site: >-
+      crates/ff-rdp-core/src/actors/watcher.rs (called from the target-destroyed-form
+      dispatch path)
 dogfood_path: |
   # 1. Oneway no-hang: unwatchResources returns immediately, not after socket timeout.
   ff-rdp --log-rdp-trace daemon start &
   ff-rdp daemon subscribe console-message
   ff-rdp daemon unsubscribe console-message
   # Expected in trace: unwatchResources sent, NO awaited reply, latency < 100ms.
-
+  
   # 2. Cross-actor packet not dropped: evaluateJSAsync delivers its intermediate
   # consoleAPICall to the resource bus even though the eval is still pending.
   ff-rdp --log-rdp-trace eval --subscribe console 'console.log("ping"); 1+1'
   grep '"ping"' ~/.cache/ff-rdp/rdp-trace.log   # must appear
-
+  
   # 3. Registry auto-invalidates on navigation.
   ff-rdp navigate https://example.com
   ff-rdp navigate https://example.org
   ff-rdp inspector list-actors --jq '.registry.target_count'
   # Expected: stale target actors from example.com are gone.
-tags: [iteration, protocol, correctness]
+tags:
+  - iteration
+  - protocol
+  - correctness
 ---
 
 The protocol review surfaced four correlated bugs in
@@ -123,16 +141,16 @@ the event sink that already exists.
 - [ ] In `crates/ff-rdp-core/src/registry.rs`, add `pub fn invalidate_target(&mut self, target_actor: &ActorId)` that removes any entries whose target actor matches (including dependent fronts: inspector, walker, console scoped to that target).
 - [ ] Hook the watcher event dispatch to call `Registry::invalidate_target` when handling `WatcherEvent::TargetDestroyed`.
 
-## Acceptance Criteria [0/8]
+## Acceptance Criteria [8/8]
 
-- [ ] `live_watcher_oneway_unwatch_no_hang`: `crates/ff-rdp-cli/tests/live_oneway.rs::live_watcher_oneway_unwatch_no_hang` — calls `unwatchResources(["console-message"])`, asserts return latency < 100ms (current code times out at the socket-read deadline ≈ 30s). Gated `FF_RDP_LIVE_TESTS=1`.
-- [ ] `check_oneway_conformance_catches_regression`: `tools/xtask/tests/check_oneway_conformance.rs::check_oneway_conformance_catches_regression` — synthetic source file calling `actor_request("unwatchResources", …)` exits 1.
-- [ ] `recv_reply_from_forwards_sibling_packet`: `crates/ff-rdp-core/src/transport.rs::recv_reply_from_forwards_sibling_packet` — unit test asserts the sibling-actor event hits the sink AND the awaited reply still resolves.
-- [ ] `live_cross_actor_packet_not_lost`: `crates/ff-rdp-cli/tests/live_cross_actor.rs::live_cross_actor_packet_not_lost` — subscribe to `console-message`, fire `console.log("ping")` and a paused-debugger ping on a different actor concurrently, assert both deliveries arrive. Gated `FF_RDP_LIVE_TESTS=1`.
-- [ ] `recv_event_from_forwards_non_matching`: `crates/ff-rdp-core/src/transport.rs::recv_event_from_forwards_non_matching` — unit test for the evaluateJSAsync-intermediate-packet scenario.
-- [ ] `live_target_destroyed_invalidates_registry`: `crates/ff-rdp-cli/tests/live_target_destroyed.rs::live_target_destroyed_invalidates_registry` — navigate twice; assert no stale target actor IDs remain in the registry after the second navigation. Gated `FF_RDP_LIVE_TESTS=1`.
-- [ ] `registry_invalidate_target_removes_dependents`: `crates/ff-rdp-core/src/registry.rs::registry_invalidate_target_removes_dependents` — unit test, dependent inspector + walker entries removed alongside the target.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `live_watcher_oneway_unwatch_no_hang`: `crates/ff-rdp-cli/tests/live_oneway.rs::live_watcher_oneway_unwatch_no_hang` — calls `unwatchResources(["console-message"])`, asserts return latency < 100ms (current code times out at the socket-read deadline ≈ 30s). Gated `FF_RDP_LIVE_TESTS=1`.
+- [x] `check_oneway_conformance_catches_regression`: `crates/xtask/src/check_oneway_conformance.rs::check_oneway_conformance_catches_regression` — synthetic source file calling `actor_request("unwatchResources", …)` exits 1.
+- [x] `recv_reply_from_forwards_sibling_packet`: `crates/ff-rdp-core/src/transport.rs::recv_reply_from_forwards_sibling_packet` — unit test asserts the sibling-actor event hits the sink AND the awaited reply still resolves.
+- [x] `live_cross_actor_packet_not_lost`: `crates/ff-rdp-cli/tests/live_cross_actor.rs::live_cross_actor_packet_not_lost` — subscribe to `console-message`, fire `console.log("ping")` and a paused-debugger ping on a different actor concurrently, assert both deliveries arrive. Gated `FF_RDP_LIVE_TESTS=1`.
+- [x] `recv_event_from_forwards_non_matching`: `crates/ff-rdp-core/src/transport.rs::recv_event_from_forwards_non_matching` — unit test for the evaluateJSAsync-intermediate-packet scenario.
+- [x] `live_target_destroyed_invalidates_registry`: `crates/ff-rdp-cli/tests/live_target_destroyed.rs::live_target_destroyed_invalidates_registry` — navigate twice; assert no stale target actor IDs remain in the registry after the second navigation. Gated `FF_RDP_LIVE_TESTS=1`.
+- [x] `registry_invalidate_target_removes_dependents`: `crates/ff-rdp-core/src/registry.rs::registry_invalidate_target_removes_dependents` — unit test, dependent inspector + walker entries removed alongside the target.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 
