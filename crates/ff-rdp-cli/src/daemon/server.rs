@@ -2573,4 +2573,52 @@ mod tests {
             "lock_or_recover must return the inner value after poison"
         );
     }
+
+    /// iter-66 AC (paying off iter-61w test debt): a panic while holding a
+    /// daemon mutex must not wedge the daemon — the next `handle_daemon_message`
+    /// call must succeed via `lock_or_recover!` and observe the pre-panic state.
+    ///
+    /// This is the daemon-level counterpart to
+    /// [`test_lock_or_recover_continues_on_poison`] (which only exercises the
+    /// macro in isolation): we poison `state.ref_store` from a spawned thread
+    /// and then drive a `resolve-ref` request through the real handler.
+    #[test]
+    fn daemon_poisoned_mutex_recovery() {
+        let state = Arc::new(test_state());
+
+        // Pre-register a ref so the post-poison handler call has something to
+        // observe — confirming the inner value survives `lock_or_recover!`.
+        lock_or_recover!(state.ref_store).register(vec![(
+            "e1".to_owned(),
+            "document.querySelector('h1')".to_owned(),
+        )]);
+
+        // Poison the ref_store mutex: take the lock in a worker thread and panic.
+        let poisoner_state = Arc::clone(&state);
+        let handle = std::thread::spawn(move || {
+            let _guard = lock_or_recover!(poisoner_state.ref_store);
+            panic!("intentional test panic to poison daemon ref_store mutex");
+        });
+        assert!(handle.join().is_err(), "poisoner thread must have panicked");
+
+        // The mutex is now poisoned.  The next daemon request must still
+        // succeed (lock_or_recover! recovers the inner value) and the
+        // previously-registered ref must still resolve.
+        let resp = handle_daemon_message(
+            &state,
+            &json!({"to": "daemon", "type": "resolve-ref", "id": "e1"}),
+            TEST_CLIENT_ID,
+            None,
+        );
+        assert_eq!(resp["from"], "daemon");
+        assert_eq!(resp["id"], "e1");
+        assert_eq!(
+            resp["resolver"], "document.querySelector('h1')",
+            "ref must survive mutex poisoning; got {resp:?}"
+        );
+        assert!(
+            resp["error"].is_null(),
+            "handler must not return an error after mutex poison: {resp:?}"
+        );
+    }
 }
