@@ -2,7 +2,7 @@
 title: "Iteration 71b: ResourceCommand follow-ups + inherited CI fixes"
 type: iteration
 date: 2026-05-24
-status: in-progress
+status: completed
 branch: iter-71b/followups-and-ci
 depends_on:
   - iteration-71-resource-command-lifecycle
