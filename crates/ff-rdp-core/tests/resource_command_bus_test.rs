@@ -287,6 +287,74 @@ fn bus_handles_dead_receiver_gracefully() {
     let _ = server_thread.join();
 }
 
+/// `resource_command_unwatch_on_drop` (iter-71 Theme A AC):
+/// subscribe → drop receiver → dispatch event to trigger dead-channel prune →
+/// call `gc()` → assert exactly one `unwatchResources` packet on the wire.
+#[test]
+fn resource_command_unwatch_on_drop() {
+    let server = make_server();
+    let handle = server.handle();
+    let server_thread = std::thread::spawn(move || server.serve_one());
+
+    let mut transport = connect(handle.port);
+    let mut bus = ResourceCommand::new(ff_rdp_core::ActorId::from(WATCHER));
+
+    // Subscribe so the wire gets a `watchResources`.
+    let (_id, rx) = bus
+        .subscribe(&mut transport, &[ResourceType::NetworkEvent])
+        .expect("subscribe");
+
+    // Drop the receiver — channel becomes dead.
+    drop(rx);
+
+    // Dispatch an event so dead-channel pruning fires inside `dispatch_event`.
+    let packet = serde_json::json!({
+        "type": "resources-available-array",
+        "array": [
+            ["network-event", [{
+                "actor": "conn0/netEvent1",
+                "method": "GET",
+                "url": "https://example.com/",
+                "isXHR": false,
+                "cause": {"type": "document"},
+                "startedDateTime": "2026-01-01T00:00:00Z",
+                "timeStamp": 1000.0,
+                "resourceId": 1_u64
+            }]]
+        ]
+    });
+    bus.dispatch_event(&packet);
+
+    assert_eq!(
+        bus.pending_unwatch_count(),
+        1,
+        "pending_unwatch should be non-zero after dead-channel prune"
+    );
+
+    // gc() flushes the pending `unwatchResources` wire call.
+    bus.gc(&mut transport).expect("gc");
+
+    assert_eq!(
+        bus.pending_unwatch_count(),
+        0,
+        "pending_unwatch should be empty after gc()"
+    );
+
+    drop(bus);
+    drop(transport);
+
+    let requests = server_thread.join().expect("server thread");
+    let unwatch_calls: Vec<_> = requests
+        .iter()
+        .filter(|r| r["type"] == "unwatchResources")
+        .collect();
+    assert_eq!(
+        unwatch_calls.len(),
+        1,
+        "gc() should have sent exactly 1 unwatchResources for the dead subscriber: {unwatch_calls:?}"
+    );
+}
+
 /// AC5.5 — Multiple resource types in one `subscribe` call produce one wire call
 /// covering all requested types.
 #[test]

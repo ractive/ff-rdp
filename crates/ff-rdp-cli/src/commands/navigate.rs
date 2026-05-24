@@ -409,7 +409,13 @@ pub fn run_core(
             .map_err(AppError::from)?;
         None
     } else {
-        let mut bus = ResourceCommand::new(watcher_actor.clone());
+        // Obtain (or create) the ResourceCommand bus via the session so it can
+        // be reused by other command helpers without constructing a new bus each
+        // time.  The Arc clone detaches ownership from `ctx` so we can still
+        // call `ctx.transport_mut()` below without a double-borrow.
+        let bus_arc = ctx.get_or_init_resource_command(watcher_actor.clone());
+        let mut bus = bus_arc.lock().expect("resource_command lock poisoned");
+
         let (sub_id, rx) = bus
             .subscribe(ctx.transport_mut(), &[ResourceType::DocumentEvent])
             .map_err(|e| AppError::from(anyhow::anyhow!("document-event subscribe: {e:#}")))?;
@@ -431,6 +437,10 @@ pub fn run_core(
             cli.timeout,
             wait_opts.wait_level,
         );
+
+        // Flush any pending `unwatchResources` from dead-channel pruning that
+        // occurred inside `wait_for_doc_complete` before we unsubscribe.
+        let _ = bus.gc(ctx.transport_mut());
 
         // Unsubscribe regardless of outcome so Firefox cleans up server state.
         let _ = bus.unsubscribe(ctx.transport_mut(), sub_id);
