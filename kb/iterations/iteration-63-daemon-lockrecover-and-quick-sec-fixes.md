@@ -2,7 +2,7 @@
 title: "Iteration 63: Daemon lock-recover sweep + file:// gating + table sanitization"
 type: iteration
 date: 2026-05-24
-status: in-review
+status: completed
 branch: iter-63/quick-sec-fixes
 depends_on:
   - iteration-61w-security-hardening-and-cleanup
@@ -12,14 +12,16 @@ dogfood_path: |
   ff-rdp daemon start &
   # Inject a panic into a handler (manual or via test hook), reconnect,
   # confirm the daemon thread is still serving — no zombie state.
-
+  
   # 2. file:// is rejected without the new flag.
   ff-rdp navigate file:///etc/passwd          # exits non-zero, "url scheme not allowed"
   ff-rdp navigate --allow-file-urls file:///etc/hosts   # works
-
+  
   # 3. Hostile cookie name with ANSI escapes renders neutered.
   ff-rdp cookies --format table   # any \x1b in a name appears as `?`, never moves the cursor
-tags: [iteration, security]
+tags:
+  - iteration
+  - security
 ---
 
 # Iteration 63: Daemon lock-recover sweep + file:// gating + table sanitization
