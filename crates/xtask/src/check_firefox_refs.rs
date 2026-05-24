@@ -3,8 +3,6 @@ use clap::Args as ClapArgs;
 use serde::Deserialize;
 use std::path::PathBuf;
 
-use crate::check_iteration_plan::parse_plan;
-
 #[derive(ClapArgs)]
 pub struct Args {
     /// Path to the iteration plan markdown file.
@@ -89,12 +87,6 @@ pub fn run(args: Args) -> Result<()> {
     let content = std::fs::read_to_string(&args.plan)
         .with_context(|| format!("failed to read {:?}", args.plan))?;
 
-    // We need to extract raw YAML to deserialize the firefox_refs field,
-    // reusing the same frontmatter extraction logic as parse_plan.
-    let parsed = parse_plan(&content)?;
-    let _ = parsed; // we only needed this to validate the plan is parseable
-
-    // Extract firefox_refs via a dedicated struct.
     let refs_fm = extract_firefox_refs_frontmatter(&content)?;
 
     let firefox_refs = match refs_fm.firefox_refs {
@@ -143,12 +135,15 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 /// Extract the raw YAML frontmatter and deserialize only the firefox_refs key.
+/// Normalises CRLF to LF before scanning for the closing delimiter so the same
+/// logic works on Windows checkouts.
 fn extract_firefox_refs_frontmatter(content: &str) -> Result<FirefoxRefsFrontmatter> {
-    let content = content.trim_start();
-    if !content.starts_with("---") {
+    let normalised = content.replace("\r\n", "\n");
+    let trimmed = normalised.trim_start();
+    if !trimmed.starts_with("---") {
         return Ok(FirefoxRefsFrontmatter::default());
     }
-    let after_open = &content[3..];
+    let after_open = &trimmed[3..];
     let close_pos = after_open
         .find("\n---")
         .context("unterminated YAML frontmatter (no closing ---)")?;
@@ -158,20 +153,34 @@ fn extract_firefox_refs_frontmatter(content: &str) -> Result<FirefoxRefsFrontmat
     Ok(fm)
 }
 
-/// Resolve the Firefox source root from the environment, with a clear error if absent.
+/// Resolve the Firefox source root from the environment.
+/// Tries `FF_RDP_FIREFOX_PATH` first, then `$HOME/devel/firefox` as a
+/// best-effort default. Errors clearly if neither exists.
 fn resolve_firefox_root() -> Result<PathBuf> {
-    let path = std::env::var("FF_RDP_FIREFOX_PATH")
-        .unwrap_or_else(|_| "/Users/james/devel/firefox".to_owned());
-    let root = PathBuf::from(&path);
-    if !root.exists() {
+    if let Ok(path) = std::env::var("FF_RDP_FIREFOX_PATH") {
+        let root = PathBuf::from(&path);
+        if root.exists() {
+            return Ok(root);
+        }
         bail!(
-            "Firefox source root not found at {:?}. \
-             Set FF_RDP_FIREFOX_PATH to the path of your Firefox checkout. \
-             (Default: /Users/james/devel/firefox)",
+            "FF_RDP_FIREFOX_PATH={:?} does not exist. \
+             Point it at the root of your Firefox checkout.",
             root
         );
     }
-    Ok(root)
+
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let candidate = PathBuf::from(home).join("devel").join("firefox");
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    bail!(
+        "Firefox source root not found. \
+         Set FF_RDP_FIREFOX_PATH to the root of your Firefox checkout \
+         (e.g. the directory containing `devtools/`)."
+    );
 }
 
 #[cfg(test)]

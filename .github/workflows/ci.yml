@@ -127,8 +127,8 @@ jobs:
         # copy and validate that iter-61v fails / iter-61t passes.
         run: cargo run -p xtask -- check-discipline-regression
       - name: Check actor ↔ kb sync
-        # Fails if an actor .rs file was changed without a kb/rdp/actors/*.md update.
-        # Plans with no firefox_refs key are accepted silently.
+        # Fails if an actor .rs file under crates/ff-rdp-core/src/actors/ was
+        # changed without a matching kb/rdp/actors/*.md update in the same diff.
         run: cargo run -p xtask -- check-actor-kb-sync --since origin/main
       - name: Check firefox_refs (no-op in CI — no Firefox checkout)
         # check-firefox-refs validates line ranges against the local Firefox checkout.

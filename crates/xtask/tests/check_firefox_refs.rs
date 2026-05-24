@@ -184,12 +184,20 @@ fn missing_firefox_root_fails_clearly() {
     );
 }
 
-/// Gate: only runs when the real Firefox checkout is available.
+/// Live gate: runs only when the local Firefox checkout is present and
+/// `FF_RDP_LIVE_TESTS=1`. Marked `#[ignore]` so it's visible in test output
+/// rather than silently passing, matching the project convention for live
+/// gates documented in CLAUDE.md.
 #[test]
+#[ignore]
 fn real_firefox_path_iter73_plan_no_refs_passes() {
+    if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
+        eprintln!("skipping: set FF_RDP_LIVE_TESTS=1 to run");
+        return;
+    }
     let firefox_devtools = Path::new("/Users/james/devel/firefox/devtools");
     if !firefox_devtools.exists() {
-        // CI without the Firefox checkout — skip.
+        eprintln!("skipping: /Users/james/devel/firefox/devtools not present");
         return;
     }
     let tmp = tempfile::tempdir().unwrap();

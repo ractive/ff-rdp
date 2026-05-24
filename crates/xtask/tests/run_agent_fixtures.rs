@@ -13,8 +13,8 @@
 //!     --input tools/agents/fixtures/synthetic-watcher-diff.patch
 //! ```
 //!
-//! A `cargo xtask run-agent-fixtures` subcommand to automate this is
-//! // allow-todo: deferred to follow-up iteration
+//! A `cargo xtask run-agent-fixtures` subcommand is deferred to a
+//! follow-up iteration. // TODO allow-todo: subcommand wiring deferred
 
 use std::fs;
 use std::path::PathBuf;

@@ -2,6 +2,15 @@ use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 use regex::Regex;
 use std::process::Command;
+use std::sync::OnceLock;
+
+fn actor_path_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // Pattern is a compile-time constant; compilation cannot fail.
+        Regex::new(r"^crates/ff-rdp-core/src/actors/([a-z][a-z0-9_]*)\.rs$").unwrap()
+    })
+}
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -96,10 +105,7 @@ pub fn has_skip_annotation(file_path: &str) -> bool {
 
 /// Find the actor stem for a changed file path, if it is an actor source file.
 fn actor_stem_for(path: &str) -> Option<&'static str> {
-    let re =
-        Regex::new(r"^crates/ff-rdp-core/src/actors/([a-z][a-z0-9_]*)\.rs$").expect("static regex");
-
-    let caps = re.captures(path)?;
+    let caps = actor_path_re().captures(path)?;
     let stem = caps.get(1)?.as_str();
 
     // Return the static stem from our map if it matches.
