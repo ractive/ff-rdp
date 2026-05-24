@@ -283,6 +283,17 @@ impl ConnectedTab {
     /// This helper centralises the "lazily construct the bus once and reuse"
     /// pattern used by navigate and other commands.  The created bus is stored
     /// on the session so subsequent calls return the same instance.
+    ///
+    /// # Watcher-actor stability invariant ("first watcher_actor wins")
+    ///
+    /// Once a `ResourceCommand` bus is created, the `watcher_actor` passed in
+    /// subsequent calls is **silently ignored** — the bus always uses the actor
+    /// that was bound at creation time.  This is intentional: Firefox assigns a
+    /// stable watcher actor per tab for the lifetime of the connection, so all
+    /// calls within a single session refer to the same actor.  If Firefox ever
+    /// changes this (per-navigation watcher rotation), callers would need to
+    /// detect the change and call `session.clear_resource_command()` before
+    /// calling this helper again.
     pub fn get_or_init_resource_command(
         &mut self,
         watcher_actor: ActorId,

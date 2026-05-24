@@ -1,3 +1,4 @@
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ff_rdp_core::{
@@ -110,9 +111,18 @@ struct CommitInfo {
 /// The caller must have already subscribed to [`ResourceType::DocumentEvent`]
 /// via `bus` before calling this function.  The subscription is left open so
 /// that the caller can unsubscribe at its own discretion.
+/// Wait for the navigation to reach `wait_level` by pumping the transport and
+/// dispatching received events through the bus.
+///
+/// # Lock discipline
+///
+/// The `bus_arc` mutex is acquired **per dispatch operation only** — it is
+/// never held across the `transport.recv()` call (which may block up to
+/// `poll_interval`).  This prevents a deadlock where another thread tries to
+/// acquire the same mutex while this call is waiting for Firefox.
 fn wait_for_doc_complete(
     transport: &mut RdpTransport,
-    bus: &mut ResourceCommand,
+    bus_arc: &Arc<Mutex<ResourceCommand>>,
     rx: &std::sync::mpsc::Receiver<std::sync::Arc<Resource>>,
     timeout_ms: u64,
     wait_level: WaitLevel,
@@ -234,8 +244,18 @@ fn wait_for_doc_complete(
 
         // Pump the transport — will block up to `poll_interval` then return
         // Timeout, which we treat as idle (keep looping).
+        // The lock is acquired ONLY for dispatch_event (not held during recv).
         match transport.recv() {
-            Ok(msg) => bus.dispatch_event(&msg),
+            Ok(msg) => {
+                // Acquire the lock for dispatch only; release immediately after.
+                // SAFETY invariant: no panic path inside dispatch_event can
+                // leave the guard dropped while the bus is in a bad state —
+                // dispatch_event only pushes to channels and prunes dead ones.
+                bus_arc
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .dispatch_event(&msg);
+            }
             Err(ff_rdp_core::ProtocolError::Timeout) => {}
             Err(e) => {
                 return Err(AppError::from(anyhow::anyhow!(
@@ -414,9 +434,13 @@ pub fn run_core(
         // time.  The Arc clone detaches ownership from `ctx` so we can still
         // call `ctx.transport_mut()` below without a double-borrow.
         let bus_arc = ctx.get_or_init_resource_command(watcher_actor.clone());
-        let mut bus = bus_arc.lock().expect("resource_command lock poisoned");
 
-        let (sub_id, rx) = bus
+        // Lock per-operation: subscribe, wait, gc, unsubscribe.
+        // The lock is released between each operation so other threads can
+        // acquire it without blocking on the full navigation wait time.
+        let (sub_id, rx) = bus_arc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .subscribe(ctx.transport_mut(), &[ResourceType::DocumentEvent])
             .map_err(|e| AppError::from(anyhow::anyhow!("document-event subscribe: {e:#}")))?;
 
@@ -430,9 +454,11 @@ pub fn run_core(
             }))
             .map_err(AppError::from)?;
 
+        // wait_for_doc_complete acquires the lock only during dispatch_event,
+        // not across the full recv() wait — see its lock-discipline doc-comment.
         let result = wait_for_doc_complete(
             ctx.transport_mut(),
-            &mut bus,
+            &bus_arc,
             &rx,
             cli.timeout,
             wait_opts.wait_level,
@@ -440,10 +466,16 @@ pub fn run_core(
 
         // Flush any pending `unwatchResources` from dead-channel pruning that
         // occurred inside `wait_for_doc_complete` before we unsubscribe.
-        let _ = bus.gc(ctx.transport_mut());
+        let _ = bus_arc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .gc(ctx.transport_mut());
 
         // Unsubscribe regardless of outcome so Firefox cleans up server state.
-        let _ = bus.unsubscribe(ctx.transport_mut(), sub_id);
+        let _ = bus_arc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unsubscribe(ctx.transport_mut(), sub_id);
 
         // Restore the original timeout so subsequent RDP round-trips (e.g.
         // wait-text / wait-selector polling) use the configured timeout.
@@ -1151,12 +1183,12 @@ mod tests {
         }
 
         let watcher_actor = ff_rdp_core::ActorId::from("conn0/watcher1");
-        let mut bus = ResourceCommand::new(watcher_actor);
+        let bus_arc = Arc::new(Mutex::new(ResourceCommand::new(watcher_actor)));
 
         let started = Instant::now();
         let result = wait_for_doc_complete(
             &mut transport,
-            &mut bus,
+            &bus_arc,
             &rx,
             TIMEOUT_MS,
             WaitLevel::Complete,
@@ -1172,6 +1204,78 @@ mod tests {
         assert!(
             elapsed_ms <= MAX_ELAPSED_MS,
             "deadline overrun: elapsed {elapsed_ms}ms > allowed {MAX_ELAPSED_MS}ms"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // navigate_bus_lock_released_during_wait (iter-71b AC)
+    //
+    // Verify that `wait_for_doc_complete` does NOT hold the bus lock across
+    // `transport.recv()`.  We do this by attempting to acquire the lock from
+    // a second thread while the function is blocked in recv — if the lock were
+    // held the second thread would also block, causing the test to time out.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn navigate_bus_lock_released_during_wait() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use ff_rdp_core::transport::{RdpTransport, encode_frame};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // Server: send greeting, then sleep 500ms before sending anything else
+        // so the transport blocks in recv for that window.
+        let server_handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let greeting =
+                serde_json::json!({"from": "root", "applicationType": "browser", "traits": {}});
+            let _ = writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes());
+            std::thread::sleep(Duration::from_millis(500));
+        });
+
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+        // short timeout so wait_for_doc_complete times out quickly
+        let (tx, rx) = std::sync::mpsc::channel::<std::sync::Arc<Resource>>();
+        drop(tx); // empty channel — wait will timeout
+
+        let watcher_actor = ff_rdp_core::ActorId::from("conn0/watcher1");
+        let bus_arc = Arc::new(Mutex::new(ResourceCommand::new(watcher_actor)));
+        let bus_arc_clone = Arc::clone(&bus_arc);
+
+        // Probe: attempt to acquire the lock from a second thread while
+        // wait_for_doc_complete is running. We record whether the lock was
+        // acquired within a 300 ms window.
+        let lock_acquired = Arc::new(AtomicBool::new(false));
+        let lock_acquired_clone = Arc::clone(&lock_acquired);
+
+        let probe_handle = std::thread::spawn(move || {
+            // Give wait_for_doc_complete time to start its first recv call.
+            std::thread::sleep(Duration::from_millis(60));
+            // Try to lock with a generous timeout: if the lock is held across
+            // recv() this will block for ~100ms (the poll_interval) or more.
+            // We just try to acquire it; success means it was released.
+            if bus_arc_clone.try_lock().is_ok() {
+                lock_acquired_clone.store(true, Ordering::Relaxed);
+            }
+        });
+
+        // Run wait_for_doc_complete with a 200ms timeout so the test finishes quickly.
+        let _ = wait_for_doc_complete(&mut transport, &bus_arc, &rx, 200, WaitLevel::Complete);
+
+        probe_handle.join().unwrap();
+        server_handle.join().unwrap();
+
+        assert!(
+            lock_acquired.load(Ordering::Relaxed),
+            "navigate_bus_lock_released_during_wait: second thread could not acquire \
+             the bus lock while wait_for_doc_complete was running — lock held too long"
         );
     }
 }

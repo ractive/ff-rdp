@@ -13,6 +13,15 @@ This is a standalone crate (its own `[workspace]`), kept out of the main
 workspace so stable `cargo test --workspace` does not try to build the
 nightly-only `libfuzzer-sys` dependency.
 
+## Platform requirements
+
+The fuzz harnesses require the **`x86_64-unknown-linux-gnu`** target (not
+`musl`).  libFuzzer's address-sanitiser is incompatible with musl libc, which
+causes a link failure on Ubuntu runners that default to `x86_64-unknown-linux-musl`.
+The CI `fuzz` job pins `targets: x86_64-unknown-linux-gnu` in the
+`dtolnay/rust-toolchain` step for this reason.  Run locally on any Linux/macOS
+host with the standard nightly toolchain.
+
 ## Install
 
 ```sh

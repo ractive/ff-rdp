@@ -33,8 +33,8 @@ use std::time::Duration;
 
 use common::LiveFirefox;
 use ff_rdp_core::{
-    ActorId, RdpTransport, ResourceCommand, ResourceType, RootActor, TabActor, WatcherActor,
-    WebConsoleActor,
+    ActorId, RdpTransport, Resource, ResourceCommand, ResourceType, RootActor, TabActor,
+    WatcherActor, WebConsoleActor,
 };
 
 /// Gated helper: returns `true` if `FF_RDP_LIVE_TESTS=1` is set.
@@ -66,8 +66,8 @@ fn live_console_no_double_delivery() {
     let mut transport = RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5))
         .expect("connect to Firefox RDP");
 
-    // Consume greeting.
-    let _greeting = transport.recv().expect("greeting");
+    // Note: RdpTransport::connect already consumed the Firefox greeting packet
+    // internally — do not read it again here.
 
     // Resolve the first tab.
     let tabs = RootActor::list_tabs(&mut transport).expect("list tabs");
@@ -105,9 +105,10 @@ fn live_console_no_double_delivery() {
     });
     transport.send(&eval_msg).expect("send evaluateJSAsync");
 
-    // Drain the transport for a short window, routing watcher events through
-    // the bus.  We collect up to 200 ms worth of events.
-    let deadline = std::time::Instant::now() + Duration::from_millis(200);
+    // Drain the transport for a window long enough for Firefox to push the
+    // console event through both the legacy actor path and the watcher path.
+    // 500 ms gives a comfortable margin while remaining fast in CI.
+    let deadline = std::time::Instant::now() + Duration::from_millis(500);
     transport
         .set_read_timeout(Some(Duration::from_millis(50)))
         .expect("set_read_timeout");
@@ -116,16 +117,21 @@ fn live_console_no_double_delivery() {
         if let Ok(msg) = transport.recv() {
             bus.dispatch_event(&msg);
         }
-        // On timeout/error: continue draining until deadline.
+        // On timeout: continue draining until deadline.
     }
 
     // Count how many console-message resources the bus received that contain
-    // our sentinel string.  Use the Debug representation since Resource does
-    // not implement Serialize.
+    // our sentinel string.  Use the typed `ConsoleResource::message` field
+    // rather than the Debug representation for a more precise match.
     let received: Vec<Arc<ff_rdp_core::Resource>> = bus_rx.try_iter().collect();
     let matching: Vec<_> = received
         .iter()
-        .filter(|r| format!("{:?}", r.as_ref()).contains(sentinel))
+        .filter(|r| {
+            matches!(
+                r.as_ref(),
+                Resource::ConsoleMessage(c) if c.message.contains(sentinel)
+            )
+        })
         .collect();
 
     eprintln!(
@@ -134,13 +140,28 @@ fn live_console_no_double_delivery() {
         matching.len()
     );
 
-    // The bus should have received the console.log exactly once via the
-    // watcher resource path.  If startListeners also pushed the event through
-    // the watcher channel, matching.len() would be > 1.
+    // The bus should have received the sentinel at most once via the watcher
+    // resource path.  A count of 0 means Firefox delivered the event only via
+    // the legacy consoleActor push (not through `resources-available-array`);
+    // a count of 1 means the watcher path also fired; a count > 1 means
+    // double-delivery occurred.
+    //
+    // Research finding (iter-71 Theme C): on the tested Firefox version the
+    // watcher delivers 0 console-message resources for `evaluateJSAsync`-
+    // triggered console.log calls.  The legacy `consoleAPICall` push comes
+    // through the console actor directly and is NOT routed through the watcher
+    // `resources-available-array` stream.  This means no double-delivery is
+    // possible via this path, and the legacy `startListeners` can be left in
+    // place without risk of duplicating events on the watcher bus.
     assert!(
         matching.len() <= 1,
-        "expected at most 1 delivery of the sentinel console.log on the watcher bus, \
-         got {}: this suggests double-delivery via legacy startListeners + watcher paths",
+        "double-delivery detected on the watcher bus: got {} deliveries of the \
+         sentinel console.log — expected at most 1",
+        matching.len()
+    );
+    eprintln!(
+        "live_console_no_double_delivery: watcher_bus_count={} \
+         (0=legacy-only, 1=watcher-delivered, >1=double-delivery)",
         matching.len()
     );
 

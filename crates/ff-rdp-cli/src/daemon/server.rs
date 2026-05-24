@@ -346,10 +346,17 @@ pub(crate) fn run_daemon(
     // events to stream subscribers / rpc_writer.  Decoupled from the reader
     // so that heavy event bursts do not delay auth-greeting writes.
     let state_for_dispatcher = Arc::clone(&state);
+    let writer_for_dispatcher = Arc::clone(&firefox_writer);
     thread::Builder::new()
         .name("event-dispatcher".into())
         .spawn(move || {
-            event_dispatcher_loop(&state_for_dispatcher, event_rx, resource_bus, resource_rx);
+            event_dispatcher_loop(
+                &state_for_dispatcher,
+                event_rx,
+                resource_bus,
+                resource_rx,
+                writer_for_dispatcher,
+            );
         })
         .context("spawning event dispatcher thread")?;
 
@@ -468,6 +475,10 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
 ///
 /// Owns the `ResourceCommand` bus and the typed `Resource` receiver so that
 /// watcher events can be parsed once and fanned out to the `ResourceBuffer`.
+///
+/// `firefox_writer` is the write half of the split transport, used to flush
+/// pending `unwatchResources` packets via [`ResourceCommand::gc_fire_forget`]
+/// once per event-batch cycle.
 // `rx: mpsc::Receiver<Value>` must be owned; clippy incorrectly flags it as
 // "not consumed" because we call methods rather than move out of it.
 #[allow(clippy::needless_pass_by_value)]
@@ -476,12 +487,17 @@ fn event_dispatcher_loop(
     rx: mpsc::Receiver<Value>,
     mut resource_bus: ResourceCommand,
     resource_rx: std::sync::mpsc::Receiver<std::sync::Arc<ff_rdp_core::Resource>>,
+    firefox_writer: Arc<Mutex<ff_rdp_core::FramedWriter>>,
 ) {
     loop {
         // Use recv_timeout so we can check the shutdown flag periodically.
         match rx.recv_timeout(Duration::from_secs(1)) {
             Ok(msg) => {
                 dispatch_firefox_message(state, &msg, &mut resource_bus, &resource_rx);
+                // Flush any pending `unwatchResources` accumulated during
+                // dispatch (e.g. from dead-channel pruning in dispatch_event).
+                // Runs once per event — cheap when pending_unwatch is empty.
+                resource_bus.gc_fire_forget(&mut *lock_or_recover!(firefox_writer));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if state.shutdown.load(Ordering::Relaxed) {
@@ -2626,5 +2642,148 @@ mod tests {
             "test_state() starts with an empty buffer; the poison recovery \
              returns the inner value as-is, so drain should yield []"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // daemon_dispatcher_calls_gc (iter-71b AC)
+    //
+    // Verify that after `dispatch_firefox_message` prunes a dead subscriber
+    // channel, calling `gc_fire_forget` on the bus sends an `unwatchResources`
+    // packet through the writer.
+    //
+    // We drive this via `dispatch_firefox_message` (same as the real dispatcher)
+    // followed by a manual `gc_fire_forget` call — which is exactly what
+    // `event_dispatcher_loop` does after each event.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn daemon_dispatcher_calls_gc() {
+        use std::io::{BufReader, Read as _, Write as _};
+        use std::net::TcpListener;
+
+        // Use a state whose watcher_actor matches the bus's watcher so that
+        // is_watcher_event() returns true and dispatch_event() is called.
+        let state = SharedState {
+            watcher_actor: "conn0/watcher1".to_owned(),
+            ..test_state()
+        };
+
+        // ── Transport loopback for subscribe() ──────────────────────────────
+        // We need a real transport to call subscribe() (which sends watchResources).
+        // A background thread plays the Firefox role: reads watchResources, replies.
+        let sub_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let sub_addr = sub_listener.local_addr().unwrap();
+        let ff_sim_handle = std::thread::spawn(move || {
+            let (ff_stream, _) = sub_listener.accept().unwrap();
+            let mut ff_reader = BufReader::new(ff_stream.try_clone().unwrap());
+            ff_stream
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .unwrap();
+            // Send the Firefox greeting first — RdpTransport::connect discards it.
+            let greeting = json!({"from": "root", "applicationType": "browser", "traits": {}});
+            let frame =
+                ff_rdp_core::transport::encode_frame(&serde_json::to_string(&greeting).unwrap());
+            let _ = (&ff_stream).write_all(frame.as_bytes());
+
+            // Read watchResources, reply with ack (no "type" field — actor replies
+            // must not have a "type" field or recv_reply_from rejects them as events).
+            if let Ok(req) = ff_rdp_core::transport::recv_from(&mut ff_reader) {
+                let ack = json!({"from": req["to"]});
+                let frame =
+                    ff_rdp_core::transport::encode_frame(&serde_json::to_string(&ack).unwrap());
+                let _ = (&ff_stream).write_all(frame.as_bytes());
+            }
+            // Drain remaining (the gc_fire_forget packet arrives here but we don't
+            // need to reply — fire-and-forget).
+            ff_stream
+                .set_read_timeout(Some(Duration::from_millis(300)))
+                .unwrap();
+            let mut buf = Vec::new();
+            let _ = (&ff_stream).read_to_end(&mut buf);
+            buf // return what we received for assertions
+        });
+
+        let mut transport = ff_rdp_core::RdpTransport::connect(
+            "127.0.0.1",
+            sub_addr.port(),
+            Duration::from_secs(5),
+        )
+        .expect("connect to test transport");
+
+        // ── Build the resource bus and subscribe ────────────────────────────
+        let watcher: ff_rdp_core::ActorId = ff_rdp_core::ActorId::from("conn0/watcher1");
+        let mut resource_bus = ResourceCommand::new(watcher.clone());
+
+        let (_sub_id, rx) = resource_bus
+            .subscribe(&mut transport, &[ff_rdp_core::ResourceType::NetworkEvent])
+            .expect("subscribe");
+
+        // Drop the receiver — makes the channel dead so next dispatch prunes it.
+        drop(rx);
+
+        assert_eq!(resource_bus.pending_unwatch_count(), 0, "starts empty");
+
+        // ── Build a watcher event ───────────────────────────────────────────
+        let packet = json!({
+            "type": "resources-available-array",
+            "from": watcher.as_ref(),
+            "array": [["network-event", [{
+                "actor": "conn0/netEvent1",
+                "method": "GET",
+                "url": "https://example.com/",
+                "isXHR": false,
+                "cause": {"type": "document"},
+                "startedDateTime": "2026-01-01T00:00:00Z",
+                "timeStamp": 1000.0,
+                "resourceId": 1_u64
+            }]]]
+        });
+
+        // Simulate one event-dispatcher-loop iteration (dispatch only; ignore
+        // the resource_rx — we just need the dead-channel prune to fire).
+        let (_dummy_tx, resource_rx) =
+            std::sync::mpsc::channel::<std::sync::Arc<ff_rdp_core::Resource>>();
+        dispatch_firefox_message(&state, &packet, &mut resource_bus, &resource_rx);
+
+        assert_eq!(
+            resource_bus.pending_unwatch_count(),
+            1,
+            "daemon_dispatcher_calls_gc: pending_unwatch should be 1 after dead-channel prune"
+        );
+
+        // ── gc_fire_forget via the same transport writer ────────────────────
+        // In the real daemon this is the Arc<Mutex<FramedWriter>> from the split.
+        // Here we reuse the transport's writer half by taking its write-side via
+        // a loopback pair so we can inspect the outbound packet.
+        let (gc_server, mut gc_client) = loopback_pair();
+        let mut gc_writer = FramedWriter::from_stream(gc_server);
+
+        resource_bus.gc_fire_forget(&mut gc_writer);
+
+        assert_eq!(
+            resource_bus.pending_unwatch_count(),
+            0,
+            "gc_fire_forget must clear pending_unwatch"
+        );
+
+        // Read the sent packet from the client side.
+        gc_client
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let mut buf = Vec::new();
+        let _ = gc_client.read_to_end(&mut buf);
+        let raw = String::from_utf8_lossy(&buf);
+
+        assert!(
+            raw.contains("unwatchResources"),
+            "daemon_dispatcher_calls_gc: outbound packet must include `unwatchResources`; got: {raw}"
+        );
+        assert!(
+            raw.contains("network-event"),
+            "unwatchResources packet must name the pruned resource type; got: {raw}"
+        );
+
+        // Allow ff_sim_handle to finish cleanly.
+        let _ = ff_sim_handle.join();
     }
 }
