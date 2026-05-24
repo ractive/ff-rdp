@@ -2,7 +2,7 @@
 title: "Iteration 68: Supply-chain CI gates + parser fuzz harnesses"
 type: iteration
 date: 2026-05-24
-status: in-review
+status: completed
 branch: iter-68/supply-chain-and-fuzz
 depends_on:
   - iteration-63-daemon-lockrecover-and-quick-sec-fixes
@@ -11,12 +11,14 @@ dogfood_path: |
   # 1. PR workflow rejects a known-vulnerable dep.
   # (Simulated by adding a temporary advisory to a fixture; revert before merge.)
   gh workflow run ci.yml   # cargo audit step fails on advisory
-
+  
   # 2. Fuzz harnesses build and run for 60 s each without panicking.
   cargo +nightly fuzz run transport_recv_from -- -max_total_time=60
   cargo +nightly fuzz run parse_page_map_str  -- -max_total_time=60
   cargo +nightly fuzz run parse_script_file   -- -max_total_time=60
-tags: [iteration, security]
+tags:
+  - iteration
+  - security
 ---
 
 # Iteration 68: Supply-chain CI gates + parser fuzz harnesses
