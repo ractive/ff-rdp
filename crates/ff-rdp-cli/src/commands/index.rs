@@ -6,7 +6,6 @@
 //! then writes the result atomically to the output path.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::Context as _;
@@ -38,6 +37,8 @@ pub struct IndexOpts<'a> {
     pub report: Option<&'a Path>,
     /// When true, suppress the crawl summary JSON line on stdout.
     pub silent: bool,
+    /// When set, output paths must be descendants of this directory.
+    pub output_root: Option<&'a Path>,
 }
 
 /// Entry point for `ff-rdp index`.
@@ -200,6 +201,12 @@ fn run_crawl(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
         flows: BTreeMap::new(),
     };
 
+    if let Some(root) = opts.output_root {
+        crate::util::safe_io::ensure_within_root(opts.out, root).map_err(|e| {
+            AppError::User(format!("index: output path escapes --output-root: {e}"))
+        })?;
+    }
+
     write_page_map_atomic(opts.out, &map, opts.format)
         .map_err(|e| AppError::User(format!("writing page-map: {e}")))?;
 
@@ -251,6 +258,7 @@ fn run_check(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
         page_map: None,
         report: None,
         silent: true,
+        output_root: None,
     };
     run_crawl(cli, &crawl_opts)?;
 
@@ -273,7 +281,7 @@ fn run_check(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
     if let Some(report_path) = opts.report {
         let content = serde_json::to_string_pretty(&report_json)
             .map_err(|e| AppError::Internal(anyhow::anyhow!("serialising report: {e}")))?;
-        write_atomic(report_path, content.as_bytes())
+        crate::util::safe_io::safe_write(report_path, content.as_bytes())
             .map_err(|e| AppError::User(format!("writing report: {e}")))?;
         eprintln!("[index] drift report written to {}", report_path.display());
     }
@@ -692,7 +700,7 @@ fn fetch_disallowed_paths(base_url: &str) -> Vec<String> {
     }
 }
 
-/// Write a page-map atomically (write to temp file then rename).
+/// Write a page-map to the caller-supplied path using safe_write (no symlink follow).
 pub fn write_page_map_atomic(path: &Path, map: &PageMap, format: &str) -> anyhow::Result<()> {
     // Ensure parent directory exists.
     if let Some(parent) = path.parent()
@@ -711,21 +719,7 @@ pub fn write_page_map_atomic(path: &Path, map: &PageMap, format: &str) -> anyhow
         }
     };
 
-    write_atomic(path, content.as_bytes())
-}
-
-/// Atomic write: write to a temp file in the same directory, then rename.
-pub fn write_atomic(path: &Path, content: &[u8]) -> anyhow::Result<()> {
-    let parent = path.parent().unwrap_or(Path::new("."));
-    let tmp_parent = if parent.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        parent
-    };
-    let mut tmp = tempfile::NamedTempFile::new_in(tmp_parent)
-        .context("creating temp file for atomic write")?;
-    tmp.write_all(content).context("writing temp file")?;
-    tmp.persist(path)
-        .with_context(|| format!("renaming temp file to '{}'", path.display()))?;
-    Ok(())
+    // Use safe_write so a symlink pre-positioned at the destination is refused.
+    crate::util::safe_io::safe_write(path, content.as_bytes())
+        .with_context(|| format!("writing page-map to '{}'", path.display()))
 }

@@ -630,6 +630,9 @@ With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...
         /// Capture at this explicit height (pixels) instead of the viewport height
         #[arg(long, value_name = "PX", conflicts_with = "full_page")]
         viewport_height: Option<u32>,
+        /// Restrict output to paths under this directory (rejects path traversal)
+        #[arg(long, value_name = "DIR")]
+        output_root: Option<std::path::PathBuf>,
     },
     /// Click an element matching a CSS selector
     #[command(long_about = "Click an element matching a CSS selector.
@@ -1283,6 +1286,10 @@ Output: writes page-map JSON/YAML to --out (default: .ffrdp/page-map.json)
         /// Write drift report to this file (--check mode only, default: stdout)
         #[arg(long, value_name = "PATH", requires = "check")]
         report: Option<std::path::PathBuf>,
+
+        /// Restrict output to paths under this directory (rejects path traversal)
+        #[arg(long, value_name = "DIR")]
+        output_root: Option<std::path::PathBuf>,
     },
 }
 

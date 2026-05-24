@@ -25,6 +25,8 @@ pub(crate) struct ScreenshotOpts<'a> {
     /// `--viewport-height` is accepted for CLI compatibility but is not
     /// supported by the snapshot-actor path.  Passing it returns an error.
     pub(crate) viewport_height: Option<u32>,
+    /// When set, the resolved output path must be a descendant of this root.
+    pub(crate) output_root: Option<&'a std::path::Path>,
 }
 
 /// Data URL prefix returned by the screenshot actor.
@@ -121,7 +123,15 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
         let dest = resolve_output_path(opts.output_path)
             .map_err(|e| AppError::from(anyhow::anyhow!("screenshot: {e}")))?;
 
-        std::fs::write(&dest, &png_bytes)
+        if let Some(root) = opts.output_root {
+            crate::util::safe_io::ensure_within_root(&dest, root).map_err(|e| {
+                AppError::User(format!(
+                    "screenshot: output path escapes --output-root: {e}"
+                ))
+            })?;
+        }
+
+        crate::util::safe_io::safe_write(&dest, &png_bytes)
             .with_context(|| format!("screenshot: could not write to '{}'", dest.display()))
             .map_err(AppError::from)?;
 
