@@ -2,7 +2,7 @@
 title: "Iteration 61z: Discipline skill integration (Phase 2 claims-vs-code + AC fidelity gate)"
 type: iteration
 date: 2026-05-24
-status: in-review
+status: done
 branch: iter-61z/discipline-skill-integration
 depends_on:
   - iteration-61y-iteration-discipline-tooling
