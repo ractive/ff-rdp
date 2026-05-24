@@ -39,6 +39,8 @@ and crash artifacts live in `corpus/` and `artifacts/` and are
 1. The CI job uploads the minimised input as an artifact.
 2. Reproduce locally: `cargo +nightly fuzz run <target> <path-to-input>`.
 3. Open an issue with the minimised input attached.
-4. Fix the parser, add the input to `corpus/<target>/` as a regression seed.
+4. Fix the parser, check the input into `fuzz/seeds/<target>/` as a
+   regression seed (the runtime `corpus/` is `.gitignore`d, so only
+   `seeds/` is version-controlled — see `CONTRIBUTING.md`).
 
 See `CONTRIBUTING.md` for the full policy.
