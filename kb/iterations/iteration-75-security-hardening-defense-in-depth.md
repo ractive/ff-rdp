@@ -2,47 +2,58 @@
 title: "Iteration 75: Security hardening — defense in depth (bulk cap, profile dir, supply chain)"
 type: iteration
 date: 2026-05-24
-status: in-progress
+status: completed
 branch: iter-75/security-hardening-defense-in-depth
 depends_on:
   - iteration-72-transport-polish
   - iteration-73-spec-fidelity-gates
 firefox_refs:
-  - path: devtools/shared/transport/transport.js
-    lines: "138-200"
-    why: "Bulk-packet send/receive contract — confirms the byte-length header is the only gate; ff-rdp must apply its own cap on receive."
-  - path: devtools/shared/transport/transport.js
-    lines: "490-512"
+  - lines: 138-200
+    path: devtools/shared/transport/transport.js
+    why: >-
+      Bulk-packet send/receive contract — confirms the byte-length header is the only
+      gate; ff-rdp must apply its own cap on receive.
+  - lines: 490-512
+    path: devtools/shared/transport/transport.js
     why: "onBulkPacket read path: streaming bytes, no upper bound enforced server-side; loopback peer cannot be trusted to honour our limits."
-  - path: devtools/shared/specs/heap-snapshot-file.js
-    lines: "11-22"
-    why: "BULK_RESPONSE example — heap-snapshot transfer is the realistic large-bulk path the cap must accommodate but not be infinite for."
+  - lines: 11-22
+    path: devtools/shared/specs/heap-snapshot-file.js
+    why: >-
+      BULK_RESPONSE example — heap-snapshot transfer is the realistic large-bulk path
+      the cap must accommodate but not be infinite for.
 kb_refs:
   - kb/rdp/protocol/transport.md
   - kb/rdp/from-our-codebase/open-gaps.md
 first_call_sites:
-  - primitive: "ff_rdp_cli::util::profile_dir::secure_profile_root"
-    site: "crates/ff-rdp-cli/src/commands/launch.rs (replaces env::temp_dir() at the temp-profile creation site)"
-  - primitive: "ff_rdp_core::transport::BulkFrameTooLarge"
-    site: "crates/ff-rdp-core/src/transport.rs (returned from recv_bulk_frame when the announced length exceeds max_frame_bytes())"
+  - primitive: ff_rdp_cli::util::profile_dir::secure_profile_root
+    site: >-
+      crates/ff-rdp-cli/src/commands/launch.rs (replaces env::temp_dir() at the
+      temp-profile creation site)
+  - primitive: ff_rdp_core::transport::BulkFrameTooLarge
+    site: >-
+      crates/ff-rdp-core/src/transport.rs (returned from recv_bulk_frame when the
+      announced length exceeds max_frame_bytes())
 dogfood_path: |
   # 1. Bulk-frame cap rejects oversized announcements promptly.
   ff-rdp --max-frame-mb 8 memory heap-snapshot https://example.com /tmp/snap.bin
   # If snapshot > 8 MiB, expect BulkFrameTooLarge error within ~50ms, not a hung reader.
-
+  
   # 2. Profile lives under the secure state dir, mode 0700 on Unix.
   ff-rdp launch --headless https://example.com &
   ls -ld ~/.local/state/ff-rdp/profiles/*    # mode drwx------; owner = $USER
   # On Windows: %LOCALAPPDATA%\ff-rdp\profiles\<rand> with ACLs restricted to current user.
-
+  
   # 3. Re-validated URL after a cross-scheme redirect logs a warning.
   ff-rdp --log-rdp-trace navigate https://example.com/redirect-to-file
   grep 'scheme changed' ~/.cache/ff-rdp/rdp-trace.log
-
+  
   # 4. Verify release attestation + SBOM on a tagged build (CI dry-run).
   gh attestation verify dist/ff-rdp-x86_64-apple-darwin --owner ractive
   ls dist/*.cdx.json   # CycloneDX SBOM present per artifact.
-tags: [iteration, security, supply-chain]
+tags:
+  - iteration
+  - security
+  - supply-chain
 ---
 
 Seven defense-in-depth gaps surfaced in the security review. None are
