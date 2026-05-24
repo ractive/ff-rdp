@@ -89,12 +89,53 @@ The 4 follow-up iterations (61t..61w) are roughly half "fix the bugs we should h
 - Each iteration's Phase 2 (review) should include "AC fidelity check": read the plan's AC list, confirm each item is verified, not just ticked.
 - Add a `--integration` flag that bumps the per-iteration timeout and requires the iteration plan to declare `integration: true` in frontmatter.
 
+## Follow-up: did the mitigations work? (2026-05-24, after iter-61t..61y merged)
+
+### Scorecard
+
+| Mitigation | Status | Where it landed |
+|---|---|---|
+| 1. No "deferred" AC ticks without a new plan filed first | ⚠️ **Partial** — discipline rule documented in CLAUDE.md, no mechanical gate yet (deferred to [[iteration-61z-discipline-skill-integration]] theme B) |
+| 2. Every primitive must have a production call site (CI grep) | ✅ **Closed** — `cargo xtask check-dead-primitives` (iter-61y) + CI `discipline` job |
+| 3. Every spec method needs a live Firefox test | ⚠️ **Partial** — convention documented; no mechanical enforcement |
+| 4. AC list read aloud in PR with `[verified live]`/`[deferred]` per item | ⚠️ **Partial** — deferred to [[iteration-61z-discipline-skill-integration]] theme B |
+| 5. `cargo xtask check-dead-primitives` | ✅ **Closed** — (same as #2) |
+| 6. Pre-commit hook for unannotated TODO/FIXME | ✅ **Closed** — `.githooks/pre-commit` + `cargo xtask check-todo-annotations` |
+| 7. "Dogfood path" required in iteration plans | ✅ **Closed** — `kb/iterations/_template.md` + `cargo xtask check-iteration-plan` |
+| 8. Integration iteration every 3-4 layers | ❌ **Open** — no mechanism added; convention-only |
+
+### Did the recurrence get caught?
+
+The iter-61t..61v window itself exhibited the same failure mode that the original postmortem named:
+
+- **iter-61u** PR-claimed `chromeContext` had been removed; the spec-layer comment said so, but `actors/console.rs:226,657` and `commands/eval.rs:240,333,341` still sent and branched on the field. **The PR review missed it.**
+- **iter-61v** PR-claimed a typed `RdpError::Navigation{cause}` enum with `DnsFail/CertError/ConnReset/Timeout`. `grep -rn 'RdpError::Navigation' crates/` returned zero. The corresponding AC was ticked. **The PR review missed it.**
+- **iter-61v** PR-claimed gating on `dom-loading | dom-interactive | dom-complete`. Only the first and last were matched in `navigate.rs:155-189`. **The PR review missed it.**
+
+Both the post-61s review and the post-61v review caught these by *cross-cutting reading* — diffing claims against code at a level no single PR review covers. That's the gap the iter-61z mitigations (#1 and #4 above) are designed to mechanize. Until they land, the pattern can recur.
+
+### What the close-out arc did fix structurally
+
+- iter-61t actually wired Registry/bus/ScopedGrip/Resource::Destroyed: 12/14 previous-review findings closed in code (the kb-review agent confirmed in the post-61v audit).
+- iter-61u landed the seven spec fixes (oneway, longstring, six watcher methods, dpr-as-string, console renames). The `chromeContext` claim was a partial failure — the spec layer was cleaned, the wire wasn't.
+- iter-61v landed the bus throttle = 0, the screenshot JS-fallback deletion, the document-event subscription, and `live_screenshot_full_page_dpr2` *placeholder*. iter-61x landed the real DPR=2 test on the third attempt.
+- iter-61w landed all 4 themes of code (security A/B/C + LongString cap hoist E + deadline-fix F) but only 5/12 promised tests; the other 5 became iter-61x theme I — yet another carry-over.
+- iter-61x corrected the iter-61u/v claim/code gaps and absorbed iter-61w's test carry-over. Its PR title "honest commits" is itself an artifact of the discipline pattern.
+- iter-61y honestly marked themes D and E as `[0/2]` deferred rather than ticking with `[deferred — …]` and called the deferral out explicitly in its merge commit message. This is itself a small win — the iteration declined to lie about its own coverage.
+
+### Conclusion
+
+Five of eight mitigations are closed mechanically (CI checks, hooks, plan template). The two highest-leverage ones (claims-vs-code, AC fidelity) are deferred to iter-61z because they live in the ralph-loop skill, not the repo. Until 61z lands, the discipline rules are documented but not enforced — and the iter-61u/v recurrence shows that documented-but-not-enforced is not enough. **Land iter-61z before starting any new layered roadmap.**
+
 ## References
 
 - [[iter-61t-wire-the-foundations]] — wires Registry / bus / ScopedGrip / destroyed-array
 - [[iter-61u-spec-and-front-correctness]] — fixes the spec/Front divergences
 - [[iter-61v-navigate-and-screenshot-completion]] — closes the deferred user-visible work
 - [[iter-61w-security-hardening-and-cleanup]] — security + bulk packet + kb refresh
+- [[iter-61x-honest-commits-and-cleanup]] — corrects the iter-61u/v claim/code gap
+- [[iter-61y-iteration-discipline-tooling]] — cargo xtask + hook + plan template
+- [[iteration-61z-discipline-skill-integration]] — deferred ralph-loop skill checks (load-bearing)
 - [[stability-roadmap]] — original roadmap that produced 61m..61s
 - [[ralph-loop-pattern]] — the orchestrator this ran in
 - [[ff-rdp-architecture-review]]

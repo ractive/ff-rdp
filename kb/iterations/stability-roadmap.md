@@ -1,9 +1,9 @@
 ---
-title: "Stability Roadmap (iter-61m → iter-61w) — derived from kb/rdp/ wiki + 3-agent architectural review"
+title: "Stability Roadmap (iter-61m → iter-61y) — derived from kb/rdp/ wiki + 3-agent architectural review"
 type: roadmap
-date: 2026-05-23
+date: 2026-05-24
 status: in-progress
-tags: [roadmap, stability, architecture, iter-61m, iter-61n, iter-61o, iter-61p, iter-61q, iter-61r, iter-61s, iter-61t, iter-61u, iter-61v, iter-61w]
+tags: [roadmap, stability, architecture, iter-61m, iter-61n, iter-61o, iter-61p, iter-61q, iter-61r, iter-61s, iter-61t, iter-61u, iter-61v, iter-61w, iter-61x, iter-61y]
 ---
 
 # Stability Roadmap (iter-61m → iter-61w)
@@ -77,6 +77,25 @@ review between 61s and 61t catalogued the gap.  The corrective iterations
 - **iter-61w** is a hardening + docs refresh on top: constant-time token
   comparison, bounded `RefStore`, terminal-escape sanitisation, typed
   bulk-packet rejection, and this very roadmap update.
+- **iter-61x** ("honest commits") closes the claim/code gap the post-61v
+  review exposed: `DescriptorFront::getProcess(0)` for genuine chrome-context
+  eval, the typed `RdpError::Navigation{cause}` enum that 61v PR-claimed
+  but didn't write, the `dom-interactive` arm that lets `--wait interactive`
+  work, the DPR=2 live screenshot test on its third attempt, fleshed-out
+  longstring + cache-disable live tests, deletion of the dead
+  `wait_for_commit` polling helper, `Arc<Resource>` bus fan-out, and the
+  five test-coverage carry-overs from 61w.
+- **iter-61y** ("iteration discipline tooling") converts the postmortem
+  mitigations from prose into mechanism: `cargo xtask` with
+  `check-dead-primitives`, `check-todo-annotations`, and
+  `check-iteration-plan`; a `.githooks/pre-commit` hook for TODO
+  annotation; a CI `discipline` job; the `_template.md` iteration plan
+  with `first_call_sites` + `dogfood_path` frontmatter; and CLAUDE.md +
+  CONTRIBUTING.md updates. Themes D and E — the ralph-loop skill
+  "Claims vs code" PR diff and the AC fidelity merge gate — are
+  deferred to [[iteration-61z-discipline-skill-integration]] because
+  they edit `~/.claude/skills/`, which a cmux child workspace can't
+  touch.
 
 The single recurring lesson from the arc: shipping a primitive is not the
 same as shipping the user-visible behaviour change it was supposed to
