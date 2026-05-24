@@ -134,6 +134,34 @@ Then edit the frontmatter:
 
 The plan linter (`cargo xtask check-iteration-plan`) enforces these fields.
 
+### One-shot pre-PR discipline gate
+
+Before calling `/create-pr` on any `iter-*` branch, run the aggregator that
+wraps every discipline gate into a single command:
+
+```sh
+# Resolve the plan automatically from the current branch:
+BRANCH=$(git branch --show-current)
+PLAN=$(cargo run -q -p xtask -- find-iteration-plan --branch "$BRANCH" 2>/dev/null || true)
+if [ -n "$PLAN" ]; then
+  cargo run -p xtask -- check-iteration-ready --plan "$PLAN" --base origin/main
+fi
+```
+
+`check-iteration-ready` runs:
+1. `check-dead-primitives --since <base>` — no unwired new pub items
+2. `check-todo-annotations --since <base>` — no bare TODO/FIXME/XXX <!-- allow-todo: documents the check itself -->
+3. `check-actor-kb-sync --since <base>` — actor `.rs` changes paired with kb updates
+4. `check-firefox-refs <plan>` — `firefox_refs:` line ranges valid
+5. `check-discipline-regression` — mirror sync + replay baselines
+6. `ac-fidelity-check.sh` — ticked ACs backed by diff evidence
+
+Fix every reported failure before pushing. The `/create-pr` skill runs this
+automatically on iter-* branches.
+
+Note: CI still runs each gate individually as separate required checks for
+clearer per-check GitHub status attribution.
+
 ## PR discipline
 
 - One iteration = one branch = one PR

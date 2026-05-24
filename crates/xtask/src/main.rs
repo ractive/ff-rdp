@@ -4,8 +4,10 @@ mod check_dead_primitives;
 mod check_discipline_regression;
 mod check_firefox_refs;
 mod check_iteration_plan;
+mod check_iteration_ready;
 mod check_oneway_conformance;
 mod check_todo_annotations;
+mod find_iteration_plan;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -37,6 +39,11 @@ enum Commands {
     CheckActorKbSync(check_actor_kb_sync::Args),
     /// Fail if any actor_request call targets a method declared oneway: true in the Firefox spec.
     CheckOnewayConformance(check_oneway_conformance::Args),
+    /// Run all iteration discipline gates and aggregate results.
+    /// Fails if any sub-check fails; reports all failures before exiting.
+    CheckIterationReady(check_iteration_ready::Args),
+    /// Resolve a branch name (iter-N/slug) to the absolute path of its iteration plan.
+    FindIterationPlan(find_iteration_plan::Args),
 }
 
 fn main() -> Result<()> {
@@ -50,5 +57,7 @@ fn main() -> Result<()> {
         Commands::CheckFirefoxRefs(args) => check_firefox_refs::run(args),
         Commands::CheckActorKbSync(args) => check_actor_kb_sync::run(args),
         Commands::CheckOnewayConformance(args) => check_oneway_conformance::run(args),
+        Commands::CheckIterationReady(args) => check_iteration_ready::run(args),
+        Commands::FindIterationPlan(args) => find_iteration_plan::run(args),
     }
 }
