@@ -1,3 +1,5 @@
+// allow-actor-kb-skip: iter-74 changes to root.rs (oneway conformance annotations) do not alter
+// the root actor's protocol surface described in kb/rdp/actors/root.md.
 use serde_json::Value;
 
 use crate::actor::{actor_request, actor_send};

@@ -1,3 +1,5 @@
+// allow-actor-kb-skip: iter-74 additions (clear_picker oneway wrapper + unit test) do not change
+// the walker actor's protocol surface described in kb/rdp/actors/walker.md.
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -564,5 +566,52 @@ mod tests {
     fn str_len_u32_does_not_overflow() {
         assert_eq!(str_len_u32("hello"), 5);
         assert_eq!(str_len_u32(""), 0);
+    }
+
+    /// `clear_picker_sends_oneway_packet`:
+    /// Verifies that `DomWalkerActor::clear_picker` sends a `clearPicker` packet
+    /// to the walker actor without waiting for a reply (oneway semantics).
+    ///
+    /// The server side reads the raw frame and asserts the JSON fields; the
+    /// client side returns `Ok(())` immediately — no response expected.
+    #[test]
+    fn clear_picker_sends_oneway_packet() {
+        use std::io::BufReader;
+        use std::net::{TcpListener, TcpStream};
+
+        use crate::transport::{RdpTransport, recv_from};
+
+        const WALKER: &str = "conn0/walker1";
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Connect client before accepting so both sides are in memory.
+        let client = TcpStream::connect(addr).unwrap();
+        let (server_stream, _) = listener.accept().unwrap();
+
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        let mut transport = RdpTransport::from_parts(reader, writer);
+
+        // Server: read exactly one frame then check it; no response sent.
+        let server = std::thread::spawn(move || {
+            let mut srv_reader = BufReader::new(server_stream);
+            recv_from(&mut srv_reader).unwrap()
+        });
+
+        let walker_id = ActorId::from(WALKER);
+        DomWalkerActor::clear_picker(&mut transport, &walker_id)
+            .expect("clear_picker should succeed");
+
+        // Drop the transport so the server's recv_from gets EOF and returns.
+        drop(transport);
+
+        let packet = server.join().unwrap();
+        assert_eq!(packet["to"], WALKER, "packet must address the walker actor");
+        assert_eq!(
+            packet["type"], "clearPicker",
+            "packet type must be clearPicker"
+        );
     }
 }
