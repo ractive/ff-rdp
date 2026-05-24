@@ -67,7 +67,7 @@ non-sensitive long URLs, obscuring debug traces.
 - [x] `max_frame_mb_knob_works`: with the cap raised, an over-default frame is accepted; lowering the cap rejects it with `FrameTooLarge` (`crates/ff-rdp-core/src/transport.rs::max_frame_mb_knob_works`).
 - [x] `dispatch_no_per_resource_json_alloc`: structural test (`crates/ff-rdp-core/src/resources/command.rs::dispatch_no_per_resource_json_alloc`) asserts the `parse_available_resources` function body contains no `json!(` call — the only legitimate caller before this iteration.
 - [x] `redact_threshold_tunable`: `crates/ff-rdp-core/src/transport.rs::redact_threshold_tunable` — long URL preserved with threshold ≥ url.len(); `authorization` still redacted; tight threshold redacts the URL.
-- [x] `bench_resource_dispatch_within_budget`: `crates/ff-rdp-core/src/resources/command.rs::bench_bus_dispatch_latency` and `bench_bus_fanout_4_subscribers` — median < 5 ms.
+- [x] `bench_bus_dispatch_latency`: median fan-out latency under 5 ms; pair benchmark `bench_bus_fanout_4_subscribers` also under 5 ms. Both in `crates/ff-rdp-core/src/resources/command.rs`.
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
