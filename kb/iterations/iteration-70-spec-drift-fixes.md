@@ -2,7 +2,7 @@
 title: "Iteration 70: Spec drift fixes — dpr-as-string, parent chain, kb refresh"
 type: iteration
 date: 2026-05-24
-status: in-progress
+status: in-review
 branch: iter-70/spec-drift
 depends_on:
   - iteration-61u-spec-and-front-correctness
