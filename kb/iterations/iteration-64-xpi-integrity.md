@@ -8,16 +8,22 @@ depends_on:
   - iteration-63-daemon-lockrecover-and-quick-sec-fixes
 first_call_sites: []
 dogfood_path: |
-  # 1. Auto-consent install still works end-to-end.
+  # 1. Auto-consent install still works end-to-end with the vendored XPI.
   ff-rdp launch --temp-profile --auto-consent
   ff-rdp navigate https://www.theguardian.com/   # consent banner dismissed
 
-  # 2. Tampered XPI is rejected (simulated by editing the on-disk cache file
-  #    then re-launching). Expect: "XPI hash mismatch, refusing to install".
-  rm -rf ~/.cache/ff-rdp/extensions
-  ff-rdp launch --temp-profile --auto-consent   # fresh download succeeds
-  echo "tampered" >> ~/.cache/ff-rdp/extensions/gdpr@cavi.au.dk.xpi
-  ff-rdp launch --temp-profile --auto-consent   # exits non-zero, "hash mismatch"
+  # 2. No AMO network call happens at launch time (the vendored bytes are
+  #    embedded via include_bytes!). Confirm with a network monitor or by
+  #    running offline:
+  ff-rdp launch --temp-profile --auto-consent    # succeeds with no internet
+  # The installed file is the vendored XPI:
+  ls "$(ff-rdp profile path)/extensions/gdpr@cavi.au.dk.xpi"
+
+  # 3. Tamper-detection is now compile-time: editing the vendored asset on
+  #    disk without updating XPI_SHA256_HEX fails
+  #    `vendored_xpi_matches_pinned_sha256`, and editing it without
+  #    updating LICENSE-consent-o-matic.txt fails
+  #    `vendored_xpi_provenance_file_is_in_sync`. Both run in `cargo test`.
 tags: [iteration, security]
 ---
 
@@ -36,7 +42,8 @@ security review — RCE in the user's browser via a single network swap.
 - **A — Pin or vendor.** Either embed a known-good SHA-256 of the pinned XPI
   version and verify after download, OR vendor the XPI bytes via
   `include_bytes!` and remove the network call entirely. The latter is
-  preferred (Consent-O-Matic is MPL-2.0, licence-compatible).
+  preferred (Consent-O-Matic is MIT-licensed, licence-compatible — see
+  `crates/ff-rdp-cli/assets/extensions/LICENSE-consent-o-matic.txt`).
 - **B — Bound the download.** Independent of integrity, cap the download
   body size so a hostile server can't OOM the process.
 
