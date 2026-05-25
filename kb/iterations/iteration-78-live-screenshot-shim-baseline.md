@@ -2,14 +2,16 @@
 title: "Iteration 78: Live tests for iter-77 spec-drift fixes"
 type: iteration
 date: 2026-05-25
-status: planned
+status: completed
 branch: iter-78/live-tests-for-iter-77
 depends_on:
   - iteration-77-spec-drift-and-windows-reparse-points
 firefox_refs:
-  - path: devtools/server/actors/screenshot.js
-    lines: "1-25"
-    why: "Re-verify the live PNG round-trip is unchanged after the ScreenshotArgsExt shim landed in iter-77."
+  - lines: 1-25
+    path: devtools/server/actors/screenshot.js
+    why: >-
+      Re-verify the live PNG round-trip is unchanged after the ScreenshotArgsExt shim
+      landed in iter-77.
 kb_refs:
   - kb/rdp/actors/screenshot.md
   - kb/rdp/actors/webconsole.md
@@ -20,7 +22,11 @@ dogfood_path: |
   ff-rdp --log-rdp-trace eval --frame "$FRAME_ACTOR" 'location.href' https://example.com
   ff-rdp --log-rdp-trace eval --subscribe console \
     'console.log("hello %s, you are %d", "world", 42)' https://example.com
-tags: [iteration, protocol, live-tests, carry-over]
+tags:
+  - iteration
+  - protocol
+  - live-tests
+  - carry-over
 ---
 
 Carry-over plan filed before iter-77 merged.  Captures the three
