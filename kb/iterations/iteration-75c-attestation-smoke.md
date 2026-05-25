@@ -2,7 +2,7 @@
 title: "Iteration 75c: PR-time smoke check that `gh attestation verify` works on a freshly built artifact"
 type: iteration
 date: 2026-05-24
-status: in-progress
+status: completed
 branch: iter-75c/attestation-smoke
 depends_on:
   - iteration-75-security-hardening-defense-in-depth
@@ -15,7 +15,11 @@ dogfood_path: |
   gh pr checks --watch
   # Locally re-verify a downloaded artifact end-to-end.
   gh attestation verify ff-rdp-x86_64-apple-darwin.tar.gz --owner ractive
-tags: [iteration, security, supply-chain, ci]
+tags:
+  - iteration
+  - security
+  - supply-chain
+  - ci
 ---
 
 Carry-over from [[iteration-75-security-hardening-defense-in-depth]] task F.4.
