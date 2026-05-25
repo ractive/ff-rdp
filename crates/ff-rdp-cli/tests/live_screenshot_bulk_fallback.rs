@@ -23,12 +23,14 @@ use common::{LiveFirefox, base_args, ff_rdp_bin};
 ///
 /// The stream-poison bug: `try_bulk_screenshot` used `send_capture_request`
 /// (one-way) then `recv_bulk_with_handler`.  Firefox responded with a JSON
-/// frame; the old code consumed the first byte (`{`) via `read_exact`, returned
-/// `BulkPacketUnexpected`, then fell through to `ScreenshotActor::capture` —
-/// but that call also reads from the same transport.  The subsequent `recv_from`
-/// would see the remaining bytes of the JSON frame without the leading `{` and
-/// fail to parse.  With the fix (`try_two_step_screenshot` always calls
-/// `ScreenshotActor::capture` directly), the stream stays aligned.
+/// frame (which is length-prefixed: `<digits>:<json>`); the old code consumed
+/// the first byte — the leading digit of the length prefix — via `read_exact`,
+/// returned `BulkPacketUnexpected`, then fell through to
+/// `ScreenshotActor::capture` which reads from the same transport.  The
+/// subsequent `recv_from` would see the remainder of the length prefix without
+/// its first digit and fail to parse a valid `<digits>:` header.  With the fix
+/// (`try_two_step_screenshot` always calls `ScreenshotActor::capture` directly),
+/// the stream stays aligned.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_screenshot_bulk_fallback_then_eval() {

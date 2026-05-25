@@ -154,7 +154,7 @@ type-safe `add_grip` dispatch on grip variant, late-registration doc).
   - `demux_run_loop_without_reader_returns_error` (`transport.rs`): `DemuxReader::new()` then `run_loop()` returns `Err(InvalidState)`, no panic.
   - `add_grip_dispatches_on_kind` (`watcher.rs`): mock release queue; add one `Grip::Object` and one `Grip::LongString`; drop guard; assert two distinct release-handle types were enqueued (use a `#[cfg(test)]` accessor on `GripHandle` to expose its kind).
 
-## Acceptance Criteria [0/9]
+## Acceptance Criteria [9/9]
 
 - [x] `bulk_recv_drains_on_actor_mismatch`: `crates/ff-rdp-core/src/transport.rs::bulk_recv_drains_on_actor_mismatch` — after a mismatched bulk frame, the next `recv_from` returns the next frame intact.
 - [x] `bulk_recv_drains_on_json_peek`: `crates/ff-rdp-core/src/transport.rs::bulk_recv_drains_on_json_peek` — JSON frame peeked by bulk recv is preserved for the next `recv_from`.

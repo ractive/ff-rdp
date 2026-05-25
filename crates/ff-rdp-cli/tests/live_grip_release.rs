@@ -127,6 +127,13 @@ fn live_grip_release_actually_releases() {
             "start",
             "--foreground",
         ])
+        // Force the grip-release-drainer's TRACE log line through so this
+        // assertion has real signal — without this, the tracing subscriber
+        // defaults below TRACE and "sending grip release" is never emitted.
+        .env(
+            "RUST_LOG",
+            "ff_rdp_cli::daemon::grip_release=trace,ff_rdp_cli=info",
+        )
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .spawn()
@@ -173,21 +180,16 @@ fn live_grip_release_actually_releases() {
         "live_grip_release_actually_releases: found {release_count} release entries in daemon trace"
     );
 
-    // We expect at least 1 release packet to have been sent within the window.
-    // Note: `window` evaluations may return a cached grip or no actor grip
-    // depending on Firefox's grip internals; if no grips were extracted, the
-    // count will be 0 and we skip rather than fail.
-    if release_count == 0 {
-        eprintln!(
-            "live_grip_release_actually_releases: no release packets found — \
-             Firefox may not return object grips for 'window' on this build; \
-             test is inconclusive"
-        );
-        return;
-    }
-
+    // This live test is the explicit regression for "grip release is wired
+    // up end-to-end".  Zero release lines means either the drainer thread is
+    // dead, the grip-extraction path is broken, or tracing isn't being
+    // emitted — all of which are real failures, so fail loudly rather than
+    // returning "inconclusive".
     assert!(
         release_count >= 1,
-        "expected at least 1 release packet, got {release_count}"
+        "expected at least 1 'sending grip release' trace line from the daemon, got 0.\n\
+         This means either the release drainer thread is not running, \
+         extract_grips() returned no grips for 100 `window` evaluations, \
+         or RUST_LOG configuration didn't enable the trace target."
     );
 }

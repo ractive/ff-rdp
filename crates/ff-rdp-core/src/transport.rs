@@ -925,10 +925,11 @@ impl DemuxReader {
     ///
     /// # Ordering invariant
     ///
-    /// All actors **must** be registered before [`Self::run_loop`] is called.
-    /// After `run_loop` spawns the background reader thread, the channel map
-    /// snapshot is captured by that thread; subsequent `register` calls update
-    /// the local map but have no effect on the already-running reader.
+    /// All actors **must** be registered before the `DemuxReader` is moved
+    /// into the thread that runs [`Self::run_loop`] / [`Self::run_loop_with`].
+    /// `run_loop` consumes `self`, so any `register` call after that point is
+    /// impossible by construction; this note exists to remind callers to
+    /// finish registration before handing off to the reader thread.
     ///
     /// See also: [`Self::run_loop`].
     pub fn register(&mut self, actor: &ActorId) -> mpsc::Receiver<Packet> {
@@ -1002,8 +1003,10 @@ impl DemuxReader {
     /// # Ordering invariant
     ///
     /// All actors **must** be registered via [`Self::register`] **before**
-    /// `run_loop` is called.  Once the reader thread is running, the channel
-    /// map snapshot is fixed; subsequent `register` calls are a logical no-op.
+    /// `run_loop` is called.  `run_loop` consumes `self`, so post-start
+    /// registration is impossible by construction — callers must finish
+    /// wiring up all per-actor channels before handing the `DemuxReader`
+    /// off to the thread that will drive the loop.
     ///
     /// See also: [`Self::register`].
     pub fn run_loop(mut self) -> ProtocolError {
