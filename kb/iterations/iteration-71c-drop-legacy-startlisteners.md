@@ -4,6 +4,10 @@ date: 2026-05-24
 status: planned
 branch: iter-71c/drop-legacy-startlisteners
 tags: [iteration, console, watcher, cleanup]
+dogfood_path: |
+  Launch headless Firefox at port 6000, then:
+    ff-rdp console            # cached messages — must succeed without startListeners
+    ff-rdp console --follow   # streams console-message resources from the watcher
 ---
 
 # Context
@@ -29,27 +33,27 @@ resources will arrive going forward).
 
 # Tasks
 
-- [ ] Remove the three `start_listeners` call sites in
+- [x] Remove the three `start_listeners` call sites in
       `crates/ff-rdp-cli/src/commands/console.rs` (lines 21, 180, 266).
-- [ ] Verify that the `WebConsoleActor::start_listeners` function in
+- [x] Verify that the `WebConsoleActor::start_listeners` function in
       `crates/ff-rdp-core/src/fronts/console.rs` is no longer called from any
       non-test code after removal.  If it becomes dead code, remove it and its
       spec helpers in `crates/ff-rdp-core/src/specs/console.rs`.
-- [ ] Run `cargo run -p xtask -- check-dead-primitives --since origin/main` to
+- [x] Run `cargo run -p xtask -- check-dead-primitives --since origin/main` to
       confirm no new dead public items.
-- [ ] Update or remove unit tests in `console.rs` that test the `start_listeners`
+- [x] Update or remove unit tests in `console.rs` that test the `start_listeners`
       path (those tests may be testing mock-server behavior, not Firefox itself).
-- [ ] Run `FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli --test
+- [x] Run `FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli --test
       live_console_no_double_delivery -- --nocapture` to confirm the test still
       passes after removal (the assertion is `<= 1` which is safe if the legacy
       path disappears, since the watcher still delivers 0 in this scenario).
 
 # Acceptance Criteria
 
-- [ ] `no_start_listeners_in_console_rs`: `grep -n 'start_listeners' crates/ff-rdp-cli/src/commands/console.rs` returns zero hits.
-- [ ] `start_listeners_dead_or_removed`: `start_listeners` is either removed from `ff-rdp-core` or only used in tests.
-- [ ] `live_console_no_double_delivery_post_removal`: live test passes with `FF_RDP_LIVE_TESTS=1` after the removal.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` all green.
+- [x] `no_start_listeners_in_console_rs`: `grep -n 'start_listeners' crates/ff-rdp-cli/src/commands/console.rs` returns zero hits.
+- [x] `start_listeners_dead_or_removed`: `start_listeners` is either removed from `ff-rdp-core` or only used in tests.
+- [x] `live_console_no_double_delivery_post_removal`: live test passes with `FF_RDP_LIVE_TESTS=1` after the removal.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` all green.
 
 # Out of scope
 
