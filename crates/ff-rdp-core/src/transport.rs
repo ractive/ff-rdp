@@ -1,12 +1,14 @@
+use std::collections::HashMap;
 use std::io::{BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{self, Sender, SyncSender, TrySendError};
 use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::error::{ActorErrorKind, ProtocolError};
+use crate::types::ActorId;
 
 // ---------------------------------------------------------------------------
 // Payload redactor
@@ -367,6 +369,21 @@ impl RdpTransport {
         (FramedReader { reader }, FramedWriter { writer })
     }
 
+    /// Split the transport for per-actor demux dispatch.
+    ///
+    /// Returns a [`DemuxReader`] (pre-configured with the read half; call
+    /// [`DemuxReader::run_loop`] to start dispatching on a background thread)
+    /// and a [`FramedWriter`] for sending requests.
+    ///
+    /// The synchronous CLI path never calls this — it uses `split()` or drives
+    /// the transport directly.  This is only used by daemon mode to fan inbound
+    /// packets into per-actor bounded channels.
+    pub fn split_demux(self) -> (DemuxReader, FramedWriter) {
+        let (reader, writer) = self.into_parts();
+        let demux = DemuxReader::with_reader(reader);
+        (demux, FramedWriter { writer })
+    }
+
     /// Override the socket read timeout.
     ///
     /// Pass `None` to block indefinitely (not recommended in production).
@@ -465,6 +482,31 @@ impl RdpTransport {
         obj.insert("type".into(), Value::String(type_.to_owned()));
         self.send(&packet)
     }
+
+    /// Receive a bulk packet from `actor` with kind `kind`, streaming bytes
+    /// directly into `out` in 8 KiB chunks without buffering the full body.
+    ///
+    /// Firefox's bulk-frame wire format is:
+    /// `bulk <actor> <kind> <length>:<binary-data>`
+    ///
+    /// This method reads the next frame from the transport.  If it is a bulk
+    /// frame whose `actor` and `kind` fields match the expected values, the
+    /// body bytes are copied to `out` in [`BULK_CHUNK_SIZE`] chunks and the
+    /// total byte count is returned.  If the frame is a JSON packet or a bulk
+    /// frame from a different actor/kind, `Err(ProtocolError::BulkPacketUnexpected)`
+    /// is returned.
+    ///
+    /// The bulk body is limited by `max_frame_bytes()`.  An announcement
+    /// exceeding the cap returns `ProtocolError::BulkFrameTooLarge` before any
+    /// allocation is attempted.
+    pub fn recv_bulk_with_handler<W: Write>(
+        &mut self,
+        actor: &str,
+        kind: &str,
+        out: &mut W,
+    ) -> Result<u64, ProtocolError> {
+        recv_bulk_with_handler_from(&mut self.reader, actor, kind, out)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +566,19 @@ impl FramedReader {
     /// read half for the client loop.
     pub fn try_clone_stream(&self) -> std::io::Result<TcpStream> {
         self.reader.get_ref().try_clone()
+    }
+
+    /// Receive a bulk packet streaming directly into `out`.
+    ///
+    /// Mirrors [`RdpTransport::recv_bulk_with_handler`]; see its documentation
+    /// for the full contract.
+    pub fn recv_bulk_with_handler<W: Write>(
+        &mut self,
+        actor: &str,
+        kind: &str,
+        out: &mut W,
+    ) -> Result<u64, ProtocolError> {
+        recv_bulk_with_handler_from(&mut self.reader, actor, kind, out)
     }
 }
 
@@ -585,6 +640,290 @@ impl FramedWriter {
     /// subscriber without consuming the original.
     pub fn try_clone_stream(&self) -> std::io::Result<TcpStream> {
         self.writer.try_clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bulk streaming
+// ---------------------------------------------------------------------------
+
+/// Chunk size used when streaming bulk packet bodies to an output writer.
+const BULK_CHUNK_SIZE: usize = 8 * 1024; // 8 KiB
+
+/// Default per-actor channel capacity for [`DemuxReader`].
+pub const DEMUX_CHANNEL_CAPACITY: usize = 64;
+
+/// Receive a bulk frame from `reader`, matching the expected `actor` and `kind`.
+///
+/// Reads the bulk-frame header (`bulk <actor> <kind> <length>:`), validates the
+/// actor/kind fields, then streams the body into `out` in [`BULK_CHUNK_SIZE`]
+/// chunks.  Returns the total number of bytes written on success.
+///
+/// Errors:
+/// - `BulkFrameTooLarge` — announced length exceeds `max_frame_bytes()`.
+/// - `BulkPacketUnexpected` — actor/kind mismatch, or the next frame is a JSON
+///   packet rather than a bulk packet.
+/// - `InvalidPacket` — malformed header.
+/// - `RecvFailed` / `Timeout` — I/O error while reading.
+fn recv_bulk_with_handler_from<W: Write>(
+    reader: &mut impl Read,
+    actor: &str,
+    kind: &str,
+    out: &mut W,
+) -> Result<u64, ProtocolError> {
+    // Peek the first byte to confirm this is a bulk frame.
+    let mut first = [0u8; 1];
+    reader.read_exact(&mut first).map_err(map_recv_io_error)?;
+
+    if first[0] != b'b' {
+        // JSON frame — unexpected.  We can't easily put the byte back, so the
+        // stream is now misaligned; surface a typed error so the caller knows.
+        return Err(ProtocolError::BulkPacketUnexpected {
+            actor: actor.to_owned(),
+            kind: kind.to_owned(),
+        });
+    }
+
+    // Read the rest of the header up to ':'.  We already consumed 'b'.
+    let mut header_buf: Vec<u8> = b"b".to_vec();
+    loop {
+        let mut byte = [0u8; 1];
+        reader.read_exact(&mut byte).map_err(map_recv_io_error)?;
+        if byte[0] == b':' {
+            break;
+        }
+        header_buf.push(byte[0]);
+        if header_buf.len() > 4096 {
+            return Err(ProtocolError::InvalidPacket(
+                "bulk frame header exceeds 4096 bytes".to_owned(),
+            ));
+        }
+    }
+
+    let header = std::str::from_utf8(&header_buf)
+        .map_err(|_| ProtocolError::InvalidPacket("non-UTF8 in bulk frame header".to_owned()))?;
+
+    // Expected: "bulk <actor> <kind> <length>"
+    let parts: Vec<&str> = header.splitn(4, ' ').collect();
+    if parts.len() != 4 || parts[0] != "bulk" {
+        return Err(ProtocolError::InvalidPacket(format!(
+            "malformed bulk frame header: {header:?}"
+        )));
+    }
+    let frame_actor = parts[1];
+    let frame_kind = parts[2];
+    let length: u64 = parts[3]
+        .parse()
+        .map_err(|e| ProtocolError::InvalidPacket(format!("bulk length parse error: {e}")))?;
+
+    // Validate cap before any I/O.
+    let cap = max_frame_bytes() as u64;
+    if length > cap {
+        return Err(ProtocolError::BulkFrameTooLarge {
+            announced: length,
+            max: cap,
+        });
+    }
+
+    // Validate actor/kind match.
+    if frame_actor != actor || frame_kind != kind {
+        return Err(ProtocolError::BulkPacketUnexpected {
+            actor: actor.to_owned(),
+            kind: kind.to_owned(),
+        });
+    }
+
+    // Stream body into `out` in chunks.
+    let mut remaining = length;
+    let mut chunk = vec![0u8; BULK_CHUNK_SIZE];
+    while remaining > 0 {
+        // Safe: remaining <= BULK_CHUNK_SIZE (usize) after the .min() so the
+        // truncation on 32-bit targets cannot actually occur.  We use
+        // try_from + unwrap_or to silence the cast lint cleanly.
+        let to_read = usize::try_from(remaining)
+            .unwrap_or(BULK_CHUNK_SIZE)
+            .min(BULK_CHUNK_SIZE);
+        reader
+            .read_exact(&mut chunk[..to_read])
+            .map_err(map_recv_io_error)?;
+        out.write_all(&chunk[..to_read])
+            .map_err(ProtocolError::SendFailed)?;
+        remaining -= to_read as u64;
+    }
+
+    Ok(length)
+}
+
+// ---------------------------------------------------------------------------
+// Per-actor demux reader (Theme C, iter-76)
+// ---------------------------------------------------------------------------
+
+/// A packet routed by [`DemuxReader`].
+///
+/// Each inbound Firefox RDP frame is classified by its `from` actor field and
+/// dispatched to the matching per-actor channel.  Packets from unregistered
+/// actors go to the fallback sink so they are never silently dropped.
+#[derive(Debug)]
+pub struct Packet {
+    /// The raw JSON packet as received from Firefox.
+    pub value: Value,
+}
+
+/// Per-actor demux reader — the read half produced by [`RdpTransport::split_demux`].
+///
+/// `DemuxReader` owns the TCP read half and a `HashMap` of per-actor bounded
+/// channels (default capacity [`DEMUX_CHANNEL_CAPACITY`]).  A background reader
+/// thread drains the socket and dispatches each packet to the correct channel:
+///
+/// - If `from` matches a registered actor, the packet is sent to that actor's
+///   `mpsc::SyncSender`.  A full channel surfaces as
+///   [`ProtocolError::ActorChannelFull`] (back-pressure).
+/// - Packets from unregistered actors go to the fallback sink (if set) so they
+///   are never dropped — consistent with the iter-74 no-drop invariant.
+///
+/// The synchronous CLI path is unaffected; `split_demux` is only called from
+/// daemon mode.
+pub struct DemuxReader {
+    /// Optional TCP reader half (present when created via `split_demux`).
+    reader: Option<BufReader<TcpStream>>,
+    /// Per-actor channels: actor ID → sender half.
+    channels: HashMap<String, SyncSender<Packet>>,
+    /// Optional fallback for packets from unknown actors.
+    fallback: Option<SyncSender<Packet>>,
+}
+
+impl DemuxReader {
+    /// Create an empty `DemuxReader` with no registered actors and no reader.
+    ///
+    /// Useful in tests where you drive [`dispatch`] directly.
+    pub fn new() -> Self {
+        Self {
+            reader: None,
+            channels: HashMap::new(),
+            fallback: None,
+        }
+    }
+
+    /// Create a `DemuxReader` backed by a live TCP `BufReader`.
+    ///
+    /// Called by [`RdpTransport::split_demux`]; use that method rather than
+    /// calling this directly.
+    fn with_reader(reader: BufReader<TcpStream>) -> Self {
+        Self {
+            reader: Some(reader),
+            channels: HashMap::new(),
+            fallback: None,
+        }
+    }
+
+    /// Register an actor and return the receiver half of a bounded channel
+    /// (capacity [`DEMUX_CHANNEL_CAPACITY`]).
+    ///
+    /// If the actor was already registered, the old channel is replaced and the
+    /// previous receiver is dropped.
+    pub fn register(&mut self, actor: &ActorId) -> mpsc::Receiver<Packet> {
+        let (tx, rx) = mpsc::sync_channel(DEMUX_CHANNEL_CAPACITY);
+        self.channels.insert(actor.as_ref().to_owned(), tx);
+        rx
+    }
+
+    /// Set the fallback sink for packets from unregistered actors.
+    ///
+    /// Pass a `SyncSender` created with `mpsc::sync_channel`; the DemuxReader
+    /// holds the send half and uses it whenever `from` is not in `channels`.
+    /// Pass `None` to clear (unregistered-actor packets are silently dropped).
+    pub fn set_fallback(&mut self, sink: Option<SyncSender<Packet>>) {
+        self.fallback = sink;
+    }
+
+    /// Dispatch a single packet to the appropriate per-actor channel.
+    ///
+    /// Called by the reader loop for each inbound frame.  Returns
+    /// `Err(ProtocolError::ActorChannelFull)` if the target channel is full.
+    pub fn dispatch(&self, value: Value) -> Result<(), ProtocolError> {
+        let actor = value
+            .get("from")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+
+        if let Some(tx) = self.channels.get(&actor) {
+            match tx.try_send(Packet {
+                value: value.clone(),
+            }) {
+                Ok(()) => return Ok(()),
+                Err(TrySendError::Full(_)) => {
+                    return Err(ProtocolError::ActorChannelFull { actor });
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    // Receiver dropped — treat as an unknown actor, fall through.
+                }
+            }
+        }
+
+        // Unknown actor or disconnected receiver → fallback sink.
+        if let Some(sink) = &self.fallback {
+            // Best-effort; ignore if the fallback is also full or disconnected.
+            let _ = sink.try_send(Packet { value });
+        }
+        Ok(())
+    }
+
+    /// Start the demux reader loop using the stored reader half.
+    ///
+    /// Blocks until the reader returns an error (typically EOF / timeout on
+    /// shutdown).  Intended to be run on a dedicated background thread.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called on a `DemuxReader` that was not created via
+    /// [`RdpTransport::split_demux`] (i.e. the reader half is absent).
+    /// In tests, use [`run_loop_with`] to pass a custom reader.
+    ///
+    /// Returns the first non-dispatch `ProtocolError` (i.e. an actual I/O or
+    /// framing error), not `ActorChannelFull` (those are logged and skipped).
+    pub fn run_loop(mut self) -> ProtocolError {
+        let reader = self
+            .reader
+            .take()
+            .expect("DemuxReader::run_loop called without a reader — use split_demux()");
+        self.run_loop_with(reader)
+    }
+
+    /// Run a read loop over a custom `reader`, dispatching each packet.
+    ///
+    /// This variant is for testing — pass any `impl Read` (e.g. a `Cursor`).
+    /// In production, call [`run_loop`] which uses the stored TCP reader.
+    pub fn run_loop_with(self, mut reader: impl Read) -> ProtocolError {
+        loop {
+            match recv_from(&mut reader) {
+                Ok(value) => {
+                    if let Err(e) = self.dispatch(value) {
+                        tracing::warn!(
+                            target: "ff_rdp_core::transport",
+                            error = %e,
+                            "DemuxReader: actor channel full — packet dropped"
+                        );
+                    }
+                }
+                Err(e) => return e,
+            }
+        }
+    }
+}
+
+impl Default for DemuxReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for DemuxReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DemuxReader")
+            .field("has_reader", &self.reader.is_some())
+            .field("actors", &self.channels.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
     }
 }
 
@@ -1716,5 +2055,194 @@ mod tests {
         assert_eq!(forwarded[1]["type"], "target-available-form");
 
         server_thread.join().unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // recv_bulk_with_handler (Theme A, iter-76)
+    // -----------------------------------------------------------------------
+
+    /// AC: `recv_bulk_with_handler_chunked` — confirms that the handler copies
+    /// body bytes in chunks without buffering the full body in memory, and
+    /// returns the correct byte count.
+    #[test]
+    fn recv_bulk_with_handler_chunked() {
+        // Build a synthetic bulk frame whose body is larger than one chunk.
+        let body: Vec<u8> = (0u8..=255).cycle().take(20_000).collect(); // > 8 KiB
+        let frame = make_bulk_frame("conn0/heapSnap1", "bulkData", &body);
+        let mut cursor = Cursor::new(frame);
+
+        let mut out = Vec::new();
+        let bytes_written =
+            recv_bulk_with_handler_from(&mut cursor, "conn0/heapSnap1", "bulkData", &mut out)
+                .unwrap();
+
+        assert_eq!(bytes_written, 20_000);
+        assert_eq!(out, body, "output must match the raw body byte-for-byte");
+    }
+
+    #[test]
+    fn recv_bulk_with_handler_empty_body() {
+        let frame = make_bulk_frame("actor1", "kind1", b"");
+        let mut cursor = Cursor::new(frame);
+        let mut out = Vec::new();
+        let n = recv_bulk_with_handler_from(&mut cursor, "actor1", "kind1", &mut out).unwrap();
+        assert_eq!(n, 0);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn recv_bulk_with_handler_actor_mismatch_returns_error() {
+        let frame = make_bulk_frame("actor1", "kind1", b"hello");
+        let mut cursor = Cursor::new(frame);
+        let mut out = Vec::new();
+        let err =
+            recv_bulk_with_handler_from(&mut cursor, "actor2", "kind1", &mut out).unwrap_err();
+        assert!(
+            matches!(err, ProtocolError::BulkPacketUnexpected { .. }),
+            "expected BulkPacketUnexpected, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn recv_bulk_with_handler_kind_mismatch_returns_error() {
+        let frame = make_bulk_frame("actor1", "kind1", b"hello");
+        let mut cursor = Cursor::new(frame);
+        let mut out = Vec::new();
+        let err =
+            recv_bulk_with_handler_from(&mut cursor, "actor1", "kind2", &mut out).unwrap_err();
+        assert!(
+            matches!(err, ProtocolError::BulkPacketUnexpected { .. }),
+            "expected BulkPacketUnexpected, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn recv_bulk_with_handler_json_frame_returns_unexpected() {
+        // A JSON frame (not a bulk frame) → BulkPacketUnexpected.
+        let payload = r#"{"type":"listTabs","to":"root"}"#;
+        let frame = encode_frame(payload);
+        let mut cursor = Cursor::new(frame.into_bytes());
+        let mut out = Vec::new();
+        let err =
+            recv_bulk_with_handler_from(&mut cursor, "actor1", "kind1", &mut out).unwrap_err();
+        assert!(
+            matches!(err, ProtocolError::BulkPacketUnexpected { .. }),
+            "expected BulkPacketUnexpected for JSON frame, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn recv_bulk_with_handler_oversized_rejected() {
+        let _g = FRAME_CAP_LOCK.lock().unwrap();
+        let _restore = FrameCapGuard::new();
+        set_max_frame_bytes(1024);
+
+        // Header only — body > cap.
+        let header = b"bulk actor1 kind1 8000000:";
+        let mut cursor = Cursor::new(header.to_vec());
+        let mut out = Vec::new();
+        let err =
+            recv_bulk_with_handler_from(&mut cursor, "actor1", "kind1", &mut out).unwrap_err();
+        assert!(
+            matches!(err, ProtocolError::BulkFrameTooLarge { .. }),
+            "expected BulkFrameTooLarge, got {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // DemuxReader (Theme C, iter-76)
+    // -----------------------------------------------------------------------
+
+    /// AC: `demux_reader_per_actor_fifo` — packets from actor A and B interleaved
+    /// on the wire arrive in per-actor FIFO order on their respective channels.
+    #[test]
+    fn demux_reader_per_actor_fifo() {
+        let mut demux = DemuxReader::new();
+        let rx_a = demux.register(&ActorId::from("actorA"));
+        let rx_b = demux.register(&ActorId::from("actorB"));
+
+        // Build a stream: A1, B1, A2, B2, A3.
+        let mut stream: Vec<u8> = Vec::new();
+        for (from, seq) in [
+            ("actorA", 1),
+            ("actorB", 1),
+            ("actorA", 2),
+            ("actorB", 2),
+            ("actorA", 3),
+        ] {
+            let json =
+                serde_json::to_string(&serde_json::json!({"from": from, "seq": seq})).unwrap();
+            stream.extend_from_slice(encode_frame(&json).as_bytes());
+        }
+
+        // A terminator that causes recv_from to return an error (EOF).
+        let cursor = Cursor::new(stream);
+        let err = demux.run_loop_with(cursor);
+        assert!(
+            matches!(err, ProtocolError::RecvFailed(_)),
+            "expected RecvFailed (EOF), got {err:?}"
+        );
+
+        // Actor A: must receive seq 1, 2, 3 in order.
+        let a_seqs: Vec<i64> = std::iter::from_fn(|| rx_a.try_recv().ok())
+            .map(|p| p.value["seq"].as_i64().unwrap())
+            .collect();
+        assert_eq!(a_seqs, vec![1, 2, 3], "actor A FIFO violated");
+
+        // Actor B: must receive seq 1, 2 in order.
+        let b_seqs: Vec<i64> = std::iter::from_fn(|| rx_b.try_recv().ok())
+            .map(|p| p.value["seq"].as_i64().unwrap())
+            .collect();
+        assert_eq!(b_seqs, vec![1, 2], "actor B FIFO violated");
+    }
+
+    /// AC: `demux_reader_unknown_actor_to_sink` — packet from an unregistered
+    /// actor reaches the fallback sink rather than being silently dropped.
+    #[test]
+    fn demux_reader_unknown_actor_to_sink() {
+        let mut demux = DemuxReader::new();
+        let (sink_tx, sink_rx) = mpsc::sync_channel(16);
+        demux.set_fallback(Some(sink_tx));
+
+        let json =
+            serde_json::to_string(&serde_json::json!({"from": "unknownActor", "type": "ping"}))
+                .unwrap();
+        let stream = Cursor::new(encode_frame(&json).into_bytes());
+
+        let err = demux.run_loop_with(stream);
+        assert!(matches!(err, ProtocolError::RecvFailed(_)));
+
+        let pkt = sink_rx
+            .try_recv()
+            .expect("fallback sink must receive the packet");
+        assert_eq!(pkt.value["from"], "unknownActor");
+        assert_eq!(pkt.value["type"], "ping");
+    }
+
+    #[test]
+    fn demux_reader_full_channel_returns_actor_channel_full() {
+        // Channel of capacity 1 — dispatch a second packet to trigger back-pressure.
+        let (tx, _rx) = mpsc::sync_channel::<Packet>(1);
+        let mut channels = HashMap::new();
+        channels.insert("actorA".to_owned(), tx);
+        let demux = DemuxReader {
+            reader: None,
+            channels,
+            fallback: None,
+        };
+
+        // First packet — fits.
+        demux
+            .dispatch(serde_json::json!({"from": "actorA", "n": 1}))
+            .unwrap();
+
+        // Second packet — channel is full.
+        let err = demux
+            .dispatch(serde_json::json!({"from": "actorA", "n": 2}))
+            .unwrap_err();
+        assert!(
+            matches!(err, ProtocolError::ActorChannelFull { .. }),
+            "expected ActorChannelFull, got {err:?}"
+        );
     }
 }

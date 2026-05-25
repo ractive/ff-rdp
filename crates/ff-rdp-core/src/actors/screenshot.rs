@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use crate::actor::actor_request;
+use crate::actor::{actor_request, actor_send};
 use crate::actors::screenshot_content::PrepareCapture;
 use crate::error::ProtocolError;
 use crate::transport::RdpTransport;
@@ -106,6 +106,55 @@ impl ScreenshotActor {
             .to_owned();
 
         Ok(data)
+    }
+
+    /// Send a `capture` request to the screenshot actor without reading the reply.
+    ///
+    /// The caller is responsible for reading the next packet from the transport.
+    /// This is the low-level split used by the `--bulk` path in the CLI to allow
+    /// `Transport::recv_bulk_with_handler` to consume the reply as a bulk frame.
+    ///
+    /// Most callers should use [`capture`](Self::capture) instead.
+    pub fn send_capture_request(
+        transport: &mut RdpTransport,
+        screenshot_actor: &str,
+        browsing_context_id: u64,
+        full_page: bool,
+        prep: &PrepareCapture,
+    ) -> Result<(), ProtocolError> {
+        let snapshot_scale = prep.window_dpr * prep.window_zoom;
+        let dpr_str = format!("{}", prep.window_dpr);
+
+        let mut args = if (snapshot_scale - 1.0).abs() < 1e-6 {
+            json!({
+                "browsingContextID": browsing_context_id,
+                "fullpage": full_page,
+                "dpr": dpr_str,
+            })
+        } else {
+            json!({
+                "browsingContextID": browsing_context_id,
+                "fullpage": full_page,
+                "dpr": dpr_str,
+                "snapshotScale": snapshot_scale,
+            })
+        };
+
+        if let Some(ref rect) = prep.rect {
+            args["rect"] = json!({
+                "left": rect.left,
+                "top": rect.top,
+                "width": rect.width,
+                "height": rect.height,
+            });
+        }
+
+        actor_send(
+            transport,
+            screenshot_actor,
+            "capture",
+            Some(&json!({ "args": args })),
+        )
     }
 }
 

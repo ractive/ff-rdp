@@ -235,6 +235,23 @@ pub enum ProtocolError {
         length: u64,
     },
 
+    /// The caller requested a bulk frame from a specific actor/kind, but the
+    /// next frame on the wire was either a JSON packet or a bulk frame with a
+    /// different actor or kind.
+    ///
+    /// When this is returned the stream position is undefined — the caller
+    /// should treat the connection as unrecoverable.
+    #[error("unexpected bulk packet: expected actor={actor} kind={kind}")]
+    BulkPacketUnexpected { actor: String, kind: String },
+
+    /// A per-actor demux channel is at capacity.
+    ///
+    /// Returned by [`DemuxReader::dispatch`] when the bounded channel for
+    /// `actor` is full.  The packet is dropped; the caller (reader thread) logs
+    /// a warning and continues reading so the Firefox connection stays healthy.
+    #[error("actor channel full: actor={actor}")]
+    ActorChannelFull { actor: String },
+
     #[error("actor error from {actor}: {error} ({kind}) — {message}")]
     ActorError {
         actor: String,
@@ -321,7 +338,9 @@ impl ProtocolError {
             | Self::EvalNavigatedDuringEval
             | Self::FrameTooLarge { .. }
             | Self::BulkFrameTooLarge { .. }
-            | Self::BulkPacketUnsupported { .. } => false,
+            | Self::BulkPacketUnsupported { .. }
+            | Self::BulkPacketUnexpected { .. }
+            | Self::ActorChannelFull { .. } => false,
         }
     }
 }

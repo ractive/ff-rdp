@@ -26,7 +26,9 @@ pub use actors::dom_walker::{DomAttr, DomNode, DomWalkerActor};
 pub use actors::inspector::InspectorActor;
 pub use actors::network::{EventTimings, Header, NetworkEventActor, ResponseContent};
 pub use actors::object::{
-    ObjectActor, PropertyDescriptor, PrototypeAndProperties, ScopedGrip, descriptor_to_json,
+    GripHandle, GripKind, LongStringGrip, LongStringScopedGrip, ObjectActor, ObjectGrip,
+    ObjectScopedGrip, PropertyDescriptor, PrototypeAndProperties, ReleaseQueueRx, ReleaseQueueTx,
+    ReleaseRequest, ScopedGrip, descriptor_to_json, release_queue,
 };
 pub use actors::page_style::{
     AppliedRule, BoxModelLayout, BoxSides, ComputedProperty, PageStyleActor, RuleProperty,
@@ -44,9 +46,9 @@ pub use actors::tab::{TabActor, TabInfo, TargetInfo, note_tab_navigated_scheme_c
 pub use actors::target::WindowGlobalTarget;
 pub use actors::thread::{SourceInfo, ThreadActor};
 pub use actors::watcher::{
-    ConsoleResource, NetworkResource, NetworkResourceUpdate, TargetEvent, WatcherActor,
-    WatcherEvent, dispatch_watcher_event, parse_console_resources, parse_network_resource_updates,
-    parse_network_resources, parse_target_event,
+    ConsoleResource, NetworkResource, NetworkResourceUpdate, ResourceGripGuard, TargetEvent,
+    WatcherActor, WatcherEvent, dispatch_watcher_event, parse_console_resources,
+    parse_network_resource_updates, parse_network_resources, parse_target_event,
 };
 pub use connection::{COMPATIBLE_FIREFOX_MAX, COMPATIBLE_FIREFOX_MIN, RdpConnection};
 pub use error::{ActorErrorKind, NavCause, ProtocolError, RdpError, RdpResult};
@@ -58,7 +60,7 @@ pub use fronts::{
 pub use registry::{Front, FrontKind, IsActorGone, Registry, call_with_refresh};
 pub use resources::{Resource, ResourceCommand, ResourceType, SubscriptionId};
 pub use session::Session;
-pub use transport::{FramedReader, FramedWriter, RdpTransport};
+pub use transport::{DemuxReader, FramedReader, FramedWriter, Packet, RdpTransport};
 pub use types::{ActorId, Grip};
 pub use util::terminal::sanitize_for_terminal;
 

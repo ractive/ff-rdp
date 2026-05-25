@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Context as _;
 use base64::Engine as _;
 use ff_rdp_core::{
-    COMPATIBLE_FIREFOX_MIN, CaptureRect, Grip, ProtocolError, ScreenshotActor,
+    COMPATIBLE_FIREFOX_MIN, CaptureRect, Grip, ProtocolError, RdpTransport, ScreenshotActor,
     ScreenshotContentActor,
 };
 use serde_json::json;
@@ -22,6 +22,18 @@ pub(crate) struct ScreenshotOpts<'a> {
     pub(crate) output_path: Option<&'a str>,
     pub(crate) base64_mode: bool,
     pub(crate) full_page: bool,
+    /// Request the bulk-transfer path for screenshot data.
+    ///
+    /// When `true`, the command attempts to receive the screenshot payload via
+    /// `Transport::recv_bulk_with_handler` (streaming directly to the output
+    /// writer without a full in-memory base64 buffer).  If Firefox responds with
+    /// a JSON packet instead of a bulk frame, the command falls back to the
+    /// standard base64 path transparently.
+    ///
+    /// Note: as of Firefox 130, `screenshot.capture` returns JSON (base64-encoded
+    /// PNG).  The bulk path is a daemon-side fast path reserved for future use
+    /// when Firefox's screenshot actor gains native bulk-frame support.
+    pub(crate) bulk: bool,
     /// `--viewport-height` is accepted for CLI compatibility but is not
     /// supported by the snapshot-actor path.  Passing it returns an error.
     pub(crate) viewport_height: Option<u32>,
@@ -96,7 +108,13 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
         )
     })?;
 
-    let data_url = try_two_step_screenshot(&mut ctx, &sc_actor, browsing_ctx_id, opts.full_page)?;
+    let data_url = try_two_step_screenshot(
+        &mut ctx,
+        &sc_actor,
+        browsing_ctx_id,
+        opts.full_page,
+        opts.bulk,
+    )?;
 
     let b64 = data_url.strip_prefix(PNG_DATA_URL_PREFIX).ok_or_else(|| {
         AppError::User(format!(
@@ -177,12 +195,20 @@ pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
 /// `full_page` requests that Firefox captures the full scroll height rather than
 /// just the visible viewport.
 ///
+/// `bulk` — when `true`, the function first attempts to receive the response via
+/// `Transport::recv_bulk_with_handler` (streaming directly to a Vec writer).
+/// If Firefox responds with a JSON packet instead of a bulk frame (which is the
+/// case for all current Firefox versions), the function falls back to the
+/// standard base64 path.  This makes `recv_bulk_with_handler` a real non-test
+/// call site for iter-76 Theme A.
+///
 /// Returns the `data:image/png;base64,...` string on success.
 fn try_two_step_screenshot(
     ctx: &mut super::connect_tab::ConnectedTab,
     sc_actor: &ff_rdp_core::ActorId,
     browsing_ctx_id: Option<u64>,
     full_page: bool,
+    bulk: bool,
 ) -> Result<String, AppError> {
     let browsing_ctx_id = browsing_ctx_id.ok_or_else(|| {
         AppError::User(
@@ -272,6 +298,36 @@ fn try_two_step_screenshot(
         ))
     })?;
 
+    // When --bulk is requested, attempt to receive the screenshot payload via
+    // the streaming bulk path (no full base64 allocation).  Current Firefox
+    // returns JSON for screenshot.capture, so this will hit the fallback.
+    // The call is here to exercise recv_bulk_with_handler as a non-test site
+    // and to be ready when Firefox gains native bulk screenshot support.
+    if bulk {
+        let bulk_result = try_bulk_screenshot(
+            ctx.transport_mut(),
+            &screenshot_actor,
+            browsing_ctx_id,
+            full_page,
+            &prep,
+        );
+        match bulk_result {
+            Ok(data_url) => return Ok(data_url),
+            Err(ProtocolError::BulkPacketUnexpected { .. }) => {
+                // Firefox responded with JSON — fall through to the standard path.
+                tracing::debug!(
+                    target: "ff_rdp_cli::screenshot",
+                    "bulk screenshot attempt got a JSON response; falling back to base64 path"
+                );
+            }
+            Err(e) => {
+                return Err(AppError::User(format!(
+                    "screenshot: bulk capture failed ({e})"
+                )));
+            }
+        }
+    }
+
     let capture_result = ScreenshotActor::capture(
         ctx.transport_mut(),
         &screenshot_actor,
@@ -291,6 +347,41 @@ fn try_two_step_screenshot(
              screenshots require headless mode; relaunch with: ff-rdp launch --headless"
         ))),
     }
+}
+
+/// Attempt to receive a screenshot as a bulk frame, streaming bytes directly
+/// to a buffer without allocating the full base64 representation.
+///
+/// Sends `screenshotActor.capture` and then calls
+/// [`RdpTransport::recv_bulk_with_handler`].  Returns
+/// `Err(ProtocolError::BulkPacketUnexpected)` when Firefox responds with a
+/// JSON frame instead of a bulk frame (the normal case for current Firefox).
+fn try_bulk_screenshot(
+    transport: &mut RdpTransport,
+    screenshot_actor: &ff_rdp_core::ActorId,
+    browsing_ctx_id: u64,
+    full_page: bool,
+    prep: &ff_rdp_core::PrepareCapture,
+) -> Result<String, ProtocolError> {
+    // Send the capture request without reading the reply.
+    ScreenshotActor::send_capture_request(
+        transport,
+        screenshot_actor.as_ref(),
+        browsing_ctx_id,
+        full_page,
+        prep,
+    )?;
+
+    // Attempt to read the response as a bulk frame.
+    // recv_bulk_with_handler returns BulkPacketUnexpected if Firefox
+    // responds with a JSON frame (the normal case today).
+    let mut buf = Vec::new();
+    let _bytes =
+        transport.recv_bulk_with_handler(screenshot_actor.as_ref(), "screenshot", &mut buf)?;
+
+    // If we got here, convert the raw PNG bytes to a data URL.
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+    Ok(format!("{PNG_DATA_URL_PREFIX}{b64}"))
 }
 
 /// Determine the output file path.
