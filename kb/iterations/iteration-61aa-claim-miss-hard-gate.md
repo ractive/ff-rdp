@@ -2,7 +2,7 @@
 title: "Iteration 61aa: Promote claim-miss to a hard gate"
 type: iteration
 date: 2026-05-24
-status: planned
+status: obsolete
 branch: iter-61aa/claim-miss-hard-gate
 depends_on:
   - iteration-61z-discipline-skill-integration

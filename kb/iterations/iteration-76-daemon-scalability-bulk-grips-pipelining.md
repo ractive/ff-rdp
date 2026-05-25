@@ -2,71 +2,97 @@
 title: "Iteration 76: Daemon scalability — streaming bulk recv, grip release, per-actor pipelining"
 type: iteration
 date: 2026-05-24
-status: planned
+status: done
 branch: iter-76/daemon-scalability-bulk-grips-pipelining
 depends_on:
   - iteration-72-transport-polish
   - iteration-73-spec-fidelity-gates
   - iteration-74-protocol-correctness-oneway-events-lifecycle
 firefox_refs:
-  - path: devtools/shared/transport/transport.js
-    lines: "40-56"
+  - lines: 40-56
+    path: devtools/shared/transport/transport.js
     why: "Transport contract: typed + bulk packets share one channel; the demux thread must handle both."
-  - path: devtools/shared/transport/transport.js
-    lines: "138-200"
-    why: "startBulkSend / BulkPacket framing — the wire shape recv_bulk_with_handler must consume in chunks."
-  - path: devtools/shared/transport/transport.js
-    lines: "490-512"
-    why: "onBulkPacket streaming-read API — direct precedent for the streaming receiver we are adding."
-  - path: devtools/shared/specs/heap-snapshot-file.js
-    lines: "11-22"
-    why: "transferHeapSnapshot uses BULK_RESPONSE — primary new consumer of recv_bulk_with_handler."
-  - path: devtools/shared/specs/screenshot.js
-    lines: "22-35"
-    why: "screenshot.capture returns json today (base64 PNG inside a string); the bulk path lets us switch to byte-accurate transfer for the daemon `--bulk` flag."
-  - path: devtools/shared/specs/object.js
-    lines: "205-218"
-    why: "objectSpec.release marker — the grip-release method ScopedGrip<Object> must invoke on Drop."
-  - path: devtools/server/actors/object.js
-    lines: "780-795"
-    why: "release() server-side implementation confirms it is the only way to free the actor; protocol.js owns the framing."
-  - path: devtools/server/actors/string.js
-    lines: "40-45"
-    why: "Long-string actor release path — equivalent for the longStringActor grip."
-  - path: devtools/shared/specs/string.js
-    lines: "58-85"
-    why: "longstring type marshalling; clarifies which actor IDs need release."
+  - lines: 138-200
+    path: devtools/shared/transport/transport.js
+    why: >-
+      startBulkSend / BulkPacket framing — the wire shape recv_bulk_with_handler must
+      consume in chunks.
+  - lines: 490-512
+    path: devtools/shared/transport/transport.js
+    why: >-
+      onBulkPacket streaming-read API — direct precedent for the streaming receiver
+      we are adding.
+  - lines: 11-22
+    path: devtools/shared/specs/heap-snapshot-file.js
+    why: >-
+      transferHeapSnapshot uses BULK_RESPONSE — primary new consumer of
+      recv_bulk_with_handler.
+  - lines: 22-35
+    path: devtools/shared/specs/screenshot.js
+    why: >-
+      screenshot.capture returns json today (base64 PNG inside a string); the bulk
+      path lets us switch to byte-accurate transfer for the daemon `--bulk` flag.
+  - lines: 205-218
+    path: devtools/shared/specs/object.js
+    why: >-
+      objectSpec.release marker — the grip-release method ScopedGrip<Object> must
+      invoke on Drop.
+  - lines: 780-795
+    path: devtools/server/actors/object.js
+    why: >-
+      release() server-side implementation confirms it is the only way to free the
+      actor; protocol.js owns the framing.
+  - lines: 40-45
+    path: devtools/server/actors/string.js
+    why: Long-string actor release path — equivalent for the longStringActor grip.
+  - lines: 58-85
+    path: devtools/shared/specs/string.js
+    why: longstring type marshalling; clarifies which actor IDs need release.
 kb_refs:
   - kb/rdp/protocol/transport.md
   - kb/rdp/protocol/message-format.md
   - kb/rdp/from-our-codebase/open-gaps.md
 first_call_sites:
-  - primitive: "ff_rdp_core::transport::Transport::recv_bulk_with_handler"
-    site: "crates/ff-rdp-cli/src/commands/screenshot.rs (used when --bulk or expected size > 4 MiB)"
-  - primitive: "ff_rdp_core::transport::Transport::split"
-    site: "crates/ff-rdp-cli/src/commands/daemon.rs (daemon mode spawns the demux reader thread)"
-  - primitive: "ff_rdp_core::transport::DemuxReader"
-    site: "crates/ff-rdp-core/src/transport.rs (returned by Transport::split alongside the writer half)"
-  - primitive: "ff_rdp_core::actors::object::Grip"
-    site: "crates/ff-rdp-core/src/actors/dom_walker.rs (issued grips on inspector.getNodeActorFromObjectActor)"
-  - primitive: "ff_rdp_core::actors::watcher::ResourceGripGuard"
-    site: "crates/ff-rdp-core/src/actors/watcher.rs (auto-release for grips returned in watched resources)"
+  - primitive: ff_rdp_core::transport::Transport::recv_bulk_with_handler
+    site: >-
+      crates/ff-rdp-cli/src/commands/screenshot.rs (used when --bulk or expected size
+      > 4 MiB)
+  - primitive: ff_rdp_core::transport::Transport::split
+    site: >-
+      crates/ff-rdp-cli/src/commands/daemon.rs (daemon mode spawns the demux reader
+      thread)
+  - primitive: ff_rdp_core::transport::DemuxReader
+    site: >-
+      crates/ff-rdp-core/src/transport.rs (returned by Transport::split alongside the
+      writer half)
+  - primitive: ff_rdp_core::actors::object::Grip
+    site: >-
+      crates/ff-rdp-core/src/actors/dom_walker.rs (issued grips on
+      inspector.getNodeActorFromObjectActor)
+  - primitive: ff_rdp_core::actors::watcher::ResourceGripGuard
+    site: >-
+      crates/ff-rdp-core/src/actors/watcher.rs (auto-release for grips returned in
+      watched resources)
 dogfood_path: |
   # 1. Streaming bulk screenshot — bytes match the base64 path bit-for-bit.
   ff-rdp screenshot --bulk -o /tmp/a.png https://example.com
   ff-rdp screenshot       -o /tmp/b.png https://example.com
   cmp /tmp/a.png /tmp/b.png    # exit 0
-
+  
   # 2. Daemon mode: 1000 console grips, all released after subscribe drop.
   ff-rdp daemon start &
   ff-rdp daemon subscribe console-message --count 1000
   ff-rdp daemon unsubscribe console-message
   ff-rdp daemon inspect --jq '.object_pool.live_grips'   # expect 0
-
+  
   # 3. Two-actor pipelining: overlapping console + walker requests both succeed.
   ff-rdp daemon eval --tail 'for(let i=0;i<50;i++) console.log(i)' &
   ff-rdp daemon walker query 'body > *'                  # returns within budget
-tags: [iteration, daemon, performance, protocol]
+tags:
+  - iteration
+  - daemon
+  - performance
+  - protocol
 ---
 
 Three concurrency-shaped issues from the review (F3, L4, C1) all hit

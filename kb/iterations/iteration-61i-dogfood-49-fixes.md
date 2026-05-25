@@ -2,7 +2,7 @@
 title: "Iteration 61i: Dogfood-49 fixes — same-URL navigate, dom shape, computed flags, hint suppression"
 type: iteration
 date: 2026-05-22
-status: in-progress
+status: done
 branch: iter-61i/dogfood-49-fixes
 depends_on:
   - iteration-61h-headless-screenshot-firefox150

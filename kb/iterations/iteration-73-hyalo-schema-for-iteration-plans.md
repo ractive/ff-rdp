@@ -2,7 +2,7 @@
 title: "Iteration 73: Move iteration-plan validation into hyalo schema"
 type: iteration
 date: 2026-05-24
-status: planned
+status: obsolete
 branch: iter-73/hyalo-schema
 depends_on:
   - iteration-61y-iteration-discipline-tooling
@@ -11,20 +11,22 @@ dogfood_path: |
   # 1. hyalo lint catches missing required frontmatter fields on a fresh plan.
   cp kb/iterations/_template.md /tmp/bad.md
   hyalo lint /tmp/bad.md      # exits non-zero, reports missing branch/dogfood_path/etc.
-
+  
   # 2. hyalo lint catches a status=completed plan with open checkboxes (HYALO002).
   hyalo lint kb/iterations/iteration-72-transport-polish.md   # clean while open
   # then flip frontmatter to status=completed without ticking → fails
-
+  
   # 3. xtask check-iteration-plan now only enforces the conditional
   #    "body mentions pub items → first_call_sites must be non-empty" rule.
   cargo run -p xtask -- check-iteration-plan kb/iterations/iteration-72-transport-polish.md
   # Expected: OK (hyalo lint covers the rest; xtask is now a thin xtask).
-
+  
   # 4. CI runs both:
   #    - `hyalo lint --type iteration --rule-prefix HYALO --rule-prefix FM` as a required check
   #    - `cargo run -p xtask -- check-iteration-plan` for the conditional rule
-tags: [iteration, tooling]
+tags:
+  - iteration
+  - tooling
 ---
 
 # Iteration 73: Move iteration-plan validation into hyalo schema
