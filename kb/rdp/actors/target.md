@@ -32,7 +32,13 @@ is reached through a target. Obtained by calling `getTarget()` on a descriptor.
 - `attach()` — attach to the target (returns state and actors).
 - `detach()` — detach and release the target.
 - `navigate(url)` — navigate the target to a URL.
+- `reload({options: {force?: bool}})` — reload the current document.
+  iter-80 Theme B wired the optional `options.force` into
+  `WindowGlobalTarget::reload(transport, target, force)` and `ff-rdp reload
+  --hard` so callers can bypass the HTTP cache. See
+  [[rdp/actors/targets/window-global-target]] for the wire-level spec.
 
 ## Status
 
-Stub — backfilled in iter-73; expand on next touch.
+Stub — backfilled in iter-73; iter-80 expanded `reload` to surface the
+optional `options.force` (Firefox spec key — *not* `forceReload`) argument.

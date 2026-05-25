@@ -49,7 +49,7 @@ COMMAND REFERENCE:
     ff-rdp responsive <SEL>... [--widths W1,W2,...]
 
   Accessibility:
-    ff-rdp a11y [--depth N] [--selector SEL] [--interactive]
+    ff-rdp a11y [--depth N] [--selector SEL] [--interactive] [--critical]
     ff-rdp a11y contrast [--selector SEL] [--fail-only]
     ff-rdp a11y summary
 
@@ -208,8 +208,14 @@ pub enum LogLevel {
 #[derive(Parser)]
 #[command(
     name = "ff-rdp",
-    about = "Firefox Remote Debugging Protocol CLI\n\nQuick start:  ff-rdp launch          # start Firefox with debugging enabled\n              ff-rdp navigate <URL>   # open a page",
+    about = "Firefox Remote Debugging Protocol CLI\n\nCommand groups (see `ff-rdp <cmd> --help` for details):\n  Inspect    dom, styles, computed, a11y, snapshot, page-text, perf\n  Navigate   navigate, reload, click, type, screenshot\n  Trace      console, network, eval\n  Lifecycle  launch, daemon\n\nQuick start:  ff-rdp launch          # start Firefox with debugging enabled\n              ff-rdp navigate <URL>   # open a page",
     long_about = "Firefox Remote Debugging Protocol CLI
+
+Command groups (use `ff-rdp <cmd> --help` for details on any command):
+  Inspect    dom, styles, computed, a11y, snapshot, page-text, perf
+  Navigate   navigate, reload, click, type, screenshot
+  Trace      console, network, eval
+  Lifecycle  launch, daemon
 
 Quick start:
   ff-rdp launch                   Launch a new Firefox instance with remote debugging
@@ -441,7 +447,12 @@ Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}
 
 When the result is a non-primitive (object, array), Firefox returns actor grip
 metadata (actor IDs, class names) instead of the actual values. Use --stringify
-to wrap the expression in JSON.stringify() and get the real data back.")]
+to wrap the expression in JSON.stringify() and get the real data back.
+
+Pass --unwrap when the expression itself already returns a JSON-encoded string
+(e.g. `localStorage.getItem('user')` or a server endpoint that returns text):
+ff-rdp will parse it client-side and put the structured object/array into
+`results`. Primitive or non-JSON strings are passed through unchanged.")]
     #[command(group(
         ArgGroup::new("eval_source")
             .required(true)
@@ -482,6 +493,12 @@ to wrap the expression in JSON.stringify() and get the real data back.")]
         /// Maps to `innerWindowID` in the `evaluateJSAsync` request.
         #[arg(long, value_name = "ID")]
         inner_window: Option<u64>,
+        /// When the result is a JSON-encoded string for an object or array, parse it
+        /// on the client and replace `results` with the structured value.  Pairs
+        /// naturally with `--stringify` and with scripts that already return
+        /// `JSON.stringify(...)`.  Non-JSON strings are left unchanged.
+        #[arg(long)]
+        unwrap: bool,
     },
     /// Extract visible page text (document.body.innerText)
     #[command(long_about = "Extract visible page text (document.body.innerText).
@@ -537,6 +554,21 @@ See also:
         /// Mutually exclusive with --count.
         #[arg(long, conflicts_with = "count")]
         first: bool,
+        /// Attach computed CSS values for each match (comma-separated property list).
+        /// Each result element gets an extra `style` field with the named getComputedStyle
+        /// values, e.g. `--include-style color,display`. Capped by `--include-style-limit`.
+        #[arg(long, value_name = "PROPS")]
+        include_style: Option<String>,
+        /// Cap the number of matches that receive computed styles when
+        /// `--include-style` is set. Default 50. Elements beyond the cap omit the
+        /// `style` field and the response sets `meta.style_truncated: true`.
+        #[arg(
+            long,
+            value_name = "N",
+            default_value_t = 50,
+            requires = "include_style"
+        )]
+        include_style_limit: usize,
     },
     /// Read console messages
     #[command(long_about = "Read console messages.
@@ -877,6 +909,12 @@ With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"passe
         /// Only show interactive elements (buttons, links, inputs, etc.)
         #[arg(long)]
         interactive: bool,
+        /// Surface only nodes that fail a basic WCAG audit (e.g. `<img>` without
+        /// alt, form controls without an accessible name). Returns a flat array
+        /// of violation records `{role, name?, selector, violation, severity}`
+        /// instead of the full accessibility tree; empty when nothing critical.
+        #[arg(long, conflicts_with = "interactive")]
+        critical: bool,
     },
     /// Reload the page
     #[command(long_about = "Reload the page.
@@ -884,13 +922,18 @@ With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"passe
 With --wait-idle, the command blocks after reload until network activity has been
 idle for --idle-ms (default 500) or the --reload-timeout expires (default 10000).
 
+Pass --hard for a cache-bypassing reload (Firefox `options.force`, the
+protocol equivalent of Cmd-Shift-R / `LoadFlags::BYPASS_CACHE`).  Default
+remains a soft reload.
+
 Examples:
   ff-rdp reload
+  ff-rdp reload --hard
   ff-rdp reload --wait-idle
-  ff-rdp reload --wait-idle --idle-ms 1000 --reload-timeout 30000
+  ff-rdp reload --hard --wait-idle --idle-ms 1000 --reload-timeout 30000
 
-Output (plain):    {\"results\": {\"action\": \"reload\"}, \"total\": 1, \"meta\": {...}}
-Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requests_observed\": M}, \"total\": 1, \"meta\": {...}}")]
+Output (plain):    {\"results\": {\"action\": \"reload\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
+Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requests_observed\": M[, \"force\": true]}, \"total\": 1, \"meta\": {...}}")]
     Reload {
         /// Block until network is idle after reload
         #[arg(long)]
@@ -901,6 +944,10 @@ Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requ
         /// Maximum total milliseconds to wait for idle (--wait-idle only)
         #[arg(long, default_value_t = 10000, requires = "wait_idle")]
         reload_timeout: u64,
+        /// Hard reload — bypass the HTTP cache (sends Firefox's `options.force`,
+        /// equivalent to Cmd-Shift-R in the browser UI). Default is a soft reload.
+        #[arg(long)]
+        hard: bool,
     },
     /// Go back in history
     #[command(long_about = "Navigate back in browser history.

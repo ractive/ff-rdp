@@ -3,6 +3,7 @@ use crate::registry::{Front, FrontKind, Registry};
 use crate::specs::{NoArgs, call, target as spec};
 use crate::transport::RdpTransport;
 use crate::types::ActorId;
+use serde_json::json;
 
 /// A typed handle to a Firefox `WindowGlobalTarget` actor.
 ///
@@ -39,9 +40,22 @@ impl TargetFront {
     }
 
     /// Reload the current page.
-    pub fn reload(&self, transport: &mut RdpTransport) -> Result<(), ProtocolError> {
-        call::<spec::Reload>(transport, &self.id, &NoArgs {})?;
-        Ok(())
+    ///
+    /// Pass `force = true` to bypass the HTTP cache (sends the Firefox
+    /// `{options: {force: true}}` request shape, equivalent to a hard
+    /// reload in the browser UI).
+    pub fn reload(&self, transport: &mut RdpTransport, force: bool) -> Result<(), ProtocolError> {
+        if force {
+            // Bypass the typed spec (which carries `NoArgs`) so we can attach
+            // the Firefox `options.force` request field directly.
+            let packet = json!({"to": self.id.as_ref(), "type": "reload",
+                "options": {"force": true}});
+            let _ = transport.request(&packet)?;
+            Ok(())
+        } else {
+            call::<spec::Reload>(transport, &self.id, &NoArgs {})?;
+            Ok(())
+        }
     }
 
     /// Go back in browser history.
@@ -142,7 +156,7 @@ mod tests {
             );
         });
 
-        front.reload(&mut transport).unwrap();
+        front.reload(&mut transport, false).unwrap();
         t.join().unwrap();
     }
 }

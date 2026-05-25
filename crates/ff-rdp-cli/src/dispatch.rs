@@ -431,6 +431,7 @@ fn dispatch_inner(
             frame,
             node,
             inner_window,
+            unwrap,
         } => commands::eval::run(
             cli,
             script.as_deref(),
@@ -438,6 +439,7 @@ fn dispatch_inner(
             *stdin,
             *stringify,
             *no_isolate,
+            *unwrap,
             commands::eval::CliEvalScope {
                 frame_actor: frame.as_deref(),
                 selected_node_actor: node.as_deref(),
@@ -448,11 +450,12 @@ fn dispatch_inner(
             wait_idle,
             idle_ms,
             reload_timeout,
+            hard,
         } => {
             if *wait_idle {
-                commands::nav_action::run_reload_wait_idle(cli, *idle_ms, *reload_timeout)
+                commands::nav_action::run_reload_wait_idle(cli, *idle_ms, *reload_timeout, *hard)
             } else {
-                commands::nav_action::run(cli, NavAction::Reload)
+                commands::nav_action::run(cli, NavAction::Reload { force: *hard })
             }
         }
         Command::Back => commands::nav_action::run(cli, NavAction::Back),
@@ -469,6 +472,8 @@ fn dispatch_inner(
             text_attrs,
             count,
             first,
+            include_style,
+            include_style_limit,
         } => match dom_command {
             Some(DomCommand::Stats) => commands::dom::run_stats(cli),
             Some(DomCommand::Tree {
@@ -502,7 +507,17 @@ fn dispatch_inner(
                         // `--format html` switches to raw HTML in run().
                         commands::dom::OutputMode::AriaTree
                     };
-                    commands::dom::run(cli, sel, mode, *first)
+                    let style_props: Vec<String> = include_style
+                        .as_deref()
+                        .map(|s| {
+                            s.split(',')
+                                .map(str::trim)
+                                .filter(|p| !p.is_empty())
+                                .map(str::to_owned)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    commands::dom::run(cli, sel, mode, *first, &style_props, *include_style_limit)
                 }
             }
         },
@@ -684,6 +699,7 @@ fn dispatch_inner(
             selector,
             ref_id,
             interactive,
+            critical,
         } => {
             let resolved_selector: Option<String> = if let Some(id) = ref_id.as_deref() {
                 Some(resolve_ref_via_daemon(cli, id)?)
@@ -698,7 +714,17 @@ fn dispatch_inner(
                 }) => commands::a11y_contrast::run(cli, contrast_selector.as_deref(), *fail_only),
                 Some(A11yCommand::Summary) => commands::a11y_summary::run(cli),
                 None => {
-                    commands::a11y::run(cli, *depth, *max_chars, effective_selector, *interactive)
+                    if *critical {
+                        commands::a11y::run_critical(cli, effective_selector)
+                    } else {
+                        commands::a11y::run(
+                            cli,
+                            *depth,
+                            *max_chars,
+                            effective_selector,
+                            *interactive,
+                        )
+                    }
                 }
             }
         }

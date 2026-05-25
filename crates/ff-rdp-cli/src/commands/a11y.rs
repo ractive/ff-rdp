@@ -11,7 +11,7 @@ use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_direct};
-use super::js_helpers::resolve_result;
+use super::js_helpers::{escape_selector, eval_or_bail, resolve_result};
 
 pub fn run(
     cli: &Cli,
@@ -361,6 +361,174 @@ fn strip_actor_ids(value: &mut Value) {
         _ => {}
     }
 }
+
+/// `a11y --critical` (Theme E, iter-80): surface only nodes that fail a basic
+/// WCAG audit. Runs a small JS audit in the page (the native accessibility
+/// actor exposes contrast violations via `a11y contrast` but does not surface a
+/// general "critical" severity at the tree level), then returns a flat array
+/// of violation records suitable for piping into automation.
+///
+/// `root_selector` scopes the audit to a subtree when set; defaults to the
+/// whole document.
+pub fn run_critical(cli: &Cli, root_selector: Option<&str>) -> Result<(), AppError> {
+    let mut ctx = connect_direct(cli)?;
+    let console_actor = ctx.target.console_actor.clone();
+
+    let root = root_selector.unwrap_or(":root");
+    let js = A11Y_CRITICAL_JS_TEMPLATE.replace("__SELECTOR__", &escape_selector(root));
+
+    let eval_result = eval_or_bail(
+        &mut ctx,
+        &console_actor,
+        &js,
+        "a11y --critical query failed",
+    )?;
+    let parsed = resolve_result(&mut ctx, &eval_result.result)?;
+    let violations: Vec<Value> = match parsed {
+        Value::Array(arr) => arr,
+        Value::Null => Vec::new(),
+        other => {
+            return Err(AppError::User(format!(
+                "a11y --critical: unexpected result shape: {other}"
+            )));
+        }
+    };
+
+    let mut meta = json!({
+        "root": root,
+    });
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
+
+    let controls = OutputControls::from_cli(cli, SortDir::Asc);
+    let mut items = violations;
+    controls.apply_sort(&mut items);
+    let (limited, total, truncated) = controls.apply_limit(items, None);
+    let limited = controls.apply_fields(limited);
+    let shown = limited.len();
+    let envelope =
+        output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
+
+    let hint_ctx = HintContext::new(HintSource::A11y);
+    OutputPipeline::from_cli(cli)?
+        .finalize_with_hints(&envelope, Some(&hint_ctx))
+        .map_err(AppError::from)
+}
+
+/// JS audit: returns a JSON array of violation records. Each record has
+/// `{role, selector, violation, severity}` and optionally `name`. Severity is
+/// always `"critical"` here — the helper is the WCAG-critical subset.
+const A11Y_CRITICAL_JS_TEMPLATE: &str = r#"(function() {
+  var root = document.querySelector('__SELECTOR__') || document.body || document.documentElement;
+  if (!root) return '__FF_RDP_JSON__[]';
+  var out = [];
+
+  function selectorFor(el) {
+    if (el.id) return '#' + el.id;
+    var path = [];
+    var n = el;
+    while (n && n.nodeType === 1 && n !== root && path.length < 5) {
+      var seg = n.tagName.toLowerCase();
+      if (n.classList && n.classList.length) seg += '.' + n.classList[0];
+      var parent = n.parentNode;
+      if (parent) {
+        var same = 0, idx = 0;
+        for (var i = 0; i < parent.children.length; i++) {
+          var sib = parent.children[i];
+          if (sib.tagName === n.tagName) { same++; if (sib === n) idx = same; }
+        }
+        if (same > 1) seg += ':nth-of-type(' + idx + ')';
+      }
+      path.unshift(seg);
+      n = n.parentElement;
+    }
+    return path.join(' > ');
+  }
+
+  function hasAccessibleName(el) {
+    if (el.getAttribute && el.getAttribute('aria-label')) return true;
+    var labelledBy = el.getAttribute && el.getAttribute('aria-labelledby');
+    if (labelledBy) {
+      var ids = labelledBy.split(/\s+/);
+      for (var k = 0; k < ids.length; k++) {
+        if (!ids[k]) continue;
+        var label = document.getElementById(ids[k]);
+        if (label && label.textContent && label.textContent.trim()) return true;
+      }
+    }
+    if (el.labels && el.labels.length) {
+      for (var i = 0; i < el.labels.length; i++) {
+        if ((el.labels[i].textContent || '').trim()) return true;
+      }
+    }
+    var text = (el.textContent || '').trim();
+    if (text) return true;
+    if (el.title) return true;
+    return false;
+  }
+
+  // 1) <img> without alt
+  var imgs = root.querySelectorAll('img');
+  for (var i = 0; i < imgs.length; i++) {
+    var img = imgs[i];
+    if (!img.hasAttribute('alt')) {
+      out.push({
+        role: 'img',
+        selector: selectorFor(img),
+        violation: 'missing-alt',
+        severity: 'critical'
+      });
+    }
+  }
+
+  // 2) <button>, role=button without accessible name
+  var btns = root.querySelectorAll('button, [role="button"]');
+  for (var j = 0; j < btns.length; j++) {
+    var btn = btns[j];
+    if (!hasAccessibleName(btn)) {
+      out.push({
+        role: 'button',
+        selector: selectorFor(btn),
+        violation: 'missing-name',
+        severity: 'critical'
+      });
+    }
+  }
+
+  // 3) Form controls without an accessible name
+  var ctrls = root.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), select, textarea');
+  for (var k = 0; k < ctrls.length; k++) {
+    var c = ctrls[k];
+    if (!hasAccessibleName(c) && !(c.getAttribute && c.getAttribute('placeholder'))) {
+      out.push({
+        role: c.tagName.toLowerCase(),
+        selector: selectorFor(c),
+        violation: 'missing-label',
+        severity: 'critical'
+      });
+    }
+  }
+
+  // 4) Links without accessible name
+  var as = root.querySelectorAll('a[href]');
+  for (var m = 0; m < as.length; m++) {
+    if (!hasAccessibleName(as[m])) {
+      out.push({
+        role: 'link',
+        selector: selectorFor(as[m]),
+        violation: 'missing-name',
+        severity: 'critical'
+      });
+    }
+  }
+
+  return '__FF_RDP_JSON__' + JSON.stringify(out);
+})()"#;
 
 /// JS template for selector-based accessibility tree extraction.
 ///
