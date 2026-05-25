@@ -8,7 +8,7 @@ depends_on:
   - iteration-77-spec-drift-and-windows-reparse-points
 firefox_refs:
   - path: devtools/server/actors/screenshot.js
-    lines: "1-50"
+    lines: "1-25"
     why: "Re-verify the live PNG round-trip is unchanged after the ScreenshotArgsExt shim landed in iter-77."
 kb_refs:
   - kb/rdp/actors/screenshot.md
@@ -29,15 +29,15 @@ iter-77 ACs:
 
 ## Tasks
 
-- [ ] Add `crates/ff-rdp-cli/tests/live_screenshot_shim.rs::live_screenshot_unchanged_after_shim`
-- [ ] Add `crates/ff-rdp-cli/tests/live_eval_scope.rs::live_eval_in_frame`
-- [ ] Add `crates/ff-rdp-cli/tests/live_console_printf.rs::live_console_printf_e2e`
+- [x] Add `crates/ff-rdp-cli/tests/live_screenshot_shim.rs::live_screenshot_unchanged_after_shim`
+- [x] Add `crates/ff-rdp-cli/tests/live_eval_scope.rs::live_eval_in_frame`
+- [x] Add `crates/ff-rdp-cli/tests/live_console_printf.rs::live_console_printf_e2e`
 
-## Acceptance Criteria [0/3]
+## Acceptance Criteria [3/3]
 
-- [ ] `live_screenshot_unchanged_after_shim`: PNG hash matches the pre-iter-77 baseline. Gated `FF_RDP_LIVE_TESTS=1`.
-- [ ] `live_eval_in_frame`: eval --frame against an iframe returns the iframe's location. Gated `FF_RDP_LIVE_TESTS=1`.
-- [ ] `live_console_printf_e2e`: `console.log("hello %s, you are %d", "world", 42)` round-trips through ff-rdp formatted as `"hello world, you are 42"`. Gated `FF_RDP_LIVE_TESTS=1`.
+- [x] `live_screenshot_unchanged_after_shim`: PNG hash matches the pre-iter-77 baseline. Gated `FF_RDP_LIVE_TESTS=1`.
+- [x] `live_eval_in_frame`: eval --frame against an iframe returns the iframe's location. Gated `FF_RDP_LIVE_TESTS=1`.
+- [x] `live_console_printf_e2e`: `console.log("hello %s, you are %d", "world", 42)` round-trips through ff-rdp formatted as `"hello world, you are 42"`. Gated `FF_RDP_LIVE_TESTS=1`.
 
 ## Out of scope
 
