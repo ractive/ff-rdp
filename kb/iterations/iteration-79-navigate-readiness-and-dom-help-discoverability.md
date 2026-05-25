@@ -104,9 +104,9 @@ addresses:
 - Reworking the `--wait` flag semantics or default level (the default
   remains `dom-complete`).  This iter only fixes the subscription bug so
   the existing default actually works on real pages.
-- Adding a `--include-style` flag to `dom`.  The user explicitly declined
-  it; existing `ff-rdp styles` / `ff-rdp computed` cover the use case once
-  they are discoverable.
+- Adding a `--include-style` flag to `dom`.  Planned separately in
+  [[iteration-80-ff-rdp-ergonomics-bundle]] (Theme D); kept out of this
+  iter so the discoverability fix can land independently.
 - Renaming or restructuring the `styles` / `computed` subcommands.
 
 ## References
