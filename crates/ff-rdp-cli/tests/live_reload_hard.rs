@@ -25,7 +25,10 @@ use std::time::Duration;
 use common::{LiveFirefox, base_args, ff_rdp_bin};
 
 /// Spawn a tiny local HTTP server that serves a cached HTML page and counts
-/// each request to `/page`. Returns `(port, counter, shutdown)`.
+/// each request to `/page` (other paths like `/favicon.ico` are served but
+/// not counted, so probe traffic doesn't skew the assertion). Returns
+/// `(port, counter, server-thread-handle)`; dropping the handle does not stop
+/// the server — the thread exits after its bounded `take(20)` accept loop.
 fn spawn_counting_server() -> Option<(u16, Arc<AtomicU32>, thread::JoinHandle<()>)> {
     let listener = TcpListener::bind("127.0.0.1:0").ok()?;
     let port = listener.local_addr().ok()?.port();
@@ -40,8 +43,15 @@ fn spawn_counting_server() -> Option<(u16, Arc<AtomicU32>, thread::JoinHandle<()
             let Ok(mut stream) = stream else { continue };
             let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
             let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf);
-            counter_for_thread.fetch_add(1, Ordering::SeqCst);
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let is_page = req
+                .lines()
+                .next()
+                .is_some_and(|line| line.starts_with("GET /page "));
+            if is_page {
+                counter_for_thread.fetch_add(1, Ordering::SeqCst);
+            }
             let body = b"<!doctype html><title>iter-80 reload --hard</title><h1 id=\"h\">v1</h1>";
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: public, max-age=3600\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",

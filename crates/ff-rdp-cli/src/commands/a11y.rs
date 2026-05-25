@@ -454,8 +454,12 @@ const A11Y_CRITICAL_JS_TEMPLATE: &str = r#"(function() {
     if (el.getAttribute && el.getAttribute('aria-label')) return true;
     var labelledBy = el.getAttribute && el.getAttribute('aria-labelledby');
     if (labelledBy) {
-      var label = document.getElementById(labelledBy);
-      if (label && label.textContent && label.textContent.trim()) return true;
+      var ids = labelledBy.split(/\s+/);
+      for (var k = 0; k < ids.length; k++) {
+        if (!ids[k]) continue;
+        var label = document.getElementById(ids[k]);
+        if (label && label.textContent && label.textContent.trim()) return true;
+      }
     }
     if (el.labels && el.labels.length) {
       for (var i = 0; i < el.labels.length; i++) {
