@@ -68,10 +68,11 @@ addresses:
       `crates/ff-rdp-cli/src/commands/navigate.rs`: root cause was a missing
       `watchTargets("frame")` call. Per the Firefox watcher contract a
       `WatcherActor` delivers nothing until BOTH `watchTargets("frame")` and
-      `watchResources([...])` have been issued. The non-`--with-network`
-      branch in `run_core` now calls `WatcherActor::watch_targets` before
-      `ResourceCommand::subscribe`, so document-event resources actually
-      flow on real pages.
+      `watchResources([...])` have been issued. Both the non-`--with-network`
+      `run_core` path and the `run_with_network` path now call
+      `WatcherActor::watch_targets("frame")` before subscribing to
+      resources, and pair it with a best-effort `unwatch_targets` in
+      teardown so the server-side frame-target subscription is cleared.
 - [x] **A.3** Added live regression test
       `crates/ff-rdp-cli/tests/live_navigate_readiness.rs::live_navigate_default_wait_reaches_complete`
       — navigates to `https://tennis-sepp.ch` under the default timeout
