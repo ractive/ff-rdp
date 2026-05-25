@@ -35,10 +35,16 @@ pub mod request {
     }
 
     /// Args for `unwatchTargets` — unsubscribe from target events.
+    ///
+    /// Per `devtools/shared/specs/watcher.js:20-32`, the request takes
+    /// `(targetType, options)`.  `options` is forwarded verbatim when
+    /// provided; omitted entries fall back to the server's defaults.
     #[derive(Debug, Clone, Default, Serialize)]
     pub struct UnwatchTargets {
         #[serde(rename = "targetType")]
         pub target_type: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub options: Option<serde_json::Value>,
     }
 
     /// Args for `clearResources` — clear resources for given types (oneway).

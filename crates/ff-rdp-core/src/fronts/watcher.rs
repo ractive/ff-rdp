@@ -102,9 +102,11 @@ impl WatcherFront {
         &self,
         transport: &mut RdpTransport,
         target_type: &str,
+        options: Option<serde_json::Value>,
     ) -> Result<(), ProtocolError> {
         let args = spec::request::UnwatchTargets {
             target_type: target_type.to_string(),
+            options,
         };
         call::<spec::UnwatchTargets>(transport, &self.id, &args)?;
         Ok(())
@@ -385,7 +387,9 @@ mod tests {
             // No reply sent — oneway method.
         });
 
-        front.unwatch_targets(&mut transport, "frame").unwrap();
+        front
+            .unwatch_targets(&mut transport, "frame", None)
+            .unwrap();
         t.join().unwrap();
     }
 }

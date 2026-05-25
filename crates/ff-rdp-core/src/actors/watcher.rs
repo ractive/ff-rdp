@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 
 use crate::actor::{actor_request, actor_send};
 use crate::actors::object::{GripHandle, LongStringGrip, ObjectGrip, ReleaseQueueTx};
-use crate::error::ProtocolError;
+use crate::error::{ProtocolError, RdpError, RdpResult};
 use crate::registry::Registry;
 use crate::transport::RdpTransport;
 use crate::types::{ActorId, Grip};
@@ -99,19 +99,43 @@ impl WatcherActor {
     /// Unsubscribe from target events of the given type.
     ///
     /// **Oneway** — `unwatchTargets` is declared `oneway: true` in
-    /// `devtools/shared/specs/watcher.js:23-32`. Firefox does not send a reply.
+    /// `devtools/shared/specs/watcher.js:20-32`. Firefox does not send a reply.
+    ///
+    /// `target_type` is **required** per the spec — passing `None` returns
+    /// [`RdpError::Spec`] without sending a packet (closes iter-77 W4; the
+    /// previous silent default to `"frame"` masked caller bugs).
+    ///
+    /// `options` carries the spec-declared options dict
+    /// (`devtools/shared/specs/watcher.js:23-32`) and is serialised verbatim
+    /// when provided.  Pass `None` to omit (server applies its defaults).
     pub fn unwatch_targets(
         transport: &mut RdpTransport,
         watcher_actor: &ActorId,
-        target_type: &str,
-    ) -> Result<(), ProtocolError> {
-        let params = json!({ "targetType": target_type });
+        target_type: Option<&str>,
+        options: Option<&Value>,
+    ) -> RdpResult<()> {
+        let Some(target_type) = target_type else {
+            tracing::error!(
+                actor = %watcher_actor,
+                "unwatchTargets called without targetType — refusing to send malformed packet"
+            );
+            return Err(RdpError::Spec {
+                reason: "targetType required".to_owned(),
+            });
+        };
+        let mut params = json!({ "targetType": target_type });
+        if let Some(opts) = options
+            && let Some(obj) = params.as_object_mut()
+        {
+            obj.insert("options".to_owned(), opts.clone());
+        }
         actor_send(
             transport,
             watcher_actor.as_ref(),
             "unwatchTargets",
             Some(&params),
-        )
+        )?;
+        Ok(())
     }
 }
 
@@ -205,6 +229,9 @@ pub struct TargetEvent {
 pub fn parse_target_event(msg: &Value) -> Option<TargetEvent> {
     let target = msg.get("target")?;
     let actor = target.get("actor").and_then(Value::as_str)?;
+    // Reject empty IDs at the boundary so downstream registry lookups
+    // and `assert_alive` calls cannot collide on the empty-string key.
+    let actor_id = ActorId::try_new(actor)?;
     let url = target.get("url").and_then(Value::as_str).map(String::from);
     let title = target
         .get("title")
@@ -221,7 +248,7 @@ pub fn parse_target_event(msg: &Value) -> Option<TargetEvent> {
         .unwrap_or(false);
 
     Some(TargetEvent {
-        actor: ActorId::from(actor),
+        actor: actor_id,
         url,
         title,
         target_type,
@@ -455,6 +482,123 @@ pub fn parse_console_resources_from_items(items: &[Value]) -> Vec<ConsoleResourc
         .collect()
 }
 
+/// Apply Firefox's printf-style substitution to a console-API `arguments`
+/// array.  Ported from `devtools/server/actors/webconsole.js:1100-1175`
+/// (the per-arg formatter the server uses when constructing
+/// `formatted-message` payloads).
+///
+/// Supported specifiers (Firefox subset):
+/// - `%s` — coerce argument to string.
+/// - `%d` / `%i` — coerce argument to integer (truncates non-integers).
+/// - `%f` — coerce argument to float.
+/// - `%o` / `%O` — coerce argument to JSON-ish string (best-effort).
+/// - `%c` — CSS styling.  We consume the corresponding argument (so later
+///   specifiers stay aligned with their args) but produce NO text output,
+///   matching our text-mode rendering (Firefox would apply CSS in DevTools).
+/// - `%%` — literal `%`.
+///
+/// Returns the formatted string followed by any unconsumed arguments
+/// joined with a single space (mirroring browser behaviour where extra
+/// trailing args are appended after the formatted prefix).
+fn format_console_args(args: &[Value]) -> String {
+    // No printf substitution unless the first arg is a string containing
+    // a recognised specifier.
+    let Some(fmt) = args.first().and_then(Value::as_str) else {
+        return join_console_args_plain(args);
+    };
+    if !fmt.contains('%') {
+        return join_console_args_plain(args);
+    }
+
+    let mut out = String::with_capacity(fmt.len());
+    let mut chars = fmt.chars().peekable();
+    let mut arg_idx = 1usize; // args[0] is the format string itself.
+
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        let Some(&spec) = chars.peek() else {
+            // Lone trailing '%' — preserve verbatim, matching browser behaviour.
+            out.push('%');
+            break;
+        };
+        // Consume the specifier character.
+        chars.next();
+        match spec {
+            '%' => out.push('%'),
+            's' | 'o' | 'O' => {
+                if let Some(a) = args.get(arg_idx) {
+                    out.push_str(&value_to_plain_string(a));
+                    arg_idx += 1;
+                }
+            }
+            'd' | 'i' => {
+                if let Some(a) = args.get(arg_idx) {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let n = a
+                        .as_i64()
+                        .or_else(|| a.as_f64().map(|f| f as i64))
+                        .or_else(|| a.as_str().and_then(|s| s.parse::<i64>().ok()))
+                        .unwrap_or(0);
+                    out.push_str(&n.to_string());
+                    arg_idx += 1;
+                }
+            }
+            'f' => {
+                if let Some(a) = args.get(arg_idx) {
+                    let f = a
+                        .as_f64()
+                        .or_else(|| a.as_str().and_then(|s| s.parse::<f64>().ok()))
+                        .unwrap_or(0.0);
+                    out.push_str(&f.to_string());
+                    arg_idx += 1;
+                }
+            }
+            'c' => {
+                // %c consumes its argument (a CSS string) but produces no
+                // text in our text-mode output.  Keeping the consumption
+                // aligned with browser behaviour is the important part —
+                // otherwise subsequent `%s`/`%d` would mis-bind to args.
+                if arg_idx < args.len() {
+                    arg_idx += 1;
+                }
+            }
+            other => {
+                // Unrecognised specifier: emit verbatim and do NOT consume an
+                // arg, matching browser behaviour for unknown formats.
+                out.push('%');
+                out.push(other);
+            }
+        }
+    }
+
+    // Append any trailing arguments separated by spaces (browser behaviour).
+    if arg_idx < args.len() {
+        for a in &args[arg_idx..] {
+            out.push(' ');
+            out.push_str(&value_to_plain_string(a));
+        }
+    }
+    out
+}
+
+/// Default plain-join used when the first arg is not a printf format string.
+fn join_console_args_plain(args: &[Value]) -> String {
+    args.iter()
+        .map(value_to_plain_string)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn value_to_plain_string(v: &Value) -> String {
+    match v.as_str() {
+        Some(s) => s.to_owned(),
+        None => v.to_string(),
+    }
+}
+
 fn parse_single_console_resource(item: &Value) -> Option<ConsoleResource> {
     let resource_id = item.get("resourceId").and_then(Value::as_u64);
 
@@ -466,19 +610,13 @@ fn parse_single_console_resource(item: &Value) -> Option<ConsoleResource> {
             .unwrap_or("log")
             .to_owned();
 
-        // Arguments is an array of values; join them as strings.
+        // Arguments is an array of values; if the first arg is a printf
+        // format string, apply substitution before joining.  Falls back to
+        // a plain space-joined string when no specifiers are present.
         let message = msg
             .get("arguments")
             .and_then(Value::as_array)
-            .map(|args| {
-                args.iter()
-                    .map(|a| match a.as_str() {
-                        Some(s) => s.to_owned(),
-                        None => a.to_string(),
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
+            .map(|args| format_console_args(args))
             .unwrap_or_default();
 
         let source = msg
@@ -809,6 +947,79 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+
+    // ── unwatch_targets (Theme D / iter-77 W3, W4) ──────────────────────────
+
+    use std::io::BufReader;
+    use std::net::{TcpListener, TcpStream};
+
+    fn make_unwatch_pair() -> (RdpTransport, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        (RdpTransport::from_parts(reader, writer), server)
+    }
+
+    /// AC: `unwatch_targets_options_serialized` — `options` arg appears in
+    /// the outbound packet next to `targetType`.
+    #[test]
+    fn unwatch_targets_options_serialized() {
+        let (mut transport, server) = make_unwatch_pair();
+        let watcher = ActorId::from("server1.conn0.watcher4");
+
+        let t = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            let req = crate::transport::recv_from(&mut reader).unwrap();
+            assert_eq!(req["to"], "server1.conn0.watcher4");
+            assert_eq!(req["type"], "unwatchTargets");
+            assert_eq!(req["targetType"], "frame");
+            assert_eq!(req["options"]["isPriorityTarget"], true);
+        });
+
+        let opts = json!({ "isPriorityTarget": true });
+        WatcherActor::unwatch_targets(&mut transport, &watcher, Some("frame"), Some(&opts))
+            .unwrap();
+        t.join().unwrap();
+    }
+
+    /// AC: `unwatch_targets_rejects_missing_type` — `targetType=None`
+    /// returns `RdpError::Spec` and **no** packet reaches the server.
+    #[test]
+    fn unwatch_targets_rejects_missing_type() {
+        let (mut transport, server) = make_unwatch_pair();
+        let watcher = ActorId::from("server1.conn0.watcher4");
+
+        // Hold the server end open but assert that no readable bytes appear.
+        let probe = std::thread::spawn(move || {
+            use std::io::Read as _;
+            use std::time::Duration;
+            server
+                .set_read_timeout(Some(Duration::from_millis(75)))
+                .unwrap();
+            let mut buf = [0u8; 16];
+            let mut srv = &server;
+            srv.read(&mut buf).err().map(|e| e.kind())
+        });
+
+        let err = WatcherActor::unwatch_targets(&mut transport, &watcher, None, None).unwrap_err();
+        assert!(
+            matches!(err, RdpError::Spec { ref reason } if reason == "targetType required"),
+            "expected RdpError::Spec, got {err:?}"
+        );
+
+        // The server must have hit its read timeout — proving no packet was sent.
+        let kind = probe.join().unwrap();
+        assert!(
+            matches!(
+                kind,
+                Some(std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
+            ),
+            "expected read timeout (no packet sent), got {kind:?}"
+        );
+    }
 
     // ── extract_grips ────────────────────────────────────────────────────────
 
@@ -1348,6 +1559,112 @@ mod tests {
         let resources = parse_console_resources(&event);
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].message, "valid");
+    }
+
+    // ── printf substitution (Theme C / iter-77 S6) ──────────────────────────
+
+    /// AC: `console_printf_string_substitution`.
+    #[test]
+    fn console_printf_string_substitution() {
+        let event = json!({
+            "array": [["console-message", [{
+                "message": {
+                    "arguments": ["hello %s", "world"],
+                    "level": "log",
+                    "filename": "t.js",
+                    "lineNumber": 1,
+                    "columnNumber": 1,
+                    "timeStamp": 0.0
+                }
+            }]]]
+        });
+        let resources = parse_console_resources(&event);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].message, "hello world");
+    }
+
+    /// AC: `console_printf_digit` — `%d`/`%i`/`%f` numeric formatting.
+    #[test]
+    fn console_printf_digit() {
+        let event = json!({
+            "array": [["console-message", [{
+                "message": {
+                    "arguments": ["you are %d and %f%%", 42, 99.5_f64],
+                    "level": "log",
+                    "filename": "t.js",
+                    "lineNumber": 1,
+                    "columnNumber": 1,
+                    "timeStamp": 0.0
+                }
+            }]]]
+        });
+        let resources = parse_console_resources(&event);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].message, "you are 42 and 99.5%");
+    }
+
+    /// AC: `console_printf_styled_dropped` — `%c` consumes its arg but
+    /// produces no styled output in our text-mode renderer.
+    #[test]
+    fn console_printf_styled_dropped() {
+        let event = json!({
+            "array": [["console-message", [{
+                "message": {
+                    "arguments": ["%cbold %s", "font-weight: bold", "world"],
+                    "level": "log",
+                    "filename": "t.js",
+                    "lineNumber": 1,
+                    "columnNumber": 1,
+                    "timeStamp": 0.0
+                }
+            }]]]
+        });
+        let resources = parse_console_resources(&event);
+        assert_eq!(resources.len(), 1);
+        // `%c` consumes the CSS arg silently; `%s` still binds to "world".
+        assert_eq!(resources[0].message, "bold world");
+    }
+
+    /// printf format with %% literal and trailing extra args (browser behaviour
+    /// is to append remaining args separated by spaces after the formatted text).
+    #[test]
+    fn console_printf_percent_literal_and_trailing_args() {
+        let event = json!({
+            "array": [["console-message", [{
+                "message": {
+                    "arguments": ["100%% of %s", "tests", "extra1", 7],
+                    "level": "log",
+                    "filename": "t.js",
+                    "lineNumber": 1,
+                    "columnNumber": 1,
+                    "timeStamp": 0.0
+                }
+            }]]]
+        });
+        let resources = parse_console_resources(&event);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].message, "100% of tests extra1 7");
+    }
+
+    /// Strings without specifiers should not allocate scratch — the joiner
+    /// behaviour is preserved for the unchanged path.
+    #[test]
+    fn console_printf_no_specifier_passthrough() {
+        let event = json!({
+            "array": [["console-message", [{
+                "message": {
+                    "arguments": ["plain", "second"],
+                    "level": "log",
+                    "filename": "t.js",
+                    "lineNumber": 1,
+                    "columnNumber": 1,
+                    "timeStamp": 0.0
+                }
+            }]]]
+        });
+        let resources = parse_console_resources(&event);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].message, "plain second");
     }
 
     #[test]

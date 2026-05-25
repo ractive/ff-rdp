@@ -19,7 +19,8 @@ pub mod util;
 
 pub use actors::accessibility::{AccessibilityActor, AccessibleNode, filter_interactive};
 pub use actors::console::{
-    ConsoleMessage, EvalException, EvalResult, WebConsoleActor, parse_console_notification,
+    ConsoleMessage, EvalException, EvalResult, EvaluateScope, WebConsoleActor,
+    parse_console_notification,
 };
 pub use actors::device::DeviceActor;
 pub use actors::dom_walker::{DomAttr, DomNode, DomWalkerActor};
@@ -36,7 +37,7 @@ pub use actors::page_style::{
 pub use actors::reflow::ReflowActor;
 pub use actors::responsive::ResponsiveActor;
 pub use actors::root::{ProcessInfo, RootActor};
-pub use actors::screenshot::ScreenshotActor;
+pub use actors::screenshot::{ScreenshotActor, ScreenshotArgsExt, ScreenshotArgsRect};
 pub use actors::screenshot_content::{
     CaptureRect, PrepareCapture, ScreenshotCapture, ScreenshotContentActor,
 };

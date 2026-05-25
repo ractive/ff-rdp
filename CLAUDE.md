@@ -74,6 +74,12 @@ An AC without a named test is not done.
   The ralph-loop skill enforces this at merge time via `ac-fidelity-check.sh`:
   every ticked AC must reference a test slug, a code symbol that appears in the
   diff, or the `[deferred — new plan: <path>]` form. See iter-61z.
+- Spec drift: when ff-rdp must send a field or call a method that is NOT
+  declared in the published Firefox spec dict (but the server *reads* it
+  anyway), annotate the call site with `// allow-spec-drift: bug NNNN`,
+  where `bug NNNN` is a filed Mozilla Bugzilla issue tracking the gap.
+  The annotation makes the drift reviewable for the `rdp-spec-reviewer`
+  agent and pairs every drift with an upstream-fix tracker (see iter-77).
 - Commit-message claims (`adds Foo::Bar`, "subscribes to dom-interactive",
   "implements RdpError::Navigation") must be backed by the branch diff. The
   ralph-loop skill emits a `## Claims vs code` PR-description section via

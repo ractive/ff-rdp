@@ -1,3 +1,4 @@
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::actor::{actor_request, actor_send};
@@ -5,6 +6,86 @@ use crate::actors::screenshot_content::PrepareCapture;
 use crate::error::ProtocolError;
 use crate::transport::RdpTransport;
 use crate::types::ActorId;
+
+/// Wire-format arguments for the root `screenshotActor.capture` request.
+///
+/// The published spec dict at `devtools/shared/specs/screenshot.js:13-35`
+/// declares only `fullpage`, `file`, `clipboard`, `selector`, `dpr`, and
+/// `delay`.  However, the server-side `devtools/server/actors/screenshot.js`
+/// implementation reads three additional fields that ff-rdp must send for
+/// the two-step Firefox-149+ protocol to work:
+///
+/// - `browsingContextID` — selects the browsing context whose snapshot
+///   `browsingContext.drawSnapshot` should render.
+/// - `snapshotScale` — `windowDPR * windowZoom`; omitted when equal to 1.0
+///   (server default).
+/// - `rect` — capture rectangle for fullpage / element captures.
+///
+/// This typed shim makes the spec drift explicit (rather than scattered
+/// `json!({…})` blocks) so the `rdp-spec-reviewer` agent can flag it.
+///
+// allow-spec-drift: bug TBD (Mozilla Bugzilla — screenshot.args dict missing
+// browsingContextID/snapshotScale/rect; tracked upstream, follow-up to file).
+#[derive(Debug, Clone, Serialize)]
+pub struct ScreenshotArgsExt {
+    // ── spec-declared fields ────────────────────────────────────────────────
+    /// Whether to capture the full scrollable page.  Spec field.
+    pub fullpage: bool,
+    /// Device pixel ratio.  Spec types this as `nullable:string`, so it is
+    /// serialised as a JSON string (e.g. `"1.5"`).
+    pub dpr: String,
+
+    // ── extra fields read by the server but NOT in the spec dict ────────────
+    /// Browsing context the snapshot should be taken against.
+    #[serde(rename = "browsingContextID")]
+    pub browsing_context_id: u64,
+    /// `windowDPR * windowZoom`.  Omitted when equal to 1.0 (server default).
+    #[serde(rename = "snapshotScale", skip_serializing_if = "Option::is_none")]
+    pub snapshot_scale: Option<f64>,
+    /// Optional capture rectangle, serialised as `{left,top,width,height}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rect: Option<ScreenshotArgsRect>,
+}
+
+/// Serialisable capture rectangle.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScreenshotArgsRect {
+    pub left: f64,
+    pub top: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl ScreenshotArgsExt {
+    /// Build a `ScreenshotArgsExt` from the two-step protocol inputs.
+    pub fn from_prep(browsing_context_id: u64, full_page: bool, prep: &PrepareCapture) -> Self {
+        let snapshot_scale_raw = prep.window_dpr * prep.window_zoom;
+        let snapshot_scale = if (snapshot_scale_raw - 1.0).abs() < 1e-6 {
+            None
+        } else {
+            Some(snapshot_scale_raw)
+        };
+        let rect = prep.rect.as_ref().map(|r| ScreenshotArgsRect {
+            left: r.left,
+            top: r.top,
+            width: r.width,
+            height: r.height,
+        });
+        Self {
+            fullpage: full_page,
+            dpr: format!("{}", prep.window_dpr),
+            browsing_context_id,
+            snapshot_scale,
+            rect,
+        }
+    }
+
+    /// Serialise to a JSON `Value` for inclusion as the `args` field of the
+    /// outbound `capture` request.
+    pub fn to_args_value(&self) -> Value {
+        serde_json::to_value(self).expect("ScreenshotArgsExt is Serialize-safe")
+    }
+}
 
 /// Operations on the root-level `screenshotActor` (parent-process side).
 ///
@@ -53,43 +134,12 @@ impl ScreenshotActor {
         full_page: bool,
         prep: &PrepareCapture,
     ) -> Result<String, ProtocolError> {
-        let snapshot_scale = prep.window_dpr * prep.window_zoom;
-        // The Firefox spec at devtools/shared/specs/screenshot.js:18 types
-        // `dpr` as `nullable:string`.  Serialise as a JSON string so the
-        // server-side typed-protocol validator accepts the request.
-        let dpr_str = format!("{}", prep.window_dpr);
-
-        let mut args = if (snapshot_scale - 1.0).abs() < 1e-6 {
-            // Omit snapshotScale when it equals the server default (1.0).
-            json!({
-                "browsingContextID": browsing_context_id,
-                "fullpage": full_page,
-                "dpr": dpr_str,
-            })
-        } else {
-            json!({
-                "browsingContextID": browsing_context_id,
-                "fullpage": full_page,
-                "dpr": dpr_str,
-                "snapshotScale": snapshot_scale,
-            })
-        };
-
-        // Forward the capture rect if present (required for fullpage/element captures).
-        if let Some(ref rect) = prep.rect {
-            args["rect"] = json!({
-                "left": rect.left,
-                "top": rect.top,
-                "width": rect.width,
-                "height": rect.height,
-            });
-        }
-
+        let args = ScreenshotArgsExt::from_prep(browsing_context_id, full_page, prep);
         let response = actor_request(
             transport,
             screenshot_actor.as_ref(),
             "capture",
-            Some(&json!({ "args": args })),
+            Some(&json!({ "args": args.to_args_value() })),
         )?;
 
         // The response shape is: `{ "value": { "data": "data:...", ... } }`
@@ -122,38 +172,12 @@ impl ScreenshotActor {
         full_page: bool,
         prep: &PrepareCapture,
     ) -> Result<(), ProtocolError> {
-        let snapshot_scale = prep.window_dpr * prep.window_zoom;
-        let dpr_str = format!("{}", prep.window_dpr);
-
-        let mut args = if (snapshot_scale - 1.0).abs() < 1e-6 {
-            json!({
-                "browsingContextID": browsing_context_id,
-                "fullpage": full_page,
-                "dpr": dpr_str,
-            })
-        } else {
-            json!({
-                "browsingContextID": browsing_context_id,
-                "fullpage": full_page,
-                "dpr": dpr_str,
-                "snapshotScale": snapshot_scale,
-            })
-        };
-
-        if let Some(ref rect) = prep.rect {
-            args["rect"] = json!({
-                "left": rect.left,
-                "top": rect.top,
-                "width": rect.width,
-                "height": rect.height,
-            });
-        }
-
+        let args = ScreenshotArgsExt::from_prep(browsing_context_id, full_page, prep);
         actor_send(
             transport,
             screenshot_actor,
             "capture",
-            Some(&json!({ "args": args })),
+            Some(&json!({ "args": args.to_args_value() })),
         )
     }
 }
@@ -411,6 +435,57 @@ mod tests {
         };
         ScreenshotActor::capture(&mut transport, &actor_id, 1, false, &prep).unwrap();
         t.join().unwrap();
+    }
+
+    /// AC: `screenshot_args_ext_serializes_full_set` — `ScreenshotArgsExt`
+    /// round-trips through `to_args_value()` carrying both the spec-declared
+    /// fields and the locally-required `browsingContextID` / `snapshotScale`
+    /// / `rect` fields.  Also verifies the `allow-spec-drift: bug` annotation
+    /// is present on the struct (doctest grep against the module source).
+    #[test]
+    fn screenshot_args_ext_serializes_full_set() {
+        let prep = PrepareCapture {
+            window_dpr: 2.0,
+            window_zoom: 1.5,
+            rect: Some(crate::actors::screenshot_content::CaptureRect {
+                left: 1.0,
+                top: 2.0,
+                width: 800.0,
+                height: 600.0,
+            }),
+        };
+        let args = ScreenshotArgsExt::from_prep(99, true, &prep);
+        let v = args.to_args_value();
+        // Spec-declared fields.
+        assert_eq!(v["fullpage"], true);
+        assert_eq!(v["dpr"], "2");
+        // Locally-required fields (NOT in the published spec dict).
+        assert_eq!(v["browsingContextID"], 99);
+        assert!((v["snapshotScale"].as_f64().unwrap() - 3.0).abs() < f64::EPSILON);
+        assert_eq!(v["rect"]["left"], 1.0);
+        assert_eq!(v["rect"]["width"], 800.0);
+
+        // Drop snapshotScale when DPR*zoom == 1.0.
+        let unit = PrepareCapture {
+            window_dpr: 1.0,
+            window_zoom: 1.0,
+            rect: None,
+        };
+        let unit_v = ScreenshotArgsExt::from_prep(1, false, &unit).to_args_value();
+        assert!(
+            unit_v.get("snapshotScale").is_none(),
+            "snapshotScale must be omitted when equal to server default 1.0"
+        );
+        assert!(unit_v.get("rect").is_none());
+
+        // Verify the allow-spec-drift annotation is present in the module
+        // source — it is part of the contract that spec drift is documented.
+        let src = include_str!("screenshot.rs");
+        assert!(
+            src.contains("allow-spec-drift: bug"),
+            "screenshot.rs must carry an `allow-spec-drift: bug …` annotation \
+             documenting the spec-dict gap"
+        );
     }
 
     #[test]

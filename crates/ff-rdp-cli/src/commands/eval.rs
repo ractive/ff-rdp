@@ -2,8 +2,8 @@ use std::io::Read;
 
 use anyhow::Context as _;
 use ff_rdp_core::{
-    ActorId, Grip, ObjectActor, ProcessDescriptorFront, ProtocolError, RootActor, ScopedGrip,
-    TabActor, WebConsoleActor, sanitize_for_terminal,
+    ActorId, EvaluateScope, Grip, ObjectActor, ProcessDescriptorFront, ProtocolError, RootActor,
+    ScopedGrip, TabActor, WebConsoleActor, sanitize_for_terminal,
 };
 use serde_json::json;
 
@@ -198,14 +198,44 @@ fn get_chrome_console_actor(
 /// from within a script on a CSP-restricted page is still blocked.  The fix is
 /// to send the raw expression directly so Firefox evaluates it via its built-in
 /// DevTools mechanism (not subject to page CSP).
+/// CLI-side companion to [`EvaluateScope`] — owns `&str` slices borrowed
+/// from clap so the dispatch site does not have to construct an
+/// [`ActorId`] before deciding which connection path to take.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CliEvalScope<'a> {
+    pub frame_actor: Option<&'a str>,
+    pub selected_node_actor: Option<&'a str>,
+    pub inner_window_id: Option<u64>,
+}
+
+impl CliEvalScope<'_> {
+    /// Convert into an owned [`EvaluateScope`] for the core API, returning
+    /// `None` when every field is unset (so callers can pass `None` to the
+    /// scoped evaluator and stay on the legacy code path).
+    pub fn to_scope(self) -> Option<EvaluateScope> {
+        if self.frame_actor.is_none()
+            && self.selected_node_actor.is_none()
+            && self.inner_window_id.is_none()
+        {
+            return None;
+        }
+        Some(EvaluateScope {
+            frame_actor: self.frame_actor.map(ActorId::from),
+            selected_node_actor: self.selected_node_actor.map(ActorId::from),
+            inner_window_id: self.inner_window_id,
+        })
+    }
+}
+
 fn eval_with_csp_fallback(
     transport: &mut ff_rdp_core::RdpTransport,
     registry: &ff_rdp_core::Registry,
     console_actor: &ActorId,
     script: &str,
     fallback_script: &str,
+    scope: Option<&EvaluateScope>,
 ) -> Result<(ff_rdp_core::EvalResult, bool), AppError> {
-    let first = WebConsoleActor::evaluate_js_async(transport, console_actor, script)
+    let first = WebConsoleActor::evaluate_js_async_scoped(transport, console_actor, script, scope)
         .map_err(AppError::from)?;
 
     // Check whether the exception looks like a CSP eval block.
@@ -228,7 +258,12 @@ fn eval_with_csp_fallback(
 
     // Retry with the chrome-privileged parent-process console actor using the
     // fallback script (no eval() wrapper so page CSP does not apply).
-    match WebConsoleActor::evaluate_js_async(transport, &chrome_console, fallback_script) {
+    match WebConsoleActor::evaluate_js_async_scoped(
+        transport,
+        &chrome_console,
+        fallback_script,
+        scope,
+    ) {
         Ok(result) => Ok((result, true)),
         Err(ProtocolError::ActorError { .. }) => {
             // Chrome context not available — return the original CSP error.
@@ -245,8 +280,10 @@ pub fn run(
     use_stdin: bool,
     stringify: bool,
     no_isolate: bool,
+    cli_scope: CliEvalScope<'_>,
 ) -> Result<(), AppError> {
     let script = load_script(script, file, use_stdin)?;
+    let scope = cli_scope.to_scope();
     let isolate = !no_isolate;
     let final_script = build_script(&script, stringify, isolate);
 
@@ -274,6 +311,7 @@ pub fn run(
         &console_actor,
         &final_script,
         &fallback_script,
+        scope.as_ref(),
     ) {
         Ok(result) => result,
         Err(AppError::RdpProtocol { ref name, .. })
@@ -292,6 +330,7 @@ pub fn run(
                 &fresh_console,
                 &final_script,
                 &fallback_script,
+                scope.as_ref(),
             )?
         }
         Err(e) => return Err(e),

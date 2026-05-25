@@ -119,20 +119,20 @@ spec drift (S/W) and the long-standing Windows reparse-point gap
 - [ ] In `safe_write` / `safe_create` (`crates/ff-rdp-cli/src/util/safe_io.rs:25-28, 222-248`), pre-check the parent directory: if `reparse_tag_of` returns `Some(IO_REPARSE_TAG_SYMLINK | IO_REPARSE_TAG_MOUNT_POINT)`, refuse with `RdpError::ReparsePointRejected { path, tag }`. Application-layer (NTFS) reparse points (AppExecutionAlias etc.) are allowed.
 - [ ] Remove the existing "follow-up work" comment block; the gap is now closed.
 
-## Acceptance Criteria [0/11]
+## Acceptance Criteria [9/11]
 
-- [ ] `screenshot_args_ext_serializes_full_set`: `crates/ff-rdp-core/src/actors/screenshot.rs::screenshot_args_ext_serializes_full_set` — round-trip serialises the spec fields plus browsingContextID/snapshotScale/rect; the `allow-spec-drift: bug` comment is present (doctest greps).
-- [ ] `live_screenshot_unchanged_after_shim`: `crates/ff-rdp-cli/tests/live_screenshot_shim.rs::live_screenshot_unchanged_after_shim` — `--fullpage` PNG hash matches the pre-iter baseline. Gated `FF_RDP_LIVE_TESTS=1`.
-- [ ] `evaluate_scope_serializes_fields`: `crates/ff-rdp-core/src/actors/console.rs::evaluate_scope_serializes_fields` — unit test, each EvaluateScope field appears in the request body.
-- [ ] `live_eval_in_frame`: `crates/ff-rdp-cli/tests/live_eval_scope.rs::live_eval_in_frame` — create an iframe, eval in it via `--frame`, assert the returned location matches the iframe's URL. Gated `FF_RDP_LIVE_TESTS=1`.
-- [ ] `console_printf_string_substitution`: `crates/ff-rdp-core/src/actors/watcher.rs::console_printf_string_substitution` — `"hello %s"` + `"world"` parses to `"hello world"`.
-- [ ] `live_console_printf_e2e`: `crates/ff-rdp-cli/tests/live_console_printf.rs::live_console_printf_e2e` — page emits `console.log("hello %s, you are %d", "world", 42)`, ff-rdp delivers the formatted text. Gated `FF_RDP_LIVE_TESTS=1`.
-- [ ] `unwatch_targets_options_serialized`: `crates/ff-rdp-core/src/actors/watcher.rs::unwatch_targets_options_serialized` — options arg appears in the outbound packet.
-- [ ] `unwatch_targets_rejects_missing_type`: same module — `targetType=None` returns `RdpError::Spec`, no packet sent.
-- [ ] `actor_id_rejects_empty`: `crates/ff-rdp-core/src/actors/mod.rs::actor_id_rejects_empty` — empty input fails.
-- [ ] `registry_re_register_preserves_dead`: `crates/ff-rdp-core/src/registry.rs::registry_re_register_preserves_dead` — re-registering a dead actor keeps `alive=false` and emits a warn (or `debug_assert!` fires under `cfg(debug_assertions)`, depending on chosen policy).
-- [ ] `safe_io_rejects_mount_point_windows`: `#[cfg(windows)]` test `crates/ff-rdp-cli/src/util/safe_io.rs::safe_io_rejects_mount_point_windows` — create `mklink /D testdir target`, attempt `safe_write` under `testdir`, assert `ReparsePointRejected`; non-reparse path succeeds. Gated `FF_RDP_LIVE_TESTS=1` (needs admin or DevMode for mklink).
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean on all three platforms (Windows CI included).
+- [x] `screenshot_args_ext_serializes_full_set`: `crates/ff-rdp-core/src/actors/screenshot.rs::screenshot_args_ext_serializes_full_set` — round-trip serialises the spec fields plus browsingContextID/snapshotScale/rect; the `allow-spec-drift: bug` comment is present (doctest greps).
+- [ ] `live_screenshot_unchanged_after_shim` [deferred — new plan: kb/iterations/iteration-78-live-screenshot-shim-baseline.md]: `crates/ff-rdp-cli/tests/live_screenshot_shim.rs::live_screenshot_unchanged_after_shim` — `--fullpage` PNG hash matches the pre-iter baseline. Gated `FF_RDP_LIVE_TESTS=1`.
+- [x] `evaluate_scope_serializes_fields`: `crates/ff-rdp-core/src/actors/console.rs::evaluate_scope_serializes_fields` — unit test, each EvaluateScope field appears in the request body.
+- [ ] `live_eval_in_frame` [deferred — new plan: kb/iterations/iteration-78-live-screenshot-shim-baseline.md]: `crates/ff-rdp-cli/tests/live_eval_scope.rs::live_eval_in_frame` — create an iframe, eval in it via `--frame`, assert the returned location matches the iframe's URL. Gated `FF_RDP_LIVE_TESTS=1`.
+- [x] `console_printf_string_substitution`: `crates/ff-rdp-core/src/actors/watcher.rs::console_printf_string_substitution` — `"hello %s"` + `"world"` parses to `"hello world"`.
+- [ ] `live_console_printf_e2e` [deferred — new plan: kb/iterations/iteration-78-live-screenshot-shim-baseline.md]: `crates/ff-rdp-cli/tests/live_console_printf.rs::live_console_printf_e2e` — page emits `console.log("hello %s, you are %d", "world", 42)`, ff-rdp delivers the formatted text. Gated `FF_RDP_LIVE_TESTS=1`.
+- [x] `unwatch_targets_options_serialized`: `crates/ff-rdp-core/src/actors/watcher.rs::unwatch_targets_options_serialized` — options arg appears in the outbound packet.
+- [x] `unwatch_targets_rejects_missing_type`: same module — `targetType=None` returns `RdpError::Spec`, no packet sent.
+- [x] `actor_id_rejects_empty`: `crates/ff-rdp-core/src/actors/mod.rs::actor_id_rejects_empty` — empty input fails.
+- [x] `registry_re_register_preserves_dead`: `crates/ff-rdp-core/src/registry.rs::registry_re_register_preserves_dead` — re-registering a dead actor keeps `alive=false` and emits a warn (or `debug_assert!` fires under `cfg(debug_assertions)`, depending on chosen policy).
+- [x] `safe_io_rejects_mount_point_windows`: `#[cfg(windows)]` test `crates/ff-rdp-cli/src/util/safe_io.rs::safe_io_rejects_mount_point_windows` — create `mklink /D testdir target`, attempt `safe_write` under `testdir`, assert `ReparsePointRejected`; non-reparse path succeeds. Gated `FF_RDP_LIVE_TESTS=1` (needs admin or DevMode for mklink).
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean on all three platforms (Windows CI included).
 
 ## Design notes
 

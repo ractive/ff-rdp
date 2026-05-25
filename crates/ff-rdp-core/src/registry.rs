@@ -113,9 +113,25 @@ impl Registry {
 
     /// Register an actor with the given kind and optional owning target root.
     ///
-    /// If the actor is already registered, the existing entry is overwritten
-    /// (it was either dead or a stale reference from a previous page load).
+    /// If the actor is already registered, the *new* entry is normally
+    /// installed — except when the previous entry was marked dead
+    /// (`alive=false`).  In that case we keep the dead state (so callers
+    /// that still hold a stale handle continue to surface
+    /// `RdpError::ActorDestroyed`) and emit a `tracing::warn!` recording the
+    /// re-register attempt.  With iter-74's registry-invalidation lifecycle
+    /// in place this branch should be effectively unreachable in
+    /// production; the warn lets us spot regressions.
     pub fn register(&self, id: ActorId, kind: FrontKind, target_root: Option<ActorId>) {
+        if let Some(existing) = self.inner.get(&id)
+            && !existing.is_alive()
+        {
+            tracing::warn!(
+                actor = %id,
+                kind = ?kind,
+                "registry: refusing to revive dead actor — keeping alive=false"
+            );
+            return;
+        }
         self.inner.insert(id, FrontState::new(kind, target_root));
     }
 
@@ -630,6 +646,31 @@ mod tests {
         assert!(
             reg.assert_alive(&unrelated_console).is_ok(),
             "unrelated console must still be alive"
+        );
+    }
+
+    /// AC: `registry_re_register_preserves_dead` — re-registering an actor
+    /// whose previous state was `alive=false` must keep the dead marker.
+    /// Iter-74's invalidation lifecycle should make this branch unreachable
+    /// in production, so the policy is "preserve dead + warn" — preferred
+    /// over `debug_assert!` so a stray legacy code path cannot panic the
+    /// CLI under `cfg(debug_assertions)`.
+    #[test]
+    fn registry_re_register_preserves_dead() {
+        let reg = Registry::new();
+        let id = make_id("conn0/target1");
+        reg.register(id.clone(), FrontKind::Target, None);
+        reg.invalidate_target(&id);
+        assert!(matches!(
+            reg.assert_alive(&id),
+            Err(RdpError::ActorDestroyed { .. })
+        ));
+
+        // Re-register: must NOT revive the actor.
+        reg.register(id.clone(), FrontKind::Target, None);
+        assert!(
+            matches!(reg.assert_alive(&id), Err(RdpError::ActorDestroyed { .. })),
+            "re-register of a dead actor must keep alive=false"
         );
     }
 
