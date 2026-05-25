@@ -1,11 +1,11 @@
 use serde_json::{Value, json};
 
 use crate::actor::{actor_request, actor_send};
-use crate::actors::object::{GripHandle, ObjectGrip, ReleaseQueueTx};
+use crate::actors::object::{GripHandle, LongStringGrip, ObjectGrip, ReleaseQueueTx};
 use crate::error::ProtocolError;
 use crate::registry::Registry;
 use crate::transport::RdpTransport;
-use crate::types::ActorId;
+use crate::types::{ActorId, Grip};
 
 /// Operations on a Watcher actor for subscribing to resource events.
 ///
@@ -598,11 +598,128 @@ fn parse_single_network_resource(item: &Value) -> Option<NetworkResource> {
 }
 
 // ---------------------------------------------------------------------------
+// Grip extraction from watcher events (iter-76b Theme B)
+// ---------------------------------------------------------------------------
+
+/// Inspect a single JSON value and push a [`Grip`] if it represents a
+/// server-side actor grip (`object` or `longString`).
+fn visit_grip_value(v: &Value, out: &mut Vec<Grip>) {
+    let Some(obj) = v.as_object() else { return };
+    let Some(type_str) = obj.get("type").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(actor) = obj.get("actor").and_then(Value::as_str) else {
+        return;
+    };
+    match type_str {
+        "object" => {
+            let class = obj
+                .get("class")
+                .and_then(Value::as_str)
+                .unwrap_or("Object")
+                .to_owned();
+            out.push(Grip::Object {
+                actor: ActorId::from(actor),
+                class,
+                preview: None,
+            });
+        }
+        "longString" => {
+            let length = obj.get("length").and_then(Value::as_u64).unwrap_or(0);
+            let initial = obj
+                .get("initial")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            out.push(Grip::LongString {
+                actor: ActorId::from(actor),
+                length,
+                initial,
+            });
+        }
+        _ => {}
+    }
+}
+
+/// Extract any [`Grip`] values embedded in a watcher resource event.
+///
+/// Walks the following fields (tolerating missing / unexpected shapes):
+/// - `event.array[*][1][*].message.arguments[]` — console-message grips.
+/// - `event.array[*][1][*].message.styles[]` — console-message style grips.
+/// - `event.result` — top-level evaluation result grip.
+/// - `event.exception` — top-level evaluation exception grip.
+///
+/// For each candidate object:
+/// - `{"type": "object", "actor": <id>, "class": <class>}` → `Grip::Object`.
+/// - `{"type": "longString", "actor": <id>}` → `Grip::LongString`.
+///
+/// Returns an empty `Vec` when no grips are found.
+pub fn extract_grips(event: &Value) -> Vec<Grip> {
+    let mut out = Vec::new();
+
+    // Walk the resources-available-array structure.
+    if let Some(array) = event.get("array").and_then(Value::as_array) {
+        for sub in array {
+            let sub_arr = match sub.as_array() {
+                Some(a) if a.len() == 2 => a,
+                _ => continue,
+            };
+            let resource_type = sub_arr[0].as_str().unwrap_or_default();
+            if resource_type != "console-message" {
+                continue;
+            }
+            let Some(items) = sub_arr[1].as_array() else {
+                continue;
+            };
+            for item in items {
+                if let Some(msg) = item.get("message") {
+                    if let Some(args) = msg.get("arguments").and_then(Value::as_array) {
+                        for arg in args {
+                            visit_grip_value(arg, &mut out);
+                        }
+                    }
+                    if let Some(styles) = msg.get("styles").and_then(Value::as_array) {
+                        for style in styles {
+                            visit_grip_value(style, &mut out);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check top-level result and exception fields.
+    if let Some(result) = event.get("result") {
+        visit_grip_value(result, &mut out);
+    }
+    if let Some(exception) = event.get("exception") {
+        visit_grip_value(exception, &mut out);
+    }
+
+    out
+}
+
+// ---------------------------------------------------------------------------
 // ResourceGripGuard (iter-76 Theme B)
 // ---------------------------------------------------------------------------
 
-/// Guard that owns the [`GripHandle<ObjectGrip>`] instances embedded in
-/// watcher resource events (`consoleAPICall`, `evaluationResult`).
+/// Type-safe storage for a grip of any kind inside [`ResourceGripGuard`].
+///
+/// Each variant wraps the correctly-typed `GripHandle<K>` so that the marker
+/// type is honoured — a `LongString` actor is NOT accidentally wrapped as
+/// `ObjectGrip`.  The inner `GripHandle` is never accessed after construction;
+/// it exists solely for its `Drop` impl which enqueues the release request.
+#[allow(dead_code)] // fields are held for their Drop impl, not for reading
+enum AnyGripHandle {
+    /// An object grip (`Grip::Object`).
+    Object(GripHandle<ObjectGrip>),
+    /// A long-string grip (`Grip::LongString`).
+    LongString(GripHandle<LongStringGrip>),
+    /// A primitive grip (no actor ID; release is a no-op).
+    Primitive,
+}
+
+/// Guard that owns grip handles embedded in watcher resource events.
 ///
 /// When a watcher delivers a resource event the packet may contain object grip
 /// actor IDs.  `ResourceGripGuard` collects those grips and auto-releases them
@@ -619,7 +736,7 @@ fn parse_single_network_resource(item: &Value) -> Option<NetworkResource> {
 /// // When `guard` is dropped, all grips are released via the queue.
 /// ```
 pub struct ResourceGripGuard {
-    grips: Vec<GripHandle<ObjectGrip>>,
+    grips: Vec<AnyGripHandle>,
     release_tx: ReleaseQueueTx,
 }
 
@@ -632,14 +749,22 @@ impl ResourceGripGuard {
         }
     }
 
-    /// Add a [`Grip`] to this guard.
+    /// Add a [`Grip`] to this guard with type-safe dispatch.
     ///
-    /// If `grip` is an object or long-string variant, its actor ID is wrapped
-    /// in a `ScopedGrip<ObjectGrip>` that will enqueue a release on drop.
-    /// Primitive grips are stored but carry no actor ID and release nothing.
-    pub fn add_grip(&mut self, grip: crate::types::Grip) {
-        self.grips
-            .push(GripHandle::new(grip, self.release_tx.clone()));
+    /// - `Grip::Object` → wrapped in `GripHandle<ObjectGrip>`.
+    /// - `Grip::LongString` → wrapped in `GripHandle<LongStringGrip>`.
+    /// - Primitives → stored as `AnyGripHandle::Primitive` (no release).
+    pub fn add_grip(&mut self, grip: Grip) {
+        let handle = match grip {
+            Grip::Object { .. } => {
+                AnyGripHandle::Object(GripHandle::<ObjectGrip>::new(grip, self.release_tx.clone()))
+            }
+            Grip::LongString { .. } => AnyGripHandle::LongString(
+                GripHandle::<LongStringGrip>::new(grip, self.release_tx.clone()),
+            ),
+            _ => AnyGripHandle::Primitive,
+        };
+        self.grips.push(handle);
     }
 
     /// Number of grips currently held by this guard.
@@ -650,6 +775,22 @@ impl ResourceGripGuard {
     /// Returns `true` if no grips are currently held.
     pub fn is_empty(&self) -> bool {
         self.grips.is_empty()
+    }
+
+    /// Returns a `Vec` of string tags for each stored handle.
+    ///
+    /// Used in tests to verify that the correct `GripHandle<K>` variant is
+    /// constructed for each `Grip` kind.
+    #[cfg(test)]
+    pub fn kinds(&self) -> Vec<&'static str> {
+        self.grips
+            .iter()
+            .map(|h| match h {
+                AnyGripHandle::Object(_) => "Object",
+                AnyGripHandle::LongString(_) => "LongString",
+                AnyGripHandle::Primitive => "Primitive",
+            })
+            .collect()
     }
 }
 
@@ -664,8 +805,78 @@ impl std::fmt::Debug for ResourceGripGuard {
 #[cfg(test)]
 #[allow(clippy::unreadable_literal)]
 mod tests {
+    use crate::actors::object::release_queue;
+
     use super::*;
     use serde_json::json;
+
+    // ── extract_grips ────────────────────────────────────────────────────────
+
+    /// AC: `extract_grips_finds_object_and_long_string`
+    #[test]
+    fn extract_grips_finds_object_and_long_string() {
+        let event = json!({
+            "type": "resources-available-array",
+            "array": [["console-message", [{
+                "message": {
+                    "arguments": [
+                        {"type": "object", "actor": "conn0/obj1", "class": "Array"},
+                        {"type": "longString", "actor": "conn0/longStr1", "length": 100, "initial": "abc"}
+                    ]
+                }
+            }]]]
+        });
+        let grips = extract_grips(&event);
+        assert_eq!(grips.len(), 2, "expected 2 grips, got {}", grips.len());
+        assert!(
+            matches!(&grips[0], Grip::Object { actor, .. } if actor.as_ref() == "conn0/obj1"),
+            "first grip must be Object(conn0/obj1)"
+        );
+        assert!(
+            matches!(&grips[1], Grip::LongString { actor, .. } if actor.as_ref() == "conn0/longStr1"),
+            "second grip must be LongString(conn0/longStr1)"
+        );
+    }
+
+    #[test]
+    fn extract_grips_empty_on_no_grips() {
+        let event = json!({"type": "resources-available-array", "array": []});
+        assert!(extract_grips(&event).is_empty());
+    }
+
+    #[test]
+    fn extract_grips_top_level_result_and_exception() {
+        let event = json!({
+            "result": {"type": "object", "actor": "conn0/res1", "class": "Promise"},
+            "exception": {"type": "longString", "actor": "conn0/err1", "length": 50, "initial": "err"}
+        });
+        let grips = extract_grips(&event);
+        assert_eq!(grips.len(), 2);
+        assert!(matches!(&grips[0], Grip::Object { actor, .. } if actor.as_ref() == "conn0/res1"));
+        assert!(
+            matches!(&grips[1], Grip::LongString { actor, .. } if actor.as_ref() == "conn0/err1")
+        );
+    }
+
+    // ── ResourceGripGuard type-safe dispatch ────────────────────────────────
+
+    /// AC: `add_grip_dispatches_on_kind`
+    #[test]
+    fn add_grip_dispatches_on_kind() {
+        let (tx, _rx) = release_queue(16);
+        let mut guard = ResourceGripGuard::new(tx);
+        guard.add_grip(Grip::Object {
+            actor: "conn0/obj1".into(),
+            class: "Object".to_owned(),
+            preview: None,
+        });
+        guard.add_grip(Grip::LongString {
+            actor: "conn0/longStr1".into(),
+            length: 0,
+            initial: String::new(),
+        });
+        assert_eq!(guard.kinds(), vec!["Object", "LongString"]);
+    }
 
     #[test]
     fn parse_target_event_valid() {

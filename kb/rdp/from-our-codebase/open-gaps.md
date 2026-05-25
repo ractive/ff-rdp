@@ -36,13 +36,15 @@ Catalog of known RDP-layer gaps as of 2026-05-23, drawn from dogfooding sessions
 
 ## actor-leak-in-daemon
 
-**Status (iter-70)**: still partial. `ScopedGrip` is used in `commands/eval.rs:295` for daemon eval grips, but other grip-consuming call sites (inspector, network response body) still leak.  No soak test has been added.
+**Status (iter-76b)**: CLOSED. `extract_grips` now walks watcher resource payloads and populates `ResourceGripGuard` for every `consoleAPICall` / `evaluationResult` containing object or longString grips. The drainer thread (`grip_release_drainer_loop`) owns `ReleaseQueueRx` and sends release packets over the shared `FramedWriter`. Type-safe dispatch via `AnyGripHandle` ensures `LongString` actors are not misidentified as `Object` actors. Live test: `live_grip_release_actually_releases` (`FF_RDP_LIVE_TESTS=1`).
+
+Remaining known gap: grip-consuming call sites in inspector and network-response-body paths still do not call `add_grip`; those are low-priority because daemon eval is the primary source of unbounded actor growth. File a new iteration if they become a problem.
 
 **Symptom**: Each `evaluateJSAsync` returning an object/longString allocates server-side actor IDs that are never released in long-running daemons. iter-54 task 4 landed `ObjectActor::release` + `ScopedGrip` wrapper as building blocks but didn't wire them into daemon-mode call sites or add a soak test.
 
-**Protocol layer**: We never send `release` to grip actors. Firefox's per-connection actor pool grows without bound.
+**Protocol layer**: Fixed in iter-76b — `release` packets are now sent for grip actors extracted from daemon watcher events.
 
-**Sessions**: surfaced in [[iteration-54-protocol-correctness]] task 4 (deferred sub-tasks 2 & 3); no dogfooding session has reproduced an OOM yet but a 1000-eval soak test was planned.
+**Sessions**: surfaced in [[iteration-54-protocol-correctness]] task 4 (deferred sub-tasks 2 & 3); closed in [[iteration-76b-daemon-scalability-bulk-drain-and-live-grip-release]].
 
 ## legacy-startlisteners-coexistence
 

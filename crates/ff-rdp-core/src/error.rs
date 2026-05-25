@@ -260,6 +260,10 @@ pub enum ProtocolError {
         error: String,
         message: String,
     },
+
+    /// A typed-state invariant was violated by a misuse of the transport API.
+    #[error("invalid state: {0}")]
+    InvalidState(String),
 }
 
 impl ProtocolError {
@@ -340,7 +344,8 @@ impl ProtocolError {
             | Self::BulkFrameTooLarge { .. }
             | Self::BulkPacketUnsupported { .. }
             | Self::BulkPacketUnexpected { .. }
-            | Self::ActorChannelFull { .. } => false,
+            | Self::ActorChannelFull { .. }
+            | Self::InvalidState(_) => false,
         }
     }
 }

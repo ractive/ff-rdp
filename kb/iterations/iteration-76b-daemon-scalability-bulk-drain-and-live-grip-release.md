@@ -2,36 +2,51 @@
 title: "Iteration 76b: Daemon scalability follow-up — bulk-frame drain, wire up grip release, type-safe Grip dispatch"
 type: iteration
 date: 2026-05-25
-status: planned
+status: completed
 branch: iter-76b/daemon-scalability-bulk-drain-and-live-grip-release
 depends_on:
   - iteration-75b-pre-create-pr-discipline-gate
   - iteration-76-daemon-scalability-bulk-grips-pipelining
 firefox_refs:
-  - path: devtools/shared/specs/object.js
-    lines: "205-218"
-    why: "ObjectActor.release is oneway in spec — confirms the release-method name and no-reply semantics."
-  - path: devtools/shared/specs/string.js
-    lines: "58-85"
-    why: "LongStringActor.release is also oneway with the same method name (`release`); GripKind markers must dispatch to this when the grip is a LongString."
-  - path: devtools/shared/transport/packets.js
-    lines: "247-431"
-    why: "BulkPacket framing — confirms that on type/actor mismatch the client must still drain the announced byte length before reading the next frame."
-  - path: devtools/server/actors/watcher.js
-    lines: "405-460"
-    why: "Watcher event payload shape — where to find grip actor IDs (object-actor / long-string-actor sub-fields) inside `consoleAPICall` / `evaluationResult` resource updates."
+  - lines: 205-218
+    path: devtools/shared/specs/object.js
+    why: >-
+      ObjectActor.release is oneway in spec — confirms the release-method name and
+      no-reply semantics.
+  - lines: 58-85
+    path: devtools/shared/specs/string.js
+    why: >-
+      LongStringActor.release is also oneway with the same method name (`release`);
+      GripKind markers must dispatch to this when the grip is a LongString.
+  - lines: 247-431
+    path: devtools/shared/transport/packets.js
+    why: >-
+      BulkPacket framing — confirms that on type/actor mismatch the client must still
+      drain the announced byte length before reading the next frame.
+  - lines: 405-460
+    path: devtools/server/actors/watcher.js
+    why: >-
+      Watcher event payload shape — where to find grip actor IDs (object-actor /
+      long-string-actor sub-fields) inside `consoleAPICall` / `evaluationResult` resource
+      updates.
 kb_refs:
   - kb/rdp/actors/object.md
   - kb/rdp/actors/string.md
   - kb/rdp/actors/watcher.md
   - kb/rdp/from-our-codebase/open-gaps.md
 first_call_sites:
-  - primitive: "ff_rdp_core::transport::drain_bulk_frame"
-    site: "crates/ff-rdp-core/src/transport.rs (called inside recv_bulk_with_handler on type/kind mismatch and on the JSON-first-byte fast-path)"
-  - primitive: "ff_rdp_core::actors::watcher::extract_grips"
-    site: "crates/ff-rdp-cli/src/daemon/server.rs::dispatch_firefox_message (populates ResourceGripGuard)"
-  - primitive: "ff_rdp_cli::daemon::server::spawn_grip_release_drainer"
-    site: "crates/ff-rdp-cli/src/daemon/server.rs::run_daemon (replaces the dropped `_grip_release_rx` binding)"
+  - primitive: ff_rdp_core::transport::drain_bulk_frame
+    site: >-
+      crates/ff-rdp-core/src/transport.rs (called inside recv_bulk_with_handler on
+      type/kind mismatch and on the JSON-first-byte fast-path)
+  - primitive: ff_rdp_core::actors::watcher::extract_grips
+    site: >-
+      crates/ff-rdp-cli/src/daemon/server.rs::dispatch_firefox_message (populates
+      ResourceGripGuard)
+  - primitive: ff_rdp_cli::daemon::server::spawn_grip_release_drainer
+    site: >-
+      crates/ff-rdp-cli/src/daemon/server.rs::run_daemon (replaces the dropped
+      `_grip_release_rx` binding)
 dogfood_path: |
   # 1. Stream-corruption regression: after a --bulk screenshot fallback to
   #    JSON, the next command must succeed (was: misaligned reads / panic).
@@ -39,7 +54,7 @@ dogfood_path: |
   ff-rdp --bulk screenshot https://example.com /tmp/s.png   # falls back to JSON
   ff-rdp eval https://example.com 'document.title'          # was broken; must succeed
   pkill -f 'firefox.*ff-rdp-test-profile'
-
+  
   # 2. Grip release smoke: daemon mode, fire 100 evals, assert Firefox
   #    object pool stays bounded.
   ff-rdp daemon start --port 8965
@@ -49,13 +64,18 @@ dogfood_path: |
   # Inspect the daemon log: must contain release packets for objectActor grips.
   grep '"type":"release"' ~/.cache/ff-rdp/daemon-8965/rdp-trace.log | wc -l
   # Expected: ≥ 100 (one release per grip).
-
+  
   # 3. iter-76b discipline gate.
   FF_RDP_FIREFOX_PATH=/Users/james/devel/firefox \
     cargo run -p xtask -- check-iteration-ready \
       --plan kb/iterations/iteration-76b-daemon-scalability-bulk-drain-and-live-grip-release.md \
       --base origin/main
-tags: [iteration, daemon, transport, grips, followup]
+tags:
+  - iteration
+  - daemon
+  - transport
+  - grips
+  - followup
 ---
 
 Post-merge review of iter-76 (PR #109) surfaced four shipping defects.
@@ -102,49 +122,49 @@ type-safe `add_grip` dispatch on grip variant, late-registration doc).
 
 ### A. Bulk-frame drain on mismatch
 
-- [ ] Add `pub(crate) fn drain_bulk_frame(reader, header_first_byte) -> Result<(), ProtocolError>` in `crates/ff-rdp-core/src/transport.rs` that finishes reading the bulk header (`bulk <actor> <kind> <length>:`), then reads-and-discards exactly `length` bytes from the body in 8 KiB chunks. Apply the existing `max_frame_bytes()` cap before the discard loop (carry forward the iter-75 M-1 fix to this path).
-- [ ] In `recv_bulk_with_handler_from`, on the `first[0] != b'b'` fast-path: do NOT return immediately. Push the first byte back onto a peek buffer (already supported via `BufReader::seek_relative(-1)` if Buf; otherwise prepend to the read buffer for the next `recv_from`) — the caller's next `recv_from` must see a well-aligned frame. If true push-back isn't feasible, instead consume the rest of the JSON length prefix + `:` + body in-place and surface the parsed JSON via a new `BulkPacketUnexpected { json: Value }` variant so the caller can act on it.
-- [ ] In `recv_bulk_with_handler_from`, on actor/kind mismatch: call `drain_bulk_frame` to consume the remaining body before returning `BulkPacketUnexpected { actor, kind }`. The stream must remain aligned afterwards.
-- [ ] Restructure `try_two_step_screenshot` in `crates/ff-rdp-cli/src/commands/screenshot.rs`: do NOT call `send_capture_request` then `recv_bulk_with_handler`. Instead, call the full `ScreenshotActor::capture` and inspect the reply: if the reply is a base64 `data:` URL, decode in-process; if Firefox ever returns a bulk hint (future), fall through to the bulk path. Remove the pre-consume race entirely.
-- [ ] Tests:
+- [x] Add `pub(crate) fn drain_bulk_frame(reader, header_first_byte) -> Result<(), ProtocolError>` in `crates/ff-rdp-core/src/transport.rs` that finishes reading the bulk header (`bulk <actor> <kind> <length>:`), then reads-and-discards exactly `length` bytes from the body in 8 KiB chunks. Apply the existing `max_frame_bytes()` cap before the discard loop (carry forward the iter-75 M-1 fix to this path).
+- [x] In `recv_bulk_with_handler_from`, on the `first[0] != b'b'` fast-path: do NOT return immediately. Push the first byte back onto a peek buffer (already supported via `BufReader::seek_relative(-1)` if Buf; otherwise prepend to the read buffer for the next `recv_from`) — the caller's next `recv_from` must see a well-aligned frame. If true push-back isn't feasible, instead consume the rest of the JSON length prefix + `:` + body in-place and surface the parsed JSON via a new `BulkPacketUnexpected { json: Value }` variant so the caller can act on it.
+- [x] In `recv_bulk_with_handler_from`, on actor/kind mismatch: call `drain_bulk_frame` to consume the remaining body before returning `BulkPacketUnexpected { actor, kind }`. The stream must remain aligned afterwards.
+- [x] Restructure `try_two_step_screenshot` in `crates/ff-rdp-cli/src/commands/screenshot.rs`: do NOT call `send_capture_request` then `recv_bulk_with_handler`. Instead, call the full `ScreenshotActor::capture` and inspect the reply: if the reply is a base64 `data:` URL, decode in-process; if Firefox ever returns a bulk hint (future), fall through to the bulk path. Remove the pre-consume race entirely.
+- [x] Tests:
   - `bulk_recv_drains_on_actor_mismatch` (`transport.rs`): a fixture stream of `bulk other-actor screenshot 30:<30 bytes>` followed by `5:hello` — call `recv_bulk_with_handler("actor", "screenshot", ...)`, assert it returns `BulkPacketUnexpected`, then `recv_from` succeeds with `hello`.
   - `bulk_recv_drains_on_json_peek` (`transport.rs`): stream `30:{"from":"x","msg":"y"}…` — call `recv_bulk_with_handler`, assert error variant, then `recv_from` returns the JSON intact.
   - `bulk_recv_caps_drain_length` (`transport.rs`): announced length > `max_frame_bytes()` is rejected without entering the discard loop.
 
 ### B. Wire up grip release end-to-end
 
-- [ ] Spawn `grip_release_drainer` thread in `run_daemon` (`crates/ff-rdp-cli/src/daemon/server.rs`): owns `grip_release_rx`, loops `recv()` and for each `(actor_id, kind)` issues `actor_send(transport, &actor_id, "release", None)`. Thread exits when the channel disconnects. Replace the `let (grip_release_tx, _grip_release_rx) = …` line so `_grip_release_rx` is genuinely moved into the drainer.
-- [ ] Add `pub fn extract_grips(event: &Value) -> Vec<Grip>` to `crates/ff-rdp-core/src/actors/watcher.rs`. Walks `consoleAPICall.arguments[]`, `consoleAPICall.styles[]`, `evaluationResult.result`, `evaluationResult.exception`, and resource-array variants; for each `{ type: "object", actor: <id> }` returns `Grip::Object(actor)`, and for each `{ type: "longString", actor: <id> }` returns `Grip::LongString(actor)`. Tolerate missing/extra fields.
-- [ ] In `dispatch_firefox_message` (server.rs:548-553), call `extract_grips(&msg)` and `ResourceGripGuard::add_grip(grip)` for each returned grip BEFORE the guard drops.
-- [ ] Live test `live_grip_release_actually_releases` (`crates/ff-rdp-cli/tests/live_grip_release.rs`): daemon mode, evaluate `window` 100 times, snapshot Firefox's object-actor count via `Memory.getDistinguishedObjects` (or a proxy: count `objectActor` IDs in trace); assert the count after `sleep 1s` is bounded by 10 (release latency tolerance). Gated `FF_RDP_LIVE_TESTS=1`.
-- [ ] Unit test `extract_grips_finds_object_and_long_string` (`actors/watcher.rs`): synthetic `consoleAPICall` JSON with one object grip and one longString grip; assert both are returned with correct kind.
+- [x] Spawn `grip_release_drainer` thread in `run_daemon` (`crates/ff-rdp-cli/src/daemon/server.rs`): owns `grip_release_rx`, loops `recv()` and for each `(actor_id, kind)` issues `actor_send(transport, &actor_id, "release", None)`. Thread exits when the channel disconnects. Replace the `let (grip_release_tx, _grip_release_rx) = …` line so `_grip_release_rx` is genuinely moved into the drainer.
+- [x] Add `pub fn extract_grips(event: &Value) -> Vec<Grip>` to `crates/ff-rdp-core/src/actors/watcher.rs`. Walks `consoleAPICall.arguments[]`, `consoleAPICall.styles[]`, `evaluationResult.result`, `evaluationResult.exception`, and resource-array variants; for each `{ type: "object", actor: <id> }` returns `Grip::Object(actor)`, and for each `{ type: "longString", actor: <id> }` returns `Grip::LongString(actor)`. Tolerate missing/extra fields.
+- [x] In `dispatch_firefox_message` (server.rs:548-553), call `extract_grips(&msg)` and `ResourceGripGuard::add_grip(grip)` for each returned grip BEFORE the guard drops.
+- [x] Live test `live_grip_release_actually_releases` (`crates/ff-rdp-cli/tests/live_grip_release.rs`): daemon mode, evaluate `window` 100 times, snapshot Firefox's object-actor count via `Memory.getDistinguishedObjects` (or a proxy: count `objectActor` IDs in trace); assert the count after `sleep 1s` is bounded by 10 (release latency tolerance). Gated `FF_RDP_LIVE_TESTS=1`.
+- [x] Unit test `extract_grips_finds_object_and_long_string` (`actors/watcher.rs`): synthetic `consoleAPICall` JSON with one object grip and one longString grip; assert both are returned with correct kind.
 
 ### C. Type-safe Grip dispatch + small cleanups
 
-- [ ] `ResourceGripGuard::add_grip(grip: Grip)` matches on `grip`:
+- [x] `ResourceGripGuard::add_grip(grip: Grip)` matches on `grip`:
   ```
   Grip::Object(a)     => self.handles.push(GripHandle::<ObjectGrip>::new(a, self.tx.clone()).into_dyn()),
   Grip::LongString(a) => self.handles.push(GripHandle::<LongStringGrip>::new(a, self.tx.clone()).into_dyn()),
   ```
   (Or store a homogeneous `Vec<Box<dyn ReleaseHandle>>`.) The point is: a `LongStringGrip` must NOT be wrapped as `ObjectGrip`. Today both methods happen to be `"release"` so there's no observable bug, but the type-level distinction must be honoured.
-- [ ] `DemuxReader::run_loop` (`transport.rs:885-890`): replace `self.reader.take().expect(...)` with a `match` that returns `Err(ProtocolError::InvalidState("run_loop called without a reader — use split_demux()".into()))` when `None`. Add `ProtocolError::InvalidState(String)` variant if not present.
-- [ ] Add a `tracing::warn!` in `DemuxReader::dispatch` (`transport.rs:846`) when the incoming packet has no `from` field — silent routing to fallback hides protocol errors.
-- [ ] Document the "all actors must be registered before `run_loop` is called" invariant in the rustdoc on `DemuxReader::register` AND `DemuxReader::run_loop`. Cross-link them.
-- [ ] Unit tests:
+- [x] `DemuxReader::run_loop` (`transport.rs:885-890`): replace `self.reader.take().expect(...)` with a `match` that returns `Err(ProtocolError::InvalidState("run_loop called without a reader — use split_demux()".into()))` when `None`. Add `ProtocolError::InvalidState(String)` variant if not present.
+- [x] Add a `tracing::warn!` in `DemuxReader::dispatch` (`transport.rs:846`) when the incoming packet has no `from` field — silent routing to fallback hides protocol errors.
+- [x] Document the "all actors must be registered before `run_loop` is called" invariant in the rustdoc on `DemuxReader::register` AND `DemuxReader::run_loop`. Cross-link them.
+- [x] Unit tests:
   - `demux_run_loop_without_reader_returns_error` (`transport.rs`): `DemuxReader::new()` then `run_loop()` returns `Err(InvalidState)`, no panic.
   - `add_grip_dispatches_on_kind` (`watcher.rs`): mock release queue; add one `Grip::Object` and one `Grip::LongString`; drop guard; assert two distinct release-handle types were enqueued (use a `#[cfg(test)]` accessor on `GripHandle` to expose its kind).
 
-## Acceptance Criteria [0/9]
+## Acceptance Criteria [9/9]
 
-- [ ] `bulk_recv_drains_on_actor_mismatch`: `crates/ff-rdp-core/src/transport.rs::bulk_recv_drains_on_actor_mismatch` — after a mismatched bulk frame, the next `recv_from` returns the next frame intact.
-- [ ] `bulk_recv_drains_on_json_peek`: `crates/ff-rdp-core/src/transport.rs::bulk_recv_drains_on_json_peek` — JSON frame peeked by bulk recv is preserved for the next `recv_from`.
-- [ ] `bulk_recv_caps_drain_length`: `crates/ff-rdp-core/src/transport.rs::bulk_recv_caps_drain_length` — over-cap announced length is rejected without entering the discard loop.
-- [ ] `live_screenshot_bulk_fallback_then_eval` (live, `FF_RDP_LIVE_TESTS=1`): `crates/ff-rdp-cli/tests/live_screenshot_bulk_fallback.rs::live_screenshot_bulk_fallback_then_eval` — `--bulk` screenshot then `eval` both succeed against the same Firefox instance (regression for the stream-poison bug).
-- [ ] `live_grip_release_actually_releases` (live, `FF_RDP_LIVE_TESTS=1`): `crates/ff-rdp-cli/tests/live_grip_release.rs::live_grip_release_actually_releases` — 100 evals in daemon mode produce ≥ 100 `release` packets in the trace; object-actor count stays bounded.
-- [ ] `extract_grips_finds_object_and_long_string`: `crates/ff-rdp-core/src/actors/watcher.rs::extract_grips_finds_object_and_long_string` — synthetic event with both grip kinds returns both.
-- [ ] `demux_run_loop_without_reader_returns_error`: `crates/ff-rdp-core/src/transport.rs::demux_run_loop_without_reader_returns_error` — typed error, not panic.
-- [ ] `add_grip_dispatches_on_kind`: `crates/ff-rdp-core/src/actors/watcher.rs::add_grip_dispatches_on_kind` — `LongStringGrip` enqueued through `add_grip` is NOT wrapped as `ObjectGrip`.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean; `cargo xtask check-iteration-ready --plan kb/iterations/iteration-76b-…md --base origin/main` exits 0.
+- [x] `bulk_recv_drains_on_actor_mismatch`: `crates/ff-rdp-core/src/transport.rs::bulk_recv_drains_on_actor_mismatch` — after a mismatched bulk frame, the next `recv_from` returns the next frame intact.
+- [x] `bulk_recv_drains_on_json_peek`: `crates/ff-rdp-core/src/transport.rs::bulk_recv_drains_on_json_peek` — JSON frame peeked by bulk recv is preserved for the next `recv_from`.
+- [x] `bulk_recv_caps_drain_length`: `crates/ff-rdp-core/src/transport.rs::bulk_recv_caps_drain_length` — over-cap announced length is rejected without entering the discard loop.
+- [x] `live_screenshot_bulk_fallback_then_eval` (live, `FF_RDP_LIVE_TESTS=1`): `crates/ff-rdp-cli/tests/live_screenshot_bulk_fallback.rs::live_screenshot_bulk_fallback_then_eval` — `--bulk` screenshot then `eval` both succeed against the same Firefox instance (regression for the stream-poison bug).
+- [x] `live_grip_release_actually_releases` (live, `FF_RDP_LIVE_TESTS=1`): `crates/ff-rdp-cli/tests/live_grip_release.rs::live_grip_release_actually_releases` — 100 evals in daemon mode produce ≥ 100 `release` packets in the trace; object-actor count stays bounded.
+- [x] `extract_grips_finds_object_and_long_string`: `crates/ff-rdp-core/src/actors/watcher.rs::extract_grips_finds_object_and_long_string` — synthetic event with both grip kinds returns both.
+- [x] `demux_run_loop_without_reader_returns_error`: `crates/ff-rdp-core/src/transport.rs::demux_run_loop_without_reader_returns_error` — typed error, not panic.
+- [x] `add_grip_dispatches_on_kind`: `crates/ff-rdp-core/src/actors/watcher.rs::add_grip_dispatches_on_kind` — `LongStringGrip` enqueued through `add_grip` is NOT wrapped as `ObjectGrip`.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean; `cargo xtask check-iteration-ready --plan kb/iterations/iteration-76b-…md --base origin/main` exits 0.
 
 ## Design notes
 
