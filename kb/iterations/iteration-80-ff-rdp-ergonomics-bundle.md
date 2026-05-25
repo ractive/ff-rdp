@@ -2,14 +2,17 @@
 title: "Iteration 80: ff-rdp ergonomics bundle — help grouping, reload --hard, eval --unwrap, dom --include-style, a11y --critical"
 type: iteration
 date: 2026-05-25
-status: in-progress
+status: done
 branch: iter-80/ff-rdp-ergonomics-bundle
 depends_on:
   - iteration-77-spec-drift-and-windows-reparse-points
 firefox_refs:
-  - path: devtools/server/actors/page-style.js
-    lines: "1-120"
-    why: "PageStyle.getComputed / getApplied — backs the new `dom --include-style` per-match getComputedStyle round-trip (Theme D).  Confirms the response shape we re-use from `ff-rdp computed`."
+  - lines: 1-120
+    path: devtools/server/actors/page-style.js
+    why: >-
+      PageStyle.getComputed / getApplied — backs the new `dom --include-style`
+      per-match getComputedStyle round-trip (Theme D).  Confirms the response shape we re-use
+      from `ff-rdp computed`.
 kb_refs:
   - kb/rdp/actors/styles.md
   - kb/rdp/from-our-codebase/open-gaps.md
@@ -30,7 +33,11 @@ dogfood_path: |
   # E — a11y --critical
   ff-rdp a11y --critical                                       # only WCAG violations, not the full aria tree
   pkill -f 'firefox.*ff-rdp-profile'
-tags: [iteration, cli-help, ergonomics, dogfood]
+tags:
+  - iteration
+  - cli-help
+  - ergonomics
+  - dogfood
 ---
 
 Five small CLI-ergonomics fixes bundled from the 2026-05-25 dogfooding
