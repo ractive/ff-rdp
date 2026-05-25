@@ -19,14 +19,15 @@ fn base_args(port: u16) -> Vec<String> {
 
 fn navigate_server() -> MockRdpServer {
     // Since iter-61v Theme A, navigate subscribes to document-event resources
-    // and waits for dom-complete (not JS readyState polling).  The flow is:
-    //   listTabs → getTarget → getWatcher → watchResources → navigateTo
-    //   (with dom-loading + dom-complete followups) → unwatchResources
-    //   → getTarget (refresh_console_actor after navigate)
+    // and waits for dom-complete (not JS readyState polling).  The flow (iter-79):
+    //   listTabs → getTarget → getWatcher → watchTargets → watchResources →
+    //   navigateTo (with dom-loading + dom-complete followups) →
+    //   unwatchResources → getTarget (refresh_console_actor after navigate)
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
         .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
         .on(
             "watchResources",
             load_fixture("watch_resources_response.json"),
@@ -56,6 +57,7 @@ fn navigate_with_network_server() -> MockRdpServer {
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
         .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
         .on(
             "watchResources",
             load_fixture("watch_resources_response.json"),
@@ -233,6 +235,7 @@ fn navigate_with_network_empty_when_no_events() {
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
         .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
         .on(
             "watchResources",
             load_fixture("watch_resources_response.json"),
@@ -299,7 +302,9 @@ fn navigate_wait_text_reresolves_console_actor_after_navigate() {
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
         // Theme A (iter-61v): document-event subscription replaces readyState polling.
+        // iter-79 Theme A: watchTargets("frame") is issued before watchResources.
         .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
         .on(
             "watchResources",
             load_fixture("watch_resources_response.json"),

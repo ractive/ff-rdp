@@ -429,6 +429,16 @@ pub fn run_core(
             .map_err(AppError::from)?;
         None
     } else {
+        // Engage the watcher's frame-target subscription BEFORE subscribing
+        // to document-event resources.  Per the Firefox watcher contract
+        // (devtools/shared/specs/watcher.js + kb/rdp/actors/watcher.md), a
+        // WatcherActor delivers nothing until BOTH `watchTargets("frame")` and
+        // `watchResources([...])` have been issued — so without this call the
+        // document-event stream stays empty and `wait_for_doc_complete` times
+        // out even on pages that load successfully (iter-79 Theme A).
+        WatcherActor::watch_targets(ctx.transport_mut(), &watcher_actor, "frame")
+            .map_err(AppError::from)?;
+
         // Obtain (or create) the ResourceCommand bus via the session so it can
         // be reused by other command helpers without constructing a new bus each
         // time.  The Arc clone detaches ownership from `ctx` so we can still
@@ -476,6 +486,13 @@ pub fn run_core(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .unsubscribe(ctx.transport_mut(), sub_id);
+
+        // Pair the prelude's `watchTargets("frame")` with `unwatchTargets`
+        // (oneway, no reply) so the server-side frame-target subscription is
+        // cleared.  Best-effort like the neighbouring `unsubscribe` call —
+        // we don't want a teardown error to mask the navigation result.
+        let _ =
+            WatcherActor::unwatch_targets(ctx.transport_mut(), &watcher_actor, Some("frame"), None);
 
         // Restore the original timeout so subsequent RDP round-trips (e.g.
         // wait-text / wait-selector polling) use the configured timeout.
@@ -725,6 +742,14 @@ pub fn run_with_network(
     let watcher_actor =
         TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
 
+    // Engage the watcher's frame-target stream before subscribing to resources.
+    // Per the Firefox WatcherActor contract (kb/rdp/actors/watcher.md), the
+    // server delivers nothing until BOTH `watchTargets("frame")` and
+    // `watchResources([...])` have been issued — without this the
+    // `network-event` stream stays empty on `navigate --with-network`.
+    WatcherActor::watch_targets(ctx.transport_mut(), &watcher_actor, "frame")
+        .map_err(AppError::from)?;
+
     // Subscribe to network events before navigating so we capture everything.
     WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
         .map_err(AppError::from)?;
@@ -766,6 +791,10 @@ pub fn run_with_network(
     // Unwatch to clean up server-side resources.
     let _ =
         WatcherActor::unwatch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"]);
+
+    // Pair the `watchTargets("frame")` prelude with `unwatchTargets` so the
+    // server-side frame-target subscription is cleared (oneway, best-effort).
+    let _ = WatcherActor::unwatch_targets(ctx.transport_mut(), &watcher_actor, Some("frame"), None);
 
     // NOTE: In the non-daemon path, wait_after_navigate is called *after*
     // draining network events and unwatching resources, so network data is
@@ -1215,6 +1244,130 @@ mod tests {
     // a second thread while the function is blocked in recv — if the lock were
     // held the second thread would also block, causing the test to time out.
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // navigate_subscribes_before_navigateto (iter-79 Theme A AC)
+    //
+    // The navigate prelude must issue, in this exact order:
+    //   1. watchTargets("frame")           — engages the frame-target stream
+    //   2. watchResources(["document-event"]) — engages the resource stream
+    //   3. navigateTo                       — triggers the navigation
+    //
+    // Without (1) Firefox suppresses document-event resources entirely (per
+    // the watcher contract), so wait_for_doc_complete never observes the
+    // events on a real page and the CLI times out.  This test pins the
+    // prelude to that order by capturing outbound packets on a mock server.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn navigate_subscribes_before_navigateto() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+
+        use ff_rdp_core::transport::{RdpTransport, encode_frame, recv_from};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // Mock Firefox: greeting, then accept three packets.  Reply to the
+        // first two (watchTargets, watchResources) so actor_request returns;
+        // the third (navigateTo) is fire-and-forget.
+        let server_handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+
+            let greeting = serde_json::json!({
+                "from": "root",
+                "applicationType": "browser",
+                "traits": {}
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+
+            let p1 = recv_from(&mut reader).unwrap();
+            // Reply to watchTargets.
+            let reply1 = serde_json::json!({
+                "from": p1["to"].as_str().unwrap_or("conn0/watcher1"),
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&reply1).unwrap()).as_bytes())
+                .unwrap();
+
+            let p2 = recv_from(&mut reader).unwrap();
+            // Reply to watchResources.
+            let reply2 = serde_json::json!({
+                "from": p2["to"].as_str().unwrap_or("conn0/watcher1"),
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&reply2).unwrap()).as_bytes())
+                .unwrap();
+
+            let p3 = recv_from(&mut reader).unwrap();
+            (p1, p2, p3)
+        });
+
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+
+        let watcher_actor = ff_rdp_core::ActorId::from("conn0/watcher1");
+        let target_actor = ff_rdp_core::ActorId::from("conn0/target1");
+
+        // Drive the prelude exactly as run_core() does: watchTargets, then
+        // ResourceCommand::subscribe (which sends watchResources), then a raw
+        // navigateTo send.
+        WatcherActor::watch_targets(&mut transport, &watcher_actor, "frame").unwrap();
+
+        let mut bus = ResourceCommand::new(watcher_actor.clone());
+        let (_sub_id, _rx) = bus
+            .subscribe(&mut transport, &[ResourceType::DocumentEvent])
+            .unwrap();
+
+        transport
+            .send(&json!({
+                "to": target_actor.as_ref(),
+                "type": "navigateTo",
+                "url": "https://example.com/",
+            }))
+            .unwrap();
+
+        let (p1, p2, p3) = server_handle.join().unwrap();
+
+        assert_eq!(
+            p1["type"].as_str(),
+            Some("watchTargets"),
+            "first packet must be watchTargets, got: {p1}"
+        );
+        assert_eq!(
+            p1["targetType"].as_str(),
+            Some("frame"),
+            "watchTargets must target 'frame', got: {p1}"
+        );
+        assert_eq!(
+            p2["type"].as_str(),
+            Some("watchResources"),
+            "second packet must be watchResources, got: {p2}"
+        );
+        let res_types = p2["resourceTypes"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert!(
+            res_types.contains(&"document-event"),
+            "watchResources must include 'document-event', got: {p2}"
+        );
+        assert_eq!(
+            p3["type"].as_str(),
+            Some("navigateTo"),
+            "third packet must be navigateTo, got: {p3}"
+        );
+        assert_eq!(
+            p3["url"].as_str(),
+            Some("https://example.com/"),
+            "navigateTo URL must match request, got: {p3}"
+        );
+    }
 
     #[test]
     fn navigate_bus_lock_released_during_wait() {
