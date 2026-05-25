@@ -498,7 +498,11 @@ Since iter-61i, `results` is **always an array** regardless of match count (0 �
 Each element has: ref (stable ID), role (ARIA semantic role), name (accessible name), tag, attrs (actionable only), state, level (headings).
 Use --format html for raw HTML strings in each array slot.
 Use --first to revert to the legacy single-value shape (object/string/null, total: 0 or 1).
-With --count: {\"results\": {\"count\": N}, \"total\": N, \"meta\": {...}}")]
+With --count: {\"results\": {\"count\": N}, \"total\": N, \"meta\": {...}}
+
+See also:
+  ff-rdp styles <SEL>    — declared (matched) CSS rules for an element.
+  ff-rdp computed <SEL>  — resolved computed style values for an element.")]
     #[command(group(ArgGroup::new("dom_target").required(false).multiple(false).args(["selector", "ref_id"])))]
     Dom {
         #[command(subcommand)]

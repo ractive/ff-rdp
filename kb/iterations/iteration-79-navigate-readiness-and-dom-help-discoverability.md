@@ -2,7 +2,7 @@
 title: "Iteration 79: Fix navigate readiness-event misses + surface styles/computed under dom --help"
 type: iteration
 date: 2026-05-25
-status: planned
+status: in-progress
 branch: iter-79/navigate-readiness-and-dom-help
 depends_on:
   - iteration-77-spec-drift-and-windows-reparse-points
@@ -58,46 +58,48 @@ addresses:
 
 ## Tasks
 
-- [ ] **A.1** Reproduce the timeout in a unit/live test that drives `navigate`
+- [x] **A.1** Reproduce the timeout in a unit/live test that drives `navigate`
       against a fixture/page where the document-event resources fire before
-      the subscription is established.  Today there is no regression test
-      for this path.
-- [ ] **A.2** Fix the subscription race in
-      `crates/ff-rdp-cli/src/commands/navigate.rs`:
-      issue `watchResources(["document-event"])` *before* sending the
-      `navigateTo` request, so the subscription is in place when Firefox
-      starts emitting events for the new document.  If `watchResources`
-      already runs first, investigate whether the subscription is on the
-      wrong actor / watcher pair (parent watcher vs. target-scoped watcher).
-- [ ] **A.3** Add a live regression test
+      the subscription is established. → `navigate_subscribes_before_navigateto`
+      (unit test, captures outbound packet order on a mock TcpListener) +
+      `live_navigate_default_wait_reaches_complete` (live test against
+      `https://tennis-sepp.ch`).
+- [x] **A.2** Fix the subscription race in
+      `crates/ff-rdp-cli/src/commands/navigate.rs`: root cause was a missing
+      `watchTargets("frame")` call. Per the Firefox watcher contract a
+      `WatcherActor` delivers nothing until BOTH `watchTargets("frame")` and
+      `watchResources([...])` have been issued. The non-`--with-network`
+      branch in `run_core` now calls `WatcherActor::watch_targets` before
+      `ResourceCommand::subscribe`, so document-event resources actually
+      flow on real pages.
+- [x] **A.3** Added live regression test
       `crates/ff-rdp-cli/tests/live_navigate_readiness.rs::live_navigate_default_wait_reaches_complete`
-      that navigates to a real public URL (use the reporter's reproducer:
-      `https://tennis-sepp.ch`) under the default timeout and asserts the
-      command exits 0.  Gated `FF_RDP_LIVE_NETWORK_TESTS=1`.
-- [ ] **B.1** Extend the `Commands::Dom` `long_about` in
-      `crates/ff-rdp-cli/src/cli/args.rs` with a "See also:" footer that
-      names `ff-rdp styles` and `ff-rdp computed` and gives a one-line
-      hint per command.  Keep it tight — one or two lines, not a wall.
-- [ ] **B.2** Add an e2e test
+      — navigates to `https://tennis-sepp.ch` under the default timeout
+      and asserts the command exits 0 with `ready_state=complete` and a
+      non-empty `committed_url`. Gated `FF_RDP_LIVE_NETWORK_TESTS=1`.
+- [x] **B.1** Extended `Commands::Dom` `long_about` in
+      `crates/ff-rdp-cli/src/cli/args.rs` with a two-line "See also:"
+      footer naming `ff-rdp styles` and `ff-rdp computed`.
+- [x] **B.2** Added e2e test
       `crates/ff-rdp-cli/tests/dom_help_mentions_styles.rs::dom_help_mentions_styles_and_computed`
       that runs `ff-rdp dom --help` and asserts the output contains both
-      `styles` and `computed`.  This prevents the cross-reference from
-      rotting silently if `long_about` is ever rewritten.
+      `styles` and `computed` (case-insensitive).
 
-## Acceptance Criteria [0/3]
+## Acceptance Criteria [3/3]
 
-- [ ] `live_navigate_default_wait_reaches_complete`: `ff-rdp navigate
+- [x] `live_navigate_default_wait_reaches_complete`: `ff-rdp navigate
       https://tennis-sepp.ch` exits 0 under the default `--timeout` and
-      default `--wait complete` and reports a non-empty commit URL.
-      Gated `FF_RDP_LIVE_NETWORK_TESTS=1`.
-- [ ] `dom_help_mentions_styles_and_computed`: running `ff-rdp dom --help`
-      contains both the literal `styles` and `computed` (case-insensitive),
-      backed by a unit/e2e test in `crates/ff-rdp-cli/tests/`.
-- [ ] `navigate_subscribes_before_navigateto` (unit test):
-      `crates/ff-rdp-cli/src/commands/navigate.rs` issues the
-      `watchResources(["document-event"])` request before the `navigateTo`
-      request — verified by an ordered assertion against a recorded
-      transport fixture or a mock-bus capture.
+      default `--wait complete` and reports a non-empty `committed_url`
+      with `ready_state=complete`. Gated `FF_RDP_LIVE_NETWORK_TESTS=1`.
+      Test: `crates/ff-rdp-cli/tests/live_navigate_readiness.rs`.
+- [x] `dom_help_mentions_styles_and_computed`: running `ff-rdp dom --help`
+      contains both `styles` and `computed` (case-insensitive), backed by
+      `crates/ff-rdp-cli/tests/dom_help_mentions_styles.rs`.
+- [x] `navigate_subscribes_before_navigateto` (unit test in
+      `crates/ff-rdp-cli/src/commands/navigate.rs`): the navigate prelude
+      issues `watchTargets("frame")` → `watchResources(["document-event"])`
+      → `navigateTo` in that exact order, verified by capturing outbound
+      packets on a mock TcpListener server.
 
 ## Out of scope
 
