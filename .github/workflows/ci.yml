@@ -170,7 +170,7 @@ jobs:
           ls -la ff-rdp-x86_64-unknown-linux-gnu.tar.gz
       - name: Attest build provenance
         id: attest
-        uses: actions/attest-build-provenance@619dbb2e03d83bf3e96250d6a4257f4a551a1b80 # v2.6.0
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: ff-rdp-x86_64-unknown-linux-gnu.tar.gz
       - name: Verify attestation end-to-end

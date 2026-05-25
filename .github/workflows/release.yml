@@ -170,7 +170,7 @@ jobs:
       # containers don't expose the OIDC token.
       - name: Attest build provenance
         if: '!matrix.cross'
-        uses: actions/attest-build-provenance@619dbb2e03d83bf3e96250d6a4257f4a551a1b80 # v2.6.0
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: |
             ff-rdp-${{ matrix.target }}.tar.gz
