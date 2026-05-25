@@ -2,68 +2,89 @@
 title: "Iteration 77: Spec drift cleanup + Windows reparse-point safe_io"
 type: iteration
 date: 2026-05-24
-status: planned
+status: completed
 branch: iter-77/spec-drift-and-windows-reparse-points
 depends_on:
   - iteration-73-spec-fidelity-gates
   - iteration-74-protocol-correctness-oneway-events-lifecycle
   - iteration-75-security-hardening-defense-in-depth
 firefox_refs:
-  - path: devtools/shared/specs/screenshot.js
-    lines: "13-35"
-    why: "screenshot.args dict declares fullpage/file/clipboard/selector/dpr/delay only — ff-rdp sends browsingContextID/snapshotScale/rect which are NOT in the dict (S1)."
-  - path: devtools/shared/specs/webconsole.js
-    lines: "149-164"
+  - lines: 13-35
+    path: devtools/shared/specs/screenshot.js
+    why: >-
+      screenshot.args dict declares fullpage/file/clipboard/selector/dpr/delay only —
+      ff-rdp sends browsingContextID/snapshotScale/rect which are NOT in the dict (S1).
+  - lines: 149-164
+    path: devtools/shared/specs/webconsole.js
     why: "evaluateJSAsync request Options: text, frameActor, url, selectedNodeActor, selectedObjectActor, innerWindowID, mapped, eager, disableBreaks. ff-rdp currently sends only text — S3 wires the rest."
-  - path: devtools/server/actors/webconsole.js
-    lines: "761-870"
-    why: "Server-side evaluateJSAsync uses frameActor/selectedNodeActor/innerWindowID to scope the eval — proves they are not optional decoration."
-  - path: devtools/shared/specs/watcher.js
-    lines: "20-32"
-    why: "unwatchTargets accepts (targetType, options) — ff-rdp omits options (W3). targetType is required (no default to 'frame', W4)."
-  - path: devtools/server/actors/webconsole.js
-    lines: "1100-1175"
-    why: "formatStackTrace / formatted-message construction; reference for porting %s/%d/%c printf substitution (S6) — server formats per-arg, ff-rdp's joiner drops the format string."
-  - path: devtools/shared/specs/walker.js
-    lines: "125-133"
-    why: "walker.releaseNode signature — kept as response-less actor_request (not oneway); flagged here for the spec-reviewer agent to confirm."
+  - lines: 761-870
+    path: devtools/server/actors/webconsole.js
+    why: >-
+      Server-side evaluateJSAsync uses frameActor/selectedNodeActor/innerWindowID to
+      scope the eval — proves they are not optional decoration.
+  - lines: 20-32
+    path: devtools/shared/specs/watcher.js
+    why: >-
+      unwatchTargets accepts (targetType, options) — ff-rdp omits options (W3).
+      targetType is required (no default to 'frame', W4).
+  - lines: 1100-1175
+    path: devtools/server/actors/webconsole.js
+    why: >-
+      formatStackTrace / formatted-message construction; reference for porting
+      %s/%d/%c printf substitution (S6) — server formats per-arg, ff-rdp's joiner drops the
+      format string.
+  - lines: 125-133
+    path: devtools/shared/specs/walker.js
+    why: >-
+      walker.releaseNode signature — kept as response-less actor_request (not
+      oneway); flagged here for the spec-reviewer agent to confirm.
 kb_refs:
   - kb/rdp/actors/screenshot.md
   - kb/rdp/actors/webconsole.md
   - kb/rdp/actors/watcher.md
   - kb/rdp/from-our-codebase/open-gaps.md
 first_call_sites:
-  - primitive: "ff_rdp_core::actors::screenshot::ScreenshotArgsExt"
-    site: "crates/ff-rdp-cli/src/commands/screenshot.rs (wraps the extra fields ff-rdp adds beyond the spec dict)"
-  - primitive: "ff_rdp_core::actors::console::EvaluateScope"
-    site: "crates/ff-rdp-cli/src/commands/eval.rs (used by --frame/--node/--inner-window flags)"
-  - primitive: "ff_rdp_cli::util::safe_io::reparse_tag_of"
-    site: "crates/ff-rdp-cli/src/util/safe_io.rs (consumed by safe_open_windows pre-flight check)"
+  - primitive: ff_rdp_core::actors::screenshot::ScreenshotArgsExt
+    site: >-
+      crates/ff-rdp-cli/src/commands/screenshot.rs (wraps the extra fields ff-rdp
+      adds beyond the spec dict)
+  - primitive: ff_rdp_core::actors::console::EvaluateScope
+    site: >-
+      crates/ff-rdp-cli/src/commands/eval.rs (used by --frame/--node/--inner-window
+      flags)
+  - primitive: ff_rdp_cli::util::safe_io::reparse_tag_of
+    site: >-
+      crates/ff-rdp-cli/src/util/safe_io.rs (consumed by safe_open_windows pre-flight
+      check)
 dogfood_path: |
   # 1. Screenshot still works after spec-dict reconciliation.
   ff-rdp screenshot --selector body -o /tmp/s.png https://example.com
   ff-rdp --log-rdp-trace screenshot --fullpage -o /tmp/f.png https://example.com
   grep 'snapshotScale' ~/.cache/ff-rdp/rdp-trace.log    # via the typed shim
-
+  
   # 2. eval in a specific frame.
   ff-rdp eval --frame "$FRAME_ACTOR" 'location.href' https://example.com
-
+  
   # 3. console printf substitution preserved.
   ff-rdp --log-rdp-trace eval --subscribe console \
     'console.log("hello %s, you are %d", "world", 42)' https://example.com
   grep 'hello world, you are 42' ~/.cache/ff-rdp/rdp-trace.log
-
+  
   # 4. unwatchTargets requires a targetType.
   ff-rdp watcher unwatch --target-type frame     # OK
   ff-rdp watcher unwatch                          # exits 2 with usage error
-
+  
   # 5. (Windows) safe_write refuses a mount-point swap.
   # In an admin PowerShell:
   #   mklink /D C:\tmp\snap C:\Windows
   # then:
   #   ff-rdp memory heap-snapshot https://example.com C:\tmp\snap\stolen.bin
   # expect ReparsePointRejected error, no write under C:\Windows.
-tags: [iteration, protocol, windows, spec-drift]
+tags:
+  - iteration
+  - protocol
+  - windows
+  - spec-drift
 ---
 
 The first iter executed under the iter-73 spec-fidelity gates. It
