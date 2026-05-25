@@ -141,3 +141,51 @@ jobs:
         # check-oneway-conformance requires FF_RDP_FIREFOX_PATH; it skips gracefully
         # when neither the env var nor ~/devel/firefox are present.
         run: cargo run -p xtask -- check-oneway-conformance
+
+  # iter-75c: PR-time smoke that proves `gh attestation verify` will succeed
+  # against a freshly built artifact. Builds the Linux x86_64 CLI, runs
+  # actions/attest-build-provenance against it, then re-runs the same
+  # `gh attestation verify <file> --owner ractive` invocation that release
+  # consumers use. Catches mis-wired permissions, OIDC token scope changes,
+  # or a Sigstore transparency-log regression before they reach a tagged
+  # release. Skipped on fork PRs (no OIDC token).
+  verify-attestation:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Build ff-rdp-cli (release)
+        run: cargo build -p ff-rdp-cli --release --target x86_64-unknown-linux-gnu
+      - name: Package artifact
+        run: |
+          set -euo pipefail
+          tar czf ff-rdp-x86_64-unknown-linux-gnu.tar.gz \
+            -C target/x86_64-unknown-linux-gnu/release ff-rdp
+          ls -la ff-rdp-x86_64-unknown-linux-gnu.tar.gz
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: ff-rdp-x86_64-unknown-linux-gnu.tar.gz
+      - name: Verify attestation end-to-end
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Offline path: verify the bundle the attest action just produced.
+          # Catches any local mis-config (wrong subject digest, malformed
+          # bundle) before the transparency log is involved.
+          gh attestation verify ff-rdp-x86_64-unknown-linux-gnu.tar.gz \
+            --owner ractive \
+            --bundle "${{ steps.attest.outputs.bundle-path }}"
+          # Online path: round-trip through GitHub's attestation API the
+          # same way a release consumer does. This is the actual smoke
+          # check — if this fails on a no-op PR, the release would too.
+          gh attestation verify ff-rdp-x86_64-unknown-linux-gnu.tar.gz \
+            --owner ractive

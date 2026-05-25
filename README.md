@@ -333,6 +333,16 @@ ff-rdp has the same power as Firefox DevTools — it can read httpOnly cookies, 
 
 The [release workflow](.github/workflows/release.yml) automatically builds binaries for all platforms, publishes to crates.io, and updates Homebrew/Scoop/winget.
 
+### Verifying release artifacts
+
+Every release binary is signed via Sigstore-backed [build provenance attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds). To verify a downloaded artifact:
+
+```sh
+gh attestation verify ff-rdp-x86_64-apple-darwin.tar.gz --owner ractive
+```
+
+The same command runs as a PR-time smoke check in [`ci.yml`](.github/workflows/ci.yml) (`verify-attestation` job), so a regression in the attestation pipeline is caught before release.
+
 ## License
 
 MIT

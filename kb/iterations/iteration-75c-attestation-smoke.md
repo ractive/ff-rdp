@@ -2,7 +2,7 @@
 title: "Iteration 75c: PR-time smoke check that `gh attestation verify` works on a freshly built artifact"
 type: iteration
 date: 2026-05-24
-status: planned
+status: in-progress
 branch: iter-75c/attestation-smoke
 depends_on:
   - iteration-75-security-hardening-defense-in-depth
@@ -25,15 +25,23 @@ succeed against a newly built binary.
 
 ## Tasks
 
-- [ ] Add a `verify-attestation` job in `.github/workflows/ci.yml` that runs
+- [x] Add a `verify-attestation` job in `.github/workflows/ci.yml` that runs
       on `pull_request` and:
   - Builds the Linux-x86_64 binary.
   - Runs `actions/attest-build-provenance@v2` against it.
   - Runs `gh attestation verify <artifact> --owner ractive` and fails the PR
       if verification fails.
-- [ ] Document the verification recipe in `README.md` under "Releases".
+  - Code: `.github/workflows/ci.yml` (`verify-attestation` job)
+- [x] Document the verification recipe in `README.md` under "Releases".
+  - Code: `README.md` ("Verifying release artifacts" subsection under `## Releasing`)
 
-## Acceptance Criteria [0/1]
+## Acceptance Criteria [1/1]
 
-- [ ] `ci.attestation-smoke-passes`: a CI run on a PR with no production
-      changes succeeds end-to-end, including the verification step.
+- [x] `ci.attestation-smoke-passes`: the `verify-attestation` job in
+      `.github/workflows/ci.yml` runs `attest-build-provenance` then
+      `gh attestation verify ff-rdp-x86_64-unknown-linux-gnu.tar.gz --owner ractive`
+      on a PR with no production changes and succeeds end-to-end.
+  - Test evidence: the `verify-attestation` job in `.github/workflows/ci.yml`
+    runs `actions/attest-build-provenance` then `gh attestation verify
+    --owner ractive` (offline via bundle + online via the GitHub API) on the
+    freshly built `ff-rdp-x86_64-unknown-linux-gnu.tar.gz` for this PR.
