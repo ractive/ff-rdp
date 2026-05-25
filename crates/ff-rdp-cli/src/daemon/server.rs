@@ -321,10 +321,12 @@ pub(crate) fn run_daemon(
     // reader never blocks in normal SPA traffic (hundreds of events/s).
     let (event_tx, event_rx) = mpsc::sync_channel::<Value>(4096);
 
-    // Grip release queue (iter-76 Theme B): watcher event parsers wrap grip
-    // actor IDs in ResourceGripGuard instances backed by this sender.
+    // Grip release queue (iter-76 Theme B, wired in iter-76b): watcher event
+    // parsers wrap grip actor IDs in ResourceGripGuard instances backed by
+    // this sender.  The receiver is owned by the grip-release-drainer thread
+    // which actually sends the `release` packets to Firefox.
     // Capacity 1024 accommodates burst resource events without blocking.
-    let (grip_release_tx, _grip_release_rx) = release_queue(1024);
+    let (grip_release_tx, grip_release_rx) = release_queue(1024);
 
     // Build a DemuxReader for potential future per-actor pipelining (iter-76
     // Theme C); not yet wired into the reader loop, but constructed here so
@@ -355,6 +357,21 @@ pub(crate) fn run_daemon(
     // The Firefox writer is shared: the main thread may forward CLI messages to
     // Firefox while the reader thread owns the read half exclusively.
     let firefox_writer = Arc::new(Mutex::new(firefox_writer));
+
+    // Spawn the grip-release-drainer thread (iter-76b Theme B).
+    //
+    // This thread owns the grip release queue receiver and issues `release`
+    // packets to Firefox for each enqueued grip actor.  Without this thread,
+    // the queue was immediately dropped and no release was ever sent —
+    // the headline "fix daemon-mode grip leaks" in iter-76 was completely inert.
+    let writer_for_drainer = Arc::clone(&firefox_writer);
+    let state_for_drainer = Arc::clone(&state);
+    thread::Builder::new()
+        .name("grip-release-drainer".into())
+        .spawn(move || {
+            grip_release_drainer_loop(&state_for_drainer, grip_release_rx, writer_for_drainer);
+        })
+        .context("spawning grip release drainer thread")?;
 
     // Spawn the Firefox reader thread.
     let state_for_reader = Arc::clone(&state);
@@ -388,6 +405,53 @@ pub(crate) fn run_daemon(
     eprintln!("daemon: shut down");
 
     result
+}
+
+/// Drain the grip release queue and issue `release` packets to Firefox.
+///
+/// This thread owns the `grip_release_rx` receiver.  For each enqueued
+/// [`ReleaseRequest`], it sends a one-way `{"to": <actor>, "type": "release"}`
+/// packet to Firefox so the server-side actor can be freed.  Without this
+/// thread, grips accumulate indefinitely in long-lived daemon sessions.
+///
+/// The loop exits when the sender side of the queue is dropped (all
+/// `ResourceGripGuard`s have been dropped and the `SharedState` is being
+/// torn down) or when `state.shutdown` is set.
+#[allow(clippy::needless_pass_by_value)] // rx and writer are consumed by the loop body
+fn grip_release_drainer_loop(
+    state: &Arc<SharedState>,
+    rx: ff_rdp_core::ReleaseQueueRx,
+    writer: Arc<Mutex<ff_rdp_core::FramedWriter>>,
+) {
+    loop {
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(req) => {
+                tracing::trace!(
+                    target: "ff_rdp_cli::daemon::grip_release",
+                    actor = %req.actor_id,
+                    method = %req.method,
+                    "sending grip release"
+                );
+                let packet = serde_json::json!({
+                    "to": req.actor_id.as_ref(),
+                    "type": req.method,
+                });
+                if let Ok(mut w) = writer.lock() {
+                    // Best-effort: ignore send errors (Firefox may have closed
+                    // the connection already, or the daemon is shutting down).
+                    let _ = w.send(&packet);
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if state.shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                break;
+            }
+        }
+    }
 }
 
 fn validate_greeting(greeting: &Value) -> Result<()> {
@@ -549,8 +613,11 @@ fn dispatch_firefox_message(
         // ResourceGripGuard backed by the daemon's release queue.  When the
         // guard is dropped at end-of-scope the grips are enqueued for release,
         // preventing actor accumulation in long-lived daemon sessions
-        // (iter-76 Theme B).
-        let _grip_guard = ResourceGripGuard::new(state.grip_release_tx.clone());
+        // (iter-76b Theme B — actually wired).
+        let mut grip_guard = ResourceGripGuard::new(state.grip_release_tx.clone());
+        for grip in ff_rdp_core::extract_grips(msg) {
+            grip_guard.add_grip(grip);
+        }
 
         // Parse into typed Resources via the bus, then route to the buffer.
         //

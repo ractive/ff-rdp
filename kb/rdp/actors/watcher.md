@@ -130,3 +130,12 @@ The Rust entry points are:
 
 - Watched resources (consoleAPICall, evaluationResult) may embed grip actor IDs. The watcher now wraps these in `ResourceGripGuard`, which drops the underlying `ScopedGrip` handles when the subscription is dropped, enqueueing release on the transport-shared release queue.
 - Closes the `actor-leak-in-daemon` open gap (kb/rdp/from-our-codebase/open-gaps.md:36).
+
+## Iter-76b update — extract_grips + type-safe dispatch
+
+- `extract_grips(event: &Value) -> Vec<Grip>` (re-exported from `ff_rdp_core`) walks resource payloads for embedded grip actor IDs.
+  Paths walked: `array[*][1][*].message.arguments`, `array[*][1][*].message.styles`, `result`, `exception`.
+  Returns `Grip::Object` for `{type:"object"}` and `Grip::LongString` for `{type:"longString"}` sub-values.
+- `ResourceGripGuard::add_grip(grip: Grip)` now dispatches to `AnyGripHandle::Object(GripHandle::<ObjectGrip>)` or `AnyGripHandle::LongString(GripHandle::<LongStringGrip>)` — a `LongString` actor is no longer wrongly wrapped as an `ObjectGrip`.
+- `dispatch_firefox_message` in `daemon/server.rs` calls `extract_grips` and `add_grip` so grips are actually released when the guard drops (was inert in iter-76).
+- The `grip_release_drainer_loop` thread now genuinely owns `ReleaseQueueRx` and sends release packets over the shared `FramedWriter`.

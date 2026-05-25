@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender, SyncSender, TrySendError};
@@ -653,11 +653,103 @@ const BULK_CHUNK_SIZE: usize = 8 * 1024; // 8 KiB
 /// Default per-actor channel capacity for [`DemuxReader`].
 pub const DEMUX_CHANNEL_CAPACITY: usize = 64;
 
+/// Discard exactly `length` bytes from `reader` in 8 KiB chunks.
+///
+/// Used by [`recv_bulk_with_handler_from`] and [`drain_bulk_frame`] to consume
+/// a mismatched or unsupported bulk frame body so the stream stays aligned.
+fn drain_bulk_body<R: Read>(reader: &mut R, length: u64) -> Result<(), ProtocolError> {
+    let mut remaining = length;
+    let mut chunk = vec![0u8; BULK_CHUNK_SIZE];
+    while remaining > 0 {
+        let to_read = usize::try_from(remaining)
+            .unwrap_or(BULK_CHUNK_SIZE)
+            .min(BULK_CHUNK_SIZE);
+        reader
+            .read_exact(&mut chunk[..to_read])
+            .map_err(map_recv_io_error)?;
+        remaining -= to_read as u64;
+    }
+    Ok(())
+}
+
+/// Consume a complete bulk frame from `reader` whose first byte (`b`) has
+/// already been consumed by the caller.
+///
+/// Reads the rest of the header (`ulk <actor> <kind> <length>:`), validates it,
+/// applies the `max_frame_bytes()` cap, then reads-and-discards exactly `length`
+/// bytes from the body.  Returns `Ok((actor, kind, length))` when the frame has
+/// been fully consumed so the caller can continue reading the next frame.
+///
+/// This is the low-level drain shared by [`recv_bulk_frame`] (which returns
+/// [`ProtocolError::BulkPacketUnsupported`]) and the daemon reader loop (which
+/// may encounter unexpected bulk frames mid-stream and must drain them to keep
+/// the TCP stream aligned).
+///
+/// Errors:
+/// - `InvalidPacket` — malformed header.
+/// - `BulkFrameTooLarge` — announced length exceeds `max_frame_bytes()` (body
+///   is NOT read in this case, so the stream is unrecoverable).
+/// - `RecvFailed` — I/O error while reading.
+pub(crate) fn drain_bulk_frame<R: BufRead>(
+    reader: &mut R,
+    first_byte: u8,
+) -> Result<(String, String, u64), ProtocolError> {
+    // Re-assemble the header starting from the already-consumed first byte.
+    let mut header_buf: Vec<u8> = vec![first_byte];
+    loop {
+        let mut byte = [0u8; 1];
+        reader.read_exact(&mut byte).map_err(map_recv_io_error)?;
+        if byte[0] == b':' {
+            break;
+        }
+        header_buf.push(byte[0]);
+        if header_buf.len() > 4096 {
+            return Err(ProtocolError::InvalidPacket(
+                "bulk frame header exceeds 4096 bytes".to_owned(),
+            ));
+        }
+    }
+
+    let header = std::str::from_utf8(&header_buf)
+        .map_err(|_| ProtocolError::InvalidPacket("non-UTF8 in bulk frame header".to_owned()))?;
+
+    // Expected: "bulk <actor> <kind> <length>"
+    let parts: Vec<&str> = header.splitn(4, ' ').collect();
+    if parts.len() != 4 || parts[0] != "bulk" {
+        return Err(ProtocolError::InvalidPacket(format!(
+            "malformed bulk frame header: {header:?}"
+        )));
+    }
+    let actor = parts[1].to_owned();
+    let kind = parts[2].to_owned();
+    let length: u64 = parts[3]
+        .parse()
+        .map_err(|e| ProtocolError::InvalidPacket(format!("bulk length parse error: {e}")))?;
+
+    // Cap check before entering the discard loop.
+    let cap = max_frame_bytes() as u64;
+    if length > cap {
+        return Err(ProtocolError::BulkFrameTooLarge {
+            announced: length,
+            max: cap,
+        });
+    }
+
+    drain_bulk_body(reader, length)?;
+    Ok((actor, kind, length))
+}
+
 /// Receive a bulk frame from `reader`, matching the expected `actor` and `kind`.
 ///
-/// Reads the bulk-frame header (`bulk <actor> <kind> <length>:`), validates the
-/// actor/kind fields, then streams the body into `out` in [`BULK_CHUNK_SIZE`]
-/// chunks.  Returns the total number of bytes written on success.
+/// Uses `BufRead::fill_buf` to peek the first byte without consuming it.  If
+/// the first byte is not `b` (indicating a JSON frame rather than a bulk frame),
+/// the byte is **not** consumed and the function returns
+/// `Err(ProtocolError::BulkPacketUnexpected)`.  The stream stays aligned so
+/// the caller's next `recv_from` reads the JSON frame intact.
+///
+/// On actor/kind mismatch (after parsing the header), the body is discarded via
+/// [`drain_bulk_body`] before returning `BulkPacketUnexpected`, keeping the
+/// stream aligned.
 ///
 /// Errors:
 /// - `BulkFrameTooLarge` — announced length exceeds `max_frame_bytes()`.
@@ -665,24 +757,31 @@ pub const DEMUX_CHANNEL_CAPACITY: usize = 64;
 ///   packet rather than a bulk packet.
 /// - `InvalidPacket` — malformed header.
 /// - `RecvFailed` / `Timeout` — I/O error while reading.
-fn recv_bulk_with_handler_from<W: Write>(
-    reader: &mut impl Read,
+fn recv_bulk_with_handler_from<W: Write, R: BufRead>(
+    reader: &mut R,
     actor: &str,
     kind: &str,
     out: &mut W,
 ) -> Result<u64, ProtocolError> {
-    // Peek the first byte to confirm this is a bulk frame.
-    let mut first = [0u8; 1];
-    reader.read_exact(&mut first).map_err(map_recv_io_error)?;
-
-    if first[0] != b'b' {
-        // JSON frame — unexpected.  We can't easily put the byte back, so the
-        // stream is now misaligned; surface a typed error so the caller knows.
-        return Err(ProtocolError::BulkPacketUnexpected {
-            actor: actor.to_owned(),
-            kind: kind.to_owned(),
-        });
+    // Peek the first byte WITHOUT consuming it.
+    {
+        let buf = reader.fill_buf().map_err(map_recv_io_error)?;
+        if buf.is_empty() {
+            return Err(ProtocolError::RecvFailed(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "EOF before bulk frame",
+            )));
+        }
+        if buf[0] != b'b' {
+            // JSON frame peeked — do NOT consume; the stream stays aligned.
+            return Err(ProtocolError::BulkPacketUnexpected {
+                actor: actor.to_owned(),
+                kind: kind.to_owned(),
+            });
+        }
     }
+    // Consume the `b` byte we peeked.
+    reader.consume(1);
 
     // Read the rest of the header up to ':'.  We already consumed 'b'.
     let mut header_buf: Vec<u8> = b"b".to_vec();
@@ -725,8 +824,10 @@ fn recv_bulk_with_handler_from<W: Write>(
         });
     }
 
-    // Validate actor/kind match.
+    // Validate actor/kind match.  On mismatch, drain the body first so the
+    // stream stays aligned, then return the typed error.
     if frame_actor != actor || frame_kind != kind {
+        drain_bulk_body(reader, length)?;
         return Err(ProtocolError::BulkPacketUnexpected {
             actor: actor.to_owned(),
             kind: kind.to_owned(),
@@ -821,6 +922,15 @@ impl DemuxReader {
     ///
     /// If the actor was already registered, the old channel is replaced and the
     /// previous receiver is dropped.
+    ///
+    /// # Ordering invariant
+    ///
+    /// All actors **must** be registered before [`Self::run_loop`] is called.
+    /// After `run_loop` spawns the background reader thread, the channel map
+    /// snapshot is captured by that thread; subsequent `register` calls update
+    /// the local map but have no effect on the already-running reader.
+    ///
+    /// See also: [`Self::run_loop`].
     pub fn register(&mut self, actor: &ActorId) -> mpsc::Receiver<Packet> {
         let (tx, rx) = mpsc::sync_channel(DEMUX_CHANNEL_CAPACITY);
         self.channels.insert(actor.as_ref().to_owned(), tx);
@@ -846,6 +956,13 @@ impl DemuxReader {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
+
+        if actor.is_empty() {
+            tracing::warn!(
+                target: "ff_rdp_core::transport",
+                "DemuxReader: incoming packet has no `from` field — routing to fallback"
+            );
+        }
 
         if let Some(tx) = self.channels.get(&actor) {
             match tx.try_send(Packet {
@@ -874,27 +991,35 @@ impl DemuxReader {
     /// Blocks until the reader returns an error (typically EOF / timeout on
     /// shutdown).  Intended to be run on a dedicated background thread.
     ///
-    /// # Panics
-    ///
-    /// Panics if called on a `DemuxReader` that was not created via
-    /// [`RdpTransport::split_demux`] (i.e. the reader half is absent).
-    /// In tests, use [`run_loop_with`] to pass a custom reader.
-    ///
     /// Returns the first non-dispatch `ProtocolError` (i.e. an actual I/O or
     /// framing error), not `ActorChannelFull` (those are logged and skipped).
+    ///
+    /// Returns [`ProtocolError::InvalidState`] if called on a `DemuxReader`
+    /// that was not created via [`RdpTransport::split_demux`] (i.e. the reader
+    /// half is absent).  Use [`Self::run_loop_with`] to pass a custom reader in
+    /// tests.
+    ///
+    /// # Ordering invariant
+    ///
+    /// All actors **must** be registered via [`Self::register`] **before**
+    /// `run_loop` is called.  Once the reader thread is running, the channel
+    /// map snapshot is fixed; subsequent `register` calls are a logical no-op.
+    ///
+    /// See also: [`Self::register`].
     pub fn run_loop(mut self) -> ProtocolError {
-        let reader = self
-            .reader
-            .take()
-            .expect("DemuxReader::run_loop called without a reader — use split_demux()");
+        let Some(reader) = self.reader.take() else {
+            return ProtocolError::InvalidState(
+                "run_loop called without a reader — use split_demux()".to_owned(),
+            );
+        };
         self.run_loop_with(reader)
     }
 
     /// Run a read loop over a custom `reader`, dispatching each packet.
     ///
-    /// This variant is for testing — pass any `impl Read` (e.g. a `Cursor`).
+    /// This variant is for testing — pass any `impl BufRead` (e.g. a `Cursor`).
     /// In production, call [`run_loop`] which uses the stored TCP reader.
-    pub fn run_loop_with(self, mut reader: impl Read) -> ProtocolError {
+    pub fn run_loop_with(self, mut reader: impl BufRead) -> ProtocolError {
         loop {
             match recv_from(&mut reader) {
                 Ok(value) => {
@@ -1055,13 +1180,17 @@ pub fn encode_frame(json: &str) -> String {
 ///    process their binary payload, so the body bytes are consumed (skipped) and
 ///    [`ProtocolError::BulkPacketUnsupported`] is returned.  The stream remains
 ///    valid; the caller can log the error once and continue reading.
-pub fn recv_from(reader: &mut impl Read) -> Result<Value, ProtocolError> {
+pub fn recv_from(reader: &mut impl BufRead) -> Result<Value, ProtocolError> {
     // Read the first byte to distinguish JSON vs bulk frames.
     let mut first = [0u8; 1];
     reader.read_exact(&mut first).map_err(map_recv_io_error)?;
 
     if first[0] == b'b' {
-        return recv_bulk_frame(reader);
+        // Delegate to drain_bulk_frame which shares the discard logic with
+        // recv_bulk_with_handler_from.  recv_bulk_frame returns
+        // BulkPacketUnsupported after draining; we map that back from the
+        // existing helper.
+        return recv_bulk_frame(reader, first[0]);
     }
 
     // Normal JSON frame: read remaining bytes of the length prefix.
@@ -1159,78 +1288,14 @@ pub(crate) fn check_outbound_bulk_size(length: u64) -> Result<(), ProtocolError>
 
 /// Parse and discard a Firefox bulk frame.
 ///
-/// Called when `recv_from` sees a leading `b`.  The bulk frame header format is:
-/// `bulk <actor> <kind> <length>:` followed by exactly `length` binary bytes.
-/// The `b` has already been consumed; this function reads the rest of the header
-/// and skips the body.
+/// Called when `recv_from` sees a leading `b` (already consumed).  Delegates
+/// to [`drain_bulk_frame`] for the shared drain logic, then maps the result to
+/// [`ProtocolError::BulkPacketUnsupported`] so the caller can log and skip.
 ///
 /// Returns [`ProtocolError::BulkPacketUnsupported`] on success (body skipped)
 /// or a parse/IO error if the stream is malformed.
-fn recv_bulk_frame(reader: &mut impl Read) -> Result<Value, ProtocolError> {
-    // We already consumed the leading 'b'.  Read up to ':' to get the rest of
-    // the header: "ulk <actor> <kind> <length>".
-    let mut header_buf: Vec<u8> = b"b".to_vec();
-    loop {
-        let mut byte = [0u8; 1];
-        reader.read_exact(&mut byte).map_err(map_recv_io_error)?;
-
-        if byte[0] == b':' {
-            break;
-        }
-        header_buf.push(byte[0]);
-
-        // Sanity limit: headers shouldn't be multi-KB.
-        if header_buf.len() > 4096 {
-            return Err(ProtocolError::InvalidPacket(
-                "bulk frame header exceeds 4096 bytes".to_owned(),
-            ));
-        }
-    }
-
-    let header = std::str::from_utf8(&header_buf)
-        .map_err(|_| ProtocolError::InvalidPacket("non-UTF8 in bulk frame header".to_owned()))?;
-
-    // Expected format: "bulk <actor> <kind> <length>"
-    let parts: Vec<&str> = header.splitn(4, ' ').collect();
-    if parts.len() != 4 || parts[0] != "bulk" {
-        return Err(ProtocolError::InvalidPacket(format!(
-            "malformed bulk frame header: {header:?}"
-        )));
-    }
-    let actor = parts[1].to_owned();
-    let kind = parts[2].to_owned();
-    let length: u64 = parts[3]
-        .parse()
-        .map_err(|e| ProtocolError::InvalidPacket(format!("bulk length parse error: {e}")))?;
-
-    // Reject oversized bulk announcements before reading the body.  The
-    // Firefox transport.js receiver does not enforce a server-side cap on
-    // bulk-frame length, so a malicious or buggy peer could stream a
-    // multi-GB body and pin our memory.  We apply the same `max_frame_bytes`
-    // knob used for JSON frames — operators reason about one number.
-    let cap_usize = max_frame_bytes();
-    let cap = cap_usize as u64;
-    if length > cap {
-        return Err(ProtocolError::BulkFrameTooLarge {
-            announced: length,
-            max: cap,
-        });
-    }
-
-    // Consume (discard) the body bytes in chunks to avoid large allocations.
-    let mut remaining = length;
-    let mut discard = [0u8; 8192];
-    while remaining > 0 {
-        let chunk_len = discard.len().min(
-            // Safe: remaining fits in usize because we take at most discard.len().
-            usize::try_from(remaining).unwrap_or(discard.len()),
-        );
-        reader
-            .read_exact(&mut discard[..chunk_len])
-            .map_err(map_recv_io_error)?;
-        remaining -= chunk_len as u64;
-    }
-
+fn recv_bulk_frame<R: BufRead>(reader: &mut R, first_byte: u8) -> Result<Value, ProtocolError> {
+    let (actor, kind, length) = drain_bulk_frame(reader, first_byte)?;
     Err(ProtocolError::BulkPacketUnsupported {
         actor,
         kind,
@@ -2244,5 +2309,136 @@ mod tests {
             matches!(err, ProtocolError::ActorChannelFull { .. }),
             "expected ActorChannelFull, got {err:?}"
         );
+    }
+
+    // ── Theme A: bulk-frame drain tests ─────────────────────────────────────
+
+    /// AC: `bulk_recv_drains_on_actor_mismatch` — after a mismatched bulk
+    /// frame, the next `recv_from` returns the following frame intact.
+    #[test]
+    fn bulk_recv_drains_on_actor_mismatch() {
+        // Build: bulk other-actor screenshot 30:<30 bytes> followed by a JSON frame.
+        let body: Vec<u8> = b"X".repeat(30);
+        let bulk_header = b"bulk other-actor screenshot 30:";
+        let json_str = r#"{"from":"x","msg":"hello"}"#; // 25 bytes
+        let json_frame = format!("{}:{}", json_str.len(), json_str);
+
+        let mut stream = Vec::new();
+        stream.extend_from_slice(bulk_header);
+        stream.extend_from_slice(&body);
+        stream.extend_from_slice(json_frame.as_bytes());
+
+        let mut cursor = Cursor::new(stream);
+
+        let mut out = Vec::new();
+        let err =
+            recv_bulk_with_handler_from(&mut cursor, "actor", "screenshot", &mut out).unwrap_err();
+        assert!(
+            matches!(err, ProtocolError::BulkPacketUnexpected { .. }),
+            "expected BulkPacketUnexpected on actor mismatch, got {err:?}"
+        );
+
+        // Stream must be aligned: next recv_from should get the JSON frame.
+        let val = recv_from(&mut cursor).expect("next frame must be readable after drain");
+        assert_eq!(
+            val.get("msg").and_then(serde_json::Value::as_str),
+            Some("hello"),
+            "next frame content mismatch"
+        );
+    }
+
+    /// AC: `bulk_recv_drains_on_json_peek` — a JSON frame peeked by the bulk
+    /// recv function is preserved for the next `recv_from`.
+    #[test]
+    fn bulk_recv_drains_on_json_peek() {
+        let json_str = r#"{"from":"x","msg":"world"}"#; // 25 bytes
+        let json_frame = format!("{}:{}", json_str.len(), json_str);
+
+        let mut cursor = Cursor::new(json_frame.into_bytes());
+
+        let mut out = Vec::new();
+        let err =
+            recv_bulk_with_handler_from(&mut cursor, "actor", "screenshot", &mut out).unwrap_err();
+        assert!(
+            matches!(err, ProtocolError::BulkPacketUnexpected { .. }),
+            "expected BulkPacketUnexpected on JSON peek, got {err:?}"
+        );
+
+        // The JSON frame must still be intact (byte NOT consumed).
+        let val = recv_from(&mut cursor).expect("JSON frame must be recoverable after peek");
+        assert_eq!(
+            val.get("msg").and_then(serde_json::Value::as_str),
+            Some("world"),
+            "JSON frame content mismatch"
+        );
+    }
+
+    /// AC: `bulk_recv_caps_drain_length` — over-cap announced length is
+    /// rejected before the discard loop (no body bytes read).
+    #[test]
+    fn bulk_recv_caps_drain_length() {
+        let _g = FRAME_CAP_LOCK.lock().unwrap();
+        let _restore = FrameCapGuard::new();
+
+        // Set a very small cap so we can craft a frame that exceeds it.
+        set_max_frame_bytes(100);
+
+        // `drain_bulk_frame` receives first_byte = b'b' (already consumed by
+        // the caller).  The cursor starts with the rest of the header.
+        // "ulk actor1 kind1 1000:" (22 bytes after 'b') + ':' terminator is
+        // included in the string literal below; body bytes follow.
+        //
+        // Full header: "bulk actor1 kind1 1000:" (23 bytes total).
+        // We pass 'b' as first_byte, so the cursor holds bytes 1..end.
+        let rest_of_header = b"ulk actor1 kind1 1000:";
+        // Provide only 10 body bytes (not the announced 1000).  If the cap
+        // check fires first (correct), we get BulkFrameTooLarge before any
+        // body read.  If it doesn't fire (wrong), we'd get RecvFailed on EOF.
+        let short_body: Vec<u8> = b"X".repeat(10);
+
+        let mut stream: Vec<u8> = Vec::new();
+        stream.extend_from_slice(rest_of_header);
+        stream.extend_from_slice(&short_body);
+        let total_len = stream.len();
+
+        let mut cursor = Cursor::new(stream);
+
+        let res = drain_bulk_frame(&mut cursor, b'b');
+        assert!(
+            matches!(
+                res,
+                Err(ProtocolError::BulkFrameTooLarge {
+                    announced: 1000,
+                    max: 100
+                })
+            ),
+            "expected BulkFrameTooLarge, got {res:?}"
+        );
+
+        // Cursor should be positioned right after the header ':' — body NOT read.
+        // rest_of_header length = 22 bytes (includes the ':' at the end).
+        #[allow(clippy::cast_possible_truncation)]
+        let pos = cursor.position() as usize;
+        assert_eq!(
+            pos,
+            rest_of_header.len(),
+            "cursor should be positioned after header, not into body; \
+             body bytes should still be unread (total={total_len}, pos={pos})"
+        );
+    }
+
+    /// AC: `demux_run_loop_without_reader_returns_error` — typed error, not panic.
+    #[test]
+    fn demux_run_loop_without_reader_returns_error() {
+        let r = DemuxReader::new();
+        match r.run_loop() {
+            ProtocolError::InvalidState(msg) => {
+                assert!(
+                    msg.contains("reader"),
+                    "error message should mention 'reader': {msg}"
+                );
+            }
+            other => panic!("expected InvalidState, got {other:?}"),
+        }
     }
 }
