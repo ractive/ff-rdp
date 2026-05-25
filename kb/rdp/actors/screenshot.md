@@ -104,3 +104,14 @@ So the "page width/height" is `innerWidth + scrollMaxX - scrollMinX − scrollba
 
 - The default screenshot path still returns base64 JSON (matches spec). The new `--bulk` CLI flag opts into the transport-level BULK_RESPONSE carrier via `Transport::recv_bulk_with_handler`, copying the PNG bytes in 8 KiB chunks straight to the output file. No full-body buffer alloc; peak RSS scales with chunk size, not image size.
 - `--bulk` is a daemon-side optimisation; bytewise output must match the base64 path (`cmp` exit 0).
+
+## Iter-77 update — ScreenshotArgsExt typed shim
+
+- `crates/ff-rdp-core/src/actors/screenshot.rs::ScreenshotArgsExt` is now the
+  single construction site for the outbound `capture` args.  It documents the
+  spec drift explicitly: `browsingContextID`, `snapshotScale`, and `rect` are
+  read by `devtools/server/actors/screenshot.js` but NOT declared in
+  `devtools/shared/specs/screenshot.js:13-35`.  The struct carries an
+  `allow-spec-drift: bug` annotation pointing at the upstream tracker.
+- `snapshotScale` is still omitted when `windowDPR * windowZoom == 1.0` so
+  outbound bytes are unchanged from the pre-iter-77 baseline.

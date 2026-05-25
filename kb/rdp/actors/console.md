@@ -95,3 +95,15 @@ Listener kinds: `"PageError"`, `"ConsoleAPI"`, `"FileActivity"`, `"ReflowActivit
 - `innerWindowID` lets you target a specific iframe inside a top target.
 - Workers have a stripped-down listener set — only `worker-listeners.js` is loaded under `isWorker`.
 - Result objects come back as **grips**; complex objects need a follow-up to ObjectActor to inspect properties.
+
+## Iter-77 update — EvaluateScope (S3)
+
+- `crates/ff-rdp-core/src/actors/console.rs::EvaluateScope` and
+  `WebConsoleActor::evaluate_js_async_scoped` wire the three spec-declared
+  request fields the iter-73 review found missing: `frameActor`,
+  `selectedNodeActor`, and `innerWindowID` (per
+  `devtools/shared/specs/webconsole.js:149-164` and the consuming server code
+  at `devtools/server/actors/webconsole.js:761-870`).
+- The legacy `evaluate_js_async` is preserved as a thin delegate so all
+  existing callers continue to work; only `commands::eval::run` opts in via
+  the new `--frame` / `--node` / `--inner-window` CLI flags.
