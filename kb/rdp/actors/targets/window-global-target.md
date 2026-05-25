@@ -37,6 +37,7 @@ These are created via `createExtraActors` from a registry; **lazy** — first ac
 
 - `detach`, `focus`.
 - `goForward`, `goBack`, `reload({force})` — **legacy**. Use [[rdp/actors/descriptors/tab-descriptor]] `goBack/Forward/reloadDescriptor` instead. Kept for third-party tools (bug 1717837).
+  - iter-80 Theme B: `WindowGlobalTarget::reload(transport, target, force)` accepts a `force` flag that maps to `{options: {forceReload: true}}` in the wire packet (the Firefox spec shape — server reads `request.options.forceReload`). `ff-rdp reload --hard` exposes this to the CLI for cache-bypassing reloads.
 - `navigateTo({url})` — legacy. Use descriptor.
 - `reconfigure({cacheDisabled, colorSchemeSimulation, printSimulationEnabled, restoreFocus, serviceWorkersTestingEnabled})` — **legacy** as of v87+; use target-configuration actor instead but kept for webextensions.
 - `switchToFrame({windowId})` — pick a specific iframe as the active target. Returns `{message}`.

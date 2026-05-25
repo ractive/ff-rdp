@@ -2,18 +2,20 @@
 title: "Iteration 80: ff-rdp ergonomics bundle — help grouping, reload --hard, eval --unwrap, dom --include-style, a11y --critical"
 type: iteration
 date: 2026-05-25
-status: planned
+status: in-progress
 branch: iter-80/ff-rdp-ergonomics-bundle
 depends_on:
   - iteration-77-spec-drift-and-windows-reparse-points
 firefox_refs:
-  - path: devtools/server/actors/styles.js
+  - path: devtools/server/actors/page-style.js
     lines: "1-120"
     why: "PageStyle.getComputed / getApplied — backs the new `dom --include-style` per-match getComputedStyle round-trip (Theme D).  Confirms the response shape we re-use from `ff-rdp computed`."
 kb_refs:
   - kb/rdp/actors/styles.md
   - kb/rdp/from-our-codebase/open-gaps.md
-first_call_sites: []
+first_call_sites:
+  - "WindowGlobalTarget::reload (force param): crates/ff-rdp-cli/src/commands/nav_action.rs"
+  - "commands::a11y::run_critical: crates/ff-rdp-cli/src/dispatch.rs"
 dogfood_path: |
   # A — help grouping
   ff-rdp --help | head -40                                     # must show Inspect / Navigate / Trace sections
@@ -38,72 +40,74 @@ and reviewable.
 ## Tasks
 
 ### Theme A — help grouping
-- [ ] Restructure the top-level `--help` text in
+- [x] Restructure the top-level `--help` text in
       `crates/ff-rdp-cli/src/cli/args.rs` into sections:
       **Inspect** (`dom`, `styles`, `computed`, `a11y`, `snapshot`,
       `page-text`, `perf`),
       **Navigate** (`navigate`, `reload`, `click`, `type`, `screenshot`),
       **Trace** (`console`, `network`, `eval`),
       **Lifecycle** (`launch`, `daemon`).
-      Implement via clap's `help_heading` per-subcommand or a hand-rolled
-      `after_help`/`long_about` on the root, whichever yields the cleanest
-      output.
+      Implemented as a hand-rolled grouping block prepended to the root
+      `about`/`long_about` so the section names appear at the top of
+      `ff-rdp --help` regardless of clap's subcommand listing order.
 
 ### Theme B — reload --hard
-- [ ] Add `--hard` flag to `ff-rdp reload` that sets the RDP `force_cache`
-      / `LoadFlags::BYPASS_CACHE` equivalent so the request bypasses
-      HTTP cache.  Default remains soft reload.
+- [x] Add `--hard` flag to `ff-rdp reload` that sets the RDP
+      `options.forceReload` (Firefox's `LoadFlags::BYPASS_CACHE` equivalent)
+      so the request bypasses HTTP cache. Default remains soft reload.
+      `WindowGlobalTarget::reload(transport, target, force)` gained the
+      `force: bool` parameter; the wait-idle paths reuse `build_reload_packet`
+      to attach `options.forceReload` consistently.
 
 ### Theme C — eval --unwrap
-- [ ] Add `--unwrap` to `ff-rdp eval`: when the result value is a string
+- [x] Add `--unwrap` to `ff-rdp eval`: when the result value is a string
       that round-trips through `serde_json::from_str` as a JSON object or
       array, replace `results` with the parsed value before printing.
-      No magic when the string is not valid JSON.
+      Extracted into `try_unwrap_json_string` so the behaviour is unit-tested
+      end-to-end. Non-JSON strings and JSON primitives are left unchanged.
 
 ### Theme D — dom --include-style
-- [ ] Add `--include-style <PROPS>` to `ff-rdp dom` (comma-separated CSS
-      property list).  For each matched node, attach a `style` field
-      with the named getComputedStyle values.  Re-use the
-      `WebConsoleActor::evaluate_js` + `getComputedStyle` path that
-      `ff-rdp computed` already exercises, or call PageStyle.getComputed
-      per match — whichever is cheaper for N matches.
-- [ ] If the round-trip becomes expensive on large match sets, add a
-      `--include-style-limit <N>` guard (default 50) and document it in
-      `long_about`.
+- [x] Add `--include-style <PROPS>` to `ff-rdp dom` (comma-separated CSS
+      property list). For each matched ARIA-tree node, attach a `style` field
+      with the named getComputedStyle values via a second JS roundtrip that
+      mirrors the `ff-rdp computed` build_js path (`props.length` loop with
+      `cs.getPropertyValue` + bracket fallback).
+- [x] `--include-style-limit <N>` guard (default 50) caps the per-call cost
+      on large match sets; truncated runs set `meta.style_truncated: true`
+      and `meta.style_limit`.
 
 ### Theme E — a11y --critical
-- [ ] Add `--critical` to `ff-rdp a11y` that filters the output to nodes
-      with a WCAG violation (use whatever the existing a11y actor surfaces
-      as severity / audit-result).  Empty array when nothing is critical.
+- [x] Add `--critical` to `ff-rdp a11y` that surfaces nodes that fail a
+      basic WCAG audit (img without alt, button/link/form controls without
+      an accessible name). Returns a flat array of `{role, selector,
+      violation, severity}` records; empty when nothing is critical.
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
-- [ ] `cli_help_groups_commands_by_role`: a unit/e2e test in
-      `crates/ff-rdp-cli/tests/` runs `ff-rdp --help` and asserts the
-      output contains the section headers `Inspect`, `Navigate`,
-      `Trace`, `Lifecycle` (case-insensitive) — proving the grouping
-      survived a clap refactor.
-- [ ] `reload_hard_bypasses_cache`: live test
-      `crates/ff-rdp-cli/tests/live_reload_hard.rs::live_reload_hard_bypasses_cache`
-      that loads a page with a `Cache-Control: public, max-age=3600`
-      asset, reloads with `--hard`, and asserts the request is re-issued
-      to the origin (e.g. by observing the network actor or by serving
-      a counter from a local fixture).  Gated `FF_RDP_LIVE_TESTS=1`.
-- [ ] `eval_unwrap_parses_json_string`: unit test
-      `crates/ff-rdp-cli/src/commands/eval.rs::tests::eval_unwrap_parses_json_string`
-      that runs `eval` with `--unwrap` on a result whose string value is
-      `"{\"a\":1}"` and asserts `results == {"a": 1}`.  Negative case
-      with `"hello"` asserts the result is left unchanged.
-- [ ] `dom_include_style_attaches_computed_values`: live test
-      `crates/ff-rdp-cli/tests/live_dom_include_style.rs::dom_include_style_attaches_computed_values`
-      that navigates to a fixture page with `<p style="color:red">` and
-      runs `dom 'p' --include-style color`; asserts each result element
-      has `style.color == "rgb(255, 0, 0)"`.  Gated `FF_RDP_LIVE_TESTS=1`.
-- [ ] `a11y_critical_filters_to_violations`: live test
-      `crates/ff-rdp-cli/tests/live_a11y_critical.rs::a11y_critical_filters_to_violations`
-      on a fixture page with a known WCAG violation (e.g. an `<img>` with
-      no alt); asserts `a11y --critical` returns exactly the offending
-      node and an empty result on a clean page.  Gated `FF_RDP_LIVE_TESTS=1`.
+- [x] `cli_help_groups_commands_by_role` (crates/ff-rdp-cli/tests/cli_help_groups.rs): a unit/e2e test
+      runs `ff-rdp --help` and asserts the output contains the section
+      headers `Inspect`, `Navigate`, `Trace`, `Lifecycle`
+      (case-insensitive) — proving the grouping survived a clap refactor.
+- [x] `live_reload_hard_bypasses_cache` (crates/ff-rdp-cli/tests/live_reload_hard.rs):
+      loads a page served with `Cache-Control: public, max-age=3600` from
+      a local counting HTTP server, reloads with `--hard`, asserts the
+      response carries `force: true` and the server observes a second
+      origin hit. Gated `FF_RDP_LIVE_TESTS=1`.
+- [x] `eval_unwrap_parses_json_string`
+      (crates/ff-rdp-cli/src/commands/eval.rs::tests::eval_unwrap_parses_json_string):
+      exercises `try_unwrap_json_string` on `{"a":1}` and asserts the
+      structured object is returned. Companion tests cover plain strings,
+      JSON primitives, arrays, and non-string values.
+- [x] `dom_include_style_attaches_computed_values`
+      (crates/ff-rdp-cli/tests/live_dom_include_style.rs): navigates to
+      a data URL with two `<p style="color:red">` nodes, runs
+      `dom 'p' --include-style color`, and asserts every match has
+      `style.color == "rgb(255, 0, 0)"`. Gated `FF_RDP_LIVE_TESTS=1`.
+- [x] `a11y_critical_filters_to_violations`
+      (crates/ff-rdp-cli/tests/live_a11y_critical.rs): on a fixture page
+      with `<img>` missing alt, asserts `a11y --critical` returns the
+      offending node; clean page returns an empty array. Gated
+      `FF_RDP_LIVE_TESTS=1`.
 
 ## Out of scope
 

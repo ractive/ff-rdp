@@ -273,6 +273,7 @@ fn eval_with_csp_fallback(
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub fn run(
     cli: &Cli,
     script: Option<&str>,
@@ -280,6 +281,7 @@ pub fn run(
     use_stdin: bool,
     stringify: bool,
     no_isolate: bool,
+    unwrap: bool,
     cli_scope: CliEvalScope<'_>,
 ) -> Result<(), AppError> {
     let script = load_script(script, file, use_stdin)?;
@@ -434,6 +436,12 @@ pub fn run(
             }
         }
     }
+    if unwrap
+        && try_unwrap_json_string(&mut result_json)
+        && let Some(m) = meta.as_object_mut()
+    {
+        m.insert("unwrapped".to_owned(), json!(true));
+    }
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
@@ -473,6 +481,29 @@ pub fn run(
     pipeline_result
 }
 
+/// `--unwrap` helper: if `value` is a string whose contents parse as a JSON
+/// object or array, replace `value` with the parsed structure and return
+/// `true`.  Returns `false` and leaves `value` untouched otherwise (including
+/// for valid JSON that parses to a primitive — numbers, booleans, null, or
+/// plain strings).
+fn try_unwrap_json_string(value: &mut serde_json::Value) -> bool {
+    let serde_json::Value::String(s) = &*value else {
+        return false;
+    };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) else {
+        return false;
+    };
+    if matches!(
+        parsed,
+        serde_json::Value::Object(_) | serde_json::Value::Array(_)
+    ) {
+        *value = parsed;
+        true
+    } else {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,6 +512,62 @@ mod tests {
     fn load_script_positional_passthrough() {
         let s = load_script(Some("document.title"), None, false).unwrap();
         assert_eq!(s, "document.title");
+    }
+
+    /// AC iter-80 Theme C: `eval_unwrap_parses_json_string`.
+    /// A JSON-encoded object string is replaced with the parsed object.
+    #[test]
+    fn eval_unwrap_parses_json_string() {
+        let mut v = serde_json::Value::String(r#"{"a":1}"#.to_owned());
+        let unwrapped = try_unwrap_json_string(&mut v);
+        assert!(
+            unwrapped,
+            "expected unwrap to succeed on JSON object string"
+        );
+        assert_eq!(v, serde_json::json!({"a": 1}));
+    }
+
+    /// Negative: a plain string is left unchanged.
+    #[test]
+    fn eval_unwrap_leaves_plain_string_unchanged() {
+        let mut v = serde_json::Value::String("hello".to_owned());
+        let unwrapped = try_unwrap_json_string(&mut v);
+        assert!(
+            !unwrapped,
+            "plain non-JSON string must not be unwrapped: {v:?}"
+        );
+        assert_eq!(v, serde_json::Value::String("hello".to_owned()));
+    }
+
+    /// JSON-encoded primitive (e.g. `"42"`) must stay a string — only
+    /// objects and arrays unwrap.
+    #[test]
+    fn eval_unwrap_leaves_primitive_string_unchanged() {
+        let mut v = serde_json::Value::String("42".to_owned());
+        let unwrapped = try_unwrap_json_string(&mut v);
+        assert!(
+            !unwrapped,
+            "primitive JSON value must not trigger unwrap: {v:?}"
+        );
+        assert_eq!(v, serde_json::Value::String("42".to_owned()));
+    }
+
+    /// Arrays are also valid unwrap targets.
+    #[test]
+    fn eval_unwrap_parses_json_array_string() {
+        let mut v = serde_json::Value::String("[1,2,3]".to_owned());
+        let unwrapped = try_unwrap_json_string(&mut v);
+        assert!(unwrapped);
+        assert_eq!(v, serde_json::json!([1, 2, 3]));
+    }
+
+    /// Non-string values are never touched.
+    #[test]
+    fn eval_unwrap_skips_non_string_values() {
+        let mut v = serde_json::json!({"already": "object"});
+        let unwrapped = try_unwrap_json_string(&mut v);
+        assert!(!unwrapped);
+        assert_eq!(v, serde_json::json!({"already": "object"}));
     }
 
     #[test]

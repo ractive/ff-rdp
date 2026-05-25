@@ -99,7 +99,14 @@ const ARIA_TREE_JS_TEMPLATE: &str = r"(function() {
   return '__FF_RDP_JSON__' + JSON.stringify(results);
 })()";
 
-pub fn run(cli: &Cli, selector: &str, mode: OutputMode, first: bool) -> Result<(), AppError> {
+pub fn run(
+    cli: &Cli,
+    selector: &str,
+    mode: OutputMode,
+    first: bool,
+    style_props: &[String],
+    style_limit: usize,
+) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
@@ -161,6 +168,30 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode, first: bool) -> Result<(
         }
     }
 
+    // Theme D (iter-80) `--include-style`: after the primary DOM query has
+    // resolved matches, run a second JS evaluation that pulls
+    // getComputedStyle values for each match by querySelectorAll index and
+    // merge them into the result objects. Done as a separate roundtrip so the
+    // ARIA-tree JS stays focused and so callers without `--include-style` pay
+    // no cost.
+    let mut style_truncated = false;
+    if !style_props.is_empty() && matches!(effective_mode, OutputMode::AriaTree) {
+        let match_count = match &results {
+            Value::Array(arr) => arr.len(),
+            Value::Object(_) => 1,
+            _ => 0,
+        };
+        if match_count > 0 {
+            let take = match_count.min(style_limit);
+            if match_count > style_limit {
+                style_truncated = true;
+            }
+            let styles =
+                fetch_computed_styles(&mut ctx, &console_actor, selector, style_props, take);
+            attach_styles(&mut results, &styles);
+        }
+    }
+
     let mut meta = json!({"selector": selector});
     if matches!(effective_mode, OutputMode::AriaTree)
         && ctx.via_daemon
@@ -169,6 +200,10 @@ pub fn run(cli: &Cli, selector: &str, mode: OutputMode, first: bool) -> Result<(
         // Always emit refs_registered so callers can reliably check whether
         // ref handles in the output are usable (iter-61j D1).
         obj.insert("refs_registered".to_string(), json!(refs_registered));
+    }
+    if style_truncated && let Some(obj) = meta.as_object_mut() {
+        obj.insert("style_truncated".to_string(), json!(true));
+        obj.insert("style_limit".to_string(), json!(style_limit));
     }
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
@@ -251,6 +286,76 @@ fn extract_and_strip_resolvers(results: &mut Value) -> Vec<crate::daemon::client
     }
 
     entries
+}
+
+/// Fetch computed CSS values for the first `take` matches of `selector` and
+/// return them as a parallel array `[{prop: value, ...}, ...]` of length
+/// `take`.  Used by `dom --include-style` (Theme D, iter-80).
+///
+/// Returns an empty Vec on JS exception or parse failure rather than failing
+/// the whole `dom` call — `--include-style` is best-effort polish, not core.
+fn fetch_computed_styles(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    console_actor: &ff_rdp_core::ActorId,
+    selector: &str,
+    props: &[String],
+    take: usize,
+) -> Vec<Value> {
+    let escaped = escape_selector(selector);
+    let props_json = serde_json::to_string(props).unwrap_or_else(|_| "[]".to_owned());
+    let js = format!(
+        r"(function() {{
+  var props = {props_json};
+  var take = {take};
+  var els = document.querySelectorAll('{escaped}');
+  var out = [];
+  var n = Math.min(els.length, take);
+  for (var i = 0; i < n; i++) {{
+    var cs = getComputedStyle(els[i]);
+    var obj = {{}};
+    for (var j = 0; j < props.length; j++) {{
+      var p = props[j];
+      obj[p] = cs.getPropertyValue(p).trim() || cs[p] || '';
+    }}
+    out.push(obj);
+  }}
+  return '{JSON_SENTINEL}' + JSON.stringify(out);
+}})()"
+    );
+
+    let Ok(eval_result) =
+        eval_or_bail(ctx, console_actor, &js, "include-style query failed")
+    else {
+        return Vec::new();
+    };
+    let Ok(parsed) = resolve_result(ctx, &eval_result.result) else {
+        return Vec::new();
+    };
+    match parsed {
+        Value::Array(arr) => arr,
+        _ => Vec::new(),
+    }
+}
+
+/// Attach a `style` field to each entry in `results` from the parallel
+/// `styles` array.  Entries beyond `styles.len()` are left untouched (so
+/// `--include-style-limit` capping is visible to callers).
+fn attach_styles(results: &mut Value, styles: &[Value]) {
+    match results {
+        Value::Object(map) => {
+            if let Some(s) = styles.first() {
+                map.insert("style".to_string(), s.clone());
+            }
+        }
+        Value::Array(arr) => {
+            for (i, node) in arr.iter_mut().enumerate() {
+                if let (Value::Object(map), Some(s)) = (node, styles.get(i)) {
+                    map.insert("style".to_string(), s.clone());
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Remove the `ref` field from each ARIA-tree node.  Used when refs cannot be

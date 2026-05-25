@@ -14,7 +14,10 @@ use super::connect_tab::connect_and_get_target;
 /// Which navigation action to perform.
 #[derive(Clone, Copy)]
 pub enum NavAction {
-    Reload,
+    /// Reload the current page. `force = true` bypasses the HTTP cache.
+    Reload {
+        force: bool,
+    },
     Back,
     Forward,
 }
@@ -23,25 +26,29 @@ pub fn run(cli: &Cli, action: NavAction) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
 
-    let action_name = match action {
-        NavAction::Reload => {
-            WindowGlobalTarget::reload(ctx.transport_mut(), &target_actor)
+    let (action_name, force_reload) = match action {
+        NavAction::Reload { force } => {
+            WindowGlobalTarget::reload(ctx.transport_mut(), &target_actor, force)
                 .map_err(AppError::from)?;
-            "reload"
+            ("reload", force)
         }
         NavAction::Back => {
             WindowGlobalTarget::go_back(ctx.transport_mut(), &target_actor)
                 .map_err(AppError::from)?;
-            "back"
+            ("back", false)
         }
         NavAction::Forward => {
             WindowGlobalTarget::go_forward(ctx.transport_mut(), &target_actor)
                 .map_err(AppError::from)?;
-            "forward"
+            ("forward", false)
         }
     };
 
-    let result = json!({"action": action_name});
+    let result = if force_reload {
+        json!({"action": action_name, "force": true})
+    } else {
+        json!({"action": action_name})
+    };
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
@@ -53,7 +60,7 @@ pub fn run(cli: &Cli, action: NavAction) -> Result<(), AppError> {
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_source = match action {
-        NavAction::Reload => HintSource::Reload,
+        NavAction::Reload { .. } => HintSource::Reload,
         NavAction::Back => HintSource::Back,
         NavAction::Forward => HintSource::Forward,
     };
@@ -79,15 +86,27 @@ pub fn run(cli: &Cli, action: NavAction) -> Result<(), AppError> {
 /// 2. Send the `reload` request.
 /// 3. Drain events until idle or timeout.
 /// 4. Emit `{reloaded: true, idle_at_ms: N, requests_observed: M}`.
-pub fn run_reload_wait_idle(cli: &Cli, idle_ms: u64, timeout_ms: u64) -> Result<(), AppError> {
+pub fn run_reload_wait_idle(
+    cli: &Cli,
+    idle_ms: u64,
+    timeout_ms: u64,
+    force: bool,
+) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
 
     if ctx.via_daemon {
-        return run_reload_wait_idle_daemon(&mut ctx, cli, &target_actor, idle_ms, timeout_ms);
+        return run_reload_wait_idle_daemon(
+            &mut ctx,
+            cli,
+            &target_actor,
+            idle_ms,
+            timeout_ms,
+            force,
+        );
     }
 
-    run_reload_wait_idle_direct(&mut ctx, cli, &target_actor, idle_ms, timeout_ms)
+    run_reload_wait_idle_direct(&mut ctx, cli, &target_actor, idle_ms, timeout_ms, force)
 }
 
 /// Reload + wait-idle through the daemon proxy.
@@ -102,17 +121,16 @@ fn run_reload_wait_idle_daemon(
     target_actor: &ff_rdp_core::ActorId,
     idle_ms: u64,
     timeout_ms: u64,
+    force: bool,
 ) -> Result<(), AppError> {
     // Tell the daemon to stream network events directly to us.
     crate::daemon::client::start_daemon_stream(ctx.transport_mut(), "network-event")
         .map_err(AppError::from)?;
 
     // Send reload without reading the ack — events will be streamed inline.
+    let reload_packet = build_reload_packet(target_actor, force);
     ctx.transport_mut()
-        .send(&json!({
-            "to": target_actor.as_ref(),
-            "type": "reload",
-        }))
+        .send(&reload_packet)
         .map_err(AppError::from)?;
 
     let (requests_observed, idle_at_ms) =
@@ -130,7 +148,24 @@ fn run_reload_wait_idle_daemon(
         }
     };
 
-    emit_reload_result(cli, requests_observed + inflight_count, idle_at_ms)
+    emit_reload_result(cli, requests_observed + inflight_count, idle_at_ms, force)
+}
+
+/// Build the JSON `reload` packet, optionally including the
+/// `options.forceReload=true` field for a hard reload (Theme B, iter-80).
+fn build_reload_packet(target_actor: &ff_rdp_core::ActorId, force: bool) -> serde_json::Value {
+    if force {
+        json!({
+            "to": target_actor.as_ref(),
+            "type": "reload",
+            "options": {"forceReload": true},
+        })
+    } else {
+        json!({
+            "to": target_actor.as_ref(),
+            "type": "reload",
+        })
+    }
 }
 
 /// Reload + wait-idle with a direct Firefox connection (no daemon).
@@ -140,6 +175,7 @@ fn run_reload_wait_idle_direct(
     target_actor: &ff_rdp_core::ActorId,
     idle_ms: u64,
     timeout_ms: u64,
+    force: bool,
 ) -> Result<(), AppError> {
     let tab_actor = ctx.target_tab_actor().clone();
     let watcher_actor =
@@ -150,11 +186,9 @@ fn run_reload_wait_idle_direct(
         .map_err(AppError::from)?;
 
     // Send reload without reading the ack.
+    let reload_packet = build_reload_packet(target_actor, force);
     ctx.transport_mut()
-        .send(&json!({
-            "to": target_actor.as_ref(),
-            "type": "reload",
-        }))
+        .send(&reload_packet)
         .map_err(AppError::from)?;
 
     let (requests_observed, idle_at_ms) =
@@ -164,7 +198,7 @@ fn run_reload_wait_idle_direct(
     let _ =
         WatcherActor::unwatch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"]);
 
-    emit_reload_result(cli, requests_observed, idle_at_ms)
+    emit_reload_result(cli, requests_observed, idle_at_ms, force)
 }
 
 /// Drain network events from `transport` until idle or timeout.
@@ -253,12 +287,26 @@ fn count_network_events_in_frames(frames: &[serde_json::Value]) -> u64 {
     frames.iter().map(count_network_events).sum()
 }
 
-fn emit_reload_result(cli: &Cli, requests_observed: u64, idle_at_ms: u64) -> Result<(), AppError> {
-    let result = json!({
-        "reloaded": true,
-        "idle_at_ms": idle_at_ms,
-        "requests_observed": requests_observed,
-    });
+fn emit_reload_result(
+    cli: &Cli,
+    requests_observed: u64,
+    idle_at_ms: u64,
+    force: bool,
+) -> Result<(), AppError> {
+    let result = if force {
+        json!({
+            "reloaded": true,
+            "idle_at_ms": idle_at_ms,
+            "requests_observed": requests_observed,
+            "force": true,
+        })
+    } else {
+        json!({
+            "reloaded": true,
+            "idle_at_ms": idle_at_ms,
+            "requests_observed": requests_observed,
+        })
+    };
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
