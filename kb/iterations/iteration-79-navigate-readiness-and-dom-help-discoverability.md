@@ -2,17 +2,23 @@
 title: "Iteration 79: Fix navigate readiness-event misses + surface styles/computed under dom --help"
 type: iteration
 date: 2026-05-25
-status: in-progress
+status: completed
 branch: iter-79/navigate-readiness-and-dom-help
 depends_on:
   - iteration-77-spec-drift-and-windows-reparse-points
 firefox_refs:
-  - path: devtools/shared/specs/watcher.js
-    lines: "20-32"
-    why: "watchResources / unwatchTargets — confirms the resource-subscription contract used to deliver document-event resources (dom-loading / dom-interactive / dom-complete)."
-  - path: devtools/server/actors/resources/document-event.js
-    lines: "1-120"
-    why: "Source of the document-event resource stream. Confirms when each event fires server-side and whether late subscribers receive a replay or only future events — this is the suspected root cause of the missed events on real sites."
+  - lines: 20-32
+    path: devtools/shared/specs/watcher.js
+    why: >-
+      watchResources / unwatchTargets — confirms the resource-subscription contract
+      used to deliver document-event resources (dom-loading / dom-interactive /
+      dom-complete).
+  - lines: 1-120
+    path: devtools/server/actors/resources/document-event.js
+    why: >-
+      Source of the document-event resource stream. Confirms when each event fires
+      server-side and whether late subscribers receive a replay or only future events —
+      this is the suspected root cause of the missed events on real sites.
 kb_refs:
   - kb/rdp/actors/watcher.md
   - kb/rdp/from-our-codebase/open-gaps.md
@@ -26,10 +32,15 @@ dogfood_path: |
   ff-rdp navigate https://tennis-sepp.ch                       # --wait complete (default)
   ff-rdp navigate https://tennis-sepp.ch --wait interactive    # should be faster still
   pkill -f 'firefox.*ff-rdp-profile'
-
+  
   # Theme B — dom help mentions styles/computed.
   ff-rdp dom --help | grep -E 'styles|computed'                # must match at least one line
-tags: [iteration, navigate, document-event, cli-help, dogfood]
+tags:
+  - iteration
+  - navigate
+  - document-event
+  - cli-help
+  - dogfood
 ---
 
 Dogfooding report (2026-05-25) surfaced two paper-cuts that this iteration
