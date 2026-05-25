@@ -152,13 +152,13 @@ fn run_reload_wait_idle_daemon(
 }
 
 /// Build the JSON `reload` packet, optionally including the
-/// `options.forceReload=true` field for a hard reload (Theme B, iter-80).
+/// `options.force=true` field for a hard reload (Theme B, iter-80).
 fn build_reload_packet(target_actor: &ff_rdp_core::ActorId, force: bool) -> serde_json::Value {
     if force {
         json!({
             "to": target_actor.as_ref(),
             "type": "reload",
-            "options": {"forceReload": true},
+            "options": {"force": true},
         })
     } else {
         json!({

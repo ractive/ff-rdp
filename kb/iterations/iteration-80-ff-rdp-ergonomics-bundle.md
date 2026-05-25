@@ -53,11 +53,11 @@ and reviewable.
 
 ### Theme B — reload --hard
 - [x] Add `--hard` flag to `ff-rdp reload` that sets the RDP
-      `options.forceReload` (Firefox's `LoadFlags::BYPASS_CACHE` equivalent)
+      `options.force` (Firefox's `LoadFlags::BYPASS_CACHE` equivalent)
       so the request bypasses HTTP cache. Default remains soft reload.
       `WindowGlobalTarget::reload(transport, target, force)` gained the
       `force: bool` parameter; the wait-idle paths reuse `build_reload_packet`
-      to attach `options.forceReload` consistently.
+      to attach `options.force` consistently.
 
 ### Theme C — eval --unwrap
 - [x] Add `--unwrap` to `ff-rdp eval`: when the result value is a string

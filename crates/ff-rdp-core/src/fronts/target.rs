@@ -42,14 +42,14 @@ impl TargetFront {
     /// Reload the current page.
     ///
     /// Pass `force = true` to bypass the HTTP cache (sends the Firefox
-    /// `{options: {forceReload: true}}` request shape, equivalent to a hard
+    /// `{options: {force: true}}` request shape, equivalent to a hard
     /// reload in the browser UI).
     pub fn reload(&self, transport: &mut RdpTransport, force: bool) -> Result<(), ProtocolError> {
         if force {
             // Bypass the typed spec (which carries `NoArgs`) so we can attach
-            // the Firefox `options.forceReload` request field directly.
+            // the Firefox `options.force` request field directly.
             let packet = json!({"to": self.id.as_ref(), "type": "reload",
-                "options": {"forceReload": true}});
+                "options": {"force": true}});
             let _ = transport.request(&packet)?;
             Ok(())
         } else {

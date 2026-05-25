@@ -323,8 +323,7 @@ fn fetch_computed_styles(
 }})()"
     );
 
-    let Ok(eval_result) =
-        eval_or_bail(ctx, console_actor, &js, "include-style query failed")
+    let Ok(eval_result) = eval_or_bail(ctx, console_actor, &js, "include-style query failed")
     else {
         return Vec::new();
     };

@@ -922,7 +922,7 @@ With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"passe
 With --wait-idle, the command blocks after reload until network activity has been
 idle for --idle-ms (default 500) or the --reload-timeout expires (default 10000).
 
-Pass --hard for a cache-bypassing reload (Firefox `options.forceReload`, the
+Pass --hard for a cache-bypassing reload (Firefox `options.force`, the
 protocol equivalent of Cmd-Shift-R / `LoadFlags::BYPASS_CACHE`).  Default
 remains a soft reload.
 
@@ -944,7 +944,7 @@ Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requ
         /// Maximum total milliseconds to wait for idle (--wait-idle only)
         #[arg(long, default_value_t = 10000, requires = "wait_idle")]
         reload_timeout: u64,
-        /// Hard reload — bypass the HTTP cache (sends Firefox's `options.forceReload`,
+        /// Hard reload — bypass the HTTP cache (sends Firefox's `options.force`,
         /// equivalent to Cmd-Shift-R in the browser UI). Default is a soft reload.
         #[arg(long)]
         hard: bool,
