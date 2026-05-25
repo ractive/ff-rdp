@@ -96,10 +96,46 @@ pub enum RdpError {
     /// exit codes without parsing raw strings.
     #[error("navigation to '{url}' failed: {cause}")]
     Navigation { cause: NavCause, url: String },
+
+    /// A request would have violated the published Firefox RDP spec — for
+    /// example, calling `unwatchTargets` without the required `targetType`
+    /// parameter.  The CLI maps this to `AppError::User` (exit code 1), so
+    /// the malformed packet never leaves the process.
+    #[error("spec violation: {reason}")]
+    Spec { reason: String },
 }
 
 /// Convenience alias used throughout `ff-rdp-core`.
 pub type RdpResult<T> = Result<T, RdpError>;
+
+impl From<ProtocolError> for RdpError {
+    fn from(p: ProtocolError) -> Self {
+        match p {
+            ProtocolError::ConnectionFailed(e)
+            | ProtocolError::SendFailed(e)
+            | ProtocolError::RecvFailed(e) => Self::Transport(e),
+            ProtocolError::Timeout => Self::Timeout {
+                phase: "rdp".to_owned(),
+                after_ms: 0,
+            },
+            ProtocolError::ActorError {
+                actor,
+                error,
+                message,
+                ..
+            } => Self::Protocol {
+                actor,
+                name: error,
+                message,
+            },
+            other => Self::Shape {
+                path: "protocol".to_owned(),
+                expected: "ok".to_owned(),
+                got: other.to_string(),
+            },
+        }
+    }
+}
 
 /// Well-known Firefox RDP actor error codes.
 #[derive(Debug, Clone, PartialEq, Eq)]

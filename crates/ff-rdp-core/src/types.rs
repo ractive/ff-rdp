@@ -36,6 +36,26 @@ impl From<&str> for ActorId {
     }
 }
 
+impl ActorId {
+    /// Fallible constructor: returns `None` for an empty input.
+    ///
+    /// Adopted in preference to changing the existing `From<&str>` / `From<String>`
+    /// impls to be fallible — that would touch 100+ call sites and force
+    /// every caller into `?`-propagation for a degenerate input that should
+    /// never occur in practice.  Code paths that decode an actor ID from
+    /// untrusted JSON should call `try_new` and surface a typed error
+    /// (`RdpError::Shape` / `ProtocolError::InvalidPacket`) on `None`;
+    /// internal call sites that build IDs from known-good string literals
+    /// continue to use `From<&str>`.
+    pub fn try_new(s: &str) -> Option<Self> {
+        if s.is_empty() {
+            None
+        } else {
+            Some(Self::from(s))
+        }
+    }
+}
+
 impl AsRef<str> for ActorId {
     fn as_ref(&self) -> &str {
         &self.0
@@ -218,6 +238,13 @@ mod tests {
     fn actor_id_display() {
         let id = ActorId::from("server1.conn0.child1/tab1");
         assert_eq!(id.to_string(), "server1.conn0.child1/tab1");
+    }
+
+    /// AC: `actor_id_rejects_empty` — empty input fails `try_new`.
+    #[test]
+    fn actor_id_rejects_empty() {
+        assert!(ActorId::try_new("").is_none());
+        assert!(ActorId::try_new("conn0/walker1").is_some());
     }
 
     #[test]

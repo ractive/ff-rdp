@@ -464,6 +464,24 @@ to wrap the expression in JSON.stringify() and get the real data back.")]
         /// Useful when incrementally building up helpers across an interactive session.
         #[arg(long)]
         no_isolate: bool,
+        /// Evaluate inside a specific frame/iframe actor (iter-77 S3).
+        ///
+        /// Pass the frame actor ID — e.g. obtained from a `watcher`
+        /// `target-available-form` event with `targetType=frame`.  Wires the
+        /// spec-declared `frameActor` field of `evaluateJSAsync`
+        /// (devtools/shared/specs/webconsole.js:149-164).
+        #[arg(long, value_name = "ACTOR")]
+        frame: Option<String>,
+        /// Pre-bind `$0` to a DOM node actor before evaluating (iter-77 S3).
+        ///
+        /// Maps to `selectedNodeActor` in the `evaluateJSAsync` request.
+        #[arg(long, value_name = "ACTOR")]
+        node: Option<String>,
+        /// Scope the eval to a specific inner-window ID (iter-77 S3).
+        ///
+        /// Maps to `innerWindowID` in the `evaluateJSAsync` request.
+        #[arg(long, value_name = "ID")]
+        inner_window: Option<u64>,
     },
     /// Extract visible page text (document.body.innerText)
     #[command(long_about = "Extract visible page text (document.body.innerText).

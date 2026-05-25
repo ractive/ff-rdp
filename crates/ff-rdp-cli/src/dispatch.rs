@@ -428,6 +428,9 @@ fn dispatch_inner(
             stdin,
             stringify,
             no_isolate,
+            frame,
+            node,
+            inner_window,
         } => commands::eval::run(
             cli,
             script.as_deref(),
@@ -435,6 +438,11 @@ fn dispatch_inner(
             *stdin,
             *stringify,
             *no_isolate,
+            commands::eval::CliEvalScope {
+                frame_actor: frame.as_deref(),
+                selected_node_actor: node.as_deref(),
+                inner_window_id: *inner_window,
+            },
         ),
         Command::Reload {
             wait_idle,

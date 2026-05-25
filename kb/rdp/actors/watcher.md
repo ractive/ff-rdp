@@ -139,3 +139,19 @@ The Rust entry points are:
 - `ResourceGripGuard::add_grip(grip: Grip)` now dispatches to `AnyGripHandle::Object(GripHandle::<ObjectGrip>)` or `AnyGripHandle::LongString(GripHandle::<LongStringGrip>)` — a `LongString` actor is no longer wrongly wrapped as an `ObjectGrip`.
 - `dispatch_firefox_message` in `daemon/server.rs` calls `extract_grips` and `add_grip` so grips are actually released when the guard drops (was inert in iter-76).
 - The `grip_release_drainer_loop` thread now genuinely owns `ReleaseQueueRx` and sends release packets over the shared `FramedWriter`.
+
+## Iter-77 update — unwatchTargets options + printf substitution
+
+- `WatcherActor::unwatch_targets` now takes `Option<&str>` for `targetType`
+  and `Option<&Value>` for `options`.  Passing `target_type = None` is
+  rejected with `RdpError::Spec { reason: "targetType required" }` and NO
+  packet is sent (closes the silent default-to-`"frame"` from W4 in the
+  iter-73 review).  `WatcherFront::unwatch_targets` mirrors this with an
+  `options: Option<Value>` parameter; `request::UnwatchTargets` skips
+  serialising `options` when `None`.
+- `parse_console_resources` now applies Firefox's `%s`/`%d`/`%i`/`%f`/
+  `%o`/`%O`/`%c`/`%%` substitution to the first argument when it is a
+  format string — ported from `devtools/server/actors/webconsole.js:1100-1175`.
+  `%c` consumes its arg silently (no CSS in our text output).
+- `parse_target_event` now rejects empty `actor` strings via the new
+  `ActorId::try_new` constructor — closing L2 from the iter-73 review.
