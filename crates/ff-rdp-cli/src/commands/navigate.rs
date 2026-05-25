@@ -487,6 +487,13 @@ pub fn run_core(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .unsubscribe(ctx.transport_mut(), sub_id);
 
+        // Pair the prelude's `watchTargets("frame")` with `unwatchTargets`
+        // (oneway, no reply) so the server-side frame-target subscription is
+        // cleared.  Best-effort like the neighbouring `unsubscribe` call —
+        // we don't want a teardown error to mask the navigation result.
+        let _ =
+            WatcherActor::unwatch_targets(ctx.transport_mut(), &watcher_actor, Some("frame"), None);
+
         // Restore the original timeout so subsequent RDP round-trips (e.g.
         // wait-text / wait-selector polling) use the configured timeout.
         restore_timeout(ctx.transport_mut(), cli.timeout);
@@ -735,6 +742,14 @@ pub fn run_with_network(
     let watcher_actor =
         TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
 
+    // Engage the watcher's frame-target stream before subscribing to resources.
+    // Per the Firefox WatcherActor contract (kb/rdp/actors/watcher.md), the
+    // server delivers nothing until BOTH `watchTargets("frame")` and
+    // `watchResources([...])` have been issued — without this the
+    // `network-event` stream stays empty on `navigate --with-network`.
+    WatcherActor::watch_targets(ctx.transport_mut(), &watcher_actor, "frame")
+        .map_err(AppError::from)?;
+
     // Subscribe to network events before navigating so we capture everything.
     WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
         .map_err(AppError::from)?;
@@ -776,6 +791,10 @@ pub fn run_with_network(
     // Unwatch to clean up server-side resources.
     let _ =
         WatcherActor::unwatch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"]);
+
+    // Pair the `watchTargets("frame")` prelude with `unwatchTargets` so the
+    // server-side frame-target subscription is cleared (oneway, best-effort).
+    let _ = WatcherActor::unwatch_targets(ctx.transport_mut(), &watcher_actor, Some("frame"), None);
 
     // NOTE: In the non-daemon path, wait_after_navigate is called *after*
     // draining network events and unwatching resources, so network data is

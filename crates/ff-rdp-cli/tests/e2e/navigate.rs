@@ -27,10 +27,7 @@ fn navigate_server() -> MockRdpServer {
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
         .on("getWatcher", load_fixture("get_watcher_response.json"))
-        .on(
-            "watchTargets",
-            load_fixture("watch_targets_response.json"),
-        )
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
         .on(
             "watchResources",
             load_fixture("watch_resources_response.json"),
@@ -60,6 +57,7 @@ fn navigate_with_network_server() -> MockRdpServer {
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
         .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
         .on(
             "watchResources",
             load_fixture("watch_resources_response.json"),
@@ -237,6 +235,7 @@ fn navigate_with_network_empty_when_no_events() {
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
         .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
         .on(
             "watchResources",
             load_fixture("watch_resources_response.json"),
@@ -305,10 +304,7 @@ fn navigate_wait_text_reresolves_console_actor_after_navigate() {
         // Theme A (iter-61v): document-event subscription replaces readyState polling.
         // iter-79 Theme A: watchTargets("frame") is issued before watchResources.
         .on("getWatcher", load_fixture("get_watcher_response.json"))
-        .on(
-            "watchTargets",
-            load_fixture("watch_targets_response.json"),
-        )
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
         .on(
             "watchResources",
             load_fixture("watch_resources_response.json"),
