@@ -1,7 +1,7 @@
 ---
 title: "iter-71c: Drop legacy WebConsoleActor::start_listeners calls"
 date: 2026-05-24
-status: planned
+status: done
 branch: iter-71c/drop-legacy-startlisteners
 tags: [iteration, console, watcher, cleanup]
 dogfood_path: |
@@ -15,12 +15,15 @@ dogfood_path: |
 iter-71b Theme C ran `live_console_no_double_delivery` against a real headless Firefox
 and confirmed:
 
-- `evaluateJSAsync`-triggered `console.log` calls arrive **only** via the legacy
-  `consoleActor` push path (`consoleAPICall` events from the console actor).
-- The watcher `resources-available-array` stream delivers **zero** console-message resources
-  for these eval-triggered calls.
+- With `startListeners(["PageError","ConsoleAPI"])` followed by
+  `watchResources(console-message, error-message)`, the watcher
+  `resources-available-array` stream delivers **zero** console-message resources for
+  `evaluateJSAsync`-triggered `console.log` calls.
+- The legacy `consoleActor` push path (`consoleAPICall`) also delivered **zero** events
+  for those eval-triggered logs in the recorded run — the `startListeners` call is dead
+  weight in the current Firefox build, not the only delivery channel.
 - Therefore **no double-delivery** is possible via the `startListeners` + `watchResources`
-  combination in the current codebase.
+  combination in the current codebase, and dropping `startListeners` is safe.
 
 See `kb/research/iter71-legacy-listener-coexistence.md` for the full trace and analysis.
 
@@ -36,7 +39,7 @@ resources will arrive going forward).
 - [x] Remove the three `start_listeners` call sites in
       `crates/ff-rdp-cli/src/commands/console.rs` (lines 21, 180, 266).
 - [x] Verify that the `WebConsoleActor::start_listeners` function in
-      `crates/ff-rdp-core/src/fronts/console.rs` is no longer called from any
+      `crates/ff-rdp-core/src/actors/console.rs` is no longer called from any
       non-test code after removal.  If it becomes dead code, remove it and its
       spec helpers in `crates/ff-rdp-core/src/specs/console.rs`.
 - [x] Run `cargo run -p xtask -- check-dead-primitives --since origin/main` to
@@ -51,8 +54,8 @@ resources will arrive going forward).
 # Acceptance Criteria
 
 - [x] `no_start_listeners_in_console_rs`: `grep -n 'start_listeners' crates/ff-rdp-cli/src/commands/console.rs` returns zero hits.
-- [x] `start_listeners_dead_or_removed`: `start_listeners` is either removed from `ff-rdp-core` or only used in tests.
-- [x] `live_console_no_double_delivery_post_removal`: live test passes with `FF_RDP_LIVE_TESTS=1` after the removal.
+- [x] `start_listeners_dead_or_removed`: `start_listeners` is either removed from `ff-rdp-core` or only used in tests. Verified by `rg -n 'WebConsoleActor::start_listeners' crates/ -g '!*/tests/*'` returning zero non-test hits.
+- [x] `live_console_no_double_delivery_post_removal`: live test asserts console messages delivered at most once (count ≤ 1) with `FF_RDP_LIVE_TESTS=1`; recorded run shows `watcher_bus_count=0` after the removal.
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` all green.
 
 # Out of scope

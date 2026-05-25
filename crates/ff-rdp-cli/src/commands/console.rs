@@ -290,10 +290,13 @@ fn run_follow_daemon(
 /// If `jq_filter` is set, it is applied to each message before printing.
 ///
 /// Firefox delivers console messages via the watcher's
-/// `resources-available-array` stream once `watchResources(console-message,
-/// error-message)` has been issued.  We also accept legacy `consoleAPICall` /
-/// `pageError` pushes defensively in case a server build emits them without
-/// an explicit `startListeners` call — see iter-71c.
+/// `resources-available-array` stream.  In direct-follow mode the caller
+/// issues `watchResources(console-message, error-message)` before invoking
+/// `follow_loop`; in daemon-follow mode the equivalent subscription is set
+/// up by `start_daemon_stream(...)`.  Either way, `follow_loop` reads the
+/// resulting watcher frames off the transport.  We also accept legacy
+/// `consoleAPICall` / `pageError` pushes defensively in case a server build
+/// emits them without an explicit `startListeners` call — see iter-71c.
 fn follow_loop(
     transport: &mut RdpTransport,
     level: Option<&str>,
