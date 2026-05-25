@@ -324,6 +324,7 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         | Command::Geometry { .. }
         | Command::Styles { .. }
         | Command::Computed { .. }
+        | Command::Cascade { .. }
         | Command::Responsive { .. }
         | Command::A11y { .. }
         | Command::Snapshot { .. }
@@ -806,6 +807,22 @@ fn dispatch_inner(
             } else {
                 commands::styles::run(cli, &selector, properties.as_deref())
             }
+        }
+        Command::Cascade {
+            selector_pos,
+            selector_flag,
+            ref_id,
+            prop,
+            all,
+        } => {
+            let selector = resolve_selector_or_ref(
+                selector_pos.as_deref(),
+                selector_flag.as_deref(),
+                ref_id.as_deref(),
+                "cascade",
+                cli,
+            )?;
+            commands::cascade::run(cli, &selector, prop.as_deref(), *all)
         }
         Command::Geometry {
             selectors,

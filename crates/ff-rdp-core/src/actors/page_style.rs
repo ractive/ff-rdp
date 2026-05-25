@@ -38,6 +38,17 @@ pub struct AppliedRule {
     pub column: Option<u32>,
     /// CSS declarations in this rule.
     pub properties: Vec<RuleProperty>,
+    /// The subset of the rule's selectors that actually matched the node.
+    ///
+    /// Populated by `getApplied` when `matchedSelectors: true` is sent.
+    /// Empty when Firefox omits the field (older versions or non-matching mode).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched_selectors: Vec<String>,
+    /// Media query text(s) wrapping the rule (e.g. `"(max-width: 600px)"`).
+    ///
+    /// Empty when the rule is not inside an `@media` block.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<String>,
 }
 
 /// The four sides of a CSS box model dimension.
@@ -242,12 +253,37 @@ fn parse_applied_entry(entry: &Value) -> Option<AppliedRule> {
         })
         .unwrap_or_default();
 
+    let matched_selectors: Vec<String> = rule
+        .get("matchedSelectors")
+        .or_else(|| entry.get("matchedSelectors"))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let media: Vec<String> = rule
+        .get("media")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+
     Some(AppliedRule {
         selector,
         source,
         line,
         column,
         properties,
+        matched_selectors,
+        media,
     })
 }
 
@@ -505,6 +541,8 @@ mod tests {
             line: None,
             column: None,
             properties: vec![],
+            matched_selectors: vec![],
+            media: vec![],
         };
         let v = serde_json::to_value(&rule).unwrap();
         assert!(v.get("source").is_none());
