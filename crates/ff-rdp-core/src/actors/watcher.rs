@@ -1,6 +1,7 @@
 use serde_json::{Value, json};
 
 use crate::actor::{actor_request, actor_send};
+use crate::actors::object::{GripHandle, ObjectGrip, ReleaseQueueTx};
 use crate::error::ProtocolError;
 use crate::registry::Registry;
 use crate::transport::RdpTransport;
@@ -594,6 +595,70 @@ fn parse_single_network_resource(item: &Value) -> Option<NetworkResource> {
         timestamp,
         resource_id,
     })
+}
+
+// ---------------------------------------------------------------------------
+// ResourceGripGuard (iter-76 Theme B)
+// ---------------------------------------------------------------------------
+
+/// Guard that owns the [`GripHandle<ObjectGrip>`] instances embedded in
+/// watcher resource events (`consoleAPICall`, `evaluationResult`).
+///
+/// When a watcher delivers a resource event the packet may contain object grip
+/// actor IDs.  `ResourceGripGuard` collects those grips and auto-releases them
+/// via the transport release queue when the guard is dropped — preventing
+/// indefinite actor accumulation in long-lived daemon sessions.
+///
+/// # Usage
+/// ```no_run
+/// # use ff_rdp_core::{release_queue, ResourceGripGuard, Grip};
+/// # let (tx, _rx) = release_queue(256);
+/// let mut guard = ResourceGripGuard::new(tx);
+/// // After parsing a resource event, collect any object grip actor IDs:
+/// guard.add_grip(Grip::Object { actor: "conn0/obj1".into(), class: "Object".into(), preview: None });
+/// // When `guard` is dropped, all grips are released via the queue.
+/// ```
+pub struct ResourceGripGuard {
+    grips: Vec<GripHandle<ObjectGrip>>,
+    release_tx: ReleaseQueueTx,
+}
+
+impl ResourceGripGuard {
+    /// Create a new guard backed by the given release queue sender.
+    pub fn new(release_tx: ReleaseQueueTx) -> Self {
+        Self {
+            grips: Vec::new(),
+            release_tx,
+        }
+    }
+
+    /// Add a [`Grip`] to this guard.
+    ///
+    /// If `grip` is an object or long-string variant, its actor ID is wrapped
+    /// in a `ScopedGrip<ObjectGrip>` that will enqueue a release on drop.
+    /// Primitive grips are stored but carry no actor ID and release nothing.
+    pub fn add_grip(&mut self, grip: crate::types::Grip) {
+        self.grips
+            .push(GripHandle::new(grip, self.release_tx.clone()));
+    }
+
+    /// Number of grips currently held by this guard.
+    pub fn len(&self) -> usize {
+        self.grips.len()
+    }
+
+    /// Returns `true` if no grips are currently held.
+    pub fn is_empty(&self) -> bool {
+        self.grips.is_empty()
+    }
+}
+
+impl std::fmt::Debug for ResourceGripGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResourceGripGuard")
+            .field("grip_count", &self.grips.len())
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(test)]

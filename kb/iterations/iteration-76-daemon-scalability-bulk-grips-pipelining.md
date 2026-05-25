@@ -31,7 +31,7 @@ firefox_refs:
     lines: "780-795"
     why: "release() server-side implementation confirms it is the only way to free the actor; protocol.js owns the framing."
   - path: devtools/server/actors/string.js
-    lines: "40-50"
+    lines: "40-45"
     why: "Long-string actor release path — equivalent for the longStringActor grip."
   - path: devtools/shared/specs/string.js
     lines: "58-85"

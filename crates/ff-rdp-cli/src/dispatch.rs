@@ -708,12 +708,14 @@ fn dispatch_inner(
             full_page,
             viewport_height,
             output_root,
+            bulk,
         } => commands::screenshot::run(
             cli,
             &commands::screenshot::ScreenshotOpts {
                 output_path: output.as_deref(),
                 base64_mode: *base64,
                 full_page: *full_page,
+                bulk: *bulk,
                 viewport_height: *viewport_height,
                 output_root: output_root.as_deref(),
             },

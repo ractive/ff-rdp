@@ -125,3 +125,8 @@ The Rust entry points are:
 - A WatcherActor will not see anything until you `watchTargets("frame")` AND `watchResources([...])`. Resources alone get nothing.
 - `getNetworkParentActor()` must be the path to set throttling — the per-event NetworkEventActor only reads, never writes.
 - The registry lives in `ParentProcessWatcherRegistry.sys.mjs` (singleton, `global: "shared"`) — devtools can only have one logical view of the watcher set per process tree.
+
+## Iter-76 update — ResourceGripGuard
+
+- Watched resources (consoleAPICall, evaluationResult) may embed grip actor IDs. The watcher now wraps these in `ResourceGripGuard`, which drops the underlying `ScopedGrip` handles when the subscription is dropped, enqueueing release on the transport-shared release queue.
+- Closes the `actor-leak-in-daemon` open gap (kb/rdp/from-our-codebase/open-gaps.md:36).

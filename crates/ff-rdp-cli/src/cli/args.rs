@@ -656,6 +656,16 @@ With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...
         /// Restrict output to paths under this directory (rejects path traversal)
         #[arg(long, value_name = "DIR")]
         output_root: Option<std::path::PathBuf>,
+        /// Attempt to receive the screenshot via a bulk-frame streaming path.
+        ///
+        /// When set, the command sends the capture request and then tries to
+        /// read the response as a bulk binary frame via
+        /// `Transport::recv_bulk_with_handler` (no full base64 allocation in
+        /// memory).  If Firefox responds with a JSON frame (the current
+        /// behaviour for all Firefox versions), the command falls back to the
+        /// standard base64 path transparently.
+        #[arg(long)]
+        bulk: bool,
     },
     /// Click an element matching a CSS selector
     #[command(long_about = "Click an element matching a CSS selector.

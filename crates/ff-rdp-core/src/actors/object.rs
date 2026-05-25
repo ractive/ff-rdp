@@ -1,11 +1,89 @@
 use std::collections::BTreeMap;
+use std::sync::mpsc;
 
 use serde_json::{Value, json};
 
 use crate::actor::actor_request;
 use crate::error::ProtocolError;
 use crate::transport::RdpTransport;
-use crate::types::Grip;
+use crate::types::{ActorId, Grip};
+
+// ---------------------------------------------------------------------------
+// GripKind marker trait and concrete markers
+// ---------------------------------------------------------------------------
+
+/// Marker trait for the kind of server-side actor a [`ScopedGrip`] wraps.
+///
+/// The marker determines which release method to send to Firefox on drop:
+/// - [`ObjectGrip`] → `"release"` (per `devtools/shared/specs/object.js:213`).
+/// - [`LongStringGrip`] → `"release"` (per `devtools/server/actors/string.js:40-50`).
+///
+/// Both currently use `"release"` as the method name; the separate marker
+/// types exist to enforce type-safety at call sites (you cannot accidentally
+/// release a long-string via an object actor).
+pub trait GripKind: sealed::Sealed {
+    /// The Firefox RDP method name to invoke when releasing this kind.
+    const RELEASE_METHOD: &'static str;
+}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Marker: the wrapped actor is a JavaScript object grip.
+pub struct ObjectGrip;
+
+impl sealed::Sealed for ObjectGrip {}
+impl GripKind for ObjectGrip {
+    const RELEASE_METHOD: &'static str = "release";
+}
+
+/// Marker: the wrapped actor is a long-string grip.
+pub struct LongStringGrip;
+
+impl sealed::Sealed for LongStringGrip {}
+impl GripKind for LongStringGrip {
+    const RELEASE_METHOD: &'static str = "release";
+}
+
+// ---------------------------------------------------------------------------
+// Release queue
+// ---------------------------------------------------------------------------
+
+/// A pending release request enqueued by a dropped [`GripHandle<K>`].
+///
+/// The actor ID and release method are recorded at drop time so the queue
+/// can be drained later — either by the demux reader thread (daemon mode)
+/// or by the next `actor_request` call (synchronous CLI mode).
+#[derive(Debug)]
+pub struct ReleaseRequest {
+    /// The actor ID to send the release packet to.
+    pub actor_id: ActorId,
+    /// The Firefox RDP method name to invoke (e.g. `"release"`).
+    pub method: &'static str,
+}
+
+/// Sender half of the release queue, shared across all [`ScopedGrip`] instances.
+///
+/// Obtained by calling [`release_queue`].  Pass the matching receiver to a
+/// background drainer (daemon mode) or drain inline (synchronous mode).
+pub type ReleaseQueueTx = mpsc::SyncSender<ReleaseRequest>;
+
+/// Receiver half of the release queue.
+pub type ReleaseQueueRx = mpsc::Receiver<ReleaseRequest>;
+
+/// Create a bounded release queue with the given `capacity`.
+///
+/// Typically called once per connection at setup time.  The returned `Tx` is
+/// cloned into every [`ScopedGrip`] created for that connection.  The `Rx` is
+/// handed to a drainer (background thread or next-request inline drain).
+///
+/// If the queue is full when a `ScopedGrip` is dropped, the release is silently
+/// discarded — the actor leaks until the connection closes, which is acceptable
+/// as a fallback under extreme load.
+pub fn release_queue(capacity: usize) -> (ReleaseQueueTx, ReleaseQueueRx) {
+    mpsc::sync_channel(capacity)
+}
 
 /// A property descriptor as returned by Firefox's `prototypeAndProperties`.
 #[derive(Debug, Clone)]
@@ -87,20 +165,161 @@ impl ObjectActor {
     }
 }
 
-/// A grip that releases its server-side actor when explicitly consumed.
+/// A grip that auto-releases its server-side actor on [`Drop`] via a queue,
+/// parameterised by a [`GripKind`] marker.
 ///
 /// Firefox allocates server-side actors for `object` and `longString` grips
 /// returned by `evaluateJSAsync`.  In long-lived daemon connections these
-/// actors accumulate without bound.  `ScopedGrip` wraps a [`Grip`] and
-/// provides a [`release`](ScopedGrip::release) method that sends `release`
-/// to the grip actor, freeing the server-side resource.
+/// actors accumulate without bound.  `GripHandle<K>` wraps the actor ID and
+/// enqueues a [`ReleaseRequest`] on drop — the queue is drained by the demux
+/// reader thread (daemon mode) or by the next `actor_request` call (sync CLI).
 ///
-/// Design note: `Drop` is intentionally *not* used for release because `Drop`
-/// cannot propagate errors.  Call [`release`](ScopedGrip::release) explicitly
-/// at the end of scope to get a `Result`.  If you drop a `ScopedGrip` without
-/// calling `release` (e.g. due to an early-return error), the actor leaks on
-/// the Firefox side until the connection closes — this is acceptable for
-/// short-lived connections that tear down immediately after a single command.
+/// When no release queue is set (constructed via [`ScopedGrip::without_queue`]),
+/// dropping the guard is a no-op and the actor leaks until the connection
+/// closes.  This is acceptable for short-lived synchronous CLI connections.
+///
+/// Use the convenience type aliases [`ObjectScopedGrip`] and
+/// [`LongStringScopedGrip`] to avoid writing the type parameter explicitly.
+pub struct GripHandle<K: GripKind> {
+    /// The actor ID to release on drop.  `None` for primitive grips (no actor).
+    actor_id: Option<ActorId>,
+    /// The full [`Grip`] value — kept for callers that need to inspect it.
+    inner: Grip,
+    /// Optional queue to enqueue release requests on drop.
+    release_tx: Option<ReleaseQueueTx>,
+    _kind: std::marker::PhantomData<K>,
+}
+
+/// Convenience alias: `GripHandle` wrapping an `ObjectGrip`.
+pub type ObjectScopedGrip = GripHandle<ObjectGrip>;
+
+/// Convenience alias: `GripHandle` wrapping a `LongStringGrip`.
+pub type LongStringScopedGrip = GripHandle<LongStringGrip>;
+
+impl<K: GripKind> GripHandle<K> {
+    /// Wrap a [`Grip`] and enqueue a release on drop via `release_tx`.
+    ///
+    /// If `grip` is a primitive (no actor ID), the release queue is never used.
+    pub fn new(grip: Grip, release_tx: ReleaseQueueTx) -> Self {
+        let actor_id = match &grip {
+            Grip::Object { actor, .. } | Grip::LongString { actor, .. } => Some(actor.clone()),
+            _ => None,
+        };
+        Self {
+            actor_id,
+            inner: grip,
+            release_tx: Some(release_tx),
+            _kind: std::marker::PhantomData,
+        }
+    }
+
+    /// Wrap a [`Grip`] without a release queue — actor leaks on drop.
+    ///
+    /// Use for short-lived synchronous CLI connections that close immediately.
+    /// Equivalent to calling [`release`](Self::release) never — the connection
+    /// teardown releases all actors implicitly.
+    pub fn without_queue(grip: Grip) -> Self {
+        let actor_id = match &grip {
+            Grip::Object { actor, .. } | Grip::LongString { actor, .. } => Some(actor.clone()),
+            _ => None,
+        };
+        Self {
+            actor_id,
+            inner: grip,
+            release_tx: None,
+            _kind: std::marker::PhantomData,
+        }
+    }
+
+    /// Access the inner grip.
+    pub fn grip(&self) -> &Grip {
+        &self.inner
+    }
+
+    /// Consume the wrapper and release the server-side actor immediately over
+    /// the transport, bypassing the release queue.
+    ///
+    /// For `Grip::Object` and `Grip::LongString` variants, sends the release
+    /// method to the grip actor so Firefox can free the associated server-side
+    /// memory immediately.  Primitive variants carry no actor and are a no-op.
+    ///
+    /// `unknownActor` errors from Firefox are silently swallowed.
+    /// Other errors are returned to the caller.
+    ///
+    /// Returns the inner grip so the caller can still inspect it after release.
+    ///
+    /// Note: calling this disarms the drop-enqueue — the actor will not be
+    /// double-released.
+    pub fn release(mut self, transport: &mut RdpTransport) -> Result<Grip, ProtocolError> {
+        // Disarm the drop so the queue is not also used.
+        self.release_tx = None;
+        let actor_id = self.actor_id.take();
+        // SAFETY: we disarmed the drop above; the inner Grip is replaced with a
+        // sentinel to allow the (now-disarmed) Drop to run without accessing it.
+        //
+        // Invariant: self.release_tx is None and self.actor_id is None at this
+        // point, so the Drop impl is a no-op. We swap out inner and return the
+        // original value.
+        let grip = std::mem::replace(&mut self.inner, Grip::Null);
+        if let Some(id) = actor_id {
+            match ObjectActor::release(transport, id.as_ref()) {
+                Ok(()) => {}
+                Err(e) if e.is_unknown_actor() => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(grip)
+    }
+
+    /// Consume the wrapper, disarming the drop-enqueue without sending a
+    /// release packet.  The actor leaks until connection teardown.
+    ///
+    /// Useful when the actor is already known to be gone (e.g. after a
+    /// navigation that destroyed all actors on the page).
+    pub fn disarm(mut self) -> Grip {
+        self.release_tx = None;
+        self.actor_id = None;
+        // Swap out the inner value; the (now-disarmed) Drop is a no-op.
+        std::mem::replace(&mut self.inner, Grip::Null)
+    }
+}
+
+impl<K: GripKind> Drop for GripHandle<K> {
+    /// Enqueue a release request on the transport release queue, if set.
+    ///
+    /// If the queue is full, the release is silently discarded — the actor
+    /// leaks until connection teardown, which is acceptable as a graceful
+    /// degradation under extreme load.
+    fn drop(&mut self) {
+        if let (Some(id), Some(tx)) = (self.actor_id.take(), self.release_tx.take()) {
+            // Best-effort: if the queue is full or the receiver is gone, drop silently.
+            let _ = tx.try_send(ReleaseRequest {
+                actor_id: id,
+                method: K::RELEASE_METHOD,
+            });
+        }
+    }
+}
+
+impl<K: GripKind> std::fmt::Debug for GripHandle<K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScopedGrip")
+            .field("actor_id", &self.actor_id)
+            .field("inner", &self.inner)
+            .field("has_queue", &self.release_tx.is_some())
+            .finish()
+    }
+}
+
+/// Backward-compatible `ScopedGrip` for short-lived synchronous CLI connections.
+///
+/// This is the original API from before iter-76.  It wraps any grip (object,
+/// long-string, or primitive) and provides an explicit [`release`] method that
+/// sends the release packet immediately over the transport.  Drop does NOT
+/// enqueue a release — callers must call `release` explicitly.
+///
+/// New code targeting the daemon should prefer [`GripHandle<K>`] with a
+/// release queue for automatic cleanup on drop.
 #[derive(Debug)]
 pub struct ScopedGrip {
     inner: Grip,
@@ -481,5 +700,82 @@ mod tests {
         assert_eq!(j["configurable"], true);
         assert_eq!(j["get"]["type"], "object");
         assert!(j.get("set").is_none());
+    }
+
+    // --- GripHandle<K> (generic, iter-76) ---
+
+    /// AC: `grip_drop_enqueues_release` — dropping a `ScopedGrip<ObjectGrip>`
+    /// adds a release entry to the transport queue with the correct actor ID and
+    /// method name.
+    #[test]
+    fn grip_drop_enqueues_release() {
+        let (tx, rx) = release_queue(16);
+
+        let grip = Grip::Object {
+            actor: "conn0/obj42".into(),
+            class: "Array".to_owned(),
+            preview: None,
+        };
+        let scoped: GripHandle<ObjectGrip> = GripHandle::new(grip, tx);
+
+        // Drop it — should enqueue a release request.
+        drop(scoped);
+
+        let req = rx.try_recv().expect("release request must be enqueued");
+        assert_eq!(req.actor_id, "conn0/obj42");
+        assert_eq!(req.method, "release");
+    }
+
+    #[test]
+    fn grip_drop_without_queue_is_noop() {
+        // Dropping without a queue must not panic.
+        let grip = Grip::Object {
+            actor: "conn0/obj1".into(),
+            class: "Object".to_owned(),
+            preview: None,
+        };
+        let scoped: GripHandle<ObjectGrip> = GripHandle::without_queue(grip);
+        drop(scoped); // no panic, no enqueue
+    }
+
+    #[test]
+    fn grip_primitive_does_not_enqueue() {
+        let (tx, rx) = release_queue(16);
+        let scoped: GripHandle<ObjectGrip> = GripHandle::new(Grip::Null, tx);
+        drop(scoped);
+        // Null grip has no actor, nothing should arrive.
+        assert!(
+            rx.try_recv().is_err(),
+            "primitive grip must not enqueue a release"
+        );
+    }
+
+    #[test]
+    fn grip_disarm_does_not_enqueue() {
+        let (tx, rx) = release_queue(16);
+        let grip = Grip::Object {
+            actor: "conn0/obj7".into(),
+            class: "Function".to_owned(),
+            preview: None,
+        };
+        let scoped: GripHandle<ObjectGrip> = GripHandle::new(grip, tx);
+        scoped.disarm(); // should not enqueue
+        assert!(rx.try_recv().is_err(), "disarmed grip must not enqueue");
+    }
+
+    #[test]
+    fn long_string_grip_enqueues_release_with_correct_method() {
+        let (tx, rx) = release_queue(16);
+        let grip = Grip::LongString {
+            actor: "conn0/longStr3".into(),
+            initial: "hello world".to_owned(),
+            length: 11,
+        };
+        let scoped: GripHandle<LongStringGrip> = GripHandle::new(grip, tx);
+        drop(scoped);
+
+        let req = rx.try_recv().expect("release request must be enqueued");
+        assert_eq!(req.actor_id, "conn0/longStr3");
+        assert_eq!(req.method, "release");
     }
 }

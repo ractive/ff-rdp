@@ -329,11 +329,16 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
                     max: *max,
                 }
             }
-            // EvalNavigatedDuringEval and BulkPacketUnsupported remain Internal.
+            // EvalNavigatedDuringEval, BulkPacketUnsupported, BulkPacketUnexpected,
+            // and ActorChannelFull remain Internal.
             // Bulk frames are not something the CLI handles; they are skipped
             // by the daemon and surfaced as Internal for direct-connect callers.
+            // ActorChannelFull is a daemon-internal back-pressure signal; it
+            // should not escape to end-user error paths.
             ff_rdp_core::ProtocolError::EvalNavigatedDuringEval
-            | ff_rdp_core::ProtocolError::BulkPacketUnsupported { .. } => {
+            | ff_rdp_core::ProtocolError::BulkPacketUnsupported { .. }
+            | ff_rdp_core::ProtocolError::BulkPacketUnexpected { .. }
+            | ff_rdp_core::ProtocolError::ActorChannelFull { .. } => {
                 Self::Internal(anyhow::Error::new(err))
             }
         }
