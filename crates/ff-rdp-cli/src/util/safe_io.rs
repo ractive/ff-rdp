@@ -24,8 +24,17 @@
 //! and inspects the reparse tag via `DeviceIoControl(FSCTL_GET_REPARSE_POINT)`
 //! before writing.  A parent whose reparse tag is
 //! `IO_REPARSE_TAG_SYMLINK` or `IO_REPARSE_TAG_MOUNT_POINT` is refused with
-//! [`SafeIoError::ReparsePointRejected`] — closing the iter-44 TOCTOU gap
-//! flagged by the M-4 review.
+//! [`SafeIoError::ReparsePointRejected`] — substantially narrowing the iter-44
+//! TOCTOU window flagged by the M-4 review.
+//!
+//! This is **not** fully race-free: the implementation still performs a
+//! check-then-open on the parent path rather than holding a handle and
+//! opening relative to it.  A determined local attacker who can swap the
+//! parent between our `reparse_tag_of` call and the subsequent `CreateFileW`
+//! could still bypass the check.  A race-free version would require opening
+//! the parent directory, retaining the handle, and then opening the child
+//! via `NtCreateFile` with a relative `OBJECT_ATTRIBUTES` — out of scope for
+//! iter-77.
 //!
 //! Application-layer reparse tags (Windows Store `AppExecutionAlias` etc.)
 //! are *not* a redirect vector and would break legitimate workflows; only

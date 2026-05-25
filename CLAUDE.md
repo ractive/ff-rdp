@@ -80,6 +80,10 @@ An AC without a named test is not done.
   where `bug NNNN` is a filed Mozilla Bugzilla issue tracking the gap.
   The annotation makes the drift reviewable for the `rdp-spec-reviewer`
   agent and pairs every drift with an upstream-fix tracker (see iter-77).
+  Use `// allow-spec-drift: bug TBD (<short rationale>)` ONLY for the
+  initial landing of a newly-discovered drift; replace `TBD` with the
+  actual Bugzilla number in a follow-up iteration before the next release
+  cut. The `rdp-spec-reviewer` agent flags any `TBD` annotation it sees.
 - Commit-message claims (`adds Foo::Bar`, "subscribes to dom-interactive",
   "implements RdpError::Navigation") must be backed by the branch diff. The
   ralph-loop skill emits a `## Claims vs code` PR-description section via

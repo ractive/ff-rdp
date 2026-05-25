@@ -32,16 +32,18 @@ iter-77 ACs:
 - [ ] Add `crates/ff-rdp-cli/tests/live_screenshot_shim.rs::live_screenshot_unchanged_after_shim`
 - [ ] Add `crates/ff-rdp-cli/tests/live_eval_scope.rs::live_eval_in_frame`
 - [ ] Add `crates/ff-rdp-cli/tests/live_console_printf.rs::live_console_printf_e2e`
+- [ ] File the Mozilla Bugzilla issue tracking the `screenshot.args` spec-dict gap (missing `browsingContextID`, `snapshotScale`, `rect` despite `devtools/server/actors/screenshot.js` reading them).  Replace the `// allow-spec-drift: bug TBD` annotation on `ScreenshotArgsExt` (carried over from iter-77) with the real `bug NNNN` number per CLAUDE.md.
 
-## Acceptance Criteria [0/3]
+## Acceptance Criteria [0/4]
 
 - [ ] `live_screenshot_unchanged_after_shim`: PNG hash matches the pre-iter-77 baseline. Gated `FF_RDP_LIVE_TESTS=1`.
 - [ ] `live_eval_in_frame`: eval --frame against an iframe returns the iframe's location. Gated `FF_RDP_LIVE_TESTS=1`.
 - [ ] `live_console_printf_e2e`: `console.log("hello %s, you are %d", "world", 42)` round-trips through ff-rdp formatted as `"hello world, you are 42"`. Gated `FF_RDP_LIVE_TESTS=1`.
+- [ ] `screenshot_args_ext_bug_number_filed`: `crates/ff-rdp-core/src/actors/screenshot.rs` no longer contains the literal string `bug TBD`; the annotation references a concrete Bugzilla number.
 
 ## Out of scope
 
-- Any new wire changes — this iter only adds tests.
+- Any new wire changes — this iter only adds tests and updates the spec-drift bug annotation.
 
 ## References
 

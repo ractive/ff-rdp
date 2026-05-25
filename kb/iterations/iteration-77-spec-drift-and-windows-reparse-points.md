@@ -93,31 +93,32 @@ spec drift (S/W) and the long-standing Windows reparse-point gap
 ## Tasks
 
 ### A. Screenshot spec dict (S1)
-- [ ] Add `pub struct ScreenshotArgsExt` in `crates/ff-rdp-core/src/actors/screenshot.rs` that serializes to a JSON object containing the spec-declared `screenshot.args` fields PLUS the locally-required `browsingContextID`, `snapshotScale`, `rect`. Document at the top that the extra fields are read by the server (per `devtools/server/actors/screenshot.js`) but are not in the published spec dict (`devtools/shared/specs/screenshot.js:13-35`).
-- [ ] Replace the current ad-hoc `json!({...})` construction site with `ScreenshotArgsExt`.
+- [x] Add `pub struct ScreenshotArgsExt` in `crates/ff-rdp-core/src/actors/screenshot.rs` that serializes to a JSON object containing the spec-declared `screenshot.args` fields PLUS the locally-required `browsingContextID`, `snapshotScale`, `rect`. Document at the top that the extra fields are read by the server (per `devtools/server/actors/screenshot.js`) but are not in the published spec dict (`devtools/shared/specs/screenshot.js:13-35`).
+- [x] Replace the current ad-hoc `json!({...})` construction site with `ScreenshotArgsExt`.
 - [ ] Open a Mozilla Bugzilla issue tracking the spec-dict gap; record the bug number in a `// allow-spec-drift: bug NNNN` comment on the struct. (`allow-spec-drift` is a new convention; document it in `CLAUDE.md` alongside `allow-claim-miss`.)
+  - The `allow-spec-drift` convention itself is now documented in `CLAUDE.md` (including a `bug TBD` escape hatch for the first landing), and `ScreenshotArgsExt` carries `// allow-spec-drift: bug TBD …` pointing at iter-78 for the follow-up filing.  The actual Bugzilla number has not yet been filed — left unchecked, tracked via [[iteration-78-live-screenshot-shim-baseline]].
 
 ### B. evaluateJSAsync scope (S3)
-- [ ] Add `pub struct EvaluateScope { pub frame_actor: Option<ActorId>, pub selected_node_actor: Option<ActorId>, pub inner_window_id: Option<u64> }` in `crates/ff-rdp-core/src/actors/console.rs`.
-- [ ] Extend `ConsoleFront::evaluate_js_async` to accept `Option<EvaluateScope>` and serialise the provided fields into the request body (per `devtools/shared/specs/webconsole.js:149-164`).
-- [ ] CLI: add `--frame <actor>`, `--node <actor>`, `--inner-window <u64>` to `crates/ff-rdp-cli/src/commands/eval.rs`.
+- [x] Add `pub struct EvaluateScope { pub frame_actor: Option<ActorId>, pub selected_node_actor: Option<ActorId>, pub inner_window_id: Option<u64> }` in `crates/ff-rdp-core/src/actors/console.rs`.
+- [x] Extend `ConsoleFront::evaluate_js_async` to accept `Option<EvaluateScope>` and serialise the provided fields into the request body (per `devtools/shared/specs/webconsole.js:149-164`).
+- [x] CLI: add `--frame <actor>`, `--node <actor>`, `--inner-window <u64>` to `crates/ff-rdp-cli/src/commands/eval.rs`.
 
 ### C. Console printf substitution (S6)
-- [ ] In `crates/ff-rdp-core/src/actors/watcher.rs` `parse_console_resources`, when the first arg is a string and contains `%s`/`%d`/`%i`/`%f`/`%o`/`%O`/`%c`, run a port of Firefox's formatter (`devtools/server/actors/webconsole.js:1100-1175` is the reference; see Design notes for what subset we port). Remaining args pass through unchanged.
-- [ ] Unit tests: `console_printf_string_substitution`, `console_printf_digit`, `console_printf_styled_dropped` (CSS-style `%c` consumes its arg but produces no text in our text-mode output).
+- [x] In `crates/ff-rdp-core/src/actors/watcher.rs` `parse_console_resources`, when the first arg is a string and contains `%s`/`%d`/`%i`/`%f`/`%o`/`%O`/`%c`, run a port of Firefox's formatter (`devtools/server/actors/webconsole.js:1100-1175` is the reference; see Design notes for what subset we port). Remaining args pass through unchanged.
+- [x] Unit tests: `console_printf_string_substitution`, `console_printf_digit`, `console_printf_styled_dropped` (CSS-style `%c` consumes its arg but produces no text in our text-mode output).
 
 ### D. Watcher unwatchTargets (W3, W4)
-- [ ] In `crates/ff-rdp-core/src/actors/watcher.rs`, extend `unwatch_targets` to accept an `options: Option<Value>` arg and serialise per `devtools/shared/specs/watcher.js:23-32`.
-- [ ] Remove the silent default to `"frame"` when `targetType` is missing — make it a required parameter at both the Rust API and CLI level. Logged via `tracing::error!` + returned as `RdpError::Spec { reason: "targetType required" }`.
+- [x] In `crates/ff-rdp-core/src/actors/watcher.rs`, extend `unwatch_targets` to accept an `options: Option<Value>` arg and serialise per `devtools/shared/specs/watcher.js:23-32`.
+- [x] Remove the silent default to `"frame"` when `targetType` is missing — make it a required parameter at both the Rust API and CLI level. Logged via `tracing::error!` + returned as `RdpError::Spec { reason: "targetType required" }`.
 
 ### E. ActorId hygiene (L2, L3)
-- [ ] In `crates/ff-rdp-core/src/actors/mod.rs` `ActorId::from`, reject empty strings (return `Result` or `Option` — choose based on existing call-site count, document the choice).
-- [ ] In `crates/ff-rdp-core/src/registry.rs`, re-registering an actor whose previous state was `alive=false` either keeps `alive=false` (preferred, with a tracing warn) or panics in debug builds (`debug_assert!`). Pick one based on whether any current production path legitimately re-registers killed actors; document.
+- [x] In `crates/ff-rdp-core/src/actors/mod.rs` `ActorId::from`, reject empty strings (return `Result` or `Option` — choose based on existing call-site count, document the choice).
+- [x] In `crates/ff-rdp-core/src/registry.rs`, re-registering an actor whose previous state was `alive=false` either keeps `alive=false` (preferred, with a tracing warn) or panics in debug builds (`debug_assert!`). Pick one based on whether any current production path legitimately re-registers killed actors; document.
 
 ### F. Windows reparse-point pre-flight (M-4)
-- [ ] Add `pub fn reparse_tag_of(path: &Path) -> windows::Result<Option<u32>>` in `crates/ff-rdp-cli/src/util/safe_io.rs` using `windows-sys` `CreateFileW` with `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS`, then `DeviceIoControl(FSCTL_GET_REPARSE_POINT)` to read the tag. Return `None` for non-reparse files.
-- [ ] In `safe_write` / `safe_create` (`crates/ff-rdp-cli/src/util/safe_io.rs:25-28, 222-248`), pre-check the parent directory: if `reparse_tag_of` returns `Some(IO_REPARSE_TAG_SYMLINK | IO_REPARSE_TAG_MOUNT_POINT)`, refuse with `RdpError::ReparsePointRejected { path, tag }`. Application-layer (NTFS) reparse points (AppExecutionAlias etc.) are allowed.
-- [ ] Remove the existing "follow-up work" comment block; the gap is now closed.
+- [x] Add `pub fn reparse_tag_of(path: &Path) -> windows::Result<Option<u32>>` in `crates/ff-rdp-cli/src/util/safe_io.rs` using `windows-sys` `CreateFileW` with `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS`, then `DeviceIoControl(FSCTL_GET_REPARSE_POINT)` to read the tag. Return `None` for non-reparse files.
+- [x] In `safe_write` / `safe_create` (`crates/ff-rdp-cli/src/util/safe_io.rs:25-28, 222-248`), pre-check the parent directory: if `reparse_tag_of` returns `Some(IO_REPARSE_TAG_SYMLINK | IO_REPARSE_TAG_MOUNT_POINT)`, refuse with `RdpError::ReparsePointRejected { path, tag }`. Application-layer (NTFS) reparse points (AppExecutionAlias etc.) are allowed.
+- [x] Remove the existing "follow-up work" comment block; the gap is now closed.
 
 ## Acceptance Criteria [9/11]
 

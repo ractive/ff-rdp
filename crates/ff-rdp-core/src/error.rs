@@ -99,8 +99,8 @@ pub enum RdpError {
 
     /// A request would have violated the published Firefox RDP spec — for
     /// example, calling `unwatchTargets` without the required `targetType`
-    /// parameter.  Surfacing this as a typed error lets the CLI exit `2`
-    /// instead of dispatching a malformed packet.
+    /// parameter.  The CLI maps this to `AppError::User` (exit code 1), so
+    /// the malformed packet never leaves the process.
     #[error("spec violation: {reason}")]
     Spec { reason: String },
 }

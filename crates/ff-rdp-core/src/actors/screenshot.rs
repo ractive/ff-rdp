@@ -24,8 +24,12 @@ use crate::types::ActorId;
 /// This typed shim makes the spec drift explicit (rather than scattered
 /// `json!({…})` blocks) so the `rdp-spec-reviewer` agent can flag it.
 ///
-// allow-spec-drift: bug TBD (Mozilla Bugzilla — screenshot.args dict missing
-// browsingContextID/snapshotScale/rect; tracked upstream, follow-up to file).
+// allow-spec-drift: bug TBD (Mozilla Bugzilla entry to be filed in a follow-up
+// iter — screenshot.args dict at devtools/shared/specs/screenshot.js:13-35
+// omits browsingContextID/snapshotScale/rect even though the server in
+// devtools/server/actors/screenshot.js reads all three).  Per the `TBD`
+// rule in CLAUDE.md, this annotation MUST be replaced with the real
+// Bugzilla number before the next release cut; tracked via iter-78.
 #[derive(Debug, Clone, Serialize)]
 pub struct ScreenshotArgsExt {
     // ── spec-declared fields ────────────────────────────────────────────────

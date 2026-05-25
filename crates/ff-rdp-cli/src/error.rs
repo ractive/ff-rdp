@@ -248,7 +248,9 @@ impl From<ff_rdp_core::RdpError> for AppError {
                 actor: actor.to_string(),
             },
             ff_rdp_core::RdpError::Navigation { cause, url } => Self::Navigation { cause, url },
-            ff_rdp_core::RdpError::Spec { reason } => Self::User(format!("spec violation: {reason}")),
+            ff_rdp_core::RdpError::Spec { reason } => {
+                Self::User(format!("spec violation: {reason}"))
+            }
         }
     }
 }
