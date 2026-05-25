@@ -642,14 +642,6 @@ impl ResourceGripGuard {
             .push(GripHandle::new(grip, self.release_tx.clone()));
     }
 
-    /// Consume the guard and return all inner [`Grip`] values without releasing.
-    ///
-    /// Use when the caller wants to keep the grips alive beyond the guard's
-    /// scope and handle release manually.
-    pub fn disarm_all(mut self) -> Vec<crate::types::Grip> {
-        self.grips.drain(..).map(GripHandle::disarm).collect()
-    }
-
     /// Number of grips currently held by this guard.
     pub fn len(&self) -> usize {
         self.grips.len()

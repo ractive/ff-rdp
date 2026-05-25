@@ -99,3 +99,8 @@ So the "page width/height" is `innerWidth + scrollMaxX - scrollMinX − scrollba
 - `browsingContextID` must be the **content browsing context** id (from TabDescriptor.form's `browsingContextID`), not the chrome window id.
 - `data:` URL can be huge — for the parent process actor there's no streaming, the whole base64 PNG comes back in one JSON packet. ff-rdp must be ready to receive multi-MB responses.
 - The screenshot util is in `browser/components/screenshots/`, **not** in devtools — Firefox UI screenshots share the same backend. Updates to clamping/DPR logic may land in the non-devtools path.
+
+## Iter-76 update — bulk transport path
+
+- The default screenshot path still returns base64 JSON (matches spec). The new `--bulk` CLI flag opts into the transport-level BULK_RESPONSE carrier via `Transport::recv_bulk_with_handler`, copying the PNG bytes in 8 KiB chunks straight to the output file. No full-body buffer alloc; peak RSS scales with chunk size, not image size.
+- `--bulk` is a daemon-side optimisation; bytewise output must match the base64 path (`cmp` exit 0).
