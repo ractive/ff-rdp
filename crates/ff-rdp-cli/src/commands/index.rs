@@ -350,6 +350,7 @@ fn crawl_page(
         no_wait: false,
         wait_for: &[],
         wait_level: WaitLevel::Complete,
+        wait_strategy: crate::commands::navigate::WaitStrategy::Events,
     };
     navigate_run(cli, url, &wait_opts).map_err(|e| anyhow::anyhow!("navigate: {e}"))?;
 

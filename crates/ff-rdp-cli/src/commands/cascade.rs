@@ -33,7 +33,8 @@ enum Origin {
     #[allow(dead_code)] // distinguishing user-stylesheet origin is future work
     User,
     Author,
-    #[allow(dead_code)] // Inline style="…" entries are filtered by the actor today; variant kept for future support.
+    #[allow(dead_code)]
+    // Inline style="…" entries are filtered by the actor today; variant kept for future support.
     Inline,
 }
 
@@ -307,9 +308,30 @@ fn fetch_applied(cli: &Cli, selector: &str) -> Result<(ConnectedTab, Vec<Applied
     Ok((ctx, applied))
 }
 
-/// CLI entry point for `ff-rdp cascade <SEL> [--prop NAME | --all]`.
-pub fn run(cli: &Cli, selector: &str, prop: Option<&str>, all: bool) -> Result<(), AppError> {
+/// CLI entry point for `ff-rdp cascade <SEL> [--prop NAME | --all] [--debug-raw]`.
+pub fn run(
+    cli: &Cli,
+    selector: &str,
+    prop: Option<&str>,
+    all: bool,
+    debug_raw: bool,
+) -> Result<(), AppError> {
     let (_ctx, applied) = fetch_applied(cli, selector)?;
+
+    if debug_raw {
+        // Emit the raw applied rules to stderr so the caller can inspect field names
+        // without rebuilding. Useful when diagnosing protocol drift.
+        let raw: Vec<serde_json::Value> = applied
+            .iter()
+            .map(|r| serde_json::to_value(r).unwrap_or_default())
+            .collect();
+        eprintln!(
+            "[cascade --debug-raw] raw getApplied entries ({} rules):\n{}",
+            raw.len(),
+            serde_json::to_string_pretty(&serde_json::Value::Array(raw))
+                .unwrap_or_else(|e| format!("serialization error: {e}"))
+        );
+    }
 
     let _ = all; // --all is the default; flag is accepted for clarity.
     let properties: Vec<String> = match prop {

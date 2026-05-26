@@ -48,6 +48,20 @@ pub enum WaitLevel {
     Complete,
 }
 
+/// Strategy for waiting for navigation readiness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum WaitStrategy {
+    /// Wait for Firefox document-event resources (dom-complete). Default.
+    #[default]
+    Events,
+    /// Poll `document.readyState == "complete"` until timeout.
+    Readystate,
+    /// Try events first; if they time out, fall back to readystate polling
+    /// within the remaining budget.
+    Both,
+}
+
 /// Options controlling an optional wait condition after navigation.
 ///
 /// # False positive risk
@@ -74,6 +88,8 @@ pub struct WaitAfterNav<'a> {
     pub wait_for: &'a [String],
     /// Readiness level to wait for (default: `Complete`).
     pub wait_level: WaitLevel,
+    /// Strategy for waiting for navigation readiness (default: `Events`).
+    pub wait_strategy: WaitStrategy,
 }
 
 impl WaitAfterNav<'_> {
@@ -284,6 +300,56 @@ fn is_neterror_url(url: &str) -> bool {
     url.starts_with("about:neterror")
 }
 
+/// Poll `document.readyState == "complete"` until the deadline, returning a
+/// `CommitInfo` when the condition is met.
+///
+/// Used by the `readystate` and `both` wait strategies as a fallback when the
+/// document-event resource stream doesn't fire within the timeout budget.
+fn wait_for_readystate_complete(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    timeout_ms: u64,
+) -> Result<CommitInfo, AppError> {
+    use crate::commands::js_helpers::poll_js_condition;
+
+    let console_actor = ctx.target.console_actor.clone();
+    let started = std::time::Instant::now();
+
+    let elapsed_ms = poll_js_condition(
+        ctx,
+        &console_actor,
+        "document.readyState === 'complete'",
+        timeout_ms,
+        "navigate readystate: JS evaluation error",
+        &format!(
+            "navigate: document.readyState did not reach 'complete' within {timeout_ms}ms — \
+             use --no-wait to skip or increase --timeout"
+        ),
+    )?;
+
+    let url = {
+        let console_actor = ctx.target.console_actor.clone();
+        match super::js_helpers::eval_or_bail(
+            ctx,
+            &console_actor,
+            "window.location.href",
+            "navigate readystate: url eval",
+        ) {
+            Ok(result) => match result.result {
+                ff_rdp_core::Grip::Value(serde_json::Value::String(s)) => s,
+                _ => String::new(),
+            },
+            Err(_) => String::new(),
+        }
+    };
+
+    let _ = started; // `elapsed_ms` already reported by poll_js_condition
+    Ok(CommitInfo {
+        committed_url: url,
+        ready_state: "complete".to_owned(),
+        elapsed_ms,
+    })
+}
+
 /// Check whether two URLs refer to the same origin + path (ignoring query, hash,
 /// and trailing slash).  Used by the cross-origin race fix (Theme G): when a
 /// commit-wait times out but the landed URL shares scheme+host+port+path with
@@ -466,7 +532,7 @@ pub fn run_core(
 
         // wait_for_doc_complete acquires the lock only during dispatch_event,
         // not across the full recv() wait — see its lock-discipline doc-comment.
-        let result = wait_for_doc_complete(
+        let event_result = wait_for_doc_complete(
             ctx.transport_mut(),
             &bus_arc,
             &rx,
@@ -497,6 +563,27 @@ pub fn run_core(
         // Restore the original timeout so subsequent RDP round-trips (e.g.
         // wait-text / wait-selector polling) use the configured timeout.
         restore_timeout(ctx.transport_mut(), cli.timeout);
+
+        // Apply wait_strategy: for `both`, if events timed out, try readystate fallback.
+        let result = match (wait_opts.wait_strategy, event_result) {
+            // events (default) or readystate: use whatever the event path returned.
+            (WaitStrategy::Events, r) => r,
+            // readystate: ignore events, use readystate poll.
+            (WaitStrategy::Readystate, _) => {
+                // Theme K: refresh console actor so eval hits the new document.
+                refresh_console_actor(&mut ctx);
+                wait_for_readystate_complete(&mut ctx, cli.timeout)
+            }
+            // both: if events succeeded, use it; otherwise fall back to readystate.
+            (WaitStrategy::Both, Ok(ci)) => Ok(ci),
+            (WaitStrategy::Both, Err(AppError::Timeout(_))) => {
+                // Events timed out — try readystate within the full budget.
+                // Console actor may need refresh after the timeout.
+                refresh_console_actor(&mut ctx);
+                wait_for_readystate_complete(&mut ctx, cli.timeout)
+            }
+            (WaitStrategy::Both, Err(e)) => Err(e),
+        };
 
         match result {
             Ok(ci) => Some(ci),
@@ -991,6 +1078,7 @@ mod tests {
             no_wait: false,
             wait_for: &[],
             wait_level: WaitLevel::Complete,
+            wait_strategy: WaitStrategy::Events,
         }
     }
 

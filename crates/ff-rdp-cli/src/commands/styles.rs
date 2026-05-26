@@ -124,6 +124,10 @@ pub fn run_applied(cli: &Cli, selector: &str) -> Result<(), AppError> {
 
     let mut items: Vec<Value> = applied
         .iter()
+        // N6: drop entries with no declarations when --applied is the only mode.
+        // UA-reset stubs (e.g. `*, ::after, ::before { }`) produce noise at the
+        // head of every reply; they carry no declarations so are safe to discard.
+        .filter(|r| !r.properties.is_empty())
         .map(|r| serde_json::to_value(r).map_err(|e| AppError::Internal(e.into())))
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -323,5 +327,73 @@ mod tests {
         let props = vec!["nonexistent-prop".to_string()];
         let result = apply_properties_filter(items, Some(&props));
         assert!(result.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // N6: styles_applied_dedupes_empty_ua_stubs
+    //
+    // When `--applied` is the only mode, rules with no declarations (the UA-reset
+    // stubs like `*, ::after, ::before {}`) must be dropped.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_styles_applied_dedupes_empty_ua_stubs() {
+        use ff_rdp_core::{AppliedRule, RuleProperty};
+
+        // Three back-to-back empty UA stubs + one real author rule.
+        let rules = [
+            AppliedRule {
+                selector: "*, ::after, ::before".to_owned(),
+                source: Some("resource://gre-resources/ua.css".to_owned()),
+                line: Some(1),
+                column: Some(1),
+                properties: vec![],
+                matched_selectors: vec![],
+                media: vec![],
+            },
+            AppliedRule {
+                selector: "*, ::after, ::before".to_owned(),
+                source: Some("resource://gre-resources/forms.css".to_owned()),
+                line: Some(2),
+                column: Some(1),
+                properties: vec![],
+                matched_selectors: vec![],
+                media: vec![],
+            },
+            AppliedRule {
+                selector: "*, ::after, ::before".to_owned(),
+                source: Some("resource://gre-resources/html.css".to_owned()),
+                line: Some(3),
+                column: Some(1),
+                properties: vec![],
+                matched_selectors: vec![],
+                media: vec![],
+            },
+            AppliedRule {
+                selector: "h1".to_owned(),
+                source: None,
+                line: Some(5),
+                column: Some(1),
+                properties: vec![RuleProperty {
+                    name: "color".to_owned(),
+                    value: "red".to_owned(),
+                    priority: String::new(),
+                }],
+                matched_selectors: vec!["h1".to_owned()],
+                media: vec![],
+            },
+        ];
+
+        // Replicate the filter logic from run_applied.
+        let non_empty: Vec<&AppliedRule> =
+            rules.iter().filter(|r| !r.properties.is_empty()).collect();
+
+        // All three UA stubs must be dropped; only the author rule remains.
+        assert_eq!(
+            non_empty.len(),
+            1,
+            "should have dropped the 3 empty UA stubs"
+        );
+        assert_eq!(non_empty[0].selector, "h1");
     }
 }

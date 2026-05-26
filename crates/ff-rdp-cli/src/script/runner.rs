@@ -762,6 +762,7 @@ fn execute_navigate(
         no_wait: false,
         wait_for: &[],
         wait_level: crate::commands::navigate::WaitLevel::Complete,
+        wait_strategy: crate::commands::navigate::WaitStrategy::Events,
     };
     nav_run_core(cli, &effective_url, &wait_opts)
 }

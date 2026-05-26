@@ -206,6 +206,33 @@ pub enum LogLevel {
     Error,
 }
 
+/// Build the version string displayed by `ff-rdp --version`.
+///
+/// When the binary was built from a git checkout, includes the short sha and
+/// commit date: `0.2.0 (abc123def456 2026-05-26)`.  When `+dirty` is appended
+/// to the sha it means the working tree had uncommitted changes at build time.
+///
+/// When the sha is empty (crates.io tarball, offline build, or
+/// `CARGO_FF_RDP_FORCE_NO_GIT=1`), returns the bare `CARGO_PKG_VERSION`.
+pub fn build_version_string() -> &'static str {
+    const SHA: &str = env!("FF_RDP_BUILD_VERSION_SHA");
+    const DATE: &str = env!("FF_RDP_BUILD_DATE");
+    const PKG: &str = env!("CARGO_PKG_VERSION");
+
+    if SHA.is_empty() {
+        PKG
+    } else {
+        // SAFETY: `concat!` on static strings produces a `'static str`.
+        // We use a `Box::leak` to build the string once at first call.
+        // This is intentional: version strings are compared/printed rarely.
+        use std::sync::OnceLock;
+        static VERSION: OnceLock<String> = OnceLock::new();
+        VERSION
+            .get_or_init(|| format!("{PKG} ({SHA} {DATE})"))
+            .as_str()
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "ff-rdp",
@@ -228,7 +255,7 @@ any already-running Firefox windows — it uses a temporary profile and
 the -no-remote flag automatically.",
     after_help = "Tip: Run 'ff-rdp launch' first to start Firefox with remote debugging.\n     It won't affect any existing Firefox windows — safe to run alongside\n     your normal browser.",
     after_long_help = AFTER_LONG_HELP,
-    version
+    version = build_version_string()
 )]
 pub struct Cli {
     /// Firefox debug server host
@@ -422,6 +449,13 @@ Output: {\"results\": {\"navigated\": \"...\", \"committed_url\": \"...\", \"rea
         /// Uses the --timeout budget. On failure surfaces a descriptive error.
         #[arg(long, value_name = "PREDICATE")]
         wait_for: Vec<String>,
+        /// Strategy for waiting for navigation readiness.
+        /// `events` (default): wait for document-event resources (dom-complete).
+        /// `readystate`: poll `document.readyState == "complete"` until timeout.
+        /// `both`: try events first; if they time out, fall back to readystate poll
+        ///         within the remaining budget.
+        #[arg(long, value_name = "STRATEGY", default_value = "events", value_enum)]
+        wait_strategy: crate::commands::navigate::WaitStrategy,
     },
     /// Evaluate JavaScript in the target tab
     #[command(long_about = "Evaluate JavaScript in the target tab.
@@ -871,6 +905,12 @@ Output: {\"results\": [{\"name\": \"...\", \"value\": \"...\", \"domain\": \"...
         /// Filter by cookie name (exact match)
         #[arg(long)]
         name: Option<String>,
+        /// Also evaluate `document.cookie` and merge any entries not already
+        /// present in the StorageActor reply (marked with `source: "document.cookie"`).
+        /// Useful for cookies that lack a `Domain=` attribute and are not surfaced
+        /// by `getStoreObjects`.
+        #[arg(long)]
+        include_document_cookie: bool,
     },
     /// Read web storage (localStorage or sessionStorage)
     #[command(long_about = "Read web storage (localStorage or sessionStorage).
@@ -995,9 +1035,13 @@ Output: {\"results\": [{\"url\": \"...\", \"actor\": \"...\", \"isBlackBoxed\": 
 Output: {\"results\": {\"tag\": \"HTML\", \"children\": [...], ...}, \"total\": 1, \"meta\": {...}}"
     )]
     Snapshot {
-        /// Maximum tree depth to traverse (default: 6)
+        /// Maximum tree depth to traverse (default: 6). Alias: --max-depth.
         #[arg(long, default_value_t = 6)]
         depth: u32,
+        /// Maximum tree depth to traverse (alias for --depth, matches `dom tree --max-depth` / CDP convention).
+        /// Overrides --depth when both are set. Must be ≥ 1.
+        #[arg(long, value_name = "N", conflicts_with = "depth")]
+        max_depth: Option<u32>,
         /// Maximum total characters of text content to include (default: 50000)
         #[arg(long, default_value_t = 50000)]
         max_chars: u32,
@@ -1174,6 +1218,10 @@ Examples:
         /// Explain every property declared on the element (the default).
         #[arg(long)]
         all: bool,
+        /// Dump the raw PageStyle `getApplied` reply to stderr before parsing.
+        /// Use to diagnose field-name drift between ff-rdp and Firefox.
+        #[arg(long)]
+        debug_raw: bool,
     },
     /// Scroll the page or a specific element
     #[command(long_about = "Scroll the page or a specific element.

@@ -70,8 +70,8 @@ fn version_mismatch_message() -> String {
         None => "unknown".to_owned(),
     };
     format!(
-        "screenshot actor unavailable on Firefox {observed}; minimum supported version: {COMPATIBLE_FIREFOX_MIN}. \
-         hint: upgrade Firefox or run `ff-rdp doctor` for the full compatibility report."
+        "screenshot actor not advertised by Firefox {observed} root form — see doctor for details. \
+         hint: run `ff-rdp doctor` for the full compatibility report (minimum supported: {COMPATIBLE_FIREFOX_MIN})."
     )
 }
 
@@ -291,11 +291,10 @@ fn try_two_step_screenshot(
     }
 
     // Step 2: capture — call the root-level screenshotActor.
-    let screenshot_actor = ScreenshotActor::get_actor_id(ctx.transport_mut()).map_err(|e| {
-        AppError::User(format!(
-            "screenshot: could not find root screenshotActor ({e}) — \
-             this Firefox version may not support the two-step screenshot protocol"
-        ))
+    let screenshot_actor = ScreenshotActor::get_actor_id(ctx.transport_mut()).map_err(|_e| {
+        // `getRoot` succeeded but the `screenshotActor` field was absent — the
+        // actor is simply not advertised by this Firefox build/version.
+        AppError::User(format!("screenshot: {}", version_mismatch_message()))
     })?;
 
     // Log a diagnostic if --bulk was requested.  The bulk path is not active
