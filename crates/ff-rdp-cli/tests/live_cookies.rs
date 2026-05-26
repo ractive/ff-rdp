@@ -1,4 +1,5 @@
 //! iter-82 AC: `live_cookies_surfaces_js_readable_cookie`.
+//! iter-83 AC: `live_cookies_default_surfaces_js_readable_cookie`.
 //!
 //! Serves a minimal HTML page on a localhost HTTP port, navigates Firefox to
 //! it, then runs `ff-rdp cookies --include-document-cookie` and asserts the
@@ -163,6 +164,95 @@ fn live_cookies_surfaces_js_readable_cookie() {
 
     eprintln!(
         "live_cookies_surfaces_js_readable_cookie: PASS — found 'probe' among {} cookies",
+        results.len()
+    );
+}
+
+/// `live_cookies_default_surfaces_js_readable_cookie` (iter-83 AC):
+///
+/// Same as `live_cookies_surfaces_js_readable_cookie` but calls `ff-rdp cookies`
+/// WITHOUT any `--include-document-cookie` flag.  Verifies that the default
+/// behavior (as of iter-83 Theme D) includes document.cookie evaluation, so the
+/// `probe` cookie shows up without an explicit flag.
+///
+/// Gated on `FF_RDP_LIVE_TESTS=1`.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_cookies_default_surfaces_js_readable_cookie() {
+    if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
+        eprintln!(
+            "live_cookies_default_surfaces_js_readable_cookie: set FF_RDP_LIVE_TESTS=1 to run"
+        );
+        return;
+    }
+
+    let Some(ff) = LiveFirefox::headless_on_random_port() else {
+        eprintln!(
+            "live_cookies_default_surfaces_js_readable_cookie: Firefox not available — skipping"
+        );
+        return;
+    };
+
+    let Some((http_port, _server)) = spawn_fixture_server() else {
+        eprintln!(
+            "live_cookies_default_surfaces_js_readable_cookie: could not bind HTTP server — skipping"
+        );
+        return;
+    };
+
+    let fixture_url = format!("http://127.0.0.1:{http_port}/");
+
+    // Navigate to fixture so the JS cookie is set.
+    let nav = Command::new(ff_rdp_bin())
+        .args(base_args(ff.port()))
+        .args(["navigate", &fixture_url])
+        .output()
+        .expect("ff-rdp navigate");
+    assert!(
+        nav.status.success(),
+        "live_cookies_default_surfaces_js_readable_cookie: navigate failed — {}",
+        String::from_utf8_lossy(&nav.stderr)
+    );
+
+    // Run cookies WITHOUT --include-document-cookie — this is the key difference
+    // from the iter-82 test: the default must now include document.cookie.
+    let out = Command::new(ff_rdp_bin())
+        .args(base_args(ff.port()))
+        .args(["cookies"])
+        .output()
+        .expect("ff-rdp cookies (no flags)");
+    assert!(
+        out.status.success(),
+        "live_cookies_default_surfaces_js_readable_cookie: cookies failed — stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!(
+            "live_cookies_default_surfaces_js_readable_cookie: output is not valid JSON: {e}\n\
+             stdout={stdout}\nstderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+
+    let results = json["results"]
+        .as_array()
+        .expect("results must be an array");
+
+    let has_probe = results
+        .iter()
+        .any(|c| c["name"].as_str().unwrap_or("") == "probe");
+
+    assert!(
+        has_probe,
+        "live_cookies_default_surfaces_js_readable_cookie: cookie 'probe' not found in results; \
+         results={results:?}"
+    );
+
+    eprintln!(
+        "live_cookies_default_surfaces_js_readable_cookie: PASS — \
+         found 'probe' among {} cookies (no --include-document-cookie flag)",
         results.len()
     );
 }

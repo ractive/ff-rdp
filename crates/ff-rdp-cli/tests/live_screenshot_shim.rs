@@ -199,9 +199,11 @@ fn live_screenshot_no_args_on_firefox_151() {
     };
 
     // Navigate to a simple page so there is content to capture.
+    // Use --wait-strategy readystate so the navigate step itself doesn't panic
+    // when the events stream is slow — Theme B (iter-83) pre-stabilise fix.
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
-        .args(["navigate", "about:blank"])
+        .args(["navigate", "about:blank", "--wait-strategy", "readystate"])
         .output()
         .expect("navigate to about:blank");
     assert!(

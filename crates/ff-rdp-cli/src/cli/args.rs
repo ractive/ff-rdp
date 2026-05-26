@@ -450,11 +450,11 @@ Output: {\"results\": {\"navigated\": \"...\", \"committed_url\": \"...\", \"rea
         #[arg(long, value_name = "PREDICATE")]
         wait_for: Vec<String>,
         /// Strategy for waiting for navigation readiness.
-        /// `events` (default): wait for document-event resources (dom-complete).
+        /// `both` (default): try events first; if they time out, fall back to
+        ///         readystate poll within the remaining budget.
+        /// `events`: wait for document-event resources (dom-complete).
         /// `readystate`: poll `document.readyState == "complete"` until timeout.
-        /// `both`: try events first; if they time out, fall back to readystate poll
-        ///         within the remaining budget.
-        #[arg(long, value_name = "STRATEGY", default_value = "events", value_enum)]
+        #[arg(long, value_name = "STRATEGY", default_value = "both", value_enum)]
         wait_strategy: crate::commands::navigate::WaitStrategy,
     },
     /// Evaluate JavaScript in the target tab
@@ -909,8 +909,19 @@ Output: {\"results\": [{\"name\": \"...\", \"value\": \"...\", \"domain\": \"...
         /// present in the StorageActor reply (marked with `source: "document.cookie"`).
         /// Useful for cookies that lack a `Domain=` attribute and are not surfaced
         /// by `getStoreObjects`.
-        #[arg(long)]
+        ///
+        /// This is enabled by default. Pass `--storage-only` to disable.
+        #[arg(
+            long,
+            hide = true,
+            default_value_t = false,
+            conflicts_with = "storage_only"
+        )]
         include_document_cookie: bool,
+        /// Return only cookies from the StorageActor (skip `document.cookie` evaluation).
+        /// Use this when you need the raw StorageActor view, e.g. to debug httpOnly cookies.
+        #[arg(long)]
+        storage_only: bool,
     },
     /// Read web storage (localStorage or sessionStorage)
     #[command(long_about = "Read web storage (localStorage or sessionStorage).

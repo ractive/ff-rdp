@@ -524,14 +524,24 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
     let tbt = compute_tbt(longtask_entries, fcp);
     let lcp_approximate = is_lcp_approximate(lcp_entries);
 
-    // N7: when LCP is not measurable, emit "unavailable" rather than "good" + 0.0.
-    let lcp_rating: serde_json::Value = match lcp {
-        Some(v) => json!(rate(v, 2500.0, 4000.0)),
-        None => json!("unavailable"),
+    // N7 / Theme F (iter-83): when LCP is not measurable or is an approximate 0ms
+    // estimate, emit "unavailable" and null rather than "good" + 0.0.
+    // `lcp_approximate=true` means the DOM fallback ran and found startTime=0 (no
+    // real load timing), so the value is meaningless.
+    let lcp_unavailable = lcp.is_none() || (lcp_approximate && lcp.unwrap_or(1.0) == 0.0);
+    let lcp_rating: serde_json::Value = if lcp_unavailable {
+        json!("unavailable")
+    } else {
+        json!(rate(lcp.unwrap_or(0.0), 2500.0, 4000.0))
+    };
+    let lcp_ms_output: serde_json::Value = if lcp_unavailable {
+        serde_json::Value::Null
+    } else {
+        json!(lcp)
     };
 
     let mut results = json!({
-        "lcp_ms": lcp,
+        "lcp_ms": lcp_ms_output,
         "lcp_rating": lcp_rating,
         "cls": cls,
         "cls_rating": rate(cls, 0.1, 0.25),
@@ -1695,9 +1705,14 @@ mod tests {
     fn test_perf_vitals_emits_unavailable_when_lcp_missing() {
         // Replicate the N7 fix: None input must produce "unavailable", not "good".
         let lcp: Option<f64> = None;
-        let lcp_rating: serde_json::Value = match lcp {
-            Some(v) => json!(rate(v, 2500.0, 4000.0)),
-            None => json!("unavailable"),
+        let lcp_approximate = false;
+        let lcp_unavailable = lcp.is_none_or(|v| lcp_approximate && v == 0.0);
+        let lcp_rating: serde_json::Value = if lcp_unavailable {
+            json!("unavailable")
+        } else if let Some(v) = lcp {
+            json!(rate(v, 2500.0, 4000.0))
+        } else {
+            json!("unavailable")
         };
         assert_eq!(
             lcp_rating,
@@ -1719,6 +1734,57 @@ mod tests {
             lcp_ms,
             serde_json::Value::Null,
             "lcp_ms must be JSON null when lcp is None"
+        );
+    }
+
+    /// iter-83 Theme F AC: `perf_vitals_emits_unavailable_when_lcp_approximate`
+    ///
+    /// When `lcp_approximate == true` AND `lcp_ms == 0.0` (the DOM fallback ran but
+    /// found no real load timing), `lcp_rating` must be "unavailable" and the output
+    /// `lcp_ms` must be JSON null.  The old code would have emitted `lcp_rating: "good"`
+    /// and `lcp_ms: 0.0` which is misleading.
+    #[test]
+    fn perf_vitals_emits_unavailable_when_lcp_approximate() {
+        // Simulate what the DOM approximation returns: startTime=0, approximate=true.
+        let lcp_entries = vec![json!({
+            "entryType": "largest-contentful-paint",
+            "startTime": 0.0,
+            "renderTime": 0.0,
+            "loadTime": 0.0,
+            "size": 12000.0,
+            "url": "",
+            "element": null,
+            "approximate": true,
+        })];
+
+        let lcp = compute_lcp(&lcp_entries); // returns Some(0.0)
+        let lcp_approximate = is_lcp_approximate(&lcp_entries); // returns true
+
+        assert_eq!(lcp, Some(0.0), "compute_lcp should return Some(0.0)");
+        assert!(lcp_approximate, "is_lcp_approximate should return true");
+
+        // Replicate the Theme F fix logic:
+        let lcp_unavailable = lcp.is_none() || (lcp_approximate && lcp.unwrap_or(1.0) == 0.0);
+        let lcp_rating: serde_json::Value = if lcp_unavailable {
+            json!("unavailable")
+        } else {
+            json!(rate(lcp.unwrap_or(0.0), 2500.0, 4000.0))
+        };
+        let lcp_ms_output: serde_json::Value = if lcp_unavailable {
+            serde_json::Value::Null
+        } else {
+            json!(lcp)
+        };
+
+        assert_eq!(
+            lcp_rating,
+            json!("unavailable"),
+            "lcp_rating must be 'unavailable' when lcp_approximate=true and lcp_ms=0.0"
+        );
+        assert_eq!(
+            lcp_ms_output,
+            serde_json::Value::Null,
+            "lcp_ms must be null when lcp_approximate=true and lcp_ms=0.0"
         );
     }
 

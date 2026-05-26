@@ -249,3 +249,11 @@ flag's `long_about`. Cosmetic.
 - [[dogfooding-session-51]] — original demo.testfire.net audit
 - Public Firing Range — https://public-firing-range.appspot.com
   (source: https://github.com/google/firing-range)
+
+## Resolution
+
+Resolved in iter-83 (see [[iteration-83-dogfood-55-real-fixes]]).
+All 7 themes (A-G) implemented: cascade parser fix + live test for external CSS,
+screenshot navigate pre-stabilise, navigate default changed to `both`, cookies
+document.cookie on by default, styles dedupe narrowed to UA-reset pattern only,
+perf vitals LCP approximate=true → unavailable, cookies help text bleed fixed.
