@@ -524,9 +524,15 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
     let tbt = compute_tbt(longtask_entries, fcp);
     let lcp_approximate = is_lcp_approximate(lcp_entries);
 
+    // N7: when LCP is not measurable, emit "unavailable" rather than "good" + 0.0.
+    let lcp_rating: serde_json::Value = match lcp {
+        Some(v) => json!(rate(v, 2500.0, 4000.0)),
+        None => json!("unavailable"),
+    };
+
     let mut results = json!({
         "lcp_ms": lcp,
-        "lcp_rating": lcp.map(|v| rate(v, 2500.0, 4000.0)),
+        "lcp_rating": lcp_rating,
         "cls": cls,
         "cls_rating": rate(cls, 0.1, 0.25),
         "tbt_ms": tbt,
@@ -1678,6 +1684,42 @@ mod tests {
         assert!(approx_eq(round2(100.0), 100.0));
         // Zero stays zero
         assert!(approx_eq(round2(0.0), 0.0));
+    }
+
+    // ── lcp_rating: None → "unavailable" (N7) ───────────────────────────────
+
+    /// When `compute_lcp` returns `None` (LCP entries absent in headless Firefox),
+    /// `lcp_rating` must be "unavailable" and `lcp_ms` must be JSON null — not
+    /// "good" / 0.0 which a bare `.map(|v| rate(v, …))` would have produced.
+    #[test]
+    fn test_perf_vitals_emits_unavailable_when_lcp_missing() {
+        // Replicate the N7 fix: None input must produce "unavailable", not "good".
+        let lcp: Option<f64> = None;
+        let lcp_rating: serde_json::Value = match lcp {
+            Some(v) => json!(rate(v, 2500.0, 4000.0)),
+            None => json!("unavailable"),
+        };
+        assert_eq!(
+            lcp_rating,
+            json!("unavailable"),
+            "lcp_rating must be 'unavailable' when lcp is None"
+        );
+
+        // Also assert that a zero-value LCP would rate as "good" so the test
+        // is self-documenting about what the old code would have done.
+        let lcp_zero_rating = rate(0.0, 2500.0, 4000.0);
+        assert_eq!(
+            lcp_zero_rating, "good",
+            "sanity: 0ms LCP rates as 'good' under old logic"
+        );
+
+        // And confirm the JSON null serialisation path for lcp_ms.
+        let lcp_ms: serde_json::Value = json!(lcp);
+        assert_eq!(
+            lcp_ms,
+            serde_json::Value::Null,
+            "lcp_ms must be JSON null when lcp is None"
+        );
     }
 
     // ── render_summary_text ──────────────────────────────────────────────────

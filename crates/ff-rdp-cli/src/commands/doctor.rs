@@ -157,9 +157,11 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     let any_failed = probes.iter().any(|p| p.status == Status::Fail);
 
     let results = build_results_json(&probes);
+    let version_long = crate::cli::args::build_version_string();
     let mut meta = json!({
         "host": host,
         "port": port,
+        "version_long": version_long,
     });
     crate::connection_meta::merge_into(&mut meta, host, port, firefox_version);
     let envelope = output::envelope(&results, probes.len(), &meta);

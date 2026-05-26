@@ -329,8 +329,8 @@ fn screenshot_module_load_failure_surfaces_clean_version_mismatch_message() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("screenshot actor unavailable on Firefox"),
-        "stderr should include the version-mismatch one-liner: {stderr}"
+        stderr.contains("screenshot actor not found in Firefox"),
+        "stderr should include 'screenshot actor not found in Firefox': {stderr}"
     );
     assert!(
         stderr.contains("ff-rdp doctor"),
@@ -376,8 +376,8 @@ fn screenshot_module_load_failure_in_two_step_protocol_surfaces_clean_message() 
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("screenshot actor unavailable on Firefox"),
-        "stderr should include the version-mismatch one-liner: {stderr}"
+        stderr.contains("screenshot actor not found in Firefox"),
+        "stderr should include 'screenshot actor not found in Firefox': {stderr}"
     );
     assert!(
         stderr.contains("ff-rdp doctor"),

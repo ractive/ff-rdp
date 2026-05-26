@@ -48,6 +48,20 @@ pub enum WaitLevel {
     Complete,
 }
 
+/// Strategy for waiting for navigation readiness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum WaitStrategy {
+    /// Wait for Firefox document-event resources (dom-complete). Default.
+    #[default]
+    Events,
+    /// Poll `document.readyState == "complete"` until timeout.
+    Readystate,
+    /// Try events first; if they time out, fall back to readystate polling
+    /// within the remaining budget.
+    Both,
+}
+
 /// Options controlling an optional wait condition after navigation.
 ///
 /// # False positive risk
@@ -74,6 +88,8 @@ pub struct WaitAfterNav<'a> {
     pub wait_for: &'a [String],
     /// Readiness level to wait for (default: `Complete`).
     pub wait_level: WaitLevel,
+    /// Strategy for waiting for navigation readiness (default: `Events`).
+    pub wait_strategy: WaitStrategy,
 }
 
 impl WaitAfterNav<'_> {
@@ -284,6 +300,56 @@ fn is_neterror_url(url: &str) -> bool {
     url.starts_with("about:neterror")
 }
 
+/// Poll `document.readyState == "complete"` until the deadline, returning a
+/// `CommitInfo` when the condition is met.
+///
+/// Used by the `readystate` and `both` wait strategies as a fallback when the
+/// document-event resource stream doesn't fire within the timeout budget.
+fn wait_for_readystate_complete(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    timeout_ms: u64,
+) -> Result<CommitInfo, AppError> {
+    use crate::commands::js_helpers::poll_js_condition;
+
+    let console_actor = ctx.target.console_actor.clone();
+    let started = std::time::Instant::now();
+
+    let elapsed_ms = poll_js_condition(
+        ctx,
+        &console_actor,
+        "document.readyState === 'complete'",
+        timeout_ms,
+        "navigate readystate: JS evaluation error",
+        &format!(
+            "navigate: document.readyState did not reach 'complete' within {timeout_ms}ms — \
+             use --no-wait to skip or increase --timeout"
+        ),
+    )?;
+
+    let url = {
+        let console_actor = ctx.target.console_actor.clone();
+        match super::js_helpers::eval_or_bail(
+            ctx,
+            &console_actor,
+            "window.location.href",
+            "navigate readystate: url eval",
+        ) {
+            Ok(result) => match result.result {
+                ff_rdp_core::Grip::Value(serde_json::Value::String(s)) => s,
+                _ => String::new(),
+            },
+            Err(_) => String::new(),
+        }
+    };
+
+    let _ = started; // `elapsed_ms` already reported by poll_js_condition
+    Ok(CommitInfo {
+        committed_url: url,
+        ready_state: "complete".to_owned(),
+        elapsed_ms,
+    })
+}
+
 /// Check whether two URLs refer to the same origin + path (ignoring query, hash,
 /// and trailing slash).  Used by the cross-origin race fix (Theme G): when a
 /// commit-wait times out but the landed URL shares scheme+host+port+path with
@@ -428,7 +494,20 @@ pub fn run_core(
         WindowGlobalTarget::navigate_to(ctx.transport_mut(), &target_actor, url)
             .map_err(AppError::from)?;
         None
+    } else if wait_opts.wait_strategy == WaitStrategy::Readystate {
+        // --wait-strategy readystate: skip the document-event bus entirely.
+        // Sending navigateTo + immediately polling document.readyState avoids
+        // the full event-wait timeout cost that the default Events path pays.
+        WindowGlobalTarget::navigate_to(ctx.transport_mut(), &target_actor, url)
+            .map_err(AppError::from)?;
+        // Theme K: refresh console actor so eval hits the new document.
+        refresh_console_actor(&mut ctx);
+        let ci = wait_for_readystate_complete(&mut ctx, cli.timeout)?;
+        Some(ci)
     } else {
+        // Events or Both strategy: subscribe to document-event resources before
+        // sending navigateTo so we don't miss events that arrive immediately.
+        //
         // Engage the watcher's frame-target subscription BEFORE subscribing
         // to document-event resources.  Per the Firefox watcher contract
         // (devtools/shared/specs/watcher.js + kb/rdp/actors/watcher.md), a
@@ -454,6 +533,10 @@ pub fn run_core(
             .subscribe(ctx.transport_mut(), &[ResourceType::DocumentEvent])
             .map_err(|e| AppError::from(anyhow::anyhow!("document-event subscribe: {e:#}")))?;
 
+        // Record the wall-clock instant before sending navigateTo so we can
+        // compute the remaining budget for the Both readystate fallback.
+        let nav_start = Instant::now();
+
         // Send navigateTo raw (not via actor_request) so we don't lose
         // resources-available-array events that arrive before the ack.
         ctx.transport_mut()
@@ -466,7 +549,7 @@ pub fn run_core(
 
         // wait_for_doc_complete acquires the lock only during dispatch_event,
         // not across the full recv() wait — see its lock-discipline doc-comment.
-        let result = wait_for_doc_complete(
+        let event_result = wait_for_doc_complete(
             ctx.transport_mut(),
             &bus_arc,
             &rx,
@@ -497,6 +580,32 @@ pub fn run_core(
         // Restore the original timeout so subsequent RDP round-trips (e.g.
         // wait-text / wait-selector polling) use the configured timeout.
         restore_timeout(ctx.transport_mut(), cli.timeout);
+
+        // Apply wait_strategy.  `Readystate` was handled by the early branch
+        // above and never reaches this code.  Only `Events` and `Both` run here.
+        //
+        // For `Both`, if events timed out, fall back to readystate polling with
+        // only the REMAINING budget so we don't re-pay the full timeout.
+        let result = match event_result {
+            r @ Ok(_) => r,
+            Err(e) if wait_opts.wait_strategy != WaitStrategy::Both => Err(e),
+            Err(AppError::Timeout(_)) => {
+                // Events timed out — compute remaining budget and try readystate.
+                refresh_console_actor(&mut ctx);
+                let elapsed_ms =
+                    u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(cli.timeout);
+                let remaining = cli.timeout.saturating_sub(elapsed_ms);
+                if remaining == 0 {
+                    Err(AppError::Timeout(format!(
+                        "navigate: timed out after {elapsed_ms}ms waiting for document events \
+                         and no remaining budget for readystate fallback"
+                    )))
+                } else {
+                    wait_for_readystate_complete(&mut ctx, remaining)
+                }
+            }
+            Err(e) => Err(e),
+        };
 
         match result {
             Ok(ci) => Some(ci),
@@ -991,6 +1100,7 @@ mod tests {
             no_wait: false,
             wait_for: &[],
             wait_level: WaitLevel::Complete,
+            wait_strategy: WaitStrategy::Events,
         }
     }
 

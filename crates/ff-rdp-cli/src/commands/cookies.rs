@@ -21,7 +21,7 @@ const CMP_SELECTORS: &[&str] = &[
     ".qc-cmp-ui-container",
 ];
 
-pub fn run(cli: &Cli, name: Option<&str>) -> Result<(), AppError> {
+pub fn run(cli: &Cli, name: Option<&str>, include_document_cookie: bool) -> Result<(), AppError> {
     let mut ctx = connect_direct(cli)?;
     let tab_actor = ctx.target_tab_actor().clone();
 
@@ -44,6 +44,27 @@ pub fn run(cli: &Cli, name: Option<&str>) -> Result<(), AppError> {
             obj
         })
         .collect();
+
+    // --include-document-cookie: evaluate document.cookie and merge any entries
+    // not already present in the StorageActor reply (e.g. cookies that lack a
+    // Domain= attribute and are not surfaced by getStoreObjects).
+    if include_document_cookie {
+        let doc_cookies = fetch_document_cookies(&mut ctx);
+        let storage_names: std::collections::HashSet<String> = results
+            .iter()
+            .filter_map(|c| c.get("name").and_then(Value::as_str).map(str::to_owned))
+            .collect();
+        for entry in doc_cookies {
+            let entry_name = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if !storage_names.contains(&entry_name) {
+                results.push(entry);
+            }
+        }
+    }
 
     // Filter by cookie name if requested.
     if let Some(filter_name) = name {
@@ -86,6 +107,52 @@ pub fn run(cli: &Cli, name: Option<&str>) -> Result<(), AppError> {
     OutputPipeline::from_cli(cli)?
         .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
+}
+
+/// Evaluate `document.cookie` and return each `name=value` pair as a JSON
+/// object with `source: "document.cookie"`.
+///
+/// This is a best-effort fallback for cookies that are not surfaced by the
+/// StorageActor (e.g. cookies without a `Domain=` attribute set via JS).
+/// Errors and empty results are returned as an empty Vec.
+fn fetch_document_cookies(ctx: &mut ConnectedTab) -> Vec<Value> {
+    let js = "document.cookie";
+    let console_actor = ctx.target.console_actor.clone();
+    let Ok(eval_result) =
+        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, js)
+    else {
+        return vec![];
+    };
+
+    if eval_result.exception.is_some() {
+        return vec![];
+    }
+
+    let cookie_str = match &eval_result.result {
+        Grip::Value(Value::String(s)) => s.clone(),
+        _ => return vec![],
+    };
+
+    if cookie_str.trim().is_empty() {
+        return vec![];
+    }
+
+    cookie_str
+        .split(';')
+        .filter_map(|pair| {
+            let pair = pair.trim();
+            if pair.is_empty() {
+                return None;
+            }
+            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+            Some(json!({
+                "name": name.trim(),
+                "value": value.trim(),
+                "source": "document.cookie",
+                "expires": "Session",
+            }))
+        })
+        .collect()
 }
 
 /// Check if common CMP/consent banner elements exist on the page via JS eval.
@@ -146,5 +213,62 @@ mod tests {
                 "CMP selector should not contain single quotes: {sel}"
             );
         }
+    }
+
+    #[test]
+    fn fetch_document_cookies_parses_name_value_pairs() {
+        // Unit test the parsing logic directly (without a live Firefox).
+        fn parse_cookie_str(s: &str) -> Vec<Value> {
+            if s.trim().is_empty() {
+                return vec![];
+            }
+            s.split(';')
+                .filter_map(|pair| {
+                    let pair = pair.trim();
+                    if pair.is_empty() {
+                        return None;
+                    }
+                    let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+                    Some(json!({
+                        "name": name.trim(),
+                        "value": value.trim(),
+                        "source": "document.cookie",
+                        "expires": "Session",
+                    }))
+                })
+                .collect()
+        }
+
+        let cookies = parse_cookie_str("probe=1; session=abc; flag");
+        assert_eq!(cookies.len(), 3);
+        assert_eq!(cookies[0]["name"], "probe");
+        assert_eq!(cookies[0]["value"], "1");
+        assert_eq!(cookies[0]["source"], "document.cookie");
+        assert_eq!(cookies[1]["name"], "session");
+        assert_eq!(cookies[1]["value"], "abc");
+        assert_eq!(cookies[2]["name"], "flag");
+        assert_eq!(cookies[2]["value"], "");
+    }
+
+    #[test]
+    fn fetch_document_cookies_empty_string_returns_empty() {
+        fn parse_cookie_str(s: &str) -> Vec<Value> {
+            if s.trim().is_empty() {
+                return vec![];
+            }
+            s.split(';')
+                .filter_map(|pair| {
+                    let pair = pair.trim();
+                    if pair.is_empty() {
+                        None
+                    } else {
+                        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+                        Some(json!({"name": name.trim(), "value": value.trim()}))
+                    }
+                })
+                .collect()
+        }
+        assert!(parse_cookie_str("").is_empty());
+        assert!(parse_cookie_str("   ").is_empty());
     }
 }

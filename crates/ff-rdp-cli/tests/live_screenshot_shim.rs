@@ -170,3 +170,84 @@ fn live_screenshot_unchanged_after_shim() {
         png_bytes.len()
     );
 }
+
+/// `live_screenshot_no_args_on_firefox_151` (iter-82 AC):
+///
+/// Runs `ff-rdp screenshot -o <tmp>.png` with no extra flags and asserts
+/// that:
+///   - The command exits with code 0.
+///   - The output file exists and is non-empty.
+///   - The file begins with the 8-byte PNG magic (`\x89PNG\r\n\x1a\n`).
+///
+/// This covers the path through the iter-78 shim that the earlier baseline
+/// (`live_screenshot_unchanged_after_shim`) did not exercise: the shim must
+/// work without `--full-page` and `--base64` flags, writing a file to disk
+/// via `-o`.
+///
+/// Gated on `FF_RDP_LIVE_TESTS=1`.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_screenshot_no_args_on_firefox_151() {
+    if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
+        eprintln!("live_screenshot_no_args_on_firefox_151: set FF_RDP_LIVE_TESTS=1 to run");
+        return;
+    }
+
+    let Some(ff) = LiveFirefox::headless_on_random_port() else {
+        eprintln!("live_screenshot_no_args_on_firefox_151: Firefox not available — skipping");
+        return;
+    };
+
+    // Navigate to a simple page so there is content to capture.
+    let nav = Command::new(ff_rdp_bin())
+        .args(base_args(ff.port()))
+        .args(["navigate", "about:blank"])
+        .output()
+        .expect("navigate to about:blank");
+    assert!(
+        nav.status.success(),
+        "live_screenshot_no_args_on_firefox_151: navigate failed — {}",
+        String::from_utf8_lossy(&nav.stderr)
+    );
+
+    // Write screenshot to a temp file.
+    let tmp = std::env::temp_dir().join("live_screenshot_no_args_on_firefox_151.png");
+
+    let out = Command::new(ff_rdp_bin())
+        .args(base_args(ff.port()))
+        .arg("screenshot")
+        .arg("-o")
+        .arg(&tmp)
+        .output()
+        .expect("ff-rdp screenshot -o <tmp>");
+
+    assert!(
+        out.status.success(),
+        "live_screenshot_no_args_on_firefox_151: screenshot exited non-zero — stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(
+        tmp.exists(),
+        "live_screenshot_no_args_on_firefox_151: output file not created at {tmp:?}"
+    );
+
+    let bytes = std::fs::read(&tmp)
+        .unwrap_or_else(|e| panic!("live_screenshot_no_args_on_firefox_151: read {tmp:?}: {e}"));
+
+    assert!(
+        !bytes.is_empty(),
+        "live_screenshot_no_args_on_firefox_151: output file is empty"
+    );
+
+    assert_eq!(
+        &bytes[..8.min(bytes.len())],
+        &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+        "live_screenshot_no_args_on_firefox_151: file does not start with PNG magic bytes"
+    );
+
+    eprintln!(
+        "live_screenshot_no_args_on_firefox_151: PASS — PNG {} bytes",
+        bytes.len()
+    );
+}

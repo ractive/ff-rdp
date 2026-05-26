@@ -408,6 +408,7 @@ fn dispatch_inner(
             no_wait,
             wait_for,
             wait,
+            wait_strategy,
         } => {
             let wait_opts = commands::navigate::WaitAfterNav {
                 wait_text: wait_text.as_deref(),
@@ -416,6 +417,7 @@ fn dispatch_inner(
                 no_wait: *no_wait,
                 wait_for,
                 wait_level: *wait,
+                wait_strategy: *wait_strategy,
             };
             if *with_network {
                 commands::navigate::run_with_network(cli, url, &wait_opts, *network_timeout)
@@ -729,7 +731,10 @@ fn dispatch_inner(
                 }
             }
         }
-        Command::Cookies { name } => commands::cookies::run(cli, name.as_deref()),
+        Command::Cookies {
+            name,
+            include_document_cookie,
+        } => commands::cookies::run(cli, name.as_deref(), *include_document_cookie),
         Command::Storage { storage_type, key } => {
             commands::storage::run(cli, storage_type, key.as_deref())
         }
@@ -814,6 +819,7 @@ fn dispatch_inner(
             ref_id,
             prop,
             all,
+            debug_raw,
         } => {
             let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
@@ -822,7 +828,7 @@ fn dispatch_inner(
                 "cascade",
                 cli,
             )?;
-            commands::cascade::run(cli, &selector, prop.as_deref(), *all)
+            commands::cascade::run(cli, &selector, prop.as_deref(), *all, *debug_raw)
         }
         Command::Geometry {
             selectors,
@@ -849,7 +855,25 @@ fn dispatch_inner(
                 commands::responsive::run(cli, selectors, widths, *include_hidden)
             }
         }
-        Command::Snapshot { depth, max_chars } => commands::snapshot::run(cli, *depth, *max_chars),
+        Command::Snapshot {
+            depth,
+            max_depth,
+            max_chars,
+        } => {
+            // --max-depth overrides --depth; must be ≥ 1.
+            let effective_depth = if let Some(md) = max_depth {
+                if *md == 0 {
+                    return Err(AppError::User(
+                        "snapshot: --max-depth must be ≥ 1 (0 would produce an empty tree)"
+                            .to_owned(),
+                    ));
+                }
+                *md
+            } else {
+                *depth
+            };
+            commands::snapshot::run(cli, effective_depth, *max_chars)
+        }
         Command::Scroll { scroll_command } => match scroll_command {
             ScrollCommand::To {
                 selector,
