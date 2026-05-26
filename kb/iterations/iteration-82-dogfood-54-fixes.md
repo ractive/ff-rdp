@@ -2,7 +2,7 @@
 title: "Iteration 82: dogfood-54 fixes — cascade, screenshot/FF151, navigate readiness, cookies, --version git-sha"
 type: iteration
 date: 2026-05-26
-status: planned
+status: done
 branch: iter-82/dogfood-54-fixes
 depends_on:
   - iteration-79-navigate-readiness-and-dom-help-discoverability
@@ -99,73 +99,78 @@ dogfooding sessions catch the next regression before it ships.
 
 ## Tasks
 
-### Theme A — cascade inspector returns real rules
-- [ ] Reproduce the empty-`rules`/null-`computed` shape on
+### Theme A — cascade inspector returns real rules [4/4]
+- [x] Reproduce the empty-`rules`/null-`computed` shape on
       `crates/ff-rdp-cli/src/commands/cascade.rs` with a fresh
       `--log-level trace` capture against `tennis-sepp.ch` or
       `https://demo.testfire.net`.
-- [ ] Compare the trace to a known-working `styles --applied` capture on
+- [x] Compare the trace to a known-working `styles --applied` capture on
       the same selector — `styles` returns rich rule data on the same
       page, so the upstream PageStyle data IS available.
-- [ ] Fix `cascade.rs` to read the matched-selector indices + rule list
+- [x] Fix `cascade.rs` to read the matched-selector indices + rule list
       from whatever field name PageStyle actually returns on Firefox 151
       (iter-81's review comments referenced
       `matchedSelectorIndexes` + `ancestorData`; the parser is probably
       keying on a stale field).
-- [ ] Add a `--debug-raw` (or `--verbose`) escape hatch that emits the
+- [x] Add a `--debug-raw` (or `--verbose`) escape hatch that emits the
       raw PageStyle reply so future drift is diagnosable without a
       rebuild.
 
-### Theme B — screenshot regression on Firefox 151
-- [ ] Reproduce: `ff-rdp screenshot -o /tmp/x.png` against FF 151 errors
+### Theme B — screenshot regression on Firefox 151 [3/3]
+- [x] Reproduce: `ff-rdp screenshot -o /tmp/x.png` against FF 151 errors
       with `screenshot actor unavailable on Firefox 151; minimum
       supported version: 120`.  Check whether iter-77's
       `ScreenshotArgsExt` shim is being applied for the `-o PATH` /
       no-args branch as well as the `--full-page` branch.
-- [ ] Fix the actor-discovery probe in
+- [x] Fix the actor-discovery probe in
       `crates/ff-rdp-core/src/actors/screenshot.rs` so it doesn't
       mis-report the gap as a *minimum-version* mismatch (FF 151 > 120).
       The error path should phrase the failure as the actual condition:
       "screenshot actor not advertised by Firefox 151 root form — see
       doctor for details".
-- [ ] Widen the iter-78 live test suite
+- [x] Widen the iter-78 live test suite
       (`crates/ff-rdp-core/tests/live_screenshot_shim.rs`) to cover the
       no-flag (`screenshot -o PATH`) call path and a viewport-sized
       capture — the regression should have been caught there.
 
-### Theme C — navigate readiness still misses on real sites
-- [ ] Reproduce the dogfood-54 finding: `ff-rdp navigate
+### Theme C — navigate readiness still misses on real sites [3/4]
+- [x] Reproduce the dogfood-54 finding: `ff-rdp navigate
       https://example.com` (after Firefox is on a different page) hits
       the 10s `dom-complete` timeout even though
       `wait --eval 'document.readyState=="complete"'` returns in ~3s.
-- [ ] Trace the document-event resource stream
+- [x] Trace the document-event resource stream
       (`devtools/server/actors/resources/document-event.js`) to confirm
       whether (a) ff-rdp subscribes too late and the server doesn't
       replay, or (b) the watcher target swap on cross-origin nav drops
       our subscription.  iter-79's fix added `watchTargets` before
       `watchResources`, but the failure mode persists.
-- [ ] Add a `--wait-strategy {events,readystate,both}` fallback so the
+- [x] Add a `--wait-strategy {events,readystate,both}` fallback so the
       command can poll `document.readyState` when the resource stream
       misses — eliminates the regression as a release-blocker while the
       root cause is being chased.
 - [ ] Once root-cause is fixed, default `navigate` keeps the existing
       event-based path; the readystate fallback runs only when the
       event-budget is exhausted.
+      *Deferred — root-cause document-event replay fix not landed in this iteration;
+      see Out of scope. Default remains `events`; users opt into `readystate`/`both`.*
 
-### Theme D — cookies surfaces JS-readable cookies
-- [ ] Diagnose why `getStoreObjects("cookies")` on Altoro Mutual returns
+### Theme D — cookies surfaces JS-readable cookies [2/3]
+- [x] Diagnose why `getStoreObjects("cookies")` on Altoro Mutual returns
       `[]` while `document.cookie` exposes `AltoroAccounts=...`.  Most
       likely a host/path filter or a missing default-host argument.
 - [ ] Fix the StorageActor query in
       `crates/ff-rdp-cli/src/commands/cookies.rs` so it passes the
       target's host/origin instead of an empty default.
-- [ ] If a residual gap remains for cookies that lack `Domain=`, add a
+      *Not done — superseded by the `--include-document-cookie` fallback below,
+      which addresses the user-visible symptom. Storage-host fix may be filed
+      as a follow-up if any cookies remain invisible even with the fallback.*
+- [x] If a residual gap remains for cookies that lack `Domain=`, add a
       `--include-document-cookie` flag (off by default) that falls back
       to `eval document.cookie` and merges the result, marking each
       entry with `source: "document.cookie"`.
 
-### Theme E — `ff-rdp --version` embeds the git sha + build date
-- [ ] Add a `build.rs` to `crates/ff-rdp-cli/` that runs at build time:
+### Theme E — `ff-rdp --version` embeds the git sha + build date [4/4]
+- [x] Add a `build.rs` to `crates/ff-rdp-cli/` that runs at build time:
       - read `GIT_COMMIT` and `GIT_COMMIT_DATE` from `$GIT_COMMIT` env
         if set (release CI path), else shell out to
         `git rev-parse --short=12 HEAD` + `git show -s --format=%cs HEAD`.
@@ -177,31 +182,31 @@ dogfooding sessions catch the next regression before it ships.
       - tarball / crates.io fallback: if `.git` is unavailable, emit
         `FF_RDP_BUILD_VERSION=` empty and the runtime composes
         `0.2.0 (no-git)`.
-- [ ] In `crates/ff-rdp-cli/src/cli/args.rs`, replace the bare
+- [x] In `crates/ff-rdp-cli/src/cli/args.rs`, replace the bare
       `#[command(version)]` with
       `#[command(version = build_version_string())]` where
       `build_version_string()` returns
       `format!("{} ({} {})", CARGO_PKG_VERSION, FF_RDP_BUILD_VERSION_SHA,
       FF_RDP_BUILD_DATE)` (or just `CARGO_PKG_VERSION` when sha is empty).
-- [ ] Mirror the sha into `meta.version_long` for the JSON envelope on
+- [x] Mirror the sha into `meta.version_long` for the JSON envelope on
       `ff-rdp doctor` so agents reading JSON can see the build provenance.
-- [ ] Confirm offline / no-network build (`cargo install --offline`) and
+- [x] Confirm offline / no-network build (`cargo install --offline`) and
       crates.io publish path (no `.git` inside the source tarball) both
       succeed — the build script must NOT fail when git is unavailable.
 
-### Theme F — small dogfood-54 polish (N6 / N7 / N9)
-- [ ] **N6** Dedupe the `*, ::after, ::before` UA-reset stubs at the head
+### Theme F — small dogfood-54 polish (N6 / N7 / N9) [3/3]
+- [x] **N6** Dedupe the `*, ::after, ::before` UA-reset stubs at the head
       of every `styles --applied` reply.  Either drop entries with
       `properties.len() == 0` (when `--applied` is the only mode) or
       collapse consecutive identical-selector rows into one.  Implement
       in `crates/ff-rdp-cli/src/commands/styles.rs` so the wire response
       remains untouched.
-- [ ] **N7** `perf vitals`: when LCP (or any other vital) is not
+- [x] **N7** `perf vitals`: when LCP (or any other vital) is not
       measurable, emit `lcp_rating: "unavailable"` (and `lcp_ms: null`)
       instead of `"good"` + `0.0`.  Update the rating-computation site
       to short-circuit on `None` rather than treating it as 0.  Keep the
       `lcp_note` explanation.
-- [ ] **N9** Add `--max-depth` to `snapshot` (the depth limiter is
+- [x] **N9** Add `--max-depth` to `snapshot` (the depth limiter is
       currently hard-coded — `meta.depth: 6`).  Name it `--max-depth` to
       match `dom tree --max-depth` and CDP muscle memory; keep
       `--max-chars` as the byte-budget knob.  Reject combinations that
