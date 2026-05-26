@@ -1,8 +1,12 @@
 //! iter-82 AC: `live_cookies_surfaces_js_readable_cookie`.
 //!
-//! Navigates to a fixture page that sets `document.cookie = "probe=1"` from
-//! JS, then runs `ff-rdp cookies --include-document-cookie` and asserts the
+//! Serves a minimal HTML page on a localhost HTTP port, navigates Firefox to
+//! it, then runs `ff-rdp cookies --include-document-cookie` and asserts the
 //! cookie name `"probe"` appears in the results.
+//!
+//! A `data:` URL is used as a fallback fixture in many tests, but cookies set
+//! via `document.cookie` on `data:` URLs do not persist — browsers treat them
+//! as cookie-averse origins.  A real `http://127.0.0.1` origin is required.
 //!
 //! This validates Theme D: cookies set via JS without a `Domain=` attribute
 //! (which StorageActor sometimes misses) are surfaced via the
@@ -16,21 +20,64 @@
 #[path = "common/mod.rs"]
 mod common;
 
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 
 use common::{LiveFirefox, base_args, ff_rdp_bin};
 
-/// Fixture page: sets a JS-writable cookie without `Domain=` or `Secure`,
-/// then exposes `window.__cookieSet = true` so the caller knows the script ran.
-const FIXTURE_HTML: &str = "data:text/html;charset=utf-8,\
-<!DOCTYPE html><html><head></head><body>\
+/// HTML body served by the local fixture server.
+///
+/// Sets `document.cookie = "probe=1"` so the cookie is JS-readable on
+/// the `http://127.0.0.1` origin.  The `source: "document.cookie"` path
+/// in ff-rdp cookies must surface this entry when
+/// `--include-document-cookie` is passed.
+const FIXTURE_BODY: &[u8] = b"<!DOCTYPE html><html><head></head><body>\
 <script>document.cookie='probe=1';window.__cookieSet=true;</script>\
 </body></html>";
 
+/// Spawn a minimal single-shot HTTP server on a random port.
+///
+/// The server accepts connections in a background thread (bounded to 10
+/// accepts so the thread exits after the test), serving `FIXTURE_BODY`
+/// with `Content-Type: text/html` on any `GET` request.  Returns
+/// `(port, join-handle)`.
+fn spawn_fixture_server() -> Option<(u16, thread::JoinHandle<()>)> {
+    let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+    let port = listener.local_addr().ok()?.port();
+
+    let handle = thread::spawn(move || {
+        listener.set_nonblocking(false).ok();
+        for stream in listener.incoming().take(10) {
+            let Ok(mut stream) = stream else { continue };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            // Drain the HTTP request so the browser doesn't see a reset.
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: text/html; charset=utf-8\r\n\
+                 Content-Length: {}\r\n\
+                 Cache-Control: no-store\r\n\
+                 Connection: close\r\n\r\n",
+                FIXTURE_BODY.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(FIXTURE_BODY);
+        }
+    });
+
+    Some((port, handle))
+}
+
 /// `live_cookies_surfaces_js_readable_cookie`:
-/// Navigate to a fixture page that sets `document.cookie = "probe=1"` from
-/// JS, then assert that `ff-rdp cookies --include-document-cookie` surfaces
-/// a cookie named `"probe"` in its results.
+/// Serve a fixture page that sets `document.cookie = "probe=1"` from JS
+/// on a real `http://127.0.0.1` origin, navigate Firefox to it, then
+/// assert that `ff-rdp cookies --include-document-cookie` surfaces a
+/// cookie named `"probe"` in its results.
 ///
 /// Gated on `FF_RDP_LIVE_TESTS=1`.
 #[test]
@@ -46,10 +93,19 @@ fn live_cookies_surfaces_js_readable_cookie() {
         return;
     };
 
+    let Some((http_port, _server)) = spawn_fixture_server() else {
+        eprintln!(
+            "live_cookies_surfaces_js_readable_cookie: could not bind HTTP server — skipping"
+        );
+        return;
+    };
+
+    let fixture_url = format!("http://127.0.0.1:{http_port}/");
+
     // Navigate to fixture so the JS cookie is set.
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
-        .args(["navigate", FIXTURE_HTML])
+        .args(["navigate", &fixture_url])
         .output()
         .expect("ff-rdp navigate");
     assert!(
@@ -91,6 +147,18 @@ fn live_cookies_surfaces_js_readable_cookie() {
         has_probe,
         "live_cookies_surfaces_js_readable_cookie: cookie 'probe' not found in results; \
          results={results:?}"
+    );
+
+    // Also assert the entry was surfaced via the document.cookie path.
+    let probe = results
+        .iter()
+        .find(|c| c["name"].as_str().unwrap_or("") == "probe")
+        .expect("probe cookie must exist");
+    assert_eq!(
+        probe["source"].as_str().unwrap_or(""),
+        "document.cookie",
+        "probe cookie must have source 'document.cookie'; got {:?}",
+        probe["source"]
     );
 
     eprintln!(

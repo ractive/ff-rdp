@@ -265,9 +265,18 @@ fn declared_properties(rules: &[AppliedRule]) -> Vec<String> {
 
 /// Shared setup: connect, find the node, fetch its applied rules.
 ///
-/// Returns the connected tab (transport owner) and the applied rules in the
-/// order Firefox returned them.
-fn fetch_applied(cli: &Cli, selector: &str) -> Result<(ConnectedTab, Vec<AppliedRule>), AppError> {
+/// Returns the connected tab (transport owner), the applied rules in the order
+/// Firefox returned them, and — when `capture_raw` is `true` — the raw
+/// `getApplied` reply packet as a `serde_json::Value` (before field-name
+/// mapping).  When `capture_raw` is `false` the third element is `None`.
+///
+/// Capturing the raw reply requires a second RDP round-trip on the same
+/// connection; this is acceptable for the diagnostic `--debug-raw` path.
+fn fetch_applied(
+    cli: &Cli,
+    selector: &str,
+    capture_raw: bool,
+) -> Result<(ConnectedTab, Vec<AppliedRule>, Option<Value>), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
 
     let inspector_actor = ctx
@@ -302,10 +311,21 @@ fn fetch_applied(cli: &Cli, selector: &str) -> Result<(ConnectedTab, Vec<Applied
         .ok_or_else(|| AppError::Internal(anyhow::anyhow!("matched node has no actor ID")))?;
     let node_actor = ActorId::from(node_actor_str);
 
+    // Capture the raw reply BEFORE parsing so --debug-raw shows unmodified field names.
+    // This is a separate RDP round-trip on the same connection.
+    let raw_reply = if capture_raw {
+        Some(
+            PageStyleActor::get_applied_raw(ctx.transport_mut(), &page_style_actor, &node_actor)
+                .map_err(map_cascade_error)?,
+        )
+    } else {
+        None
+    };
+
     let applied = PageStyleActor::get_applied(ctx.transport_mut(), &page_style_actor, &node_actor)
         .map_err(map_cascade_error)?;
 
-    Ok((ctx, applied))
+    Ok((ctx, applied, raw_reply))
 }
 
 /// CLI entry point for `ff-rdp cascade <SEL> [--prop NAME | --all] [--debug-raw]`.
@@ -316,19 +336,16 @@ pub fn run(
     all: bool,
     debug_raw: bool,
 ) -> Result<(), AppError> {
-    let (_ctx, applied) = fetch_applied(cli, selector)?;
+    let (_ctx, applied, raw_reply) = fetch_applied(cli, selector, debug_raw)?;
 
-    if debug_raw {
-        // Emit the raw applied rules to stderr so the caller can inspect field names
-        // without rebuilding. Useful when diagnosing protocol drift.
-        let raw: Vec<serde_json::Value> = applied
-            .iter()
-            .map(|r| serde_json::to_value(r).unwrap_or_default())
-            .collect();
+    if let Some(raw) = raw_reply {
+        // Emit the RAW getApplied reply to stderr BEFORE any conversion.
+        // This shows the actual field names Firefox sends, which is the only
+        // reliable way to diagnose protocol drift (e.g. when a field is renamed
+        // server-side and our parser silently drops it).
         eprintln!(
-            "[cascade --debug-raw] raw getApplied entries ({} rules):\n{}",
-            raw.len(),
-            serde_json::to_string_pretty(&serde_json::Value::Array(raw))
+            "[cascade --debug-raw] raw getApplied reply:\n{}",
+            serde_json::to_string_pretty(&raw)
                 .unwrap_or_else(|e| format!("serialization error: {e}"))
         );
     }

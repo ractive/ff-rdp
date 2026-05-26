@@ -13,8 +13,17 @@ use std::process::Command;
 
 fn main() {
     // Rerun when HEAD or any ref changes (covers new commits and branch switches).
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs/");
+    // Derive the git directory via `git rev-parse --git-dir` so this works in
+    // worktrees (where `.git` is a file, not a directory) and in repos where the
+    // git dir is not at `.git/`.  Fall back to the hardcoded paths if git is
+    // unavailable.
+    if let Some(git_dir) = git_output(&["rev-parse", "--git-dir"]) {
+        println!("cargo:rerun-if-changed={git_dir}/HEAD");
+        println!("cargo:rerun-if-changed={git_dir}/refs/");
+    } else {
+        println!("cargo:rerun-if-changed=.git/HEAD");
+        println!("cargo:rerun-if-changed=.git/refs/");
+    }
     // Env-var-based overrides also trigger a rebuild when they change.
     println!("cargo:rerun-if-env-changed=GIT_COMMIT");
     println!("cargo:rerun-if-env-changed=GIT_COMMIT_DATE");

@@ -108,6 +108,33 @@ impl PageStyleActor {
         parse_computed_properties(computed)
     }
 
+    /// Get the raw `getApplied` reply from Firefox as an uninterpreted JSON value.
+    ///
+    /// This is the diagnostic counterpart to [`Self::get_applied`]: it sends the
+    /// same request but returns the full server response before any field-name
+    /// mapping occurs.  Useful for debugging protocol drift — e.g. when
+    /// `--debug-raw` is passed to `ff-rdp cascade`.
+    ///
+    /// Send: `{"to": pagestyle_actor, "type": "getApplied", "node": node_actor, "inherited": false, "matchedSelectors": true, "filter": "user"}`
+    /// Response: raw `serde_json::Value` of the entire reply packet.
+    pub fn get_applied_raw(
+        transport: &mut RdpTransport,
+        page_style_actor: &ActorId,
+        node_actor: &ActorId,
+    ) -> Result<Value, ProtocolError> {
+        actor_request(
+            transport,
+            page_style_actor.as_ref(),
+            "getApplied",
+            Some(&json!({
+                "node": node_actor.as_ref(),
+                "inherited": false,
+                "matchedSelectors": true,
+                "filter": "user"
+            })),
+        )
+    }
+
     /// Get applied CSS rules for a node.
     ///
     /// Sends `inherited: false`, so inherited CSS rules from ancestor elements are excluded;

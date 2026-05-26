@@ -70,8 +70,9 @@ fn version_mismatch_message() -> String {
         None => "unknown".to_owned(),
     };
     format!(
-        "screenshot actor not advertised by Firefox {observed} root form — see doctor for details. \
-         hint: run `ff-rdp doctor` for the full compatibility report (minimum supported: {COMPATIBLE_FIREFOX_MIN})."
+        "screenshot actor not found in Firefox {observed} root form. \
+         Run `ff-rdp doctor` for the full compatibility report \
+         (minimum supported: {COMPATIBLE_FIREFOX_MIN})."
     )
 }
 

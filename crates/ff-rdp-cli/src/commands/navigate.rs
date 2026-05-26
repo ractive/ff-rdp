@@ -494,7 +494,20 @@ pub fn run_core(
         WindowGlobalTarget::navigate_to(ctx.transport_mut(), &target_actor, url)
             .map_err(AppError::from)?;
         None
+    } else if wait_opts.wait_strategy == WaitStrategy::Readystate {
+        // --wait-strategy readystate: skip the document-event bus entirely.
+        // Sending navigateTo + immediately polling document.readyState avoids
+        // the full event-wait timeout cost that the default Events path pays.
+        WindowGlobalTarget::navigate_to(ctx.transport_mut(), &target_actor, url)
+            .map_err(AppError::from)?;
+        // Theme K: refresh console actor so eval hits the new document.
+        refresh_console_actor(&mut ctx);
+        let ci = wait_for_readystate_complete(&mut ctx, cli.timeout)?;
+        Some(ci)
     } else {
+        // Events or Both strategy: subscribe to document-event resources before
+        // sending navigateTo so we don't miss events that arrive immediately.
+        //
         // Engage the watcher's frame-target subscription BEFORE subscribing
         // to document-event resources.  Per the Firefox watcher contract
         // (devtools/shared/specs/watcher.js + kb/rdp/actors/watcher.md), a
@@ -519,6 +532,10 @@ pub fn run_core(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .subscribe(ctx.transport_mut(), &[ResourceType::DocumentEvent])
             .map_err(|e| AppError::from(anyhow::anyhow!("document-event subscribe: {e:#}")))?;
+
+        // Record the wall-clock instant before sending navigateTo so we can
+        // compute the remaining budget for the Both readystate fallback.
+        let nav_start = Instant::now();
 
         // Send navigateTo raw (not via actor_request) so we don't lose
         // resources-available-array events that arrive before the ack.
@@ -564,25 +581,30 @@ pub fn run_core(
         // wait-text / wait-selector polling) use the configured timeout.
         restore_timeout(ctx.transport_mut(), cli.timeout);
 
-        // Apply wait_strategy: for `both`, if events timed out, try readystate fallback.
-        let result = match (wait_opts.wait_strategy, event_result) {
-            // events (default) or readystate: use whatever the event path returned.
-            (WaitStrategy::Events, r) => r,
-            // readystate: ignore events, use readystate poll.
-            (WaitStrategy::Readystate, _) => {
-                // Theme K: refresh console actor so eval hits the new document.
+        // Apply wait_strategy.  `Readystate` was handled by the early branch
+        // above and never reaches this code.  Only `Events` and `Both` run here.
+        //
+        // For `Both`, if events timed out, fall back to readystate polling with
+        // only the REMAINING budget so we don't re-pay the full timeout.
+        let result = match event_result {
+            r @ Ok(_) => r,
+            Err(e) if wait_opts.wait_strategy != WaitStrategy::Both => Err(e),
+            Err(AppError::Timeout(_)) => {
+                // Events timed out — compute remaining budget and try readystate.
                 refresh_console_actor(&mut ctx);
-                wait_for_readystate_complete(&mut ctx, cli.timeout)
+                let elapsed_ms =
+                    u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(cli.timeout);
+                let remaining = cli.timeout.saturating_sub(elapsed_ms);
+                if remaining == 0 {
+                    Err(AppError::Timeout(format!(
+                        "navigate: timed out after {elapsed_ms}ms waiting for document events \
+                         and no remaining budget for readystate fallback"
+                    )))
+                } else {
+                    wait_for_readystate_complete(&mut ctx, remaining)
+                }
             }
-            // both: if events succeeded, use it; otherwise fall back to readystate.
-            (WaitStrategy::Both, Ok(ci)) => Ok(ci),
-            (WaitStrategy::Both, Err(AppError::Timeout(_))) => {
-                // Events timed out — try readystate within the full budget.
-                // Console actor may need refresh after the timeout.
-                refresh_console_actor(&mut ctx);
-                wait_for_readystate_complete(&mut ctx, cli.timeout)
-            }
-            (WaitStrategy::Both, Err(e)) => Err(e),
+            Err(e) => Err(e),
         };
 
         match result {

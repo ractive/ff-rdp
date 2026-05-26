@@ -2,7 +2,7 @@
 //!
 //! Loads a data URL with `<style>h1 { color: red }</style><h1>x</h1>`,
 //! runs `ff-rdp cascade h1 --prop color`, and asserts:
-//!   - `rules[].matched_selectors` contains `"h1"`
+//!   - `rules[].selector` is the string `"h1"`
 //!   - `computed == "rgb(255, 0, 0)"`
 //!
 //! # Running
@@ -88,20 +88,19 @@ fn live_cascade_returns_matched_rules() {
         "cascade computed must be 'rgb(255, 0, 0)'; got {computed:?}"
     );
 
-    // At least one rule must have a matched selector containing "h1".
+    // At least one rule must have a selector of "h1".
+    // CascadeEntry::to_json outputs `selector` (a string), not `matched_selectors`.
     let rules = entry["rules"].as_array().expect("rules must be an array");
     assert!(
         !rules.is_empty(),
         "live_cascade_returns_matched_rules: rules array must not be empty; got {entry}"
     );
-    let has_h1_selector = rules.iter().any(|r| {
-        r["matched_selectors"]
-            .as_array()
-            .is_some_and(|arr| arr.iter().any(|s| s.as_str().unwrap_or("") == "h1"))
-    });
+    let has_h1_selector = rules
+        .iter()
+        .any(|r| r["selector"].as_str().unwrap_or("") == "h1");
     assert!(
         has_h1_selector,
-        "live_cascade_returns_matched_rules: no rule has matched_selector 'h1'; rules={rules:?}"
+        "live_cascade_returns_matched_rules: no rule has selector 'h1'; rules={rules:?}"
     );
 
     eprintln!("live_cascade_returns_matched_rules: PASS — computed={computed:?}");

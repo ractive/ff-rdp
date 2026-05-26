@@ -1039,7 +1039,7 @@ Output: {\"results\": {\"tag\": \"HTML\", \"children\": [...], ...}, \"total\": 
         #[arg(long, default_value_t = 6)]
         depth: u32,
         /// Maximum tree depth to traverse (alias for --depth, matches `dom tree --max-depth` / CDP convention).
-        /// Overrides --depth when both are set. Must be ≥ 1.
+        /// Mutually exclusive with --depth. Must be ≥ 1.
         #[arg(long, value_name = "N", conflicts_with = "depth")]
         max_depth: Option<u32>,
         /// Maximum total characters of text content to include (default: 50000)

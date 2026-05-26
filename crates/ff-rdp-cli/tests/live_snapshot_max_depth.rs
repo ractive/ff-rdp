@@ -3,7 +3,7 @@
 //! Runs `ff-rdp snapshot --max-depth 2` on a nested fixture page (4 levels
 //! deep) and asserts:
 //!   - The returned tree has no nodes deeper than 2.
-//!   - `meta.depth == 2` (or the depth field reflects the limit).
+//!   - `meta.depth == 2`.
 //!
 //! # Running
 //!
@@ -100,7 +100,14 @@ fn live_snapshot_max_depth_truncates_tree() {
         actual_depth <= 2,
         "snapshot_max_depth_truncates_tree: tree depth {actual_depth} exceeds --max-depth 2; \
          first 200 chars of output: {}",
-        &stdout[..stdout.len().min(200)]
+        stdout.chars().take(200).collect::<String>()
+    );
+
+    // meta.depth must reflect the limit passed via --max-depth.
+    let meta_depth = json["meta"]["depth"].as_u64().unwrap_or(u64::MAX);
+    assert_eq!(
+        meta_depth, 2,
+        "snapshot_max_depth_truncates_tree: meta.depth must be 2; got {meta_depth}"
     );
 
     eprintln!("snapshot_max_depth_truncates_tree: PASS — max depth in tree = {actual_depth}");
