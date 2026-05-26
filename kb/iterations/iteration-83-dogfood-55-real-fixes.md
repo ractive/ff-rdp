@@ -177,11 +177,17 @@ real failure mode, and they're never required to actually pass.**
       Then assert PNG IHDR magic + non-zero height.
 
 ### Theme C — fix the default `navigate` path (don't require a flag)
-- [x] Diagnose the `both` budget bug: today, `--wait-strategy both` exhausts
+- [ ] Diagnose the `both` budget bug: today, `--wait-strategy both` exhausts
       the entire 10s budget waiting for events, then errors with "no
       remaining budget for readystate fallback".  Allocate ~70% of the
       budget to events and reserve the remainder for the readystate poll;
       or start the readystate poll *concurrently* and return on first.
+      **DEFERRED to iter-84**: a 7500/9000ms slice of `cli.timeout` for
+      events was attempted in the PR-review pass but caused
+      `live_screenshot_full_page` to regress (screenshot actor not found
+      in root form after navigate) for reasons that still need
+      investigation.  The Copilot review on PR #120 flagged this; tracking
+      as follow-up rather than shipping a regression.
 - [x] Once `both` works reliably, **make `both` the default** (with the
       existing `events` and `readystate` still available as opt-ins).
       This is the only change that fixes the real-world UX.
