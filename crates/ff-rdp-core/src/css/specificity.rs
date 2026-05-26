@@ -129,16 +129,14 @@ fn is_special_functional_pseudo(name: &str) -> bool {
 /// contributes nothing).  `:where(...)` is always zero.  Anything else
 /// is already counted as a plain pseudo-class by the caller.
 fn apply_functional_pseudo(name: &str, inside: &str, a: &mut u32, b: &mut u32, c: &mut u32) {
-    match name.to_ascii_lowercase().as_str() {
-        "where" => { /* contributes nothing */ }
-        "is" | "not" | "has" => {
-            let max = max_specificity_in_list(inside);
-            *a += max.0;
-            *b += max.1;
-            *c += max.2;
-        }
-        _ => { /* already counted as a pseudo-class at the call site */ }
+    if matches!(name.to_ascii_lowercase().as_str(), "is" | "not" | "has") {
+        let max = max_specificity_in_list(inside);
+        *a += max.0;
+        *b += max.1;
+        *c += max.2;
     }
+    // `:where(...)` and any other name contribute nothing here;
+    // the call site already handled the pseudo-class count.
 }
 
 /// Return the maximum specificity across a comma-separated selector list.

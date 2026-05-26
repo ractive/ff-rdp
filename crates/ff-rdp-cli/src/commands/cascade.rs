@@ -537,9 +537,9 @@ mod tests {
                         "href": "https://example.com/pico.css",
                         "line": 88,
                         "column": 1,
-                        "selectors": ["dialog"],
-                        "matchedSelectors": ["dialog"]
+                        "selectors": ["dialog"]
                     },
+                    "matchedSelectorIndexes": [0],
                     "declarations": [
                         {"name": "display", "value": "block", "priority": ""}
                     ]
@@ -550,9 +550,9 @@ mod tests {
                         "href": "https://example.com/site.css",
                         "line": 142,
                         "column": 1,
-                        "selectors": ["dialog#lightbox"],
-                        "matchedSelectors": ["dialog#lightbox"]
+                        "selectors": ["dialog#lightbox"]
                     },
+                    "matchedSelectorIndexes": [0],
                     "declarations": [
                         {"name": "display", "value": "flex", "priority": ""}
                     ]
@@ -582,12 +582,17 @@ mod tests {
                 .iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect();
-            let matched_selectors: Vec<String> = rule
-                .get("matchedSelectors")
+            // Mirrors the spec parse: matchedSelectorIndexes on the entry
+            // resolved against rule.selectors.
+            let matched_selectors: Vec<String> = entry
+                .get("matchedSelectorIndexes")
                 .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
+                .map(|idxs| {
+                    idxs.iter()
+                        .filter_map(|v| {
+                            let i = usize::try_from(v.as_u64()?).ok()?;
+                            selectors.get(i).cloned()
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
