@@ -732,9 +732,13 @@ fn dispatch_inner(
             }
         }
         Command::Cookies {
-            name,
-            include_document_cookie,
-        } => commands::cookies::run(cli, name.as_deref(), *include_document_cookie),
+            name, storage_only, ..
+        } => {
+            // Theme D (iter-83): include document.cookie by default; `--storage-only` opts out.
+            // `--include-document-cookie` is kept as a hidden accepted flag for backward compat
+            // but is a no-op now that the behavior is the default.
+            commands::cookies::run(cli, name.as_deref(), !storage_only)
+        }
         Command::Storage { storage_type, key } => {
             commands::storage::run(cli, storage_type, key.as_deref())
         }

@@ -52,13 +52,13 @@ pub enum WaitLevel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum WaitStrategy {
-    /// Wait for Firefox document-event resources (dom-complete). Default.
-    #[default]
+    /// Wait for Firefox document-event resources (dom-complete).
     Events,
     /// Poll `document.readyState == "complete"` until timeout.
     Readystate,
     /// Try events first; if they time out, fall back to readystate polling
-    /// within the remaining budget.
+    /// within the remaining budget. Default.
+    #[default]
     Both,
 }
 

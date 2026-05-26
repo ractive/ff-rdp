@@ -1,11 +1,9 @@
 //! iter-82 AC: `live_navigate_dom_complete_within_default_timeout`.
+//! iter-83 AC: `live_navigate_default_completes_within_timeout`.
 //!
-//! Navigates to a local HTTP fixture page that emits a 200ms delayed script
-//! (simulating a slow SPA) and asserts the `navigate --wait-strategy both`
-//! call returns within the default 10s budget with `ready_state == "complete"`.
-//!
-//! This validates Theme C: when events time out, the `both` strategy falls
-//! back to polling `document.readyState` and succeeds.
+//! Navigates to a local data URL fixture page and asserts navigate completes
+//! within the default 10s budget with `ready_state == "complete"` when
+//! NO `--wait-strategy` flag is passed (the default changed to `both` in iter-83).
 //!
 //! # Running
 //!
@@ -50,6 +48,7 @@ fn live_navigate_dom_complete_within_default_timeout() {
     };
 
     let mut args = base_args(ff.port());
+    // Explicitly pass --wait-strategy both for backward compat of this test name.
     args.extend([
         "navigate".to_owned(),
         FIXTURE_URL.to_owned(),
@@ -100,6 +99,80 @@ fn live_navigate_dom_complete_within_default_timeout() {
 
     eprintln!(
         "live_navigate_dom_complete_within_default_timeout: PASS — \
+         completed in {elapsed:?}, ready_state={ready_state:?}"
+    );
+}
+
+/// `live_navigate_default_completes_within_timeout` (iter-83 AC):
+///
+/// Navigate to the fixture with NO `--wait-strategy` flag and assert the
+/// default (now `both` as of iter-83) completes within 10s with
+/// `ready_state == "complete"`.  This is the key regression test: if the
+/// default was still `events` the test would still pass, but if the `both`
+/// budget-allocation bug was present the test would time out or error.
+///
+/// Gated on `FF_RDP_LIVE_TESTS=1`.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_navigate_default_completes_within_timeout() {
+    if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
+        eprintln!("live_navigate_default_completes_within_timeout: set FF_RDP_LIVE_TESTS=1 to run");
+        return;
+    }
+
+    let Some(ff) = LiveFirefox::headless_on_random_port() else {
+        eprintln!(
+            "live_navigate_default_completes_within_timeout: Firefox not available — skipping"
+        );
+        return;
+    };
+
+    // NO --wait-strategy flag — uses the default (both).
+    let mut args = base_args(ff.port());
+    args.extend(["navigate".to_owned(), FIXTURE_URL.to_owned()]);
+
+    let start = std::time::Instant::now();
+    let output = Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp navigate");
+    let elapsed = start.elapsed();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "live_navigate_default_completes_within_timeout: ff-rdp navigate must exit 0.\n\
+         status={:?}\nstdout={stdout}\nstderr={stderr}",
+        output.status,
+    );
+
+    assert!(
+        elapsed.as_secs() < 10,
+        "live_navigate_default_completes_within_timeout: navigate took {elapsed:?} \
+         which exceeds the 10s default budget"
+    );
+
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!(
+            "live_navigate_default_completes_within_timeout: output is not valid JSON: \
+             {e}\nstdout={stdout}\nstderr={stderr}"
+        )
+    });
+
+    let ready_state = json["results"]["ready_state"]
+        .as_str()
+        .or_else(|| json["ready_state"].as_str())
+        .unwrap_or_default();
+    assert_eq!(
+        ready_state, "complete",
+        "live_navigate_default_completes_within_timeout: expected \
+         ready_state=complete, got {ready_state:?}; full json={json}"
+    );
+
+    eprintln!(
+        "live_navigate_default_completes_within_timeout: PASS — \
          completed in {elapsed:?}, ready_state={ready_state:?}"
     );
 }

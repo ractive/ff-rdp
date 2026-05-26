@@ -124,10 +124,11 @@ pub fn run_applied(cli: &Cli, selector: &str) -> Result<(), AppError> {
 
     let mut items: Vec<Value> = applied
         .iter()
-        // N6: drop entries with no declarations when --applied is the only mode.
-        // UA-reset stubs (e.g. `*, ::after, ::before { }`) produce noise at the
-        // head of every reply; they carry no declarations so are safe to discard.
-        .filter(|r| !r.properties.is_empty())
+        // N6 / Theme E (iter-83): drop ONLY empty-declaration entries whose selector
+        // matches the UA-reset pattern `*, ::after, ::before`.  Dropping all empty
+        // entries was too aggressive — real pages can have rules with no declarations
+        // that are still meaningful (e.g. `@media` wrappers serialised as rule stubs).
+        .filter(|r| !is_ua_reset_stub(r))
         .map(|r| serde_json::to_value(r).map_err(|e| AppError::Internal(e.into())))
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -194,6 +195,27 @@ pub fn run_layout(cli: &Cli, selector: &str) -> Result<(), AppError> {
     OutputPipeline::from_cli(cli)?
         .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
+}
+
+/// Returns `true` for UA-reset stub rules that should be filtered from `--applied` output.
+///
+/// A rule is a UA-reset stub when ALL of the following hold:
+///   1. It has no declarations (`properties` is empty).
+///   2. Its selector text contains the UA-reset universal pattern (`*, ::after, ::before`).
+///
+/// Narrowing condition (2) prevents dropping author rules that happen to have no
+/// declarations in a particular reply (e.g. rules inside unmatched `@media` blocks
+/// that Firefox still surfaces with an empty properties list).
+fn is_ua_reset_stub(rule: &ff_rdp_core::AppliedRule) -> bool {
+    if !rule.properties.is_empty() {
+        return false;
+    }
+    // Match on the most common UA-reset selector text patterns.
+    let sel = rule.selector.as_str();
+    sel.contains("*, ::after, ::before")
+        || sel.contains("*,::after,::before")
+        || sel == "*"
+        || (sel.contains('*') && sel.contains("::before") && sel.contains("::after"))
 }
 
 /// Map actor errors to user-friendly messages.
@@ -330,10 +352,12 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // N6: styles_applied_dedupes_empty_ua_stubs
+    // N6 / Theme E (iter-83): styles_applied_dedupes_empty_ua_stubs
     //
-    // When `--applied` is the only mode, rules with no declarations (the UA-reset
-    // stubs like `*, ::after, ::before {}`) must be dropped.
+    // When `--applied` is used, UA-reset stubs (`*, ::after, ::before {}`) must
+    // be dropped, but author rules with non-empty properties must survive.
+    // The narrowed filter (iter-83 Theme E) must NOT drop empty-properties entries
+    // whose selector doesn't match the UA-reset pattern.
     // ---------------------------------------------------------------------------
 
     #[test]
@@ -384,16 +408,42 @@ mod tests {
             },
         ];
 
-        // Replicate the filter logic from run_applied.
-        let non_empty: Vec<&AppliedRule> =
-            rules.iter().filter(|r| !r.properties.is_empty()).collect();
+        // Replicate the filter logic from run_applied (narrowed in iter-83 Theme E).
+        let filtered: Vec<&AppliedRule> = rules.iter().filter(|r| !is_ua_reset_stub(r)).collect();
 
         // All three UA stubs must be dropped; only the author rule remains.
         assert_eq!(
-            non_empty.len(),
+            filtered.len(),
             1,
-            "should have dropped the 3 empty UA stubs"
+            "should have dropped the 3 empty UA stubs, got {filtered:?}"
         );
-        assert_eq!(non_empty[0].selector, "h1");
+        assert_eq!(filtered[0].selector, "h1");
+        assert!(
+            !filtered[0].properties.is_empty(),
+            "surviving rule must have non-empty properties"
+        );
+    }
+
+    /// Theme E (iter-83): an author rule with EMPTY properties whose selector does NOT
+    /// match the UA-reset pattern must NOT be dropped.
+    #[test]
+    fn styles_applied_keeps_non_ua_empty_rules() {
+        use ff_rdp_core::AppliedRule;
+
+        // An empty-properties rule with a non-UA selector (e.g. an @media stub).
+        let media_stub = AppliedRule {
+            selector: "h2".to_owned(),
+            source: Some("https://example.com/style.css".to_owned()),
+            line: Some(10),
+            column: Some(1),
+            properties: vec![],
+            matched_selectors: vec![],
+            media: vec!["(max-width: 600px)".to_owned()],
+        };
+        // Must NOT be treated as a UA-reset stub.
+        assert!(
+            !is_ua_reset_stub(&media_stub),
+            "non-UA empty rule must not be treated as a UA-reset stub"
+        );
     }
 }
