@@ -2,28 +2,39 @@
 title: "Iteration 81: Cascade inspector — explain why a CSS property wins for an element"
 type: iteration
 date: 2026-05-25
-status: in-progress
+status: done
 branch: iter-81/cascade-inspector
 depends_on:
   - iteration-77-spec-drift-and-windows-reparse-points
 firefox_refs:
-  - path: devtools/server/actors/page-style.js
-    lines: "1-400"
-    why: "PageStyle.getMatchedSelectors / getApplied — returns the ordered list of CSS rules that match an element, plus origin (UA / user / author), media, and parent stylesheet.  This is the backbone of the cascade view."
-  - path: devtools/server/actors/style-rule.js
-    lines: "1-150"
-    why: "StyleRuleActor — represents a single CSS rule (selector text, declarations, stylesheet, line).  Needed to render per-rule output."
-  - path: devtools/shared/specs/page-style.js
-    lines: "1-120"
-    why: "PageStyle spec — confirms the request/response shape for getMatchedSelectors and getApplied; required for an actor binding."
+  - lines: 1-400
+    path: devtools/server/actors/page-style.js
+    why: >-
+      PageStyle.getMatchedSelectors / getApplied — returns the ordered list of CSS
+      rules that match an element, plus origin (UA / user / author), media, and parent
+      stylesheet.  This is the backbone of the cascade view.
+  - lines: 1-150
+    path: devtools/server/actors/style-rule.js
+    why: >-
+      StyleRuleActor — represents a single CSS rule (selector text, declarations,
+      stylesheet, line).  Needed to render per-rule output.
+  - lines: 1-120
+    path: devtools/shared/specs/page-style.js
+    why: >-
+      PageStyle spec — confirms the request/response shape for getMatchedSelectors
+      and getApplied; required for an actor binding.
 kb_refs:
   - kb/rdp/actors/styles.md
   - kb/rdp/from-our-codebase/open-gaps.md
 first_call_sites:
-  - primitive: "ff_rdp_core::actors::page_style::PageStyleActor"
-    site: "crates/ff-rdp-cli/src/commands/cascade.rs (issues getMatchedSelectors per element)"
-  - primitive: "ff_rdp_core::css::specificity::compute"
-    site: "crates/ff-rdp-cli/src/commands/cascade.rs (ranks the matched rules for the winner-explanation column)"
+  - primitive: ff_rdp_core::actors::page_style::PageStyleActor
+    site: >-
+      crates/ff-rdp-cli/src/commands/cascade.rs (issues getMatchedSelectors per
+      element)
+  - primitive: ff_rdp_core::css::specificity::compute
+    site: >-
+      crates/ff-rdp-cli/src/commands/cascade.rs (ranks the matched rules for the
+      winner-explanation column)
 dogfood_path: |
   ff-rdp launch --auto-consent --headless
   ff-rdp navigate https://example.com
@@ -33,7 +44,11 @@ dogfood_path: |
   # selector, specificity, origin, stylesheet:line, declaration value,
   # and a final `winner: true` on the rule whose declaration was used.
   pkill -f 'firefox.*ff-rdp-profile'
-tags: [iteration, css, page-style, feature]
+tags:
+  - iteration
+  - css
+  - page-style
+  - feature
 ---
 
 Killer-feature ask from the 2026-05-25 dogfooding report.  The current
