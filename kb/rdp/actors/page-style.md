@@ -27,6 +27,7 @@ Computed styles, matched rules, font usage, layout boxes. Spawned by the Inspect
 | `getComputed(node, {markMatched, onlyMatched, clearCache, filter, filterProperties})` | `{computed: json}` — full computed style map. |
 | `getMatchedSelectors(node, property, {filter})` | `{rules, matched}` |
 | `getApplied(node, {inherited, matchedSelectors, skipPseudo, filter})` | `appliedStylesReturn` — full cascade with inherited rules. |
+| `getApplied`-raw (ff-rdp `get_applied_raw`, iter-82) | Same `getApplied` request as above, but returns the *uninterpreted* reply as `serde_json::Value`. Backs the `ff-rdp cascade --debug-raw` escape hatch added in iter-82 so protocol-shape drift can be diagnosed without a rebuild. |
 | `getRule(ruleId)` | `domstylerule` |
 | `getLayout(node, …)` | box-model values (margin/border/padding/content + position). |
 | `isPositionEditable(node)` | bool |
