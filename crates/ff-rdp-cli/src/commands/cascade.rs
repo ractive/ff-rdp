@@ -33,6 +33,7 @@ enum Origin {
     #[allow(dead_code)] // distinguishing user-stylesheet origin is future work
     User,
     Author,
+    #[allow(dead_code)] // Inline style="…" entries are filtered by the actor today; variant kept for future support.
     Inline,
 }
 
@@ -50,12 +51,13 @@ impl Origin {
 /// Classify a rule by its stylesheet href.
 ///
 /// Firefox sends UA sheets with a `resource://` or `chrome://` prefix.
-/// Inline `style="…"` rules have no href.  Everything else is treated as
-/// an author rule.  This is a heuristic; full origin info would require
-/// querying each parent stylesheet separately (out of scope for iter-81).
+/// `<style>` blocks embedded in the document have no href but are still
+/// author-origin rules.  True inline `style="…"` declarations (rule
+/// `type == 0` in the RDP response) are filtered out by the actor
+/// parser today, so we never see them here — the `Origin::Inline`
+/// variant is reserved for when that parsing is extended.
 fn classify_origin(source: Option<&str>) -> Origin {
     match source {
-        None | Some("") => Origin::Inline,
         Some(href)
             if href.starts_with("resource://")
                 || href.starts_with("chrome://")
@@ -63,6 +65,7 @@ fn classify_origin(source: Option<&str>) -> Origin {
         {
             Origin::UserAgent
         }
+        // `None` or empty href → `<style>` block (author origin).
         _ => Origin::Author,
     }
 }
@@ -114,18 +117,25 @@ impl CascadeEntry {
 fn cascade_rank(e: &CascadeEntry) -> (u8, u8, Specificity, usize) {
     // Importance tier: 1 if important, 0 otherwise — important always beats normal.
     let importance = u8::from(e.important);
-    // Origin tier within the group. For normal: Inline(3) > Author(2) > User(1) > UA(0).
-    // For important: UA(3) > User(2) > Author(1) > Inline(0) — flip the order.
-    let normal_rank = match e.origin {
-        Origin::UserAgent => 0,
-        Origin::User => 1,
-        Origin::Author => 2,
-        Origin::Inline => 3,
-    };
+    // Origin tier within the group.
+    //   Normal:    Inline(4) > Author(3) > User(2) > UA(1)
+    //   Important: UA(4) > User(3) > Author(2) ≈ Inline(2)
+    // Inline declarations belong to the author origin in the cascade; when
+    // !important they keep the same tier as other author rules (and win
+    // ties via their higher specificity in practice).
     let origin_rank = if e.important {
-        3 - normal_rank
+        match e.origin {
+            Origin::UserAgent => 4,
+            Origin::User => 3,
+            Origin::Author | Origin::Inline => 2,
+        }
     } else {
-        normal_rank
+        match e.origin {
+            Origin::UserAgent => 1,
+            Origin::User => 2,
+            Origin::Author => 3,
+            Origin::Inline => 4,
+        }
     };
     (importance, origin_rank, e.specificity, e.source_order)
 }
@@ -141,7 +151,12 @@ fn cascade_rank(e: &CascadeEntry) -> (u8, u8, Specificity, usize) {
 /// were returned (older Firefox or non-matching mode).
 fn pick_selector(rule: &AppliedRule) -> (String, Specificity) {
     let candidates: Vec<&str> = if rule.matched_selectors.is_empty() {
-        rule.selector.split(',').map(str::trim).collect()
+        // Split on top-level commas only — naive `split(',')` would
+        // shred selectors like `:is(.a, .b)` into invalid fragments.
+        specificity::split_top_level_commas(&rule.selector)
+            .into_iter()
+            .map(str::trim)
+            .collect()
     } else {
         rule.matched_selectors.iter().map(String::as_str).collect()
     };
@@ -166,9 +181,10 @@ fn build_cascade_for_property(rules: &[AppliedRule], property: &str) -> Vec<Casc
             let origin = classify_origin(rule.source.as_deref());
             // A rule may legitimately declare the same property twice (later wins
             // within the rule); we keep each declaration as a separate row.
+            // Custom properties (--foo) are case-sensitive; standard properties are not.
             rule.properties
                 .iter()
-                .filter(|p| p.name.eq_ignore_ascii_case(property))
+                .filter(|p| property_name_matches(&p.name, property))
                 .map(move |p| CascadeEntry {
                     selector: sel.clone(),
                     specificity: spec,
@@ -211,12 +227,36 @@ fn render_property_cascade(selector: &str, property: &str, rules: &[AppliedRule]
     })
 }
 
+/// True if `decl_name` matches `query` under CSS property-name rules.
+///
+/// Standard CSS property names are ASCII-case-insensitive.  CSS custom
+/// properties (any name starting with `--`) are case-sensitive per
+/// CSS Variables — `--Foo` and `--foo` are distinct properties.
+fn property_name_matches(decl_name: &str, query: &str) -> bool {
+    if is_custom_property(decl_name) || is_custom_property(query) {
+        decl_name == query
+    } else {
+        decl_name.eq_ignore_ascii_case(query)
+    }
+}
+
+fn is_custom_property(name: &str) -> bool {
+    name.starts_with("--")
+}
+
 /// Set of properties declared anywhere in the applied rules.
+///
+/// Standard property names are normalized to lowercase; custom properties
+/// (`--foo`) keep their original casing because they are case-sensitive.
 fn declared_properties(rules: &[AppliedRule]) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
     for rule in rules {
         for prop in &rule.properties {
-            seen.insert(prop.name.to_ascii_lowercase());
+            if is_custom_property(&prop.name) {
+                seen.insert(prop.name.clone());
+            } else {
+                seen.insert(prop.name.to_ascii_lowercase());
+            }
         }
     }
     seen.into_iter().collect()
@@ -273,6 +313,7 @@ pub fn run(cli: &Cli, selector: &str, prop: Option<&str>, all: bool) -> Result<(
 
     let _ = all; // --all is the default; flag is accepted for clarity.
     let properties: Vec<String> = match prop {
+        Some(name) if is_custom_property(name) => vec![name.to_string()],
         Some(name) => vec![name.to_ascii_lowercase()],
         None => declared_properties(&applied),
     };
@@ -439,10 +480,13 @@ mod tests {
     }
 
     #[test]
-    fn cascade_classifies_inline_and_ua_origins() {
-        // Inline (no href).
-        let inline = rule("dialog", None, 0, &[("color", "red", "")]);
-        assert_eq!(classify_origin(inline.source.as_deref()), Origin::Inline);
+    fn cascade_classifies_origins() {
+        // <style> block (no href) → author.
+        let style_block = rule("dialog", None, 0, &[("color", "red", "")]);
+        assert_eq!(
+            classify_origin(style_block.source.as_deref()),
+            Origin::Author
+        );
         // UA stylesheet.
         assert_eq!(
             classify_origin(Some("resource://gre-resources/ua.css")),
@@ -452,13 +496,92 @@ mod tests {
             classify_origin(Some("chrome://global/skin/global.css")),
             Origin::UserAgent
         );
-        // Author.
+        // External author sheet.
         assert_eq!(
             classify_origin(Some("https://example.com/site.css")),
             Origin::Author
         );
-        // Empty href → inline.
-        assert_eq!(classify_origin(Some("")), Origin::Inline);
+        // Empty href → author (<style> block, not style attribute — the
+        // actor filters style="…" entries out before they reach us).
+        assert_eq!(classify_origin(Some("")), Origin::Author);
+    }
+
+    #[test]
+    fn cascade_custom_property_is_case_sensitive() {
+        // --Foo and --foo are distinct custom properties.
+        let rules = vec![rule(
+            ":root",
+            Some("https://example.com/site.css"),
+            1,
+            &[("--Foo", "1px", ""), ("--foo", "2px", "")],
+        )];
+        // Querying lower-case `--foo` must NOT pick up `--Foo`.
+        let out = render_property_cascade(":root", "--foo", &rules);
+        assert_eq!(out["computed"], "2px");
+        let arr = out["rules"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["value"], "2px");
+    }
+
+    #[test]
+    fn cascade_pick_selector_handles_commas_in_functional_pseudos() {
+        // Selector text `:is(.a, .b)` with no matchedSelectors must not be
+        // shredded by a naive split(',').  The whole selector is treated
+        // as one candidate, so specificity comes from the max inside :is().
+        let mut r = rule(
+            ":is(.a, .b)",
+            Some("https://example.com/site.css"),
+            1,
+            &[("color", "red", "")],
+        );
+        r.matched_selectors = vec![]; // force the fallback path
+        let out = render_property_cascade(".a", "color", &[r]);
+        let arr = out["rules"].as_array().unwrap();
+        // :is(.a, .b) → (0,1,0); a naive split would have produced
+        // ":is(.a" with specificity (0,1,0) too but with a broken
+        // selector string — we check the selector text is preserved.
+        assert_eq!(arr[0]["selector"], ":is(.a, .b)");
+        assert_eq!(arr[0]["specificity"], json!([0, 1, 0]));
+    }
+
+    #[test]
+    fn cascade_inline_important_keeps_author_tier() {
+        // An inline-origin !important must NOT be demoted below author
+        // !important.  Equal specificity → document order breaks the tie
+        // (here: same source_order=0 for both, but the inline rule's
+        // higher implicit specificity would win in practice).
+        // This test asserts that Origin::Inline + important does not sink
+        // to the lowest origin rank.
+        let inline_important = CascadeEntry {
+            selector: "dialog".into(),
+            specificity: (0, 0, 1),
+            origin: Origin::Inline,
+            media: vec![],
+            stylesheet: None,
+            line: None,
+            value: "block".into(),
+            important: true,
+            source_order: 0,
+        };
+        let ua_normal = CascadeEntry {
+            specificity: (1, 0, 0),
+            origin: Origin::UserAgent,
+            important: false,
+            ..inline_important.clone()
+        };
+        // Inline-important must rank higher than UA-normal (different
+        // importance tiers).
+        assert!(cascade_rank(&inline_important) > cascade_rank(&ua_normal));
+        // And not below author-important (author-important should equal
+        // or tie inline-important on the origin axis).
+        let author_important = CascadeEntry {
+            origin: Origin::Author,
+            ..inline_important.clone()
+        };
+        // Both should land in the same origin rank for important.
+        let (_, r1, _, _) = cascade_rank(&inline_important);
+        let (_, r2, _, _) = cascade_rank(&author_important);
+        assert_eq!(r1, r2);
     }
 
     #[test]

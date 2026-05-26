@@ -61,8 +61,11 @@ pub fn compute(selector: &str) -> Specificity {
             }
             b':' => {
                 // Single colon = pseudo-class (b), double colon = pseudo-element (c).
-                let is_pseudo_element = bytes.get(i + 1) == Some(&b':');
-                if is_pseudo_element {
+                // CSS2 legacy single-colon pseudo-elements (:before, :after,
+                // :first-line, :first-letter) count as pseudo-elements even
+                // though they're written with one colon.
+                let double_colon = bytes.get(i + 1) == Some(&b':');
+                if double_colon {
                     i += 2;
                 } else {
                     i += 1;
@@ -70,6 +73,7 @@ pub fn compute(selector: &str) -> Specificity {
                 let name_len = skip_ident(&bytes[i..]);
                 let name = std::str::from_utf8(&bytes[i..i + name_len]).unwrap_or("");
                 i += name_len;
+                let is_pseudo_element = double_colon || is_legacy_pseudo_element(name);
 
                 // Count the pseudo itself.  Pseudo-element → c, pseudo-class → b
                 // (the special-case functional pseudo-classes below may override or
@@ -109,6 +113,16 @@ pub fn compute(selector: &str) -> Specificity {
     }
 
     (a, b, c)
+}
+
+/// CSS2-era pseudo-elements (`:before`, `:after`, `:first-line`,
+/// `:first-letter`) are still accepted with a single colon and count as
+/// pseudo-elements for specificity (contributing to `c`, not `b`).
+fn is_legacy_pseudo_element(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "before" | "after" | "first-line" | "first-letter"
+    )
 }
 
 /// True when `:name(...)` has the special "max specificity in argument list"
@@ -151,25 +165,44 @@ fn max_specificity_in_list(list: &str) -> Specificity {
     best
 }
 
-/// Split a string on top-level `,` (not inside parens or brackets).
-fn split_top_level_commas(s: &str) -> Vec<&str> {
+/// Split a string on top-level `,` (not inside parens, brackets, or quoted strings).
+///
+/// Handles `'…'` and `"…"` string literals so a comma inside an attribute
+/// value like `[data-x="a, b"]` does not cause a split.  Backslash escapes
+/// inside the quoted string are honored.
+pub fn split_top_level_commas(s: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut depth_paren = 0i32;
     let mut depth_bracket = 0i32;
+    let mut in_quote: Option<u8> = None;
     let bytes = s.as_bytes();
     let mut start = 0;
-    for (i, &ch) in bytes.iter().enumerate() {
-        match ch {
-            b'(' => depth_paren += 1,
-            b')' => depth_paren -= 1,
-            b'[' => depth_bracket += 1,
-            b']' => depth_bracket -= 1,
-            b',' if depth_paren == 0 && depth_bracket == 0 => {
-                out.push(&s[start..i]);
-                start = i + 1;
+    let mut i = 0;
+    while i < bytes.len() {
+        let ch = bytes[i];
+        if let Some(q) = in_quote {
+            if ch == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
             }
-            _ => {}
+            if ch == q {
+                in_quote = None;
+            }
+        } else {
+            match ch {
+                b'"' | b'\'' => in_quote = Some(ch),
+                b'(' => depth_paren += 1,
+                b')' => depth_paren -= 1,
+                b'[' => depth_bracket += 1,
+                b']' => depth_bracket -= 1,
+                b',' if depth_paren == 0 && depth_bracket == 0 => {
+                    out.push(&s[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
         }
+        i += 1;
     }
     out.push(&s[start..]);
     out
@@ -378,6 +411,22 @@ mod tests {
     }
 
     // ----- Ordering / comparison ------------------------------------------------
+
+    #[test]
+    fn legacy_single_colon_pseudo_elements_count_as_c() {
+        // CSS2 syntax — single colon — must still count toward `c`.
+        assert_eq!(compute("p:before"), (0, 0, 2));
+        assert_eq!(compute("p:after"), (0, 0, 2));
+        assert_eq!(compute("p:first-line"), (0, 0, 2));
+        assert_eq!(compute("p:first-letter"), (0, 0, 2));
+    }
+
+    #[test]
+    fn split_top_level_commas_honors_quoted_strings() {
+        // Comma inside an attribute-selector quoted value must not split.
+        let parts = split_top_level_commas(r#"[data-x="a, b"], .c"#);
+        assert_eq!(parts, vec![r#"[data-x="a, b"]"#, " .c"]);
+    }
 
     #[test]
     fn specificity_ordering_uses_tuple_compare() {

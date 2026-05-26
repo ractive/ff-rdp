@@ -69,13 +69,13 @@ whose declaration is the computed value.
           "property": "display",
           "computed": "flex",
           "rules": [
-            {"selector": "dialog#lightbox", "specificity": [1,1,0],
-             "origin": "author", "media": null,
-             "stylesheet": "site.css", "line": 142,
-             "value": "block", "important": false, "winner": false},
             {"selector": "dialog", "specificity": [0,0,1],
              "origin": "author", "media": null,
              "stylesheet": "pico.css", "line": 88,
+             "value": "block", "important": false, "winner": false},
+            {"selector": "dialog#lightbox", "specificity": [1,0,1],
+             "origin": "author", "media": null,
+             "stylesheet": "site.css", "line": 142,
              "value": "flex", "important": false, "winner": true}
           ]
         }],
