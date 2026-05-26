@@ -45,6 +45,7 @@ COMMAND REFERENCE:
   CSS & styles:
     ff-rdp computed <SEL> [--prop NAME | --all]
     ff-rdp styles <SEL> [--properties P1,P2 | --applied | --layout]
+    ff-rdp cascade <SEL> [--prop NAME | --all]    # explain which rule wins
     ff-rdp geometry <SEL>... [--include-hidden]
     ff-rdp responsive <SEL>... [--widths W1,W2,...]
 
@@ -208,11 +209,11 @@ pub enum LogLevel {
 #[derive(Parser)]
 #[command(
     name = "ff-rdp",
-    about = "Firefox Remote Debugging Protocol CLI\n\nCommand groups (see `ff-rdp <cmd> --help` for details):\n  Inspect    dom, styles, computed, a11y, snapshot, page-text, perf\n  Navigate   navigate, reload, click, type, screenshot\n  Trace      console, network, eval\n  Lifecycle  launch, daemon\n\nQuick start:  ff-rdp launch          # start Firefox with debugging enabled\n              ff-rdp navigate <URL>   # open a page",
+    about = "Firefox Remote Debugging Protocol CLI\n\nCommand groups (see `ff-rdp <cmd> --help` for details):\n  Inspect    dom, styles, computed, cascade, a11y, snapshot, page-text, perf\n  Navigate   navigate, reload, click, type, screenshot\n  Trace      console, network, eval\n  Lifecycle  launch, daemon\n\nQuick start:  ff-rdp launch          # start Firefox with debugging enabled\n              ff-rdp navigate <URL>   # open a page",
     long_about = "Firefox Remote Debugging Protocol CLI
 
 Command groups (use `ff-rdp <cmd> --help` for details on any command):
-  Inspect    dom, styles, computed, a11y, snapshot, page-text, perf
+  Inspect    dom, styles, computed, cascade, a11y, snapshot, page-text, perf
   Navigate   navigate, reload, click, type, screenshot
   Trace      console, network, eval
   Lifecycle  launch, daemon
@@ -1137,6 +1138,42 @@ Output (--layout):  {\"results\": [{\"selector\": \"...\", \"box\": {\"margin\":
         /// Comma-separated list of CSS property names to include (computed mode only)
         #[arg(long, value_delimiter = ',', conflicts_with_all = ["applied", "layout"])]
         properties: Option<Vec<String>>,
+    },
+    /// Explain *why* a CSS property has the value it does (cascade view)
+    #[command(
+        long_about = "Show the ordered list of CSS rules that determine a property's value.
+
+For the first element matching SELECTOR, returns each rule that declares the
+property in cascade order, annotated with origin (ua/user/author/inline),
+matched selector specificity, stylesheet:line, declaration value, and an
+!important flag.  The rule whose declaration wins gets `winner: true`.
+
+Output: {\"results\": [{\"selector\": \"...\", \"property\": \"...\", \"computed\": \"...\",
+                       \"rules\": [{...}, {...}]}], \"total\": N, \"meta\": {...}}
+
+Examples:
+  ff-rdp cascade 'dialog#lightbox' --prop display
+  ff-rdp cascade h1 --prop color
+  ff-rdp cascade '.btn'                # all properties declared on the element"
+    )]
+    #[command(group(ArgGroup::new("cascade_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
+    Cascade {
+        /// CSS selector to match the element (positional, or use --selector)
+        #[arg(group = "cascade_target")]
+        selector_pos: Option<String>,
+        /// CSS selector to match the element (flag form)
+        #[arg(long = "selector", value_name = "SELECTOR", group = "cascade_target")]
+        selector_flag: Option<String>,
+        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+        #[arg(long = "ref", value_name = "REF_ID", group = "cascade_target")]
+        ref_id: Option<String>,
+        /// CSS property to explain (e.g. `--prop display`).  Defaults to all
+        /// properties declared on the element.
+        #[arg(long, value_name = "NAME", conflicts_with = "all")]
+        prop: Option<String>,
+        /// Explain every property declared on the element (the default).
+        #[arg(long)]
+        all: bool,
     },
     /// Scroll the page or a specific element
     #[command(long_about = "Scroll the page or a specific element.

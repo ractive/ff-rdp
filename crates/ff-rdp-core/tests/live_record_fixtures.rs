@@ -2422,6 +2422,106 @@ fn live_page_style_get_applied() {
     save_cli_fixture("page_style_get_applied_response.json", &resp);
 }
 
+/// Record a `getApplied` response for the iter-81 cascade inspector.
+///
+/// Loads a `data:` URL whose `<style>` block declares `dialog` with
+/// `display: block` and `dialog#lightbox` with `display: flex`, then
+/// queries the matched applied-rules for the `#lightbox` element.
+/// The recorded fixture is the canonical input shape consumed by the
+/// `ff-rdp cascade` command's unit tests.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_page_style_get_applied_cascade() {
+    if !should_run_live() {
+        return;
+    }
+
+    // Two rules with distinct specificity on `display`, so the cascade
+    // unit tests can assert winner=true on the higher-specificity rule.
+    let html = "data:text/html;charset=utf-8,\
+        <!DOCTYPE html><html><head><style>\
+        dialog{display:block}dialog%23lightbox{display:flex}\
+        </style></head><body><dialog id=\"lightbox\" open>hi</dialog></body></html>";
+
+    {
+        let mut conn = connect();
+        let (target_actor, _console) = setup_target(conn.transport_mut());
+        conn.transport_mut()
+            .send(&json!({
+                "to": &target_actor,
+                "type": "navigateTo",
+                "url": html,
+            }))
+            .expect("send navigateTo");
+        std::thread::sleep(Duration::from_secs(1));
+        drain_messages(conn.transport_mut(), Duration::from_millis(500));
+    }
+
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+    let inspector_actor = get_inspector_actor(transport);
+
+    transport
+        .send(&json!({"to": &inspector_actor, "type": "getWalker"}))
+        .expect("send getWalker");
+    let walker_resp = recv_from_actor(transport, &inspector_actor);
+    let walker_actor = walker_resp["walker"]["actor"]
+        .as_str()
+        .expect("walker actor")
+        .to_owned();
+
+    transport
+        .send(&json!({"to": &inspector_actor, "type": "getPageStyle"}))
+        .expect("send getPageStyle");
+    let page_style_resp = recv_from_actor(transport, &inspector_actor);
+    let page_style_actor = page_style_resp["pageStyle"]["actor"]
+        .as_str()
+        .expect("pageStyle actor")
+        .to_owned();
+
+    transport
+        .send(&json!({"to": &walker_actor, "type": "documentElement"}))
+        .expect("send documentElement");
+    let root_resp = recv_from_actor(transport, &walker_actor);
+    let root_node_actor = root_resp["node"]["actor"]
+        .as_str()
+        .expect("root node actor")
+        .to_owned();
+
+    transport
+        .send(&json!({
+            "to": &walker_actor,
+            "type": "querySelector",
+            "node": &root_node_actor,
+            "selector": "dialog#lightbox",
+        }))
+        .expect("send querySelector");
+    let resp = recv_from_actor(transport, &walker_actor);
+    let node_actor = resp["node"]["actor"]
+        .as_str()
+        .expect("dialog#lightbox actor")
+        .to_owned();
+
+    transport
+        .send(&json!({
+            "to": &page_style_actor,
+            "type": "getApplied",
+            "node": &node_actor,
+            "inherited": false,
+            "matchedSelectors": true,
+            "filter": "user",
+        }))
+        .expect("send getApplied");
+    let resp = recv_from_actor(transport, &page_style_actor);
+
+    assert!(
+        resp.get("entries").and_then(Value::as_array).is_some(),
+        "getApplied must return an entries array: {resp:#}"
+    );
+
+    save_cli_fixture("page_style_get_applied_cascade_response.json", &resp);
+}
+
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_page_style_get_layout() {

@@ -38,6 +38,17 @@ pub struct AppliedRule {
     pub column: Option<u32>,
     /// CSS declarations in this rule.
     pub properties: Vec<RuleProperty>,
+    /// The subset of the rule's selectors that actually matched the node.
+    ///
+    /// Populated by `getApplied` when `matchedSelectors: true` is sent.
+    /// Empty when Firefox omits the field (older versions or non-matching mode).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched_selectors: Vec<String>,
+    /// Media query text(s) wrapping the rule (e.g. `"(max-width: 600px)"`).
+    ///
+    /// Empty when the rule is not inside an `@media` block.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<String>,
 }
 
 /// The four sides of a CSS box model dimension.
@@ -242,12 +253,51 @@ fn parse_applied_entry(entry: &Value) -> Option<AppliedRule> {
         })
         .unwrap_or_default();
 
+    // Resolve `matchedSelectors` from the canonical spec shape:
+    // `appliedstyle.matchedSelectorIndexes: nullable:array:number` indexes
+    // into the rule's `selectors` array (see
+    // devtools/shared/specs/style/style-types.js).  Older devtools clients
+    // resolved this client-side; we do the same here.
+    let matched_selectors: Vec<String> = entry
+        .get("matchedSelectorIndexes")
+        .and_then(Value::as_array)
+        .map(|idxs| {
+            idxs.iter()
+                .filter_map(|v| {
+                    let idx = usize::try_from(v.as_u64()?).ok()?;
+                    selectors.get(idx).map(|s| (*s).to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Media queries live in `rule.ancestorData[]` entries where
+    // `type === "media"`; `value` is the joined media text.  See
+    // devtools/server/actors/style-rule.js:_getAncestorDataForForm.
+    let media: Vec<String> = rule
+        .get("ancestorData")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|d| {
+                    let ty = d.get("type").and_then(Value::as_str)?;
+                    if ty != "media" {
+                        return None;
+                    }
+                    d.get("value").and_then(Value::as_str).map(String::from)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     Some(AppliedRule {
         selector,
         source,
         line,
         column,
         properties,
+        matched_selectors,
+        media,
     })
 }
 
@@ -392,6 +442,47 @@ mod tests {
     }
 
     #[test]
+    fn parse_applied_entry_resolves_matched_selector_indexes() {
+        // Spec shape (style-types.js): matchedSelectorIndexes is on the
+        // entry and indexes into rule.selectors.
+        let entry = json!({
+            "rule": {
+                "type": 1,
+                "selectors": ["h1", ".title", "#x"],
+                "href": "https://example.com/style.css",
+                "line": 42,
+                "column": 1
+            },
+            "matchedSelectorIndexes": [1, 2],
+            "declarations": []
+        });
+        let rule = parse_applied_entry(&entry).unwrap();
+        assert_eq!(rule.matched_selectors, vec![".title", "#x"]);
+    }
+
+    #[test]
+    fn parse_applied_entry_extracts_media_from_ancestor_data() {
+        // Spec shape (style-rule.js _getAncestorDataForForm): media query
+        // text is surfaced in ancestorData[] entries of type "media".
+        let entry = json!({
+            "rule": {
+                "type": 1,
+                "selectors": ["p"],
+                "href": "https://example.com/style.css",
+                "line": 1,
+                "column": 1,
+                "ancestorData": [
+                    {"type": "media", "value": "(max-width: 600px)"},
+                    {"type": "supports", "value": "(display: flex)"}
+                ]
+            },
+            "declarations": []
+        });
+        let rule = parse_applied_entry(&entry).unwrap();
+        assert_eq!(rule.media, vec!["(max-width: 600px)"]);
+    }
+
+    #[test]
     fn parse_applied_entry_skips_non_type_1_rules() {
         // type 0 = inline style
         let entry = json!({
@@ -505,6 +596,8 @@ mod tests {
             line: None,
             column: None,
             properties: vec![],
+            matched_selectors: vec![],
+            media: vec![],
         };
         let v = serde_json::to_value(&rule).unwrap();
         assert!(v.get("source").is_none());
