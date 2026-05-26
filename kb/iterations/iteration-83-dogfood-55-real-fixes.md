@@ -2,7 +2,7 @@
 title: "Iteration 83: dogfood-55 actual fixes — make iter-82's promises real (cascade, screenshot, navigate default, cookies default, perf vitals, styles dedupe)"
 type: iteration
 date: 2026-05-26
-status: in-progress
+status: completed
 branch: iter-83/dogfood-55-real-fixes
 depends_on:
   - iteration-82-dogfood-54-fixes
