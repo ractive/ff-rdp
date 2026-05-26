@@ -157,14 +157,12 @@ fn live_cascade_returns_matched_rules_external_css() {
         .args(["navigate", &fixture, "--wait-strategy", "readystate"])
         .output()
         .expect("ff-rdp navigate");
-    if !nav.status.success() {
-        eprintln!(
-            "live_cascade_returns_matched_rules_external_css: navigate failed (non-fatal) — {}",
-            String::from_utf8_lossy(&nav.stderr)
-        );
-        // Non-fatal: continue with cascade even if navigate timed out; the page
-        // may still have loaded.
-    }
+    assert!(
+        nav.status.success(),
+        "live_cascade_returns_matched_rules_external_css: navigate must succeed so cascade \
+         operates on the intended fixture — stderr={}",
+        String::from_utf8_lossy(&nav.stderr)
+    );
 
     // Brief sleep to allow @import to resolve.
     std::thread::sleep(std::time::Duration::from_millis(300));

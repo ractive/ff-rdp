@@ -20,10 +20,12 @@ use std::process::Command;
 
 use common::{LiveFirefox, base_args, ff_rdp_bin};
 
-/// Fixture page: a `<p>` element with two author CSS rules so `styles p --applied`
-/// should return at least 2 rules with non-empty properties.
+/// Fixture page: a `<p>` element with an explicit UA-reset stub plus two author
+/// CSS rules.  The stub `*, ::after, ::before{}` exercises the `is_ua_reset_stub`
+/// filter against an actual matching selector; the two author rules must survive.
 const FIXTURE_HTML: &str = "data:text/html;charset=utf-8,\
 <!DOCTYPE html><html><head>\
+<style>*, ::after, ::before{}</style>\
 <style>p{color:red;font-size:16px}</style>\
 <style>p{margin:0;padding:0}</style>\
 </head><body><p>test</p></body></html>";
@@ -104,6 +106,28 @@ fn live_styles_applied_returns_real_rules() {
         "live_styles_applied_returns_real_rules: expected at least 2 rules with non-empty \
          properties, got {}; full results={results:?}",
         rules_with_props.len()
+    );
+
+    // Theme E regression guard: no empty-properties rule with a UA-reset selector
+    // pattern should appear in results.  If the filter regresses, such rules
+    // would reappear and this assertion catches it.
+    let ua_reset_leak: Vec<_> = results
+        .iter()
+        .filter(|r| {
+            let props_empty = r
+                .get("properties")
+                .and_then(|p| p.as_array())
+                .is_some_and(Vec::is_empty);
+            let sel = r.get("selector").and_then(|s| s.as_str()).unwrap_or("");
+            props_empty
+                && (sel.contains("*, ::after, ::before")
+                    || sel.contains("*,::after,::before")
+                    || (sel.contains('*') && sel.contains("::before") && sel.contains("::after")))
+        })
+        .collect();
+    assert!(
+        ua_reset_leak.is_empty(),
+        "live_styles_applied_returns_real_rules: UA-reset stub leaked into results: {ua_reset_leak:?}"
     );
 
     eprintln!(

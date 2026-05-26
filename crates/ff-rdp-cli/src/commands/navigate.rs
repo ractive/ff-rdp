@@ -549,6 +549,16 @@ pub fn run_core(
 
         // wait_for_doc_complete acquires the lock only during dispatch_event,
         // not across the full recv() wait — see its lock-discipline doc-comment.
+        //
+        // NOTE (Copilot review on PR #120 / follow-up for iter-84):
+        // When `wait_strategy == Both`, the readystate fallback runs with whatever
+        // budget remains AFTER events times out — which can be ~0 in the worst case
+        // ("no remaining budget for readystate fallback").  A natural fix is to slice
+        // the budget here (e.g. give events 3/4 of cli.timeout), but doing so caused
+        // a regression in `live_screenshot_full_page` for reasons that still need
+        // investigation (a smaller events budget appears to perturb subsequent
+        // root-actor calls).  Tracking this as a follow-up rather than shipping a
+        // change that breaks an unrelated test.
         let event_result = wait_for_doc_complete(
             ctx.transport_mut(),
             &bus_arc,
@@ -1256,6 +1266,34 @@ mod tests {
             "https://example.com/",
             "https://other.com/"
         ));
+    }
+
+    /// iter-83 Theme C: assert the default `WaitStrategy` is `Both` so the
+    /// CLI's documented default (events first, readystate fallback) is exercised
+    /// when callers omit `--wait-strategy`.
+    #[test]
+    fn wait_strategy_default_is_both() {
+        assert_eq!(WaitStrategy::default(), WaitStrategy::Both);
+    }
+
+    /// iter-83 Theme C: parsing the navigate command without `--wait-strategy`
+    /// must resolve to `WaitStrategy::Both`.
+    #[test]
+    fn navigate_clap_default_wait_strategy_is_both() {
+        use clap::Parser as _;
+        let cli =
+            crate::cli::args::Cli::try_parse_from(["ff-rdp", "navigate", "https://example.com/"])
+                .expect("clap parse navigate");
+        match cli.command {
+            crate::cli::args::Command::Navigate { wait_strategy, .. } => {
+                assert_eq!(
+                    wait_strategy,
+                    WaitStrategy::Both,
+                    "clap default for --wait-strategy must be Both (iter-83 Theme C)"
+                );
+            }
+            _ => panic!("expected Navigate command variant"),
+        }
     }
 
     // -----------------------------------------------------------------------

@@ -911,7 +911,12 @@ Output: {\"results\": [{\"name\": \"...\", \"value\": \"...\", \"domain\": \"...
         /// by `getStoreObjects`.
         ///
         /// This is enabled by default. Pass `--storage-only` to disable.
-        #[arg(long, hide = true, default_value_t = false)]
+        #[arg(
+            long,
+            hide = true,
+            default_value_t = false,
+            conflicts_with = "storage_only"
+        )]
         include_document_cookie: bool,
         /// Return only cookies from the StorageActor (skip `document.cookie` evaluation).
         /// Use this when you need the raw StorageActor view, e.g. to debug httpOnly cookies.

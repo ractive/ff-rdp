@@ -50,20 +50,21 @@ fn cookies_help_no_fields_paragraph_leak() {
     );
 
     // The `--include-document-cookie` flag is now hidden; it must not appear
-    // in help at all.  If it does appear, its paragraph must not contain the
-    // `--fields` description text.
-    if help_text.contains("include-document-cookie") {
-        assert!(
-            !help_text.contains("Comma-separated list of fields"),
-            "cookies_help_no_fields_paragraph_leak: \
-             '--include-document-cookie' help paragraph contains \
-             'Comma-separated list of fields' (paragraph bleed)\n\
-             full help text:\n{help_text}"
-        );
-    }
-    // Whether or not the flag is visible, the fields paragraph must exist
-    // separately and not be contaminated.
-    // This assertion is a no-op if --include-document-cookie is hidden (which is correct).
+    // in help at all.  Asserting absence makes this test catch regressions
+    // where the flag accidentally reappears.
+    assert!(
+        !help_text.contains("include-document-cookie"),
+        "cookies_help_no_fields_paragraph_leak: \
+         '--include-document-cookie' should be hidden but appears in help\n\
+         full help text:\n{help_text}"
+    );
+    // The `--fields` description text must still be present.
+    assert!(
+        help_text.contains("Comma-separated list of fields"),
+        "cookies_help_no_fields_paragraph_leak: \
+         '--fields' help paragraph missing 'Comma-separated list of fields'\n\
+         full help text:\n{help_text}"
+    );
 
     eprintln!("cookies_help_no_fields_paragraph_leak: PASS");
 }
