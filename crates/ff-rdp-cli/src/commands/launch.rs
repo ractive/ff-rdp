@@ -352,6 +352,11 @@ fn wait_for_port(host: &str, port: u16, timeout: Duration) -> Result<(), AppErro
     )))
 }
 
+/// Launch Firefox with remote debugging.
+///
+/// `replace` — if `true` and the port is already in use, stop the prior instance
+/// before launching (implements `--replace` / `--force`).
+#[allow(clippy::fn_params_excessive_bools)]
 pub fn run(
     cli: &Cli,
     headless: bool,
@@ -359,6 +364,7 @@ pub fn run(
     temp_profile: bool,
     debug_port: Option<u16>,
     auto_consent: bool,
+    replace: bool,
 ) -> Result<(), AppError> {
     let port = debug_port.unwrap_or(cli.port);
     let host = &cli.host;
@@ -368,23 +374,29 @@ pub fn run(
     // listener, so we surface the conflict ourselves with a hint that points
     // at `doctor` for follow-up diagnosis.
     if port_owner::is_port_in_use(port) {
-        let owner = port_owner::find_listener(port).ok().flatten();
-        // Suggest a nearby port that always differs from the conflicting one,
-        // even at the u16 upper bound where +10 would overflow.
-        let suggested = port
-            .checked_add(10)
-            .unwrap_or_else(|| port.saturating_sub(10));
-        let detail = match &owner {
-            Some(o) if !o.process_name.is_empty() => {
-                format!("by {} (PID {})", o.process_name, o.pid)
-            }
-            Some(o) => format!("by PID {}", o.pid),
-            None => "by another process".to_owned(),
-        };
-        return Err(AppError::User(format!(
-            "port {port} is already in use {detail}. \
-             hint: pass --port {suggested} to use a different port, run `ff-rdp doctor` for a full report, or stop the existing listener."
-        )));
+        if replace {
+            // --replace / --force: stop the prior instance gracefully, then proceed.
+            crate::daemon::client::stop_prior_instance(cli, port)?;
+        } else {
+            let owner = port_owner::find_listener(port).ok().flatten();
+            // Suggest a nearby port that always differs from the conflicting one,
+            // even at the u16 upper bound where +10 would overflow.
+            let suggested = port
+                .checked_add(10)
+                .unwrap_or_else(|| port.saturating_sub(10));
+            let detail = match &owner {
+                Some(o) if !o.process_name.is_empty() => {
+                    format!("by {} (PID {})", o.process_name, o.pid)
+                }
+                Some(o) => format!("by PID {}", o.pid),
+                None => "by another process".to_owned(),
+            };
+            return Err(AppError::User(format!(
+                "port {port} is already in use {detail}. \
+                 hint: pass --replace to stop the existing instance, pass --port {suggested} to use a different port, \
+                 or run `ff-rdp doctor` for a full report."
+            )));
+        }
     }
 
     let firefox = find_firefox()?;

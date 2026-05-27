@@ -772,6 +772,8 @@ fn dispatch_inner(
             temp_profile,
             debug_port,
             auto_consent,
+            replace,
+            force,
         } => commands::launch::run(
             cli,
             *headless,
@@ -779,6 +781,7 @@ fn dispatch_inner(
             *temp_profile,
             *debug_port,
             *auto_consent,
+            *replace || *force,
         ),
         Command::Computed {
             selector_pos,

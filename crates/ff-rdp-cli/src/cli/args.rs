@@ -278,6 +278,12 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub jq: Option<String>,
 
+    /// When using --jq, treat a missing path (null result) as an error: exits non-zero
+    /// with "error: jq path '<path>' not found in input" on stderr.
+    /// By default missing paths produce no output (silent omit).
+    #[arg(long, global = true, requires = "jq")]
+    pub jq_strict: bool,
+
     /// Operation timeout in milliseconds
     #[arg(long, default_value_t = 10000, global = true)]
     pub timeout: u64,
@@ -1287,6 +1293,14 @@ Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\":
         /// Install Consent-O-Matic extension to auto-dismiss cookie consent banners
         #[arg(long)]
         auto_consent: bool,
+        /// If the debug port is already occupied, stop the prior Firefox instance
+        /// gracefully (SIGTERM → SIGKILL after 2 s) and then launch a fresh one.
+        /// Alias: --force.
+        #[arg(long)]
+        replace: bool,
+        /// Alias for --replace (stop the prior instance and relaunch).
+        #[arg(long, hide = true)]
+        force: bool,
     },
     /// Install Claude Code skill files to the user or project filesystem
     #[command(
@@ -1534,6 +1548,10 @@ pub enum PerfCommand {
     /// Aggregate resource summary: sizes, request counts by type, slowest resources, domain breakdown
     Summary,
     /// Full page performance audit: vitals, navigation timing, resource breakdown, DOM stats
+    ///
+    /// LCP: Firefox doesn't implement the Chromium LCP PerformanceObserver entry. ff-rdp
+    /// reports a best-effort approximation (largest visible image). For canonical LCP,
+    /// use Lighthouse against Chromium.
     Audit,
     /// Compare performance across multiple URLs: navigate each, collect vitals + timing
     Compare {

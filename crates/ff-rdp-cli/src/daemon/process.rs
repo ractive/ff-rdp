@@ -60,10 +60,76 @@ pub fn is_process_alive(pid: u32) -> bool {
 // Process signaling
 // ---------------------------------------------------------------------------
 
+/// Kill the entire process group of `pid` using SIGTERM (Unix).
+///
+/// On Unix we send SIGTERM to the negative PID (the process group leader).
+/// This reaches Firefox's child processes (GPU, RDD, etc.) so the port is
+/// actually freed instead of just the parent shell wrapper exiting.
+///
+/// On Windows there is no POSIX process-group concept; we fall back to
+/// terminating just the parent PID (same as `kill_process`).
+///
+/// Errors are silently ignored — the caller checks PID liveness separately.
+pub fn kill_process_group(pid: u32) {
+    #[cfg(unix)]
+    {
+        // SAFETY: `kill(-pgid, SIGTERM)` sends SIGTERM to all processes in the
+        // process group.  We use the PID as the PGID because Firefox calls
+        // `setsid()` making itself a session leader whose PGID equals its PID.
+        // The cast from u32 to pid_t (i32) is intentional; the OS accepts any
+        // valid PGID and we received this PID from the OS registry.
+        #[allow(clippy::cast_possible_wrap)]
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGTERM);
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // Windows has no POSIX process groups — fall back to killing the parent.
+        kill_process(pid);
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+    }
+}
+
+/// Forcibly kill the process group of `pid` using SIGKILL (Unix).
+///
+/// Used as a last resort after the SIGTERM grace period expires.
+/// On Windows, falls back to `kill_process`.
+pub fn kill_process_group_force(pid: u32) {
+    #[cfg(unix)]
+    {
+        // SAFETY: Same rationale as `kill_process_group`; SIGKILL cannot be caught
+        // or ignored, so it is guaranteed to terminate the process group.
+        #[allow(clippy::cast_possible_wrap)]
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        kill_process(pid);
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+    }
+}
+
 /// Send SIGTERM (Unix) or TerminateProcess (Windows) to `pid`.
 ///
 /// Errors are silently ignored — the caller checks PID liveness separately
 /// to decide whether the termination succeeded.
+///
+/// Also used internally by `kill_process_group` and `kill_process_group_force`
+/// as the Windows fallback path inside `#[cfg(windows)]` blocks.
+#[allow(dead_code)]
 pub fn kill_process(pid: u32) {
     #[cfg(unix)]
     {
@@ -97,6 +163,38 @@ pub fn kill_process(pid: u32) {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Port liveness
+// ---------------------------------------------------------------------------
+
+/// Return `true` if something is accepting TCP connections on `localhost:port`.
+///
+/// Uses a non-blocking connect with a 100 ms timeout to avoid hanging on
+/// firewalled ports.
+pub fn is_port_in_use(port: u16) -> bool {
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
+    let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok()
+}
+
+/// Poll `localhost:port` every 100 ms until it stops accepting connections,
+/// or until `timeout` elapses.
+///
+/// Returns `true` if the port is free (connection refused) before the deadline,
+/// `false` if it is still listening when `timeout` expires.
+pub fn wait_for_port_closed(port: u16, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !is_port_in_use(port) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 

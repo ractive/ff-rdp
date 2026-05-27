@@ -24,8 +24,18 @@ pub enum HintsMode {
     Off,
 }
 
+/// Policy for missing (null) jq path results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JqMissingPolicy {
+    /// Silently omit null outputs from `--jq` (default, least surprise for pipelines).
+    SilentOmit,
+    /// Exit non-zero with a diagnostic message when a path resolves to null.
+    Strict,
+}
+
 pub struct OutputPipeline {
     jq_filter: Option<String>,
+    jq_missing: JqMissingPolicy,
     format: OutputFormat,
     hints_mode: HintsMode,
 }
@@ -35,6 +45,7 @@ impl OutputPipeline {
     pub fn new(jq_filter: Option<String>) -> Self {
         Self {
             jq_filter,
+            jq_missing: JqMissingPolicy::SilentOmit,
             format: OutputFormat::Json,
             hints_mode: HintsMode::Off,
         }
@@ -74,8 +85,15 @@ impl OutputPipeline {
             }
         };
 
+        let jq_missing = if cli.jq_strict {
+            JqMissingPolicy::Strict
+        } else {
+            JqMissingPolicy::SilentOmit
+        };
+
         Ok(Self {
             jq_filter: cli.jq.clone(),
+            jq_missing,
             format,
             hints_mode,
         })
@@ -123,7 +141,24 @@ impl OutputPipeline {
 
         match &self.jq_filter {
             Some(filter) => {
-                let filtered = output::apply_jq_filter(&envelope, filter)?;
+                let raw_filtered = output::apply_jq_filter(&envelope, filter)?;
+
+                // Apply the missing-path policy: filter out nulls (SilentOmit) or
+                // error on null (Strict). A null output signals that a path was absent
+                // from the input — e.g. `.results.nonexistent` on an object without
+                // that key.
+                let filtered: Vec<serde_json::Value> = match self.jq_missing {
+                    JqMissingPolicy::SilentOmit => {
+                        raw_filtered.into_iter().filter(|v| !v.is_null()).collect()
+                    }
+                    JqMissingPolicy::Strict => {
+                        if raw_filtered.iter().any(serde_json::Value::is_null) {
+                            anyhow::bail!("jq path '{filter}' not found in input");
+                        }
+                        raw_filtered
+                    }
+                };
+
                 match self.format {
                     OutputFormat::Text => {
                         // jq runs first, then text rendering applies to each
@@ -329,6 +364,7 @@ mod tests {
     fn text_array_of_objects_renders_table() {
         let pipeline = OutputPipeline {
             jq_filter: None,
+            jq_missing: JqMissingPolicy::SilentOmit,
             format: OutputFormat::Text,
             hints_mode: HintsMode::Off,
         };
@@ -359,6 +395,7 @@ mod tests {
     fn text_flat_object_renders_kv() {
         let pipeline = OutputPipeline {
             jq_filter: None,
+            jq_missing: JqMissingPolicy::SilentOmit,
             format: OutputFormat::Text,
             hints_mode: HintsMode::Off,
         };
@@ -378,6 +415,7 @@ mod tests {
         // on an envelope that has "hint" and "truncated".
         let pipeline = OutputPipeline {
             jq_filter: None,
+            jq_missing: JqMissingPolicy::SilentOmit,
             format: OutputFormat::Text,
             hints_mode: HintsMode::Off,
         };
@@ -439,6 +477,7 @@ mod tests {
         // jq first, then renders the result as text.
         let pipeline = OutputPipeline {
             jq_filter: Some(".results".to_string()),
+            jq_missing: JqMissingPolicy::SilentOmit,
             format: OutputFormat::Text,
             hints_mode: HintsMode::Off,
         };
@@ -460,6 +499,63 @@ mod tests {
         assert!(
             rendered.contains("foo") && rendered.contains("bar"),
             "non-escape content must survive sanitization, got: {rendered:?}"
+        );
+    }
+
+    // ── unit_jq_filter_silent_vs_strict (iter-86 Theme D) ───────────────────
+
+    /// Default (SilentOmit): a missing path produces no output, not "null".
+    /// `finalize` must succeed with exit 0 and print nothing for a null path.
+    #[test]
+    fn unit_jq_filter_silent_omit_missing_path_produces_no_output() {
+        let pipeline = OutputPipeline {
+            jq_filter: Some(".results.does_not_exist".to_string()),
+            jq_missing: JqMissingPolicy::SilentOmit,
+            format: OutputFormat::Json,
+            hints_mode: HintsMode::Off,
+        };
+        let envelope = json!({"results": {"present": 1}, "total": 1});
+        // Should not error — missing path is silently omitted.
+        assert!(
+            pipeline.finalize(&envelope).is_ok(),
+            "SilentOmit: finalize must succeed on missing path"
+        );
+    }
+
+    /// The SilentOmit policy must filter out null values from the jq output.
+    #[test]
+    fn unit_jq_filter_silent_omit_filters_null() {
+        // `.does_not_exist` returns null in jaq when the key is absent.
+        // SilentOmit must produce an empty vec (nothing printed).
+        let input = json!({"results": {"x": 1}});
+        let raw = crate::output::apply_jq_filter(&input, ".results.missing").unwrap();
+        assert_eq!(
+            raw,
+            vec![serde_json::Value::Null],
+            "jaq returns null for absent key"
+        );
+
+        // SilentOmit filters it out.
+        let silent: Vec<serde_json::Value> = raw.into_iter().filter(|v| !v.is_null()).collect();
+        assert!(
+            silent.is_empty(),
+            "SilentOmit must produce nothing for a missing path, got: {silent:?}"
+        );
+    }
+
+    /// Present path must still pass through both policies unchanged.
+    #[test]
+    fn unit_jq_filter_present_path_passes_through() {
+        let pipeline = OutputPipeline {
+            jq_filter: Some(".results.present".to_string()),
+            jq_missing: JqMissingPolicy::SilentOmit,
+            format: OutputFormat::Json,
+            hints_mode: HintsMode::Off,
+        };
+        let envelope = json!({"results": {"present": 42}, "total": 1});
+        assert!(
+            pipeline.finalize(&envelope).is_ok(),
+            "present path must pass through without error"
         );
     }
 
