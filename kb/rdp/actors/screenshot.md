@@ -124,3 +124,36 @@ present.  `ScreenshotActor::get_root_raw()` returns the unparsed root
 reply so callers can list the available actor IDs in their error
 message, which improves diagnosability before deciding whether the
 actor has moved to a per-target form or been renamed.
+
+## iter-85: Firefox 151+ fallback path via WindowGlobalTarget (Theme B)
+
+On Firefox 151+, `screenshotActor` was observed absent from `getRoot`
+(dogfood-57).  The iter-85 fix adds `ScreenshotActor::screenshot_via_target()`
+which implements a fallback path:
+
+1. `root.listTabs` → find the selected tab actor.
+2. `tabActor.getTarget` → obtain the `WindowGlobalTarget` actor ID.
+3. Send a `screenshot` request (or `takeScreenshot` as a secondary fallback)
+   directly to the `WindowGlobalTarget` actor.
+
+The CLI's `try_two_step_screenshot` fallback ladder:
+- **Path A** (standard): `getRoot` → `screenshotActor.capture`.
+- **Path B** (FF151+): if `screenshotActor` absent or module-load failure,
+  call `screenshot_via_target()` before giving up.
+
+The target-actor `screenshot` method is not declared in
+`devtools/shared/specs/targets/window-global.js` (spec drift); annotated
+with `// allow-spec-drift: bug TBD`.
+
+Fixture: `crates/ff-rdp-core/tests/fixtures/getroot_ff151.json` — synthetic
+FF 151 `getRoot` shape with no `screenshotActor` field (replace with a
+recorded fixture when a live FF 151 instance is available).
+
+Unit tests added:
+- `screenshot_via_target_uses_target_screenshot_method` — mock server validates
+  the full `listTabs` → `getTarget` → `screenshot` sequence.
+- `get_actor_id_returns_error_when_screenshotactor_absent_ff151` — confirms the
+  fallback trigger condition (error names the missing field).
+
+Live test: `live_screenshot_ff151_cli` (`live_screenshot_ff151.rs`) —
+`#[ignore]` gated; asserts `-o /tmp/x.png` produces a valid PNG file.

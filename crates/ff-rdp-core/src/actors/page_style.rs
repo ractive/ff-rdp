@@ -234,19 +234,32 @@ fn parse_computed_properties(computed: &Value) -> Result<Vec<ComputedProperty>, 
 
 /// Parse a single entry from the `entries` array of a `getApplied` response.
 ///
-/// Includes entries where `rule.type == 1` (stylesheet CSS rules) or where
-/// the `type` field is absent (some Firefox versions omit it for external
-/// stylesheet rules — Theme A, iter-84).  Inline style declarations
-/// (`rule.type == 0`) are always excluded.
+/// Accepts entries where `matchedSelectorIndexes` is non-empty — this is the
+/// canonical discriminator: Firefox only populates `matchedSelectorIndexes`
+/// for rules that actually matched the queried element.  The old type-based
+/// guard (`rule.type == 1`) was too strict; Firefox 151 sends `type: 100`
+/// (`CSSStyleRule`) for ordinary author rules and those were silently dropped
+/// (dogfood-57, iter-85 Theme A).
+///
+/// Inline style declarations (`rule.type == 0`) lack `matchedSelectorIndexes`
+/// (the array is absent or empty), so they are naturally excluded.
 fn parse_applied_entry(entry: &Value) -> Option<AppliedRule> {
     let rule = entry.get("rule")?;
 
-    // Skip inline style declarations (type 0) and unknown types.
-    // Accept type 1 (stylesheet CSS rules) or absent `type` — Firefox
-    // sometimes omits the field for rules from external stylesheets.
-    match rule.get("type").and_then(Value::as_u64) {
-        None | Some(1) => {}    // stylesheet rule or absent — keep
-        Some(_) => return None, // inline style (0) or unknown — skip
+    // Accept entries where `matchedSelectorIndexes` is non-empty.
+    // This is the cleanest discriminator: Firefox only sets this field for
+    // rules that matched the queried element.  Inline styles and unmatched
+    // rules either lack the field or carry an empty array — both map to the
+    // same `unwrap_or_default()` → empty vec path below, so they produce no
+    // matched_selectors and the caller can filter them if needed.
+    // We still require a non-empty array here so we don't emit rules that
+    // Firefox included for other reasons (e.g. inherited or unmatched rules).
+    let has_matched = entry
+        .get("matchedSelectorIndexes")
+        .and_then(Value::as_array)
+        .is_some_and(|arr| !arr.is_empty());
+    if !has_matched {
+        return None;
     }
 
     let selectors: Vec<&str> = rule
@@ -473,6 +486,7 @@ mod tests {
                 "line": 42,
                 "column": 1
             },
+            "matchedSelectorIndexes": [0],
             "declarations": [
                 {"name": "color", "value": "red", "priority": ""},
                 {"name": "font-weight", "value": "bold", "priority": "important"}
@@ -528,6 +542,7 @@ mod tests {
                     {"type": "supports", "value": "(display: flex)"}
                 ]
             },
+            "matchedSelectorIndexes": [0],
             "declarations": []
         });
         let rule = parse_applied_entry(&entry).unwrap();
@@ -535,8 +550,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_applied_entry_skips_non_type_1_rules() {
-        // type 0 = inline style
+    fn parse_applied_entry_skips_inline_style_without_matched_selectors() {
+        // Inline style declarations (type 0) never have matchedSelectorIndexes
+        // populated — the entry is rejected by the non-empty guard.
         let entry = json!({
             "rule": {"type": 0, "selectors": [], "href": ""},
             "declarations": [{"name": "color", "value": "blue", "priority": ""}]
@@ -545,9 +561,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_applied_entry_absent_type_treated_as_stylesheet_rule() {
+    fn parse_applied_entry_absent_type_accepted_when_matched_selectors_present() {
         // Theme A (iter-84): some Firefox versions omit `type` for external
-        // stylesheet rules.  These should be parsed as regular stylesheet rules.
+        // stylesheet rules.  These are accepted as long as matchedSelectorIndexes
+        // is non-empty — the `type` field is no longer the discriminator.
         let entry = json!({
             "rule": {
                 "selectors": ["h1"],
@@ -555,6 +572,7 @@ mod tests {
                 "line": 1,
                 "column": 1
             },
+            "matchedSelectorIndexes": [0],
             "declarations": [{"name": "color", "value": "red", "priority": ""}]
         });
         let rule = parse_applied_entry(&entry).unwrap();
@@ -572,6 +590,7 @@ mod tests {
     fn parse_applied_entry_empty_href_gives_none_source() {
         let entry = json!({
             "rule": {"type": 1, "selectors": ["p"], "href": "", "line": 1, "column": 1},
+            "matchedSelectorIndexes": [0],
             "declarations": []
         });
         let rule = parse_applied_entry(&entry).unwrap();
@@ -669,12 +688,66 @@ mod tests {
                 "line": 1,
                 "column": 1
             },
+            "matchedSelectorIndexes": [0],
             "declarations": [{"name": "color", "value": "red", "priority": ""}]
         });
         let rule = parse_applied_entry(&entry).unwrap();
         assert_eq!(
             rule.rule_actor_id.as_ref().map(std::convert::AsRef::as_ref),
             Some("conn0/styleRuleActor42")
+        );
+    }
+
+    /// iter-85 Theme A: Firefox 151 sends `type: 100` (CSSStyleRule) for ordinary
+    /// author rules.  The old type-based guard rejected these, returning an empty
+    /// `rules[]`.  The new guard uses `matchedSelectorIndexes` instead.
+    #[test]
+    fn unit_cascade_accepts_css_type_100() {
+        // Synthetic entry shaped like a real Firefox 151 `getApplied` response for
+        // an ordinary author rule.  `type: 100` corresponds to `CSSStyleRule` in
+        // the Firefox devtools spec — previously rejected as "unknown type".
+        let entry = json!({
+            "rule": {
+                "type": 100,
+                "className": "CSSStyleRule",
+                "selectors": ["h1"],
+                "href": "https://tennis-sepp.ch/style.css",
+                "line": 10,
+                "column": 1
+            },
+            "matchedSelectorIndexes": [0],
+            "declarations": [{"name": "color", "value": "rgb(0,0,0)", "priority": ""}]
+        });
+        let rule = parse_applied_entry(&entry);
+        assert!(
+            rule.is_some(),
+            "type-100 (CSSStyleRule) entry with non-empty matchedSelectorIndexes \
+             must be accepted; got None"
+        );
+        let rule = rule.unwrap();
+        assert_eq!(rule.selector, "h1");
+        assert_eq!(rule.matched_selectors, vec!["h1"]);
+        assert_eq!(rule.properties[0].name, "color");
+    }
+
+    /// Entries with an empty `matchedSelectorIndexes` array must be rejected —
+    /// they represent rules that Firefox included but that did not match.
+    #[test]
+    fn unit_cascade_rejects_empty_matched_selector_indexes() {
+        let entry = json!({
+            "rule": {
+                "type": 100,
+                "selectors": ["h2"],
+                "href": "https://example.com/style.css",
+                "line": 1,
+                "column": 1
+            },
+            "matchedSelectorIndexes": [],
+            "declarations": [{"name": "color", "value": "red", "priority": ""}]
+        });
+        assert!(
+            parse_applied_entry(&entry).is_none(),
+            "entry with empty matchedSelectorIndexes must be rejected"
         );
     }
 

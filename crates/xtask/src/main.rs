@@ -2,6 +2,7 @@ mod check_actor_kb_sync;
 mod check_daemon_locks;
 mod check_dead_primitives;
 mod check_discipline_regression;
+mod check_dogfood_script;
 mod check_firefox_refs;
 mod check_iteration_plan;
 mod check_iteration_ready;
@@ -42,6 +43,9 @@ enum Commands {
     /// Run all iteration discipline gates and aggregate results.
     /// Fails if any sub-check fails; reports all failures before exiting.
     CheckIterationReady(check_iteration_ready::Args),
+    /// Execute the iteration plan's dogfood_script and verify the sentinel is written.
+    /// Skips gracefully if FF_RDP_LIVE_TESTS != "1" or no dogfood_script field is set.
+    CheckDogfoodScript(check_dogfood_script::Args),
     /// Resolve a branch name (iter-N/slug) to the absolute path of its iteration plan.
     FindIterationPlan(find_iteration_plan::Args),
 }
@@ -59,5 +63,6 @@ fn main() -> Result<()> {
         Commands::CheckOnewayConformance(args) => check_oneway_conformance::run(args),
         Commands::CheckIterationReady(args) => check_iteration_ready::run(args),
         Commands::FindIterationPlan(args) => find_iteration_plan::run(args),
+        Commands::CheckDogfoodScript(args) => check_dogfood_script::run(args),
     }
 }

@@ -293,38 +293,25 @@ fn try_two_step_screenshot(
 
     // Step 2: capture — call the root-level screenshotActor.
     //
-    // Theme B (iter-84): On Firefox 151+, `screenshotActor` may be absent from
-    // `getRoot` (it moved to the per-target form or was renamed).  When the
-    // standard probe fails, call `getRoot` again (via `get_root_raw`) and log
-    // the available actor keys to stderr for diagnostics, then fail with a
-    // descriptive error that lists what WAS advertised.
-    let screenshot_actor = match ScreenshotActor::get_actor_id(ctx.transport_mut()) {
-        Ok(id) => id,
-        Err(_e) => {
-            // Try to give the user a diagnostic showing what's actually in getRoot.
-            let getroot_keys: String = match ScreenshotActor::get_root_raw(ctx.transport_mut()) {
-                Ok(root) => root
-                    .as_object()
-                    .map(|obj| {
-                        obj.keys()
-                            .filter(|k| k.ends_with("Actor") || k.ends_with("actor"))
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    })
-                    .unwrap_or_default(),
-                Err(_) => String::new(),
-            };
-            let hint = if getroot_keys.is_empty() {
-                String::new()
-            } else {
-                format!(" (actors in getRoot: {getroot_keys})")
-            };
-            return Err(AppError::User(format!(
-                "screenshot: {}{}",
-                version_mismatch_message(),
-                hint
-            )));
+    // Theme B (iter-84/85): On Firefox 151+, `screenshotActor` may be absent
+    // from `getRoot` (it moved to the per-target form or was renamed).
+    //
+    // Fallback ladder:
+    // A. Try `getRoot` → `screenshotActor` (standard path, Firefox 87-149+).
+    // B. If absent or module-load failure, try `screenshot_via_target()` which
+    //    sends the `screenshot` / `takeScreenshot` request directly to the
+    //    WindowGlobalTarget actor (Firefox 151+).
+    // C. If the target path also fails, surface a diagnostic error.
+    let root_actor_result = ScreenshotActor::get_actor_id(ctx.transport_mut());
+
+    let use_target_fallback = match &root_actor_result {
+        Ok(_) => false,
+        Err(e) => {
+            tracing::debug!(
+                target: "ff_rdp_cli::screenshot",
+                "screenshotActor absent from getRoot ({e}); trying screenshot_via_target fallback"
+            );
+            true
         }
     };
 
@@ -341,6 +328,32 @@ fn try_two_step_screenshot(
         );
     }
 
+    if use_target_fallback {
+        // Theme B (iter-85) — Firefox 151+ path: send the screenshot request
+        // directly to the WindowGlobalTarget actor.
+        return ScreenshotActor::screenshot_via_target(
+            ctx.transport_mut(),
+            browsing_ctx_id,
+            full_page,
+            &prep,
+        )
+        .map_err(|e| {
+            AppError::User(format!(
+                "screenshot: root-form screenshotActor absent and target fallback failed ({e}) — \
+                 {} — screenshots require headless mode; relaunch with: ff-rdp launch --headless",
+                version_mismatch_message()
+            ))
+        });
+    }
+
+    // Standard path: use the root-level screenshotActor.
+    let screenshot_actor = root_actor_result.map_err(|e| {
+        AppError::User(format!(
+            "screenshot: failed to get screenshotActor — {e}: {}",
+            version_mismatch_message()
+        ))
+    })?;
+
     let capture_result = ScreenshotActor::capture(
         ctx.transport_mut(),
         &screenshot_actor,
@@ -351,10 +364,22 @@ fn try_two_step_screenshot(
 
     match capture_result {
         Ok(data) => Ok(data),
-        Err(ref e) if is_actor_module_load_failure(e) => Err(AppError::User(format!(
-            "screenshot: {}",
-            version_mismatch_message()
-        ))),
+        Err(ref e) if is_actor_module_load_failure(e) => {
+            // Module load failure on the root path — try the target fallback
+            // before giving up (some FF 151 builds report this error instead of
+            // omitting the field from getRoot).
+            tracing::debug!(
+                target: "ff_rdp_cli::screenshot",
+                "screenshotActor module load failure; retrying via screenshot_via_target"
+            );
+            ScreenshotActor::screenshot_via_target(
+                ctx.transport_mut(),
+                browsing_ctx_id,
+                full_page,
+                &prep,
+            )
+            .map_err(|_| AppError::User(format!("screenshot: {}", version_mismatch_message())))
+        }
         Err(e) => Err(AppError::User(format!(
             "screenshot: screenshotActor.capture failed ({e}) — \
              screenshots require headless mode; relaunch with: ff-rdp launch --headless"

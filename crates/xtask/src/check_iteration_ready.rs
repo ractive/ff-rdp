@@ -208,6 +208,11 @@ pub fn run(args: Args) -> Result<()> {
         run_ac_fidelity(&plan, base_str, &repo_root)
     }));
 
+    // --- 7. check-dogfood-script
+    results.push(run_or_skip("check-dogfood-script", &mut || {
+        run_xtask("check-dogfood-script", &[&plan_display])
+    }));
+
     let total = results.len();
     for (i, result) in results.iter().enumerate() {
         print_result(i + 1, total, result);
@@ -224,5 +229,64 @@ pub fn run(args: Args) -> Result<()> {
             "check-iteration-ready: {fail_count} sub-check(s) FAILED — fix above issues before /create-pr"
         );
         Err(anyhow!("{fail_count} sub-check(s) failed"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Verify that the check-dogfood-script sub-check is included in the results
+    /// produced by run(). We use `--skip` for all other gates and a synthetic
+    /// plan so this test doesn't require a full repo checkout or Firefox binary.
+    #[test]
+    fn xtask_check_iteration_ready_calls_dogfood_script() {
+        use std::io::Write as _;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        // Write a minimal plan with dogfood_path (no dogfood_script) so the
+        // check-dogfood-script sub-check skips cleanly (SKIP = pass).
+        let plan_path = dir.path().join("iteration-96-test.md");
+        let content = "---\ntitle: \"Test\"\nstatus: planned\ntype: iteration\ndogfood_path: \"ff-rdp --help\"\n---\n\n# Body\n";
+        {
+            let mut f = std::fs::File::create(&plan_path).unwrap();
+            write!(f, "{content}").unwrap();
+        }
+
+        // Run check-iteration-ready via cargo run (current_exe is the test runner, not xtask).
+        let output = std::process::Command::new("cargo")
+            .args(["run", "-q", "-p", "xtask", "--"])
+            .args([
+                "check-iteration-ready",
+                "--plan",
+                plan_path.to_str().unwrap(),
+                "--base",
+                "HEAD",
+                "--skip",
+                "check-dead-primitives",
+                "--skip",
+                "check-todo-annotations",
+                "--skip",
+                "check-actor-kb-sync",
+                "--skip",
+                "check-firefox-refs",
+                "--skip",
+                "check-discipline-regression",
+                "--skip",
+                "ac-fidelity-check",
+            ])
+            .output()
+            .unwrap();
+
+        let combined = {
+            let mut s = String::from_utf8_lossy(&output.stdout).into_owned();
+            s.push_str(&String::from_utf8_lossy(&output.stderr));
+            s
+        };
+
+        // The sub-check name must appear in output.
+        assert!(
+            combined.contains("check-dogfood-script"),
+            "check-dogfood-script sub-check name missing from output:\n{combined}"
+        );
     }
 }

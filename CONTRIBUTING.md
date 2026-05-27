@@ -83,6 +83,36 @@ cargo run -p xtask -- check-actor-kb-sync --since origin/main
 Added in iter-73. See the ACTOR_KB_MAP constant in `crates/xtask/src/check_actor_kb_sync.rs`
 for the full actor → kb path mapping.
 
+### Runnable dogfood script (Theme M, iter-85)
+
+Iteration plans may include a `dogfood_script` key in their YAML frontmatter pointing to
+a sibling shell script:
+
+```yaml
+dogfood_script: iteration-85-dogfood-57-carryovers-and-runnable-dogfood-path.dogfood.sh
+```
+
+The script lives next to the `.md` plan file and is executed by:
+
+```sh
+cargo run -p xtask -- check-dogfood-script kb/iterations/iteration-NN-slug.md
+```
+
+Requirements:
+- The script **must** write the sentinel file `/tmp/ff-rdp-iter-<N>-dogfood-ok` before
+  exiting 0 (where `N` is the iteration number extracted from the plan filename).
+- The gate is silently skipped if `FF_RDP_LIVE_TESTS` is not set to `"1"`.
+- Plans with no `dogfood_script` field are also skipped (pass) — existing iterations
+  without the field continue to work.
+- `dogfood_path` and `dogfood_script` may coexist; a warning is emitted but it is not
+  a hard failure.
+
+`check-dogfood-script` is the 7th sub-check run by `check-iteration-ready`. It is also
+a required CI step on `iter-*` branches in the Live Tests workflow (`live.yml`) when
+`FF_RDP_LIVE_TESTS=1`.
+
+Windows: the bash invocation is skipped on non-unix platforms (CI runs on ubuntu-latest).
+
 ### rdp-spec-reviewer agent
 
 A `rdp-spec-reviewer` subagent is installed at `~/.claude/agents/rdp-spec-reviewer.md`

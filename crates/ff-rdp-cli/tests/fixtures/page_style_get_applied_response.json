@@ -9,6 +9,7 @@
         "column": 1,
         "selectors": ["h1"]
       },
+      "matchedSelectorIndexes": [0],
       "declarations": [
         {"name": "font-size", "value": "2em", "priority": ""},
         {"name": "margin-bottom", "value": "0.67em", "priority": ""}
@@ -22,6 +23,7 @@
         "column": 1,
         "selectors": ["h1", ".title"]
       },
+      "matchedSelectorIndexes": [0],
       "declarations": [
         {"name": "color", "value": "black", "priority": "important"}
       ]

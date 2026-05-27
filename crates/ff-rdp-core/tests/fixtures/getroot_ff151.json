@@ -1,0 +1,9 @@
+{
+  "_synthetic": true,
+  "_note": "Synthetic FF 151 getRoot shape. Real Firefox 151 was observed (dogfood-57) to not include 'screenshotActor' in the getRoot response. This fixture replicates that shape for unit testing the fallback path. Replace with a recorded fixture when a live FF 151 instance is available.",
+  "from": "root",
+  "preferenceActor": "server1.conn0.preferenceActor1",
+  "deviceActor": "server1.conn0.deviceActor2",
+  "addonsActor": "server1.conn0.addonsActor3",
+  "processActor": "server1.conn0.processActor4"
+}

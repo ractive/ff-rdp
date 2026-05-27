@@ -1,8 +1,11 @@
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::actor::{actor_request, actor_send};
+use crate::actor::actor_request;
+use crate::actor::actor_send;
+use crate::actors::root::RootActor;
 use crate::actors::screenshot_content::PrepareCapture;
+use crate::actors::tab::TabActor;
 use crate::error::ProtocolError;
 use crate::transport::RdpTransport;
 use crate::types::ActorId;
@@ -102,6 +105,13 @@ impl ScreenshotArgsExt {
 ///    and returns the PNG data URL
 ///
 /// The actor ID is obtained via `root.getRoot` → `screenshotActor`.
+///
+/// ## Firefox 151+ fallback path
+///
+/// On Firefox 151+ the `screenshotActor` field was observed absent from the
+/// `getRoot` response in dogfood session 57.  In that case, callers should use
+/// [`screenshot_via_target`] which sends the `screenshot` request directly
+/// against the `WindowGlobalTarget` actor obtained via `listTabs` + `getTarget`.
 pub struct ScreenshotActor;
 
 impl ScreenshotActor {
@@ -197,6 +207,87 @@ impl ScreenshotActor {
             "capture",
             Some(&json!({ "args": args.to_args_value() })),
         )
+    }
+
+    /// Fallback capture path for Firefox 151+ where `screenshotActor` is absent
+    /// from `getRoot`.
+    ///
+    /// Protocol:
+    /// 1. `root.listTabs` → find the selected tab's actor.
+    /// 2. `tabActor.getTarget` → obtain the `WindowGlobalTarget` actor ID.
+    /// 3. Send a `screenshot` request directly to the target actor with the same
+    ///    args used by the root-form path.
+    ///
+    /// Firefox 151 moved the screenshot capability onto the target actor itself.
+    /// The method names tried in order are:
+    /// - `"screenshot"` — the name used by the WindowGlobalTarget in FF 151+.
+    /// - `"takeScreenshot"` — alternate name observed in some builds.
+    ///
+    /// Returns the `data:image/png;base64,...` string on success, or a
+    /// [`ProtocolError`] when neither method is recognised by the target.
+    ///
+    // allow-spec-drift: bug TBD (WindowGlobalTarget.screenshot not declared in
+    // devtools/shared/specs/targets/window-global.js on main — the method was
+    // observed in the server-side implementation on FF 151 but the spec dict
+    // has not been updated.  This annotation must be replaced once the Bugzilla
+    // number is available.)
+    pub fn screenshot_via_target(
+        transport: &mut RdpTransport,
+        browsing_context_id: u64,
+        full_page: bool,
+        prep: &PrepareCapture,
+    ) -> Result<String, ProtocolError> {
+        // Step 1: find the selected tab.
+        let tabs = RootActor::list_tabs(transport)?;
+        let tab = tabs
+            .iter()
+            .find(|t| t.selected)
+            .or_else(|| tabs.first())
+            .ok_or_else(|| {
+                ProtocolError::InvalidPacket(
+                    "screenshot_via_target: no tabs available from listTabs".into(),
+                )
+            })?;
+
+        // Step 2: get the WindowGlobalTarget actor.
+        let target = TabActor::get_target(transport, &tab.actor.clone())?;
+
+        // Step 3: try screenshot methods on the target actor.
+        let args = ScreenshotArgsExt::from_prep(browsing_context_id, full_page, prep);
+        #[allow(clippy::items_after_statements)]
+        const TARGET_SCREENSHOT_METHODS: &[&str] = &["screenshot", "takeScreenshot"];
+        let mut last_err: Option<ProtocolError> = None;
+        for &method in TARGET_SCREENSHOT_METHODS {
+            match actor_request(
+                transport,
+                target.actor.as_ref(),
+                method,
+                Some(&json!({ "args": args.to_args_value() })),
+            ) {
+                Ok(response) => {
+                    let value = response.get("value").unwrap_or(&response);
+                    let data = value
+                        .get("data")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            ProtocolError::InvalidPacket(format!(
+                                "WindowGlobalTarget.{method} response missing 'data' field"
+                            ))
+                        })?
+                        .to_owned();
+                    return Ok(data);
+                }
+                Err(e) if e.is_unrecognized_packet_type() => {
+                    last_err = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            ProtocolError::InvalidPacket(
+                "screenshot_via_target: no screenshot methods recognized by target".into(),
+            )
+        }))
     }
 }
 
@@ -534,6 +625,116 @@ mod tests {
             rect: None,
         };
         ScreenshotActor::capture(&mut transport, &actor_id, 1, false, &prep).unwrap();
+        t.join().unwrap();
+    }
+
+    // ── Firefox 151 fallback: screenshot_via_target ──────────────────────────
+
+    /// AC: `screenshot_via_target_uses_target_screenshot_method`
+    ///
+    /// A mock server returns a FF 151-shaped `getRoot` (no `screenshotActor`),
+    /// then responds to `listTabs`, `getTarget`, and the `screenshot` method on
+    /// the WindowGlobalTarget actor.  Asserts that `screenshot_via_target`
+    /// selects the target path and returns the data URL.
+    #[test]
+    fn screenshot_via_target_uses_target_screenshot_method() {
+        use std::io::Write as _;
+
+        let (mut transport, server) = make_transport_pair();
+
+        let t = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            let mut srv = &server;
+
+            // Request 1: listTabs
+            let req1 = recv_from(&mut reader).unwrap();
+            assert_eq!(req1["type"], "listTabs");
+            let list_tabs_reply = json!({
+                "from": "root",
+                "tabs": [{
+                    "actor": "server1.conn0.tabDescriptor1",
+                    "title": "Test",
+                    "url": "https://example.com",
+                    "selected": true,
+                    "browsingContextID": 42
+                }]
+            });
+            srv.write_all(
+                encode_frame(&serde_json::to_string(&list_tabs_reply).unwrap()).as_bytes(),
+            )
+            .unwrap();
+
+            // Request 2: getTarget on the tab
+            let req2 = recv_from(&mut reader).unwrap();
+            assert_eq!(req2["type"], "getTarget");
+            let get_target_reply = json!({
+                "from": "server1.conn0.tabDescriptor1",
+                "frame": {
+                    "actor": "server1.conn0.child1/windowGlobalTarget2",
+                    "consoleActor": "server1.conn0.child1/consoleActor3"
+                }
+            });
+            srv.write_all(
+                encode_frame(&serde_json::to_string(&get_target_reply).unwrap()).as_bytes(),
+            )
+            .unwrap();
+
+            // Request 3: screenshot on the target actor
+            let req3 = recv_from(&mut reader).unwrap();
+            assert_eq!(req3["type"], "screenshot");
+            assert_eq!(req3["to"], "server1.conn0.child1/windowGlobalTarget2");
+            let screenshot_reply = json!({
+                "from": "server1.conn0.child1/windowGlobalTarget2",
+                "value": {
+                    "data": "data:image/png;base64,ff151data"
+                }
+            });
+            srv.write_all(
+                encode_frame(&serde_json::to_string(&screenshot_reply).unwrap()).as_bytes(),
+            )
+            .unwrap();
+        });
+
+        let prep = PrepareCapture {
+            window_dpr: 1.0,
+            window_zoom: 1.0,
+            rect: None,
+        };
+        let data =
+            ScreenshotActor::screenshot_via_target(&mut transport, 42, false, &prep).unwrap();
+        assert_eq!(data, "data:image/png;base64,ff151data");
+        t.join().unwrap();
+    }
+
+    /// AC: `get_actor_id_returns_error_when_screenshotActor_absent_ff151`
+    ///
+    /// Verifies that a `getRoot` reply without `screenshotActor` (the FF 151
+    /// shape from fixture `getroot_ff151.json`) causes `get_actor_id` to return
+    /// an error that clearly names the missing field — confirming the fallback
+    /// trigger condition.
+    #[test]
+    fn get_actor_id_returns_error_when_screenshotactor_absent_ff151() {
+        let (mut transport, server) = make_transport_pair();
+
+        // Synthetic FF 151 getRoot shape: no screenshotActor field.
+        // Source: crates/ff-rdp-core/tests/fixtures/getroot_ff151.json (synthetic)
+        let ff151_root = json!({
+            "from": "root",
+            "preferenceActor": "server1.conn0.preferenceActor1",
+            "deviceActor": "server1.conn0.deviceActor2",
+            "addonsActor": "server1.conn0.addonsActor3",
+            "processActor": "server1.conn0.processActor4"
+        });
+
+        let t = std::thread::spawn(move || {
+            server_reply(&server, ff151_root);
+        });
+
+        let err = ScreenshotActor::get_actor_id(&mut transport).unwrap_err();
+        assert!(
+            err.to_string().contains("screenshotActor"),
+            "error must mention the missing field: {err}"
+        );
         t.join().unwrap();
     }
 }

@@ -274,6 +274,169 @@ pub(crate) fn parse_cookie(item: &Value) -> Option<CookieInfo> {
     })
 }
 
+/// A cookie entry derived from a `Set-Cookie` response header.
+///
+/// This is a simplified representation.  Only the name, value, domain, path,
+/// and expiry are extracted — sufficient for merging with [`CookieInfo`].
+///
+/// Used by [`merge_storage_and_network_cookies`] to supplement the
+/// StorageActor reply with cookies that Firefox has not yet flushed to the
+/// storage actor (e.g. cookies set by a `Set-Cookie` header during the
+/// navigation that just completed).
+#[derive(Debug, Clone)]
+pub struct NetworkSetCookie {
+    /// Cookie name.
+    pub name: String,
+    /// Cookie value.
+    pub value: String,
+    /// Domain from the `Domain=` attribute (empty string if absent).
+    pub domain: String,
+    /// Path from the `Path=` attribute (defaults to `/`).
+    pub path: String,
+    /// Expiry epoch milliseconds derived from `Max-Age=` or `Expires=` (0 = session).
+    pub expires: u64,
+    /// Whether the `Secure` flag was set.
+    pub is_secure: bool,
+    /// Whether the `HttpOnly` flag was set.
+    pub is_http_only: bool,
+}
+
+/// Parse a single `Set-Cookie` header value into a [`NetworkSetCookie`].
+///
+/// The format is:
+/// ```text
+/// name=value[; attr[=val]]*
+/// ```
+///
+/// Returns `None` when the header value is empty or has no `name=value` pair.
+///
+/// **Limitation**: `Expires=` date strings are not parsed — only `Max-Age=`
+/// is used to determine expiry.  Cookies with an `Expires=` attribute but no
+/// `Max-Age=` attribute are treated as session cookies (`expires: 0`).
+pub fn parse_set_cookie_header(header: &str) -> Option<NetworkSetCookie> {
+    let header = header.trim();
+    if header.is_empty() {
+        return None;
+    }
+
+    let mut parts = header.split(';');
+    // The first part is always `name=value`.
+    let name_value = parts.next()?.trim();
+    let (name, value) = name_value.split_once('=').unwrap_or((name_value, ""));
+    let name = name.trim().to_owned();
+    let value = value.trim().to_owned();
+    if name.is_empty() {
+        return None;
+    }
+
+    let mut domain = String::new();
+    let mut path = "/".to_owned();
+    let mut expires: u64 = 0;
+    let mut is_secure = false;
+    let mut is_http_only = false;
+
+    for attr in parts {
+        let attr = attr.trim();
+        if attr.is_empty() {
+            continue;
+        }
+        let (attr_name, attr_val) = if let Some((n, v)) = attr.split_once('=') {
+            (n.trim(), v.trim())
+        } else {
+            (attr, "")
+        };
+        match attr_name.to_ascii_lowercase().as_str() {
+            "domain" => attr_val.clone_into(&mut domain),
+            "path" => attr_val.clone_into(&mut path),
+            "max-age" => {
+                if let Ok(seconds) = attr_val.parse::<i64>()
+                    && seconds > 0
+                {
+                    // Convert to epoch ms: now + max-age seconds.  Uses the
+                    // system clock, so tests assert only on directional
+                    // properties (`expires > 0`), not on an exact value.
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| {
+                            // d.as_millis() returns u128; cap at u64::MAX to
+                            // avoid wrapping on implausibly large timestamps.
+                            #[allow(clippy::cast_possible_truncation)]
+                            let ms = d.as_millis() as u64;
+                            ms
+                        });
+                    #[allow(clippy::cast_sign_loss)]
+                    let offset_ms = (seconds as u64).saturating_mul(1000);
+                    expires = now_ms.saturating_add(offset_ms);
+                }
+            }
+            "secure" => is_secure = true,
+            "httponly" => is_http_only = true,
+            _ => {}
+        }
+    }
+
+    Some(NetworkSetCookie {
+        name,
+        value,
+        domain,
+        path,
+        expires,
+        is_secure,
+        is_http_only,
+    })
+}
+
+/// Merge StorageActor cookies with cookies parsed from `Set-Cookie` headers.
+///
+/// Rules:
+/// - StorageActor wins on key conflict (same `name`).
+/// - `NetworkSetCookie` entries whose `name` is absent from `storage_cookies`
+///   are appended to the result as minimal [`CookieInfo`] entries.
+///
+/// The merge key is `name` only.  If a future caller needs domain/path
+/// disambiguation, add `(name, domain, path)` as a composite key.
+///
+/// # Arguments
+/// * `storage_cookies` — cookies returned by [`StorageActor::list_cookies`].
+/// * `network_cookies` — cookies from `Set-Cookie` response headers, e.g. via
+///   [`parse_set_cookie_header`].
+pub fn merge_storage_and_network_cookies(
+    storage_cookies: Vec<CookieInfo>,
+    network_cookies: Vec<NetworkSetCookie>,
+) -> Vec<CookieInfo> {
+    // Build a set of names already present in the storage reply.  We also
+    // insert each appended network-cookie name into the same set so duplicate
+    // `Set-Cookie` headers (multiple entries with the same name) collapse to
+    // a single appended cookie — first-seen wins for the network-only side.
+    let mut seen_names: std::collections::HashSet<String> =
+        storage_cookies.iter().map(|c| c.name.clone()).collect();
+
+    let mut result = storage_cookies;
+
+    // Append network-only cookies that StorageActor hasn't seen yet.
+    for nc in network_cookies {
+        if !seen_names.contains(nc.name.as_str()) {
+            seen_names.insert(nc.name.clone());
+            result.push(CookieInfo {
+                name: nc.name,
+                value: nc.value,
+                host: nc.domain,
+                path: nc.path,
+                expires: nc.expires,
+                size: 0,
+                is_http_only: nc.is_http_only,
+                is_secure: nc.is_secure,
+                same_site: String::new(),
+                host_only: false,
+                last_accessed: 0.0,
+                creation_time: 0.0,
+            });
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 #[allow(clippy::unreadable_literal)]
 mod tests {
@@ -487,5 +650,133 @@ mod tests {
         let items = response["data"].as_array().unwrap();
         let cookies: Vec<CookieInfo> = items.iter().filter_map(parse_cookie).collect();
         assert!(cookies.is_empty());
+    }
+
+    // --- parse_set_cookie_header ---
+
+    #[test]
+    fn parse_set_cookie_header_basic_name_value() {
+        let sc = parse_set_cookie_header("foo=bar").unwrap();
+        assert_eq!(sc.name, "foo");
+        assert_eq!(sc.value, "bar");
+        assert_eq!(sc.domain, "");
+        assert_eq!(sc.path, "/");
+        assert_eq!(sc.expires, 0);
+        assert!(!sc.is_secure);
+        assert!(!sc.is_http_only);
+    }
+
+    #[test]
+    fn parse_set_cookie_header_with_attributes() {
+        let sc = parse_set_cookie_header(
+            "session_id=abc123; Path=/api; Domain=example.com; Secure; HttpOnly",
+        )
+        .unwrap();
+        assert_eq!(sc.name, "session_id");
+        assert_eq!(sc.value, "abc123");
+        assert_eq!(sc.domain, "example.com");
+        assert_eq!(sc.path, "/api");
+        assert!(sc.is_secure);
+        assert!(sc.is_http_only);
+    }
+
+    #[test]
+    fn parse_set_cookie_header_max_age_produces_nonzero_expires() {
+        let sc = parse_set_cookie_header("probe=1; Max-Age=3600").unwrap();
+        assert_eq!(sc.name, "probe");
+        // Max-Age > 0 → expires should be in the future (> 0).
+        assert!(sc.expires > 0, "expires must be > 0 when Max-Age is set");
+    }
+
+    #[test]
+    fn parse_set_cookie_header_empty_returns_none() {
+        assert!(parse_set_cookie_header("").is_none());
+        assert!(parse_set_cookie_header("   ").is_none());
+    }
+
+    #[test]
+    fn parse_set_cookie_header_no_value_uses_empty_string() {
+        let sc = parse_set_cookie_header("token=").unwrap();
+        assert_eq!(sc.name, "token");
+        assert_eq!(sc.value, "");
+    }
+
+    // --- merge_storage_and_network_cookies ---
+
+    fn make_cookie(name: &str, value: &str) -> CookieInfo {
+        CookieInfo {
+            name: name.to_owned(),
+            value: value.to_owned(),
+            host: String::new(),
+            path: "/".to_owned(),
+            expires: 0,
+            size: 0,
+            is_http_only: false,
+            is_secure: false,
+            same_site: String::new(),
+            host_only: false,
+            last_accessed: 0.0,
+            creation_time: 0.0,
+        }
+    }
+
+    fn make_network_cookie(name: &str, value: &str) -> NetworkSetCookie {
+        NetworkSetCookie {
+            name: name.to_owned(),
+            value: value.to_owned(),
+            domain: String::new(),
+            path: "/".to_owned(),
+            expires: 0,
+            is_secure: false,
+            is_http_only: false,
+        }
+    }
+
+    /// AC: `unit_cookies_setcookie_merge` — storage wins on key conflict;
+    /// network-only cookies are appended.
+    #[test]
+    fn unit_cookies_setcookie_merge() {
+        // StorageActor has foo=storage_value.
+        let storage = vec![make_cookie("foo", "storage_value")];
+
+        // Network has foo=network_value (storage wins) and bar=network_only.
+        let network = vec![
+            make_network_cookie("foo", "network_value"),
+            make_network_cookie("bar", "network_only"),
+        ];
+
+        let merged = merge_storage_and_network_cookies(storage, network);
+
+        assert_eq!(merged.len(), 2, "merged must have 2 entries");
+
+        let foo = merged.iter().find(|c| c.name == "foo").unwrap();
+        assert_eq!(
+            foo.value, "storage_value",
+            "storage must win for 'foo': got '{}'",
+            foo.value
+        );
+
+        let bar = merged.iter().find(|c| c.name == "bar").unwrap();
+        assert_eq!(
+            bar.value, "network_only",
+            "network-only 'bar' must appear: got '{}'",
+            bar.value
+        );
+    }
+
+    #[test]
+    fn merge_with_empty_network_returns_storage_unchanged() {
+        let storage = vec![make_cookie("a", "1"), make_cookie("b", "2")];
+        let merged = merge_storage_and_network_cookies(storage.clone(), vec![]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].name, "a");
+        assert_eq!(merged[1].name, "b");
+    }
+
+    #[test]
+    fn merge_with_empty_storage_uses_network_cookies() {
+        let network = vec![make_network_cookie("x", "1"), make_network_cookie("y", "2")];
+        let merged = merge_storage_and_network_cookies(vec![], network);
+        assert_eq!(merged.len(), 2);
     }
 }

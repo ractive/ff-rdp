@@ -133,15 +133,15 @@ fn check_iteration_ready_happy_path() {
         "aggregator should exit 0 for a clean plan.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
 
-    // Final line must be "6/6 PASS".
+    // Final line must be "7/7 PASS".
     let last_meaningful = stdout
         .lines()
         .rev()
         .find(|l| !l.trim().is_empty())
         .unwrap_or_default();
     assert!(
-        last_meaningful.contains("6/6 PASS"),
-        "expected '6/6 PASS' as final summary line, got: {last_meaningful:?}\n--- combined ---\n{combined}"
+        last_meaningful.contains("7/7 PASS"),
+        "expected '7/7 PASS' as final summary line, got: {last_meaningful:?}\n--- combined ---\n{combined}"
     );
 }
 
@@ -201,12 +201,12 @@ dogfood_path: |
         combined.contains("ac-fidelity"),
         "expected 'ac-fidelity' in the failure output.\n--- combined ---\n{combined}"
     );
-    // Non-short-circuit: every sub-check header `[N/6]` must appear, proving
+    // Non-short-circuit: every sub-check header `[N/7]` must appear, proving
     // the aggregator continued past the failing sub-check rather than bailing
     // on the first one. This is the iter-74 regression's "see every issue at
     // once" requirement.
-    for i in 1..=6 {
-        let header = format!("[{i}/6]");
+    for i in 1..=7 {
+        let header = format!("[{i}/7]");
         assert!(
             combined.contains(&header),
             "expected sub-check header {header} in output (non-short-circuit).\n\
@@ -227,8 +227,8 @@ fn check_iteration_ready_aggregates_failures() {
     let plan_path = tmp.path().join("plan.md");
 
     // A plan with a ticked AC naming a test that doesn't exist — this will
-    // cause ac-fidelity-check to fail. The other 5 sub-checks should still run
-    // (we can verify by seeing all 6 [N/6] lines in the output).
+    // cause ac-fidelity-check to fail. The other 6 sub-checks should still
+    // run (we can verify by seeing all 7 [N/7] lines in the output).
     fs::write(
         &plan_path,
         "\
@@ -264,10 +264,10 @@ dogfood_path: |
     );
 
     // All 6 sub-check lines must appear — aggregator does NOT short-circuit.
-    for i in 1..=6 {
+    for i in 1..=7 {
         assert!(
-            combined.contains(&format!("[{i}/6]")),
-            "expected '[{i}/6]' in output (aggregator must not short-circuit).\n--- combined ---\n{combined}"
+            combined.contains(&format!("[{i}/7]")),
+            "expected '[{i}/7]' in output (aggregator must not short-circuit).\n--- combined ---\n{combined}"
         );
     }
 

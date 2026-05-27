@@ -83,6 +83,8 @@ first_call_sites:
     site: "crates/ff-rdp-cli/src/commands/wait.rs"
   - primitive: "cookies merges Set-Cookie response headers (Theme L)"
     site: "crates/ff-rdp-cli/src/commands/cookies.rs"
+# tombstone (iter-85): this dogfood_path block was never executed pre-merge.
+# See iteration-85 for the runnable dogfood_script replacement.
 dogfood_path: |
   # === MANDATORY: rebuild and locally test every theme before ticking ACs ===
   # This is the THIRD attempt at the iter-82/iter-83 carry-over themes.
