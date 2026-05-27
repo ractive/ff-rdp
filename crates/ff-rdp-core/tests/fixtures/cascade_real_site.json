@@ -1,5 +1,5 @@
 {
-  "_note": "Synthetic fixture — shaped like a real Firefox 151 getApplied response for an h1 element. type:100 = CSSStyleRule. Used by unit_cascade_accepts_csss_type_100 in page_style tests.",
+  "_note": "Synthetic fixture — shaped like a real Firefox 151 getApplied response for an h1 element. type:100 = CSSStyleRule. Used by unit_cascade_accepts_css_type_100 in page_style tests.",
   "entries": [
     {
       "rule": {

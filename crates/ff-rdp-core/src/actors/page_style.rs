@@ -702,7 +702,7 @@ mod tests {
     /// author rules.  The old type-based guard rejected these, returning an empty
     /// `rules[]`.  The new guard uses `matchedSelectorIndexes` instead.
     #[test]
-    fn unit_cascade_accepts_csss_type_100() {
+    fn unit_cascade_accepts_css_type_100() {
         // Synthetic entry shaped like a real Firefox 151 `getApplied` response for
         // an ordinary author rule.  `type: 100` corresponds to `CSSStyleRule` in
         // the Firefox devtools spec — previously rejected as "unknown type".

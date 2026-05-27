@@ -34,7 +34,9 @@ jobs:
         run: cargo test-live
 
       - name: Run dogfood-script gate (iter-* branches only)
-        if: startsWith(github.head_ref, 'iter-')
+        # Gated on same-repo PRs to avoid executing arbitrary scripts from
+        # forked PRs that happen to use an `iter-` branch prefix.
+        if: startsWith(github.head_ref, 'iter-') && github.event.pull_request.head.repo.full_name == github.repository
         env:
           FF_RDP_LIVE_TESTS: "1"
         run: |

@@ -79,24 +79,25 @@ fn run_script(script_path: &std::path::Path, iter_num: u32) -> Result<()> {
             .with_context(|| format!("failed to remove stale sentinel {:?}", sentinel))?;
     }
 
-    // Run the script with bash.
+    // Run the script with bash.  Pass the script path as an OsStr to avoid
+    // lossy UTF-8 conversion on platforms where paths can be non-UTF-8.
     let status = std::process::Command::new("bash")
-        .args(["-euo", "pipefail", script_path.to_str().unwrap_or_default()])
+        .arg("-euo")
+        .arg("pipefail")
+        .arg(script_path)
         .status()
         .with_context(|| format!("failed to invoke bash for {:?}", script_path))?;
 
     if !status.success() {
         let code = status.code().unwrap_or(-1);
-        println!("check-dogfood-script: FAIL (script exited with code {code})");
-        std::process::exit(1);
+        anyhow::bail!("check-dogfood-script: FAIL (script exited with code {code})");
     }
 
     if !sentinel.exists() {
-        println!(
+        anyhow::bail!(
             "check-dogfood-script: FAIL (missing sentinel {:?} after script succeeded)",
             sentinel
         );
-        std::process::exit(1);
     }
 
     println!("check-dogfood-script: OK");
@@ -173,10 +174,10 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn xtask_check_dogfood_script_missing_sentinel() {
-        // Script exits 0 but does NOT write the sentinel → run_inner returns Ok but
-        // run_script calls process::exit(1). We test via a child process to observe
-        // the exit code rather than calling run_inner directly (which would kill the
-        // test runner).
+        // Script exits 0 but does NOT write the sentinel → run_script returns
+        // an error via anyhow::bail!, which the xtask binary propagates as a
+        // non-zero exit code.  We invoke a child process to observe the exit
+        // code end-to-end (rather than asserting on run_inner's Result).
         let dir = TempDir::new().unwrap();
         let plan_path = write_plan(
             &dir,
@@ -192,8 +193,9 @@ mod tests {
         // Pre-clean sentinel.
         let _ = std::fs::remove_file("/tmp/ff-rdp-iter-98-dogfood-ok");
 
-        // run_script calls process::exit on failure, so spawn a child process to
-        // capture the exit code. Use cargo run (current_exe is the test runner).
+        // run_script returns an error on failure, which the xtask binary turns
+        // into a non-zero exit. Spawn cargo run to observe the binary's exit
+        // code (current_exe inside the test is the test runner, not xtask).
         let output = std::process::Command::new("cargo")
             .args(["run", "-q", "-p", "xtask", "--"])
             .env("FF_RDP_LIVE_TESTS", "1")

@@ -227,8 +227,8 @@ fn check_iteration_ready_aggregates_failures() {
     let plan_path = tmp.path().join("plan.md");
 
     // A plan with a ticked AC naming a test that doesn't exist — this will
-    // cause ac-fidelity-check to fail. The other 5 sub-checks should still run
-    // (we can verify by seeing all 7 [N/7] lines in the output).
+    // cause ac-fidelity-check to fail. The other 6 sub-checks should still
+    // run (we can verify by seeing all 7 [N/7] lines in the output).
     fs::write(
         &plan_path,
         "\

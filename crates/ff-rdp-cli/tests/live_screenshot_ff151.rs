@@ -67,21 +67,24 @@ fn live_screenshot_ff151_cli() {
         return;
     }
 
-    let out_path = "/tmp/live_screenshot_ff151_cli_test.png";
+    let out_path = std::env::temp_dir().join("live_screenshot_ff151_cli_test.png");
 
     let result = Command::new(ff_rdp_bin())
-        .args(["screenshot", "-o", out_path])
+        .arg("screenshot")
+        .arg("-o")
+        .arg(&out_path)
         .output()
         .expect("ff-rdp screenshot failed");
 
     assert!(
         result.status.success(),
-        "screenshot -o /tmp/x.png failed (Theme B): {}",
+        "screenshot -o {} failed (Theme B): {}",
+        out_path.display(),
         String::from_utf8_lossy(&result.stderr)
     );
 
-    let bytes = std::fs::read(out_path)
-        .unwrap_or_else(|e| panic!("screenshot file not found at {out_path}: {e}"));
+    let bytes = std::fs::read(&out_path)
+        .unwrap_or_else(|e| panic!("screenshot file not found at {}: {e}", out_path.display()));
 
     // PNG magic: 137 80 78 71 13 10 26 10
     assert!(
@@ -96,5 +99,5 @@ fn live_screenshot_ff151_cli() {
     );
 
     // Clean up.
-    let _ = std::fs::remove_file(out_path);
+    let _ = std::fs::remove_file(&out_path);
 }

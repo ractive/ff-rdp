@@ -352,9 +352,9 @@ pub fn parse_set_cookie_header(header: &str) -> Option<NetworkSetCookie> {
                 if let Ok(seconds) = attr_val.parse::<i64>()
                     && seconds > 0
                 {
-                    // Convert to epoch ms: now + max-age seconds.
-                    // Use a fixed offset rather than wall clock so tests
-                    // are deterministic — approximate but correct direction.
+                    // Convert to epoch ms: now + max-age seconds.  Uses the
+                    // system clock, so tests assert only on directional
+                    // properties (`expires > 0`), not on an exact value.
                     let now_ms = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map_or(0, |d| {
@@ -404,15 +404,19 @@ pub fn merge_storage_and_network_cookies(
     storage_cookies: Vec<CookieInfo>,
     network_cookies: Vec<NetworkSetCookie>,
 ) -> Vec<CookieInfo> {
-    // Build a set of names already present in the storage reply.
-    let storage_names: std::collections::HashSet<String> =
+    // Build a set of names already present in the storage reply.  We also
+    // insert each appended network-cookie name into the same set so duplicate
+    // `Set-Cookie` headers (multiple entries with the same name) collapse to
+    // a single appended cookie — first-seen wins for the network-only side.
+    let mut seen_names: std::collections::HashSet<String> =
         storage_cookies.iter().map(|c| c.name.clone()).collect();
 
     let mut result = storage_cookies;
 
     // Append network-only cookies that StorageActor hasn't seen yet.
     for nc in network_cookies {
-        if !storage_names.contains(nc.name.as_str()) {
+        if !seen_names.contains(nc.name.as_str()) {
+            seen_names.insert(nc.name.clone());
             result.push(CookieInfo {
                 name: nc.name,
                 value: nc.value,

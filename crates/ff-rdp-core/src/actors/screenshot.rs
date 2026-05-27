@@ -283,7 +283,11 @@ impl ScreenshotActor {
                 Err(e) => return Err(e),
             }
         }
-        Err(last_err.expect("TARGET_SCREENSHOT_METHODS is non-empty"))
+        Err(last_err.unwrap_or_else(|| {
+            ProtocolError::InvalidPacket(
+                "screenshot_via_target: no screenshot methods recognized by target".into(),
+            )
+        }))
     }
 }
 
