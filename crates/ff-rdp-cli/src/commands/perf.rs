@@ -857,7 +857,11 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
   result.navigation = performance.getEntriesByType('navigation').map(function(e) { return e.toJSON(); });
   result.resource = performance.getEntriesByType('resource').map(function(e) { return e.toJSON(); });
 
-  // DOM stats
+  // DOM stats — Theme H (iter-84): images_without_lazy uses the same
+  // viewport-and-lazy logic as `dom stats` so both commands agree on the count.
+  // `dom stats` counts only images that are BOTH out of viewport AND lack
+  // loading="lazy"; counting all images without lazy (including in-viewport
+  // ones that legitimately don't need it) produces a larger and misleading number.
   result.dom = {
     node_count: document.querySelectorAll('*').length,
     document_size: document.documentElement.outerHTML.length,
@@ -869,7 +873,17 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
       });
       return count;
     })(),
-    images_without_lazy: document.querySelectorAll('img:not([loading="lazy"])').length
+    images_without_lazy: (function() {
+      var imgs = document.getElementsByTagName('img');
+      var count = 0;
+      for (var m = 0; m < imgs.length; m++) {
+        var img = imgs[m];
+        var rect = img.getBoundingClientRect();
+        var inViewport = rect.top < window.innerHeight && rect.bottom >= 0;
+        if (!inViewport && img.getAttribute('loading') !== 'lazy') count++;
+      }
+      return count;
+    })()
   };
 
   result.hostname = document.location.hostname;

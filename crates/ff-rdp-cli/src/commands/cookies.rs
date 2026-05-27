@@ -25,8 +25,19 @@ pub fn run(cli: &Cli, name: Option<&str>, include_document_cookie: bool) -> Resu
     let mut ctx = connect_direct(cli)?;
     let tab_actor = ctx.target_tab_actor().clone();
 
-    let cookies =
+    // Theme L (iter-84): StorageActor may not yet have committed cookies that
+    // were set via `Set-Cookie` response headers on the navigation that just
+    // completed (e.g. httpbin.org/cookies/set redirect).  Retry once after a
+    // short delay when the first query returns empty — this covers the window
+    // where Firefox has received the header but hasn't flushed it to the
+    // storage actor yet.
+    let mut cookies =
         StorageActor::list_cookies(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+    if cookies.is_empty() {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        cookies =
+            StorageActor::list_cookies(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+    }
 
     let mut results: Vec<Value> = cookies
         .iter()

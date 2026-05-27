@@ -891,8 +891,9 @@ Output: {\"results\": {\"matched\": true, \"elapsed_ms\": N, \"condition\": \"se
         /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
         #[arg(long = "ref", value_name = "REF_ID", group = "condition")]
         ref_id: Option<String>,
-        /// Timeout in milliseconds before giving up
-        #[arg(long, default_value_t = 5000)]
+        /// Timeout in milliseconds before giving up (canonical flag — use this one).
+        /// The legacy spelling `--wait-timeout` is also accepted as a hidden alias.
+        #[arg(long = "timeout-ms", alias = "wait-timeout", default_value_t = 5000)]
         wait_timeout: u64,
     },
     /// List cookies via the Firefox StorageActor (includes httpOnly, secure, sameSite, etc.)

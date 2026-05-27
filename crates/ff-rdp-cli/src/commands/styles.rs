@@ -122,7 +122,26 @@ pub fn run_applied(cli: &Cli, selector: &str) -> Result<(), AppError> {
     let applied = PageStyleActor::get_applied(ctx.transport_mut(), &page_style_actor, &node_actor)
         .map_err(map_style_error)?;
 
-    let mut items: Vec<Value> = applied
+    // Theme E (iter-84): deduplicate applied rules by rule actor ID.
+    // Firefox sometimes sends the same compiled rule object multiple times
+    // (e.g. two `::after, ::before` rows at the same column, or two `h1`
+    // rows from different stylesheet contexts that share the same rule actor).
+    // The correct deduplication key is the RDP actor ID (`rule.actor`), not
+    // a `(selector, property)` pair that legitimately repeats across sheets.
+    //
+    // Rules with no `rule_actor_id` (`None` — Firefox omitted the field) are
+    // kept as-is rather than deduplicated, since we have no safe key to merge on.
+    let mut seen_actor_ids: std::collections::HashSet<ff_rdp_core::ActorId> =
+        std::collections::HashSet::new();
+    let deduped_applied: Vec<&ff_rdp_core::AppliedRule> = applied
+        .iter()
+        .filter(|r| match &r.rule_actor_id {
+            None => true, // No actor ID — always keep (can't deduplicate safely).
+            Some(id) => seen_actor_ids.insert(id.clone()),
+        })
+        .collect();
+
+    let mut items: Vec<Value> = deduped_applied
         .iter()
         // N6 / Theme E (iter-83): drop ONLY empty-declaration entries whose selector
         // matches the UA-reset pattern `*, ::after, ::before`.  Dropping all empty
@@ -374,6 +393,7 @@ mod tests {
                 properties: vec![],
                 matched_selectors: vec![],
                 media: vec![],
+                rule_actor_id: None,
             },
             AppliedRule {
                 selector: "*, ::after, ::before".to_owned(),
@@ -383,6 +403,7 @@ mod tests {
                 properties: vec![],
                 matched_selectors: vec![],
                 media: vec![],
+                rule_actor_id: None,
             },
             AppliedRule {
                 selector: "*, ::after, ::before".to_owned(),
@@ -392,6 +413,7 @@ mod tests {
                 properties: vec![],
                 matched_selectors: vec![],
                 media: vec![],
+                rule_actor_id: None,
             },
             AppliedRule {
                 selector: "h1".to_owned(),
@@ -405,6 +427,7 @@ mod tests {
                 }],
                 matched_selectors: vec!["h1".to_owned()],
                 media: vec![],
+                rule_actor_id: None,
             },
         ];
 
@@ -439,6 +462,7 @@ mod tests {
             properties: vec![],
             matched_selectors: vec![],
             media: vec!["(max-width: 600px)".to_owned()],
+            rule_actor_id: None,
         };
         // Must NOT be treated as a UA-reset stub.
         assert!(

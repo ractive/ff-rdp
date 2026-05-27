@@ -292,11 +292,41 @@ fn try_two_step_screenshot(
     }
 
     // Step 2: capture — call the root-level screenshotActor.
-    let screenshot_actor = ScreenshotActor::get_actor_id(ctx.transport_mut()).map_err(|_e| {
-        // `getRoot` succeeded but the `screenshotActor` field was absent — the
-        // actor is simply not advertised by this Firefox build/version.
-        AppError::User(format!("screenshot: {}", version_mismatch_message()))
-    })?;
+    //
+    // Theme B (iter-84): On Firefox 151+, `screenshotActor` may be absent from
+    // `getRoot` (it moved to the per-target form or was renamed).  When the
+    // standard probe fails, call `getRoot` again (via `get_root_raw`) and log
+    // the available actor keys to stderr for diagnostics, then fail with a
+    // descriptive error that lists what WAS advertised.
+    let screenshot_actor = match ScreenshotActor::get_actor_id(ctx.transport_mut()) {
+        Ok(id) => id,
+        Err(_e) => {
+            // Try to give the user a diagnostic showing what's actually in getRoot.
+            let getroot_keys: String = match ScreenshotActor::get_root_raw(ctx.transport_mut()) {
+                Ok(root) => root
+                    .as_object()
+                    .map(|obj| {
+                        obj.keys()
+                            .filter(|k| k.ends_with("Actor") || k.ends_with("actor"))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default(),
+                Err(_) => String::new(),
+            };
+            let hint = if getroot_keys.is_empty() {
+                String::new()
+            } else {
+                format!(" (actors in getRoot: {getroot_keys})")
+            };
+            return Err(AppError::User(format!(
+                "screenshot: {}{}",
+                version_mismatch_message(),
+                hint
+            )));
+        }
+    };
 
     // Log a diagnostic if --bulk was requested.  The bulk path is not active
     // for current Firefox versions (which return JSON, not a bulk frame, for

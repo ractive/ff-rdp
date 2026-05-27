@@ -106,6 +106,10 @@ pub struct ScreenshotActor;
 
 impl ScreenshotActor {
     /// Obtain the `screenshotActor` ID from the root actor's `getRoot` response.
+    ///
+    /// Callers needing the full `getRoot` payload (to enumerate alternative
+    /// actor locations on Firefox 151+, for example) should use
+    /// [`get_root_raw`](Self::get_root_raw) instead.
     pub fn get_actor_id(transport: &mut RdpTransport) -> Result<ActorId, ProtocolError> {
         let response = actor_request(transport, "root", "getRoot", None)?;
 
@@ -119,6 +123,16 @@ impl ScreenshotActor {
             })?;
 
         Ok(id.into())
+    }
+
+    /// Probe the root `getRoot` response and return the raw reply as a JSON value.
+    ///
+    /// Used by the CLI screenshot command for diagnostics: when `screenshotActor`
+    /// is absent from `getRoot` (e.g. Firefox 151+) the caller enumerates the
+    /// advertised actor keys and surfaces them in the error message so the
+    /// missing capability is visible to the user.
+    pub fn get_root_raw(transport: &mut RdpTransport) -> Result<Value, ProtocolError> {
+        actor_request(transport, "root", "getRoot", None)
     }
 
     /// Capture a screenshot via the root-level screenshot actor (Firefox 149+).
