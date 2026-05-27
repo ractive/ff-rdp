@@ -594,9 +594,17 @@ pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
     Ok(OutputPipeline::from_cli(cli)?.finalize(&envelope)?)
 }
 
-/// `ff-rdp daemon stop` — gracefully stop the running daemon.
+/// `ff-rdp daemon stop` — gracefully stop the running daemon and free the Firefox port.
+///
+/// Stop sequence (iter-86 Theme A):
+/// 1. Send a graceful shutdown RPC to the daemon (2 s grace).
+/// 2. If the daemon is still alive after the RPC, SIGTERM its entire process group.
+/// 3. Wait up to 2 s for the process to exit.
+/// 4. If still alive, SIGKILL the process group as a last resort.
+/// 5. Poll `localhost:<firefox_port>` until refused (max 3 s).
+///    Return non-zero with a diagnostic if the port is still listening.
 pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
-    // Read registry to get PID for fallback SIGTERM.
+    // Read registry to get PID and port for process-group killing + port poll.
     let Some(info) = registry::read_registry()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
     else {
@@ -610,6 +618,8 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
         return Ok(OutputPipeline::from_cli(cli)?.finalize(&envelope)?);
     };
 
+    let firefox_port = info.firefox_port;
+
     if !process::is_process_alive(info.pid) {
         registry::remove_registry().ok();
         let meta = json!({});
@@ -621,11 +631,11 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
         return Ok(OutputPipeline::from_cli(cli)?.finalize(&envelope)?);
     }
 
-    // Try graceful shutdown via RPC first.
+    // 1. Try graceful shutdown via RPC first.
     let rpc_ok = daemon_rpc(cli, &json!({"to": "daemon", "type": "shutdown"})).is_ok();
 
     if rpc_ok {
-        // Give the daemon up to 2 seconds to exit cleanly.
+        // Give the daemon up to 2 seconds to exit cleanly after the RPC.
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
             if !process::is_process_alive(info.pid) {
@@ -638,19 +648,81 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
         }
     }
 
-    // If still alive, send SIGTERM as fallback.
+    // 2. If still alive, SIGTERM the Firefox process group (not just the daemon PID).
+    //    Firefox spawns GPU/RDD child processes in the same group; killing only the
+    //    daemon leaves those children alive and holding the port open.
     if process::is_process_alive(info.pid) {
-        process::kill_process(info.pid);
-        std::thread::sleep(Duration::from_millis(500));
+        process::kill_process_group(info.pid);
+        // Wait up to 2 s for the process group to exit.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while process::is_process_alive(info.pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
-    // Clean up registry.
+    // 3. If SIGTERM was not enough, SIGKILL the group as a last resort.
+    if process::is_process_alive(info.pid) {
+        process::kill_process_group_force(info.pid);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+
+    // 4. Clean up the daemon registry regardless of process state.
     registry::remove_registry().ok();
+
+    // 5. Poll the Firefox debug port until it stops accepting connections (max 3 s).
+    //    This confirms that the OS has reclaimed the socket, so a subsequent
+    //    `launch` on the same port will succeed immediately without a "port in use" error.
+    let port_free = process::wait_for_port_closed(firefox_port, Duration::from_secs(3));
+
+    if !port_free {
+        return Err(AppError::User(format!(
+            "daemon stopped but port {firefox_port} is still listening after 3 s — \
+             another process may be holding it. Run `ff-rdp doctor` or `lsof -i :{firefox_port}` to investigate."
+        )));
+    }
 
     let stopped = !process::is_process_alive(info.pid);
     let meta = json!({});
     let envelope = output::envelope(&json!({"stopped": stopped}), 1, &meta);
     Ok(OutputPipeline::from_cli(cli)?.finalize(&envelope)?)
+}
+
+/// Stop an existing Firefox instance on `port` to make way for a fresh launch.
+///
+/// Used by `launch --replace` / `launch --force` (iter-86 Theme A).
+/// Returns `Ok(())` if the port is free afterwards, `Err` if it is still in use.
+pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> {
+    // If there's a daemon registered for this port, use the graceful stop path.
+    match registry::read_registry() {
+        Ok(Some(ref info)) if info.firefox_port == port => {
+            run_daemon_stop(cli)?;
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // No daemon registry — try to kill whatever is on the port by PID from
+    // the port-owner helper, then wait for the port to free.
+    if let Ok(Some(owner)) = crate::port_owner::find_listener(port) {
+        process::kill_process_group(owner.pid);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while process::is_process_alive(owner.pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if process::is_process_alive(owner.pid) {
+            process::kill_process_group_force(owner.pid);
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    }
+
+    // Poll until free.
+    if !process::wait_for_port_closed(port, Duration::from_secs(3)) {
+        return Err(AppError::User(format!(
+            "port {port} is still in use after stopping the prior instance. \
+             Run `ff-rdp doctor` or `lsof -i :{port}` to investigate."
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
