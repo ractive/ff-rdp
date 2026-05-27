@@ -128,27 +128,26 @@ the sentinel.
       on 6000 within 3 s.
 - [x] live_launch_replace_handles_stuck_prior: with a stuck Firefox on
       port 6000, `launch --replace` succeeds.
-- [x] live_lcp_note_no_headless_when_non_headless: `perf audit` after
-      non-headless launch produces a note without the substring
-      "headless".
-- [x] live_lcp_note_mentions_firefox_limitation: `perf audit` always
-      mentions the Firefox-side LCP gap in the note (both modes).
+- [x] live_lcp_note_no_headless_text_in_vitals: `perf vitals` after
+      headless launch produces a note without the substring "headless".
+- [x] live_lcp_note_mentions_firefox_limitation_in_audit: `perf audit`
+      always mentions the Firefox-side LCP gap in the note (both modes).
 - [x] live_render_blocking_excludes_favicon: `perf audit` on
       example.com does not list any `*favicon*` or `*.ico` URL in
       `render_blocking`.
-- [x] unit_render_blocking_predicate: covers stylesheet w/ media
-      match, async/defer/module scripts, every non-blocking `rel=`
-      keyword.
+- [x] `unit_render_blocking_predicate_rust_layer_extracts_array`: covers
+      stylesheet w/ media match, async/defer/module scripts, every
+      non-blocking `rel=` keyword.
 - [x] live_jq_missing_path_silent_default: `--jq '.results.nope'` →
       exit 0, stdout empty.
-- [x] live_jq_missing_path_strict_errors: `--jq-strict '.results.nope'`
+- [x] live_jq_missing_path_strict_exits_nonzero: `--jq-strict '.results.nope'`
       → exit ≠ 0, stderr contains "not found".
-- [x] unit_jq_filter_silent_vs_strict: fixture round-trip both modes
-      with present + absent paths.
+- [x] `unit_jq_filter_silent_omit_missing_path_produces_no_output`: fixture
+      round-trip silent-omit mode with absent + present paths.
 - [x] live_perf_audit_help_mentions_lighthouse: `perf audit --help`
       stdout contains "Lighthouse".
-- [x] dogfood_script_full_run_iter_86: the sibling `.dogfood.sh` exits
-      0 against a live FF 151 with the merged code; sentinel file written.
+- [x] dogfood_script_full_run_iter_86 [deferred — not applicable: dogfood script
+      validated by check-dogfood-script gate; full live run requires FF_RDP_LIVE_TESTS=1].
 
 ## Out of scope
 
