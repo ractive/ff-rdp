@@ -2,7 +2,7 @@
 title: "Iteration 86: perf field-report fixes — daemon-stop port leak, lcp_note staleness, render-blocking favicon miscount, --jq missing-path policy, LCP messaging"
 type: iteration
 date: 2026-05-27
-status: in-progress
+status: completed
 branch: iter-86/perf-field-report-fixes
 depends_on:
   - iteration-85-dogfood-57-carryovers-and-runnable-dogfood-path
