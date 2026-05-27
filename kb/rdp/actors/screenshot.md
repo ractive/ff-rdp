@@ -115,3 +115,12 @@ So the "page width/height" is `innerWidth + scrollMaxX - scrollMinX − scrollba
   `allow-spec-drift: bug` annotation pointing at the upstream tracker.
 - `snapshotScale` is still omitted when `windowDPR * windowZoom == 1.0` so
   outbound bytes are unchanged from the pre-iter-77 baseline.
+
+## iter-84: getRoot diagnostic helper (Theme B)
+
+When the screenshot actor is not advertised in the root form (observed on
+Firefox 151+), the previous error gave no hint of what actors *were*
+present.  `ScreenshotActor::get_root_raw()` returns the unparsed root
+reply so callers can list the available actor IDs in their error
+message, which improves diagnosability before deciding whether the
+actor has moved to a per-target form or been renamed.
