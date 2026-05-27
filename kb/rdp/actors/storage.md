@@ -34,4 +34,42 @@ listing, reading, updating, and deleting storage entries.
 
 ## Status
 
-Stub — backfilled in iter-73; expand on next touch.
+Active — see iter-73 (initial), iter-84 (retry delay), iter-85 (network cookie merge).
+
+## iter-85: Set-Cookie header merge (Theme L)
+
+**Problem**: cookies set via `Set-Cookie` response header (e.g.
+`httpbin.org/cookies/set`) may not appear via `StorageActor` on FF 151 because
+Firefox has not yet flushed them to the cookie store by the time `cookies list`
+runs.
+
+**Architecture note**: ff-rdp has no cross-command persistent state (each
+command calls `connect_direct`), so buffering network response headers across
+`navigate` + `cookies` invocations is not directly possible.
+
+**What was implemented (iter-85)**:
+
+1. `parse_set_cookie_header(header: &str) -> Option<NetworkSetCookie>` — parses
+   a single `Set-Cookie` header value into a typed `NetworkSetCookie`.  Handles
+   `Domain=`, `Path=`, `Max-Age=`, `Secure`, and `HttpOnly` attributes.
+   `Expires=` date strings are not parsed (treated as session cookies).
+
+2. `merge_storage_and_network_cookies(storage, network) -> Vec<CookieInfo>` —
+   merges `StorageActor` cookies with `NetworkSetCookie` entries.  StorageActor
+   wins on name conflict.  Network-only cookies are appended.
+
+3. Unit test `unit_cookies_setcookie_merge` verifies the merge semantics:
+   - `foo=storage_value` (storage) beats `foo=network_value` (network).
+   - `bar=network_only` (network only) appears in the merged output.
+
+**Limitation**: The `cookies` CLI command does not yet call
+`merge_storage_and_network_cookies` — the architecture would require the
+command to subscribe to network events AND parse response headers during the
+same session.  The retry delay (iter-84) is still the active mitigation.
+The merge function is wired in `lib.rs` (`parse_set_cookie_header`,
+`merge_storage_and_network_cookies`, `NetworkSetCookie`) for future wiring when
+a suitable network-events subscription path is added.
+
+Live test: `live_cookies_set_cookie_header.rs` — `#[ignore]` gated;
+navigates to `httpbin.org/cookies/set?probe=1` and asserts `probe=1` appears
+in `cookies list` output.

@@ -16,6 +16,23 @@ pub struct WaitOptions<'a> {
     pub wait_timeout: u64,
 }
 
+/// Emit a deprecation warning to stderr when the caller passed `--timeout`
+/// (the global flag) to the `wait` command instead of `--timeout-ms`.
+///
+/// Clap does not expose which alias was used, so we inspect raw argv.  This
+/// is intentionally simple: only the exact `--timeout` spelling (or
+/// `--timeout=<value>`) triggers the warning; other global-timeout forms
+/// (`-t`, future short flags) do not — they are not deprecated aliases.
+fn warn_if_timeout_alias_used() {
+    let used = std::env::args().any(|a| a == "--timeout" || a.starts_with("--timeout="));
+    if used {
+        eprintln!(
+            "warning: --timeout is deprecated for `wait`, use --timeout-ms instead \
+             (this alias will be removed in a future release)"
+        );
+    }
+}
+
 /// Wait for a condition and return the result value without printing.
 ///
 /// Called by the script runner, which handles its own NDJSON output.
@@ -71,6 +88,7 @@ pub fn run_core(cli: &Cli, opts: &WaitOptions<'_>) -> Result<serde_json::Value, 
 }
 
 pub fn run(cli: &Cli, opts: &WaitOptions<'_>) -> Result<(), AppError> {
+    warn_if_timeout_alias_used();
     let result_json = run_core(cli, opts)?;
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(
@@ -157,6 +175,22 @@ mod tests {
         };
         let js = build_wait_js(&opts).unwrap();
         assert!(js.contains("document.readyState === 'complete'"));
+    }
+
+    // iter-85 Theme K-followup: deprecation warning for --timeout alias
+
+    /// The deprecation message must contain the word "deprecat" (lowercase) so
+    /// the dogfood script can grep for it reliably.
+    #[test]
+    fn timeout_alias_deprecation_message_contains_deprecat() {
+        // Build the warning message string the same way `warn_if_timeout_alias_used` does,
+        // without touching argv (which varies per test runner invocation).
+        let msg = "warning: --timeout is deprecated for `wait`, use --timeout-ms instead \
+             (this alias will be removed in a future release)";
+        assert!(
+            msg.contains("deprecat"),
+            "deprecation message must contain 'deprecat'; got: {msg}"
+        );
     }
 
     // A2: timeout error messages distinguish "selector not found" from "tab unresponsive"

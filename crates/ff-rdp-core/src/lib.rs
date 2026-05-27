@@ -42,7 +42,10 @@ pub use actors::screenshot::{ScreenshotActor, ScreenshotArgsExt, ScreenshotArgsR
 pub use actors::screenshot_content::{
     CaptureRect, PrepareCapture, ScreenshotCapture, ScreenshotContentActor,
 };
-pub use actors::storage::{CookieInfo, StorageActor};
+pub use actors::storage::{
+    CookieInfo, NetworkSetCookie, StorageActor, merge_storage_and_network_cookies,
+    parse_set_cookie_header,
+};
 pub use actors::string::LongStringActor;
 pub use actors::tab::{TabActor, TabInfo, TargetInfo, note_tab_navigated_scheme_change};
 pub use actors::target::WindowGlobalTarget;

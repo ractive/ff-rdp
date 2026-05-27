@@ -1,0 +1,21 @@
+{
+  "_note": "Synthetic fixture — shaped like a real Firefox 151 getApplied response for an h1 element. type:100 = CSSStyleRule. Used by unit_cascade_accepts_csss_type_100 in page_style tests.",
+  "entries": [
+    {
+      "rule": {
+        "type": 100,
+        "className": "CSSStyleRule",
+        "actor": "conn0/styleRuleActor1",
+        "selectors": ["h1"],
+        "href": "https://tennis-sepp.ch/style.css",
+        "line": 12,
+        "column": 1
+      },
+      "matchedSelectorIndexes": [0],
+      "declarations": [
+        {"name": "color", "value": "rgb(0, 0, 0)", "priority": ""},
+        {"name": "font-size", "value": "2rem", "priority": ""}
+      ]
+    }
+  ]
+}

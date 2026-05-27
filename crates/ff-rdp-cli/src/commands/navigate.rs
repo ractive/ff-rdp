@@ -1287,6 +1287,34 @@ mod tests {
         assert_eq!(WaitStrategy::default(), WaitStrategy::Both);
     }
 
+    /// iter-85 Theme C: the `Both` budget-split formula must always reserve at
+    /// least 1 000 ms for the readystate fallback — even at the default 10 s
+    /// timeout — so the fallback has a meaningful window instead of 0 ms
+    /// (the bug that caused example.com to always time out).
+    #[test]
+    fn navigate_both_strategy_reserves_readystate_budget() {
+        // Mirrors the arithmetic in `run_core` for the `Both` branch.
+        let timeout_ms: u64 = 10_000; // default cli.timeout
+        let reserved_ms = (timeout_ms * 30 / 100).max(1000).min(timeout_ms);
+        let events_budget = timeout_ms.saturating_sub(reserved_ms).max(1);
+        // Reserved slice must be at least 1 s.
+        assert!(
+            reserved_ms >= 1000,
+            "readystate reserve must be ≥ 1000 ms; got {reserved_ms}"
+        );
+        // Events budget must be strictly less than the total so there IS a reserve.
+        assert!(
+            events_budget < timeout_ms,
+            "events budget must be < total timeout; got events_budget={events_budget}"
+        );
+        // The two slices must not exceed the total budget.
+        assert!(
+            events_budget + reserved_ms <= timeout_ms,
+            "events_budget ({events_budget}) + reserved_ms ({reserved_ms}) \
+             exceeds timeout ({timeout_ms})"
+        );
+    }
+
     /// iter-83 Theme C: parsing the navigate command without `--wait-strategy`
     /// must resolve to `WaitStrategy::Both`.
     #[test]

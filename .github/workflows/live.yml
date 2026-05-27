@@ -32,3 +32,11 @@ jobs:
 
       - name: Run live tests
         run: cargo test-live
+
+      - name: Run dogfood-script gate (iter-* branches only)
+        if: startsWith(github.head_ref, 'iter-')
+        env:
+          FF_RDP_LIVE_TESTS: "1"
+        run: |
+          plan=$(cargo run -q -p xtask -- find-iteration-plan "${{ github.head_ref }}")
+          cargo run -q -p xtask -- check-dogfood-script "$plan"

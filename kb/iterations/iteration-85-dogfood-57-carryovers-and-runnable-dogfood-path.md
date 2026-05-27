@@ -16,8 +16,8 @@ firefox_refs:
       author rules. Re-confirm the type enum and accept the modern
       `CSSStyleRule` constant (or drop the filter and rely on
       `matchedSelectorIndexes` non-empty as the discriminator).
-  - lines: 1-160
-    path: devtools/server/actors/screenshot.js
+  - lines: 1-144
+    path: devtools/server/actors/screenshot-content.js
     why: >-
       Theme B — iter-84 added per-target probing scaffolding but did NOT
       route the actual capture call through `WindowGlobalTarget` /
@@ -25,8 +25,11 @@ firefox_refs:
       error message. Land the call path: when the root-form `screenshot`
       actor is absent, send `getCurrentTabActor` then issue the capture
       request against `tabActor.screenshot` (or the FF 151 equivalent).
-  - lines: 1-200
-    path: devtools/server/actors/storage.js
+      (FF 151 split: `screenshot.js` is now a 25-line re-export shim;
+      the real WindowGlobal-target capture path lives in
+      `screenshot-content.js`.)
+  - lines: 1-18
+    path: devtools/server/actors/resources/storage-cookie.js
     why: >-
       Theme L — iter-84 shipped a 250 ms StorageActor retry but never
       reached for the network actor. dogfood-57 confirms cookies set via
