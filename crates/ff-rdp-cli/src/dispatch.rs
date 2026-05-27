@@ -264,16 +264,17 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
             wait_timeout,
             ..
         } => {
+            let effective_timeout = *wait_timeout;
             // Record whichever condition was used, including the explicit timeout.
             if selector.is_some() || text.is_some() || eval.is_some() || resolved_selector.is_some()
             {
                 // Record the timeout only when it differs from the default (5000 ms)
                 // so that scripts stay clean when the user didn't explicitly set it.
                 const DEFAULT_WAIT_TIMEOUT_MS: u64 = 5000;
-                let recorded_timeout = if *wait_timeout == DEFAULT_WAIT_TIMEOUT_MS {
+                let recorded_timeout = if effective_timeout == DEFAULT_WAIT_TIMEOUT_MS {
                     None
                 } else {
-                    Some(*wait_timeout)
+                    Some(effective_timeout)
                 };
                 Some(Step::Wait(crate::script::format::WaitStep {
                     selector: resolved_selector
@@ -672,6 +673,7 @@ fn dispatch_inner(
             ref_id,
             wait_timeout,
         } => {
+            let effective_timeout = *wait_timeout;
             // --ref resolves to a JS querySelectorAll expression; treat it as a --selector.
             let resolved_selector: Option<String> = if let Some(id) = ref_id.as_deref() {
                 Some(
@@ -691,7 +693,7 @@ fn dispatch_inner(
                     selector: resolved_selector.as_deref().or(selector.as_deref()),
                     text: text.as_deref(),
                     eval: eval.as_deref(),
-                    wait_timeout: *wait_timeout,
+                    wait_timeout: effective_timeout,
                 },
             )
         }

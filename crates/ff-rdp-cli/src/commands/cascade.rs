@@ -425,6 +425,7 @@ mod tests {
                 .collect(),
             matched_selectors: vec![selector.to_string()],
             media: vec![],
+            rule_actor_id: None,
         }
     }
 
@@ -788,6 +789,10 @@ mod tests {
                 properties,
                 matched_selectors,
                 media: vec![],
+                rule_actor_id: rule
+                    .get("actor")
+                    .and_then(Value::as_str)
+                    .and_then(ff_rdp_core::ActorId::try_new),
             })
         }
     }

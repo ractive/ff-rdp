@@ -547,23 +547,30 @@ pub fn run_core(
             }))
             .map_err(AppError::from)?;
 
+        // Theme C (iter-84): when the `Both` strategy is active, split the
+        // timeout budget so the readystate fallback is guaranteed at least 30%
+        // of the total.  Without this split, `wait_for_doc_complete` can
+        // consume the entire budget and leave `remaining == 0` for the
+        // readystate pass — which is the bug that caused `navigate
+        // https://example.com` to always time out on real cross-origin pages.
+        //
+        // For the `Events`-only strategy, pass the full budget so behaviour
+        // is unchanged for users who explicitly opted in to event-only waiting.
+        let events_budget = if wait_opts.wait_strategy == WaitStrategy::Both {
+            // Reserve 30% for readystate but always give events at least 1 s.
+            let reserved_ms = (cli.timeout * 30 / 100).max(1000);
+            cli.timeout.saturating_sub(reserved_ms).max(1000)
+        } else {
+            cli.timeout
+        };
+
         // wait_for_doc_complete acquires the lock only during dispatch_event,
         // not across the full recv() wait — see its lock-discipline doc-comment.
-        //
-        // NOTE (Copilot review on PR #120 / follow-up for iter-84):
-        // When `wait_strategy == Both`, the readystate fallback runs with whatever
-        // budget remains AFTER events times out — which can be ~0 in the worst case
-        // ("no remaining budget for readystate fallback").  A natural fix is to slice
-        // the budget here (e.g. give events 3/4 of cli.timeout), but doing so caused
-        // a regression in `live_screenshot_full_page` for reasons that still need
-        // investigation (a smaller events budget appears to perturb subsequent
-        // root-actor calls).  Tracking this as a follow-up rather than shipping a
-        // change that breaks an unrelated test.
         let event_result = wait_for_doc_complete(
             ctx.transport_mut(),
             &bus_arc,
             &rx,
-            cli.timeout,
+            events_budget,
             wait_opts.wait_level,
         );
 
@@ -601,18 +608,13 @@ pub fn run_core(
             Err(e) if wait_opts.wait_strategy != WaitStrategy::Both => Err(e),
             Err(AppError::Timeout(_)) => {
                 // Events timed out — compute remaining budget and try readystate.
+                // Because we sliced the budget (events get ≤70% of cli.timeout),
+                // `remaining` is guaranteed to be > 0 for normal timeout values.
                 refresh_console_actor(&mut ctx);
                 let elapsed_ms =
                     u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(cli.timeout);
-                let remaining = cli.timeout.saturating_sub(elapsed_ms);
-                if remaining == 0 {
-                    Err(AppError::Timeout(format!(
-                        "navigate: timed out after {elapsed_ms}ms waiting for document events \
-                         and no remaining budget for readystate fallback"
-                    )))
-                } else {
-                    wait_for_readystate_complete(&mut ctx, remaining)
-                }
+                let remaining = cli.timeout.saturating_sub(elapsed_ms).max(1000);
+                wait_for_readystate_complete(&mut ctx, remaining)
             }
             Err(e) => Err(e),
         };

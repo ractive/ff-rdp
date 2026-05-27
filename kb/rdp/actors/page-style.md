@@ -69,3 +69,32 @@ The cascade order applied by the CLI matches CSS Cascade Level 4:
 The `AppliedRule` struct exposes `matched_selectors` and `media` fields from
 the response; both are populated when `getApplied` sends `matchedSelectors:
 true` and the rule sits inside an `@media` block respectively.
+
+## iter-84 fixes: rule type field and actor ID deduplication
+
+### Theme A — absent `type` field on external-stylesheet rules
+
+Firefox sometimes omits the `type` field on CSS rules from external
+stylesheets (observed on css.gg and similar icon libraries).
+
+**Before**: `parse_applied_entry` used `?` on `rule.get("type")` which
+returned `None` (skipped the rule) when the field was absent.
+
+**After**: a `match` on `rule.get("type").and_then(Value::as_u64)` treats
+`None` (absent) identically to `Some(1)` (stylesheet rule) — both are kept.
+`Some(0)` (inline style) and all other values are still rejected.
+
+### Theme E — rule deduplication via `rule_actor_id`
+
+When the same CSS rule matches via multiple inheritance paths (e.g. a `*`
+selector applied to every ancestor), `getApplied` returns the rule once per
+matched element, producing duplicates in the applied-styles output.
+
+**Change**: `AppliedRule` now carries a `rule_actor_id: String` field
+populated from `rule.actor` in the `getApplied` response. The CLI's
+`styles applied` command deduplicates by this field before building the
+JSON output — rules with an empty actor ID (absent from server) pass through
+unchanged.
+
+`rule_actor_id` is serialized only when non-empty
+(`#[serde(default, skip_serializing_if = "String::is_empty")]`).

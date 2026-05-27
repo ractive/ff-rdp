@@ -44,14 +44,15 @@ firefox_refs:
       rows). Dedupe must key on rule actor ID, not on `(selector,
       property)` pairs that legitimately repeat across stylesheets.
   - lines: 1-200
-    path: devtools/server/actors/storage.js
+    path: devtools/server/actors/resources/storage/cookies.js
     why: >-
       Theme L — `cookies` against httpbin.org/cookies/set returns empty
       `results: []` even when Firefox processed the `Set-Cookie`
       response header. StorageActor doesn't always surface server-set
       cookies that haven't been persisted to disk; need to also read
       the `Set-Cookie` response headers via the network actor and
-      merge.
+      merge. (Note: storage.js was refactored to resources/storage/cookies.js
+      in newer Firefox versions.)
 kb_refs:
   - kb/rdp/actors/page-style.md
   - kb/rdp/actors/screenshot.md

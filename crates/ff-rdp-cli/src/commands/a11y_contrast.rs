@@ -139,30 +139,56 @@ const CONTRAST_JS_TEMPLATE: &str = r#"(function() {
   var checks = [];
   var aaPass = 0, aaFail = 0;
 
-  for (var i = 0; i < elements.length && i < 500; i++) {
+  for (var i = 0; i < elements.length && i < 1000; i++) {
     var el = elements[i];
     var text = el.textContent && el.textContent.trim();
     if (!text) continue;
 
+    var cs;
     try {
-      var cs = window.getComputedStyle(el);
-      if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+      cs = window.getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') continue;
     } catch(e) { continue; }
 
-    // Only check leaf text nodes or elements with direct text.
-    if (el.children.length > 0) {
-      var hasDirectText = false;
+    // Theme J (iter-84): check both leaf elements AND elements with direct
+    // text nodes.  The previous code skipped container elements without direct
+    // text, but real-world contrast violations (e.g. WAI bad demo) often live
+    // in `<td>` / `<li>` elements whose text is wrapped in inline elements.
+    // Strategy: process any element that has text content AND whose computed
+    // color is not fully transparent.
+    var hasText = false;
+    if (el.children.length === 0) {
+      // Leaf element — always has direct text if textContent is non-empty.
+      hasText = true;
+    } else {
+      // Check for direct text node children first.
       for (var j = 0; j < el.childNodes.length; j++) {
         if (el.childNodes[j].nodeType === 3 && el.childNodes[j].textContent.trim()) {
-          hasDirectText = true;
+          hasText = true;
           break;
         }
       }
-      if (!hasDirectText) continue;
+      // Also include elements where ALL children are inline (span, a, b, etc.)
+      // so we don't miss styled-container contrast issues.
+      if (!hasText) {
+        var INLINE_TAGS = {'A': 1, 'ABBR': 1, 'B': 1, 'BDI': 1, 'BDO': 1, 'BR': 1,
+          'CITE': 1, 'CODE': 1, 'DATA': 1, 'DFN': 1, 'EM': 1, 'I': 1, 'KBD': 1,
+          'MARK': 1, 'Q': 1, 'RP': 1, 'RT': 1, 'RUBY': 1, 'S': 1, 'SAMP': 1,
+          'SMALL': 1, 'SPAN': 1, 'STRONG': 1, 'SUB': 1, 'SUP': 1, 'TIME': 1,
+          'U': 1, 'VAR': 1, 'WBR': 1, 'FONT': 1};
+        var allInline = el.children.length > 0;
+        for (var k = 0; k < el.children.length; k++) {
+          if (!INLINE_TAGS[el.children[k].tagName]) { allInline = false; break; }
+        }
+        if (allInline) hasText = true;
+      }
     }
+    if (!hasText) continue;
 
     var fg = parseColor(cs.color);
     if (!fg) continue;
+    // Skip fully transparent foreground colors.
+    if (fg.a !== undefined && fg.a < 0.1) continue;
     var bg = getEffectiveBg(el);
 
     var fgL = luminance(fg.r, fg.g, fg.b);
@@ -206,7 +232,7 @@ const CONTRAST_JS_TEMPLATE: &str = r#"(function() {
 
   return '__FF_RDP_JSON__' + JSON.stringify({
     checks: checks,
-    summary: {total: checks.length, aa_pass: aaPass, aa_fail: aaFail, capped: elements.length >= 500}
+    summary: {total: checks.length, aa_pass: aaPass, aa_fail: aaFail, capped: elements.length >= 1000}
   });
 })()"#;
 
@@ -238,15 +264,17 @@ mod tests {
     }
 
     #[test]
-    fn contrast_js_checks_direct_text_only() {
-        // Ensures we don't check containers with only child-element text.
-        assert!(CONTRAST_JS_TEMPLATE.contains("hasDirectText"));
+    fn contrast_js_checks_text_nodes() {
+        // Theme J (iter-84): the JS checks direct text nodes and also
+        // containers with only inline children (span, a, b, etc.) so that
+        // real-world contrast violations in table cells and paragraphs are found.
         assert!(CONTRAST_JS_TEMPLATE.contains("nodeType === 3"));
+        assert!(CONTRAST_JS_TEMPLATE.contains("hasText"));
     }
 
     #[test]
     fn contrast_js_caps_element_count() {
         // Guard against hanging on massive pages.
-        assert!(CONTRAST_JS_TEMPLATE.contains("i < 500"));
+        assert!(CONTRAST_JS_TEMPLATE.contains("i < 1000"));
     }
 }

@@ -49,6 +49,16 @@ pub struct AppliedRule {
     /// Empty when the rule is not inside an `@media` block.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub media: Vec<String>,
+    /// The stable RDP actor ID for this rule (e.g. `"conn0/styleRuleActor1"`).
+    ///
+    /// Used by `styles --applied` to deduplicate entries: Firefox sometimes
+    /// sends the same rule multiple times when multiple stylesheets share the
+    /// same compiled rule object.  Keying on `rule_actor_id` (rather than on
+    /// `(selector, property)` pairs) is the correct deduplication level.
+    ///
+    /// `None` when Firefox omits the `actor` field (unusual but safe to ignore).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_actor_id: Option<ActorId>,
 }
 
 /// The four sides of a CSS box model dimension.
@@ -224,14 +234,19 @@ fn parse_computed_properties(computed: &Value) -> Result<Vec<ComputedProperty>, 
 
 /// Parse a single entry from the `entries` array of a `getApplied` response.
 ///
-/// Only includes entries where `rule.type == 1` (stylesheet CSS rules, not inline styles).
+/// Includes entries where `rule.type == 1` (stylesheet CSS rules) or where
+/// the `type` field is absent (some Firefox versions omit it for external
+/// stylesheet rules — Theme A, iter-84).  Inline style declarations
+/// (`rule.type == 0`) are always excluded.
 fn parse_applied_entry(entry: &Value) -> Option<AppliedRule> {
     let rule = entry.get("rule")?;
 
-    // Only process CSS rules (type == 1), skip inline/other rule types.
-    let rule_type = rule.get("type").and_then(Value::as_u64)?;
-    if rule_type != 1 {
-        return None;
+    // Skip inline style declarations (type 0) and unknown types.
+    // Accept type 1 (stylesheet CSS rules) or absent `type` — Firefox
+    // sometimes omits the field for rules from external stylesheets.
+    match rule.get("type").and_then(Value::as_u64) {
+        None | Some(1) => {}    // stylesheet rule or absent — keep
+        Some(_) => return None, // inline style (0) or unknown — skip
     }
 
     let selectors: Vec<&str> = rule
@@ -317,6 +332,15 @@ fn parse_applied_entry(entry: &Value) -> Option<AppliedRule> {
         })
         .unwrap_or_default();
 
+    // Extract the rule actor ID (`rule.actor`).  Firefox populates this with a
+    // stable actor path like `conn0/styleRuleActor1`.  Used downstream for
+    // deduplication in `styles --applied` (Theme E, iter-84).
+    // Use `ActorId::try_new` so absent/empty fields are stored as None.
+    let rule_actor_id = rule
+        .get("actor")
+        .and_then(Value::as_str)
+        .and_then(ActorId::try_new);
+
     Some(AppliedRule {
         selector,
         source,
@@ -325,6 +349,7 @@ fn parse_applied_entry(entry: &Value) -> Option<AppliedRule> {
         properties,
         matched_selectors,
         media,
+        rule_actor_id,
     })
 }
 
@@ -520,6 +545,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_applied_entry_absent_type_treated_as_stylesheet_rule() {
+        // Theme A (iter-84): some Firefox versions omit `type` for external
+        // stylesheet rules.  These should be parsed as regular stylesheet rules.
+        let entry = json!({
+            "rule": {
+                "selectors": ["h1"],
+                "href": "https://example.com/style.css",
+                "line": 1,
+                "column": 1
+            },
+            "declarations": [{"name": "color", "value": "red", "priority": ""}]
+        });
+        let rule = parse_applied_entry(&entry).unwrap();
+        assert_eq!(rule.selector, "h1");
+        assert_eq!(rule.properties[0].name, "color");
+    }
+
+    #[test]
     fn parse_applied_entry_missing_rule_returns_none() {
         let entry = json!({"declarations": []});
         assert!(parse_applied_entry(&entry).is_none());
@@ -616,6 +659,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_applied_entry_extracts_rule_actor_id() {
+        let entry = json!({
+            "rule": {
+                "type": 1,
+                "actor": "conn0/styleRuleActor42",
+                "selectors": ["h1"],
+                "href": "https://example.com/style.css",
+                "line": 1,
+                "column": 1
+            },
+            "declarations": [{"name": "color", "value": "red", "priority": ""}]
+        });
+        let rule = parse_applied_entry(&entry).unwrap();
+        assert_eq!(
+            rule.rule_actor_id.as_ref().map(std::convert::AsRef::as_ref),
+            Some("conn0/styleRuleActor42")
+        );
+    }
+
+    #[test]
     fn applied_rule_serialization_skips_optional_fields() {
         let rule = AppliedRule {
             selector: "p".to_string(),
@@ -625,11 +688,16 @@ mod tests {
             properties: vec![],
             matched_selectors: vec![],
             media: vec![],
+            rule_actor_id: None,
         };
         let v = serde_json::to_value(&rule).unwrap();
         assert!(v.get("source").is_none());
         assert!(v.get("line").is_none());
         assert!(v.get("column").is_none());
+        assert!(
+            v.get("rule_actor_id").is_none(),
+            "None actor_id should not serialize"
+        );
         assert_eq!(v["selector"], "p");
     }
 }
