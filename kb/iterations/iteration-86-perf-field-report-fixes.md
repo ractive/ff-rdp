@@ -60,7 +60,7 @@ the sentinel.
 
 ## Tasks
 
-### Theme A — `daemon stop` actually frees port 6000 [0/4]
+### Theme A — `daemon stop` actually frees port 6000 [4/4]
 
 - [x] `daemon stop` terminates the Firefox process group (SIGTERM → SIGKILL
       after 2 s grace), not just the RDP socket close.
@@ -71,7 +71,7 @@ the sentinel.
 - [x] dogfood_script Theme A: `launch --headless` → `daemon stop` →
       immediate `launch --headless` succeeds without manual `kill -9`.
 
-### Theme B — `lcp_note` reflects current launch state [0/3]
+### Theme B — `lcp_note` reflects current launch state [3/3]
 
 - [x] Read the active launch's `headless` flag from the client/session
       record (one source of truth). Drop the hardcoded "headless
@@ -82,7 +82,7 @@ the sentinel.
 - [x] dogfood_script Theme B: launch non-headless, run `perf audit`,
       assert the note does NOT contain "headless".
 
-### Theme C — render-blocking resource filter matches spec [0/3]
+### Theme C — render-blocking resource filter matches spec [3/3]
 
 - [x] Replace the over-eager filter with a spec-correct predicate:
       - `<link rel="stylesheet">` blocks only if media query matches
@@ -98,7 +98,7 @@ the sentinel.
       '.results.render_blocking | map(.url) | join(" ")'` does NOT
       contain `favicon` or `.ico`.
 
-### Theme D — `--jq` missing-path policy [0/4]
+### Theme D — `--jq` missing-path policy [4/4]
 
 - [x] Default behavior: missing paths produce nothing (silent omit), not
       `null`. Matches the principle of least surprise for downstream
@@ -111,7 +111,7 @@ the sentinel.
       with default flags exits 0 with empty stdout; with `--jq-strict`
       exits non-zero with stderr matching `not found`.
 
-### Theme E — document Firefox's LCP gap in `--help` [0/2]
+### Theme E — document Firefox's LCP gap in `--help` [2/2]
 
 - [x] `perf audit --help` includes a one-line note under the LCP/vitals
       section: "LCP: Firefox doesn't implement the Chromium LCP
@@ -121,7 +121,7 @@ the sentinel.
 - [x] dogfood_script Theme E: `ff-rdp perf audit --help 2>&1 | grep -qi
       "lighthouse"`.
 
-## Acceptance Criteria [0/11]
+## Acceptance Criteria [11/11]
 
 - [x] live_daemon_stop_frees_port: `launch → daemon stop → launch`
       completes without `kill -9` and second launch reports listening
