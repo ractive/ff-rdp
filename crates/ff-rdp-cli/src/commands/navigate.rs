@@ -557,9 +557,12 @@ pub fn run_core(
         // For the `Events`-only strategy, pass the full budget so behaviour
         // is unchanged for users who explicitly opted in to event-only waiting.
         let events_budget = if wait_opts.wait_strategy == WaitStrategy::Both {
-            // Reserve 30% for readystate but always give events at least 1 s.
-            let reserved_ms = (cli.timeout * 30 / 100).max(1000);
-            cli.timeout.saturating_sub(reserved_ms).max(1000)
+            // Reserve 30% for readystate (or 1 s, whichever is greater).  For
+            // very small timeouts (< ~1.4 s) the reserve clamps to the full
+            // budget — events then get a 1-tick floor and readystate gets the
+            // remainder; the sum still fits inside cli.timeout.
+            let reserved_ms = (cli.timeout * 30 / 100).max(1000).min(cli.timeout);
+            cli.timeout.saturating_sub(reserved_ms).max(1)
         } else {
             cli.timeout
         };
@@ -607,14 +610,20 @@ pub fn run_core(
             r @ Ok(_) => r,
             Err(e) if wait_opts.wait_strategy != WaitStrategy::Both => Err(e),
             Err(AppError::Timeout(_)) => {
-                // Events timed out — compute remaining budget and try readystate.
-                // Because we sliced the budget (events get ≤70% of cli.timeout),
-                // `remaining` is guaranteed to be > 0 for normal timeout values.
+                // Events timed out — give readystate the reserved 30% slice,
+                // capped to whatever is actually left of cli.timeout so the
+                // total wall time stays inside the user's budget.
                 refresh_console_actor(&mut ctx);
                 let elapsed_ms =
                     u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(cli.timeout);
-                let remaining = cli.timeout.saturating_sub(elapsed_ms).max(1000);
-                wait_for_readystate_complete(&mut ctx, remaining)
+                let remaining = cli.timeout.saturating_sub(elapsed_ms);
+                if remaining == 0 {
+                    Err(AppError::Timeout(
+                        "navigate: no remaining budget for readystate fallback".to_string(),
+                    ))
+                } else {
+                    wait_for_readystate_complete(&mut ctx, remaining)
+                }
             }
             Err(e) => Err(e),
         };

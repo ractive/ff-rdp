@@ -34,7 +34,7 @@ fn live_navigate_default_fast_no_budget_exhaustion() {
 
     let start = Instant::now();
     let out = Command::new(ff_rdp_bin())
-        .args(["navigate", "https://example.com/", "--timeout-ms", "8000"])
+        .args(["--timeout", "8000", "navigate", "https://example.com/"])
         .output()
         .expect("ff-rdp navigate failed");
 
@@ -52,24 +52,23 @@ fn live_navigate_default_fast_no_budget_exhaustion() {
     );
 }
 
-/// Theme K: `--timeout` flag (deprecated) is accepted as alias for
-/// `--timeout-ms` and emits a deprecation warning.
+/// `--timeout` (global operation timeout, placed before the subcommand) is
+/// honored by `navigate` and the command still completes successfully.
 #[test]
 #[ignore = "requires FF_RDP_LIVE_TESTS=1 and running Firefox"]
-fn live_navigate_legacy_timeout_flag_accepted() {
+fn live_navigate_global_timeout_flag_accepted() {
     if !live_tests_enabled() || !live_network_tests_enabled() {
         return;
     }
 
     let out = Command::new(ff_rdp_bin())
-        .args(["navigate", "https://example.com/", "--timeout", "5000"])
+        .args(["--timeout", "5000", "navigate", "https://example.com/"])
         .output()
         .expect("ff-rdp navigate failed");
 
-    // Should succeed (deprecated flag is still accepted).
     assert!(
         out.status.success(),
-        "navigate with --timeout (deprecated) failed: {}",
+        "navigate with --timeout failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 }

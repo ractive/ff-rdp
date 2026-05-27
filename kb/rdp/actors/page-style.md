@@ -90,11 +90,11 @@ When the same CSS rule matches via multiple inheritance paths (e.g. a `*`
 selector applied to every ancestor), `getApplied` returns the rule once per
 matched element, producing duplicates in the applied-styles output.
 
-**Change**: `AppliedRule` now carries a `rule_actor_id: String` field
-populated from `rule.actor` in the `getApplied` response. The CLI's
+**Change**: `AppliedRule` now carries a `rule_actor_id: Option<ActorId>`
+field populated from `rule.actor` in the `getApplied` response. The CLI's
 `styles applied` command deduplicates by this field before building the
-JSON output — rules with an empty actor ID (absent from server) pass through
-unchanged.
+JSON output — rules with `None` (Firefox omitted the field) pass through
+unchanged because there is no safe key to merge on.
 
-`rule_actor_id` is serialized only when non-empty
-(`#[serde(default, skip_serializing_if = "String::is_empty")]`).
+`rule_actor_id` is serialized only when `Some`
+(`#[serde(default, skip_serializing_if = "Option::is_none")]`).

@@ -129,9 +129,8 @@ pub fn run_applied(cli: &Cli, selector: &str) -> Result<(), AppError> {
     // The correct deduplication key is the RDP actor ID (`rule.actor`), not
     // a `(selector, property)` pair that legitimately repeats across sheets.
     //
-    // Rules with an empty `rule_actor_id` (Firefox omitted the field) are
-    // kept as-is — they won't collide with each other since the empty string
-    // is only used as a default.
+    // Rules with no `rule_actor_id` (`None` — Firefox omitted the field) are
+    // kept as-is rather than deduplicated, since we have no safe key to merge on.
     let mut seen_actor_ids: std::collections::HashSet<ff_rdp_core::ActorId> =
         std::collections::HashSet::new();
     let deduped_applied: Vec<&ff_rdp_core::AppliedRule> = applied

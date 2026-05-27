@@ -1,9 +1,8 @@
 /// Live test for Theme K (iter-84): `--timeout-ms` is the canonical flag for
-/// the `wait` subcommand (replacing `--timeout`). Both flags are accepted;
-/// `--timeout` emits a deprecation warning.
+/// the `wait` subcommand and `--wait-timeout` is kept as a hidden alias.
 ///
-/// AC: live_wait_timeout_ms_canonical — wait --timeout-ms 1000 exits 0;
-///     wait --timeout 1000 exits 0 + stderr contains "deprecated"
+/// AC: live_wait_timeout_ms_canonical — wait --timeout-ms 2000 exits 0;
+///     wait --wait-timeout 2000 (legacy alias) exits 0
 use std::process::Command;
 
 fn ff_rdp_bin() -> String {
