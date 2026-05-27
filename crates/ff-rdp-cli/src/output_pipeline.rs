@@ -152,11 +152,8 @@ impl OutputPipeline {
                         raw_filtered.into_iter().filter(|v| !v.is_null()).collect()
                     }
                     JqMissingPolicy::Strict => {
-                        for v in &raw_filtered {
-                            if v.is_null() {
-                                eprintln!("error: jq path '{filter}' not found in input");
-                                std::process::exit(1);
-                            }
+                        if raw_filtered.iter().any(serde_json::Value::is_null) {
+                            anyhow::bail!("jq path '{filter}' not found in input");
                         }
                         raw_filtered
                     }

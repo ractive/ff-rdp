@@ -175,13 +175,9 @@ pub fn kill_process(pid: u32) {
 /// Uses a non-blocking connect with a 100 ms timeout to avoid hanging on
 /// firewalled ports.
 pub fn is_port_in_use(port: u16) -> bool {
-    use std::net::TcpStream;
-    let addr = format!("127.0.0.1:{port}");
-    TcpStream::connect_timeout(
-        &addr.parse().unwrap_or("127.0.0.1:6000".parse().unwrap()),
-        Duration::from_millis(100),
-    )
-    .is_ok()
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
+    let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok()
 }
 
 /// Poll `localhost:port` every 100 ms until it stops accepting connections,

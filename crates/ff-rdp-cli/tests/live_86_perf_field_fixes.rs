@@ -2,7 +2,9 @@
 //!
 //! Covers all five themes:
 //!   A — `daemon stop` frees the Firefox RDP port (kills process group)
-//!   B — `lcp_note` does NOT mention "headless" regardless of launch mode
+//!   B — `lcp_note` does NOT mention "headless" (verified under headless launch;
+//!         the message is constructed without consulting launch mode, so this
+//!         covers the regardless-of-mode guarantee in the only mode CI can run)
 //!   C — render-blocking filter matches spec (stylesheets + sync scripts only)
 //!   D — `--jq` missing path: silent by default, non-zero with `--jq-strict`
 //!   E — `perf audit --help` mentions Lighthouse

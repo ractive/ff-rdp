@@ -874,8 +874,8 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
     inline_script_count: document.querySelectorAll('script:not([src])').length,
     render_blocking_resources: (function() {
       // Spec-correct render-blocking predicate (iter-86 Theme C).
-      // Non-blocking rels that NEVER block rendering:
-      var nonBlockingRels = ['icon', 'manifest', 'preload', 'prefetch', 'dns-prefetch', 'preconnect', 'modulepreload', 'shortcut icon', 'apple-touch-icon'];
+      // Only rel="stylesheet" can render-block; all other rels (icon, preload,
+      // prefetch, dns-prefetch, preconnect, modulepreload, manifest, …) never do.
       var blocking = [];
       document.querySelectorAll('link, script').forEach(function(el) {
         var url = el.href || el.src || '';
@@ -1939,30 +1939,19 @@ mod tests {
     /// This is a static test of the JS source string embedded in run_audit.
     #[test]
     fn unit_render_blocking_js_excludes_non_blocking_rels() {
-        // The JS uses `nonBlockingRels` and only counts `rel="stylesheet"`.
-        // Non-blocking rels that MUST appear in the JS exclusion list:
-        let non_blocking = [
-            "icon",
-            "manifest",
-            "preload",
-            "prefetch",
-            "dns-prefetch",
-            "preconnect",
-            "modulepreload",
-        ];
-        // We can't run JS here, but we can assert the strings appear in the
-        // JS source embedded in `run_audit` (the function that contains the
-        // render-blocking logic).  This catches typos in the rel names.
-        for rel in &non_blocking {
-            // The source must reference this rel as a non-blocking entry.
-            // We check the constant string in the source via the module's
-            // compile-time embed; practically verified by running the dogfood.
-            // Here we assert the expected rel is in our non-blocking list.
-            assert!(
-                non_blocking.contains(rel),
-                "rel '{rel}' must be in the non-blocking list"
-            );
-        }
+        // The render-blocking predicate in run_audit must only count
+        // rel="stylesheet" links. Assert the source file embeds the exact
+        // filter and explanatory comment so a future refactor that loosens
+        // the predicate fails this test.
+        let source = include_str!("perf.rs");
+        assert!(
+            source.contains("if (rel !== 'stylesheet') return;"),
+            "render-blocking JS must filter on rel !== 'stylesheet'"
+        );
+        assert!(
+            source.contains("Only rel=\"stylesheet\" can render-block"),
+            "render-blocking JS must document the spec-correct predicate"
+        );
     }
 
     // ── render_summary_text ──────────────────────────────────────────────────
