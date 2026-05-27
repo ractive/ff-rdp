@@ -2,7 +2,7 @@
 title: "Iteration 84: dogfood-56 real-real fixes — finish iter-83's still-broken themes (cascade, screenshot, navigate default, styles dedupe) + bundled chaos findings (dom-stats parity, stale-tab race, a11y contrast, flag unification, cookies Set-Cookie)"
 type: iteration
 date: 2026-05-26
-status: planned
+status: completed
 branch: iter-84/dogfood-56-real-real-fixes
 depends_on:
   - iteration-83-dogfood-55-real-fixes
