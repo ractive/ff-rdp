@@ -2,50 +2,27 @@
 title: "Iteration 85: dogfood-57 carry-overs (cascade type sentinel, screenshot WindowGlobalTarget, cookies network-merge, navigate budget) + runnable dogfood_script gate"
 type: iteration
 date: 2026-05-27
-status: planned
+status: done
 branch: iter-85/dogfood-57-carryovers-and-runnable-dogfood-path
 depends_on:
   - iteration-84-dogfood-56-real-real-fixes
 firefox_refs:
   - lines: 260-520
     path: devtools/server/actors/page-style.js
-    why: >-
-      Theme A — dogfood-57 found that iter-84's cascade parser accepts
-      `rule.type` absent or `== 1` (LegacyRule sentinel), but Firefox 151
-      sends `type: 100` with `className: "CSSStyleRule"` for ordinary
-      author rules. Re-confirm the type enum and accept the modern
-      `CSSStyleRule` constant (or drop the filter and rely on
-      `matchedSelectorIndexes` non-empty as the discriminator).
+    why: "Theme A — dogfood-57 found that iter-84's cascade parser accepts `rule.type` absent or `== 1` (LegacyRule sentinel), but Firefox 151 sends `type: 100` with `className: \"CSSStyleRule\"` for ordinary author rules. Re-confirm the type enum and accept the modern `CSSStyleRule` constant (or drop the filter and rely on `matchedSelectorIndexes` non-empty as the discriminator)."
   - lines: 1-144
     path: devtools/server/actors/screenshot-content.js
-    why: >-
-      Theme B — iter-84 added per-target probing scaffolding but did NOT
-      route the actual capture call through `WindowGlobalTarget` /
-      `BrowsingContextTarget`. dogfood-57 confirms the same root-form
-      error message. Land the call path: when the root-form `screenshot`
-      actor is absent, send `getCurrentTabActor` then issue the capture
-      request against `tabActor.screenshot` (or the FF 151 equivalent).
-      (FF 151 split: `screenshot.js` is now a 25-line re-export shim;
-      the real WindowGlobal-target capture path lives in
-      `screenshot-content.js`.)
+    why: "Theme B — iter-84 added per-target probing scaffolding but did NOT route the actual capture call through `WindowGlobalTarget` / `BrowsingContextTarget`. dogfood-57 confirms the same root-form error message. Land the call path: when the root-form `screenshot` actor is absent, send `getCurrentTabActor` then issue the capture request against `tabActor.screenshot` (or the FF 151 equivalent). (FF 151 split: `screenshot.js` is now a 25-line re-export shim; the real WindowGlobal-target capture path lives in `screenshot-content.js`.)"
   - lines: 1-18
     path: devtools/server/actors/resources/storage-cookie.js
-    why: >-
-      Theme L — iter-84 shipped a 250 ms StorageActor retry but never
-      reached for the network actor. dogfood-57 confirms cookies set via
-      `Set-Cookie` response header against httpbin.org/cookies/set still
-      return `[]`. Land the network-actor side: subscribe to
-      `responseHeaders` resources during navigate, extract `Set-Cookie`
-      values, parse name/value/domain/path/expires, and merge with the
-      StorageActor reply (StorageActor wins on conflict).
+    why: "Theme L — iter-84 shipped a 250 ms StorageActor retry but never reached for the network actor. dogfood-57 confirms cookies set via `Set-Cookie` response header against httpbin.org/cookies/set still return `[]`. Land the network-actor side: subscribe to `responseHeaders` resources during navigate, extract `Set-Cookie` values, parse name/value/domain/path/expires, and merge with the StorageActor reply (StorageActor wins on conflict)."
   - lines: 1-125
     path: devtools/server/actors/resources/document-event.js
     why: >-
-      Theme C — iter-84 stopped the 10 s timeout but example.com still
-      takes ~7.2 s end-to-end (AC said < 3000 ms). Profile which
-      event/fallback is dominating the budget — likely the readystate
-      fallback fires unconditionally even when `dom-interactive` already
-      arrived. Make the fallback conditional on the event-path actually
+      Theme C — iter-84 stopped the 10 s timeout but example.com still takes ~7.2 s
+      end-to-end (AC said < 3000 ms). Profile which event/fallback is dominating the
+      budget — likely the readystate fallback fires unconditionally even when
+      `dom-interactive` already arrived. Make the fallback conditional on the event-path actually
       timing out, not on event-path absence.
 kb_refs:
   - kb/rdp/actors/page-style.md
@@ -55,20 +32,20 @@ kb_refs:
   - kb/dogfooding/dogfooding-session-57.md
   - kb/iterations/iteration-84-dogfood-56-real-real-fixes.md
 first_call_sites:
-  - primitive: "cascade parser accepts CSSStyleRule type sentinel (Theme A)"
-    site: "crates/ff-rdp-core/src/actors/page_style.rs"
-  - primitive: "screenshot capture routed through WindowGlobalTarget (Theme B)"
-    site: "crates/ff-rdp-core/src/actors/screenshot.rs"
-  - primitive: "cookies merge from network-actor Set-Cookie headers (Theme L)"
-    site: "crates/ff-rdp-core/src/actors/storage.rs"
-  - primitive: "navigate readystate fallback gated on event-path timeout (Theme C)"
-    site: "crates/ff-rdp-cli/src/commands/navigate.rs"
-  - primitive: "wait --timeout deprecation warning (Theme K-followup)"
-    site: "crates/ff-rdp-cli/src/commands/wait.rs"
+  - primitive: cascade parser accepts CSSStyleRule type sentinel (Theme A)
+    site: crates/ff-rdp-core/src/actors/page_style.rs
+  - primitive: screenshot capture routed through WindowGlobalTarget (Theme B)
+    site: crates/ff-rdp-core/src/actors/screenshot.rs
+  - primitive: cookies merge from network-actor Set-Cookie headers (Theme L)
+    site: crates/ff-rdp-core/src/actors/storage.rs
+  - primitive: navigate readystate fallback gated on event-path timeout (Theme C)
+    site: crates/ff-rdp-cli/src/commands/navigate.rs
+  - primitive: wait --timeout deprecation warning (Theme K-followup)
+    site: crates/ff-rdp-cli/src/commands/wait.rs
   - primitive: "xtask check-dogfood-script: extract+exec sibling .dogfood.sh"
-    site: "crates/xtask/src/check_dogfood_script.rs"
-  - primitive: "iteration plan schema accepts `dogfood_script:` pointer"
-    site: "crates/xtask/src/iteration_plan.rs"
+    site: crates/xtask/src/check_dogfood_script.rs
+  - primitive: iteration plan schema accepts `dogfood_script:` pointer
+    site: crates/xtask/src/iteration_plan.rs
 dogfood_script: iteration-85-dogfood-57-carryovers-and-runnable-dogfood-path.dogfood.sh
 tags:
   - iteration
