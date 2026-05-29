@@ -103,7 +103,7 @@ fn run_aggregator_real_repo_with_skips(
 // Tests
 // ---------------------------------------------------------------------------
 
-/// Happy path: synthetic plan with no ACs + clean diff → all 6 sub-checks PASS.
+/// Happy path: synthetic plan with no ACs + clean diff → all 9 sub-checks PASS.
 ///
 /// We run against the real repo root with `--base HEAD` so the code diff is
 /// empty. That means dead-primitives, todo-annotations, and actor-kb-sync all
@@ -121,8 +121,25 @@ fn check_iteration_ready_happy_path() {
     // the full main history (iter-61t merge commit) which CI's shallow
     // checkout does not include. The standalone `discipline` CI job exercises
     // it separately and proves it works in isolation.
-    let out =
-        run_aggregator_real_repo_with_skips(&plan_path, "HEAD", &["check-discipline-regression"]);
+    //
+    // Skip check-dogfood-script because the plan uses dogfood_path (not
+    // dogfood_script) and the new fail-by-default logic in iter-87 causes it
+    // to FAIL rather than SKIP on iter-* branches when FF_RDP_LIVE_TESTS is
+    // unset. The live-tests CI job exercises the dogfood gate end-to-end.
+    //
+    // Skip check-pre-fix-repro and lint-dogfood-script because the synthetic
+    // plan has no dogfood_script field and no pre_fix_repro_test annotations —
+    // both would SKIP anyway, but skipping them here keeps the test fast.
+    let out = run_aggregator_real_repo_with_skips(
+        &plan_path,
+        "HEAD",
+        &[
+            "check-discipline-regression",
+            "check-dogfood-script",
+            "check-pre-fix-repro",
+            "lint-dogfood-script",
+        ],
+    );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -133,15 +150,15 @@ fn check_iteration_ready_happy_path() {
         "aggregator should exit 0 for a clean plan.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
 
-    // Final line must be "7/7 PASS".
+    // Final line must be "9/9 PASS" (9 sub-checks as of iter-87).
     let last_meaningful = stdout
         .lines()
         .rev()
         .find(|l| !l.trim().is_empty())
         .unwrap_or_default();
     assert!(
-        last_meaningful.contains("7/7 PASS"),
-        "expected '7/7 PASS' as final summary line, got: {last_meaningful:?}\n--- combined ---\n{combined}"
+        last_meaningful.contains("9/9 PASS"),
+        "expected '9/9 PASS' as final summary line, got: {last_meaningful:?}\n--- combined ---\n{combined}"
     );
 }
 
@@ -201,12 +218,12 @@ dogfood_path: |
         combined.contains("ac-fidelity"),
         "expected 'ac-fidelity' in the failure output.\n--- combined ---\n{combined}"
     );
-    // Non-short-circuit: every sub-check header `[N/7]` must appear, proving
+    // Non-short-circuit: every sub-check header `[N/9]` must appear, proving
     // the aggregator continued past the failing sub-check rather than bailing
     // on the first one. This is the iter-74 regression's "see every issue at
     // once" requirement.
-    for i in 1..=7 {
-        let header = format!("[{i}/7]");
+    for i in 1..=9 {
+        let header = format!("[{i}/9]");
         assert!(
             combined.contains(&header),
             "expected sub-check header {header} in output (non-short-circuit).\n\
@@ -227,8 +244,8 @@ fn check_iteration_ready_aggregates_failures() {
     let plan_path = tmp.path().join("plan.md");
 
     // A plan with a ticked AC naming a test that doesn't exist — this will
-    // cause ac-fidelity-check to fail. The other 6 sub-checks should still
-    // run (we can verify by seeing all 7 [N/7] lines in the output).
+    // cause ac-fidelity-check to fail. The other 8 sub-checks should still
+    // run (we can verify by seeing all 9 [N/9] lines in the output).
     fs::write(
         &plan_path,
         "\
@@ -263,11 +280,11 @@ dogfood_path: |
         "aggregator should exit 1.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
 
-    // All 6 sub-check lines must appear — aggregator does NOT short-circuit.
-    for i in 1..=7 {
+    // All 9 sub-check lines must appear — aggregator does NOT short-circuit.
+    for i in 1..=9 {
         assert!(
-            combined.contains(&format!("[{i}/7]")),
-            "expected '[{i}/7]' in output (aggregator must not short-circuit).\n--- combined ---\n{combined}"
+            combined.contains(&format!("[{i}/9]")),
+            "expected '[{i}/9]' in output (aggregator must not short-circuit).\n--- combined ---\n{combined}"
         );
     }
 

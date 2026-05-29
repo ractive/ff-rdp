@@ -71,6 +71,104 @@ fn run_xtask(subcommand: &str, extra_args: &[&str]) -> (bool, String) {
     }
 }
 
+const LINT_DOGFOOD_SCRIPT_PATH: &str = "tools/lint-dogfood-script.sh";
+
+/// Run tools/lint-dogfood-script.sh against the plan's dogfood script (if any).
+/// Returns (true, output) on pass or SKIP; (false, output) on FAIL.
+fn run_lint_dogfood_script(plan: &Path, repo_root: &Path) -> (bool, String) {
+    let linter = repo_root.join(LINT_DOGFOOD_SCRIPT_PATH);
+    if !linter.exists() {
+        return (
+            false,
+            format!(
+                "lint-dogfood-script: FAIL (linter not found: {})",
+                linter.display()
+            ),
+        );
+    }
+
+    // Read the plan to find dogfood_script.
+    let content = match std::fs::read_to_string(plan) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                false,
+                format!("lint-dogfood-script: FAIL (could not read plan: {e})"),
+            );
+        }
+    };
+    let parsed = match crate::check_iteration_plan::parse_plan(&content) {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                false,
+                format!("lint-dogfood-script: FAIL (could not parse plan: {e})"),
+            );
+        }
+    };
+
+    let script_name = match parsed.frontmatter.dogfood_script.as_deref() {
+        None | Some("") => {
+            return (
+                true,
+                "lint-dogfood-script: SKIP (no dogfood_script field in plan)".to_owned(),
+            );
+        }
+        Some(s) => s,
+    };
+
+    let plan_dir = match plan.parent() {
+        Some(d) => d,
+        None => {
+            return (
+                false,
+                "lint-dogfood-script: FAIL (plan path has no parent dir)".to_owned(),
+            );
+        }
+    };
+    let script_path = plan_dir.join(script_name);
+
+    if !script_path.exists() {
+        return (
+            false,
+            format!(
+                "lint-dogfood-script: FAIL (script does not exist: {})",
+                script_path.display()
+            ),
+        );
+    }
+
+    let output = Command::new("bash")
+        .arg(&linter)
+        .arg(&script_path)
+        .current_dir(repo_root)
+        .output();
+
+    match output {
+        Ok(o) => {
+            let mut combined = String::from_utf8_lossy(&o.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if !stderr.is_empty() {
+                if !combined.is_empty() {
+                    combined.push('\n');
+                }
+                combined.push_str(&stderr);
+            }
+            (o.status.success(), combined)
+        }
+        Err(e) => (
+            false,
+            format!("lint-dogfood-script: FAIL (bash invocation error: {e})"),
+        ),
+    }
+}
+
+/// Run check-pre-fix-repro as a subprocess sub-check.
+fn run_check_pre_fix_repro(plan: &Path) -> (bool, String) {
+    let plan_str = plan.to_string_lossy();
+    run_xtask("check-pre-fix-repro", &["--plan", plan_str.as_ref()])
+}
+
 /// Locate the in-repo ac-fidelity-check.sh mirror, falling back to the
 /// canonical skill path.
 fn find_ac_fidelity_script(repo_root: &Path) -> Option<PathBuf> {
@@ -183,32 +281,42 @@ pub fn run(args: Args) -> Result<()> {
         run_xtask("check-dead-primitives", &["--since", base_str])
     }));
 
-    // --- 2. check-todo-annotations
+    // --- 2. check-pre-fix-repro (iter-87)
+    results.push(run_or_skip("check-pre-fix-repro", &mut || {
+        run_check_pre_fix_repro(&plan)
+    }));
+
+    // --- 3. lint-dogfood-script (iter-87)
+    results.push(run_or_skip("lint-dogfood-script", &mut || {
+        run_lint_dogfood_script(&plan, &repo_root)
+    }));
+
+    // --- 4. check-todo-annotations
     results.push(run_or_skip("check-todo-annotations", &mut || {
         run_xtask("check-todo-annotations", &["--since", base_str])
     }));
 
-    // --- 3. check-actor-kb-sync
+    // --- 5. check-actor-kb-sync
     results.push(run_or_skip("check-actor-kb-sync", &mut || {
         run_xtask("check-actor-kb-sync", &["--since", base_str])
     }));
 
-    // --- 4. check-firefox-refs
+    // --- 6. check-firefox-refs
     results.push(run_or_skip("check-firefox-refs", &mut || {
         run_xtask("check-firefox-refs", &[&plan_display])
     }));
 
-    // --- 5. check-discipline-regression
+    // --- 7. check-discipline-regression
     results.push(run_or_skip("check-discipline-regression", &mut || {
         run_xtask("check-discipline-regression", &[])
     }));
 
-    // --- 6. ac-fidelity-check.sh
+    // --- 8. ac-fidelity-check.sh
     results.push(run_or_skip("ac-fidelity-check", &mut || {
         run_ac_fidelity(&plan, base_str, &repo_root)
     }));
 
-    // --- 7. check-dogfood-script
+    // --- 9. check-dogfood-script
     results.push(run_or_skip("check-dogfood-script", &mut || {
         run_xtask("check-dogfood-script", &[&plan_display])
     }));

@@ -1,0 +1,23 @@
+{
+  "url": "https://api.github.com/repos/ractive/ff-rdp/branches/main/protection",
+  "required_status_checks": {
+    "url": "https://api.github.com/repos/ractive/ff-rdp/branches/main/protection/required_status_checks",
+    "strict": false,
+    "contexts": [
+      "ci / test",
+      "ci / clippy",
+      "supply-chain"
+    ],
+    "checks": [
+      {"context": "ci / test", "app_id": null},
+      {"context": "ci / clippy", "app_id": null},
+      {"context": "supply-chain", "app_id": null}
+    ]
+  },
+  "enforce_admins": {
+    "url": "https://api.github.com/repos/ractive/ff-rdp/branches/main/protection/enforce_admins",
+    "enabled": false
+  },
+  "required_pull_request_reviews": null,
+  "restrictions": null
+}
