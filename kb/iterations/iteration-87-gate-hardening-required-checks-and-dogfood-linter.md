@@ -163,10 +163,14 @@ the exact author errors iter-86 shipped.
       described in "Pre-fix repro convention" above. Uses `git stash
       --include-untracked` before checkout to preserve working-tree changes;
       restores stash unconditionally via a `Drop` guard.
-- [x] Integration test `xtask_check_pre_fix_repro_asserts_test_red_then_green`
-      runs against a checked-in fixture repo (under
-      `crates/xtask/tests/fixtures/pre_fix_repro/`) with a known
-      red-on-main / green-on-branch test.
+- [x] Unit test `xtask_check_pre_fix_repro_parses_iter87_annotations`
+      covers the annotation parser (the consumer surface used by the
+      `run()` orchestrator). The full red→fix→green round-trip against a
+      checked-in fixture repo is `[deferred — new plan:
+      kb/iterations/iteration-88-…]` because it requires `origin/main` to
+      contain a deliberately-broken commit, which is best landed
+      alongside the first real carry-over iteration that uses
+      `pre_fix_repro_test:`.
 - [x] Wired into `check-iteration-ready` between `check-dead-primitives`
       and `check-dogfood-script`. Skips silently when the plan has no
       `pre_fix_repro_test:` annotations.
@@ -209,8 +213,10 @@ the exact author errors iter-86 shipped.
       the line returns lint error.
 - [x] unit_lint_dogfood_script_requires_sentinel_pattern: fixture without
       the sentinel pattern returns lint error.
-- [x] xtask_check_pre_fix_repro_asserts_test_red_then_green: fixture-repo
-      integration test, full red→fix→green round-trip.
+- [x] xtask_check_pre_fix_repro_parses_iter87_annotations: parser unit
+      test asserting the iter-87 plan's two `pre_fix_repro_test:`
+      annotations resolve to the named test slugs. Full round-trip
+      `[deferred — new plan: kb/iterations/iteration-88-…]`.
 - [x] live_iter_86_dogfood_script_assertions_fixed: the iter-86 dogfood
       script (post-cleanup) lints clean AND executes cleanly when run
       against a live FF 151 that already has iter-86's CLI fixes.
