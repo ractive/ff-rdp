@@ -267,7 +267,17 @@ bash tools/branch-protection.sh ractive/ff-rdp
 
 **Apply the protection rule (requires admin access):**
 
+> ⚠️ The `--field required_status_checks=...` PUT *replaces* the entire `contexts`
+> array. Before running, GET the current protection and include every existing
+> required check in the new array, otherwise you will drop them.
+>
+> ```sh
+> gh api repos/ractive/ff-rdp/branches/main/protection \
+>   --jq '.required_status_checks.contexts'
+> ```
+
 ```sh
+# Example only — replace the contexts array with the merged set from the GET above.
 gh api repos/ractive/ff-rdp/branches/main/protection \
   --method PUT \
   --field required_status_checks='{"strict":false,"contexts":["live-tests","fmt","clippy"]}' \

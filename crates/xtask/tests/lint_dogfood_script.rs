@@ -151,15 +151,15 @@ fn unit_lint_dogfood_script_good_fixture_passes() {
 fn lint_flags_iter86_assertions_before_fix() {
     // Use the unanchored-grep-bad.sh and bool-flag-positional-bad.sh fixtures which
     // replicate the exact iter-86 bugs verbatim.
-    let (unanchored_fails, _) = run_linter("unanchored-grep-bad.sh");
-    let (boolflag_fails, _) = run_linter("bool-flag-positional-bad.sh");
+    let (unanchored_ok, _) = run_linter("unanchored-grep-bad.sh");
+    let (boolflag_ok, _) = run_linter("bool-flag-positional-bad.sh");
 
     assert!(
-        !unanchored_fails,
+        !unanchored_ok,
         "unanchored-grep fixture (iter-86 Theme B pattern) must FAIL linting"
     );
     assert!(
-        !boolflag_fails,
+        !boolflag_ok,
         "bool-flag-positional fixture (iter-86 Theme D pattern) must FAIL linting"
     );
 }

@@ -105,25 +105,21 @@ pub fn parse_pre_fix_repro_annotations(body: &str) -> Vec<PreFixAnnotation> {
     annotations
 }
 
-/// Check that a test slug exists in the workspace (or given crate).
-///
-/// Uses `cargo test [[-p crate]] -- --list` to enumerate all tests and checks
-/// that at least one entry matches the slug.
+/// Resolve a bare test slug to its fully-qualified test path (e.g.
+/// `module::path::slug`) by searching `cargo test -- --list` output.
 ///
 /// When no crate_name is specified, tries `-p xtask` first (where most
 /// discipline tests live) then falls back to searching the full workspace.
-fn assert_test_exists(slug: &str, crate_name: Option<&str>) -> Result<()> {
+fn resolve_test_path(slug: &str, crate_name: Option<&str>) -> Result<String> {
     let crates_to_try: Vec<Option<&str>> = if crate_name.is_some() {
         vec![crate_name]
     } else {
-        // Try xtask first (fast), then workspace-wide.
         vec![Some("xtask"), None]
     };
 
     for try_crate in &crates_to_try {
-        let found = try_list_tests(slug, *try_crate)?;
-        if found {
-            return Ok(());
+        if let Some(path) = try_list_tests(slug, *try_crate)? {
+            return Ok(path);
         }
     }
 
@@ -133,44 +129,56 @@ fn assert_test_exists(slug: &str, crate_name: Option<&str>) -> Result<()> {
     ))
 }
 
-/// Returns `Ok(true)` if `slug` appears in the test listing for the given crate
-/// (or workspace-wide if `crate_name` is None).
-fn try_list_tests(slug: &str, crate_name: Option<&str>) -> Result<bool> {
+/// Returns `Ok(Some(full_path))` if `slug` matches an entry in the test listing
+/// for the given crate. Surfaces compile/invocation failures rather than
+/// silently returning "not found".
+fn try_list_tests(slug: &str, crate_name: Option<&str>) -> Result<Option<String>> {
     let mut cmd = Command::new("cargo");
     cmd.arg("test");
     if let Some(name) = crate_name {
         cmd.args(["-p", name]);
     }
-    // `-- --list` lists all test names without running them.
     cmd.args(["--", "--list"]);
 
     let output = cmd
         .output()
         .context("failed to invoke `cargo test -- --list`")?;
 
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "`cargo test{} -- --list` failed (exit {}): {stderr}",
+            crate_name.map(|c| format!(" -p {c}")).unwrap_or_default(),
+            output.status.code().unwrap_or(-1)
+        ));
+    }
+
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Each test appears as "<module::path::name>: test" in the listing.
-    // Match by checking whether the slug appears as a suffix (after `::` or at start).
     let found = stdout
         .lines()
         .filter(|l| l.ends_with(": test") || l.ends_with(": bench"))
-        .any(|l| {
+        .find_map(|l| {
             let name = l.trim_end_matches(": test").trim_end_matches(": bench");
-            name == slug
+            if name == slug
                 || name.ends_with(&format!("::{slug}"))
                 || name.ends_with(&format!("/{slug}"))
+            {
+                Some(name.to_owned())
+            } else {
+                None
+            }
         });
     Ok(found)
 }
 
-/// Run a single named test and return whether it passed.
-fn run_test(slug: &str, crate_name: Option<&str>) -> Result<bool> {
+/// Run a single named test by its fully-qualified path and return whether it passed.
+fn run_test(full_path: &str, crate_name: Option<&str>) -> Result<bool> {
     let mut cmd = Command::new("cargo");
     cmd.arg("test");
     if let Some(name) = crate_name {
         cmd.args(["-p", name]);
     }
-    cmd.args(["-q", "--", slug, "--exact"]);
+    cmd.args(["-q", "--", full_path, "--exact"]);
 
     let status = cmd.status().context("failed to invoke `cargo test`")?;
 
@@ -224,10 +232,22 @@ impl CheckoutGuard {
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
             .output()
             .context("failed to get current HEAD ref")?;
-        let previous_ref = String::from_utf8(output.stdout)
+        let mut previous_ref = String::from_utf8(output.stdout)
             .context("non-utf8 git output")?
             .trim()
             .to_owned();
+
+        // Detached HEAD returns literal "HEAD" — capture the SHA instead.
+        if previous_ref == "HEAD" {
+            let sha_output = Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .context("failed to get HEAD SHA")?;
+            previous_ref = String::from_utf8(sha_output.stdout)
+                .context("non-utf8 git output")?
+                .trim()
+                .to_owned();
+        }
 
         let status = Command::new("git")
             .args(["checkout", git_ref])
@@ -275,11 +295,14 @@ pub fn run(args: Args) -> Result<()> {
             slug, annotation.theme
         );
 
-        // Step 1: assert the test exists.
-        if let Err(e) = assert_test_exists(slug, crate_name) {
-            failures.push(format!("  [{slug}] step 1 (exists): {e}"));
-            continue;
-        }
+        // Step 1: resolve the slug to a fully-qualified test path.
+        let full_path = match resolve_test_path(slug, crate_name) {
+            Ok(p) => p,
+            Err(e) => {
+                failures.push(format!("  [{slug}] step 1 (resolve): {e}"));
+                continue;
+            }
+        };
 
         // Step 2: stash current changes.
         let stash_guard = match StashGuard::stash() {
@@ -300,7 +323,7 @@ pub fn run(args: Args) -> Result<()> {
             }
             Ok(checkout_guard) => {
                 // Treat invocation errors as "test did not pass" = expected FAIL.
-                let main_passed = run_test(slug, crate_name).unwrap_or(false);
+                let main_passed = run_test(&full_path, crate_name).unwrap_or(false);
 
                 if main_passed {
                     failures.push(format!(
@@ -318,8 +341,8 @@ pub fn run(args: Args) -> Result<()> {
                 // Step 4: restore stash, run test, expect PASS.
                 drop(stash_guard);
 
-                let branch_passed =
-                    run_test(slug, crate_name).context("failed to run test on branch HEAD")?;
+                let branch_passed = run_test(&full_path, crate_name)
+                    .context("failed to run test on branch HEAD")?;
 
                 if !branch_passed {
                     failures.push(format!(
@@ -446,13 +469,13 @@ Content.
         );
     }
 
-    /// `xtask_check_pre_fix_repro_asserts_test_red_then_green`:
+    /// `xtask_check_pre_fix_repro_parses_iter87_annotations`:
     /// Verify the annotation parser handles the iter-87 format correctly and
-    /// that a plan with no annotations skips gracefully (the full red→green
-    /// round-trip requires a live git repo switch, documented as a manual
-    /// procedure — see Theme D notes in the iteration plan).
+    /// that a plan with no annotations skips gracefully. The full red→green
+    /// round-trip requires a live git repo switch and is exercised manually
+    /// — see Theme D notes in the iteration plan.
     #[test]
-    fn xtask_check_pre_fix_repro_asserts_test_red_then_green() {
+    fn xtask_check_pre_fix_repro_parses_iter87_annotations() {
         // Test that parse_pre_fix_repro_annotations correctly identifies annotations
         // and that a plan with annotations parses non-empty.
         let body_with_annotation = "### Theme X — fix something [pre_fix_repro_test: my_slug]\n";

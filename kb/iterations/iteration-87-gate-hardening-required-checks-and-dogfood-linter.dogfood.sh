@@ -21,13 +21,13 @@ if [ ! -f "$BAD" ]; then
   echo "FAIL Theme C: fixture not found: $BAD" >&2
   exit 1
 fi
-if "$LINTER" "$BAD" >/dev/null 2>&1; then
+if bash "$LINTER" "$BAD" >/dev/null 2>&1; then
   echo "FAIL Theme C: linter accepted a known-bad fixture ($BAD)" >&2
   exit 1
 fi
 
 # --- Theme C check 2: linter exits 0 on iter-87's own script ---
-"$LINTER" "$SELF_SCRIPT" || { echo "FAIL Theme C: linter rejected iter-87's own script" >&2; exit 1; }
+bash "$LINTER" "$SELF_SCRIPT" || { echo "FAIL Theme C: linter rejected iter-87's own script" >&2; exit 1; }
 
 # --- Theme B check: check-dogfood-script FAILs on iter-* branch when FF_RDP_LIVE_TESTS unset ---
 # Use BRANCH_NAME override (the implementation should honor it for testability).
@@ -45,33 +45,36 @@ grep -qi 'FF_RDP_LIVE_TESTS' /tmp/iter87-gate.out || { echo "FAIL Theme B: diagn
 # Uses a fake gh shim so the test is network-free.
 PROT_SCRIPT="$REPO_ROOT/tools/branch-protection.sh"
 FIXTURE_DIR="$REPO_ROOT/tools/tests/branch-protection"
-if [ -x "$PROT_SCRIPT" ]; then
-  # Build a temporary fake gh binary that cats a fixture JSON file.
-  TMP_GH_DIR=$(mktemp -d -t iter87-gh-XXXX)
-  GH_SHIM="$TMP_GH_DIR/gh"
-
-  # --- Pass case: fixture contains live-tests ---
-  printf '#!/usr/bin/env bash\nif [[ "$*" == *"nameWithOwner"* ]]; then echo '"'"'{"nameWithOwner":"ractive/ff-rdp"}'"'"'; exit 0; fi\ncat "%s/has-live-tests.json"\n' \
-    "$FIXTURE_DIR" > "$GH_SHIM"
-  chmod +x "$GH_SHIM"
-  if ! GH_BIN="$GH_SHIM" PATH="$TMP_GH_DIR:$PATH" "$PROT_SCRIPT" ractive/ff-rdp >/dev/null 2>&1; then
-    echo "FAIL Theme A: branch-protection.sh rejected has-live-tests fixture" >&2
-    rm -rf "$TMP_GH_DIR"
-    exit 1
-  fi
-
-  # --- Fail case: fixture missing live-tests ---
-  printf '#!/usr/bin/env bash\nif [[ "$*" == *"nameWithOwner"* ]]; then echo '"'"'{"nameWithOwner":"ractive/ff-rdp"}'"'"'; exit 0; fi\ncat "%s/missing-live-tests.json"\n' \
-    "$FIXTURE_DIR" > "$GH_SHIM"
-  chmod +x "$GH_SHIM"
-  if GH_BIN="$GH_SHIM" PATH="$TMP_GH_DIR:$PATH" "$PROT_SCRIPT" ractive/ff-rdp >/dev/null 2>&1; then
-    echo "FAIL Theme A: branch-protection.sh accepted missing-live-tests fixture (expected exit 1)" >&2
-    rm -rf "$TMP_GH_DIR"
-    exit 1
-  fi
-
-  rm -rf "$TMP_GH_DIR"
+if [ ! -f "$PROT_SCRIPT" ]; then
+  echo "FAIL Theme A: branch-protection.sh not found at $PROT_SCRIPT" >&2
+  exit 1
 fi
+
+# Build a temporary fake gh binary that cats a fixture JSON file.
+TMP_GH_DIR=$(mktemp -d -t iter87-gh-XXXX)
+GH_SHIM="$TMP_GH_DIR/gh"
+
+# --- Pass case: fixture contains live-tests ---
+printf '#!/usr/bin/env bash\nif [[ "$*" == *"nameWithOwner"* ]]; then echo '"'"'{"nameWithOwner":"ractive/ff-rdp"}'"'"'; exit 0; fi\ncat "%s/has-live-tests.json"\n' \
+  "$FIXTURE_DIR" > "$GH_SHIM"
+chmod +x "$GH_SHIM"
+if ! GH_BIN="$GH_SHIM" PATH="$TMP_GH_DIR:$PATH" bash "$PROT_SCRIPT" ractive/ff-rdp >/dev/null 2>&1; then
+  echo "FAIL Theme A: branch-protection.sh rejected has-live-tests fixture" >&2
+  rm -rf "$TMP_GH_DIR"
+  exit 1
+fi
+
+# --- Fail case: fixture missing live-tests ---
+printf '#!/usr/bin/env bash\nif [[ "$*" == *"nameWithOwner"* ]]; then echo '"'"'{"nameWithOwner":"ractive/ff-rdp"}'"'"'; exit 0; fi\ncat "%s/missing-live-tests.json"\n' \
+  "$FIXTURE_DIR" > "$GH_SHIM"
+chmod +x "$GH_SHIM"
+if GH_BIN="$GH_SHIM" PATH="$TMP_GH_DIR:$PATH" bash "$PROT_SCRIPT" ractive/ff-rdp >/dev/null 2>&1; then
+  echo "FAIL Theme A: branch-protection.sh accepted missing-live-tests fixture (expected exit 1)" >&2
+  rm -rf "$TMP_GH_DIR"
+  exit 1
+fi
+
+rm -rf "$TMP_GH_DIR"
 
 date -u +%Y-%m-%dT%H:%M:%SZ > "$SENTINEL"
 echo "iter-87 dogfood: gate hardening verified — $SENTINEL"

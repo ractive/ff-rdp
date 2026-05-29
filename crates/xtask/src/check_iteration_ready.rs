@@ -76,18 +76,7 @@ const LINT_DOGFOOD_SCRIPT_PATH: &str = "tools/lint-dogfood-script.sh";
 /// Run tools/lint-dogfood-script.sh against the plan's dogfood script (if any).
 /// Returns (true, output) on pass or SKIP; (false, output) on FAIL.
 fn run_lint_dogfood_script(plan: &Path, repo_root: &Path) -> (bool, String) {
-    let linter = repo_root.join(LINT_DOGFOOD_SCRIPT_PATH);
-    if !linter.exists() {
-        return (
-            false,
-            format!(
-                "lint-dogfood-script: FAIL (linter not found: {})",
-                linter.display()
-            ),
-        );
-    }
-
-    // Read the plan to find dogfood_script.
+    // Read & parse the plan first so we can SKIP cheaply when there's no dogfood_script.
     let content = match std::fs::read_to_string(plan) {
         Ok(c) => c,
         Err(e) => {
@@ -116,6 +105,17 @@ fn run_lint_dogfood_script(plan: &Path, repo_root: &Path) -> (bool, String) {
         }
         Some(s) => s,
     };
+
+    let linter = repo_root.join(LINT_DOGFOOD_SCRIPT_PATH);
+    if !linter.exists() {
+        return (
+            false,
+            format!(
+                "lint-dogfood-script: FAIL (linter not found: {})",
+                linter.display()
+            ),
+        );
+    }
 
     let plan_dir = match plan.parent() {
         Some(d) => d,

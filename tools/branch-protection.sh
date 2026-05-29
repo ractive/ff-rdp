@@ -50,10 +50,7 @@ PROTECTION_JSON=$("$GH" api "repos/${REPO}/branches/main/protection" 2>/dev/null
 }
 
 # Extract required status check contexts.
-CONTEXTS=$(echo "$PROTECTION_JSON" \
-  | "$GH" auth status >/dev/null 2>&1; \
-  echo "$PROTECTION_JSON" \
-  | python3 -c "
+CONTEXTS=$(echo "$PROTECTION_JSON" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 contexts = (
@@ -93,10 +90,11 @@ else
     echo "  (none)" >&2
   fi
   echo "" >&2
-  echo "Remediation — run:" >&2
+  echo "Remediation — PUT replaces required_status_checks.contexts wholesale," >&2
+  echo "so include ALL existing required checks plus 'live-tests' in the array:" >&2
   echo "  gh api repos/${REPO}/branches/main/protection \\" >&2
   echo "    --method PUT \\" >&2
-  echo "    --field required_status_checks='{\"strict\":false,\"contexts\":[\"live-tests\"]}' \\" >&2
+  echo "    --field required_status_checks='{\"strict\":false,\"contexts\":[\"live-tests\", <existing checks above>]}' \\" >&2
   echo "    --field enforce_admins=false \\" >&2
   echo "    --field required_pull_request_reviews=null \\" >&2
   echo "    --field restrictions=null" >&2
