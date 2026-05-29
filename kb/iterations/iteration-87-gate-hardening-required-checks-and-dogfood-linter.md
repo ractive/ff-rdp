@@ -2,7 +2,7 @@
 title: "Iteration 87: gate hardening — required CI checks, fail-by-default dogfood gate, dogfood-script linter, pre-fix-repro convention"
 type: iteration
 date: 2026-05-29
-status: in_progress
+status: completed
 branch: iter-87/gate-hardening-required-checks-and-dogfood-linter
 depends_on:
   - iteration-86-perf-field-report-fixes
