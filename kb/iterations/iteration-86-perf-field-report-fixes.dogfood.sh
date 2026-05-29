@@ -34,8 +34,10 @@ sleep 1
 ff-rdp launch --port 6000  # non-headless
 ff-rdp navigate https://example.com
 NOTE=$(ff-rdp perf audit --jq '.results.vitals.lcp_note // .meta.lcp_note // ""')
-echo "$NOTE" | grep -qi 'headless' && { echo "FAIL Theme B: lcp_note mentions 'headless' after non-headless launch: $NOTE" >&2; exit 1; }
-echo "$NOTE" | grep -qi 'firefox' || { echo "FAIL Theme B: lcp_note does not mention Firefox limitation: $NOTE" >&2; exit 1; }
+# Use anchored pattern: the note should NOT claim "headless Firefox" when launched non-headless.
+# "regardless of headless mode" must NOT match — so we test for the phrase "headless Firefox".
+echo "$NOTE" | grep -qiE '(^|[^a-z])headless Firefox' && { echo "FAIL Theme B: lcp_note claims 'headless Firefox' after non-headless launch: $NOTE" >&2; exit 1; }
+echo "$NOTE" | grep -qiE '(^|[^a-z])Firefox' || { echo "FAIL Theme B: lcp_note does not mention Firefox limitation: $NOTE" >&2; exit 1; }
 ff-rdp daemon stop
 sleep 1
 
@@ -56,7 +58,7 @@ test -z "$OUT" || test "$OUT" = "null" && {
 }
 # Strict: non-zero exit, stderr mentions "not found"
 set +e
-ERR=$(ff-rdp perf audit --jq-strict '.results.does_not_exist_xyz' 2>&1 >/dev/null)
+ERR=$(ff-rdp perf audit --jq-strict --jq '.results.does_not_exist_xyz' 2>&1 >/dev/null)
 EC=$?
 set -e
 test "$EC" -ne 0 || { echo "FAIL Theme D: --jq-strict missing-path exited 0" >&2; exit 1; }

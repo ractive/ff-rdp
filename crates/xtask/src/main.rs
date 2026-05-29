@@ -7,6 +7,7 @@ mod check_firefox_refs;
 mod check_iteration_plan;
 mod check_iteration_ready;
 mod check_oneway_conformance;
+mod check_pre_fix_repro;
 mod check_todo_annotations;
 mod find_iteration_plan;
 
@@ -46,6 +47,9 @@ enum Commands {
     /// Execute the iteration plan's dogfood_script and verify the sentinel is written.
     /// Skips gracefully if FF_RDP_LIVE_TESTS != "1" or no dogfood_script field is set.
     CheckDogfoodScript(check_dogfood_script::Args),
+    /// Verify pre_fix_repro_test annotations in an iteration plan: each named test
+    /// must FAIL on origin/main and PASS on the current branch HEAD.
+    CheckPreFixRepro(check_pre_fix_repro::Args),
     /// Resolve a branch name (iter-N/slug) to the absolute path of its iteration plan.
     FindIterationPlan(find_iteration_plan::Args),
 }
@@ -64,5 +68,6 @@ fn main() -> Result<()> {
         Commands::CheckIterationReady(args) => check_iteration_ready::run(args),
         Commands::FindIterationPlan(args) => find_iteration_plan::run(args),
         Commands::CheckDogfoodScript(args) => check_dogfood_script::run(args),
+        Commands::CheckPreFixRepro(args) => check_pre_fix_repro::run(args),
     }
 }

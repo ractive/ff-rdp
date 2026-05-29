@@ -253,3 +253,37 @@ See `fuzz/README.md` for the full target list.
 
 When running iterations via the ralph-loop skill, each agent also runs the xtask discipline
 checks before invoking `/create-pr`. See the ralph-loop `SKILL.md` for details.
+
+## Branch protection — `live-tests` required check
+
+The `live-tests` GitHub Actions job must be a **required** status check on `main` so that
+a red live-tests run blocks merging (iter-87).
+
+**Verify current state:**
+
+```sh
+bash tools/branch-protection.sh ractive/ff-rdp
+```
+
+**Apply the protection rule (requires admin access):**
+
+> ⚠️ The `--field required_status_checks=...` PUT *replaces* the entire `contexts`
+> array. Before running, GET the current protection and include every existing
+> required check in the new array, otherwise you will drop them.
+>
+> ```sh
+> gh api repos/ractive/ff-rdp/branches/main/protection \
+>   --jq '.required_status_checks.contexts'
+> ```
+
+```sh
+# Example only — replace the contexts array with the merged set from the GET above.
+gh api repos/ractive/ff-rdp/branches/main/protection \
+  --method PUT \
+  --field required_status_checks='{"strict":false,"contexts":["live-tests","fmt","clippy"]}' \
+  --field enforce_admins=false \
+  --field required_pull_request_reviews=null \
+  --field restrictions=null
+```
+
+After applying, re-run `bash tools/branch-protection.sh` to confirm it exits 0.

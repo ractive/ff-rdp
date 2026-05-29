@@ -17,6 +17,46 @@ fn extract_iteration_number(plan: &std::path::Path) -> Option<u32> {
     rest[..end].parse().ok()
 }
 
+/// Detect the current git branch name.
+///
+/// Priority (highest first):
+/// 1. `FF_RDP_CURRENT_BRANCH` env var — allows tests to override branch detection.
+/// 2. `BRANCH_NAME` env var — set by CI (GitHub Actions, Jenkins, etc.).
+/// 3. `git rev-parse --abbrev-ref HEAD`.
+///
+/// Returns `None` if detection fails in all three paths.
+fn detect_current_branch() -> Option<String> {
+    // Test override.
+    if let Ok(b) = std::env::var("FF_RDP_CURRENT_BRANCH")
+        && !b.trim().is_empty()
+    {
+        return Some(b.trim().to_owned());
+    }
+    // CI env var.
+    if let Ok(b) = std::env::var("BRANCH_NAME")
+        && !b.trim().is_empty()
+    {
+        return Some(b.trim().to_owned());
+    }
+    // Git command.
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !branch.is_empty() && branch != "HEAD" {
+            return Some(branch);
+        }
+    }
+    None
+}
+
+/// Returns `true` if `branch` looks like an iter-* branch.
+fn is_iter_branch(branch: &str) -> bool {
+    branch.starts_with("iter-")
+}
+
 pub fn run(args: Args) -> Result<()> {
     run_inner(args, false)
 }
@@ -25,6 +65,18 @@ pub fn run(args: Args) -> Result<()> {
 /// bypassed — used by unit tests to avoid depending on the environment.
 pub fn run_inner(args: Args, force: bool) -> Result<()> {
     if !force && std::env::var("FF_RDP_LIVE_TESTS").as_deref() != Ok("1") {
+        // On iter-* branches the skip is replaced by a hard FAIL so the gate
+        // cannot be silently bypassed. On other branches (main, release, etc.)
+        // the original SKIP behaviour is preserved.
+        if let Some(branch) = detect_current_branch()
+            && is_iter_branch(&branch)
+        {
+            anyhow::bail!(
+                "check-dogfood-script: FAIL — iter-* branch requires \
+                 FF_RDP_LIVE_TESTS=1 to verify dogfood script. \
+                 Re-run with FF_RDP_LIVE_TESTS=1 to execute the dogfood gate."
+            );
+        }
         println!("check-dogfood-script: SKIP (FF_RDP_LIVE_TESTS not set)");
         return Ok(());
     }
@@ -234,5 +286,80 @@ mod tests {
 
         let p3 = std::path::Path::new("not-an-iteration.md");
         assert_eq!(extract_iteration_number(p3), None);
+    }
+
+    /// `live_check_dogfood_script_fails_without_ff_rdp_live_tests_on_iter_branch`:
+    /// When the branch is an iter-* branch and FF_RDP_LIVE_TESTS is unset,
+    /// check-dogfood-script must FAIL (not SKIP).
+    ///
+    /// Uses FF_RDP_CURRENT_BRANCH override so this test does not depend on the
+    /// actual checked-out branch.
+    #[test]
+    fn live_check_dogfood_script_fails_without_ff_rdp_live_tests_on_iter_branch() {
+        let dir = TempDir::new().unwrap();
+        // Needs a dogfood_script field so we reach the gate logic.
+        let plan_path = write_plan(
+            &dir,
+            "iteration-95-branch-test.md",
+            "dogfood_script: fake.dogfood.sh\n",
+        );
+
+        let output = std::process::Command::new("cargo")
+            .args(["run", "-q", "-p", "xtask", "--"])
+            .args(["check-dogfood-script", plan_path.to_str().unwrap()])
+            .env("FF_RDP_CURRENT_BRANCH", "iter-99/test")
+            .env_remove("FF_RDP_LIVE_TESTS")
+            .output()
+            .unwrap();
+
+        assert!(
+            !output.status.success(),
+            "expected FAIL on iter-* branch w/o FF_RDP_LIVE_TESTS"
+        );
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            combined.contains("FF_RDP_LIVE_TESTS"),
+            "expected FF_RDP_LIVE_TESTS hint in output:\n{combined}"
+        );
+    }
+
+    /// `live_check_dogfood_script_skips_on_main_without_ff_rdp_live_tests`:
+    /// On a non-iter-* branch (e.g. "main"), check-dogfood-script must SKIP
+    /// (exit 0) when FF_RDP_LIVE_TESTS is unset.
+    #[test]
+    fn live_check_dogfood_script_skips_on_main_without_ff_rdp_live_tests() {
+        let dir = TempDir::new().unwrap();
+        let plan_path = write_plan(
+            &dir,
+            "iteration-94-main-test.md",
+            "dogfood_script: fake.dogfood.sh\n",
+        );
+
+        let output = std::process::Command::new("cargo")
+            .args(["run", "-q", "-p", "xtask", "--"])
+            .args(["check-dogfood-script", plan_path.to_str().unwrap()])
+            .env("FF_RDP_CURRENT_BRANCH", "main")
+            .env_remove("FF_RDP_LIVE_TESTS")
+            .output()
+            .unwrap();
+
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.status.success(),
+            "expected SKIP (exit 0) on non-iter-* branch w/o FF_RDP_LIVE_TESTS: {combined}"
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("SKIP"),
+            "expected SKIP message in stdout:\n{stdout}"
+        );
     }
 }
