@@ -137,6 +137,11 @@ fn try_list_tests(slug: &str, crate_name: Option<&str>) -> Result<Option<String>
     cmd.arg("test");
     if let Some(name) = crate_name {
         cmd.args(["-p", name]);
+    } else {
+        // Workspace fallback — without --workspace, bare `cargo test --list`
+        // only enumerates the default crate and silently misses tests in
+        // sibling crates (e.g. ff-rdp-core unit tests for iter-88).
+        cmd.arg("--workspace");
     }
     cmd.args(["--", "--list"]);
 
@@ -177,12 +182,26 @@ fn run_test(full_path: &str, crate_name: Option<&str>) -> Result<bool> {
     cmd.arg("test");
     if let Some(name) = crate_name {
         cmd.args(["-p", name]);
+    } else {
+        cmd.arg("--workspace");
     }
     cmd.args(["-q", "--", full_path, "--exact"]);
 
-    let status = cmd.status().context("failed to invoke `cargo test`")?;
+    let output = cmd.output().context("failed to invoke `cargo test`")?;
 
-    Ok(status.success())
+    if !output.status.success() {
+        return Ok(false);
+    }
+
+    // `cargo test --exact <name>` exits 0 even when no tests match the name,
+    // which would mask "test does not exist" as "test passed".  Require the
+    // stdout summary to report at least one PASSED test for a true PASS.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let passed_at_least_one = stdout.lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with("test result: ok.") && !t.starts_with("test result: ok. 0 passed")
+    });
+    Ok(passed_at_least_one)
 }
 
 /// A RAII guard that pops a git stash on drop.

@@ -98,3 +98,26 @@ unchanged because there is no safe key to merge on.
 
 `rule_actor_id` is serialized only when `Some`
 (`#[serde(default, skip_serializing_if = "Option::is_none")]`).
+
+## iter-88: OR-of-five entry predicate (real FF 151 shape)
+
+iter-82/83/84/85 each tried a single-field discriminator for "this entry is
+a matched author rule": absent `type`, `type == 1`, then
+`matchedSelectorIndexes` non-empty.  None survived contact with FF 151 on
+tennis-sepp.ch — `ff-rdp cascade 'h1' --prop color` kept returning
+`results[0].rules == []` (dogfooding-session-58).
+
+`parse_applied_entry` now accepts an entry when ANY of these hold:
+
+  (a) `rule.type` is absent
+  (b) `rule.type == 1` (CSSOM `STYLE_RULE`)
+  (c) `rule.type == 100` (Firefox-internal `CSSStyleRule` sentinel)
+  (d) `rule.className == "CSSStyleRule"`
+  (e) `matchedSelectorIndexes` is a non-empty array
+
+Inline style declarations (`type == 0`) satisfy none of (a)–(d) and lack a
+non-empty `matchedSelectorIndexes`, so they remain excluded.  The recorded
+fixture `crates/ff-rdp-core/tests/fixtures/cascade_tennis_sepp_h1_color.json`
+exercises the FF 151 shape (type:100 + className sentinel, no
+matchedSelectorIndexes); `pre_fix_repro_cascade_fixture_red_then_green`
+enforces the red→green transition per the iter-87 pre-fix-repro convention.

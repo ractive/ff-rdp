@@ -1,0 +1,70 @@
+{
+  "_note": "Captured from FF 151 `getApplied` reply for `h1` on https://tennis-sepp.ch via `ff-rdp cascade 'h1' --prop color --debug-raw`. FF 151 shape: ordinary author rules carry `type: 1` AND `className: \"CSSStyleRule\"` AND `matchedSelectorIndexes: [..]`, and — critically — `declarations` are nested under `rule.declarations` (older FF nested them at the entry top level). The first entry below is the FF-internal element-style sentinel (`type: 100`, `className: 100` (number), no `matchedSelectorIndexes`) and must be rejected by the parser. Used by pre_fix_repro_cascade_fixture_red_then_green and the unit_cascade_accepts_* tests.",
+  "from": "server1.conn2.child23/pageStyleActor",
+  "entries": [
+    {
+      "darkColorScheme": false,
+      "inherited": null,
+      "isSystem": false,
+      "pseudoElement": null,
+      "rule": {
+        "actor": "server1.conn2.child23/domstylerule28",
+        "ancestorData": [],
+        "authoredText": null,
+        "className": 100,
+        "cssText": "",
+        "href": "https://tennis-sepp.ch/",
+        "traits": {"canSetRuleText": true},
+        "type": 100
+      }
+    },
+    {
+      "darkColorScheme": false,
+      "inherited": null,
+      "isSystem": false,
+      "matchedSelectorIndexes": [0],
+      "pseudoElement": "",
+      "rule": {
+        "actor": "server1.conn2.child23/domstylerule29",
+        "ancestorData": [],
+        "className": "CSSStyleRule",
+        "column": 1,
+        "cssText": "margin: 0px 0px 0.15em; color: var(--pico-primary);",
+        "declarations": [
+          {"isNameValid": true, "isValid": true, "name": "margin", "priority": "", "value": "0 0 0.15em"},
+          {"isNameValid": true, "isValid": true, "name": "color", "priority": "", "value": "var(--pico-primary)"}
+        ],
+        "line": 243,
+        "parentStyleSheet": "server1.conn2.child23/windowGlobalTarget2:stylesheet:0",
+        "selectors": [".site-header hgroup h1"],
+        "selectorsSpecificity": [1026],
+        "traits": {"canSetRuleText": true},
+        "type": 1
+      }
+    },
+    {
+      "darkColorScheme": false,
+      "inherited": null,
+      "isSystem": false,
+      "matchedSelectorIndexes": [0],
+      "pseudoElement": "",
+      "rule": {
+        "actor": "server1.conn2.child23/domstylerule30",
+        "ancestorData": [],
+        "className": "CSSStyleRule",
+        "column": 29313,
+        "cssText": "margin-top: 0px; margin-bottom: 0px;",
+        "declarations": [
+          {"isNameValid": true, "isValid": true, "name": "margin-top", "priority": "", "value": "0"},
+          {"isNameValid": true, "isValid": true, "name": "margin-bottom", "priority": "", "value": "0"}
+        ],
+        "line": 4,
+        "parentStyleSheet": "server1.conn2.child23/windowGlobalTarget2:stylesheet:1",
+        "selectors": ["h1"],
+        "selectorsSpecificity": [1],
+        "traits": {"canSetRuleText": true},
+        "type": 1
+      }
+    }
+  ]
+}
