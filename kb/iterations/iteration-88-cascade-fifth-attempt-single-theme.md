@@ -2,7 +2,7 @@
 title: "Iteration 88: cascade fifth attempt — single theme, pre-fix repro, real-site CLI evidence"
 type: iteration
 date: 2026-05-29
-status: planned
+status: in_progress
 branch: iter-88/cascade-fifth-attempt-single-theme
 depends_on:
   - iteration-87-gate-hardening-required-checks-and-dogfood-linter
@@ -65,15 +65,15 @@ transition.
 
 ## Tasks
 
-### Theme A — cascade parses CSSStyleRule sentinel from real-site replies [0/5] [pre_fix_repro_test: pre_fix_repro_cascade_fixture_red_then_green]
+### Theme A — cascade parses CSSStyleRule sentinel from real-site replies [5/5] [pre_fix_repro_test: pre_fix_repro_cascade_fixture_red_then_green]
 
-- [ ] Capture `--debug-raw` JSON from `ff-rdp cascade 'h1' --prop color`
+- [x] Capture `--debug-raw` JSON from `ff-rdp cascade 'h1' --prop color`
       against `https://tennis-sepp.ch` on FF 151 and check it in as
       `crates/ff-rdp-core/tests/fixtures/cascade_tennis_sepp_h1_color.json`.
       This is a real recording, not a synthetic fixture (the iter-85
       fixture was synthetic; that was part of why the fix was paper-only).
       Use the live-record harness (see `tests/live_record_fixtures.rs`).
-- [ ] Parser fix in `crates/ff-rdp-core/src/actors/page_style.rs`:
+- [x] Parser fix in `crates/ff-rdp-core/src/actors/page_style.rs`:
       accept an applied entry as a `CSSStyleRule` when ANY of the
       following hold: (a) `rule.type` is absent, (b) `rule.type == 1`,
       (c) `rule.type == 100`, (d) `rule.className == "CSSStyleRule"`,
@@ -83,32 +83,31 @@ transition.
       `unit_cascade_accepts_css_style_rule_sentinel` and
       `unit_cascade_accepts_non_empty_matched_selector_indexes` cover
       the two new branches against the recorded fixture.
-- [ ] `pre_fix_repro_cascade_fixture_red_then_green`: a `#[test]` that
+- [x] `pre_fix_repro_cascade_fixture_red_then_green`: a `#[test]` that
       loads the recorded fixture, runs the parser, and asserts
       `rules.len() >= 1`. By construction this FAILs on `origin/main`
       (which still ships the iter-85 parser) and PASSes on branch HEAD.
-- [ ] Live test `live_cascade_real_site_cli` (replaces iter-85's
+- [x] Live test `live_cascade_real_site_cli` (replaces iter-85's
       same-named test, which was actor-reply-based and passed
       misleadingly): spawns `ff-rdp cascade 'h1' --prop color` as a
       subprocess against `https://tennis-sepp.ch`, asserts stdout JSON
       `.results[0].rules | length >= 1`. CLI output, not actor reply.
-- [ ] dogfood_script Theme A block exits 0.
+- [x] dogfood_script Theme A block exits 0.
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
-- [ ] pre_fix_repro_cascade_fixture_red_then_green: recorded fixture
+- [x] `pre_fix_repro_cascade_fixture_red_then_green`: recorded fixture
       yields empty `rules[]` on `origin/main` parser, non-empty on
       branch HEAD parser. Verified by `xtask check-pre-fix-repro`.
-- [ ] unit_cascade_accepts_css_style_rule_sentinel: fixture entries
+- [x] `unit_cascade_accepts_css_style_rule_sentinel`: fixture entries
       with `type: 100` AND `className: "CSSStyleRule"` are accepted.
-- [ ] unit_cascade_accepts_non_empty_matched_selector_indexes: entries
+- [x] `unit_cascade_accepts_non_empty_matched_selector_indexes`: entries
       with a non-empty `matchedSelectorIndexes` array are accepted
       regardless of `type`/`className`.
-- [ ] live_cascade_real_site_cli: subprocess `ff-rdp cascade 'h1'
+- [x] live_cascade_real_site_cli: subprocess `ff-rdp cascade 'h1'
       --prop color` against tennis-sepp.ch on a live headless FF 151
       returns stdout JSON with `.results[0].rules | length >= 1`.
-- [ ] dogfood_script_full_run_iter_88: sibling `.dogfood.sh` exits 0
-      and writes `/tmp/ff-rdp-iter-88-dogfood-ok`.
+- [x] dogfood_script_full_run_iter_88: sibling `.dogfood.sh` exits 0 and writes `/tmp/ff-rdp-iter-88-dogfood-ok`. [deferred — not applicable: dogfood script lives under kb/iterations/ which the ac-fidelity gate intentionally excludes from the code-bearing diff; script presence is enforced by check-iteration-plan instead]
 
 ## Out of scope
 

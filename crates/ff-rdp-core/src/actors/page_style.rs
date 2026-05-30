@@ -234,31 +234,40 @@ fn parse_computed_properties(computed: &Value) -> Result<Vec<ComputedProperty>, 
 
 /// Parse a single entry from the `entries` array of a `getApplied` response.
 ///
-/// Accepts entries where `matchedSelectorIndexes` is non-empty — this is the
-/// canonical discriminator: Firefox only populates `matchedSelectorIndexes`
-/// for rules that actually matched the queried element.  The old type-based
-/// guard (`rule.type == 1`) was too strict; Firefox 151 sends `type: 100`
-/// (`CSSStyleRule`) for ordinary author rules and those were silently dropped
-/// (dogfood-57, iter-85 Theme A).
+/// Accepts an entry as a CSS author rule when ANY of these hold (iter-88
+/// predicate; previous single-field discriminators all failed against real
+/// FF 151 replies — see dogfooding-session-58):
+///   (a) `rule.type` is absent (some Firefox replies for external stylesheets)
+///   (b) `rule.type == 1` (CSSOM `STYLE_RULE` numeric constant — older FF)
+///   (c) `rule.className == "CSSStyleRule"` (string sentinel — FF 151 author rules)
+///   (d) `matchedSelectorIndexes` is a non-empty array (legacy discriminator)
 ///
-/// Inline style declarations (`rule.type == 0`) lack `matchedSelectorIndexes`
-/// (the array is absent or empty), so they are naturally excluded.
+/// `rule.type == 100` alone is NOT sufficient: the FF 151 reply uses `100`
+/// as an element-style sentinel (with a numeric `className: 100` and no
+/// selectors). Only accept `type == 100` when paired with the string
+/// `className == "CSSStyleRule"`. Inline style declarations
+/// (`rule.type == 0`) satisfy none of (a)–(c) and lack a non-empty
+/// `matchedSelectorIndexes`, so they are excluded.
 fn parse_applied_entry(entry: &Value) -> Option<AppliedRule> {
     let rule = entry.get("rule")?;
 
-    // Accept entries where `matchedSelectorIndexes` is non-empty.
-    // This is the cleanest discriminator: Firefox only sets this field for
-    // rules that matched the queried element.  Inline styles and unmatched
-    // rules either lack the field or carry an empty array — both map to the
-    // same `unwrap_or_default()` → empty vec path below, so they produce no
-    // matched_selectors and the caller can filter them if needed.
-    // We still require a non-empty array here so we don't emit rules that
-    // Firefox included for other reasons (e.g. inherited or unmatched rules).
+    let rule_type = rule.get("type");
+    let class_name = rule.get("className").and_then(Value::as_str);
     let has_matched = entry
         .get("matchedSelectorIndexes")
         .and_then(Value::as_array)
         .is_some_and(|arr| !arr.is_empty());
-    if !has_matched {
+
+    let type_absent = rule_type.is_none();
+    let class_is_style_rule = class_name == Some("CSSStyleRule");
+    // `type == 100` alone is the FF 151 element-style sentinel (numeric
+    // className, no selectors); require the string `CSSStyleRule` className
+    // to disambiguate.
+    let type_is_style_rule = rule_type
+        .and_then(Value::as_u64)
+        .is_some_and(|t| t == 1 || (t == 100 && class_is_style_rule));
+
+    if !(type_absent || type_is_style_rule || class_is_style_rule || has_matched) {
         return None;
     }
 
@@ -285,8 +294,12 @@ fn parse_applied_entry(entry: &Value) -> Option<AppliedRule> {
         .and_then(Value::as_u64)
         .and_then(|v| u32::try_from(v).ok());
 
+    // FF 151 nests declarations under `rule.declarations`; older replies put
+    // them at the entry top level.  Try entry first for backwards-compat,
+    // then fall back to the FF 151 location.
     let properties: Vec<RuleProperty> = entry
         .get("declarations")
+        .or_else(|| rule.get("declarations"))
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
@@ -730,24 +743,124 @@ mod tests {
         assert_eq!(rule.properties[0].name, "color");
     }
 
-    /// Entries with an empty `matchedSelectorIndexes` array must be rejected —
-    /// they represent rules that Firefox included but that did not match.
+    /// iter-88 Theme A: the real FF 151 tennis-sepp.ch shape — `type: 1`,
+    /// `className: "CSSStyleRule"`, non-empty `matchedSelectorIndexes`, and
+    /// declarations nested under `rule.declarations` (NOT at entry top level).
+    /// Exercises both the `className == "CSSStyleRule"` branch and the
+    /// `rule.declarations` fallback that was the missing piece in iter-85.
     #[test]
-    fn unit_cascade_rejects_empty_matched_selector_indexes() {
+    fn unit_cascade_accepts_css_style_rule_sentinel() {
+        let entry = json!({
+            "matchedSelectorIndexes": [0],
+            "rule": {
+                "type": 1,
+                "className": "CSSStyleRule",
+                "selectors": ["h1"],
+                "href": "https://tennis-sepp.ch/style.css",
+                "line": 137,
+                "column": 1,
+                "declarations": [
+                    {"name": "color", "value": "rgb(34, 34, 34)", "priority": ""}
+                ]
+            }
+        });
+        let rule = parse_applied_entry(&entry)
+            .expect("CSSStyleRule entry must be accepted via className branch");
+        assert_eq!(rule.selector, "h1");
+        assert_eq!(rule.properties.len(), 1);
+        assert_eq!(rule.properties[0].name, "color");
+        assert_eq!(rule.properties[0].value, "rgb(34, 34, 34)");
+    }
+
+    /// iter-88 Theme A: the FF 151 element-style sentinel (`type: 100`,
+    /// numeric `className: 100`, no selectors / `matchedSelectorIndexes`)
+    /// must be REJECTED. Previously `type == 100` alone was accepted; the
+    /// CodeRabbit review on PR #125 caught the over-acceptance.
+    #[test]
+    fn unit_cascade_rejects_element_style_sentinel() {
         let entry = json!({
             "rule": {
                 "type": 100,
-                "selectors": ["h2"],
+                "className": 100,
+                "href": "https://tennis-sepp.ch/"
+            }
+        });
+        assert!(
+            parse_applied_entry(&entry).is_none(),
+            "FF 151 element-style sentinel (type==100 with numeric className) \
+             must not produce an AppliedRule"
+        );
+    }
+
+    /// iter-88 Theme A: entries with a non-empty `matchedSelectorIndexes`
+    /// array are accepted regardless of `type`/`className` — backward-compat
+    /// with older Firefox replies that relied on this discriminator.
+    #[test]
+    fn unit_cascade_accepts_non_empty_matched_selector_indexes() {
+        let entry = json!({
+            "rule": {
+                "type": 999,
+                "selectors": ["h3"],
                 "href": "https://example.com/style.css",
                 "line": 1,
                 "column": 1
             },
-            "matchedSelectorIndexes": [],
-            "declarations": [{"name": "color", "value": "red", "priority": ""}]
+            "matchedSelectorIndexes": [0],
+            "declarations": [{"name": "color", "value": "blue", "priority": ""}]
         });
+        let rule = parse_applied_entry(&entry)
+            .expect("entry with non-empty matchedSelectorIndexes must be accepted");
+        assert_eq!(rule.selector, "h3");
+        assert_eq!(rule.matched_selectors, vec!["h3"]);
+    }
+
+    /// iter-88 pre-fix repro: loads the checked-in real-recording fixture
+    /// `cascade_tennis_sepp_h1_color.json` and asserts the parser yields at
+    /// least one rule.  Red on origin/main (fixture file absent + parser
+    /// rejects the FF 151 shape); green on branch HEAD.
+    #[test]
+    fn pre_fix_repro_cascade_fixture_red_then_green() {
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("cascade_tennis_sepp_h1_color.json");
+        let fixture = std::fs::read_to_string(&fixture_path).unwrap_or_else(|e| {
+            panic!(
+                "pre-fix repro fixture missing at {}: {e} \
+                 — on origin/main this is expected (file added in iter-88)",
+                fixture_path.display()
+            )
+        });
+        let response: Value = serde_json::from_str(&fixture).expect("fixture is not valid JSON");
+        let entries = response
+            .get("entries")
+            .and_then(Value::as_array)
+            .expect("fixture missing 'entries'");
+        let rules: Vec<AppliedRule> = entries.iter().filter_map(parse_applied_entry).collect();
+        // The fixture contains 3 entries: 1 element-style sentinel that must
+        // be rejected, and 2 real CSSStyleRule author rules.
+        assert_eq!(
+            rules.len(),
+            2,
+            "fixture should yield exactly 2 author rules (sentinel excluded); got {}",
+            rules.len()
+        );
         assert!(
-            parse_applied_entry(&entry).is_none(),
-            "entry with empty matchedSelectorIndexes must be rejected"
+            rules.iter().all(|r| !r.selector.is_empty()),
+            "every parsed rule must have a non-empty selector"
+        );
+        assert!(
+            rules.iter().all(|r| !r.properties.is_empty()),
+            "every parsed rule must have ≥1 property — exercises the \
+             rule.declarations fallback that was the iter-85 → iter-88 fix"
+        );
+        let has_color = rules
+            .iter()
+            .any(|r| r.properties.iter().any(|p| p.name == "color"));
+        assert!(
+            has_color,
+            "expected at least one rule with a `color` declaration in the \
+             tennis-sepp.ch h1 cascade"
         );
     }
 

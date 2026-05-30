@@ -110,7 +110,7 @@ pub fn parse_pre_fix_repro_annotations(body: &str) -> Vec<PreFixAnnotation> {
 ///
 /// When no crate_name is specified, tries `-p xtask` first (where most
 /// discipline tests live) then falls back to searching the full workspace.
-fn resolve_test_path(slug: &str, crate_name: Option<&str>) -> Result<String> {
+fn resolve_test_path(slug: &str, crate_name: Option<&str>) -> Result<(String, Option<String>)> {
     let crates_to_try: Vec<Option<&str>> = if crate_name.is_some() {
         vec![crate_name]
     } else {
@@ -119,7 +119,7 @@ fn resolve_test_path(slug: &str, crate_name: Option<&str>) -> Result<String> {
 
     for try_crate in &crates_to_try {
         if let Some(path) = try_list_tests(slug, *try_crate)? {
-            return Ok(path);
+            return Ok((path, try_crate.map(str::to_owned)));
         }
     }
 
@@ -137,6 +137,11 @@ fn try_list_tests(slug: &str, crate_name: Option<&str>) -> Result<Option<String>
     cmd.arg("test");
     if let Some(name) = crate_name {
         cmd.args(["-p", name]);
+    } else {
+        // Workspace fallback — without --workspace, bare `cargo test --list`
+        // only enumerates the default crate and silently misses tests in
+        // sibling crates (e.g. ff-rdp-core unit tests for iter-88).
+        cmd.arg("--workspace");
     }
     cmd.args(["--", "--list"]);
 
@@ -148,7 +153,9 @@ fn try_list_tests(slug: &str, crate_name: Option<&str>) -> Result<Option<String>
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow!(
             "`cargo test{} -- --list` failed (exit {}): {stderr}",
-            crate_name.map(|c| format!(" -p {c}")).unwrap_or_default(),
+            crate_name
+                .map(|c| format!(" -p {c}"))
+                .unwrap_or_else(|| " --workspace".to_owned()),
             output.status.code().unwrap_or(-1)
         ));
     }
@@ -177,12 +184,26 @@ fn run_test(full_path: &str, crate_name: Option<&str>) -> Result<bool> {
     cmd.arg("test");
     if let Some(name) = crate_name {
         cmd.args(["-p", name]);
+    } else {
+        cmd.arg("--workspace");
     }
     cmd.args(["-q", "--", full_path, "--exact"]);
 
-    let status = cmd.status().context("failed to invoke `cargo test`")?;
+    let output = cmd.output().context("failed to invoke `cargo test`")?;
 
-    Ok(status.success())
+    if !output.status.success() {
+        return Ok(false);
+    }
+
+    // `cargo test --exact <name>` exits 0 even when no tests match the name,
+    // which would mask "test does not exist" as "test passed".  Require the
+    // stdout summary to report at least one PASSED test for a true PASS.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let passed_at_least_one = stdout.lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with("test result: ok.") && !t.starts_with("test result: ok. 0 passed")
+    });
+    Ok(passed_at_least_one)
 }
 
 /// A RAII guard that pops a git stash on drop.
@@ -296,13 +317,14 @@ pub fn run(args: Args) -> Result<()> {
         );
 
         // Step 1: resolve the slug to a fully-qualified test path.
-        let full_path = match resolve_test_path(slug, crate_name) {
+        let (full_path, resolved_crate) = match resolve_test_path(slug, crate_name) {
             Ok(p) => p,
             Err(e) => {
                 failures.push(format!("  [{slug}] step 1 (resolve): {e}"));
                 continue;
             }
         };
+        let rerun_crate = resolved_crate.as_deref();
 
         // Step 2: stash current changes.
         let stash_guard = match StashGuard::stash() {
@@ -323,7 +345,7 @@ pub fn run(args: Args) -> Result<()> {
             }
             Ok(checkout_guard) => {
                 // Treat invocation errors as "test did not pass" = expected FAIL.
-                let main_passed = run_test(&full_path, crate_name).unwrap_or(false);
+                let main_passed = run_test(&full_path, rerun_crate).unwrap_or(false);
 
                 if main_passed {
                     failures.push(format!(
@@ -341,7 +363,7 @@ pub fn run(args: Args) -> Result<()> {
                 // Step 4: restore stash, run test, expect PASS.
                 drop(stash_guard);
 
-                let branch_passed = run_test(&full_path, crate_name)
+                let branch_passed = run_test(&full_path, rerun_crate)
                     .context("failed to run test on branch HEAD")?;
 
                 if !branch_passed {
