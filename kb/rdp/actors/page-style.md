@@ -99,7 +99,7 @@ unchanged because there is no safe key to merge on.
 `rule_actor_id` is serialized only when `Some`
 (`#[serde(default, skip_serializing_if = "Option::is_none")]`).
 
-## iter-88: OR-of-five entry predicate (real FF 151 shape)
+## iter-88: entry predicate + `rule.declarations` fallback (real FF 151 shape)
 
 iter-82/83/84/85 each tried a single-field discriminator for "this entry is
 a matched author rule": absent `type`, `type == 1`, then
@@ -111,13 +111,30 @@ tennis-sepp.ch — `ff-rdp cascade 'h1' --prop color` kept returning
 
   (a) `rule.type` is absent
   (b) `rule.type == 1` (CSSOM `STYLE_RULE`)
-  (c) `rule.type == 100` (Firefox-internal `CSSStyleRule` sentinel)
-  (d) `rule.className == "CSSStyleRule"`
-  (e) `matchedSelectorIndexes` is a non-empty array
+  (c) `rule.className == "CSSStyleRule"` (FF 151 author-rule sentinel)
+  (d) `matchedSelectorIndexes` is a non-empty array
 
-Inline style declarations (`type == 0`) satisfy none of (a)–(d) and lack a
-non-empty `matchedSelectorIndexes`, so they remain excluded.  The recorded
-fixture `crates/ff-rdp-core/tests/fixtures/cascade_tennis_sepp_h1_color.json`
-exercises the FF 151 shape (type:100 + className sentinel, no
-matchedSelectorIndexes); `pre_fix_repro_cascade_fixture_red_then_green`
-enforces the red→green transition per the iter-87 pre-fix-repro convention.
+`rule.type == 100` alone is NOT sufficient: FF 151 also uses `100` as an
+element-style sentinel (with a numeric `className: 100` and no selectors).
+We only treat `type == 100` as a CSS rule when paired with the string
+`className == "CSSStyleRule"`.  Inline style declarations (`type == 0`)
+satisfy none of (a)–(c) and lack a non-empty `matchedSelectorIndexes`, so
+they remain excluded.
+
+Additionally, FF 151 nests `declarations` under `rule.declarations` (older
+replies put them at the entry top level).  `parse_applied_entry` checks the
+entry top level first for backwards compatibility, then falls back to
+`rule.declarations` — this was the missing piece that left iter-85's
+"fix" shipping empty `properties: []` arrays.
+
+The recorded fixture
+`crates/ff-rdp-core/tests/fixtures/cascade_tennis_sepp_h1_color.json`
+exercises the real FF 151 shape: the first entry is an element-style
+sentinel (`type: 100`, numeric `className: 100`) that must be rejected;
+the next two are real author rules with `type: 1`,
+`className: "CSSStyleRule"`, non-empty `matchedSelectorIndexes`, and
+declarations under `rule.declarations`.
+`pre_fix_repro_cascade_fixture_red_then_green` enforces the red→green
+transition per the iter-87 pre-fix-repro convention and asserts that a
+`color` declaration is among the parsed properties (regression-proofs the
+`rule.declarations` fallback).
