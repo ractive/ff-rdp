@@ -2,7 +2,7 @@
 title: "Iteration 88: cascade fifth attempt — single theme, pre-fix repro, real-site CLI evidence"
 type: iteration
 date: 2026-05-29
-status: in_progress
+status: completed
 branch: iter-88/cascade-fifth-attempt-single-theme
 depends_on:
   - iteration-87-gate-hardening-required-checks-and-dogfood-linter
@@ -18,7 +18,9 @@ kb_refs:
   - kb/iterations/iteration-87-gate-hardening-required-checks-and-dogfood-linter.md
   - kb/rdp/actors/page-style.md
 first_call_sites:
-  - primitive: cascade parser accepts CSSStyleRule sentinel (type==100 OR className==CSSStyleRule OR matchedSelectorIndexes non-empty)
+  - primitive: >-
+      cascade parser accepts CSSStyleRule sentinel (type==100 OR
+      className==CSSStyleRule OR matchedSelectorIndexes non-empty)
     site: crates/ff-rdp-core/src/actors/page_style.rs
   - primitive: cascade real-site fixture from FF 151 getApplied reply
     site: crates/ff-rdp-core/tests/fixtures/cascade_tennis_sepp_h1_color.json
