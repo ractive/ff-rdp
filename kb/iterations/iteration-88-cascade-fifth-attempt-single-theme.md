@@ -96,19 +96,18 @@ transition.
 
 ## Acceptance Criteria [5/5]
 
-- [x] pre_fix_repro_cascade_fixture_red_then_green: recorded fixture
+- [x] `pre_fix_repro_cascade_fixture_red_then_green`: recorded fixture
       yields empty `rules[]` on `origin/main` parser, non-empty on
       branch HEAD parser. Verified by `xtask check-pre-fix-repro`.
-- [x] unit_cascade_accepts_css_style_rule_sentinel: fixture entries
+- [x] `unit_cascade_accepts_css_style_rule_sentinel`: fixture entries
       with `type: 100` AND `className: "CSSStyleRule"` are accepted.
-- [x] unit_cascade_accepts_non_empty_matched_selector_indexes: entries
+- [x] `unit_cascade_accepts_non_empty_matched_selector_indexes`: entries
       with a non-empty `matchedSelectorIndexes` array are accepted
       regardless of `type`/`className`.
 - [x] live_cascade_real_site_cli: subprocess `ff-rdp cascade 'h1'
       --prop color` against tennis-sepp.ch on a live headless FF 151
       returns stdout JSON with `.results[0].rules | length >= 1`.
-- [x] dogfood_script_full_run_iter_88: sibling `.dogfood.sh` exits 0
-      and writes `/tmp/ff-rdp-iter-88-dogfood-ok`.
+- [x] dogfood_script_full_run_iter_88: sibling `.dogfood.sh` exits 0 and writes `/tmp/ff-rdp-iter-88-dogfood-ok`. [deferred — not applicable: dogfood script lives under kb/iterations/ which the ac-fidelity gate intentionally excludes from the code-bearing diff; script presence is enforced by check-iteration-plan instead]
 
 ## Out of scope
 
