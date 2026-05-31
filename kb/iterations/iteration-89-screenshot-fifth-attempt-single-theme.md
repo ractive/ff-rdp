@@ -2,7 +2,7 @@
 title: "Iteration 89: screenshot fifth attempt — single theme, route through WindowGlobalTarget on FF 151"
 type: iteration
 date: 2026-05-29
-status: in-progress
+status: completed
 branch: iter-89/screenshot-fifth-attempt-single-theme
 depends_on:
   - iteration-87-gate-hardening-required-checks-and-dogfood-linter
