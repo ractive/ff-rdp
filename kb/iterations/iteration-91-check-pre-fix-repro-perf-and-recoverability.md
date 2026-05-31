@@ -2,7 +2,7 @@
 title: "Iteration 91: check-pre-fix-repro — persistent main worktree + SHA-keyed result cache"
 type: iteration
 date: 2026-05-31
-status: planned
+status: done
 branch: iter-91/check-pre-fix-repro-worktree-and-cache
 depends_on:
   - iteration-87-gate-hardening-required-checks-and-dogfood-linter
@@ -12,13 +12,15 @@ kb_refs:
   - kb/iterations/iteration-87-gate-hardening-required-checks-and-dogfood-linter.md
   - kb/iterations/iteration-89-screenshot-fifth-attempt-single-theme.md
 first_call_sites:
-  - primitive: "pre-fix-repro main-side worktree resolution (~/.cache/ff-rdp/pre-fix-repro/main-tree)"
+  - primitive: >-
+      pre-fix-repro main-side worktree resolution
+      (~/.cache/ff-rdp/pre-fix-repro/main-tree)
     site: crates/xtask/src/check_pre_fix_repro.rs
-  - primitive: "main-side CARGO_TARGET_DIR routing to per-worktree target/"
+  - primitive: main-side CARGO_TARGET_DIR routing to per-worktree target/
     site: crates/xtask/src/check_pre_fix_repro.rs
-  - primitive: "SHA-keyed result cache (~/.cache/ff-rdp/pre-fix-repro/results/)"
+  - primitive: SHA-keyed result cache (~/.cache/ff-rdp/pre-fix-repro/results/)
     site: crates/xtask/src/check_pre_fix_repro.rs
-  - primitive: "run() invokes only the red-on-main probe; drops the green-on-branch rerun"
+  - primitive: run() invokes only the red-on-main probe; drops the green-on-branch rerun
     site: crates/xtask/src/check_pre_fix_repro.rs
 dogfood_script: iteration-91-check-pre-fix-repro-perf-and-recoverability.dogfood.sh
 tags:
