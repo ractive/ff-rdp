@@ -149,6 +149,21 @@ pub struct PrepareCapture {
     pub rect: Option<CaptureRect>,
 }
 
+impl PrepareCapture {
+    /// Synthesize a default viewport `PrepareCapture` (DPR=1, zoom=1, no rect).
+    ///
+    /// Used when `screenshotContentActor` is absent from the target's actor list
+    /// (observed on some Firefox 151 builds) and we still need to pass a
+    /// `PrepareCapture` to the two-step screenshot protocol.
+    pub fn default_viewport() -> Self {
+        Self {
+            window_dpr: 1.0,
+            window_zoom: 1.0,
+            rect: None,
+        }
+    }
+}
+
 /// Capture region as returned by `screenshotContentActor.prepareCapture`.
 #[derive(Debug, Clone)]
 pub struct CaptureRect {
