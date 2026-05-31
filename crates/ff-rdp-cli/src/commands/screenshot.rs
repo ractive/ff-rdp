@@ -101,17 +101,14 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
     let sc_actor = ctx.target.screenshot_content_actor.clone();
     let browsing_ctx_id = ctx.target.browsing_context_id;
 
-    let sc_actor = sc_actor.ok_or_else(|| {
-        AppError::User(
-            "screenshot: no screenshotContentActor found — \
-             screenshots require headless mode; relaunch with: ff-rdp launch --headless"
-                .to_owned(),
-        )
-    })?;
-
+    // On Firefox 151 the `screenshotContentActor` may be absent from the
+    // `getTarget` response (or the `screenshotActor.capture` call fails with
+    // "Unable to load actor module").  In that case we fall through to the
+    // `screenshot_via_process_drawsnapshot` path which uses the parent-process
+    // chrome console to call `BrowsingContext.drawSnapshot` directly.
     let data_url = try_two_step_screenshot(
         &mut ctx,
-        &sc_actor,
+        sc_actor.as_ref(),
         browsing_ctx_id,
         opts.full_page,
         opts.bulk,
@@ -188,25 +185,35 @@ pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
         .map_err(AppError::from)
 }
 
-/// Two-step screenshot protocol (canonical path).
+/// Two-step screenshot protocol (canonical path) with FF 151+ fallback.
 ///
 /// Step 1: `screenshotContentActor.prepareCapture` → viewport DPR/zoom/rect.
 /// Step 2: `screenshotActor.capture` (root actor) → PNG data URL.
 ///
-/// `full_page` requests that Firefox captures the full scroll height rather than
-/// just the visible viewport.
+/// ## Fallback ladder
 ///
-/// `bulk` — accepted for API compatibility but currently inactive.  As of
-/// Firefox 130, `screenshot.capture` always returns JSON (base64-encoded PNG),
-/// not a bulk frame.  If `--bulk` is requested, a debug message is logged and
-/// the standard JSON path is used.  If Firefox ever adds native bulk screenshot
-/// support, restore the bulk path via a separate mechanism (e.g. inspect the
-/// JSON reply for a bulk hint, then dispatch a separate bulk read).
+/// On Firefox 151, `screenshotActor.capture` fails with
+/// "Unable to load actor module 'devtools/server/actors/screenshot'" because
+/// `capture-screenshot.js` uses the `moz-src:` scheme without the `global` option
+/// required in the DevTools distinct global.  In this case we fall back to
+/// `ScreenshotActor::screenshot_via_process_drawsnapshot` which:
+/// 1. Obtains the parent-process chrome console via `getProcess(0)` + `getTarget`.
+/// 2. Calls `BrowsingContext.get(bc_id).currentWindowGlobal.drawSnapshot()` via
+///    an async `evaluateJSAsync` with `mapped: { await: true }`.
+/// 3. Writes the PNG to a temp file via `IOUtils.write()` and reads it back.
+///
+/// When `sc_actor` is `None` (the `screenshotContentActor` is absent from the
+/// target's actor list — also observed on some FF 151 builds), we synthesize a
+/// default `PrepareCapture { dpr=1, zoom=1, rect=None }` and proceed.  If the
+/// two-step path then fails too, we fall back to
+/// `screenshot_via_process_drawsnapshot` directly (skipping step 1).
+///
+/// `bulk` — accepted for API compatibility but currently inactive.
 ///
 /// Returns the `data:image/png;base64,...` string on success.
 fn try_two_step_screenshot(
     ctx: &mut super::connect_tab::ConnectedTab,
-    sc_actor: &ff_rdp_core::ActorId,
+    sc_actor: Option<&ff_rdp_core::ActorId>,
     browsing_ctx_id: Option<u64>,
     full_page: bool,
     bulk: bool,
@@ -221,17 +228,43 @@ fn try_two_step_screenshot(
     })?;
 
     // Step 1: prepare — collect viewport DPR/zoom from the content process actor.
-    let mut prep =
-        ScreenshotContentActor::prepare_capture(ctx.transport_mut(), sc_actor.as_ref(), full_page)
-            .map_err(|e| {
-                if is_actor_module_load_failure(&e) {
-                    AppError::User(format!("screenshot: {}", version_mismatch_message()))
-                } else {
-                    AppError::User(format!(
-                        "screenshot: screenshotContentActor.prepareCapture failed ({e})"
-                    ))
-                }
-            })?;
+    //
+    // If `sc_actor` is None (screenshotContentActor absent from the target on some
+    // FF 151 builds), synthesize a default PrepareCapture and skip step 1.
+    let mut prep = if let Some(actor) = sc_actor {
+        match ScreenshotContentActor::prepare_capture(
+            ctx.transport_mut(),
+            actor.as_ref(),
+            full_page,
+        ) {
+            Ok(p) => p,
+            Err(e) if is_actor_module_load_failure(&e) => {
+                // The screenshotContentActor itself failed to load — skip to the
+                // process-drawsnapshot fallback immediately.
+                tracing::debug!(
+                    target: "ff_rdp_cli::screenshot",
+                    "screenshotContentActor module load failure during prepareCapture; \
+                     skipping to screenshot_via_process_drawsnapshot"
+                );
+                return screenshot_via_process_drawsnapshot_fallback(
+                    ctx,
+                    browsing_ctx_id,
+                    full_page,
+                );
+            }
+            Err(e) => {
+                return Err(AppError::User(format!(
+                    "screenshot: screenshotContentActor.prepareCapture failed ({e})"
+                )));
+            }
+        }
+    } else {
+        tracing::debug!(
+            target: "ff_rdp_cli::screenshot",
+            "screenshotContentActor absent from target; using default PrepareCapture"
+        );
+        ff_rdp_core::PrepareCapture::default_viewport()
+    };
 
     // For full-page captures: Firefox's `prepareCapture` often returns a
     // viewport-sized rect (or null) even when `fullpage: true` is requested,
@@ -329,21 +362,13 @@ fn try_two_step_screenshot(
     }
 
     if use_target_fallback {
-        // Theme B (iter-85) — Firefox 151+ path: send the screenshot request
-        // directly to the WindowGlobalTarget actor.
-        return ScreenshotActor::screenshot_via_target(
-            ctx.transport_mut(),
-            browsing_ctx_id,
-            full_page,
-            &prep,
-        )
-        .map_err(|e| {
-            AppError::User(format!(
-                "screenshot: root-form screenshotActor absent and target fallback failed ({e}) — \
-                 {} — screenshots require headless mode; relaunch with: ff-rdp launch --headless",
-                version_mismatch_message()
-            ))
-        });
+        // screenshotActor absent from getRoot — use the process-drawsnapshot
+        // path (Firefox 151+ workaround).
+        tracing::debug!(
+            target: "ff_rdp_cli::screenshot",
+            "screenshotActor absent from getRoot; trying screenshot_via_process_drawsnapshot"
+        );
+        return screenshot_via_process_drawsnapshot_fallback(ctx, browsing_ctx_id, full_page);
     }
 
     // Standard path: use the root-level screenshotActor.
@@ -365,26 +390,58 @@ fn try_two_step_screenshot(
     match capture_result {
         Ok(data) => Ok(data),
         Err(ref e) if is_actor_module_load_failure(e) => {
-            // Module load failure on the root path — try the target fallback
-            // before giving up (some FF 151 builds report this error instead of
-            // omitting the field from getRoot).
+            // Module load failure — screenshotActor.capture can't load
+            // capture-screenshot.js (Firefox 151 regression: moz-src: scheme not
+            // supported in DevTools distinct global).  Fall back to the
+            // process-drawsnapshot path.
             tracing::debug!(
                 target: "ff_rdp_cli::screenshot",
-                "screenshotActor module load failure; retrying via screenshot_via_target"
+                "screenshotActor module load failure; retrying via screenshot_via_process_drawsnapshot"
             );
-            ScreenshotActor::screenshot_via_target(
-                ctx.transport_mut(),
-                browsing_ctx_id,
-                full_page,
-                &prep,
-            )
-            .map_err(|_| AppError::User(format!("screenshot: {}", version_mismatch_message())))
+            screenshot_via_process_drawsnapshot_fallback(ctx, browsing_ctx_id, full_page)
         }
         Err(e) => Err(AppError::User(format!(
             "screenshot: screenshotActor.capture failed ({e}) — \
              screenshots require headless mode; relaunch with: ff-rdp launch --headless"
         ))),
     }
+}
+
+/// Fallback to `ScreenshotActor::screenshot_via_process_drawsnapshot` and encode
+/// the returned PNG bytes as a `data:image/png;base64,...` data URL.
+///
+/// Called from `try_two_step_screenshot` when the standard `screenshotActor.capture`
+/// path is unavailable (Firefox 151 regression) or when `screenshotActor` is absent
+/// from `getRoot`.
+fn screenshot_via_process_drawsnapshot_fallback(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    browsing_ctx_id: u64,
+    full_page: bool,
+) -> Result<String, AppError> {
+    if full_page {
+        return Err(AppError::User(
+            "screenshot: --full-page is not yet supported on the Firefox 151 \
+             process-drawsnapshot fallback (drawSnapshot returns viewport-sized \
+             capture only); retry without --full-page"
+                .to_owned(),
+        ));
+    }
+
+    let png_bytes = ScreenshotActor::screenshot_via_process_drawsnapshot(
+        ctx.transport_mut(),
+        browsing_ctx_id,
+        full_page,
+    )
+    .map_err(|e| {
+        AppError::User(format!(
+            "screenshot: process-drawsnapshot fallback failed ({e}) — \
+                 {} — screenshots require headless mode; relaunch with: ff-rdp launch --headless",
+            version_mismatch_message()
+        ))
+    })?;
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+    Ok(format!("data:image/png;base64,{b64}"))
 }
 
 /// Determine the output file path.

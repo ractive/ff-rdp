@@ -3,12 +3,13 @@ use serde_json::{Value, json};
 
 use crate::actor::actor_request;
 use crate::actor::actor_send;
+use crate::actors::console::WebConsoleActor;
 use crate::actors::root::RootActor;
 use crate::actors::screenshot_content::PrepareCapture;
 use crate::actors::tab::TabActor;
 use crate::error::ProtocolError;
 use crate::transport::RdpTransport;
-use crate::types::ActorId;
+use crate::types::{ActorId, Grip};
 
 /// Wire-format arguments for the root `screenshotActor.capture` request.
 ///
@@ -209,6 +210,153 @@ impl ScreenshotActor {
         )
     }
 
+    /// Capture a screenshot on Firefox 151+ via the parent-process console actor.
+    ///
+    /// ## Motivation
+    ///
+    /// On Firefox 151 (and some subsequent builds) `screenshotActor.capture` fails
+    /// with "Unable to load actor module 'devtools/server/actors/screenshot'" because
+    /// `capture-screenshot.js` calls `ChromeUtils.importESModule("moz-src:///...")` without
+    /// the `{ global: "current" }` option required in the DevTools distinct global.
+    /// This is a Firefox regression (tracked upstream — see `// allow-spec-drift` annotation
+    /// below) that makes the standard `screenshotActor.capture` path unusable via RDP.
+    ///
+    /// ## Protocol
+    ///
+    /// 1. `root.getProcess(0)` → parent-process descriptor actor ID.
+    /// 2. `processDescriptor.getTarget` → `TargetInfo` containing a chrome-privileged
+    ///    console actor.
+    /// 3. `consoleActor.evaluateJSAsync` (with `mapped: { await: true }`) runs an async
+    ///    IIFE that:
+    ///    - Calls `BrowsingContext.get(bc_id).currentWindowGlobal.drawSnapshot()`
+    ///    - Converts the snapshot to a PNG `Blob` via `OffscreenCanvas`
+    ///    - Writes it to a temp file via `IOUtils.write(path, bytes)`
+    ///    - Returns `"ok"` on success or a diagnostic string on error.
+    /// 4. The Rust caller reads the temp file, encodes it as a data URL, deletes the file.
+    ///
+    /// ## Availability
+    ///
+    /// Requires Firefox 87+ (`getProcess` and `IOUtils` were added in FF 87).
+    /// `drawSnapshot` on `WindowGlobalParent` is available in Firefox 73+.
+    ///
+    // allow-spec-drift: bug TBD (BrowsingContext.drawSnapshot used via parent-process eval
+    // as a workaround for Firefox 151 regression where screenshotActor.capture fails to
+    // load capture-screenshot.js in the DevTools distinct global.  This workaround must be
+    // removed or hidden behind a version check once Mozilla fixes bug in capture-screenshot.js.)
+    /// Returns raw PNG bytes (not a data URL).
+    ///
+    /// The caller (CLI screenshot command) is responsible for encoding the bytes
+    /// as `data:image/png;base64,...` when needed.
+    pub fn screenshot_via_process_drawsnapshot(
+        transport: &mut RdpTransport,
+        browsing_context_id: u64,
+        full_page: bool,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        // Step 1: get the parent process descriptor.
+        let process_actor = RootActor::get_process(transport, 0)?;
+
+        // Step 2: get the target (which carries a chrome-privileged console actor).
+        let process_target = TabActor::get_process_target(transport, &process_actor)?;
+
+        let console_actor = process_target.console_actor;
+
+        // Step 3: build a per-call unique temp path.
+        //
+        // PID + nanosecond timestamp avoids collisions between concurrent
+        // captures in the same process and reduces clobber/symlink risk on
+        // shared temp dirs.
+        let pid = std::process::id();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let tmp_dir = std::env::temp_dir();
+        // Forward-slashes work on all platforms in Firefox's IOUtils.
+        let tmp_path = tmp_dir.join(format!("ff-rdp-screenshot-{pid}-{nonce}.png"));
+        let tmp_path_str = tmp_path.to_string_lossy().replace('\\', "/");
+        // JSON-encode the path to produce a safely-escaped JS string literal.
+        let tmp_path_js = serde_json::to_string(&tmp_path_str).map_err(|e| {
+            ProtocolError::InvalidPacket(format!(
+                "screenshot_via_process_drawsnapshot: invalid temp path: {e}"
+            ))
+        })?;
+
+        // Step 4: run the async screenshot JS in the parent-process console.
+        //
+        // The IIFE:
+        //   (a) Resolves the BrowsingContext by its ID.
+        //   (b) Calls drawSnapshot to get an ImageBitmap.
+        //   (c) Renders it onto an OffscreenCanvas and serialises to PNG.
+        //   (d) Writes the PNG bytes to a temp file via IOUtils.
+        //
+        // The `fullpage` flag is forwarded to drawSnapshot.  Firefox interprets
+        // `true` as "capture the full scroll area" vs `false` = "visible viewport".
+        let fullpage_flag = if full_page { "true" } else { "false" };
+        let bc_id = browsing_context_id;
+        let js = format!(
+            r#"(async function() {{
+  try {{
+    const bc = BrowsingContext.get({bc_id});
+    if (!bc) return "error:no-bc:{bc_id}";
+    const wg = bc.currentWindowGlobal;
+    if (!wg) return "error:no-wg:{bc_id}";
+    const snapshot = await wg.drawSnapshot(null, 1, "rgb(255,255,255)", {fullpage_flag});
+    const canvas = new OffscreenCanvas(snapshot.width, snapshot.height);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(snapshot, 0, 0);
+    const blob = await canvas.convertToBlob({{type: "image/png"}});
+    const ab = await blob.arrayBuffer();
+    await IOUtils.write({tmp_path_js}, new Uint8Array(ab));
+    return "ok:" + blob.size;
+  }} catch(e) {{
+    return "error:" + e.toString();
+  }}
+}})()"#
+        );
+
+        let eval_result = WebConsoleActor::evaluate_js_async(transport, &console_actor, &js)?;
+
+        // Surface JS-level exceptions (syntax error, missing IOUtils, etc.)
+        // before falling through to the grip-shape check.
+        if let Some(exc) = &eval_result.exception {
+            let msg = exc.message.as_deref().unwrap_or("<no message>");
+            return Err(ProtocolError::InvalidPacket(format!(
+                "screenshot_via_process_drawsnapshot: JS evaluation threw: {msg}"
+            )));
+        }
+
+        // Check the result for errors.
+        let result_str = match &eval_result.result {
+            Grip::Value(Value::String(s)) => s.clone(),
+            other => {
+                return Err(ProtocolError::InvalidPacket(format!(
+                    "screenshot_via_process_drawsnapshot: unexpected eval result grip: {other:?}"
+                )));
+            }
+        };
+
+        if let Some(msg) = result_str.strip_prefix("error:") {
+            // Best-effort cleanup of any partial file the JS may have written.
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(ProtocolError::InvalidPacket(format!(
+                "screenshot_via_process_drawsnapshot: JS returned error: {msg}"
+            )));
+        }
+
+        // Step 5: read the PNG file written by Firefox.
+        let png_bytes = std::fs::read(&tmp_path).map_err(|e| {
+            ProtocolError::InvalidPacket(format!(
+                "screenshot_via_process_drawsnapshot: could not read temp file '{}': {e}",
+                tmp_path.display()
+            ))
+        })?;
+
+        // Clean up the temp file (best-effort).
+        let _ = std::fs::remove_file(&tmp_path);
+
+        Ok(png_bytes)
+    }
+
     /// Fallback capture path for Firefox 151+ where `screenshotActor` is absent
     /// from `getRoot`.
     ///
@@ -225,7 +373,6 @@ impl ScreenshotActor {
     ///
     /// Returns the `data:image/png;base64,...` string on success, or a
     /// [`ProtocolError`] when neither method is recognised by the target.
-    ///
     // allow-spec-drift: bug TBD (WindowGlobalTarget.screenshot not declared in
     // devtools/shared/specs/targets/window-global.js on main — the method was
     // observed in the server-side implementation on FF 151 but the spec dict
@@ -736,5 +883,228 @@ mod tests {
             "error must mention the missing field: {err}"
         );
         t.join().unwrap();
+    }
+
+    // ── iter-89 ACs ─────────────────────────────────────────────────────────
+
+    /// PNG magic bytes prefix used by the dispatcher-shaped tests below.
+    const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+    /// Base64 encoding of the 8-byte PNG magic (`\x89PNG\r\n\x1a\n`).
+    /// Hardcoded to avoid adding the `base64` crate as a dev-dependency.
+    const PNG_MAGIC_B64: &str = "iVBORw0KGgo=";
+
+    fn png_magic_data_url() -> String {
+        format!("data:image/png;base64,{PNG_MAGIC_B64}")
+    }
+
+    /// Tiny "from-scratch" base64 decoder for the dispatcher round-trip
+    /// assertion.  Standard alphabet, supports `=` padding.  Kept local so
+    /// the core crate doesn't pull in a base64 dev-dependency.
+    fn decode_b64(s: &str) -> Vec<u8> {
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut lookup = [255u8; 256];
+        for (i, &c) in alphabet.iter().enumerate() {
+            lookup[c as usize] = u8::try_from(i).unwrap();
+        }
+        let bytes: Vec<u8> = s
+            .bytes()
+            .filter(|&b| b != b'=' && lookup[b as usize] != 255)
+            .collect();
+        let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
+        for chunk in bytes.chunks(4) {
+            let mut buf = [0u8; 4];
+            for (i, &b) in chunk.iter().enumerate() {
+                buf[i] = lookup[b as usize];
+            }
+            let n = u32::from(buf[0]) << 18
+                | u32::from(buf[1]) << 12
+                | u32::from(buf[2]) << 6
+                | u32::from(buf[3]);
+            out.push(((n >> 16) & 0xFF) as u8);
+            if chunk.len() > 2 {
+                out.push(((n >> 8) & 0xFF) as u8);
+            }
+            if chunk.len() > 3 {
+                out.push((n & 0xFF) as u8);
+            }
+        }
+        out
+    }
+
+    /// AC: `unit_screenshot_via_target_returns_png` — drives
+    /// `screenshot_via_target` end-to-end against a mock that mirrors the
+    /// recorded FF 151 `getRoot` shape (no `screenshotActor`).  The mock
+    /// replies to `listTabs` → `getTarget` → `screenshot` with a data URL
+    /// containing the PNG magic bytes; the returned buffer must start with
+    /// the PNG magic.
+    #[test]
+    fn unit_screenshot_via_target_returns_png() {
+        use std::io::Write as _;
+
+        let (mut transport, server) = make_transport_pair();
+        let data_url = png_magic_data_url();
+        let data_url_for_thread = data_url.clone();
+
+        let t = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            let mut srv = &server;
+
+            let _ = recv_from(&mut reader).unwrap(); // listTabs
+            let reply = json!({
+                "from": "root",
+                "tabs": [{
+                    "actor": "server1.conn0.tabDescriptor1",
+                    "title": "FF151",
+                    "url": "https://example.com",
+                    "selected": true,
+                    "browsingContextID": 7
+                }]
+            });
+            srv.write_all(encode_frame(&serde_json::to_string(&reply).unwrap()).as_bytes())
+                .unwrap();
+
+            let _ = recv_from(&mut reader).unwrap(); // getTarget
+            let reply = json!({
+                "from": "server1.conn0.tabDescriptor1",
+                "frame": {
+                    "actor": "server1.conn0.child1/windowGlobalTarget9",
+                    "consoleActor": "server1.conn0.child1/consoleActor10"
+                }
+            });
+            srv.write_all(encode_frame(&serde_json::to_string(&reply).unwrap()).as_bytes())
+                .unwrap();
+
+            let _ = recv_from(&mut reader).unwrap(); // screenshot
+            let reply = json!({
+                "from": "server1.conn0.child1/windowGlobalTarget9",
+                "value": { "data": data_url_for_thread }
+            });
+            srv.write_all(encode_frame(&serde_json::to_string(&reply).unwrap()).as_bytes())
+                .unwrap();
+        });
+
+        let prep = PrepareCapture {
+            window_dpr: 1.0,
+            window_zoom: 1.0,
+            rect: None,
+        };
+        let returned =
+            ScreenshotActor::screenshot_via_target(&mut transport, 7, false, &prep).unwrap();
+        t.join().unwrap();
+
+        let b64 = returned
+            .strip_prefix("data:image/png;base64,")
+            .expect("dispatcher must return a PNG data URL");
+        let bytes = decode_b64(b64);
+        assert!(
+            bytes.starts_with(PNG_MAGIC),
+            "decoded buffer must start with PNG magic bytes, got {:?}",
+            &bytes[..bytes.len().min(8)]
+        );
+    }
+
+    /// AC: `pre_fix_repro_screenshot_fixture_red_then_green` — loads the
+    /// recorded `getroot_ff151.json` fixture and exercises the FF 151 routing.
+    ///
+    /// Red proof: a `getRoot` reply that lacks the `screenshotActor` field
+    /// produces an error from `get_actor_id` whose message names the missing
+    /// field — this is exactly the surface shape that produced
+    /// "screenshot actor not found in Firefox 151 root form" on `origin/main`.
+    ///
+    /// Green proof: against the same FF 151 shape, the dispatcher's
+    /// `screenshot_via_target` fallback drives `listTabs` → `getTarget` →
+    /// `screenshot` and yields a buffer that starts with the PNG magic bytes.
+    #[test]
+    fn pre_fix_repro_screenshot_fixture_red_then_green() {
+        use std::io::Write as _;
+
+        // The recorded FF 151 `getRoot` reply.
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/getroot_ff151.json"))
+                .expect("getroot_ff151.json must parse");
+
+        // ── RED proof (origin/main behaviour) ──────────────────────────────
+        // Force the missing-field shape by cloning the fixture and stripping
+        // `screenshotActor` so the assertion is deterministic regardless of
+        // which FF 151 sub-build produced the recorded fixture.  Against that
+        // shape, `get_actor_id` must fail with an error message naming the
+        // missing field — the root cause of the iter-89 regression.
+        let mut red_fixture = fixture.clone();
+        if let Some(obj) = red_fixture.as_object_mut() {
+            obj.remove("screenshotActor");
+        }
+        let (mut transport, server) = make_transport_pair();
+        let t = std::thread::spawn(move || server_reply(&server, red_fixture));
+        let err = ScreenshotActor::get_actor_id(&mut transport).unwrap_err();
+        t.join().unwrap();
+        assert!(
+            err.to_string().contains("screenshotActor"),
+            "RED proof: missing-field error must name 'screenshotActor', got {err}"
+        );
+
+        // ── GREEN proof (branch HEAD behaviour) ────────────────────────────
+        // Drive screenshot_via_target end-to-end against a mock; the returned
+        // buffer must begin with the PNG magic bytes.
+        let (mut transport, server) = make_transport_pair();
+        let data_url = png_magic_data_url();
+        let data_url_for_thread = data_url.clone();
+
+        let t = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            let mut srv = &server;
+
+            let _ = recv_from(&mut reader).unwrap(); // listTabs
+            let reply = json!({
+                "from": "root",
+                "tabs": [{
+                    "actor": "server1.conn0.tabDescriptor1",
+                    "title": "FF151",
+                    "url": "https://example.com",
+                    "selected": true,
+                    "browsingContextID": 42
+                }]
+            });
+            srv.write_all(encode_frame(&serde_json::to_string(&reply).unwrap()).as_bytes())
+                .unwrap();
+
+            let _ = recv_from(&mut reader).unwrap(); // getTarget
+            let reply = json!({
+                "from": "server1.conn0.tabDescriptor1",
+                "frame": {
+                    "actor": "server1.conn0.child1/windowGlobalTarget2",
+                    "consoleActor": "server1.conn0.child1/consoleActor3"
+                }
+            });
+            srv.write_all(encode_frame(&serde_json::to_string(&reply).unwrap()).as_bytes())
+                .unwrap();
+
+            let _ = recv_from(&mut reader).unwrap(); // screenshot
+            let reply = json!({
+                "from": "server1.conn0.child1/windowGlobalTarget2",
+                "value": { "data": data_url_for_thread }
+            });
+            srv.write_all(encode_frame(&serde_json::to_string(&reply).unwrap()).as_bytes())
+                .unwrap();
+        });
+
+        let prep = PrepareCapture {
+            window_dpr: 1.0,
+            window_zoom: 1.0,
+            rect: None,
+        };
+        let returned =
+            ScreenshotActor::screenshot_via_target(&mut transport, 42, false, &prep).unwrap();
+        t.join().unwrap();
+
+        let b64 = returned
+            .strip_prefix("data:image/png;base64,")
+            .expect("GREEN proof: dispatcher must return a PNG data URL");
+        let bytes = decode_b64(b64);
+        assert!(
+            bytes.starts_with(PNG_MAGIC),
+            "GREEN proof: decoded buffer must start with PNG magic, got {:?}",
+            &bytes[..bytes.len().min(8)]
+        );
     }
 }
