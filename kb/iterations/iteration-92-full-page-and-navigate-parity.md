@@ -171,7 +171,8 @@ follow-up iter-94.
       exits 0 for the same URL as above; covers the index path.
 - [x] `dogfood_script_full_run_iter_92`: the sibling
       `iteration-92-full-page-and-navigate-parity.dogfood.sh` exits 0
-      and writes `/tmp/ff-rdp-iter-92-dogfood-ok`.
+      against a live FF 151 and writes `/tmp/ff-rdp-iter-92-dogfood-ok`
+      (verified via `cargo run -p xtask -- check-dogfood-script`).
 
 ## Out of scope
 
