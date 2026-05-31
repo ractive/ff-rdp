@@ -229,16 +229,27 @@ is_child_alive() {
     return 1  # pane gone entirely
   fi
 
-  # Read the last few lines of the pane to check for shell prompt
+  # Read the pane to look for evidence of an alive claude UI or a returned shell.
   local screen
   screen=$(cmux read-screen --surface "$SURFACE_ID" 2>&1 || true)
 
-  # If the screen shows a shell prompt ($ or %) at the end, claude has exited
-  # Look for common shell prompt patterns in the last 3 lines
+  # POSITIVE SIGNALS: if claude's interactive UI is on screen anywhere, it's alive.
+  # These markers come from the Claude Code TUI footer / header and are not
+  # present in a plain shell. Match before the negative signal to avoid the
+  # `❯` false-positive that killed an actively-running iteration before — claude
+  # renders `❯` as its own input cursor on a standalone line, which previously
+  # matched the same regex used to detect zsh's `❯` prompt character.
+  if echo "$screen" | grep -qiE 'claude code v|auto mode on|esc to interrupt|⏵⏵|press ctrl\+c'; then
+    return 0  # claude UI visible — alive
+  fi
+
+  # NEGATIVE SIGNAL: only treat as dead if the last lines look like a shell
+  # prompt AND no claude markers were found above. Tail 3 lines so a transient
+  # shell render between launcher exit and bash teardown still trips it.
   local last_lines
   last_lines=$(echo "$screen" | tail -3)
   if echo "$last_lines" | grep -qE '^\s*(\$|%|❯|➜)\s*$'; then
-    return 1  # shell prompt visible, claude exited
+    return 1
   fi
 
   return 0
@@ -342,9 +353,20 @@ run_phase() {
   # a tiny launcher script and pass its path as the command — the script's
   # shebang gives us shell evaluation for the prompt-file substitution.
   local launcher="/tmp/ralph-loop-launch-${ITER_NUM}-${phase_name}.sh"
+  # Capture Claude's process exit code as a fallback sentinel. The prompt asks
+  # the agent to write 0/1 to DONE_FILE explicitly, but agents sometimes exit
+  # cleanly after finishing real work (incl. /create-pr) without running that
+  # final echo. Previously that stranded the iteration as "failed" even though
+  # Phase 1 had completed. Now: if the agent wrote DONE_FILE, we honor it;
+  # otherwise we record claude-teams' exit code so the poller treats a clean
+  # session-exit as success and proceeds to Phase 2.
   cat > "$launcher" <<LAUNCHER_EOF
 #!/bin/bash
-exec cmux claude-teams --permission-mode auto --name '${session_name}' "\$(cat '${prompt_file}')"
+cmux claude-teams --permission-mode auto --name '${session_name}' "\$(cat '${prompt_file}')"
+claude_exit=\$?
+if [[ ! -f '${DONE_FILE}' ]]; then
+  echo "\$claude_exit" > '${DONE_FILE}'
+fi
 LAUNCHER_EOF
   chmod +x "$launcher"
   cmux respawn-pane --surface "$SURFACE_ID" --command "$launcher"
@@ -519,6 +541,8 @@ if ! check_iteration_discipline "$REPO_ROOT" 2>&1 | tee "$DISCIPLINE_LOG"; then
   log_error "iter-${ITER_NUM}: discipline checks failed — Phase 2 will address them (details in $DISCIPLINE_LOG)"
   progress 0.5 "iter-${ITER_NUM}: discipline failed, repairing in Phase 2"
 else
+  # Successful run still leaves the log around so Phase 2 sees "OK" lines if it
+  # peeks; keeps the contract uniform.
   log_info "iter-${ITER_NUM}: discipline checks passed (log at $DISCIPLINE_LOG)"
 fi
 
