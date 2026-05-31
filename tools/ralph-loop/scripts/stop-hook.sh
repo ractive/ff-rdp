@@ -24,7 +24,7 @@ set -euo pipefail
 # Bail fast if not in a git repo.
 REPO=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 SLUG=$(basename "$REPO")
-DIR="$HOME/.cache/ralph-loop/$SLUG"
+DIR="${RALPH_CACHE_DIR:-$HOME/.cache/ralph-loop/$SLUG}"
 
 # Bail fast if no ralph-loop state for this repo.
 [[ -f "$DIR/state.json" ]] || exit 0

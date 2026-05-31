@@ -73,9 +73,9 @@ pub struct Args {
 #[derive(Debug, PartialEq, Eq)]
 pub struct PreFixAnnotation {
     /// The theme title (everything after `### ` and before ` [pre_fix_repro_test:...]`).
-    pub theme: String,
+    theme: String,
     /// The test slug named in the annotation.
-    pub test_slug: String,
+    test_slug: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +92,7 @@ pub struct PreFixAnnotation {
 ///
 /// Returns a `Vec<PreFixAnnotation>`. Themes without the annotation are
 /// silently skipped. Content inside fenced code blocks is ignored.
-pub fn parse_pre_fix_repro_annotations(body: &str) -> Vec<PreFixAnnotation> {
+fn parse_pre_fix_repro_annotations(body: &str) -> Vec<PreFixAnnotation> {
     let mut annotations = Vec::new();
     let mut in_code_block = false;
 
@@ -160,7 +160,7 @@ static MAIN_WORKTREE_PATH: OnceLock<PathBuf> = OnceLock::new();
 /// `XDG_CACHE_HOME`, but does not touch the filesystem.
 ///
 /// The result is memoised per-process via a `OnceLock`.
-pub fn resolve_main_worktree_path() -> PathBuf {
+fn resolve_main_worktree_path() -> PathBuf {
     MAIN_WORKTREE_PATH
         .get_or_init(|| {
             let base = worktree_cache_root();
@@ -201,10 +201,46 @@ fn dirs_home() -> PathBuf {
 
 /// Ensure the persistent worktree exists at `path`, creating it via
 /// `git worktree add` if it does not.  Idempotent.
+///
+/// If a `.git` file exists but belongs to a different repository, the stale
+/// directory is removed and the worktree is recreated.
 fn ensure_main_worktree(path: &Path) -> Result<()> {
-    // If the directory already has a `.git` file/dir, the worktree exists.
+    // If the directory already has a `.git` file/dir, verify it belongs to
+    // the current repository before reusing it.
     if path.join(".git").exists() {
-        return Ok(());
+        // Ask git for the repo root of the *current* working directory.
+        let current_root = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .context("failed to invoke `git rev-parse --show-toplevel` for current repo")?;
+        let current_root_str = String::from_utf8_lossy(&current_root.stdout)
+            .trim()
+            .to_owned();
+
+        // Ask git for the repo root of the candidate worktree directory.
+        let worktree_root = Command::new("git")
+            .args([
+                "-C",
+                &path.to_string_lossy(),
+                "rev-parse",
+                "--show-toplevel",
+            ])
+            .output()
+            .ok()
+            .filter(|o| o.status.success());
+
+        let roots_match = worktree_root
+            .as_ref()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == current_root_str)
+            .unwrap_or(false);
+
+        if roots_match {
+            return Ok(());
+        }
+
+        // Mismatch or unreadable — remove stale directory and fall through to recreate.
+        std::fs::remove_dir_all(path)
+            .with_context(|| format!("failed to remove stale worktree dir {path:?}"))?;
     }
 
     // Create parent directory.
@@ -517,17 +553,17 @@ fn run_test_in_worktree(
 ///
 /// In production, build via `RunConfig::from_env()`.
 /// In tests, construct directly to avoid global env var mutation races.
-pub struct RunConfig {
+struct RunConfig {
     /// Cache root directory (`${XDG_CACHE_HOME:-$HOME/.cache}/ff-rdp/pre-fix-repro`).
-    pub cache_root: PathBuf,
+    cache_root: PathBuf,
     /// When `Some(sha)`, skip worktree refresh + cargo and use this SHA as the
     /// main SHA (cache-only mode).  `None` → run the full worktree path.
-    pub sha_override: Option<String>,
+    sha_override: Option<String>,
 }
 
 impl RunConfig {
     /// Build from environment variables (used by the production entry-point).
-    pub fn from_env() -> Self {
+    fn from_env() -> Self {
         let cache_root = worktree_cache_root();
         let sha_override = {
             let skip = std::env::var("FF_RDP_PRE_FIX_REPRO_SKIP_WORKTREE")
@@ -564,7 +600,7 @@ pub fn run(args: Args) -> Result<()> {
 /// Testable entry-point: same as `run()` but accepts an explicit `RunConfig`
 /// and writes info to `out` / failures to `err`.  This lets unit tests inject
 /// config without mutating global env vars (which races with parallel tests).
-pub fn run_with_writer(
+fn run_with_writer(
     args: Args,
     config: RunConfig,
     out: &mut dyn IoWrite,
@@ -670,11 +706,14 @@ pub fn run_with_writer(
                     (false, crate_name.map(str::to_owned))
                 }
             };
-        let rerun_crate = rerun_crate_owned.as_deref();
+        // NOTE: `rerun_crate_owned` captured which crate cargo resolved, but we
+        // intentionally key the cache on `crate_name` (the CLI arg) so that
+        // `cache_read` and `cache_write` always use the same key.
+        let _ = rerun_crate_owned;
 
         // --- Write to cache (best-effort) ---
-        let cache_label = match cache_write(&cache_root, &main_sha, rerun_crate, slug, main_passed)
-        {
+        // Use `crate_name` (the CLI arg) as the key to match `cache_read` above.
+        let cache_label = match cache_write(&cache_root, &main_sha, crate_name, slug, main_passed) {
             Ok(()) => "cargo run".to_owned(),
             Err(e) => format!("cargo run, cache write failed: {e}"),
         };
@@ -874,6 +913,29 @@ Content.
         );
         let hit2 = cache_read(&new_root, "sha2", None, "slug2");
         assert_eq!(hit2, Some(true));
+    }
+
+    /// `unit_cache_key_read_write_match_when_crate_none`: the key used by
+    /// `cache_write` must equal the key used by `cache_read` when
+    /// `crate_name` is `None` (i.e. whole-workspace mode).  A mismatch would
+    /// cause permanent cache misses and redundant cargo runs.
+    #[test]
+    fn unit_cache_key_read_write_match_when_crate_none() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let sha = "deadbeef";
+        let slug = "some_test";
+
+        // Write with crate_name=None.
+        cache_write(&root, sha, None, slug, false).unwrap();
+
+        // Read back with the same None key — must hit, not miss.
+        let result = cache_read(&root, sha, None, slug);
+        assert_eq!(
+            result,
+            Some(false),
+            "cache_read key must match cache_write key when crate_name is None"
+        );
     }
 
     // -----------------------------------------------------------------------

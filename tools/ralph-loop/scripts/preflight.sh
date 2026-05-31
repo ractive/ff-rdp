@@ -199,14 +199,17 @@ ITER_JSON="[]"
 MISSING=()
 
 for n in "${ITERS[@]}"; do
+  # Extract the numeric prefix for use as a sort key (avoids string "10" < "9" bugs).
+  n_int="${n%%[a-z]*}"
   plan=$(discover_plan "$n")
   if [[ -z "$plan" ]]; then
     MISSING+=("$n")
-    iter_obj=$(jq -n --arg n "$n" '{n: $n, status: "pending", plan_path: null, missing: true}')
+    iter_obj=$(jq -n --arg n "$n" --argjson n_int "$n_int" \
+               '{n: $n, n_int: $n_int, status: "pending", plan_path: null, missing: true}')
   else
     completion=$(check_completion "$n" "$plan")
-    iter_obj=$(jq -n --arg n "$n" --arg p "$plan" --arg s "$completion" \
-               '{n: $n, status: $s, plan_path: $p}')
+    iter_obj=$(jq -n --arg n "$n" --argjson n_int "$n_int" --arg p "$plan" --arg s "$completion" \
+               '{n: $n, n_int: $n_int, status: $s, plan_path: $p}')
   fi
   ITER_JSON=$(jq --argjson o "$iter_obj" '. + [$o]' <<<"$ITER_JSON")
 done
@@ -241,9 +244,9 @@ elif command -v cmux >/dev/null 2>&1; then
 fi
 
 # --- Seed state.json (overwrites any prior state). `range[0]`, `range[1]`,
-# and `current` are stored as strings; existing tick logic uses jq string
-# comparison for `current==end` / `current<end` which works alphabetically
-# for both pure-integer and letter-suffixed IDs in a same-base range. ---
+# and `current` are stored as strings so letter-suffixed IDs round-trip.
+# Each iteration entry also carries `n_int` (integer) for safe numeric
+# comparison by the orchestrator — avoids the "10" < "9" string-sort bug. ---
 jq -n \
   --arg root "$REPO_ROOT" \
   --arg now "$NOW" \
@@ -288,8 +291,9 @@ echo "Next:    iter-$CURRENT"
 
 # Defensive sweep: clear any stale `iter-*` sidebar entries / progress bar
 # left behind by a previous crashed orchestrator run.
-"$(dirname "$0")/clear-cmux-state.sh" \
-  ${CMUX_WORKSPACE:+--workspace "$CMUX_WORKSPACE"} 2>/dev/null || true
+_clear_args=()
+[[ -n "$CMUX_WORKSPACE" ]] && _clear_args+=(--workspace "$CMUX_WORKSPACE")
+"$(dirname "$0")/clear-cmux-state.sh" "${_clear_args[@]}" 2>/dev/null || true
 
 # Exit 1 if any missing — caller decides whether to proceed
 [[ ${#MISSING[@]} -eq 0 ]] || exit 1

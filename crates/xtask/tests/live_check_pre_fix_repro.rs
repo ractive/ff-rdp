@@ -41,20 +41,29 @@ fn live_check_pre_fix_repro_does_not_mutate_working_tree() {
     let repo = repo_root();
     let before = git_status_porcelain(&repo);
 
-    // Use iter-89's plan — it has no pre_fix_repro_test annotations, so the
-    // gate will SKIP immediately. That still exercises the worktree resolution
-    // path without requiring a real cargo run on main.
-    let plan = repo.join("kb/iterations/iteration-89-screenshot-fifth-attempt-single-theme.md");
-    assert!(plan.exists(), "iter-89 plan not found at {plan:?}");
+    // Use iter-87's plan — it has pre_fix_repro_test annotations so the gate
+    // exercises the full annotation-parsing path. With SHA_OVERRIDE set to a
+    // dummy value the worktree cargo run is skipped (cache-miss → hard error),
+    // but the annotations ARE parsed, which is what we need to verify here.
+    // For the no-mutation assertion we rely on the gate either SKIPping (no
+    // annotations) or erroring without touching the working tree.
+    let plan = repo
+        .join("kb/iterations/iteration-87-gate-hardening-required-checks-and-dogfood-linter.md");
+    assert!(plan.exists(), "iter-87 plan not found at {plan:?}");
 
-    // Find the xtask binary.
+    // Find the xtask binary. Check debug and release, with .exe variants for Windows.
     let xtask_bin = if let Ok(p) = std::env::var("CARGO_BIN_EXE_xtask") {
         PathBuf::from(p)
     } else {
         let target = repo.join("target");
         let debug = target.join("debug/xtask");
+        let debug_exe = target.join("debug/xtask.exe");
         let release = target.join("release/xtask");
-        if debug.exists() { debug } else { release }
+        let release_exe = target.join("release/xtask.exe");
+        [debug, debug_exe, release, release_exe]
+            .into_iter()
+            .find(|p| p.exists())
+            .expect("xtask binary not found; run `cargo build -p xtask` first")
     };
 
     let tmp = tempfile::TempDir::new().unwrap();
