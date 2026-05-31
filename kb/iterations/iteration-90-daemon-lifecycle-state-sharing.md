@@ -73,7 +73,7 @@ Per the [[iteration-87-gate-hardening-required-checks-and-dogfood-linter#pre-fix
 
 ## Tasks
 
-### Theme A — `launch` and `daemon` share one record [0/5] [pre_fix_repro_test: pre_fix_repro_daemon_state_sharing_red_then_green]
+### Theme A — `launch` and `daemon` share one record [5/5] [pre_fix_repro_test: pre_fix_repro_daemon_state_sharing_red_then_green]
 
 - [x] Introduce `DaemonRecord` in
       `crates/ff-rdp-cli/src/daemon_record.rs` with fields: `pid: u32`,
@@ -103,7 +103,7 @@ Per the [[iteration-87-gate-hardening-required-checks-and-dogfood-linter#pre-fix
       launch` works without manual `kill`, and `launch --replace`
       against a live prior instance succeeds.
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
 - [x] pre_fix_repro_daemon_state_sharing_red_then_green: `launch` then
       `daemon stop` leaves the port held on `origin/main`, frees it on

@@ -50,7 +50,9 @@ assert_port_open "$PORT" 10 || exit 1
 echo "  [ok] Firefox listening on port $PORT"
 
 # 2. daemon stop (the bug: on origin/main this returned "not running").
-STOP_OUT=$(ff-rdp --port "$PORT" daemon stop)
+# `|| true` keeps `set -e` from aborting the script on a non-zero exit so
+# that the regression check below can run and emit a precise diagnostic.
+STOP_OUT=$(ff-rdp --port "$PORT" daemon stop) || true
 echo "  daemon stop response: $STOP_OUT"
 
 echo "$STOP_OUT" | grep -q '"not running"' && {

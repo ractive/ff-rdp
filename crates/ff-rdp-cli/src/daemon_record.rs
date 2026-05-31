@@ -7,14 +7,14 @@
 //!
 //! ## File location
 //!
-//! | Platform       | Path                                     |
-//! |----------------|------------------------------------------|
-//! | Linux / macOS  | `~/.cache/ff-rdp/daemon.json`            |
-//! | Windows        | `%LOCALAPPDATA%\ff-rdp\daemon.json`      |
+//! `~/.ff-rdp/launch-record.json` on all platforms — shares the same parent
+//! directory as the proxy-daemon registry (`~/.ff-rdp/daemon.json`) so a single
+//! `FF_RDP_HOME` cleanup wipes all ff-rdp state. The file name differs to
+//! avoid colliding with the existing registry file.
 //!
-//! The `FF_RDP_HOME` env-var overrides the base directory (same convention as
-//! the existing registry in `daemon/registry.rs`):
-//! when set, the file is written to `$FF_RDP_HOME/cache/daemon.json`.
+//! The `FF_RDP_HOME` env-var overrides the home directory (same convention as
+//! `daemon/registry.rs`): when set, the file is written to
+//! `$FF_RDP_HOME/.ff-rdp/launch-record.json`.
 //!
 //! ## Staleness
 //!
@@ -59,38 +59,42 @@ pub struct DaemonRecord {
 // Directory resolution
 // ---------------------------------------------------------------------------
 
-/// Return the directory that contains the daemon record file.
+/// Filename used for the launch record, sharing `~/.ff-rdp/` with the
+/// proxy-daemon registry's `daemon.json`.
+const RECORD_FILENAME: &str = "launch-record.json";
+
+/// Return the directory that contains the launch-record file.
 ///
-/// Respects `FF_RDP_HOME` for test isolation:
-/// - If set: `$FF_RDP_HOME/cache/`
-/// - Otherwise: platform cache dir (`~/.cache/ff-rdp` on Linux/macOS,
-///   `%LOCALAPPDATA%\ff-rdp` on Windows) via `dirs::cache_dir()`.
+/// Respects `FF_RDP_HOME` for test isolation (same convention as
+/// `daemon/registry.rs`):
+/// - If set: `$FF_RDP_HOME/.ff-rdp/`
+/// - Otherwise: `$HOME/.ff-rdp/` via `dirs::home_dir()`.
 pub fn record_base_dir() -> Result<PathBuf> {
-    if let Some(home) = std::env::var_os("FF_RDP_HOME") {
-        return Ok(PathBuf::from(home).join("cache"));
-    }
-    let cache = dirs::cache_dir().context("could not determine cache directory")?;
-    Ok(cache.join("ff-rdp"))
+    let home = match std::env::var_os("FF_RDP_HOME") {
+        Some(h) => PathBuf::from(h),
+        None => dirs::home_dir().context("could not determine home directory")?,
+    };
+    Ok(home.join(".ff-rdp"))
 }
 
-/// Return the full path to the daemon record file in the default cache directory.
+/// Return the full path to the launch-record file in the default location.
 ///
 /// Useful for diagnostics and `daemon status` output.
 pub fn record_path() -> Result<PathBuf> {
-    Ok(record_base_dir()?.join("daemon.json"))
+    Ok(record_base_dir()?.join(RECORD_FILENAME))
 }
 
 // ---------------------------------------------------------------------------
 // Test-injectable base-dir variants
 // ---------------------------------------------------------------------------
 
-/// Read the daemon record from `<dir>/daemon.json`.
+/// Read the daemon record from `<dir>/launch-record.json`.
 ///
 /// Returns `None` if the file is absent or if the recorded PID is no longer
 /// alive (stale entry). When a stale entry is detected the file is removed
 /// so it cannot interfere with future launches.
 pub fn read_in(dir: &Path) -> Result<Option<DaemonRecord>> {
-    let path = dir.join("daemon.json");
+    let path = dir.join(RECORD_FILENAME);
     if !path.exists() {
         return Ok(None);
     }
@@ -109,13 +113,13 @@ pub fn read_in(dir: &Path) -> Result<Option<DaemonRecord>> {
     Ok(Some(rec))
 }
 
-/// Write `rec` to `<dir>/daemon.json` atomically (write-to-tmp + rename).
+/// Write `rec` to `<dir>/launch-record.json` atomically (write-to-tmp + rename).
 pub fn write_in(dir: &Path, rec: &DaemonRecord) -> Result<()> {
     fs::create_dir_all(dir)
         .with_context(|| format!("creating daemon record directory {}", dir.display()))?;
 
-    let record_path = dir.join("daemon.json");
-    let tmp_path = dir.join("daemon.json.tmp");
+    let record_path = dir.join(RECORD_FILENAME);
+    let tmp_path = dir.join(format!("{RECORD_FILENAME}.tmp"));
 
     let json = serde_json::to_string_pretty(rec).context("serializing DaemonRecord to JSON")?;
 
@@ -149,9 +153,9 @@ pub fn write_in(dir: &Path, rec: &DaemonRecord) -> Result<()> {
     Ok(())
 }
 
-/// Remove `<dir>/daemon.json` if it exists (idempotent).
+/// Remove `<dir>/launch-record.json` if it exists (idempotent).
 pub fn remove_in(dir: &Path) -> Result<()> {
-    let path = dir.join("daemon.json");
+    let path = dir.join(RECORD_FILENAME);
     if path.exists() {
         fs::remove_file(&path)
             .with_context(|| format!("removing daemon record {}", path.display()))?;
@@ -239,7 +243,7 @@ mod tests {
         };
 
         // Bypass the normal write_in (which doesn't check PID) by writing JSON directly.
-        let path = dir.path().join("daemon.json");
+        let path = dir.path().join(RECORD_FILENAME);
         let json = serde_json::to_string_pretty(&rec).unwrap();
         fs::write(&path, json).expect("write stale record");
         assert!(path.exists(), "file must exist before read_in");
@@ -258,7 +262,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write_in(dir.path(), &sample_record()).expect("write_in");
 
-        let tmp = dir.path().join("daemon.json.tmp");
+        let tmp = dir.path().join(format!("{RECORD_FILENAME}.tmp"));
         assert!(
             !tmp.exists(),
             ".tmp file must not remain after atomic write"
@@ -281,7 +285,7 @@ mod tests {
 
         write_in(dir.path(), &sample_record()).expect("write");
         remove_in(dir.path()).expect("remove when present must not error");
-        assert!(!dir.path().join("daemon.json").exists());
+        assert!(!dir.path().join(RECORD_FILENAME).exists());
     }
 
     /// Overwriting with a second write replaces the first.

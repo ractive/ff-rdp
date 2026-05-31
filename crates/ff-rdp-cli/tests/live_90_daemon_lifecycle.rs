@@ -157,17 +157,10 @@ fn live_launch_replace_handles_prior_instance() {
         return;
     };
     let port = ff.port();
-    let prior_pid = {
-        // Extract PID from the already-running instance via launch JSON output.
-        // The common::LiveFirefox holds the PID.
-        // We won't need to drop it explicitly — `launch --replace` kills it.
-        use std::mem::ManuallyDrop;
-        let md = ManuallyDrop::new(ff);
-        md.port(); // access to confirm liveness; PID is in the struct
-        // We re-launch --replace below; the old instance is stopped then.
-        0u32 // placeholder; we just verify the new pid differs from the old
-    };
-    let _ = prior_pid; // suppress unused warning
+    let prior_pid = ff.pid();
+    // Suppress Drop so `launch --replace` is the one that kills the prior
+    // instance — the test then asserts the new PID differs from `prior_pid`.
+    let _keep = std::mem::ManuallyDrop::new(ff);
 
     let out = Command::new(ff_rdp_bin())
         .args([
@@ -192,21 +185,24 @@ fn live_launch_replace_handles_prior_instance() {
 
     let json: serde_json::Value = serde_json::from_slice(&out.stdout)
         .expect("live_launch_replace_handles_prior_instance: stdout is not valid JSON");
-    let new_pid = json["results"]["pid"]
+    let new_pid_u64 = json["results"]["pid"]
         .as_u64()
         .expect("live_launch_replace_handles_prior_instance: results.pid missing");
+    let new_pid = u32::try_from(new_pid_u64).expect("pid fits u32");
+
+    assert_ne!(
+        new_pid, prior_pid,
+        "live_launch_replace_handles_prior_instance: FAIL — new pid ({new_pid}) \
+         must differ from prior pid ({prior_pid})"
+    );
 
     eprintln!(
         "live_launch_replace_handles_prior_instance: PASS — \
-         new pid={new_pid} on port={port}"
+         prior pid={prior_pid}, new pid={new_pid} on port={port}"
     );
 
-    // Clean up the new instance.
-    #[cfg(unix)]
-    {
-        use common::kill_pid;
-        kill_pid(u32::try_from(new_pid).expect("pid fits u32"));
-    }
+    // Clean up the new instance (cross-platform via the helper).
+    common::kill_pid(new_pid);
     let _ = wait_port_free(port, Duration::from_secs(5));
 }
 
@@ -227,10 +223,14 @@ fn live_launch_replace_handles_prior_instance() {
 /// `xtask check-pre-fix-repro` runs this test on both revisions and expects
 /// FAIL on main, PASS on HEAD.
 ///
-/// Gated on `FF_RDP_LIVE_TESTS=1`. Uses a fixed port (6090) to keep the
-/// test deterministic; if that port is in use the test skips gracefully.
+/// Gated on `FF_RDP_LIVE_TESTS=1` (not `#[ignore]`) so that
+/// `xtask check-pre-fix-repro` — which invokes `cargo test … --exact` without
+/// `--include-ignored` — can run this test on both revisions. When the env
+/// var is unset, the body returns immediately as a no-op pass.
+///
+/// Uses a fixed port (6090) to keep the test deterministic; if that port is
+/// in use the test skips gracefully.
 #[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn pre_fix_repro_daemon_state_sharing_red_then_green() {
     if !live_tests_enabled() {
         return;
@@ -321,13 +321,9 @@ fn pre_fix_repro_daemon_state_sharing_red_then_green() {
          port {port} freed; follow-up launch succeeded (new pid={new_pid})"
     );
 
-    // Cleanup the new Firefox instance.
+    // Cleanup the new Firefox instance (cross-platform via the helper).
     if new_pid > 0 {
-        #[cfg(unix)]
-        {
-            use common::kill_pid;
-            kill_pid(new_pid);
-        }
+        common::kill_pid(new_pid);
         let _ = wait_port_free(port, Duration::from_secs(5));
     }
 }

@@ -632,12 +632,16 @@ fn kill_pid_and_wait_port(pid: u32, port: u16) -> (bool, bool) {
 pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
     // ----------------------------------------------------------------
     // 1. Check the shared DaemonRecord (written by `launch`).
+    //    Only act on records whose `port` matches `cli.port` so a stray
+    //    `daemon stop` cannot kill an unrelated instance the user did
+    //    not address. `read()` already filters out stale (dead-PID)
+    //    records, so we don't need to recheck liveness here.
     // ----------------------------------------------------------------
     match crate::daemon_record::read()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon record: {e}")))?
     {
-        Some(rec) if process::is_process_alive(rec.pid) => {
-            // Live instance found via DaemonRecord — kill it.
+        Some(rec) if rec.port == cli.port => {
+            // Live instance found via DaemonRecord and matches --port — kill it.
             let (stopped, port_free) = kill_pid_and_wait_port(rec.pid, rec.port);
             crate::daemon_record::remove().ok();
 
@@ -662,24 +666,9 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
             );
             return Ok(OutputPipeline::from_cli(cli)?.finalize(&envelope)?);
         }
-        Some(rec) => {
-            // DaemonRecord present but PID is already dead — clean up and report.
-            crate::daemon_record::remove().ok();
-            let meta = json!({});
-            let envelope = output::envelope(
-                &json!({
-                    "stopped": true,
-                    "reason": "already dead",
-                    "pid": rec.pid,
-                    "port": rec.port,
-                }),
-                1,
-                &meta,
-            );
-            return Ok(OutputPipeline::from_cli(cli)?.finalize(&envelope)?);
-        }
-        None => {
-            // No DaemonRecord — fall through to the proxy-daemon registry path below.
+        _ => {
+            // No record, or record is for a different port — fall through
+            // to the proxy-daemon registry path below.
         }
     }
 
@@ -692,12 +681,7 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
     else {
         // No daemon running — report success (idempotent).
-        // Surface the record path for diagnostics so users know where to look.
-        let record_path_hint = crate::daemon_record::record_path()
-            .ok()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let meta = json!({"record_path": record_path_hint});
+        let meta = json!({});
         let envelope = output::envelope(
             &json!({"stopped": false, "reason": "not running"}),
             1,
