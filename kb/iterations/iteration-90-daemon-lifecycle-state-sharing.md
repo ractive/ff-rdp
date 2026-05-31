@@ -2,7 +2,7 @@
 title: "Iteration 90: daemon lifecycle — launch and daemon share state, single source of truth"
 type: iteration
 date: 2026-05-29
-status: planned
+status: done
 branch: iter-90/daemon-lifecycle-state-sharing
 depends_on:
   - iteration-87-gate-hardening-required-checks-and-dogfood-linter
@@ -13,11 +13,13 @@ kb_refs:
   - kb/iterations/iteration-86-perf-field-report-fixes.md
   - kb/iterations/iteration-87-gate-hardening-required-checks-and-dogfood-linter.md
 first_call_sites:
-  - primitive: DaemonRecord (PID, port, headless, launched_at) read/written by both launch and daemon
+  - primitive: >-
+      DaemonRecord (PID, port, headless, launched_at) read/written by both launch and
+      daemon
     site: crates/ff-rdp-cli/src/daemon_record.rs
   - primitive: launch writes DaemonRecord on successful Firefox spawn
     site: crates/ff-rdp-cli/src/commands/launch.rs
-  - primitive: "daemon stop reads DaemonRecord, SIGTERMs PID, waits for port to free"
+  - primitive: daemon stop reads DaemonRecord, SIGTERMs PID, waits for port to free
     site: crates/ff-rdp-cli/src/commands/daemon.rs
   - primitive: launch --replace reads DaemonRecord, stops prior, then proceeds
     site: crates/ff-rdp-cli/src/commands/launch.rs
