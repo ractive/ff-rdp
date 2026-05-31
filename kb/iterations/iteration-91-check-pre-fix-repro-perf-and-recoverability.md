@@ -88,80 +88,80 @@ time + sentinel**, not on actor reply or proxy signals.
 
 ## Tasks
 
-### Theme A — persistent main worktree + SHA-keyed result cache [0/8] [pre_fix_repro_test: pre_fix_repro_check_pre_fix_repro_completes_under_5s_on_cache_hit]
+### Theme A — persistent main worktree + SHA-keyed result cache [8/8] [pre_fix_repro_test: pre_fix_repro_check_pre_fix_repro_completes_under_5s_on_cache_hit]
 
-- [ ] Resolve the main-side worktree path:
+- [x] Resolve the main-side worktree path:
       `${XDG_CACHE_HOME:-$HOME/.cache}/ff-rdp/pre-fix-repro/main-tree`.
       If the directory does not exist or is not a worktree of the
       current repo, lazily create it via
       `git worktree add <path> origin/main`. Cache the resolved path
       in a `OnceCell` for the lifetime of the process.
-- [ ] Before any test invocation, refresh the worktree:
+- [x] Before any test invocation, refresh the worktree:
       `git -C <path> fetch origin --depth=1` then
       `git -C <path> reset --hard origin/main`. Capture the resolved
       `origin/main` SHA via `git rev-parse origin/main` in the
       worktree.
-- [ ] Route the main-side cargo invocation through the worktree:
+- [x] Route the main-side cargo invocation through the worktree:
       `CARGO_TARGET_DIR=<worktree>/target` and
       `--manifest-path <worktree>/Cargo.toml`. Use the annotation's
       crate hint when present (preserve the `--crate-name` arg the
       function already accepts), else `--workspace`.
-- [ ] Implement SHA-keyed result cache:
+- [x] Implement SHA-keyed result cache:
       `${XDG_CACHE_HOME:-$HOME/.cache}/ff-rdp/pre-fix-repro/results/<sha>-<crate-or-workspace>-<slug>`.
       The file contains exactly `PASS\n` or `FAIL\n` followed by an
       ISO-8601 timestamp. On lookup, treat missing or malformed files
       as miss; treat present as hit. Both cache reads and writes are
       best-effort (errors warn-not-fail, fall back to a real cargo
       run on read error).
-- [ ] Replace `run()`'s git stash + checkout dance with the new
+- [x] Replace `run()`'s git stash + checkout dance with the new
       worktree-based probe. Drop the `green-on-branch` cargo
       invocation (the second `run_test` call). Drop the `StashGuard`
       and `CheckoutGuard` allocations from the hot path — the dev's
       working tree is no longer mutated, so the guards become dead
       code for the main flow. (Delete them; if a legacy path is
       needed later, it can be reintroduced.)
-- [ ] When emitting output, distinguish "red on main (cache hit)",
+- [x] When emitting output, distinguish "red on main (cache hit)",
       "red on main (cargo run)", and "red on main (cargo run, cache
       write failed: <reason>)" so debugging is possible without
       adding verbose flags.
-- [ ] Update the rustdoc on the file to reflect the new flow
+- [x] Update the rustdoc on the file to reflect the new flow
       (worktree + cache, single probe, no green-on-branch run).
-- [ ] dogfood_script Theme A: sibling `.dogfood.sh` runs the gate
+- [x] dogfood_script Theme A: sibling `.dogfood.sh` runs the gate
       twice against a fixture plan and asserts the second run
       completes in < 5s.
 
-## Acceptance Criteria [0/8]
+## Acceptance Criteria [8/8]
 
-- [ ] `pre_fix_repro_check_pre_fix_repro_completes_under_5s_on_cache_hit`:
+- [x] `pre_fix_repro_check_pre_fix_repro_completes_under_5s_on_cache_hit`:
       runs the gate twice against a fixture plan; asserts second
       invocation wall time < 5s and `cargo` was NOT invoked
       (detected via instrumentation hook on `Command::new("cargo")`
       or by counting writes to the main-tree `target/` dir).
-- [ ] `pre_fix_repro_check_pre_fix_repro_completes_under_30s_warm_main_target`:
+- [x] `pre_fix_repro_check_pre_fix_repro_completes_under_30s_warm_main_target`:
       simulates origin/main advancing by one commit (via a synthetic
       fixture repo); asserts the next invocation completes < 30s on a
       warm main-side target.
-- [ ] `unit_sha_cache_round_trip`: write PASS/FAIL via the cache
+- [x] `unit_sha_cache_round_trip`: write PASS/FAIL via the cache
       module, read back identical; corrupt file body → returns miss
       and warns; missing dir → creates it.
-- [ ] `unit_worktree_path_respects_xdg_cache_home`: set
+- [x] `unit_worktree_path_respects_xdg_cache_home`: set
       `XDG_CACHE_HOME=/tmp/xdg-test`; assert resolver returns
       `/tmp/xdg-test/ff-rdp/pre-fix-repro/main-tree`. Unset → falls
       back to `$HOME/.cache/...`.
-- [ ] `unit_worktree_creation_idempotent`: calling the resolver
+- [x] `unit_worktree_creation_idempotent`: calling the resolver
       twice in the same process produces the same path; the second
       call does NOT invoke `git worktree add` (verified by counting
       `Command::new` calls or by file mtime).
-- [ ] `unit_green_on_branch_run_dropped`: golden-snapshot the output
+- [x] `unit_green_on_branch_run_dropped`: golden-snapshot the output
       lines from a successful `run()` against a fixture; assert the
       output mentions "red on main" exactly once and does NOT
       mention "green on branch HEAD" anywhere.
-- [ ] `live_check_pre_fix_repro_does_not_mutate_working_tree`:
+- [x] `live_check_pre_fix_repro_does_not_mutate_working_tree`:
       capture `git status --porcelain` before + after a real
       invocation against `iter-89`'s plan; assert identical output
       (no stash entries created, no detached HEAD, no modified
       files).
-- [ ] `dogfood_script_full_run_iter_91`: the sibling `.dogfood.sh`
+- [x] `dogfood_script_full_run_iter_91`: the sibling `.dogfood.sh`
       exits 0 and writes `/tmp/ff-rdp-iter-91-dogfood-ok`.
 
 ## Out of scope

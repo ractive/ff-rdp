@@ -77,13 +77,6 @@ pub fn record_base_dir() -> Result<PathBuf> {
     Ok(home.join(".ff-rdp"))
 }
 
-/// Return the full path to the launch-record file in the default location.
-///
-/// Useful for diagnostics and `daemon status` output.
-pub fn record_path() -> Result<PathBuf> {
-    Ok(record_base_dir()?.join(RECORD_FILENAME))
-}
-
 // ---------------------------------------------------------------------------
 // Test-injectable base-dir variants
 // ---------------------------------------------------------------------------
