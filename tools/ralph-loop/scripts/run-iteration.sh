@@ -186,7 +186,7 @@ else
   # Unparseable ID — produce a stable string so the prompt doesn't break.
   NEXT_ITER="${ITER_NUM}-next"
 fi
-PROMPT_REVIEW="You are reviewing iteration ${ITER_NUM} of this project. A PR has already been created and the GitHub Copilot review was kicked off at the end of phase 1, so it should already be in progress or complete by now. Steps: 1) If a claims-vs-code report exists at \${RALPH_CACHE_DIR:-.ralph-cache}/iter-${ITER_NUM}-claims.md, append its contents to the PR body via: gh pr edit <PR-number> --body \"\$(gh pr view <PR-number> --json body -q .body)\$(printf '\\n\\n')\$(cat \${RALPH_CACHE_DIR:-.ralph-cache}/iter-${ITER_NUM}-claims.md)\" — this surfaces any ❌ rows to the reviewer. 2) /review-pr and fix all review issues (the Copilot trigger inside /review-pr is idempotent — safe to run again if needed) 3) Update the iteration ${ITER_NUM} plan at ${PLAN_PATH}: tick every \`- [ ]\` scope checkbox whose work actually landed in this PR (verify against the merged diff — do NOT tick speculatively), and update each scope-section heading's \`[N/M]\` count to reflect the real state. Leave any genuinely incomplete checkbox unchecked and note why in the section. Commit the plan update onto the PR branch and push. 4) Check if a plan exists for iteration ${NEXT_ITER} — find it with: hyalo find --glob '**/iteration-${NEXT_ITER}-*.md' --format text (do NOT use --property 'title~=...' — frontmatter title fields like 'Iteration ${NEXT_ITER}: Slug' do not contain the substring 'iteration-${NEXT_ITER}'). If found, check whether its scope needs to be adapted based on what you learned this iteration, and update it if so 5) /merge-pr. ${DONE_SENTINEL}"
+PROMPT_REVIEW="You are reviewing iteration ${ITER_NUM} of this project. A PR has already been created and the GitHub Copilot review was kicked off at the end of phase 1, so it should already be in progress or complete by now. Steps: 0) If a discipline report exists at \${RALPH_CACHE_DIR:-.ralph-cache}/iter-${ITER_NUM}-discipline.log, read it. For each FAIL or ❌ line, either implement the missing test/code so the AC text matches the diff, soften the AC text to match what shipped, or annotate the AC with \`[deferred — new plan: iteration-NN-slug.md]\` and create the follow-up plan. Do not proceed to step 1 until \`cargo run -p xtask -- check-iteration-ready --plan ${PLAN_PATH} --base origin/main\` exits 0. 1) If a claims-vs-code report exists at \${RALPH_CACHE_DIR:-.ralph-cache}/iter-${ITER_NUM}-claims.md, append its contents to the PR body via: gh pr edit <PR-number> --body \"\$(gh pr view <PR-number> --json body -q .body)\$(printf '\\n\\n')\$(cat \${RALPH_CACHE_DIR:-.ralph-cache}/iter-${ITER_NUM}-claims.md)\" — this surfaces any ❌ rows to the reviewer. 2) /review-pr and fix all review issues (the Copilot trigger inside /review-pr is idempotent — safe to run again if needed) 3) Update the iteration ${ITER_NUM} plan at ${PLAN_PATH}: tick every \`- [ ]\` scope checkbox whose work actually landed in this PR (verify against the merged diff — do NOT tick speculatively), and update each scope-section heading's \`[N/M]\` count to reflect the real state. Leave any genuinely incomplete checkbox unchecked and note why in the section. Commit the plan update onto the PR branch and push. 4) Check if a plan exists for iteration ${NEXT_ITER} — find it with: hyalo find --glob '**/iteration-${NEXT_ITER}-*.md' --format text (do NOT use --property 'title~=...' — frontmatter title fields like 'Iteration ${NEXT_ITER}: Slug' do not contain the substring 'iteration-${NEXT_ITER}'). If found, check whether its scope needs to be adapted based on what you learned this iteration, and update it if so 5) /merge-pr. ${DONE_SENTINEL}"
 
 # --- cmux visual helpers (all soft-fail with || true) ---
 
@@ -508,12 +508,18 @@ check_iteration_discipline() {
 # use the working directory if git rev-parse fails).
 REPO_ROOT=$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || pwd)
 
-if ! check_iteration_discipline "$REPO_ROOT"; then
-  status "FAILED" warning "#ff0000"
-  progress 0.5 "iter-${ITER_NUM}: discipline check failed"
-  log_error "iter-${ITER_NUM}: discipline checks failed — see log for details"
-  echo "Iteration ${ITER_NUM} FAILED discipline checks. Fix the issues and retry." >&2
-  exit 1
+DISCIPLINE_LOG="${RALPH_CACHE_DIR:-$REPO_ROOT/.ralph-cache}/iter-${ITER_NUM}-discipline.log"
+mkdir -p "$(dirname "$DISCIPLINE_LOG")" 2>/dev/null || true
+if ! check_iteration_discipline "$REPO_ROOT" 2>&1 | tee "$DISCIPLINE_LOG"; then
+  # Discipline failures are NOT fatal here — the implementing agent is still
+  # alive in the cmux pane and Phase 2 reads $DISCIPLINE_LOG to fix each
+  # issue before /merge-pr. Exiting here (the prior behavior) stranded the
+  # iteration: the pane stayed open, /create-pr had already run in Phase 1,
+  # and the loop's manual recovery path was needed every time.
+  log_error "iter-${ITER_NUM}: discipline checks failed — Phase 2 will address them (details in $DISCIPLINE_LOG)"
+  progress 0.5 "iter-${ITER_NUM}: discipline failed, repairing in Phase 2"
+else
+  log_info "iter-${ITER_NUM}: discipline checks passed (log at $DISCIPLINE_LOG)"
 fi
 
 # --- Phase 2: Create PR, review, merge ---
