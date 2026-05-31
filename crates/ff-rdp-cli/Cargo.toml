@@ -73,6 +73,10 @@ name = "live_network_headers"
 path = "tests/live_network_headers.rs"
 
 [[test]]
+name = "live_90_daemon_lifecycle"
+path = "tests/live_90_daemon_lifecycle.rs"
+
+[[test]]
 name = "error_shapes"
 path = "tests/error_shapes.rs"
 

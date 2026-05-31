@@ -91,6 +91,11 @@ impl LiveFirefox {
         self.port
     }
 
+    /// Return the PID of the launched Firefox process.
+    pub fn pid(&self) -> u32 {
+        self.firefox_pid
+    }
+
     /// Launch Firefox headless on a random port.
     ///
     /// Tries up to 3 ports to handle rare port-allocation collisions (common in

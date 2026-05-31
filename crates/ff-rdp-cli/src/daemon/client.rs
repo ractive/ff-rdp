@@ -594,16 +594,88 @@ pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
     Ok(OutputPipeline::from_cli(cli)?.finalize(&envelope)?)
 }
 
+/// Stop a Firefox instance identified by PID and port.
+///
+/// Shared logic used by both `run_daemon_stop` (when a [`DaemonRecord`] is
+/// present) and the legacy daemon-registry stop path.
+///
+/// Stop sequence:
+/// 1. SIGTERM the Firefox process group.
+/// 2. Wait up to 2 s for graceful exit.
+/// 3. SIGKILL if still alive.
+/// 4. Poll the port until free (max 3 s).
+///
+/// Returns `(stopped, port_free)`.
+fn kill_pid_and_wait_port(pid: u32, port: u16) -> (bool, bool) {
+    process::kill_process_group(pid);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while process::is_process_alive(pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if process::is_process_alive(pid) {
+        process::kill_process_group_force(pid);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let stopped = !process::is_process_alive(pid);
+    let port_free = process::wait_for_port_closed(port, Duration::from_secs(3));
+    (stopped, port_free)
+}
+
 /// `ff-rdp daemon stop` — gracefully stop the running daemon and free the Firefox port.
 ///
-/// Stop sequence (iter-86 Theme A):
-/// 1. Send a graceful shutdown RPC to the daemon (2 s grace).
-/// 2. If the daemon is still alive after the RPC, SIGTERM its entire process group.
-/// 3. Wait up to 2 s for the process to exit.
-/// 4. If still alive, SIGKILL the process group as a last resort.
-/// 5. Poll `localhost:<firefox_port>` until refused (max 3 s).
-///    Return non-zero with a diagnostic if the port is still listening.
+/// Stop sequence (iter-90):
+/// 1. Check the [`DaemonRecord`] (written by both `launch` and `daemon start`).
+///    If present: SIGTERM, wait, SIGKILL, poll port, remove record.
+/// 2. If no DaemonRecord: fall through to the existing proxy-daemon registry path
+///    (for instances started via `daemon start`).
+/// 3. Registry path: send graceful shutdown RPC → SIGTERM → SIGKILL → poll port.
 pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
+    // ----------------------------------------------------------------
+    // 1. Check the shared DaemonRecord (written by `launch`).
+    //    Only act on records whose `port` matches `cli.port` so a stray
+    //    `daemon stop` cannot kill an unrelated instance the user did
+    //    not address. `read()` already filters out stale (dead-PID)
+    //    records, so we don't need to recheck liveness here.
+    // ----------------------------------------------------------------
+    match crate::daemon_record::read()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon record: {e}")))?
+    {
+        Some(rec) if rec.port == cli.port => {
+            // Live instance found via DaemonRecord and matches --port — kill it.
+            let (stopped, port_free) = kill_pid_and_wait_port(rec.pid, rec.port);
+            crate::daemon_record::remove().ok();
+
+            if !port_free {
+                return Err(AppError::User(format!(
+                    "stopped Firefox (pid {}) but port {} is still listening after 3 s — \
+                     another process may be holding it. Run `ff-rdp doctor` or \
+                     `lsof -i :{}` to investigate.",
+                    rec.pid, rec.port, rec.port
+                )));
+            }
+
+            let meta = json!({});
+            let envelope = output::envelope(
+                &json!({
+                    "stopped": stopped,
+                    "pid": rec.pid,
+                    "port": rec.port,
+                }),
+                1,
+                &meta,
+            );
+            return Ok(OutputPipeline::from_cli(cli)?.finalize(&envelope)?);
+        }
+        _ => {
+            // No record, or record is for a different port — fall through
+            // to the proxy-daemon registry path below.
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // 2. Proxy-daemon registry path (instances started via `daemon start`).
+    // ----------------------------------------------------------------
+
     // Read registry to get PID and port for process-group killing + port poll.
     let Some(info) = registry::read_registry()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
@@ -689,10 +761,38 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
 
 /// Stop an existing Firefox instance on `port` to make way for a fresh launch.
 ///
-/// Used by `launch --replace` / `launch --force` (iter-86 Theme A).
+/// Used by `launch --replace` / `launch --force` (iter-86 Theme A / iter-90).
 /// Returns `Ok(())` if the port is free afterwards, `Err` if it is still in use.
+///
+/// Stop priority (iter-90):
+/// 1. DaemonRecord matching the requested port → kill, wait, remove record.
+/// 2. Proxy-daemon registry matching the port → graceful `daemon stop` RPC path.
+/// 3. Fall back to port-owner lookup.
 pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> {
-    // If there's a daemon registered for this port, use the graceful stop path.
+    // 1. Check shared DaemonRecord first (covers instances started via `launch`).
+    match crate::daemon_record::read()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon record: {e}")))?
+    {
+        Some(rec) if rec.port == port && process::is_process_alive(rec.pid) => {
+            let (_stopped, port_free) = kill_pid_and_wait_port(rec.pid, rec.port);
+            crate::daemon_record::remove().ok();
+            if !port_free {
+                return Err(AppError::User(format!(
+                    "port {port} is still in use after stopping the prior instance (pid {}). \
+                     Run `ff-rdp doctor` or `lsof -i :{port}` to investigate.",
+                    rec.pid
+                )));
+            }
+            return Ok(());
+        }
+        Some(rec) if rec.port == port => {
+            // Record exists but PID is dead — clean up and proceed (port may already be free).
+            crate::daemon_record::remove().ok();
+        }
+        _ => {}
+    }
+
+    // 2. Proxy-daemon registry — use the graceful stop path.
     match registry::read_registry() {
         Ok(Some(ref info)) if info.firefox_port == port => {
             run_daemon_stop(cli)?;
@@ -701,8 +801,8 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> 
         _ => {}
     }
 
-    // No daemon registry — try to kill whatever is on the port by PID from
-    // the port-owner helper, then wait for the port to free.
+    // 3. No registry — try to kill whatever is on the port by PID from
+    //    the port-owner helper, then wait for the port to free.
     if let Ok(Some(owner)) = crate::port_owner::find_listener(port) {
         process::kill_process_group(owner.pid);
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
