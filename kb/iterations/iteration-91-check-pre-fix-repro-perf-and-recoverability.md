@@ -12,13 +12,15 @@ kb_refs:
   - kb/iterations/iteration-87-gate-hardening-required-checks-and-dogfood-linter.md
   - kb/iterations/iteration-89-screenshot-fifth-attempt-single-theme.md
 first_call_sites:
-  - primitive: per-annotation crate hint parsed from `[pre_fix_repro_test: slug | crate=ff-rdp-core]`
+  - primitive: "per-annotation crate hint parsed from `[pre_fix_repro_test: slug | crate=ff-rdp-core]`"
     site: crates/xtask/src/check_pre_fix_repro.rs
-  - primitive: `run_test` invokes `cargo test -p <crate>` instead of `--workspace`
+  - primitive: "`run_test` invokes `cargo test -p <crate>` instead of `--workspace`"
     site: crates/xtask/src/check_pre_fix_repro.rs
-  - primitive: per-cargo-invocation timeout (default 600s, env-configurable)
+  - primitive: "per-cargo-invocation timeout (default 600s, env-configurable)"
     site: crates/xtask/src/check_pre_fix_repro.rs
-  - primitive: startup recovery hint printed before any stash/checkout
+  - primitive: "startup recovery hint printed before any stash/checkout"
+    site: crates/xtask/src/check_pre_fix_repro.rs
+  - primitive: "`run_test` passes `--include-ignored` so annotated tests gated by `#[ignore]` are executed"
     site: crates/xtask/src/check_pre_fix_repro.rs
 dogfood_script: iteration-91-check-pre-fix-repro-perf-and-recoverability.dogfood.sh
 tags:
@@ -46,7 +48,7 @@ annotated test and asserts wall-clock < 300s on a warm build. On
 
 ## Tasks
 
-### Theme A — narrow the recompile scope [0/4] [pre_fix_repro_test: pre_fix_repro_check_pre_fix_repro_completes_under_300s]
+### Theme A — narrow the recompile scope [0/5] [pre_fix_repro_test: pre_fix_repro_check_pre_fix_repro_completes_under_300s]
 
 - [ ] Extend the plan annotation grammar to accept an optional crate
       hint: `[pre_fix_repro_test: slug | crate=ff-rdp-core]`. Update
@@ -63,6 +65,15 @@ annotated test and asserts wall-clock < 300s on a warm build. On
       use the narrower scope.
 - [ ] Document the new annotation grammar in
       `kb/iterations/README.md` (or the closest existing index).
+- [ ] Pass `--include-ignored` to every `cargo test` invocation issued by
+      `run_test` / `try_list_tests`. Pre-fix-repro tests are routinely
+      gated by `#[ignore]` plus an `FF_RDP_LIVE_TESTS` body guard, but the
+      current runner uses `cargo test … --exact` without
+      `--include-ignored`, so the test is silently filtered out and the
+      "at least one passed" check fails on both revisions. Surfaced by
+      iter-90 PR #127 review (`pre_fix_repro_daemon_state_sharing_red_then_green`);
+      iter-90 worked around it by dropping `#[ignore]`, but the runner
+      itself should not require that.
 
 ### Theme B — timeout guard around every `cargo test` invocation [0/2]
 
@@ -98,7 +109,7 @@ annotated test and asserts wall-clock < 300s on a warm build. On
       shared `Instant`. Gives the user a signal that the tool is alive
       vs. wedged.
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [0/6]
 
 - [ ] `pre_fix_repro_check_pre_fix_repro_completes_under_300s`: warm
       build finishes inside 300s on a single-crate annotated plan.
@@ -109,6 +120,10 @@ annotated test and asserts wall-clock < 300s on a warm build. On
 - [ ] `annotation_grammar_accepts_crate_hint`: parser accepts the
       `| crate=<name>` suffix and rejects malformed variants without
       panicking.
+- [ ] `runner_executes_ignored_pre_fix_repro_test`: a fixture plan
+      annotates a `#[ignore]`-gated test; the runner passes
+      `--include-ignored` so the test is actually executed (not silently
+      filtered) and the red/green outcome matches the test body.
 - [ ] `dogfood_script_full_run_iter_91`: sibling `.dogfood.sh` exits 0
       and writes `/tmp/ff-rdp-iter-91-dogfood-ok`. The script runs
       `xtask check-pre-fix-repro` against an annotated fixture plan
