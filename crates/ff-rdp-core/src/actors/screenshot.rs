@@ -210,23 +210,6 @@ impl ScreenshotActor {
         )
     }
 
-    /// Fallback capture path for Firefox 151+ where `screenshotActor` is absent
-    /// from `getRoot`.
-    ///
-    /// Protocol:
-    /// 1. `root.listTabs` → find the selected tab's actor.
-    /// 2. `tabActor.getTarget` → obtain the `WindowGlobalTarget` actor ID.
-    /// 3. Send a `screenshot` request directly to the target actor with the same
-    ///    args used by the root-form path.
-    ///
-    /// Firefox 151 moved the screenshot capability onto the target actor itself.
-    /// The method names tried in order are:
-    /// - `"screenshot"` — the name used by the WindowGlobalTarget in FF 151+.
-    /// - `"takeScreenshot"` — alternate name observed in some builds.
-    ///
-    /// Returns the `data:image/png;base64,...` string on success, or a
-    /// [`ProtocolError`] when neither method is recognised by the target.
-    ///
     /// Capture a screenshot on Firefox 151+ via the parent-process console actor.
     ///
     /// ## Motivation
@@ -277,16 +260,26 @@ impl ScreenshotActor {
 
         let console_actor = process_target.console_actor;
 
-        // Step 3: build a unique temp path.
+        // Step 3: build a per-call unique temp path.
         //
-        // Use a fixed name under the OS temp dir; concurrent ff-rdp invocations
-        // on the same machine could collide but that edge case is acceptable for
-        // this workaround path.  A PID-suffixed name reduces the likelihood.
+        // PID + nanosecond timestamp avoids collisions between concurrent
+        // captures in the same process and reduces clobber/symlink risk on
+        // shared temp dirs.
         let pid = std::process::id();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
         let tmp_dir = std::env::temp_dir();
         // Forward-slashes work on all platforms in Firefox's IOUtils.
-        let tmp_path = tmp_dir.join(format!("ff-rdp-screenshot-{pid}.png"));
+        let tmp_path = tmp_dir.join(format!("ff-rdp-screenshot-{pid}-{nonce}.png"));
         let tmp_path_str = tmp_path.to_string_lossy().replace('\\', "/");
+        // JSON-encode the path to produce a safely-escaped JS string literal.
+        let tmp_path_js = serde_json::to_string(&tmp_path_str).map_err(|e| {
+            ProtocolError::InvalidPacket(format!(
+                "screenshot_via_process_drawsnapshot: invalid temp path: {e}"
+            ))
+        })?;
 
         // Step 4: run the async screenshot JS in the parent-process console.
         //
@@ -300,7 +293,6 @@ impl ScreenshotActor {
         // `true` as "capture the full scroll area" vs `false` = "visible viewport".
         let fullpage_flag = if full_page { "true" } else { "false" };
         let bc_id = browsing_context_id;
-        let path = &tmp_path_str;
         let js = format!(
             r#"(async function() {{
   try {{
@@ -314,7 +306,7 @@ impl ScreenshotActor {
     ctx.drawImage(snapshot, 0, 0);
     const blob = await canvas.convertToBlob({{type: "image/png"}});
     const ab = await blob.arrayBuffer();
-    await IOUtils.write("{path}", new Uint8Array(ab));
+    await IOUtils.write({tmp_path_js}, new Uint8Array(ab));
     return "ok:" + blob.size;
   }} catch(e) {{
     return "error:" + e.toString();
@@ -323,6 +315,15 @@ impl ScreenshotActor {
         );
 
         let eval_result = WebConsoleActor::evaluate_js_async(transport, &console_actor, &js)?;
+
+        // Surface JS-level exceptions (syntax error, missing IOUtils, etc.)
+        // before falling through to the grip-shape check.
+        if let Some(exc) = &eval_result.exception {
+            let msg = exc.message.as_deref().unwrap_or("<no message>");
+            return Err(ProtocolError::InvalidPacket(format!(
+                "screenshot_via_process_drawsnapshot: JS evaluation threw: {msg}"
+            )));
+        }
 
         // Check the result for errors.
         let result_str = match &eval_result.result {
@@ -335,6 +336,8 @@ impl ScreenshotActor {
         };
 
         if let Some(msg) = result_str.strip_prefix("error:") {
+            // Best-effort cleanup of any partial file the JS may have written.
+            let _ = std::fs::remove_file(&tmp_path);
             return Err(ProtocolError::InvalidPacket(format!(
                 "screenshot_via_process_drawsnapshot: JS returned error: {msg}"
             )));
@@ -354,8 +357,24 @@ impl ScreenshotActor {
         Ok(png_bytes)
     }
 
+    /// Fallback capture path for Firefox 151+ where `screenshotActor` is absent
+    /// from `getRoot`.
+    ///
+    /// Protocol:
+    /// 1. `root.listTabs` → find the selected tab's actor.
+    /// 2. `tabActor.getTarget` → obtain the `WindowGlobalTarget` actor ID.
+    /// 3. Send a `screenshot` request directly to the target actor with the same
+    ///    args used by the root-form path.
+    ///
+    /// Firefox 151 moved the screenshot capability onto the target actor itself.
+    /// The method names tried in order are:
+    /// - `"screenshot"` — the name used by the WindowGlobalTarget in FF 151+.
+    /// - `"takeScreenshot"` — alternate name observed in some builds.
+    ///
+    /// Returns the `data:image/png;base64,...` string on success, or a
+    /// [`ProtocolError`] when neither method is recognised by the target.
     // allow-spec-drift: bug TBD (WindowGlobalTarget.screenshot not declared in
-    // devtools/server/actors/screenshot.rs on main — the method was
+    // devtools/shared/specs/targets/window-global.js on main — the method was
     // observed in the server-side implementation on FF 151 but the spec dict
     // has not been updated.  This annotation must be replaced once the Bugzilla
     // number is available.)
@@ -1006,23 +1025,23 @@ mod tests {
                 .expect("getroot_ff151.json must parse");
 
         // ── RED proof (origin/main behaviour) ──────────────────────────────
-        // When the recorded reply lacks `screenshotActor`, `get_actor_id` is
-        // expected to fail with a message naming the missing field — the
-        // root cause of the iter-89 regression.  When the field is present
-        // (some FF 151 builds re-added it), the actor ID parses; in that
-        // case the regression is the subsequent `screenshotActor.capture`
-        // module-load failure exercised by `is_actor_module_load_failure`.
-        if fixture.get("screenshotActor").is_none() {
-            let (mut transport, server) = make_transport_pair();
-            let reply = fixture.clone();
-            let t = std::thread::spawn(move || server_reply(&server, reply));
-            let err = ScreenshotActor::get_actor_id(&mut transport).unwrap_err();
-            t.join().unwrap();
-            assert!(
-                err.to_string().contains("screenshotActor"),
-                "RED proof: missing-field error must name 'screenshotActor', got {err}"
-            );
+        // Force the missing-field shape by cloning the fixture and stripping
+        // `screenshotActor` so the assertion is deterministic regardless of
+        // which FF 151 sub-build produced the recorded fixture.  Against that
+        // shape, `get_actor_id` must fail with an error message naming the
+        // missing field — the root cause of the iter-89 regression.
+        let mut red_fixture = fixture.clone();
+        if let Some(obj) = red_fixture.as_object_mut() {
+            obj.remove("screenshotActor");
         }
+        let (mut transport, server) = make_transport_pair();
+        let t = std::thread::spawn(move || server_reply(&server, red_fixture));
+        let err = ScreenshotActor::get_actor_id(&mut transport).unwrap_err();
+        t.join().unwrap();
+        assert!(
+            err.to_string().contains("screenshotActor"),
+            "RED proof: missing-field error must name 'screenshotActor', got {err}"
+        );
 
         // ── GREEN proof (branch HEAD behaviour) ────────────────────────────
         // Drive screenshot_via_target end-to-end against a mock; the returned

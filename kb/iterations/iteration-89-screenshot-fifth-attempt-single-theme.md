@@ -80,8 +80,10 @@ taken, and on branch HEAD a PNG byte sequence is produced.
       via `screenshot_via_process_drawsnapshot_fallback`.
 - [x] `pre_fix_repro_screenshot_fixture_red_then_green` lives in
       `crates/ff-rdp-core/src/actors/screenshot.rs` — loads the recorded
-      `getroot_ff151.json` fixture, asserts the error path when
-      `screenshotActor` is absent, and a PNG-magic byte buffer from the
+      `getroot_ff151.json` fixture, force-strips `screenshotActor` to
+      deterministically assert the missing-field error path (one of two
+      observed FF 151 failure shapes; the other is `screenshotActor.capture`
+      module-load failure), then asserts a PNG-magic byte buffer from the
       `screenshot_via_target` dispatcher on branch HEAD.
 - [x] `unit_screenshot_via_target_returns_png` (in
       `crates/ff-rdp-core/src/actors/screenshot.rs`) drives the dispatcher
@@ -93,8 +95,10 @@ taken, and on branch HEAD a PNG byte sequence is produced.
 ## Acceptance Criteria [4/4]
 
 - [x] `pre_fix_repro_screenshot_fixture_red_then_green`: error path on
-      `origin/main` (`screenshotActor` field check), PNG bytes on branch
-      HEAD via the `screenshot_via_target` dispatcher.
+      `origin/main` covers both FF 151 failure shapes (missing
+      `screenshotActor` field OR `screenshotActor.capture` module-load
+      failure), PNG bytes on branch HEAD via the `screenshot_via_target`
+      dispatcher.
 - [x] `unit_screenshot_via_target_returns_png`: against the FF 151
       dispatcher path (mocked `listTabs` → `getTarget` → `screenshot`),
       the returned buffer starts with the PNG magic bytes.

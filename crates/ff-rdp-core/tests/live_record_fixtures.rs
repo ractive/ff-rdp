@@ -3027,9 +3027,12 @@ fn live_a11y_summary() {
 /// the actual response from a live Firefox 151 instance and writes it as
 /// `crates/ff-rdp-core/tests/fixtures/getroot_ff151.json`.
 ///
-/// The recorded fixture confirms that on FF 151 the `getRoot` response does NOT
-/// contain a `screenshotActor` field — which is the root cause of the iter-89
-/// screenshot regression.
+/// The `screenshotActor` field presence varies across FF 151 sub-builds: some
+/// omit it entirely, others re-advertise it but the subsequent
+/// `screenshotActor.capture` call fails at module-load time.  Both failure
+/// shapes are exercised by the iter-89 unit tests.  This recorder only
+/// overwrites the checked-in fixture when the missing-actor shape is observed,
+/// preserving the regression repro across recordings.
 ///
 /// Run to record:
 ///   FF_RDP_LIVE_TESTS_RECORD=1 FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-core \
@@ -3053,16 +3056,16 @@ fn live_record_getroot_ff151() {
         "getRoot must reply from root: {resp:?}"
     );
 
-    // On FF 151, screenshotActor is expected to be absent.
-    // We record the fixture regardless so the unit tests have a real shape.
+    // Only overwrite the checked-in fixture when this recording captured the
+    // missing-actor shape; otherwise the regression repro is silently lost.
     if resp.get("screenshotActor").is_some() {
         println!(
-            "  [note] screenshotActor IS present in getRoot on this Firefox version — \
-             this may not be FF 151 or the actor was re-added"
+            "  [skip] screenshotActor IS present in getRoot on this Firefox build — \
+             leaving the checked-in missing-actor fixture intact"
         );
-    } else {
-        println!("  [ok] screenshotActor absent from getRoot (expected on FF 151)");
+        return;
     }
 
+    println!("  [ok] screenshotActor absent from getRoot — recording fixture");
     save_core_fixture("getroot_ff151.json", &resp);
 }

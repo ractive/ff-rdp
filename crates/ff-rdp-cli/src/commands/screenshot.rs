@@ -418,6 +418,15 @@ fn screenshot_via_process_drawsnapshot_fallback(
     browsing_ctx_id: u64,
     full_page: bool,
 ) -> Result<String, AppError> {
+    if full_page {
+        return Err(AppError::User(
+            "screenshot: --full-page is not yet supported on the Firefox 151 \
+             process-drawsnapshot fallback (drawSnapshot returns viewport-sized \
+             capture only); retry without --full-page"
+                .to_owned(),
+        ));
+    }
+
     let png_bytes = ScreenshotActor::screenshot_via_process_drawsnapshot(
         ctx.transport_mut(),
         browsing_ctx_id,
