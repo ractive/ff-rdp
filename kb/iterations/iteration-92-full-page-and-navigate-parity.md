@@ -169,8 +169,9 @@ follow-up iter-94.
       divergence directly.
 - [x] `live_index_navigate_parity`: `ff-rdp index <url> --depth 0`
       exits 0 for the same URL as above; covers the index path.
-- [x] `dogfood_script_full_run_iter_92`: the sibling `.dogfood.sh`
-      exits 0 and writes `/tmp/ff-rdp-iter-92-dogfood-ok`.
+- [x] `dogfood_script_full_run_iter_92`: the sibling
+      `iteration-92-full-page-and-navigate-parity.dogfood.sh` exits 0
+      and writes `/tmp/ff-rdp-iter-92-dogfood-ok`.
 
 ## Out of scope
 

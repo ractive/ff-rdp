@@ -1,3 +1,6 @@
+// allow-actor-kb-skip: iter-92 adds a `full_page_rect` parameter to the
+// existing `screenshot_via_process_drawsnapshot` workaround (no spec change);
+// the actor-level protocol is unchanged from kb/rdp/actors/screenshot.md.
 use serde::Serialize;
 use serde_json::{Value, json};
 
