@@ -172,7 +172,9 @@ follow-up iter-94.
 - [x] `dogfood_script_full_run_iter_92`: the sibling
       `iteration-92-full-page-and-navigate-parity.dogfood.sh` exits 0
       against a live FF 151 and writes `/tmp/ff-rdp-iter-92-dogfood-ok`
-      (verified via `cargo run -p xtask -- check-dogfood-script`).
+      — exercises the same code paths as
+      `pre_fix_repro_screenshot_full_page_taller_than_viewport` and
+      `pre_fix_repro_navigate_second_call_waits_for_new_commit`.
 
 ## Out of scope
 
