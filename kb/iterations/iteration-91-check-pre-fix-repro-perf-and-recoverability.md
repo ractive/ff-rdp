@@ -1,9 +1,9 @@
 ---
-title: "Iteration 91: check-pre-fix-repro — speed, scope, and recoverability"
+title: "Iteration 91: check-pre-fix-repro — persistent main worktree + SHA-keyed result cache"
 type: iteration
 date: 2026-05-31
 status: planned
-branch: iter-91/check-pre-fix-repro-perf-and-recoverability
+branch: iter-91/check-pre-fix-repro-worktree-and-cache
 depends_on:
   - iteration-87-gate-hardening-required-checks-and-dogfood-linter
   - iteration-89-screenshot-fifth-attempt-single-theme
@@ -12,15 +12,13 @@ kb_refs:
   - kb/iterations/iteration-87-gate-hardening-required-checks-and-dogfood-linter.md
   - kb/iterations/iteration-89-screenshot-fifth-attempt-single-theme.md
 first_call_sites:
-  - primitive: "per-annotation crate hint parsed from `[pre_fix_repro_test: slug | crate=ff-rdp-core]`"
+  - primitive: "pre-fix-repro main-side worktree resolution (~/.cache/ff-rdp/pre-fix-repro/main-tree)"
     site: crates/xtask/src/check_pre_fix_repro.rs
-  - primitive: "`run_test` invokes `cargo test -p <crate>` instead of `--workspace`"
+  - primitive: "main-side CARGO_TARGET_DIR routing to per-worktree target/"
     site: crates/xtask/src/check_pre_fix_repro.rs
-  - primitive: "per-cargo-invocation timeout (default 600s, env-configurable)"
+  - primitive: "SHA-keyed result cache (~/.cache/ff-rdp/pre-fix-repro/results/)"
     site: crates/xtask/src/check_pre_fix_repro.rs
-  - primitive: "startup recovery hint printed before any stash/checkout"
-    site: crates/xtask/src/check_pre_fix_repro.rs
-  - primitive: "`run_test` passes `--include-ignored` so annotated tests gated by `#[ignore]` are executed"
+  - primitive: "run() invokes only the red-on-main probe; drops the green-on-branch rerun"
     site: crates/xtask/src/check_pre_fix_repro.rs
 dogfood_script: iteration-91-check-pre-fix-repro-perf-and-recoverability.dogfood.sh
 tags:
@@ -31,119 +29,171 @@ tags:
   - dx
 ---
 
-# Iteration 91 — `check-pre-fix-repro` is too slow and too easy to wedge
+# Iteration 91 — make check-pre-fix-repro fast enough to ignore
 
-iter-89 hit `check-pre-fix-repro` head-on: a single invocation against the
-iter-89 plan ran for **24+ minutes** before being killed, and the kill left
-the working copy on detached HEAD with all branch work in a dangling
-stash. The bugs are not in the idea of "verify the test fails on main,
-passes on branch" — they're in the execution.
+iter-89 hit `check-pre-fix-repro` head-on: a single invocation ran for
+24+ minutes before being killed, and the kill left the working copy on
+detached HEAD with all branch work in a dangling stash. The previous
+iter-91 plan addressed the symptoms (crate-scope hint, timeout,
+recovery hint, progress lines). It would have brought 25 min down to
+~5 min — better, but still slow enough that the agent's "run
+check-iteration-ready until exit 0" loop in Phase 1 + Phase 2 stacks
+to multi-hour real time.
+
+The architectural fix is to **stop touching the dev's working tree**.
+Two changes:
+
+1. Maintain a persistent worktree at `origin/main` under
+   `~/.cache/ff-rdp/pre-fix-repro/main-tree/` with its own
+   `target/`. Update via `git fetch + git reset --hard origin/main`
+   before each invocation. Run the "red on main" test there. The
+   dev's `target/` is never invalidated; the main-side `target/` is
+   warm across invocations because nothing else writes to it.
+2. Memoize the red-on-main result by `(origin/main SHA, test slug)`
+   under `~/.cache/ff-rdp/pre-fix-repro/results/`. Since origin/main
+   barely moves during a dev cycle, 90%+ of invocations hit cache
+   and skip cargo entirely (~1s).
+
+Additionally, drop the second `cargo test` invocation (the
+"green-on-branch" rerun). It's redundant: the dev's regular
+`cargo test` and CI both cover that. The unique value of
+`check-pre-fix-repro` is the red-on-main probe — proving the test
+actually exercises the bug.
+
+Expected wall-clock on a typical dev machine:
+
+| Scenario | Today | After iter-91 |
+|---|---|---|
+| Fresh machine, first run | 10-25 min | ~15 min (one cold main compile, persistent) |
+| Subsequent runs, origin/main unchanged | 10-25 min | **~1s** (SHA cache hit) |
+| Subsequent runs after origin/main moved | 10-25 min | ~30s (incremental on warm main-target) |
+
+100-1000× step change on the common path, which collapses the "agent
+loops on check-iteration-ready" problem in Phase 1/Phase 2 without
+needing any flow changes.
 
 ## Pre-fix repro
 
-`pre_fix_repro_check_pre_fix_repro_completes_under_300s`: a smoke test
-that runs `xtask check-pre-fix-repro` against a fixture plan with one
-annotated test and asserts wall-clock < 300s on a warm build. On
-`origin/main` the test will time out; on branch HEAD it passes.
+`pre_fix_repro_check_pre_fix_repro_completes_under_5s_on_cache_hit`:
+a smoke test that runs `xtask check-pre-fix-repro` twice against a
+fixture plan with one annotated test. First invocation populates the
+cache; second invocation must complete in < 5s wall clock and not
+invoke `cargo`. On `origin/main` the test asserts a clean failure
+because the cache code doesn't exist. On branch HEAD it passes.
+
+## Hard rule
+
+Single-theme. No bundling. AC live tests assert on **CLI exit + wall
+time + sentinel**, not on actor reply or proxy signals.
 
 ## Tasks
 
-### Theme A — narrow the recompile scope [0/5] [pre_fix_repro_test: pre_fix_repro_check_pre_fix_repro_completes_under_300s]
+### Theme A — persistent main worktree + SHA-keyed result cache [0/8] [pre_fix_repro_test: pre_fix_repro_check_pre_fix_repro_completes_under_5s_on_cache_hit]
 
-- [ ] Extend the plan annotation grammar to accept an optional crate
-      hint: `[pre_fix_repro_test: slug | crate=ff-rdp-core]`. Update
-      `parse_pre_fix_repro_annotations` in
-      `crates/xtask/src/check_pre_fix_repro.rs` to return the crate
-      hint when present.
-- [ ] In `try_list_tests` and `run_test`, when the annotation carries a
-      crate hint, invoke `cargo test -p <crate>` instead of
-      `--workspace`. Fall back to `--workspace` only when no hint is
-      provided. This shrinks the per-checkout compile from "all 4
-      crates" to "one crate + its deps".
-- [ ] Backfill the existing iteration plans (`iter-87`, `iter-88`,
-      `iter-89`) with the `crate=` hint so their pre-fix-repro tests
-      use the narrower scope.
-- [ ] Document the new annotation grammar in
-      `kb/iterations/README.md` (or the closest existing index).
-- [ ] Pass `--include-ignored` to every `cargo test` invocation issued by
-      `run_test` / `try_list_tests`. Pre-fix-repro tests are routinely
-      gated by `#[ignore]` plus an `FF_RDP_LIVE_TESTS` body guard, but the
-      current runner uses `cargo test … --exact` without
-      `--include-ignored`, so the test is silently filtered out and the
-      "at least one passed" check fails on both revisions. Surfaced by
-      iter-90 PR #127 review (`pre_fix_repro_daemon_state_sharing_red_then_green`);
-      iter-90 worked around it by dropping `#[ignore]`, but the runner
-      itself should not require that.
+- [ ] Resolve the main-side worktree path:
+      `${XDG_CACHE_HOME:-$HOME/.cache}/ff-rdp/pre-fix-repro/main-tree`.
+      If the directory does not exist or is not a worktree of the
+      current repo, lazily create it via
+      `git worktree add <path> origin/main`. Cache the resolved path
+      in a `OnceCell` for the lifetime of the process.
+- [ ] Before any test invocation, refresh the worktree:
+      `git -C <path> fetch origin --depth=1` then
+      `git -C <path> reset --hard origin/main`. Capture the resolved
+      `origin/main` SHA via `git rev-parse origin/main` in the
+      worktree.
+- [ ] Route the main-side cargo invocation through the worktree:
+      `CARGO_TARGET_DIR=<worktree>/target` and
+      `--manifest-path <worktree>/Cargo.toml`. Use the annotation's
+      crate hint when present (preserve the `--crate-name` arg the
+      function already accepts), else `--workspace`.
+- [ ] Implement SHA-keyed result cache:
+      `${XDG_CACHE_HOME:-$HOME/.cache}/ff-rdp/pre-fix-repro/results/<sha>-<crate-or-workspace>-<slug>`.
+      The file contains exactly `PASS\n` or `FAIL\n` followed by an
+      ISO-8601 timestamp. On lookup, treat missing or malformed files
+      as miss; treat present as hit. Both cache reads and writes are
+      best-effort (errors warn-not-fail, fall back to a real cargo
+      run on read error).
+- [ ] Replace `run()`'s git stash + checkout dance with the new
+      worktree-based probe. Drop the `green-on-branch` cargo
+      invocation (the second `run_test` call). Drop the `StashGuard`
+      and `CheckoutGuard` allocations from the hot path — the dev's
+      working tree is no longer mutated, so the guards become dead
+      code for the main flow. (Delete them; if a legacy path is
+      needed later, it can be reintroduced.)
+- [ ] When emitting output, distinguish "red on main (cache hit)",
+      "red on main (cargo run)", and "red on main (cargo run, cache
+      write failed: <reason>)" so debugging is possible without
+      adding verbose flags.
+- [ ] Update the rustdoc on the file to reflect the new flow
+      (worktree + cache, single probe, no green-on-branch run).
+- [ ] dogfood_script Theme A: sibling `.dogfood.sh` runs the gate
+      twice against a fixture plan and asserts the second run
+      completes in < 5s.
 
-### Theme B — timeout guard around every `cargo test` invocation [0/2]
+## Acceptance Criteria [0/8]
 
-- [ ] Add a per-invocation timeout to `run_test` and `try_list_tests`
-      using `wait-timeout = "0.2"`. Default 600s, override via env
-      `FF_RDP_CHECK_PRE_FIX_REPRO_TIMEOUT_SECS`. On timeout, kill the
-      child process group and return a clear error citing the slug and
-      the elapsed seconds.
-- [ ] Unit test `cargo_invocation_times_out_cleanly`: spawn a sleep
-      shim via the timeout helper, assert the helper kills the child
-      and surfaces a structured error within timeout + 5s.
-
-### Theme C — recoverability when interrupted [0/3]
-
-- [ ] On startup, before any `git stash` or `git checkout`, print a
-      single-line recovery hint to stderr naming the current branch
-      and the stash slot that will be created (e.g.
-      `[check-pre-fix-repro] If interrupted, recover with: git checkout iter-89/… && git stash pop`).
-- [ ] Install a `ctrlc` (or libc `signal`) handler that on SIGINT
-      attempts the inverse: `git checkout <previous_ref> && git stash pop`.
-      If the inverse fails (e.g. merge conflict), exit 130 leaving the
-      printed hint as the user's recovery path.
-- [ ] Unit test `recovery_hint_printed_before_any_git_mutation`:
-      capture the tool's stderr; assert the hint appears before any
-      `Command::new("git")` call by gating the git calls behind a
-      printed-hint flag.
-
-### Theme D — observability [0/1]
-
-- [ ] When a sub-step's wall time exceeds 60s, print a progress line
-      (`[check-pre-fix-repro] still compiling on origin/main … 90s elapsed`)
-      every 30s. Implemented via a background thread that polls a
-      shared `Instant`. Gives the user a signal that the tool is alive
-      vs. wedged.
-
-## Acceptance Criteria [0/6]
-
-- [ ] `pre_fix_repro_check_pre_fix_repro_completes_under_300s`: warm
-      build finishes inside 300s on a single-crate annotated plan.
-- [ ] `cargo_invocation_times_out_cleanly`: timeout helper kills the
-      child within the configured window.
-- [ ] `recovery_hint_printed_before_any_git_mutation`: hint emitted
-      before any `git stash`/`git checkout`.
-- [ ] `annotation_grammar_accepts_crate_hint`: parser accepts the
-      `| crate=<name>` suffix and rejects malformed variants without
-      panicking.
-- [ ] `runner_executes_ignored_pre_fix_repro_test`: a fixture plan
-      annotates a `#[ignore]`-gated test; the runner passes
-      `--include-ignored` so the test is actually executed (not silently
-      filtered) and the red/green outcome matches the test body.
-- [ ] `dogfood_script_full_run_iter_91`: sibling `.dogfood.sh` exits 0
-      and writes `/tmp/ff-rdp-iter-91-dogfood-ok`. The script runs
-      `xtask check-pre-fix-repro` against an annotated fixture plan
-      and asserts (a) wall time < 300s, (b) tool exits 0, (c) no
-      orphan stash entries remain, (d) the working branch is unchanged.
+- [ ] `pre_fix_repro_check_pre_fix_repro_completes_under_5s_on_cache_hit`:
+      runs the gate twice against a fixture plan; asserts second
+      invocation wall time < 5s and `cargo` was NOT invoked
+      (detected via instrumentation hook on `Command::new("cargo")`
+      or by counting writes to the main-tree `target/` dir).
+- [ ] `pre_fix_repro_check_pre_fix_repro_completes_under_30s_warm_main_target`:
+      simulates origin/main advancing by one commit (via a synthetic
+      fixture repo); asserts the next invocation completes < 30s on a
+      warm main-side target.
+- [ ] `unit_sha_cache_round_trip`: write PASS/FAIL via the cache
+      module, read back identical; corrupt file body → returns miss
+      and warns; missing dir → creates it.
+- [ ] `unit_worktree_path_respects_xdg_cache_home`: set
+      `XDG_CACHE_HOME=/tmp/xdg-test`; assert resolver returns
+      `/tmp/xdg-test/ff-rdp/pre-fix-repro/main-tree`. Unset → falls
+      back to `$HOME/.cache/...`.
+- [ ] `unit_worktree_creation_idempotent`: calling the resolver
+      twice in the same process produces the same path; the second
+      call does NOT invoke `git worktree add` (verified by counting
+      `Command::new` calls or by file mtime).
+- [ ] `unit_green_on_branch_run_dropped`: golden-snapshot the output
+      lines from a successful `run()` against a fixture; assert the
+      output mentions "red on main" exactly once and does NOT
+      mention "green on branch HEAD" anywhere.
+- [ ] `live_check_pre_fix_repro_does_not_mutate_working_tree`:
+      capture `git status --porcelain` before + after a real
+      invocation against `iter-89`'s plan; assert identical output
+      (no stash entries created, no detached HEAD, no modified
+      files).
+- [ ] `dogfood_script_full_run_iter_91`: the sibling `.dogfood.sh`
+      exits 0 and writes `/tmp/ff-rdp-iter-91-dogfood-ok`.
 
 ## Out of scope
 
-- Replacing `cargo` with `cargo nextest`. The single-crate scope is
-  the dominant win; nextest is a separate dependency-policy question.
-- Adding `sccache`. Useful but workflow-wide; track separately.
-- Restructuring `check-iteration-ready` to run sub-checks in parallel.
-  Worth doing later, but parallelism amplifies the recoverability
-  problem; fix that first.
-- The detached-HEAD recovery on SIGKILL. `Drop` guards can't run on
-  SIGKILL by definition; the printed hint covers this case.
+- **Crate-scope annotation hint** (previous iter-91 Theme A). Becomes
+  much less important when both sides of the comparison are
+  permanently warm — the workspace-vs-crate factor matters most on
+  cold compiles. If wall-clock data after iter-91 still shows
+  per-crate scoping would help, file a follow-up.
+- **Per-cargo timeout** (previous iter-91 Theme B). The SHA cache
+  bounds the wedge surface: the only path that calls cargo is the
+  cache-miss path, which runs incrementally on a warm target/.
+  Timeout becomes a safety belt for an edge case rather than the
+  primary control.
+- **Recovery hint + SIGINT handler** (previous iter-91 Theme C). The
+  dev's working tree is no longer mutated. There's nothing to
+  recover from on interrupt.
+- **Progress observability** (previous iter-91 Theme D). Worth doing
+  if the warm-main-target run still feels slow in practice, but not
+  load-bearing once the SHA cache hits most invocations.
+- **Cleanup of the persistent worktree.** Out of scope. Document the
+  path so users can `rm -rf` it manually if they want; don't add a
+  CLI subcommand yet.
 
 ## References
 
-- [[iteration-89-screenshot-fifth-attempt-single-theme]] — the run
-  that exposed the bug
-- [[iteration-87-gate-hardening-required-checks-and-dogfood-linter]] —
-  introduced `check-pre-fix-repro`
+- [[iteration-89-screenshot-fifth-attempt-single-theme]] — where the
+  symptom was first hit (24+ min, dangling stash)
+- [[iteration-87-gate-hardening-required-checks-and-dogfood-linter]]
+  — introduced `check-pre-fix-repro` itself
+- The earlier (now-superseded) iter-91 plan focused on
+  symptom-mitigation: crate-hint, timeout, recovery hint, progress
+  lines. This rewrite targets the root cost instead. The previous
+  themes B/C/D can be filed as follow-up plans if real-world data
+  shows they're still needed.
