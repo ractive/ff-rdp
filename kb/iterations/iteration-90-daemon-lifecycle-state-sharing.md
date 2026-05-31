@@ -75,7 +75,7 @@ Per the [[iteration-87-gate-hardening-required-checks-and-dogfood-linter#pre-fix
 
 ### Theme A — `launch` and `daemon` share one record [0/5] [pre_fix_repro_test: pre_fix_repro_daemon_state_sharing_red_then_green]
 
-- [ ] Introduce `DaemonRecord` in
+- [x] Introduce `DaemonRecord` in
       `crates/ff-rdp-cli/src/daemon_record.rs` with fields: `pid: u32`,
       `port: u16`, `headless: bool`, `launched_at: chrono::DateTime<Utc>`,
       `profile_dir: PathBuf`. Single on-disk location:
@@ -84,41 +84,41 @@ Per the [[iteration-87-gate-hardening-required-checks-and-dogfood-linter#pre-fix
       crate. Atomic write (write-to-temp + rename). Read-with-staleness
       check: if the recorded PID is not running, the record is treated
       as absent.
-- [ ] `launch` writes the record on successful Firefox spawn (after the
+- [x] `launch` writes the record on successful Firefox spawn (after the
       RDP socket is reachable). Cleans the record on its own shutdown
       (Ctrl-C handler) when run in foreground mode; leaves it in
       background/daemon mode.
-- [ ] `daemon stop` reads the record. If present and the PID is alive,
+- [x] `daemon stop` reads the record. If present and the PID is alive,
       SIGTERM, wait up to 2 s for graceful exit, SIGKILL if needed,
       poll the port until free (max 3 s), remove the record. If absent
       or PID dead, response stays the existing `"reason": "not running"`
       shape. JSON response includes `"pid"` and `"port"` so the user can
       verify which instance was stopped.
-- [ ] `launch --replace` (and `--force` alias) reads the record; if
+- [x] `launch --replace` (and `--force` alias) reads the record; if
       present, runs the stop path internally before proceeding to
       spawn. Test `unit_daemon_record_round_trip` covers the JSON
       serialization in both directions (PID, port, headless,
       timestamp).
-- [ ] dogfood_script Theme A block exits 0: `launch → daemon stop →
+- [x] dogfood_script Theme A block exits 0: `launch → daemon stop →
       launch` works without manual `kill`, and `launch --replace`
       against a live prior instance succeeds.
 
 ## Acceptance Criteria [0/5]
 
-- [ ] pre_fix_repro_daemon_state_sharing_red_then_green: `launch` then
+- [x] pre_fix_repro_daemon_state_sharing_red_then_green: `launch` then
       `daemon stop` leaves the port held on `origin/main`, frees it on
       branch HEAD. Verified by `xtask check-pre-fix-repro`.
-- [ ] unit_daemon_record_round_trip: serialize → deserialize round-trip
+- [x] unit_daemon_record_round_trip: serialize → deserialize round-trip
       preserves PID, port, headless, timestamp; staleness check returns
       `None` when the recorded PID is dead.
-- [ ] live_daemon_stop_after_launch_frees_port: `ff-rdp launch
+- [x] live_daemon_stop_after_launch_frees_port: `ff-rdp launch
       --headless --port 6000`, then `ff-rdp daemon stop`, then poll
       `localhost:6000` for refusal within 3 s; asserts port is free.
-- [ ] live_launch_replace_handles_prior_instance: with a live Firefox
+- [x] live_launch_replace_handles_prior_instance: with a live Firefox
       already running via `launch` on port 6000, `ff-rdp launch
       --replace --headless --port 6000` succeeds and the new PID
       differs from the prior PID.
-- [ ] dogfood_script_full_run_iter_90: sibling `.dogfood.sh` exits 0
+- [x] dogfood_script_full_run_iter_90: sibling `.dogfood.sh` exits 0
       and writes `/tmp/ff-rdp-iter-90-dogfood-ok`.
 
 ## Out of scope

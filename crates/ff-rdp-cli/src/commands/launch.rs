@@ -443,6 +443,22 @@ pub fn run(
                 )));
             }
 
+            // Write the shared daemon record so `daemon stop` and
+            // `launch --replace` can find and terminate this instance.
+            // `launch` is fire-and-forget (it spawns Firefox and returns), so
+            // no Ctrl-C cleanup is needed here — the record is cleaned up by
+            // whichever stop path runs next.
+            let daemon_rec = crate::daemon_record::DaemonRecord {
+                pid,
+                port,
+                headless,
+                launched_at: chrono::Utc::now(),
+                profile_dir: profile_path.clone().unwrap_or_default(),
+            };
+            if let Err(e) = crate::daemon_record::write(&daemon_rec) {
+                eprintln!("warning: could not write daemon record: {e:#}");
+            }
+
             // `temp_profile` is true when the caller requested --temp-profile
             // OR when we auto-created one because no profile flag was given.
             let effective_temp_profile = temp_profile || profile.is_none();
