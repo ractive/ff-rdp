@@ -56,56 +56,14 @@ fn screenshot_server() -> MockRdpServer {
         .on("capture", capture_response)
 }
 
-/// Like `screenshot_server` but also handles the `evaluateJSAsync` call emitted
-/// by the `--full-page` path (scroll-dimensions probe).
-fn screenshot_full_page_server() -> MockRdpServer {
-    let prepare_response = serde_json::json!({
-        "from": "server1.conn0.child2/screenshotContentActor15",
-        "value": {
-            "rect": null,
-            "messages": [],
-            "windowDpr": 1.0,
-            "windowZoom": 1.0
-        }
-    });
-    let get_root_response = serde_json::json!({
-        "from": "root",
-        "screenshotActor": "server1.conn0.screenshotActor7",
-        "preferenceActor": "server1.conn0.preferenceActor1",
-        "addonsActor": "server1.conn0.addonsActor2"
-    });
-    let capture_response = serde_json::json!({
-        "from": "server1.conn0.screenshotActor7",
-        "value": {
-            "data": PNG_1X1,
-            "filename": "screenshot.png",
-            "messages": []
-        }
-    });
-    // Scroll-dims eval: immediate ack + result with scrollW/scrollH/dpr.
-    let eval_scroll_dims = serde_json::json!({
-        "from": "server1.conn0.child2/consoleActor3",
-        "hasException": false,
-        "input": "(function() { ... })()",
-        "result": "{\"dpr\":1.0,\"scrollW\":1280,\"scrollH\":5000}",
-        "resultID": "scroll-dims-1",
-        "startTime": 1000.0,
-        "timestamp": 1001.0,
-        "type": "evaluationResult"
-    });
-
-    MockRdpServer::new()
-        .on("listTabs", load_fixture("list_tabs_response.json"))
-        .on("getTarget", load_fixture("get_target_response.json"))
-        .on("prepareCapture", prepare_response)
-        .on_with_followup(
-            "evaluateJSAsync",
-            load_fixture("eval_immediate_response.json"),
-            eval_scroll_dims,
-        )
-        .on("getRoot", get_root_response)
-        .on("capture", capture_response)
-}
+// iter-92 Theme A: the previous `screenshot_full_page_server` mock seeded
+// the standard `screenshotActor.capture` path, which is now bypassed for
+// `--full-page` (the CLI routes through the parent-process drawSnapshot
+// fallback to avoid the FF 151 viewport-clamp regression).  Flag-parse
+// acceptance is covered by `clap_screenshot_full_page_flag_parsed` in
+// `crates/ff-rdp-cli/src/commands/screenshot.rs`; functional coverage is
+// `live_screenshot_full_page` (live_61l) and the iter-92 pre-fix repro
+// `pre_fix_repro_screenshot_full_page_taller_than_viewport`.
 
 /// Create a unique temp directory under the OS temp dir for one test.
 fn unique_temp_dir(label: &str) -> PathBuf {
@@ -408,40 +366,6 @@ fn screenshot_full_page_and_viewport_height_conflict() {
             || stderr.contains("cannot be used with"),
         "expected conflict error, got: {stderr}"
     );
-}
-
-#[test]
-fn screenshot_full_page_flag_accepted() {
-    let server = screenshot_full_page_server();
-    let port = server.port();
-    let handle = std::thread::spawn(move || server.serve_one());
-
-    let out_dir = unique_temp_dir("screenshot_full_page");
-    let out_path = out_dir.join("full.png");
-
-    let mut args = base_args(port);
-    args.extend([
-        "screenshot".to_owned(),
-        "--full-page".to_owned(),
-        "--output".to_owned(),
-        out_path.to_string_lossy().into_owned(),
-    ]);
-
-    let output = std::process::Command::new(ff_rdp_bin())
-        .args(&args)
-        .output()
-        .expect("failed to spawn ff-rdp");
-
-    handle.join().unwrap();
-
-    assert!(
-        output.status.success(),
-        "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(out_path.exists());
-
-    let _ = std::fs::remove_dir_all(&out_dir);
 }
 
 #[test]

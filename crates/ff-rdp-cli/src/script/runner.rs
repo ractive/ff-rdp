@@ -762,7 +762,12 @@ fn execute_navigate(
         no_wait: false,
         wait_for: &[],
         wait_level: crate::commands::navigate::WaitLevel::Complete,
-        wait_strategy: crate::commands::navigate::WaitStrategy::Events,
+        // iter-92 Theme B: align with the CLI default (`Both`).  Events-only
+        // produced spurious `dom-complete did not fire within timeout` errors
+        // on data: URLs and other targets where Firefox elides the event
+        // (dogfooding-session-59 §3); the readystate-poll fallback in `Both`
+        // covers those cases without changing behaviour on event-rich pages.
+        wait_strategy: crate::commands::navigate::WaitStrategy::Both,
     };
     nav_run_core(cli, &effective_url, &wait_opts)
 }

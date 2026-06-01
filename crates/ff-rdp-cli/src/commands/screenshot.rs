@@ -371,6 +371,19 @@ fn try_two_step_screenshot(
         return screenshot_via_process_drawsnapshot_fallback(ctx, browsing_ctx_id, full_page);
     }
 
+    // iter-92 Theme A: on FF 151 the root-form `screenshotActor.capture` silently
+    // returns a viewport-sized PNG even when `fullpage:true` and an oversized
+    // `rect` are sent (the regression reported in dogfooding-session-59).  The
+    // `BrowsingContext.drawSnapshot` fallback honours the `fullViewport` flag
+    // reliably, so route `--full-page` through it unconditionally.
+    if full_page {
+        tracing::debug!(
+            target: "ff_rdp_cli::screenshot",
+            "full_page requested; using screenshot_via_process_drawsnapshot to avoid FF 151 viewport-clamp regression"
+        );
+        return screenshot_via_process_drawsnapshot_fallback(ctx, browsing_ctx_id, full_page);
+    }
+
     // Standard path: use the root-level screenshotActor.
     let screenshot_actor = root_actor_result.map_err(|e| {
         AppError::User(format!(
@@ -413,24 +426,79 @@ fn try_two_step_screenshot(
 /// Called from `try_two_step_screenshot` when the standard `screenshotActor.capture`
 /// path is unavailable (Firefox 151 regression) or when `screenshotActor` is absent
 /// from `getRoot`.
+///
+/// `full_page` is forwarded to `drawSnapshot` which interprets it as "capture the
+/// full scrollable area" — the core implementation already passes the flag through
+/// to the JS call.  The previous hard-rejection of `full_page=true` was the
+/// root cause of the iter-92 Theme A regression where `--full-page` silently
+/// produced a viewport-sized PNG instead of an error.
 fn screenshot_via_process_drawsnapshot_fallback(
     ctx: &mut super::connect_tab::ConnectedTab,
     browsing_ctx_id: u64,
     full_page: bool,
 ) -> Result<String, AppError> {
-    if full_page {
-        return Err(AppError::User(
-            "screenshot: --full-page is not yet supported on the Firefox 151 \
-             process-drawsnapshot fallback (drawSnapshot returns viewport-sized \
-             capture only); retry without --full-page"
-                .to_owned(),
-        ));
-    }
+    // iter-92 Theme A: drawSnapshot only captures the full scrollable area when
+    // an oversized `rect` is supplied as its first argument; the 4th arg is
+    // `resetScrollPosition`, not a fullpage flag.  Read the page's scroll
+    // dimensions from the content process up-front and pass them through so the
+    // parent-process drawSnapshot call constructs an explicit DOMRect.
+    let full_page_rect: Option<(f64, f64)> = if full_page {
+        let console_actor = ctx.target.console_actor.clone();
+        let scroll_js = r"(function() {
+  var w = Math.max(
+    document.documentElement.scrollWidth,
+    document.body ? document.body.scrollWidth : 0,
+    window.innerWidth || 0
+  );
+  var h = Math.max(
+    document.documentElement.scrollHeight,
+    document.body ? document.body.scrollHeight : 0,
+    window.innerHeight || 0
+  );
+  return JSON.stringify({scrollW: w, scrollH: h});
+})()";
+        let parsed = eval_or_bail(
+            ctx,
+            &console_actor,
+            scroll_js,
+            "screenshot: scroll dims eval",
+        )
+        .ok()
+        .and_then(|r| match r.result {
+            Grip::Value(serde_json::Value::String(s)) => {
+                serde_json::from_str::<serde_json::Value>(&s).ok()
+            }
+            _ => None,
+        });
+        let rect = parsed.and_then(|v| {
+            let w = v.get("scrollW").and_then(serde_json::Value::as_f64)?;
+            let h = v.get("scrollH").and_then(serde_json::Value::as_f64)?;
+            if w > 0.0 && h > 0.0 {
+                Some((w, h))
+            } else {
+                None
+            }
+        });
+        // iter-92 review: if --full-page was requested but we couldn't read
+        // scroll dims, fail loudly rather than silently capture a viewport-
+        // sized image (the very regression iter-92 is meant to fix).
+        if rect.is_none() {
+            return Err(AppError::User(
+                "screenshot: --full-page requested but scroll dimensions could not be read \
+                 from the page; refusing to fall back to viewport capture"
+                    .to_owned(),
+            ));
+        }
+        rect
+    } else {
+        None
+    };
 
     let png_bytes = ScreenshotActor::screenshot_via_process_drawsnapshot(
         ctx.transport_mut(),
         browsing_ctx_id,
         full_page,
+        full_page_rect,
     )
     .map_err(|e| {
         AppError::User(format!(
