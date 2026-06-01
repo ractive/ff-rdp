@@ -2,7 +2,7 @@
 title: "Iteration 92: screenshot --full-page regression on FF 151 + navigate/run/index dom-complete parity"
 type: iteration
 date: 2026-06-01
-status: in-progress
+status: done
 branch: iter-92/full-page-and-navigate-parity
 depends_on:
   - iteration-89-screenshot-fifth-attempt-single-theme
