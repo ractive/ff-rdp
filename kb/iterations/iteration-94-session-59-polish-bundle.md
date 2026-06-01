@@ -2,7 +2,7 @@
 title: "Iteration 94: session-59 polish bundle — daemon-stop race, render_blocking divergence, cascade note, network text"
 type: iteration
 date: 2026-06-01
-status: in-progress
+status: completed
 branch: iter-94/session-59-polish-bundle
 depends_on:
   - iteration-86-perf-field-report-fixes
