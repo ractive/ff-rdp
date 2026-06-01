@@ -19,24 +19,73 @@ sleep 1
 ff-rdp launch --headless --port 6000
 sleep 2
 
-# Write a CSP fixture HTML file to /tmp.
-# The <meta> tag enforces CSP even from file:// URLs.
-FIXTURE_HTML=/tmp/ff-rdp-iter93-csp-fixture.html
-cat > "$FIXTURE_HTML" <<'HTMLEOF'
-<!DOCTYPE html>
-<html>
-<head>
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self'; object-src 'none'">
-  <title>iter93-csp-fixture</title>
-</head>
-<body><div style="height:5000px">x</div></body>
-</html>
-HTMLEOF
+# Spin up a minimal Python HTTP server that serves a strict-CSP page on a
+# random port.  We use a heredoc to pass the server script inline; this avoids
+# any dependency on axum/hyper and uses only the Python stdlib.
+FIXTURE_PORT_FILE=/tmp/ff-rdp-iter93-port.txt
+SERVER_PID_FILE=/tmp/ff-rdp-iter93-server.pid
+rm -f "$FIXTURE_PORT_FILE" "$SERVER_PID_FILE"
 
-FIXTURE_URL="file://${FIXTURE_HTML}"
+python3 - <<'PYEOF' &
+import http.server
+import socket
+
+BODY = b"""<!DOCTYPE html>
+<html>
+<head><title>iter93-csp-fixture</title></head>
+<body><div style="height:5000px">x</div></body>
+</html>"""
+
+CSP = "script-src 'self'; object-src 'none'; base-uri 'self'"
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(BODY)))
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(BODY)
+    def log_message(self, *args):
+        pass  # suppress access log
+
+sock = socket.socket()
+sock.bind(("127.0.0.1", 0))
+port = sock.getsockname()[1]
+sock.close()
+
+with open("/tmp/ff-rdp-iter93-port.txt", "w") as f:
+    f.write(str(port))
+with open("/tmp/ff-rdp-iter93-server.pid", "w") as f:
+    import os; f.write(str(os.getpid()))
+
+server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+server.serve_forever()
+PYEOF
+
+# Wait for the server to write its port (up to 5 s).
+for i in $(seq 1 50); do
+  [ -f "$FIXTURE_PORT_FILE" ] && break
+  sleep 0.1
+done
+[ -f "$FIXTURE_PORT_FILE" ] || { echo "FAIL: fixture server did not start" >&2; exit 1; }
+
+FIXTURE_PORT=$(cat "$FIXTURE_PORT_FILE")
+FIXTURE_URL="http://127.0.0.1:${FIXTURE_PORT}/"
+echo "fixture server: $FIXTURE_URL"
+
+# Cleanup trap.
+cleanup() {
+  pkill -f 'firefox.*ff-rdp-profile' || true
+  if [ -f "$SERVER_PID_FILE" ]; then
+    kill "$(cat "$SERVER_PID_FILE")" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
 
 # Navigate to the CSP fixture.
-ff-rdp navigate --allow-unsafe-urls "$FIXTURE_URL" \
+ff-rdp navigate "$FIXTURE_URL" \
   || { echo "FAIL: navigate to CSP fixture failed" >&2; exit 1; }
 
 # Evaluate document.title — must exit 0 on this branch.
@@ -44,7 +93,7 @@ EVAL_OUT=$(ff-rdp eval 'document.title') \
   || { echo "FAIL: eval 'document.title' exited non-zero (CSP still blocking?): $EVAL_OUT" >&2; exit 1; }
 
 # Parse the result with Python (available everywhere; avoids a jq dep).
-RESULT=$(python3 -c "import sys,json; d=json.loads('$EVAL_OUT'); print(d.get('results',''))" 2>/dev/null || echo "")
+RESULT=$(python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('results',''))" <<< "$EVAL_OUT" 2>/dev/null || echo "")
 if [ "$RESULT" != "iter93-csp-fixture" ]; then
   echo "FAIL: eval result '$RESULT' != 'iter93-csp-fixture'" >&2
   echo "Full output: $EVAL_OUT" >&2
@@ -55,7 +104,7 @@ echo "Theme A OK: eval 'document.title' = '$RESULT' on strict-CSP page"
 # Verify scrollY eval also works.
 SCROLL_OUT=$(ff-rdp eval 'window.scrollTo(0, 100); window.scrollY') \
   || { echo "FAIL: scrollY eval exited non-zero" >&2; exit 1; }
-SCROLL_Y=$(python3 -c "import sys,json; d=json.loads('$SCROLL_OUT'); print(d.get('results',0))" 2>/dev/null || echo "0")
+SCROLL_Y=$(python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('results',0))" <<< "$SCROLL_OUT" 2>/dev/null || echo "0")
 if python3 -c "import sys; sys.exit(0 if float('$SCROLL_Y') >= 1 else 1)" 2>/dev/null; then
   echo "Theme B OK: window.scrollY = $SCROLL_Y (>= 1 after scrollTo)"
 else
@@ -69,8 +118,6 @@ if ff-rdp eval 'throw new Error("boom")' 2>/dev/null; then
   exit 1
 fi
 echo "Theme C OK: script errors still surface (eval 'throw new Error' exited non-zero)"
-
-pkill -f 'firefox.*ff-rdp-profile' || true
 
 date -u +%Y-%m-%dT%H:%M:%SZ > "$SENTINEL"
 echo "iter-93 dogfood: CSP bypass verified — $SENTINEL"
