@@ -13,6 +13,63 @@ use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
+/// Maximum time to wait for a port to become free after killing a Firefox process.
+///
+/// If the port is still in use after this bound, the escalation sequence
+/// (SIGTERM → 1 s grace → SIGKILL → ~500 ms re-poll) runs before declaring
+/// failure.
+const PORT_FREE_WAIT_BOUND: Duration = Duration::from_secs(8);
+
+/// Format the "port still listening" error message.
+///
+/// The message embeds the actual bound from `PORT_FREE_WAIT_BOUND` so that
+/// changing the constant keeps error text in sync automatically.
+pub(crate) fn port_still_listening_msg(pid: u32, port: u16) -> String {
+    format!(
+        "stopped Firefox (pid {pid}) but port {port} is still listening after {} s — \
+         another process may be holding it. Run `ff-rdp doctor` or \
+         `lsof -i :{port}` to investigate.",
+        PORT_FREE_WAIT_BOUND.as_secs()
+    )
+}
+
+/// Format the post-escalation "port still listening" error message.
+fn port_still_listening_after_escalation_msg(pid: u32, port: u16) -> String {
+    format!(
+        "stopped Firefox (pid {pid}) but port {port} is still listening after {} s \
+         (after SIGTERM+SIGKILL escalation, port still listening) — \
+         another process may be holding it. Run `ff-rdp doctor` or \
+         `lsof -i :{port}` to investigate.",
+        PORT_FREE_WAIT_BOUND.as_secs()
+    )
+}
+
+/// Wait for `port` to become free, with SIGTERM+SIGKILL escalation on timeout.
+///
+/// Returns `true` if the port is free; `false` (with an error message) if it
+/// remains in use after the full escalation sequence.
+///
+/// Escalation:
+/// 1. Wait up to `PORT_FREE_WAIT_BOUND` for the port to free.
+/// 2. On timeout: SIGTERM the process group, wait 1 s grace.
+/// 3. SIGKILL the process group.
+/// 4. Re-poll the port for ~500 ms.
+///
+/// Returns `(port_free, error_message)`.
+fn wait_port_free_with_escalation(pid: u32, port: u16) -> (bool, String) {
+    if process::wait_for_port_closed(port, PORT_FREE_WAIT_BOUND) {
+        return (true, String::new());
+    }
+    // Bound elapsed — escalate.
+    process::kill_process_group(pid);
+    std::thread::sleep(Duration::from_secs(1));
+    process::kill_process_group_force(pid);
+    if process::wait_for_port_closed(port, Duration::from_millis(500)) {
+        return (true, String::new());
+    }
+    (false, port_still_listening_after_escalation_msg(pid, port))
+}
+
 // ---------------------------------------------------------------------------
 // Connection target resolution
 // ---------------------------------------------------------------------------
@@ -617,7 +674,7 @@ fn kill_pid_and_wait_port(pid: u32, port: u16) -> (bool, bool) {
         std::thread::sleep(Duration::from_millis(300));
     }
     let stopped = !process::is_process_alive(pid);
-    let port_free = process::wait_for_port_closed(port, Duration::from_secs(3));
+    let (port_free, _escalation_msg) = wait_port_free_with_escalation(pid, port);
     (stopped, port_free)
 }
 
@@ -646,12 +703,7 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
             crate::daemon_record::remove().ok();
 
             if !port_free {
-                return Err(AppError::User(format!(
-                    "stopped Firefox (pid {}) but port {} is still listening after 3 s — \
-                     another process may be holding it. Run `ff-rdp doctor` or \
-                     `lsof -i :{}` to investigate.",
-                    rec.pid, rec.port, rec.port
-                )));
+                return Err(AppError::User(port_still_listening_msg(rec.pid, rec.port)));
             }
 
             let meta = json!({});
@@ -741,16 +793,24 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
     // 4. Clean up the daemon registry regardless of process state.
     registry::remove_registry().ok();
 
-    // 5. Poll the Firefox debug port until it stops accepting connections (max 3 s).
+    // 5. Poll the Firefox debug port until it stops accepting connections
+    //    (max PORT_FREE_WAIT_BOUND with SIGTERM+SIGKILL escalation on timeout).
     //    This confirms that the OS has reclaimed the socket, so a subsequent
     //    `launch` on the same port will succeed immediately without a "port in use" error.
-    let port_free = process::wait_for_port_closed(firefox_port, Duration::from_secs(3));
+    let (port_free, escalation_msg) = wait_port_free_with_escalation(info.pid, firefox_port);
 
     if !port_free {
-        return Err(AppError::User(format!(
-            "daemon stopped but port {firefox_port} is still listening after 3 s — \
-             another process may be holding it. Run `ff-rdp doctor` or `lsof -i :{firefox_port}` to investigate."
-        )));
+        let msg = if escalation_msg.is_empty() {
+            format!(
+                "daemon stopped but port {firefox_port} is still listening after {} s — \
+                 another process may be holding it. Run `ff-rdp doctor` or \
+                 `lsof -i :{firefox_port}` to investigate.",
+                PORT_FREE_WAIT_BOUND.as_secs()
+            )
+        } else {
+            escalation_msg
+        };
+        return Err(AppError::User(msg));
     }
 
     let stopped = !process::is_process_alive(info.pid);
@@ -815,8 +875,8 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> 
         }
     }
 
-    // Poll until free.
-    if !process::wait_for_port_closed(port, Duration::from_secs(3)) {
+    // Poll until free — signals were already sent above, so just wait.
+    if !process::wait_for_port_closed(port, PORT_FREE_WAIT_BOUND) {
         return Err(AppError::User(format!(
             "port {port} is still in use after stopping the prior instance. \
              Run `ff-rdp doctor` or `lsof -i :{port}` to investigate."
@@ -847,5 +907,66 @@ mod tests {
             }
             ConnectionTarget::Daemon { .. } => panic!("--no-daemon must never resolve to Daemon"),
         }
+    }
+
+    /// AC: `unit_daemon_stop_message_reports_actual_bound`
+    ///
+    /// The error message produced by `port_still_listening_msg` must reflect
+    /// `PORT_FREE_WAIT_BOUND` (8 s), not any hardcoded literal. If the constant
+    /// changes, the message stays in sync.
+    #[test]
+    fn unit_daemon_stop_message_reports_actual_bound() {
+        let msg = port_still_listening_msg(12345, 6000);
+        let expected_bound = format!("after {} s", PORT_FREE_WAIT_BOUND.as_secs());
+        assert!(
+            msg.contains(&expected_bound),
+            "error message must contain '{expected_bound}' but got: {msg:?}"
+        );
+        // Regression guard: must not contain the old hardcoded value (3 s) if
+        // PORT_FREE_WAIT_BOUND is anything other than 3.
+        if PORT_FREE_WAIT_BOUND.as_secs() != 3 {
+            assert!(
+                !msg.contains("after 3 s"),
+                "error message must not mention the old 3 s bound: {msg:?}"
+            );
+        }
+        assert_eq!(PORT_FREE_WAIT_BOUND.as_secs(), 8, "bound should be 8 s");
+    }
+
+    /// AC: `pre_fix_repro_daemon_stop_waits_past_3s_for_slow_shutdown`
+    ///
+    /// Verifies that `wait_for_port_closed` with `PORT_FREE_WAIT_BOUND` (8 s)
+    /// succeeds when the port takes >3 s but <8 s to free, and that a 3 s
+    /// deadline would have failed. Uses a real TCP listener released from a
+    /// background thread after 4 s — no subprocess needed.
+    #[test]
+    fn pre_fix_repro_daemon_stop_waits_past_3s_for_slow_shutdown() {
+        use std::net::TcpListener;
+
+        // Bind an ephemeral port and record which port the OS assigned.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind failed");
+        let port = listener.local_addr().unwrap().port();
+
+        // Release the listener from a background thread after 4 s.
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(4));
+            drop(listener); // closes the socket
+        });
+
+        // A 3 s deadline must time out (pre-fix behaviour would return false here
+        // and immediately error, even though the port frees at 4 s).
+        let short_wait = super::super::process::wait_for_port_closed(port, Duration::from_secs(3));
+        assert!(
+            !short_wait,
+            "3 s deadline should have timed out while the port is still held"
+        );
+
+        // The 8 s bound (PORT_FREE_WAIT_BOUND) must succeed.
+        let long_wait = super::super::process::wait_for_port_closed(port, PORT_FREE_WAIT_BOUND);
+        assert!(
+            long_wait,
+            "PORT_FREE_WAIT_BOUND ({} s) should succeed after the 4 s hold",
+            PORT_FREE_WAIT_BOUND.as_secs()
+        );
     }
 }
