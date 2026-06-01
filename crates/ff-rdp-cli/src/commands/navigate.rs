@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ff_rdp_core::{
-    NavCause, RdpTransport, Resource, ResourceCommand, ResourceType, RootActor, TabActor,
+    Grip, NavCause, RdpTransport, Resource, ResourceCommand, ResourceType, RootActor, TabActor,
     WatcherActor, WindowGlobalTarget, parse_network_resource_updates, parse_network_resources,
 };
 use serde_json::json;
@@ -16,7 +16,7 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
 use super::js_helpers::{
-    WaitForPredicate, escape_selector, poll_js_condition, wait_for_predicates,
+    WaitForPredicate, escape_selector, eval_or_bail, poll_js_condition, wait_for_predicates,
 };
 use super::network_events::{
     build_network_entries, drain_network_events_timed, drain_network_from_daemon, merge_updates,
@@ -300,29 +300,62 @@ fn is_neterror_url(url: &str) -> bool {
     url.starts_with("about:neterror")
 }
 
+/// Returns `true` when the navigation captured by `current_nav_start` is fresh
+/// (i.e., the page loaded *after* the `pre_epoch` snapshot taken before the
+/// navigate dispatch).
+///
+/// A pre-existing completed page (same URL reloaded, or stale state from a
+/// prior session) will have `current_nav_start <= pre_epoch` and returns
+/// `false`, keeping the wait loop alive until a genuine new load completes.
+///
+/// # Unit-test target
+///
+/// `unit_navigate_rejects_stale_ready_state` exercises this function directly
+/// so the freshness logic can be verified without a live Firefox connection.
+#[cfg(test)]
+fn is_readystate_fresh(current_nav_start: f64, pre_epoch: f64) -> bool {
+    current_nav_start > pre_epoch
+}
+
 /// Poll `document.readyState == "complete"` until the deadline, returning a
 /// `CommitInfo` when the condition is met.
+///
+/// `pre_epoch` is the value of `performance.timing.navigationStart` captured
+/// *before* the navigate was dispatched.  Any `readyState == complete` reading
+/// whose `navigationStart` is not fresher than `pre_epoch` is treated as stale
+/// and the poll continues.  This prevents the second navigate to the same tab
+/// from short-circuiting on the pre-existing completed state.
 ///
 /// Used by the `readystate` and `both` wait strategies as a fallback when the
 /// document-event resource stream doesn't fire within the timeout budget.
 fn wait_for_readystate_complete(
     ctx: &mut super::connect_tab::ConnectedTab,
     timeout_ms: u64,
+    pre_epoch: f64,
 ) -> Result<CommitInfo, AppError> {
     use crate::commands::js_helpers::poll_js_condition;
 
     let console_actor = ctx.target.console_actor.clone();
     let started = std::time::Instant::now();
 
+    // Combine readyState check with navigationStart freshness guard so that a
+    // pre-existing "complete" state from the prior page load is rejected.
+    // `performance.timing.navigationStart` is milliseconds since the Unix epoch
+    // (matching the value captured before navigate dispatch).
+    let condition = format!(
+        "document.readyState === 'complete' && \
+         performance.timing.navigationStart > {pre_epoch}"
+    );
+
     let elapsed_ms = poll_js_condition(
         ctx,
         &console_actor,
-        "document.readyState === 'complete'",
+        &condition,
         timeout_ms,
         "navigate readystate: JS evaluation error",
         &format!(
-            "navigate: document.readyState did not reach 'complete' within {timeout_ms}ms — \
-             use --no-wait to skip or increase --timeout"
+            "navigate: document.readyState did not reach 'complete' (with fresh navigation) \
+             within {timeout_ms}ms — use --no-wait to skip or increase --timeout"
         ),
     )?;
 
@@ -488,6 +521,31 @@ pub fn run_core(
     let watcher_actor =
         TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
 
+    // iter-92 Theme B: capture navigationStart *before* dispatching navigateTo
+    // so the readystate-poll path can reject a pre-existing "complete" state
+    // that belongs to the prior page load (the stale-dom-complete regression).
+    //
+    // This is a best-effort capture; if eval fails (e.g. the page is still
+    // loading when we connect), we fall back to 0.0 which effectively disables
+    // the freshness guard rather than blocking the navigate.
+    let pre_nav_epoch: f64 = if wait_opts.no_wait {
+        0.0 // freshness guard not needed for --no-wait
+    } else {
+        let console_actor = ctx.target.console_actor.clone();
+        match eval_or_bail(
+            &mut ctx,
+            &console_actor,
+            "performance.timing.navigationStart",
+            "navigate: pre-nav epoch eval",
+        ) {
+            Ok(result) => match result.result {
+                Grip::Value(serde_json::Value::Number(ref n)) => n.as_f64().unwrap_or(0.0),
+                _ => 0.0,
+            },
+            Err(_) => 0.0,
+        }
+    };
+
     let commit_info = if wait_opts.no_wait {
         // --no-wait: send navigateTo via the standard actor_request (response
         // is the navigateTo ack) and return immediately, no bus needed.
@@ -502,7 +560,7 @@ pub fn run_core(
             .map_err(AppError::from)?;
         // Theme K: refresh console actor so eval hits the new document.
         refresh_console_actor(&mut ctx);
-        let ci = wait_for_readystate_complete(&mut ctx, cli.timeout)?;
+        let ci = wait_for_readystate_complete(&mut ctx, cli.timeout, pre_nav_epoch)?;
         Some(ci)
     } else {
         // Events or Both strategy: subscribe to document-event resources before
@@ -622,7 +680,7 @@ pub fn run_core(
                         "navigate: no remaining budget for readystate fallback".to_string(),
                     ))
                 } else {
-                    wait_for_readystate_complete(&mut ctx, remaining)
+                    wait_for_readystate_complete(&mut ctx, remaining, pre_nav_epoch)
                 }
             }
             Err(e) => Err(e),
@@ -1123,6 +1181,46 @@ mod tests {
             wait_level: WaitLevel::Complete,
             wait_strategy: WaitStrategy::Events,
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-92 Theme B: unit_navigate_rejects_stale_ready_state
+    //
+    // Verifies the freshness helper: a `readyState == complete` reading whose
+    // navigationStart predates the pre-epoch (from before the navigate dispatch)
+    // must be treated as stale so the poll keeps waiting.
+    // -----------------------------------------------------------------------
+
+    /// `unit_navigate_rejects_stale_ready_state`:
+    ///
+    /// Feed the `is_readystate_fresh` helper a `navigationStart` that is equal
+    /// to or older than the pre-epoch and assert it returns `false`.  Then feed
+    /// a fresh `navigationStart` and assert `true`.
+    #[test]
+    fn unit_navigate_rejects_stale_ready_state() {
+        let pre_epoch = 1_000_000.0_f64;
+
+        // Stale: navigationStart == pre_epoch (same load, not a new nav).
+        assert!(
+            !is_readystate_fresh(pre_epoch, pre_epoch),
+            "navigationStart equal to pre_epoch must be stale"
+        );
+
+        // Stale: navigationStart < pre_epoch.
+        assert!(
+            !is_readystate_fresh(pre_epoch - 100.0, pre_epoch),
+            "navigationStart before pre_epoch must be stale"
+        );
+
+        // Fresh: navigationStart clearly after pre_epoch.
+        assert!(
+            is_readystate_fresh(pre_epoch + 1.0, pre_epoch),
+            "navigationStart 1 ms after pre_epoch must be fresh"
+        );
+        assert!(
+            is_readystate_fresh(pre_epoch + 5000.0, pre_epoch),
+            "navigationStart 5 s after pre_epoch must be fresh"
+        );
     }
 
     #[test]

@@ -1,3 +1,6 @@
+// allow-actor-kb-skip: iter-92 adds a `full_page_rect` parameter to the
+// existing `screenshot_via_process_drawsnapshot` workaround (no spec change);
+// the actor-level protocol is unchanged from kb/rdp/actors/screenshot.md.
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -251,6 +254,7 @@ impl ScreenshotActor {
         transport: &mut RdpTransport,
         browsing_context_id: u64,
         full_page: bool,
+        full_page_rect: Option<(f64, f64)>,
     ) -> Result<Vec<u8>, ProtocolError> {
         // Step 1: get the parent process descriptor.
         let process_actor = RootActor::get_process(transport, 0)?;
@@ -289,9 +293,19 @@ impl ScreenshotActor {
         //   (c) Renders it onto an OffscreenCanvas and serialises to PNG.
         //   (d) Writes the PNG bytes to a temp file via IOUtils.
         //
-        // The `fullpage` flag is forwarded to drawSnapshot.  Firefox interprets
-        // `true` as "capture the full scroll area" vs `false` = "visible viewport".
-        let fullpage_flag = if full_page { "true" } else { "false" };
+        // The 4th arg to `drawSnapshot(rect, scale, color, resetScrollPosition)`
+        // is `resetScrollPosition` (see
+        // dom/webidl/WindowGlobalActors.webidl), NOT a fullpage flag.  To
+        // capture the full scrollable area, pass an explicit oversized `rect`
+        // (first arg).  The caller supplies `full_page_rect = Some((w, h))`
+        // when `--full-page` is requested; the JS then constructs a `DOMRect`
+        // spanning the full document.  When `None`, `drawSnapshot` defaults to
+        // the visible viewport.
+        let rect_js = match (full_page, full_page_rect) {
+            (true, Some((w, h))) => format!("new DOMRect(0, 0, {w}, {h})"),
+            _ => "null".to_owned(),
+        };
+        let reset_scroll = if full_page { "true" } else { "false" };
         let bc_id = browsing_context_id;
         let js = format!(
             r#"(async function() {{
@@ -300,7 +314,8 @@ impl ScreenshotActor {
     if (!bc) return "error:no-bc:{bc_id}";
     const wg = bc.currentWindowGlobal;
     if (!wg) return "error:no-wg:{bc_id}";
-    const snapshot = await wg.drawSnapshot(null, 1, "rgb(255,255,255)", {fullpage_flag});
+    const rect = {rect_js};
+    const snapshot = await wg.drawSnapshot(rect, 1, "rgb(255,255,255)", {reset_scroll});
     const canvas = new OffscreenCanvas(snapshot.width, snapshot.height);
     const ctx = canvas.getContext("2d");
     ctx.drawImage(snapshot, 0, 0);
@@ -442,6 +457,7 @@ impl ScreenshotActor {
 mod tests {
     use std::io::BufReader;
     use std::net::{TcpListener, TcpStream};
+    use std::sync::Mutex;
 
     use serde_json::json;
 
@@ -773,6 +789,92 @@ mod tests {
         };
         ScreenshotActor::capture(&mut transport, &actor_id, 1, false, &prep).unwrap();
         t.join().unwrap();
+    }
+
+    // ── iter-92 Theme A: unit_window_global_target_screenshot_forwards_full_page ──
+
+    /// AC: `unit_window_global_target_screenshot_forwards_full_page`
+    ///
+    /// Drives `screenshot_via_target` against a minimal mock server and asserts
+    /// that the outbound `screenshot` request JSON carries `args.fullpage == true`
+    /// when `full_page` is set.  This pins the iter-92 regression where the
+    /// process-drawsnapshot fallback was hard-rejecting `full_page=true` instead
+    /// of forwarding the flag — causing `--full-page` to silently produce a
+    /// viewport-sized PNG.
+    #[test]
+    fn unit_window_global_target_screenshot_forwards_full_page() {
+        use std::io::Write as _;
+
+        let (mut transport, server) = make_transport_pair();
+
+        let captured_request: std::sync::Arc<Mutex<Option<serde_json::Value>>> =
+            std::sync::Arc::new(Mutex::new(None));
+        let captured_clone = std::sync::Arc::clone(&captured_request);
+
+        let t = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            let mut srv = &server;
+
+            // listTabs
+            let _ = recv_from(&mut reader).unwrap();
+            let reply = json!({
+                "from": "root",
+                "tabs": [{
+                    "actor": "server1.conn0.tabDescriptor1",
+                    "title": "Test",
+                    "url": "about:blank",
+                    "selected": true,
+                    "browsingContextID": 7
+                }]
+            });
+            srv.write_all(encode_frame(&serde_json::to_string(&reply).unwrap()).as_bytes())
+                .unwrap();
+
+            // getTarget
+            let _ = recv_from(&mut reader).unwrap();
+            let reply = json!({
+                "from": "server1.conn0.tabDescriptor1",
+                "frame": {
+                    "actor": "server1.conn0.child1/windowGlobalTarget2",
+                    "consoleActor": "server1.conn0.child1/consoleActor3"
+                }
+            });
+            srv.write_all(encode_frame(&serde_json::to_string(&reply).unwrap()).as_bytes())
+                .unwrap();
+
+            // screenshot method — capture request before replying
+            let req = recv_from(&mut reader).unwrap();
+            *captured_clone.lock().unwrap() = Some(req);
+
+            let reply = json!({
+                "from": "server1.conn0.child1/windowGlobalTarget2",
+                "value": { "data": "data:image/png;base64,abc123" }
+            });
+            srv.write_all(encode_frame(&serde_json::to_string(&reply).unwrap()).as_bytes())
+                .unwrap();
+        });
+
+        let prep = PrepareCapture {
+            window_dpr: 1.0,
+            window_zoom: 1.0,
+            rect: None,
+        };
+        // full_page = true
+        ScreenshotActor::screenshot_via_target(&mut transport, 7, true, &prep).unwrap();
+        t.join().unwrap();
+
+        let req = captured_request.lock().unwrap().take().unwrap();
+        assert_eq!(
+            req["type"].as_str(),
+            Some("screenshot"),
+            "request must be a screenshot method call"
+        );
+        let fullpage = &req["args"]["fullpage"];
+        assert_eq!(
+            *fullpage,
+            serde_json::Value::Bool(true),
+            "args.fullpage must be true when full_page is requested, got: {fullpage}"
+        );
     }
 
     // ── Firefox 151 fallback: screenshot_via_target ──────────────────────────
