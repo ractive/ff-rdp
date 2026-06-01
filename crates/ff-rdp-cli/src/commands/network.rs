@@ -371,8 +371,17 @@ pub fn run(
         .map_err(AppError::from)
 }
 
-/// Render network summary as human-readable text.
-fn render_network_summary_text(summary: &Value) {
+/// Render network summary as human-readable text to `out`.
+///
+/// Accepts a `Write` sink so callers (and tests) can capture output without
+/// spawning subprocesses.  The production path passes `&mut io::stdout()`.
+///
+/// Null/empty `cause_type` keys are handled as follows:
+/// - If ALL keys are null (i.e. the only key is `""`) the "Requests by Cause Type"
+///   section is suppressed entirely — immediately post-nav, `cause_type` may not
+///   have been set yet, and a bare-number row confuses readers.
+/// - For a mix of null + non-null keys, the null key is displayed as `(unknown)`.
+fn render_network_summary_text_to(summary: &Value, out: &mut dyn std::io::Write) {
     let total_requests = summary
         .get("total_requests")
         .and_then(Value::as_u64)
@@ -382,27 +391,47 @@ fn render_network_summary_text(summary: &Value) {
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
 
-    println!("=== Network Summary ===");
-    println!("  Total requests:    {total_requests}");
-    println!("  Total transferred: {total_bytes:.0} bytes");
+    let _ = writeln!(out, "=== Network Summary ===");
+    let _ = writeln!(out, "  Total requests:    {total_requests}");
+    let _ = writeln!(out, "  Total transferred: {total_bytes:.0} bytes");
 
     if let Some(by_cause) = summary.get("by_cause_type").and_then(Value::as_object)
         && !by_cause.is_empty()
     {
-        println!();
-        println!("=== Requests by Cause Type ===");
-        let max_len = by_cause.keys().map(String::len).max().unwrap_or(4);
-        for (cause, count) in by_cause {
-            let n = count.as_u64().unwrap_or(0);
-            println!("  {cause:<max_len$}  {n:>4}");
+        // Suppress the section if every key is the null sentinel ("").
+        let all_null = by_cause.len() == 1 && by_cause.contains_key("");
+        if !all_null {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "=== Requests by Cause Type ===");
+            // For display purposes, map "" → "(unknown)" so readers see a label.
+            let display_keys: Vec<String> = by_cause
+                .keys()
+                .map(|k| {
+                    if k.is_empty() {
+                        "(unknown)".to_string()
+                    } else {
+                        k.clone()
+                    }
+                })
+                .collect();
+            let max_len = display_keys.iter().map(String::len).max().unwrap_or(4);
+            for (raw_key, count) in by_cause {
+                let label = if raw_key.is_empty() {
+                    "(unknown)"
+                } else {
+                    raw_key.as_str()
+                };
+                let n = count.as_u64().unwrap_or(0);
+                let _ = writeln!(out, "  {label:<max_len$}  {n:>4}");
+            }
         }
     }
 
     if let Some(slowest) = summary.get("slowest").and_then(Value::as_array)
         && !slowest.is_empty()
     {
-        println!();
-        println!("=== Slowest Requests ===");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "=== Slowest Requests ===");
         for (i, entry) in slowest.iter().enumerate() {
             let url = entry.get("url").and_then(Value::as_str).unwrap_or("?");
             let dur = entry
@@ -414,7 +443,11 @@ fn render_network_summary_text(summary: &Value) {
                 .get("transfer_size")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0);
-            println!("  {}. {url}  ({dur:.0}ms, {status}, {size:.0}b)", i + 1);
+            let _ = writeln!(
+                out,
+                "  {}. {url}  ({dur:.0}ms, {status}, {size:.0}b)",
+                i + 1
+            );
         }
     }
 
@@ -424,9 +457,16 @@ fn render_network_summary_text(summary: &Value) {
         .unwrap_or(false)
         && let Some(hint) = summary.get("hint").and_then(Value::as_str)
     {
-        println!();
-        println!("{hint}");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "{hint}");
     }
+}
+
+/// Render network summary as human-readable text to stdout.
+///
+/// Thin wrapper over `render_network_summary_text_to` for the production path.
+fn render_network_summary_text(summary: &Value) {
+    render_network_summary_text_to(summary, &mut std::io::stdout());
 }
 
 /// Build a summary view of network requests.
@@ -461,7 +501,10 @@ pub fn build_network_summary(
     let mut by_cause_type: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     for entry in entries {
-        let cause = entry["cause_type"].as_str().unwrap_or("other").to_string();
+        // Use "" as the null sentinel so we can distinguish "no cause_type" from
+        // the literal string "other". The text renderer maps "" → "(unknown)" and
+        // suppresses the section entirely when all keys are null.
+        let cause = entry["cause_type"].as_str().unwrap_or("").to_string();
         *by_cause_type.entry(cause).or_insert(0) += 1;
     }
 
@@ -903,6 +946,84 @@ mod tests {
         assert!(
             s.get("hint").is_none(),
             "hint should not be present when timeout_reached is false"
+        );
+    }
+
+    /// AC: `pre_fix_repro_network_text_suppresses_null_cause_type_section`
+    ///
+    /// When ALL entries have null `cause_type`, the "Requests by Cause Type"
+    /// section must be absent from the text output.
+    #[test]
+    fn pre_fix_repro_network_text_suppresses_null_cause_type_section() {
+        // All entries have null cause_type — simulates post-nav incomplete state.
+        let entries = vec![
+            json!({"url": "a", "duration_ms": 10.0, "status": 200, "transfer_size": 100.0}),
+            json!({"url": "b", "duration_ms": 20.0, "status": 200, "transfer_size": 200.0}),
+            json!({"url": "c", "duration_ms": 30.0, "status": 304, "transfer_size": 0.0}),
+        ];
+        let summary = build_network_summary(&entries, false);
+        let mut buf: Vec<u8> = Vec::new();
+        render_network_summary_text_to(&summary, &mut buf);
+        let text = String::from_utf8(buf).expect("output is valid UTF-8");
+
+        assert!(
+            !text.contains("Requests by Cause Type"),
+            "Section 'Requests by Cause Type' must be suppressed when all cause_type values are null.\n\
+             Got output:\n{text}"
+        );
+        // Total requests should still be reported.
+        assert!(
+            text.contains("Total requests:"),
+            "Header should still appear: {text}"
+        );
+    }
+
+    /// AC: `unit_network_text_null_keyed_row_renders_unknown`
+    ///
+    /// When cause_type has a mix of null and non-null keys, the null key
+    /// must be displayed as "(unknown)" and the section must be present.
+    #[test]
+    fn unit_network_text_null_keyed_row_renders_unknown() {
+        // Mix: some null, some "script"
+        let entries = vec![
+            json!({"url": "a", "duration_ms": 10.0, "status": 200, "cause_type": "script"}),
+            json!({"url": "b", "duration_ms": 20.0, "status": 200, "cause_type": null}),
+            json!({"url": "c", "duration_ms": 30.0, "status": 200}), // cause_type absent
+        ];
+        let summary = build_network_summary(&entries, false);
+        let mut buf: Vec<u8> = Vec::new();
+        render_network_summary_text_to(&summary, &mut buf);
+        let text = String::from_utf8(buf).expect("output is valid UTF-8");
+
+        assert!(
+            text.contains("Requests by Cause Type"),
+            "Section must appear when there are non-null keys: {text}"
+        );
+        assert!(
+            text.contains("(unknown)"),
+            "Null key must render as '(unknown)': {text}"
+        );
+        assert!(
+            text.contains("script"),
+            "Non-null key 'script' must appear: {text}"
+        );
+    }
+
+    /// Verify that null cause_type entries use "" sentinel (not "other") in the summary JSON.
+    #[test]
+    fn build_network_summary_null_cause_type_uses_empty_sentinel() {
+        let entries = vec![json!({"url": "a", "duration_ms": 10.0, "status": 200})];
+        let summary = build_network_summary(&entries, false);
+        let by_cause = summary["by_cause_type"].as_object().unwrap();
+        // The null cause_type must produce an "" key, not "other".
+        assert!(
+            by_cause.contains_key(""),
+            "null cause_type must use \"\" sentinel; got keys: {:?}",
+            by_cause.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !by_cause.contains_key("other"),
+            "null cause_type must NOT produce \"other\" key; got: {by_cause:?}"
         );
     }
 }
