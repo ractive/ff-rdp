@@ -194,9 +194,7 @@ belongs in a separate iter, not this bundle.
       become `(unknown)`.
 - [x] `live_network_text_post_nav_renders_cleanly`: immediately
       post-nav (when streaming is incomplete), no bare-number rows.
-- [x] `dogfood_script_full_run_iter_94`: the sibling `.dogfood.sh`
-      exits 0 and writes `/tmp/ff-rdp-iter-94-dogfood-ok`.
-      [deferred — not applicable: dogfood script is in this diff and verified by check-dogfood-script gate with FF_RDP_LIVE_TESTS=1]
+- [x] `dogfood_script_full_run_iter_94`: the sibling `.dogfood.sh` exits 0 and writes `/tmp/ff-rdp-iter-94-dogfood-ok`. [deferred — not applicable: dogfood script is in this diff; verified by check-dogfood-script gate with FF_RDP_LIVE_TESTS=1]
 
 ## Out of scope
 
