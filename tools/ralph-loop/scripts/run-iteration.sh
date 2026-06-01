@@ -157,8 +157,12 @@ DONE_FILE="/tmp/ralph-loop-done-${ITER_NUM}.$$"
 USAGE_FILE="/tmp/ralph-loop-usage-${ITER_NUM}.$$"
 USAGE_THRESHOLD="${RALPH_USAGE_THRESHOLD:-90}"
 POLL_INTERVAL="${RALPH_POLL_INTERVAL:-10}"
-# Max time to wait for a phase before declaring it stuck (default 2h)
-PHASE_TIMEOUT="${RALPH_PHASE_TIMEOUT:-7200}"
+# Soft budget per phase (default 4h). When elapsed exceeds this, we check
+# is_child_alive: a still-working pane gets the budget extended and a warning
+# logged; a dead pane is declared a true timeout. Bumped from 2h after two
+# review-phase incidents where claude was making genuine progress past 2h
+# (iter-92 first attempt, mid-2026 ralph-loop session-59 follow-up).
+PHASE_TIMEOUT="${RALPH_PHASE_TIMEOUT:-14400}"
 DONE_SENTINEL="When ALL steps above are complete and successful, run this exact command: echo 0 > ${DONE_FILE} — if any step fails, run: echo 1 > ${DONE_FILE}"
 
 PROMPT_IMPLEMENT="You are implementing iteration ${ITER_NUM} of this project. Steps: 1) Create a new branch for this iteration (e.g. iter-${ITER_NUM}/short-description) from main 2) Read the iteration plan from ${PLAN_PATH} 3) Implement everything in the plan (code, tests, error handling) using agents whenever possible 4) Ensure all docs, help texts, and project documentation are updated to reflect changes 5) Run the project quality gates (read CLAUDE.md for the specific commands) 6) Run \`cargo run -p xtask -- check-iteration-ready --plan ${PLAN_PATH} --base origin/main\` and fix every reported failure — do not proceed until this exits 0 7) /create-pr 8) Immediately after the PR exists, kick off the GitHub Copilot review by running: gh pr edit <PR-number> --add-reviewer @copilot — fire-and-forget, do NOT wait for the review to come back. This lets Copilot run in parallel while phase 2 starts. ${DONE_SENTINEL}"
@@ -401,13 +405,30 @@ LAUNCHER_EOF
       dead_checks=0
     fi
 
-    # Hard timeout
+    # Soft timeout: extend the budget if claude is still working.
+    #
+    # Previously this branch wrote "1" to DONE_FILE unconditionally at
+    # PHASE_TIMEOUT, racing with the launcher's exit-code capture. iter-92's
+    # first attempt hit this: review phase was making progress past 7200s,
+    # the watcher wrote "1", and the launcher rewrote "0" microseconds later
+    # — but by then the script had already exited 1 and the trap wrote
+    # iter-N-failed. The dead-process branch above (3 consecutive
+    # is_child_alive=false) already catches truly stuck panes; this branch
+    # exists only to bound a pane that is alive-but-stalled (UI rendered,
+    # no progress). When still alive, just warn and reset the clock.
     if [[ $elapsed -ge $PHASE_TIMEOUT ]]; then
-      log_error "iter-${ITER_NUM}: phase ${phase_name} timed out after ${PHASE_TIMEOUT}s"
-      echo ""
-      echo "ERROR: Phase ${phase_name} timed out after ${PHASE_TIMEOUT}s." >&2
-      echo "1" > "$DONE_FILE"
-      break
+      if is_child_alive; then
+        echo ""
+        echo "WARN: phase ${phase_name} past ${PHASE_TIMEOUT}s budget but child still alive — extending another ${PHASE_TIMEOUT}s" >&2
+        log_info "iter-${ITER_NUM}: phase ${phase_name} extended past ${PHASE_TIMEOUT}s (child alive)"
+        elapsed=0
+      else
+        log_error "iter-${ITER_NUM}: phase ${phase_name} timed out after ${PHASE_TIMEOUT}s (child not alive)"
+        echo ""
+        echo "ERROR: Phase ${phase_name} timed out after ${PHASE_TIMEOUT}s." >&2
+        echo "1" > "$DONE_FILE"
+        break
+      fi
     fi
 
     printf "."
