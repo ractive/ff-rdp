@@ -485,50 +485,57 @@ fn build_js_with_ref_start(selector: &str, mode: OutputMode, ref_start: u64) -> 
     }
 }
 
-/// JavaScript IIFE that collects DOM statistics in a single evaluation.
-const STATS_JS: &str = r"(function() {
+/// Build the JavaScript IIFE that collects DOM statistics in a single evaluation.
+///
+/// The render-blocking predicate is sourced from `crate::render_blocking::RENDER_BLOCKING_JS_PREDICATE`
+/// so that `dom stats` and `perf audit` always use the same rules.
+/// See `crate::render_blocking::classify` for the Rust-side source-of-truth and rule documentation.
+fn build_stats_js() -> String {
+    let predicate = crate::render_blocking::RENDER_BLOCKING_JS_PREDICATE;
+    format!(
+        r"(function() {{
   var nodeCount = document.getElementsByTagName('*').length;
   var docSize = document.documentElement.outerHTML.length;
   var scripts = document.getElementsByTagName('script');
   var inlineScriptCount = 0;
-  for (var i = 0; i < scripts.length; i++) {
+  for (var i = 0; i < scripts.length; i++) {{
     if (!scripts[i].getAttribute('src')) inlineScriptCount++;
-  }
-  var head = document.head || document.getElementsByTagName('head')[0];
+  }}
+  var isRenderBlocking = {predicate};
   var renderBlockingCount = 0;
-  if (head) {
-    var headLinks = head.getElementsByTagName('link');
-    for (var j = 0; j < headLinks.length; j++) {
-      if (headLinks[j].getAttribute('rel') === 'stylesheet') renderBlockingCount++;
-    }
-    var headScripts = head.getElementsByTagName('script');
-    for (var k = 0; k < headScripts.length; k++) {
-      var hs = headScripts[k];
-      if (!hs.hasAttribute('async') && !hs.hasAttribute('defer')) renderBlockingCount++;
-    }
-  }
+  document.querySelectorAll('link, script').forEach(function(el) {{
+    if (isRenderBlocking(el)) renderBlockingCount++;
+  }});
   var imgs = document.getElementsByTagName('img');
   var imagesWithoutLazy = 0;
-  for (var m = 0; m < imgs.length; m++) {
+  for (var m = 0; m < imgs.length; m++) {{
     var img = imgs[m];
     var rect = img.getBoundingClientRect();
     var inViewport = rect.top < window.innerHeight && rect.bottom >= 0;
     if (!inViewport && img.getAttribute('loading') !== 'lazy') imagesWithoutLazy++;
-  }
-  return JSON.stringify({
+  }}
+  return JSON.stringify({{
     node_count: nodeCount,
     document_size: docSize,
     inline_script_count: inlineScriptCount,
     render_blocking_count: renderBlockingCount,
     images_without_lazy: imagesWithoutLazy
-  });
-})()";
+  }});
+}})()"
+    )
+}
 
 pub fn run_stats(cli: &Cli) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
-    let eval_result = eval_or_bail(&mut ctx, &console_actor, STATS_JS, "DOM stats query failed")?;
+    let stats_js = build_stats_js();
+    let eval_result = eval_or_bail(
+        &mut ctx,
+        &console_actor,
+        &stats_js,
+        "DOM stats query failed",
+    )?;
 
     let json_str = match &eval_result.result {
         Grip::Value(Value::String(s)) => s.clone(),

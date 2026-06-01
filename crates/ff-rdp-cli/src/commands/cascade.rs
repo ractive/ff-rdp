@@ -8,7 +8,7 @@
 //! This is a read-only view; style mutation is out of scope (see iter-81 plan).
 
 use ff_rdp_core::css::specificity::{self, Specificity};
-use ff_rdp_core::{ActorId, AppliedRule, DomWalkerActor, InspectorActor, PageStyleActor};
+use ff_rdp_core::{ActorId, AppliedRule, DomWalkerActor, Grip, InspectorActor, PageStyleActor};
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -18,6 +18,7 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
+use super::js_helpers::{escape_selector, eval_or_bail};
 
 /// CSS origin bucket: lower numbers cascade earlier (lose by default).
 ///
@@ -207,7 +208,21 @@ fn build_cascade_for_property(rules: &[AppliedRule], property: &str) -> Vec<Casc
 
 /// Render the cascade for one property to a JSON object (the shape documented
 /// in `kb/iterations/iteration-81-cascade-inspector.md`).
-fn render_property_cascade(selector: &str, property: &str, rules: &[AppliedRule]) -> Value {
+///
+/// When `external_computed` is `Some(value)` and no author rules declare the
+/// property, the output includes:
+/// - `"computed": <external_computed>`
+/// - `"inherited_or_default": true`
+/// - `"note": "no author rule declares this property; computed value is inherited or default"`
+///
+/// This disambiguates an empty `rules: []` that means "inherited/default" (correct
+/// behaviour) from the iter-82/83/84 bug where empty rules meant "cascade broken".
+fn render_property_cascade(
+    selector: &str,
+    property: &str,
+    rules: &[AppliedRule],
+    external_computed: Option<&str>,
+) -> Value {
     let entries = build_cascade_for_property(rules, property);
     let winner_idx = entries.len().checked_sub(1);
     let computed = winner_idx
@@ -219,6 +234,21 @@ fn render_property_cascade(selector: &str, property: &str, rules: &[AppliedRule]
         .enumerate()
         .map(|(i, e)| e.to_json(Some(i) == winner_idx))
         .collect();
+
+    // When there are no author rules for this property AND we have an
+    // external computed value, annotate so callers can tell "inherited" from "broken".
+    if rules_json.is_empty()
+        && let Some(ext) = external_computed.filter(|s| !s.is_empty())
+    {
+        return json!({
+            "selector": selector,
+            "property": property,
+            "computed": ext,
+            "rules": rules_json,
+            "inherited_or_default": true,
+            "note": "no author rule declares this property; computed value is inherited or default",
+        });
+    }
 
     json!({
         "selector": selector,
@@ -336,7 +366,7 @@ pub fn run(
     all: bool,
     debug_raw: bool,
 ) -> Result<(), AppError> {
-    let (_ctx, applied, raw_reply) = fetch_applied(cli, selector, debug_raw)?;
+    let (mut ctx, applied, raw_reply) = fetch_applied(cli, selector, debug_raw)?;
 
     if let Some(raw) = raw_reply {
         // Emit the RAW getApplied reply to stderr BEFORE any conversion.
@@ -357,9 +387,34 @@ pub fn run(
         None => declared_properties(&applied),
     };
 
+    // When --prop is set, fetch the actual computed value via getComputedStyle.
+    // This is used as a fallback hint when no author rules declare the property,
+    // to distinguish "inherited/default" from the iter-82 broken-cascade shape.
+    let external_computed: Option<String> = if let Some(prop_name) = prop {
+        let escaped_sel = escape_selector(selector);
+        let escaped_prop =
+            serde_json::to_string(prop_name).unwrap_or_else(|_| format!("\"{prop_name}\""));
+        let js = format!(
+            "(function(){{var el=document.querySelector('{escaped_sel}');\
+             if(!el)return null;\
+             var v=getComputedStyle(el).getPropertyValue({escaped_prop});\
+             return v||null;}})()"
+        );
+        let console_actor = ctx.target.console_actor.clone();
+        match eval_or_bail(&mut ctx, &console_actor, &js, "computed style lookup") {
+            Ok(result) => match &result.result {
+                Grip::Value(serde_json::Value::String(s)) => Some(s.clone()),
+                _ => None,
+            },
+            Err(_) => None, // Non-fatal — the main cascade result still emits.
+        }
+    } else {
+        None
+    };
+
     let results: Vec<Value> = properties
         .iter()
-        .map(|p| render_property_cascade(selector, p, &applied))
+        .map(|p| render_property_cascade(selector, p, &applied, external_computed.as_deref()))
         .collect();
 
     let total = results.len();
@@ -452,7 +507,7 @@ mod tests {
             ),
         ];
 
-        let out = render_property_cascade("dialog#lightbox", "display", &rules);
+        let out = render_property_cascade("dialog#lightbox", "display", &rules, None);
         assert_eq!(out["property"], "display");
         assert_eq!(out["computed"], "flex");
 
@@ -492,7 +547,7 @@ mod tests {
             ),
         ];
 
-        let out = render_property_cascade("dialog#lightbox", "display", &rules);
+        let out = render_property_cascade("dialog#lightbox", "display", &rules, None);
         // !important wins despite lower specificity.
         assert_eq!(out["computed"], "block");
         let arr = out["rules"].as_array().unwrap();
@@ -513,7 +568,7 @@ mod tests {
             &[("color", "red", "")],
         );
         r.matched_selectors = vec![".title".into()];
-        let out = render_property_cascade(".title", "color", &[r]);
+        let out = render_property_cascade(".title", "color", &[r], None);
         let arr = out["rules"].as_array().unwrap();
         assert_eq!(arr[0]["specificity"], json!([0, 1, 0]));
         assert_eq!(arr[0]["selector"], ".title");
@@ -556,7 +611,7 @@ mod tests {
             &[("--Foo", "1px", ""), ("--foo", "2px", "")],
         )];
         // Querying lower-case `--foo` must NOT pick up `--Foo`.
-        let out = render_property_cascade(":root", "--foo", &rules);
+        let out = render_property_cascade(":root", "--foo", &rules, None);
         assert_eq!(out["computed"], "2px");
         let arr = out["rules"].as_array().unwrap();
         assert_eq!(arr.len(), 1);
@@ -575,7 +630,7 @@ mod tests {
             &[("color", "red", "")],
         );
         r.matched_selectors = vec![]; // force the fallback path
-        let out = render_property_cascade(".a", "color", &[r]);
+        let out = render_property_cascade(".a", "color", &[r], None);
         let arr = out["rules"].as_array().unwrap();
         // :is(.a, .b) → (0,1,0); a naive split would have produced
         // ":is(.a" with specificity (0,1,0) too but with a broken
@@ -633,7 +688,7 @@ mod tests {
             1,
             &[("color", "red", "")],
         )];
-        let out = render_property_cascade("dialog", "display", &rules);
+        let out = render_property_cascade("dialog", "display", &rules, None);
         assert!(out["computed"].is_null());
         assert_eq!(out["rules"].as_array().unwrap().len(), 0);
     }
@@ -646,7 +701,7 @@ mod tests {
             1,
             &[("DISPLAY", "flex", "")],
         )];
-        let out = render_property_cascade("dialog", "display", &rules);
+        let out = render_property_cascade("dialog", "display", &rules, None);
         assert_eq!(out["computed"], "flex");
     }
 
@@ -667,7 +722,7 @@ mod tests {
                 &[("color", "blue", "")],
             ),
         ];
-        let out = render_property_cascade(".a", "color", &rules);
+        let out = render_property_cascade(".a", "color", &rules, None);
         assert_eq!(out["computed"], "blue");
     }
 
@@ -727,8 +782,67 @@ mod tests {
             .iter()
             .filter_map(ff_rdp_core_test_helpers::parse_entry_for_test)
             .collect();
-        let out = render_property_cascade("dialog#lightbox", "display", &rules);
+        let out = render_property_cascade("dialog#lightbox", "display", &rules, None);
         assert_eq!(out["computed"], "flex");
+    }
+
+    /// AC: `unit_cascade_note_only_when_prop_set_and_computed_non_null`
+    ///
+    /// Table-driven: verifies the `inherited_or_default` note is emitted only
+    /// when all three conditions hold: empty rules + prop set + non-null external computed.
+    #[test]
+    fn unit_cascade_note_only_when_prop_set_and_computed_non_null() {
+        // (a) empty rules + no external computed → no note
+        let out = render_property_cascade("h1", "color", &[], None);
+        assert!(
+            out.get("inherited_or_default").is_none(),
+            "(a) no note when external_computed is None: {out}"
+        );
+
+        // (b) empty rules + empty string external computed → no note
+        let out = render_property_cascade("h1", "color", &[], Some(""));
+        assert!(
+            out.get("inherited_or_default").is_none(),
+            "(b) no note when external_computed is empty string: {out}"
+        );
+
+        // (c) empty rules + non-null external computed → note present
+        let out = render_property_cascade("h1", "color", &[], Some("rgb(255, 0, 0)"));
+        assert_eq!(
+            out.get("inherited_or_default")
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "(c) inherited_or_default must be true when rules empty + computed non-null: {out}"
+        );
+        let note = out
+            .get("note")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        assert!(!note.is_empty(), "(c) note field must be non-empty: {out}");
+        assert_eq!(
+            out.get("computed").and_then(serde_json::Value::as_str),
+            Some("rgb(255, 0, 0)"),
+            "(c) computed must reflect external_computed value: {out}"
+        );
+
+        // (d) non-empty rules + external computed → no note (rules win, note suppressed)
+        let r = rule(
+            "body",
+            Some("https://example.com/site.css"),
+            10,
+            &[("color", "red", "")],
+        );
+        let out = render_property_cascade("h1", "color", &[r], Some("rgb(255, 0, 0)"));
+        // rules list for "color" is non-empty, so inherited_or_default must be absent
+        let rules_arr = out.get("rules").and_then(serde_json::Value::as_array);
+        if let Some(rules_arr) = rules_arr
+            && !rules_arr.is_empty()
+        {
+            assert!(
+                out.get("inherited_or_default").is_none(),
+                "(d) no note when author rules are present: {out}"
+            );
+        }
     }
 
     // Tiny inline helper module: the parse_applied_entry fn in core is

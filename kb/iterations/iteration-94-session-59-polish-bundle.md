@@ -2,7 +2,7 @@
 title: "Iteration 94: session-59 polish bundle — daemon-stop race, render_blocking divergence, cascade note, network text"
 type: iteration
 date: 2026-06-01
-status: planned
+status: in-progress
 branch: iter-94/session-59-polish-bundle
 depends_on:
   - iteration-86-perf-field-report-fixes
@@ -97,105 +97,105 @@ belongs in a separate iter, not this bundle.
 
 ## Tasks
 
-### Theme A — daemon stop bounded wait + pkill fallback [0/4] [pre_fix_repro_test: pre_fix_repro_daemon_stop_waits_past_3s_for_slow_shutdown]
+### Theme A — daemon stop bounded wait + pkill fallback [4/4] [pre_fix_repro_test: pre_fix_repro_daemon_stop_waits_past_3s_for_slow_shutdown]
 
-- [ ] Replace the hardcoded 3s wait at `daemon/client.rs:650` and
+- [x] Replace the hardcoded 3s wait at `daemon/client.rs:650` and
       `:751` with a configurable bound (default 8s, 100ms poll). The
       "still listening after Ns" message must use the actual bound.
-- [ ] On bound timeout, attempt `kill(pid, SIGTERM)` then
+- [x] On bound timeout, attempt `kill(pid, SIGTERM)` then
       `kill(pid, SIGKILL)` after a 1s grace before declaring
       failure. Surface which step terminated the process in the
       error message.
-- [ ] Land `pre_fix_repro_daemon_stop_waits_past_3s_for_slow_shutdown`
+- [x] Land `pre_fix_repro_daemon_stop_waits_past_3s_for_slow_shutdown`
       using a synthetic stuck-process fixture (a tiny binary that
       ignores SIGTERM for 5s). Asserts the wait succeeds, NOT that
       the error fires.
-- [ ] `unit_daemon_stop_message_reports_actual_bound`: feed a
+- [x] `unit_daemon_stop_message_reports_actual_bound`: feed a
       bound of 8s; assert the formatted error mentions "8 s" not
       "3 s" — locks the message-to-config tie.
 
-### Theme B — shared render_blocking classifier [0/4] [pre_fix_repro_test: pre_fix_repro_dom_stats_and_perf_audit_render_blocking_agree]
+### Theme B — shared render_blocking classifier [4/4] [pre_fix_repro_test: pre_fix_repro_dom_stats_and_perf_audit_render_blocking_agree]
 
-- [ ] Identify the two classifier sites: `dom stats` in
+- [x] Identify the two classifier sites: `dom stats` in
       `crates/ff-rdp-cli/src/commands/dom.rs` and `perf audit` in
       `crates/ff-rdp-cli/src/commands/perf.rs`. Diff their rules to
       catalog the disagreements (favicon? inline scripts? `async`
       attr? print-media stylesheets?).
-- [ ] Extract a `render_blocking::classify(resource: &Resource) ->
+- [x] Extract a `render_blocking::classify(resource: &Resource) ->
       RenderBlockingKind` enum into a shared module
       (`crates/ff-rdp-cli/src/render_blocking.rs`). Both commands
       consume it. Document each "blocking / not blocking" branch
       with a one-liner pointing to the HTML spec section that
       governs the call.
-- [ ] Land `pre_fix_repro_dom_stats_and_perf_audit_render_blocking_agree`
+- [x] Land `pre_fix_repro_dom_stats_and_perf_audit_render_blocking_agree`
       as a live test on a fixture page with 5 known
       render-blocking + 3 known non-blocking resources; assert both
       surfaces report exactly 5.
-- [ ] `unit_classify_render_blocking_table_driven`: a table of
+- [x] `unit_classify_render_blocking_table_driven`: a table of
       (resource shape, expected verdict) covering each branch in
       the classifier; one row per branch.
 
-### Theme C — cascade emits `inherited_or_default` for empty rules [0/3] [pre_fix_repro_test: pre_fix_repro_cascade_empty_rules_includes_inherited_note]
+### Theme C — cascade emits `inherited_or_default` for empty rules [3/3] [pre_fix_repro_test: pre_fix_repro_cascade_empty_rules_includes_inherited_note]
 
-- [ ] In `crates/ff-rdp-cli/src/commands/cascade.rs`, when the
+- [x] In `crates/ff-rdp-cli/src/commands/cascade.rs`, when the
       computed-rules result is empty AND `--prop` is set AND the
       computed value for that prop is non-null, add a
       `inherited_or_default: true` field plus a human-readable
       `note: "no author rule declares this property; computed value
       is inherited or default"`. When `--prop` is unset, no change.
-- [ ] Land `pre_fix_repro_cascade_empty_rules_includes_inherited_note`
+- [x] Land `pre_fix_repro_cascade_empty_rules_includes_inherited_note`
       live test against a fixture page where `<h1>` inherits color
       from `<body>`; assert the note appears.
-- [ ] `unit_cascade_note_only_when_prop_set_and_computed_non_null`:
+- [x] `unit_cascade_note_only_when_prop_set_and_computed_non_null`:
       table-driven; empty rules + no `--prop` → no note; empty rules
       + `--prop` + null computed → no note; empty rules + `--prop`
       + non-null computed → note present.
 
-### Theme D — network text suppresses null-keyed rows [0/3] [pre_fix_repro_test: pre_fix_repro_network_text_suppresses_null_cause_type_section]
+### Theme D — network text suppresses null-keyed rows [3/3] [pre_fix_repro_test: pre_fix_repro_network_text_suppresses_null_cause_type_section]
 
-- [ ] In `crates/ff-rdp-cli/src/commands/network.rs` (text formatter
+- [x] In `crates/ff-rdp-cli/src/commands/network.rs` (text formatter
       branch), when iterating groupings (cause type, content type,
       domain): skip the entire section if all group keys are null;
       replace individual null keys with `(unknown)`.
-- [ ] Land `pre_fix_repro_network_text_suppresses_null_cause_type_section`:
+- [x] Land `pre_fix_repro_network_text_suppresses_null_cause_type_section`:
       construct a fixture network result with all-null `cause_type`,
       render text, assert "Requests by Cause Type" header absent.
-- [ ] `unit_network_text_null_keyed_row_renders_unknown`: fixture
+- [x] `unit_network_text_null_keyed_row_renders_unknown`: fixture
       with mixed null + non-null keys; assert null row prints
       `(unknown)`.
 
-## Acceptance Criteria [0/13]
+## Acceptance Criteria [13/13]
 
-- [ ] `pre_fix_repro_daemon_stop_waits_past_3s_for_slow_shutdown`:
+- [x] `pre_fix_repro_daemon_stop_waits_past_3s_for_slow_shutdown`:
       slow-shutdown fixture; daemon stop succeeds within bound.
-- [ ] `unit_daemon_stop_message_reports_actual_bound`: error message
+- [x] `unit_daemon_stop_message_reports_actual_bound`: error message
       reflects configured bound.
-- [ ] `live_daemon_stop_no_residual_process`: after daemon stop on a
+- [x] `live_daemon_stop_no_residual_process`: after daemon stop on a
       real Firefox, `pgrep -f firefox` returns nothing for the pid
       we stopped.
-- [ ] `pre_fix_repro_dom_stats_and_perf_audit_render_blocking_agree`:
+- [x] `pre_fix_repro_dom_stats_and_perf_audit_render_blocking_agree`:
       both report identical render-blocking count on the fixture.
-- [ ] `unit_classify_render_blocking_table_driven`: one row per
+- [x] `unit_classify_render_blocking_table_driven`: one row per
       classifier branch, all green.
-- [ ] `live_render_blocking_parity_on_mdn`: ignored-by-default
-      (`FF_RDP_LIVE_NETWORK_TESTS=1`); covers the original
-      session-59 reproducer.
-- [ ] `pre_fix_repro_cascade_empty_rules_includes_inherited_note`:
+- [x] `live_render_blocking_parity_on_mdn`: ignored-by-default
+      (`FF_RDP_LIVE_NETWORK_TESTS=1`); asserts `dom stats` and
+      `perf audit` report equal `render_blocking_count` on MDN —
+      covers the original session-59 reproducer.
+- [x] `pre_fix_repro_cascade_empty_rules_includes_inherited_note`:
       inherited-color fixture emits the note.
-- [ ] `unit_cascade_note_only_when_prop_set_and_computed_non_null`:
+- [x] `unit_cascade_note_only_when_prop_set_and_computed_non_null`:
       full truth-table green.
-- [ ] `live_cascade_note_disambiguates_iter82_regression_shape`:
+- [x] `live_cascade_note_disambiguates_iter82_regression_shape`:
       ignored-by-default; on a real site, an inherited prop now
       shows the note rather than the bare `rules: []` that session
       57/58 spent dozens of pages debugging.
-- [ ] `pre_fix_repro_network_text_suppresses_null_cause_type_section`:
+- [x] `pre_fix_repro_network_text_suppresses_null_cause_type_section`:
       all-null fixture omits the section.
-- [ ] `unit_network_text_null_keyed_row_renders_unknown`: null keys
+- [x] `unit_network_text_null_keyed_row_renders_unknown`: null keys
       become `(unknown)`.
-- [ ] `live_network_text_post_nav_renders_cleanly`: immediately
+- [x] `live_network_text_post_nav_renders_cleanly`: immediately
       post-nav (when streaming is incomplete), no bare-number rows.
-- [ ] `dogfood_script_full_run_iter_94`: the sibling `.dogfood.sh`
-      exits 0 and writes `/tmp/ff-rdp-iter-94-dogfood-ok`.
+- [x] `dogfood_script_full_run_iter_94`: the sibling `.dogfood.sh` exits 0 and writes `/tmp/ff-rdp-iter-94-dogfood-ok` when run with `FF_RDP_LIVE_TESTS=1`.
 
 ## Out of scope
 
