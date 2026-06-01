@@ -115,7 +115,7 @@ fn pre_fix_repro_navigate_second_call_waits_for_new_commit() {
 
     let eval_s = String::from_utf8_lossy(&eval_out.stdout);
     assert!(
-        eval_s.contains("B_PAGE") || eval_s.contains("data:text/html"),
+        eval_s.contains("B_PAGE"),
         "pre_fix_repro_navigate_second_call_waits_for_new_commit: \
          URL after second navigate should contain B_PAGE; got: {eval_s}"
     );

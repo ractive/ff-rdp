@@ -470,7 +470,7 @@ fn screenshot_via_process_drawsnapshot_fallback(
             }
             _ => None,
         });
-        parsed.and_then(|v| {
+        let rect = parsed.and_then(|v| {
             let w = v.get("scrollW").and_then(serde_json::Value::as_f64)?;
             let h = v.get("scrollH").and_then(serde_json::Value::as_f64)?;
             if w > 0.0 && h > 0.0 {
@@ -478,7 +478,18 @@ fn screenshot_via_process_drawsnapshot_fallback(
             } else {
                 None
             }
-        })
+        });
+        // iter-92 review: if --full-page was requested but we couldn't read
+        // scroll dims, fail loudly rather than silently capture a viewport-
+        // sized image (the very regression iter-92 is meant to fix).
+        if rect.is_none() {
+            return Err(AppError::User(
+                "screenshot: --full-page requested but scroll dimensions could not be read \
+                 from the page; refusing to fall back to viewport capture"
+                    .to_owned(),
+            ));
+        }
+        rect
     } else {
         None
     };

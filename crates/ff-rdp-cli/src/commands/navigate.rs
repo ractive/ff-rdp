@@ -540,9 +540,22 @@ pub fn run_core(
         ) {
             Ok(result) => match result.result {
                 Grip::Value(serde_json::Value::Number(ref n)) => n.as_f64().unwrap_or(0.0),
-                _ => 0.0,
+                other => {
+                    tracing::warn!(
+                        ?other,
+                        "navigate: pre-nav epoch eval returned non-numeric grip; \
+                         freshness guard disabled"
+                    );
+                    0.0
+                }
             },
-            Err(_) => 0.0,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "navigate: pre-nav epoch eval failed; freshness guard disabled"
+                );
+                0.0
+            }
         }
     };
 

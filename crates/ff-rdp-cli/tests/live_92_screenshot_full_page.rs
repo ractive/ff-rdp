@@ -73,7 +73,7 @@ fn pre_fix_repro_screenshot_full_page_taller_than_viewport() {
     // Navigate to the tall page.
     let nav = Command::new(ff_rdp_bin())
         .args(ff_args())
-        .args(["navigate", TALL_PAGE_URL])
+        .args(["navigate", "--allow-unsafe-urls", TALL_PAGE_URL])
         .output()
         .expect("navigate to tall page");
     assert!(
@@ -198,7 +198,7 @@ fn live_screenshot_full_page_md5_differs_from_viewport() {
     // Navigate to the tall page.
     let nav = Command::new(ff_rdp_bin())
         .args(ff_args())
-        .args(["navigate", TALL_PAGE_URL])
+        .args(["navigate", "--allow-unsafe-urls", TALL_PAGE_URL])
         .output()
         .expect("navigate to tall page");
     assert!(
