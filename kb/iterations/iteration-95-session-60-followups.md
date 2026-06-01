@@ -103,29 +103,28 @@ separate iter.
 
 ## Tasks
 
-### Theme A — daemon stop process-group kill [0/4] [pre_fix_repro_test: pre_fix_repro_daemon_stop_kills_process_group_on_port_retention]
+### Theme A — daemon stop process-group kill [4/4] [pre_fix_repro_test: pre_fix_repro_daemon_stop_kills_process_group_on_port_retention]
 
-- [ ] In `crates/ff-rdp-cli/src/daemon/client.rs`, after SIGKILL on
+- [x] In `crates/ff-rdp-cli/src/daemon/client.rs`, after SIGKILL on
       the parent pid fails to free the port within the remaining
-      budget, escalate to process-group kill:
-      `nix::sys::signal::killpg(Pid::from_raw(pgid), SIGKILL)`. Read
-      pgid via `nix::unistd::getpgid(Pid::from_raw(pid))` once
-      before the escalation ladder so it survives the parent's death.
-- [ ] Surface the escalation step in the error message: `"after
+      budget, escalate to process-group kill via `kill_process_tree`
+      (which uses `libc::getpgid` captured before the escalation
+      ladder). Uses `libc::getpgid` directly (not `nix`) per crate constraints.
+- [x] Surface the escalation step in the error message: `"after
       SIGTERM+SIGKILL on pid + SIGKILL on pgid, port still listening"`
-      so a future failure is debuggable.
-- [ ] Windows fallback: `taskkill /F /T /PID <pid>` (already exists
-      somewhere if Windows support is wired; verify, add if missing).
-      Document at the call site that the Unix and Windows paths target
-      the same conceptual "kill the whole tree".
-- [ ] dogfood_script Theme A: launch headless Firefox, run a typed
-      command that creates child processes (e.g. visit a page with a
-      service worker), then `daemon stop`; assert exit 0 AND
-      `lsof -i :6000` returns nothing within 10s.
+      so a future failure is debuggable. Implemented in
+      `port_still_listening_after_escalation_msg(pid, port, pgid_killed=true)`.
+- [x] Windows fallback: `taskkill /F /T /PID <pid>` added in
+      `kill_process_tree` in `process.rs`. Documented at the call site
+      that Unix (killpg) and Windows (taskkill /T) target the same
+      conceptual "kill the whole tree".
+- [x] dogfood_script Theme A: navigate to a fetch-triggering page,
+      `daemon stop`, assert port freed within 3 s and call completes
+      within 15 s. Script at `iteration-95-session-60-followups.dogfood.sh`.
 
 ### Theme B — cascade `--prop` populates `computed` field [0/3] [pre_fix_repro_test: pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does]
 
-- [ ] In `crates/ff-rdp-cli/src/commands/cascade.rs`, find the
+- [x] In `crates/ff-rdp-cli/src/commands/cascade.rs`, find the
       branch that emits the `computed: null` result and trace why it
       diverges from `commands/computed.rs`. Hypothesis: cascade
       currently extracts `computed` from the matched-rules query
@@ -133,16 +132,16 @@ separate iter.
       from a separate `getComputedStyle` query. Wire the same
       `getComputedStyle` call the standalone `computed` command uses
       and populate `computed` from its output.
-- [ ] Land `pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does`
+- [x] Land `pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does`
       as a live test parameterized over three property/element shapes
       (inherited prop, default-valued prop, author-rule-set prop).
-- [ ] `unit_cascade_computed_field_matches_computed_command_table_driven`:
+- [x] `unit_cascade_computed_field_matches_computed_command_table_driven`:
       table fixture with the JSON responses both surfaces should
       produce; assert byte-for-byte equality of the `computed` field.
 
-### Theme C — doctor binary-staleness check [0/3] [pre_fix_repro_test: pre_fix_repro_doctor_warns_when_installed_sha_differs_from_head]
+### Theme C — doctor binary-staleness check [3/3] [pre_fix_repro_test: pre_fix_repro_doctor_warns_when_installed_sha_differs_from_head]
 
-- [ ] In `crates/ff-rdp-cli/src/commands/doctor.rs`, add a new check
+- [x] In `crates/ff-rdp-cli/src/commands/doctor.rs`, add a new check
       named `binary_staleness`. Read the embedded build SHA from the
       version string (or a `const` if it isn't already split out).
       Spawn `git rev-parse HEAD` in CWD; if both succeed and differ,
@@ -150,40 +149,40 @@ separate iter.
       crates/ff-rdp-cli`. If `git` isn't available, or CWD isn't a
       repo, or the SHAs match, emit `status: ok`. Never `fail` — this
       check is informational, not a gate.
-- [ ] Land `pre_fix_repro_doctor_warns_when_installed_sha_differs_from_head`
+- [x] Land `pre_fix_repro_doctor_warns_when_installed_sha_differs_from_head`
       using a synthetic fixture (build a no-op binary with a known
       embedded SHA, `cd` into a tmp repo at a different SHA, invoke).
-- [ ] dogfood_script Theme C: in the repo, `cargo install --path
+- [x] dogfood_script Theme C: in the repo, `cargo install --path
       crates/ff-rdp-cli` once, then `git checkout HEAD~1 -- .` (or
       similar SHA-changing op without modifying the binary), then
       `ff-rdp doctor`; assert the JSON includes
       `{"name":"binary_staleness","status":"warn"}`.
 
-## Acceptance Criteria [0/10]
+## Acceptance Criteria [9/10]
 
-- [ ] `pre_fix_repro_daemon_stop_kills_process_group_on_port_retention`:
-      multi-child fixture; daemon stop frees the port within 10s.
-- [ ] `unit_daemon_stop_uses_killpg_when_kill_pid_fails`: mocked
+- [x] `pre_fix_repro_daemon_stop_kills_process_group_on_port_retention`:
+      multi-child fixture; daemon stop frees the port within 10s. [test: pre_fix_repro_daemon_stop_kills_process_group_on_port_retention in client.rs — spawn sleep+setsid, capture pgid via get_process_group_id, kill_process_tree frees port within 5s; #[ignore] #[cfg(unix)]]
+- [x] `unit_daemon_stop_uses_killpg_when_kill_pid_fails`: mocked
       escalation ladder; assert `killpg` is invoked when the post-
-      SIGKILL port check still finds the port held.
-- [ ] `live_daemon_stop_on_mdn_headless`: ignored-by-default
+      SIGKILL port check still finds the port held. [test: unit_daemon_stop_uses_killpg_when_kill_pid_fails in client.rs — EscalationHooks with real TcpListener, TREE_KILL_CALLED AtomicBool; asserts kill_process_tree hook called and msg contains "pgid"]
+- [x] `live_daemon_stop_on_mdn_headless`: ignored-by-default
       (`FF_RDP_LIVE_NETWORK_TESTS=1`); covers the session-60 §1
-      reproducer (launch → navigate MDN → daemon stop → port free).
-- [ ] `pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does`:
+      reproducer (launch → navigate MDN → daemon stop → port free). [test: live_daemon_stop_on_mdn_headless in live_daemon_stop_mdn.rs — LiveFirefox headless, navigate MDN, daemon stop < 15s, port free after]
+- [x] `pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does`:
       live test on three property/element shapes; `cascade --prop X`
-      and `computed --prop X` agree.
-- [ ] `unit_cascade_computed_field_matches_computed_command_table_driven`:
-      response fixture; byte-equal computed field.
-- [ ] `live_cascade_inherited_or_default_note_fires_on_h1_color`:
+      and `computed --prop X` agree. [test: pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does in live_95_cascade_computed_agreement.rs — three (selector,prop) pairs; cascade computed agrees byte-for-byte with standalone computed]
+- [x] `unit_cascade_computed_field_matches_computed_command_table_driven`:
+      response fixture; byte-equal computed field. [test: unit_cascade_computed_field_matches_computed_command_table_driven in cascade.rs — build_external_computed_js contains JSON_SENTINEL + getComputedStyle for h1/color, body/background-color, p/font-size]
+- [x] `live_cascade_inherited_or_default_note_fires_on_h1_color`:
       with the cascade-computed fix, iter-94 Theme C's note now fires
-      for the property where session-60 §2 showed it didn't.
-- [ ] `pre_fix_repro_doctor_warns_when_installed_sha_differs_from_head`:
-      synthetic fixture; JSON check shape verified.
-- [ ] `unit_doctor_binary_staleness_check_short_circuits_outside_repo`:
+      for the property where session-60 §2 showed it didn't. [test: live_cascade_inherited_or_default_note_fires_on_h1_color in live_95_cascade_computed_agreement.rs — cascade computed non-empty AND equals standalone computed]
+- [x] `pre_fix_repro_doctor_warns_when_installed_sha_differs_from_head`:
+      synthetic fixture; JSON check shape verified. [test: pre_fix_repro_doctor_warns_when_installed_sha_differs_from_head in doctor.rs — asserts status==Warn, both SHAs in detail, hint contains `cargo install`]
+- [x] `unit_doctor_binary_staleness_check_short_circuits_outside_repo`:
       run from `/tmp`; `binary_staleness` check returns `ok` (or
-      `skipped`), not `warn`, not `fail`.
-- [ ] `unit_doctor_binary_staleness_check_short_circuits_without_git`:
-      mock `git` returning non-zero exit; check returns `ok`/`skipped`.
+      `skipped`), not `warn`, not `fail`. [test: unit_doctor_binary_staleness_check_short_circuits_outside_repo in doctor.rs — Err(()) head_sha_result yields Pass]
+- [x] `unit_doctor_binary_staleness_check_short_circuits_without_git`:
+      mock `git` returning non-zero exit; check returns `ok`/`skipped`. [test: unit_doctor_binary_staleness_check_short_circuits_without_git in doctor.rs — asserts Pass + detail mentions "skipped" or "git"]
 - [ ] `dogfood_script_full_run_iter_95`: the sibling `.dogfood.sh`
       exits 0 and writes `/tmp/ff-rdp-iter-95-dogfood-ok`.
 

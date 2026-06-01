@@ -154,6 +154,11 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     // 5. Firefox version compatibility
     probes.push(probe_version(firefox_version));
 
+    // 6. Binary staleness — compare embedded build SHA to git HEAD in CWD.
+    let embedded_sha = env!("FF_RDP_BUILD_VERSION_SHA");
+    let head_sha_result = git_head_sha();
+    probes.push(probe_binary_staleness(embedded_sha, head_sha_result));
+
     let any_failed = probes.iter().any(|p| p.status == Status::Fail);
 
     let results = build_results_json(&probes);
@@ -327,6 +332,75 @@ fn probe_version(version: Option<u32>) -> Probe {
     }
 }
 
+/// Run `git rev-parse HEAD` in the CWD and return the trimmed stdout on success,
+/// or `Err(())` if git is unavailable, exits non-zero, or CWD is not a repo.
+fn git_head_sha() -> Result<String, ()> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .map_err(|_| ())?;
+    if !output.status.success() {
+        return Err(());
+    }
+    let sha = String::from_utf8(output.stdout).map_err(|_| ())?;
+    Ok(sha.trim().to_owned())
+}
+
+/// Pure core logic — takes the embedded SHA and the git HEAD result so that
+/// unit tests don't need a git binary.
+fn probe_binary_staleness(embedded_sha: &str, head_sha_result: Result<String, ()>) -> Probe {
+    // Empty embedded SHA means hermetic/tarball build — no provenance to check.
+    if embedded_sha.is_empty() {
+        return Probe {
+            name: "binary_staleness",
+            status: Status::Pass,
+            detail: "binary was built without git provenance (tarball or hermetic build)"
+                .to_owned(),
+            hint: None,
+        };
+    }
+
+    // Strip any `+dirty` suffix before comparing.
+    let clean_sha = embedded_sha
+        .split_once('+')
+        .map_or(embedded_sha, |(base, _)| base);
+
+    let Ok(head_sha) = head_sha_result else {
+        return Probe {
+            name: "binary_staleness",
+            status: Status::Pass,
+            detail:
+                "current directory is not a git repo (or git not available); staleness check skipped"
+                    .to_owned(),
+            hint: None,
+        };
+    };
+
+    // The embedded SHA is short (12 chars); HEAD is full 40. Compare as a prefix.
+    if head_sha.starts_with(clean_sha) {
+        let display = &head_sha[..head_sha.len().min(12)];
+        return Probe {
+            name: "binary_staleness",
+            status: Status::Pass,
+            detail: format!("installed binary matches HEAD ({display})"),
+            hint: None,
+        };
+    }
+
+    let head_short = &head_sha[..head_sha.len().min(12)];
+    Probe {
+        name: "binary_staleness",
+        status: Status::Warn,
+        detail: format!(
+            "installed binary SHA {clean_sha} differs from HEAD {head_short} — your local checkout is ahead of the installed binary"
+        ),
+        hint: Some(
+            "run `cargo install --path crates/ff-rdp-cli --force` to rebuild and reinstall"
+                .to_owned(),
+        ),
+    }
+}
+
 fn build_results_json(probes: &[Probe]) -> Value {
     let arr: Vec<Value> = probes
         .iter()
@@ -406,5 +480,86 @@ mod tests {
     fn probe_tabs_zero_is_fail() {
         let p = probe_tabs(&[]);
         assert_eq!(p.status, Status::Fail);
+    }
+
+    // --- binary_staleness tests ---
+
+    #[test]
+    fn unit_doctor_binary_staleness_check_short_circuits_outside_repo() {
+        let p = probe_binary_staleness("abc123def456", Err(()));
+        assert_eq!(p.status, Status::Pass);
+    }
+
+    #[test]
+    fn unit_doctor_binary_staleness_check_short_circuits_without_git() {
+        // No-git and outside-repo are the same code path; assert the detail
+        // string explicitly so a regression that removes the early-return is caught.
+        let p = probe_binary_staleness("abc123def456", Err(()));
+        assert_eq!(p.status, Status::Pass);
+        let detail_lower = p.detail.to_lowercase();
+        assert!(
+            detail_lower.contains("skipped") || detail_lower.contains("git"),
+            "detail should mention 'skipped' or 'git': {}",
+            p.detail
+        );
+    }
+
+    #[test]
+    fn unit_doctor_binary_staleness_check_empty_embedded_sha() {
+        let p = probe_binary_staleness("", Ok("abc123def4567890abcdef0123456789012345678".into()));
+        assert_eq!(p.status, Status::Pass);
+        let detail_lower = p.detail.to_lowercase();
+        assert!(
+            detail_lower.contains("tarball") || detail_lower.contains("without git"),
+            "detail should mention tarball or hermetic: {}",
+            p.detail
+        );
+    }
+
+    #[test]
+    fn unit_doctor_binary_staleness_check_matching_sha_is_pass() {
+        let p = probe_binary_staleness(
+            "abc123def456",
+            Ok("abc123def4567890abcdef0123456789012345678".into()),
+        );
+        assert_eq!(p.status, Status::Pass);
+    }
+
+    #[test]
+    fn unit_doctor_binary_staleness_check_strips_dirty_suffix() {
+        let p = probe_binary_staleness(
+            "abc123def456+dirty",
+            Ok("abc123def4567890abcdef0123456789012345678".into()),
+        );
+        assert_eq!(
+            p.status,
+            Status::Pass,
+            "+dirty suffix must not break prefix match: {}",
+            p.detail
+        );
+    }
+
+    #[test]
+    fn pre_fix_repro_doctor_warns_when_installed_sha_differs_from_head() {
+        let p = probe_binary_staleness(
+            "abc123def456",
+            Ok("999999999999000000000000000000000000aaaa".into()),
+        );
+        assert_eq!(p.status, Status::Warn);
+        assert!(
+            p.detail.contains("abc123def456"),
+            "detail should contain embedded SHA: {}",
+            p.detail
+        );
+        assert!(
+            p.detail.contains("999999999999"),
+            "detail should contain head short SHA: {}",
+            p.detail
+        );
+        let hint = p.hint.expect("Warn probe must have a hint");
+        assert!(
+            hint.contains("cargo install"),
+            "hint should mention cargo install: {hint}"
+        );
     }
 }
