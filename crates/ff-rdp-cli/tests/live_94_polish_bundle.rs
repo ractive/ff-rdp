@@ -91,22 +91,36 @@ fn live_daemon_stop_no_residual_process() {
 }
 
 fn is_pid_alive(pid: u32) -> bool {
-    // Use kill(pid, 0) on Unix: returns 0 if the process exists, ESRCH if not.
+    // Use kill(pid, 0) on Unix: returns 0 if the process exists, ESRCH if not,
+    // EPERM if it exists but we cannot signal it. Treat EPERM as "alive".
     #[cfg(unix)]
     {
         // SAFETY: kill(pid, 0) is a no-op signal that only checks process
         // existence; it does not deliver a signal or modify any state.
         let ret = unsafe { libc::kill(pid.cast_signed(), 0) };
-        ret == 0
+        if ret == 0 {
+            return true;
+        }
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        errno == libc::EPERM
     }
     #[cfg(not(unix))]
     {
-        // On Windows, check via process handle.
+        // On Windows, use tasklist /FO CSV with an exact PID field match.
         use std::process::Command;
+        let pid_str = pid.to_string();
         Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
             .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+            .map(|o| {
+                let out = String::from_utf8_lossy(&o.stdout);
+                out.lines().any(|l| {
+                    l.split(',')
+                        .nth(1)
+                        .map(|f| f.trim_matches('"') == pid_str)
+                        .unwrap_or(false)
+                })
+            })
             .unwrap_or(false)
     }
 }
@@ -176,15 +190,15 @@ fn live_render_blocking_parity_on_mdn() {
         .pointer("/results/render_blocking_count")
         .and_then(serde_json::Value::as_u64);
     let perf_count = perf_json
-        .pointer("/results/render_blocking_count")
+        .pointer("/results/dom_stats/render_blocking_count")
         .and_then(serde_json::Value::as_u64);
 
-    if let (Some(dom), Some(perf)) = (dom_count, perf_count) {
-        assert_eq!(
-            dom, perf,
-            "render_blocking divergence: dom stats={dom}, perf audit={perf}"
-        );
-    }
+    let dom = dom_count.expect("dom stats missing render_blocking_count");
+    let perf = perf_count.expect("perf audit missing dom_stats.render_blocking_count");
+    assert_eq!(
+        dom, perf,
+        "render_blocking divergence: dom stats={dom}, perf audit={perf}"
+    );
 }
 
 // ---------------------------------------------------------------------------

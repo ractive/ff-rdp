@@ -110,7 +110,6 @@ echo "=== Theme D — network text null-key suppression ==="
 
 # Navigate to a new page immediately (before network events complete streaming).
 ff-rdp $ARGS navigate "data:text/html,<h1>network-test</h1>"
-sleep 0
 
 NETWORK_TEXT=$(ff-rdp $ARGS network --format text 2>/dev/null || true)
 echo "  network text output (first 10 lines):"
@@ -118,7 +117,7 @@ echo "$NETWORK_TEXT" | head -10
 
 # Check there are no bare-number rows (a number with no label).
 # Bare-number rows look like lines with only spaces and digits (e.g. "      82").
-if echo "$NETWORK_TEXT" | grep -qE '^\s+[0-9]+\s*$'; then
+if echo "$NETWORK_TEXT" | grep -qE '^[[:space:]]+[0-9]+[[:space:]]*$'; then
   echo "FAIL: Theme D — bare-number row found in network text output"
   exit 1
 fi

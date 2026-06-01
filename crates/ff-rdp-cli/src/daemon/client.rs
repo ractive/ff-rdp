@@ -60,7 +60,12 @@ fn wait_port_free_with_escalation(pid: u32, port: u16) -> (bool, String) {
     if process::wait_for_port_closed(port, PORT_FREE_WAIT_BOUND) {
         return (true, String::new());
     }
-    // Bound elapsed — escalate.
+    // Bound elapsed — escalate, but only if the original PID is still alive.
+    // PIDs can be recycled by the OS; signaling a stale PGID risks killing an
+    // unrelated process group.
+    if !process::is_process_alive(pid) {
+        return (false, port_still_listening_msg(pid, port));
+    }
     process::kill_process_group(pid);
     std::thread::sleep(Duration::from_secs(1));
     process::kill_process_group_force(pid);
@@ -662,8 +667,11 @@ pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
 /// 3. SIGKILL if still alive.
 /// 4. Poll the port until free (max 3 s).
 ///
-/// Returns `(stopped, port_free)`.
-fn kill_pid_and_wait_port(pid: u32, port: u16) -> (bool, bool) {
+/// Returns `(stopped, port_free, escalation_msg)`. `escalation_msg` is non-empty
+/// only when `port_free` is false — it explains the SIGTERM+SIGKILL escalation
+/// path the wait took before giving up, and should be surfaced in the user-facing
+/// error rather than a generic "port still listening" message.
+fn kill_pid_and_wait_port(pid: u32, port: u16) -> (bool, bool, String) {
     process::kill_process_group(pid);
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while process::is_process_alive(pid) && std::time::Instant::now() < deadline {
@@ -673,9 +681,12 @@ fn kill_pid_and_wait_port(pid: u32, port: u16) -> (bool, bool) {
         process::kill_process_group_force(pid);
         std::thread::sleep(Duration::from_millis(300));
     }
+    let (port_free, escalation_msg) = wait_port_free_with_escalation(pid, port);
+    // Recompute `stopped` AFTER the escalation step — `wait_port_free_with_escalation`
+    // may send SIGTERM/SIGKILL on bound timeout, so the process can transition
+    // from alive to dead inside that call.
     let stopped = !process::is_process_alive(pid);
-    let (port_free, _escalation_msg) = wait_port_free_with_escalation(pid, port);
-    (stopped, port_free)
+    (stopped, port_free, escalation_msg)
 }
 
 /// `ff-rdp daemon stop` — gracefully stop the running daemon and free the Firefox port.
@@ -699,11 +710,16 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
     {
         Some(rec) if rec.port == cli.port => {
             // Live instance found via DaemonRecord and matches --port — kill it.
-            let (stopped, port_free) = kill_pid_and_wait_port(rec.pid, rec.port);
+            let (stopped, port_free, escalation_msg) = kill_pid_and_wait_port(rec.pid, rec.port);
             crate::daemon_record::remove().ok();
 
             if !port_free {
-                return Err(AppError::User(port_still_listening_msg(rec.pid, rec.port)));
+                let msg = if escalation_msg.is_empty() {
+                    port_still_listening_msg(rec.pid, rec.port)
+                } else {
+                    escalation_msg
+                };
+                return Err(AppError::User(msg));
             }
 
             let meta = json!({});
@@ -800,17 +816,7 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
     let (port_free, escalation_msg) = wait_port_free_with_escalation(info.pid, firefox_port);
 
     if !port_free {
-        let msg = if escalation_msg.is_empty() {
-            format!(
-                "daemon stopped but port {firefox_port} is still listening after {} s — \
-                 another process may be holding it. Run `ff-rdp doctor` or \
-                 `lsof -i :{firefox_port}` to investigate.",
-                PORT_FREE_WAIT_BOUND.as_secs()
-            )
-        } else {
-            escalation_msg
-        };
-        return Err(AppError::User(msg));
+        return Err(AppError::User(escalation_msg));
     }
 
     let stopped = !process::is_process_alive(info.pid);
@@ -834,7 +840,7 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> 
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon record: {e}")))?
     {
         Some(rec) if rec.port == port && process::is_process_alive(rec.pid) => {
-            let (_stopped, port_free) = kill_pid_and_wait_port(rec.pid, rec.port);
+            let (_stopped, port_free, _escalation_msg) = kill_pid_and_wait_port(rec.pid, rec.port);
             crate::daemon_record::remove().ok();
             if !port_free {
                 return Err(AppError::User(format!(

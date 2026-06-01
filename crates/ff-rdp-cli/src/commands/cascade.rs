@@ -397,7 +397,7 @@ pub fn run(
         let js = format!(
             "(function(){{var el=document.querySelector('{escaped_sel}');\
              if(!el)return null;\
-             var v=getComputedStyle(el)[{escaped_prop}];\
+             var v=getComputedStyle(el).getPropertyValue({escaped_prop});\
              return v||null;}})()"
         );
         let console_actor = ctx.target.console_actor.clone();

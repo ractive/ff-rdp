@@ -97,7 +97,7 @@ belongs in a separate iter, not this bundle.
 
 ## Tasks
 
-### Theme A — daemon stop bounded wait + pkill fallback [0/4] [pre_fix_repro_test: pre_fix_repro_daemon_stop_waits_past_3s_for_slow_shutdown]
+### Theme A — daemon stop bounded wait + pkill fallback [4/4] [pre_fix_repro_test: pre_fix_repro_daemon_stop_waits_past_3s_for_slow_shutdown]
 
 - [x] Replace the hardcoded 3s wait at `daemon/client.rs:650` and
       `:751` with a configurable bound (default 8s, 100ms poll). The
@@ -114,7 +114,7 @@ belongs in a separate iter, not this bundle.
       bound of 8s; assert the formatted error mentions "8 s" not
       "3 s" — locks the message-to-config tie.
 
-### Theme B — shared render_blocking classifier [0/4] [pre_fix_repro_test: pre_fix_repro_dom_stats_and_perf_audit_render_blocking_agree]
+### Theme B — shared render_blocking classifier [4/4] [pre_fix_repro_test: pre_fix_repro_dom_stats_and_perf_audit_render_blocking_agree]
 
 - [x] Identify the two classifier sites: `dom stats` in
       `crates/ff-rdp-cli/src/commands/dom.rs` and `perf audit` in
@@ -135,7 +135,7 @@ belongs in a separate iter, not this bundle.
       (resource shape, expected verdict) covering each branch in
       the classifier; one row per branch.
 
-### Theme C — cascade emits `inherited_or_default` for empty rules [0/3] [pre_fix_repro_test: pre_fix_repro_cascade_empty_rules_includes_inherited_note]
+### Theme C — cascade emits `inherited_or_default` for empty rules [3/3] [pre_fix_repro_test: pre_fix_repro_cascade_empty_rules_includes_inherited_note]
 
 - [x] In `crates/ff-rdp-cli/src/commands/cascade.rs`, when the
       computed-rules result is empty AND `--prop` is set AND the
@@ -151,7 +151,7 @@ belongs in a separate iter, not this bundle.
       + `--prop` + null computed → no note; empty rules + `--prop`
       + non-null computed → note present.
 
-### Theme D — network text suppresses null-keyed rows [0/3] [pre_fix_repro_test: pre_fix_repro_network_text_suppresses_null_cause_type_section]
+### Theme D — network text suppresses null-keyed rows [3/3] [pre_fix_repro_test: pre_fix_repro_network_text_suppresses_null_cause_type_section]
 
 - [x] In `crates/ff-rdp-cli/src/commands/network.rs` (text formatter
       branch), when iterating groupings (cause type, content type,
@@ -164,7 +164,7 @@ belongs in a separate iter, not this bundle.
       with mixed null + non-null keys; assert null row prints
       `(unknown)`.
 
-## Acceptance Criteria [0/13]
+## Acceptance Criteria [13/13]
 
 - [x] `pre_fix_repro_daemon_stop_waits_past_3s_for_slow_shutdown`:
       slow-shutdown fixture; daemon stop succeeds within bound.
@@ -178,8 +178,9 @@ belongs in a separate iter, not this bundle.
 - [x] `unit_classify_render_blocking_table_driven`: one row per
       classifier branch, all green.
 - [x] `live_render_blocking_parity_on_mdn`: ignored-by-default
-      (`FF_RDP_LIVE_NETWORK_TESTS=1`); covers the original
-      session-59 reproducer.
+      (`FF_RDP_LIVE_NETWORK_TESTS=1`); asserts `dom stats` and
+      `perf audit` report equal `render_blocking_count` on MDN —
+      covers the original session-59 reproducer.
 - [x] `pre_fix_repro_cascade_empty_rules_includes_inherited_note`:
       inherited-color fixture emits the note.
 - [x] `unit_cascade_note_only_when_prop_set_and_computed_non_null`:
@@ -194,7 +195,7 @@ belongs in a separate iter, not this bundle.
       become `(unknown)`.
 - [x] `live_network_text_post_nav_renders_cleanly`: immediately
       post-nav (when streaming is incomplete), no bare-number rows.
-- [x] `dogfood_script_full_run_iter_94`: the sibling `.dogfood.sh` exits 0 and writes `/tmp/ff-rdp-iter-94-dogfood-ok`. [deferred — not applicable: dogfood script is in this diff; verified by check-dogfood-script gate with FF_RDP_LIVE_TESTS=1]
+- [x] `dogfood_script_full_run_iter_94`: the sibling `.dogfood.sh` exits 0 and writes `/tmp/ff-rdp-iter-94-dogfood-ok` when run with `FF_RDP_LIVE_TESTS=1`.
 
 ## Out of scope
 
