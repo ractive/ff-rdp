@@ -8,6 +8,19 @@
 #   FF_RDP_LIVE_TESTS=1 bash kb/iterations/iteration-93-eval-via-debugger-csp-bypass.dogfood.sh
 set -euo pipefail
 
+# Prefer the development build over any installed ff-rdp binary, so the
+# dogfood script exercises the actual branch code.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+for candidate in "$REPO_ROOT/target/debug/ff-rdp" "$REPO_ROOT/target/release/ff-rdp"; do
+  if [ -x "$candidate" ]; then
+    export PATH="$(dirname "$candidate"):$PATH"
+    echo "using ff-rdp: $candidate"
+    break
+  fi
+done
+unset candidate SCRIPT_DIR
+
 SENTINEL=/tmp/ff-rdp-iter-93-dogfood-ok
 rm -f "$SENTINEL"
 
