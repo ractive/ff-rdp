@@ -2,7 +2,7 @@
 title: "Iteration 93: eval via the DevTools console scope — CSP bypass on strict sites"
 type: iteration
 date: 2026-06-01
-status: complete
+status: completed
 branch: iter-93/eval-via-debugger-csp-bypass
 depends_on:
   - iteration-92-full-page-and-navigate-parity
@@ -11,13 +11,13 @@ firefox_refs:
     path: devtools/server/actors/webconsole.js
     why: >-
       evaluateJSAsync consumer; routes eval through Debugger.evalInGlobal
-      (eval-with-debugger.js) which bypasses page CSP — the sandbox scope
-      is what makes CSP bypass work.
+      (eval-with-debugger.js) which bypasses page CSP — the sandbox scope is what makes CSP bypass
+      work.
   - lines: 149-164
     path: devtools/shared/specs/webconsole.js
     why: >-
-      evaluateJSAsync request fields spec (eager, frameActor, innerWindowID, …)
-      — documents which fields land in the Debugger.evalInGlobal path.
+      evaluateJSAsync request fields spec (eager, frameActor, innerWindowID, …) —
+      documents which fields land in the Debugger.evalInGlobal path.
 kb_refs:
   - kb/dogfooding/dogfooding-session-59.md
   - kb/rdp/actors/console.md
