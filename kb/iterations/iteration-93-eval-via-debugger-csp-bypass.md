@@ -2,7 +2,7 @@
 title: "Iteration 93: eval via the DevTools console scope — CSP bypass on strict sites"
 type: iteration
 date: 2026-06-01
-status: in-progress
+status: complete
 branch: iter-93/eval-via-debugger-csp-bypass
 depends_on:
   - iteration-92-full-page-and-navigate-parity
@@ -91,7 +91,7 @@ flag to a follow-up if asked.
 
 ## Tasks
 
-### Theme A — route eval through the console sandbox [0/6] [pre_fix_repro_test: pre_fix_repro_eval_works_on_strict_csp_site]
+### Theme A — route eval through the console sandbox [6/6] [pre_fix_repro_test: pre_fix_repro_eval_works_on_strict_csp_site]
 
 - [x] Stand up a local fixture HTTP server (axum or hyper, already
       a dep via tests) that serves a single HTML page with strict
@@ -128,7 +128,7 @@ flag to a follow-up if asked.
       'document.title'`; assert exit 0 AND that stdout JSON
       `result.value` equals the page title.
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [6/6]
 
 - [x] `pre_fix_repro_eval_works_on_strict_csp_site`: live test
       against the local CSP fixture; `eval('document.title')` exits

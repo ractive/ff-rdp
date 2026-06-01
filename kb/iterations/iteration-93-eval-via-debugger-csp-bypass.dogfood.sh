@@ -25,6 +25,17 @@ unset candidate SCRIPT_DIR
 SENTINEL=/tmp/ff-rdp-iter-93-dogfood-ok
 rm -f "$SENTINEL"
 
+FIXTURE_PORT_FILE=/tmp/ff-rdp-iter93-port.txt
+SERVER_PID_FILE=/tmp/ff-rdp-iter93-server.pid
+
+cleanup() {
+  pkill -f 'firefox.*ff-rdp-profile' || true
+  if [ -f "$SERVER_PID_FILE" ]; then
+    kill "$(cat "$SERVER_PID_FILE")" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
 # Kill any stale Firefox launched by ff-rdp.
 pkill -f 'firefox.*ff-rdp-profile' || true
 sleep 1
@@ -36,13 +47,10 @@ sleep 2
 # Spin up a minimal Python HTTP server that serves a strict-CSP page on a
 # random port.  We use a heredoc to pass the server script inline; this avoids
 # any dependency on axum/hyper and uses only the Python stdlib.
-FIXTURE_PORT_FILE=/tmp/ff-rdp-iter93-port.txt
-SERVER_PID_FILE=/tmp/ff-rdp-iter93-server.pid
 rm -f "$FIXTURE_PORT_FILE" "$SERVER_PID_FILE"
 
 python3 - <<'PYEOF' &
 import http.server
-import socket
 
 BODY = b"""<!DOCTYPE html>
 <html>
@@ -64,17 +72,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass  # suppress access log
 
-sock = socket.socket()
-sock.bind(("127.0.0.1", 0))
-port = sock.getsockname()[1]
-sock.close()
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+port = server.server_address[1]
 
 with open("/tmp/ff-rdp-iter93-port.txt", "w") as f:
     f.write(str(port))
 with open("/tmp/ff-rdp-iter93-server.pid", "w") as f:
     import os; f.write(str(os.getpid()))
 
-server = http.server.HTTPServer(("127.0.0.1", port), Handler)
 server.serve_forever()
 PYEOF
 
@@ -88,15 +93,6 @@ done
 FIXTURE_PORT=$(cat "$FIXTURE_PORT_FILE")
 FIXTURE_URL="http://127.0.0.1:${FIXTURE_PORT}/"
 echo "fixture server: $FIXTURE_URL"
-
-# Cleanup trap.
-cleanup() {
-  pkill -f 'firefox.*ff-rdp-profile' || true
-  if [ -f "$SERVER_PID_FILE" ]; then
-    kill "$(cat "$SERVER_PID_FILE")" 2>/dev/null || true
-  fi
-}
-trap cleanup EXIT
 
 # Navigate to the CSP fixture.
 ff-rdp navigate "$FIXTURE_URL" \
