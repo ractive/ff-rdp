@@ -13,6 +13,7 @@ mod output_controls;
 mod output_pipeline;
 mod page_map;
 mod port_owner;
+mod render_blocking;
 mod script;
 mod tab_target;
 mod util;

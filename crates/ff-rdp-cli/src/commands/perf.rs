@@ -873,27 +873,17 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
     document_size: document.documentElement.outerHTML.length,
     inline_script_count: document.querySelectorAll('script:not([src])').length,
     render_blocking_resources: (function() {
-      // Spec-correct render-blocking predicate (iter-86 Theme C).
-      // Only rel="stylesheet" can render-block; all other rels (icon, preload,
-      // prefetch, dns-prefetch, preconnect, modulepreload, manifest, …) never do.
+      // Render-blocking predicate shared with dom stats (iter-94 Theme B).
+      // Source-of-truth: crate::render_blocking — see RENDER_BLOCKING_JS_PREDICATE.
+      var isRenderBlocking = __RENDER_BLOCKING_PREDICATE__;
       var blocking = [];
       document.querySelectorAll('link, script').forEach(function(el) {
-        var url = el.href || el.src || '';
-        if (el.tagName === 'LINK') {
-          var rel = (el.getAttribute('rel') || '').toLowerCase().trim();
-          // Only stylesheets can render-block; all other rels (icon, preload, etc.) never do.
-          if (rel !== 'stylesheet') return;
-          // Stylesheet blocks only if media matches AND no disabled attribute.
-          var media = el.media || 'all';
-          try { if (!window.matchMedia(media).matches) return; } catch(e) {}
-          if (el.disabled) return;
-          blocking.push({url: url, tag: 'link', rel: rel});
-        } else if (el.tagName === 'SCRIPT') {
-          // async / defer / module scripts never block.
-          if (el.async || el.defer || (el.getAttribute('type') || '').toLowerCase() === 'module') return;
-          // Inline scripts (no src) and data: URIs don't represent network resources.
-          if (!el.src || el.src.startsWith('data:')) return;
-          blocking.push({url: url, tag: 'script'});
+        if (isRenderBlocking(el)) {
+          var url = el.href || el.src || '';
+          var tag = el.tagName.toLowerCase();
+          var entry = {url: url, tag: tag};
+          if (tag === 'link') entry.rel = (el.getAttribute('rel') || '').toLowerCase().trim();
+          blocking.push(entry);
         }
       });
       return blocking;
@@ -916,8 +906,16 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
   return JSON.stringify(result);
 })()"#;
 
+    // Inject the shared render-blocking predicate so dom stats and perf audit
+    // always use identical classification rules (iter-94 Theme B).
+    // `classify` in crate::render_blocking is the Rust-side source-of-truth.
+    let script = script.replace(
+        "__RENDER_BLOCKING_PREDICATE__",
+        crate::render_blocking::RENDER_BLOCKING_JS_PREDICATE,
+    );
+
     let mut ctx = connect_and_get_target(cli)?;
-    let json_str = eval_to_json_string(&mut ctx, script, "perf audit")?;
+    let json_str = eval_to_json_string(&mut ctx, &script, "perf audit")?;
 
     let all: Value = serde_json::from_str(&json_str)
         .context("perf audit: failed to parse collection JSON")
@@ -1936,21 +1934,26 @@ mod tests {
 
     /// Validate that the non-blocking rel keywords listed in the plan are NOT
     /// present in the JS selector that drives the render-blocking count.
-    /// This is a static test of the JS source string embedded in run_audit.
+    /// This is a static test of the JS source string embedded in the shared predicate.
+    ///
+    /// iter-94 Theme B: the predicate moved from inline in perf.rs to
+    /// `crate::render_blocking::RENDER_BLOCKING_JS_PREDICATE`. The assertion
+    /// now checks the shared module so both dom stats and perf audit are covered.
     #[test]
     fn unit_render_blocking_js_excludes_non_blocking_rels() {
-        // The render-blocking predicate in run_audit must only count
-        // rel="stylesheet" links. Assert the source file embeds the exact
-        // filter and explanatory comment so a future refactor that loosens
-        // the predicate fails this test.
-        let source = include_str!("perf.rs");
+        // The shared predicate must only count rel="stylesheet" links.
+        // Assert the predicate string embeds the exact filter so a future
+        // refactor that loosens the rule fails this test.
+        let predicate = crate::render_blocking::RENDER_BLOCKING_JS_PREDICATE;
         assert!(
-            source.contains("if (rel !== 'stylesheet') return;"),
-            "render-blocking JS must filter on rel !== 'stylesheet'"
+            predicate.contains("if (rel !== 'stylesheet') return false;"),
+            "render-blocking JS must filter on rel !== 'stylesheet'; predicate:\n{predicate}"
         );
+        // Also confirm the source documentation mentions the spec-correct restriction.
+        let source = include_str!("../render_blocking.rs");
         assert!(
             source.contains("Only rel=\"stylesheet\" can render-block"),
-            "render-blocking JS must document the spec-correct predicate"
+            "render-blocking module must document the spec-correct predicate"
         );
     }
 
