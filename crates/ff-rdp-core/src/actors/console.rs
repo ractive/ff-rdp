@@ -145,6 +145,25 @@ impl WebConsoleActor {
     /// optional [`EvaluateScope`] carrying the spec-declared
     /// `frameActor` / `selectedNodeActor` / `innerWindowID` fields
     /// (`devtools/shared/specs/webconsole.js:149-164`).
+    ///
+    /// # CSP bypass — iter-93 finding
+    ///
+    /// This method is the "console sandbox" path described in iter-93.
+    /// Firefox routes the text through `Debugger.evalInGlobal` inside
+    /// `devtools/server/actors/webconsole/eval-with-debugger.js:119-247`,
+    /// which is **not** subject to the page's Content Security Policy.
+    ///
+    /// Page CSP restricts `eval()` when called from within a page script, but
+    /// `Debugger.evalInGlobal` operates at the Debugger API level — outside the
+    /// page's scripting environment — so it bypasses that restriction entirely.
+    ///
+    /// The consuming server code that dispatches to `eval-with-debugger.js` is
+    /// in `devtools/server/actors/webconsole.js:761-900`.  The important
+    /// consequence for ff-rdp: the text sent in `evaluateJSAsync.text` must
+    /// NOT itself call `eval()`, because a page-`eval()` call from within the
+    /// evaluated script IS subject to page CSP.  `build_script` in
+    /// `crates/ff-rdp-cli/src/commands/eval.rs` is responsible for ensuring
+    /// no `eval()` wrapper is emitted.
     pub fn evaluate_js_async_scoped(
         transport: &mut RdpTransport,
         console_actor: &ActorId,
@@ -953,6 +972,75 @@ mod tests {
         )
         .unwrap();
         assert_eq!(eval_result.result, Grip::Value(json!("ok")));
+        srv.join().unwrap();
+    }
+
+    // ── iter-93: console sandbox request shape ───────────────────────────────
+
+    /// AC: `unit_evaluate_js_async_console_scope_request_shape` — the outbound
+    /// `evaluateJSAsync` request body must be exactly the field set that lands
+    /// in Firefox's Debugger.evalInGlobal path (no `chromeContext`, no
+    /// `frameActor`, no `innerWindowID`).
+    ///
+    /// This test pins the wire format.  If Firefox renames a field, this test
+    /// catches the divergence loudly.
+    ///
+    /// Expected shape (iter-93):
+    /// ```json
+    /// {"to":"<conn0.console1>","type":"evaluateJSAsync","text":"document.title",
+    ///  "eager":false,"mapped":{"await":true}}
+    /// ```
+    #[test]
+    fn unit_evaluate_js_async_console_scope_request_shape() {
+        let (mut transport, server) = make_transport_pair();
+        let console_actor: ActorId = "conn0.console1".into();
+
+        let actor_str = console_actor.as_ref().to_owned();
+        let srv = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            // Capture the outbound request and assert its exact shape.
+            let req = transport_recv_from(&mut reader).unwrap();
+
+            // Required fields that land in Debugger.evalInGlobal (iter-93).
+            assert_eq!(req["to"], actor_str, "to must be the console actor");
+            assert_eq!(req["type"], "evaluateJSAsync");
+            assert_eq!(req["text"], "document.title");
+            assert_eq!(req["eager"], false);
+            assert_eq!(
+                req["mapped"]["await"],
+                serde_json::Value::Bool(true),
+                "mapped.await must be true"
+            );
+            // No chromeContext field — removed in iter-93 (was deprecated).
+            assert!(
+                req.get("chromeContext").is_none(),
+                "chromeContext must not be present"
+            );
+            // No scope fields when None is passed.
+            assert!(req.get("frameActor").is_none());
+            assert!(req.get("innerWindowID").is_none());
+            assert!(req.get("selectedNodeActor").is_none());
+
+            let ack = json!({"from": &actor_str, "resultID": "iter93-shape-test"});
+            send_frame(&server, &ack);
+            let result = json!({
+                "from": &actor_str,
+                "type": "evaluationResult",
+                "resultID": "iter93-shape-test",
+                "result": "iter93-csp-fixture",
+                "hasException": false
+            });
+            send_frame(&server, &result);
+        });
+
+        let eval_result = WebConsoleActor::evaluate_js_async_scoped(
+            &mut transport,
+            &console_actor,
+            "document.title",
+            None,
+        )
+        .unwrap();
+        assert_eq!(eval_result.result, Grip::Value(json!("iter93-csp-fixture")));
         srv.join().unwrap();
     }
 

@@ -2,8 +2,8 @@ use std::io::Read;
 
 use anyhow::Context as _;
 use ff_rdp_core::{
-    ActorId, EvaluateScope, Grip, ObjectActor, ProcessDescriptorFront, ProtocolError, RootActor,
-    ScopedGrip, TabActor, WebConsoleActor, sanitize_for_terminal,
+    ActorId, EvaluateScope, Grip, ObjectActor, ScopedGrip, TabActor, WebConsoleActor,
+    sanitize_for_terminal,
 };
 use serde_json::json;
 
@@ -58,23 +58,37 @@ pub(crate) fn load_script(
 /// Build the final JS source from the user's script plus the `--stringify` and
 /// `--no-isolate` flags.
 ///
-/// # Isolation (default)
+/// # CSP safety — no page `eval()` call (iter-93)
 ///
-/// Firefox's console actor shares its global scope across evaluations, so two
-/// consecutive `eval 'const x = 1; x'` calls fail with "redeclaration of const
-/// x". We wrap the user code in `(function() { "use strict"; return eval(<src>);
-/// })()` — a strict-mode IIFE. Direct `eval` inside a strict function uses its
-/// own variable environment for `const`/`let`/`var` declarations, so they don't
-/// leak across calls. `eval` returns the completion value of its last
-/// statement, so single expressions like `1 + 1` still return `2`.
+/// Firefox's `evaluateJSAsync` routes through `Debugger.evalInGlobal` in
+/// `devtools/server/actors/webconsole/eval-with-debugger.js:119-247`, which is
+/// **not** subject to page Content Security Policy.  Page CSP restricts `eval()`
+/// when called *from within a page script*, but the DevTools evaluator operates
+/// at the Debugger API level, outside the page's scripting environment.
+///
+/// The previous isolation strategy wrapped the user code as
+/// `(function() { "use strict"; return eval(<encoded>); })()`.  The outer IIFE
+/// is fine — the Debugger evaluates it — but the inner `eval()` *is* a call to
+/// the page's `eval` function, which IS blocked by the page's CSP.  That is
+/// exactly what produced `EvalError: call to eval() blocked by CSP` on MDN and
+/// other strict-CSP sites (dogfooding session 59).
+///
+/// The fix: drop the `eval()` isolation wrapper entirely.  The user script is
+/// sent raw — Firefox evaluates it via the DevTools mechanism, which bypasses
+/// page CSP by design.
+///
+/// # `--no-isolate` flag
+///
+/// `--no-isolate` is now effectively a no-op because isolation no longer relies
+/// on `eval()`.  The flag is retained for CLI backward compatibility but does
+/// not change the generated script.
 ///
 /// # Stringify
 ///
 /// `--stringify` wraps the expression in `JSON.stringify(...)` so the user gets
-/// real values instead of Firefox grip metadata. When combined with isolation,
-/// we evaluate the user code first (so declarations stay scoped), then pass the
-/// returned value through `JSON.stringify`.
-pub(crate) fn build_script(user_script: &str, stringify: bool, isolate: bool) -> String {
+/// real values instead of Firefox grip metadata.  The stringify helper does NOT
+/// use `eval()` and is therefore unaffected by page CSP.
+pub(crate) fn build_script(user_script: &str, stringify: bool, _isolate: bool) -> String {
     // The stringify helper: if the value is already a string, return it as-is;
     // otherwise JSON.stringify it. This prevents double-encoding when the JS
     // expression already evaluates to a string (e.g. `document.title`).
@@ -84,19 +98,10 @@ pub(crate) fn build_script(user_script: &str, stringify: bool, isolate: bool) ->
     // Symbol's TypeError) propagate up as eval exceptions.
     const STRINGIFY_HELPER: &str = "(function(v){if(typeof v===\"string\")return v;try{return JSON.stringify(v);}catch(e){if(e instanceof TypeError&&e.message.includes(\"circular\"))return \"{\\\"error\\\":\\\"circular reference detected\\\"}\";throw e;}})";
 
-    // JSON-encode the user source so it survives as a JS string literal.
-    let encoded = serde_json::to_string(user_script).unwrap_or_else(|e| {
-        // serde_json::to_string is infallible for &str — defensive fallback.
-        unreachable!("serde_json::to_string(&str) is infallible: {e}")
-    });
-
-    match (isolate, stringify) {
-        (false, false) => user_script.to_owned(),
-        (false, true) => format!("(function(){{return {STRINGIFY_HELPER}({user_script});}})()"),
-        (true, false) => format!("(function() {{ \"use strict\"; return eval({encoded}); }})()"),
-        (true, true) => {
-            format!("(function(){{\"use strict\";return {STRINGIFY_HELPER}(eval({encoded}));}})()")
-        }
+    if stringify {
+        format!("(function(){{return {STRINGIFY_HELPER}({user_script});}})()")
+    } else {
+        user_script.to_owned()
     }
 }
 
@@ -113,91 +118,6 @@ pub fn build_eval_js(
     Ok(build_script(&user_script, stringify, isolate))
 }
 
-/// Returns `true` when an exception message contains a CSP eval-block phrase.
-///
-/// Matches the *message text only* (not the class prefix).  Handles the
-/// Firefox 149+ form where `extract_exception_message` returns just the
-/// `preview.message` field (e.g. `"call to eval() blocked by CSP"`) without
-/// the `EvalError:` class prefix.  The CSP-specific phrases are
-/// discriminating on their own — no class check is required at the call
-/// site to avoid false positives.
-fn is_csp_message(m: &str) -> bool {
-    m.contains("Content Security Policy")
-        || m.contains("blocked by CSP")
-        || m.contains("blocks the use of 'eval'")
-}
-
-/// Returns `true` when an exception message indicates a CSP eval block.
-///
-/// Accepts both the full stringified form (`"EvalError: call to eval() blocked by CSP"`)
-/// emitted by older Firefox and the message-only form (`"call to eval() blocked by CSP"`)
-/// returned by `extract_exception_message` on Firefox 149+.
-///
-/// The `EvalError` prefix (when present) adds no extra discrimination power beyond
-/// the CSP-specific phrases, but we keep the original check to avoid regressing
-/// callers that pass the full stringified form.
-fn is_csp_eval_error(exc_message: &str) -> bool {
-    let m = exc_message;
-    // Full form (older Firefox / unit tests): "EvalError: blocked by CSP"
-    if m.contains("EvalError") {
-        return m.contains("Content Security Policy")
-            || m.contains("blocked by CSP")
-            || m.contains("blocks the use of 'eval'");
-    }
-    // Message-only form (Firefox 149+, extract_exception_message returns preview.message).
-    // No EvalError prefix — rely on the CSP phrase alone.
-    is_csp_message(m)
-}
-
-/// Obtain the chrome-privileged console actor from the browser parent process.
-///
-/// Calls `root.getProcess(0)` → `processDescriptor.getTarget()` to get the
-/// parent-process target, then returns its `consoleActor` ID.
-///
-/// This console actor is chrome-privileged and does not require the deprecated
-/// `chromeContext: true` flag that was used on the tab console actor.
-///
-/// Returns `None` when the root actor does not support `getProcess` (older
-/// Firefox builds or content-only builds), so callers can gracefully degrade.
-fn get_chrome_console_actor(
-    transport: &mut ff_rdp_core::RdpTransport,
-    registry: &ff_rdp_core::Registry,
-) -> Option<ActorId> {
-    let proc_descriptor_id = RootActor::get_process(transport, 0).ok()?;
-    let proc_front = ProcessDescriptorFront::new(proc_descriptor_id, registry.clone(), None);
-    let target = proc_front.get_target(transport).ok()?;
-    Some(target.console_actor)
-}
-
-/// Evaluate `script` via the console actor, automatically retrying with the
-/// chrome context when the first attempt is blocked by page CSP.
-///
-/// Returns `(result, used_chrome)` where `used_chrome` is `true` when the
-/// fallback path was taken.
-///
-/// # CSP bypass mechanism
-///
-/// When a page CSP blocks `eval()`, the isolation wrapper
-/// `(function() { "use strict"; return eval(encoded); })()` cannot be used
-/// because the CSP applies to `eval()` calls inside scripts.  However,
-/// Firefox's `evaluateJSAsync` itself (the DevTools API eval) is NOT subject
-/// to page CSP — only the `eval()` function called FROM a script is.
-///
-/// So the bypass works as follows:
-/// 1. Try the normal path with `script` (which may include the isolation wrapper).
-/// 2. On CSP error, obtain the parent-process console actor via
-///    `root.getProcess(0)` → `processDescriptor.getTarget()`.
-/// 3. Retry with `fallback_script` (no `eval()` wrapper) against the
-///    chrome-privileged parent-process console actor.
-///
-/// The parent-process console actor is chrome-privileged by design; it does not
-/// require the deprecated `chromeContext: true` flag that was previously sent on
-/// the tab console actor.
-///
-/// The key insight (iter-61l): even in a privileged context, calling `eval()`
-/// from within a script on a CSP-restricted page is still blocked.  The fix is
-/// to send the raw expression directly so Firefox evaluates it via its built-in
-/// DevTools mechanism (not subject to page CSP).
 /// CLI-side companion to [`EvaluateScope`] — owns `&str` slices borrowed
 /// from clap so the dispatch site does not have to construct an
 /// [`ActorId`] before deciding which connection path to take.
@@ -227,52 +147,6 @@ impl CliEvalScope<'_> {
     }
 }
 
-fn eval_with_csp_fallback(
-    transport: &mut ff_rdp_core::RdpTransport,
-    registry: &ff_rdp_core::Registry,
-    console_actor: &ActorId,
-    script: &str,
-    fallback_script: &str,
-    scope: Option<&EvaluateScope>,
-) -> Result<(ff_rdp_core::EvalResult, bool), AppError> {
-    let first = WebConsoleActor::evaluate_js_async_scoped(transport, console_actor, script, scope)
-        .map_err(AppError::from)?;
-
-    // Check whether the exception looks like a CSP eval block.
-    let is_csp = first
-        .exception
-        .as_ref()
-        .and_then(|e| e.message.as_deref())
-        .is_some_and(is_csp_eval_error);
-
-    if !is_csp {
-        return Ok((first, false));
-    }
-
-    // Obtain the parent-process chrome console actor via getProcess(0).
-    // If getProcess is not supported (older Firefox, content-only build), fall
-    // back to surfacing the original CSP exception rather than a confusing error.
-    let Some(chrome_console) = get_chrome_console_actor(transport, registry) else {
-        return Ok((first, false));
-    };
-
-    // Retry with the chrome-privileged parent-process console actor using the
-    // fallback script (no eval() wrapper so page CSP does not apply).
-    match WebConsoleActor::evaluate_js_async_scoped(
-        transport,
-        &chrome_console,
-        fallback_script,
-        scope,
-    ) {
-        Ok(result) => Ok((result, true)),
-        Err(ProtocolError::ActorError { .. }) => {
-            // Chrome context not available — return the original CSP error.
-            Ok((first, false))
-        }
-        Err(e) => Err(AppError::from(e)),
-    }
-}
-
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub fn run(
     cli: &Cli,
@@ -286,14 +160,10 @@ pub fn run(
 ) -> Result<(), AppError> {
     let script = load_script(script, file, use_stdin)?;
     let scope = cli_scope.to_scope();
-    let isolate = !no_isolate;
-    let final_script = build_script(&script, stringify, isolate);
-
-    // For the CSP fallback: build a version without the eval() isolation wrapper.
-    // The wrapper calls eval() internally which is blocked by page CSP even in
-    // chrome context; the fallback uses the raw expression so Firefox evaluates
-    // it via its built-in DevTools mechanism (not subject to page CSP).
-    let fallback_script = build_script(&script, stringify, false);
+    // --no-isolate is a no-op since iter-93: the eval() isolation wrapper was
+    // dropped because it triggered page CSP.  The flag is retained for CLI
+    // backward compatibility.
+    let final_script = build_script(&script, stringify, !no_isolate);
 
     let mut ctx = connect_and_get_target(cli)?;
 
@@ -301,24 +171,21 @@ pub fn run(
     // returned by `get_target`.  The retry path below re-fetches the target
     // if the actor turns out to be stale (noSuchActor / unknownActor).
     let console_actor = ctx.target.console_actor.clone();
-    // Clone the registry before the first fallback call to avoid
-    // simultaneous mutable (transport) + immutable (registry) borrows of ctx.
-    let registry = std::sync::Arc::clone(ctx.registry());
 
-    // First attempt.  On noSuchActor / unknownActor, refresh the target once
-    // and retry — exactly one retry per call_with_refresh contract.
-    let (eval_result, used_chrome_context) = match eval_with_csp_fallback(
+    // Evaluate via the DevTools console actor.  Firefox routes this through
+    // Debugger.evalInGlobal (eval-with-debugger.js:119-247), which bypasses
+    // page CSP — no fallback to a chrome context is needed.
+    let eval_result = match WebConsoleActor::evaluate_js_async_scoped(
         ctx.transport_mut(),
-        registry.as_ref(),
         &console_actor,
         &final_script,
-        &fallback_script,
         scope.as_ref(),
     ) {
         Ok(result) => result,
-        Err(AppError::RdpProtocol { ref name, .. })
-            if name == "noSuchActor" || name == "unknownActor" =>
-        {
+        Err(ff_rdp_core::ProtocolError::ActorError {
+            kind: ff_rdp_core::ActorErrorKind::UnknownActor,
+            ..
+        }) => {
             // Actor is stale — re-resolve and retry once.
             let tab_actor = ctx.target_tab_actor().clone();
             let fresh_target =
@@ -326,16 +193,15 @@ pub fn run(
             register_target_fronts(ctx.registry(), &fresh_target);
             let fresh_console = fresh_target.console_actor.clone();
             ctx.target = fresh_target;
-            eval_with_csp_fallback(
+            WebConsoleActor::evaluate_js_async_scoped(
                 ctx.transport_mut(),
-                registry.as_ref(),
                 &fresh_console,
                 &final_script,
-                &fallback_script,
                 scope.as_ref(),
-            )?
+            )
+            .map_err(AppError::from)?
         }
-        Err(e) => return Err(e),
+        Err(e) => return Err(AppError::from(e)),
     };
 
     // If an exception occurred, print it to stderr and exit non-zero.
@@ -401,25 +267,12 @@ pub fn run(
     // string value and set `meta.stringify_parsed: false` so callers know the
     // round-trip did not produce a structured value.
     let mut meta = json!({});
-    // Surface which evaluation path was taken (iter-61r Theme C).
-    // "page-await" = standard evaluateJSAsync with mapped.await=true (default).
-    // "chrome"     = chrome-context CSP bypass path.
-    let eval_path = if used_chrome_context {
-        "chrome"
-    } else {
-        "page-await"
-    };
+    // Surface which evaluation path was taken (iter-61r Theme C / iter-93).
+    // "page-await" = evaluateJSAsync routed through Debugger.evalInGlobal,
+    //   which bypasses page CSP (devtools/server/actors/webconsole/
+    //   eval-with-debugger.js:119-247).  This is always the path taken.
     if let Some(m) = meta.as_object_mut() {
-        m.insert("eval_path".to_owned(), json!(eval_path));
-    }
-    if used_chrome_context {
-        // Surface a one-liner so callers know the chrome-context CSP bypass was used.
-        if let Some(m) = meta.as_object_mut() {
-            m.insert(
-                "note".to_owned(),
-                json!("eval ran in chrome context (page CSP blocks eval; bypassed automatically)"),
-            );
-        }
+        m.insert("eval_path".to_owned(), json!("page-await"));
     }
     if stringify && let serde_json::Value::String(ref s) = result_json {
         match serde_json::from_str::<serde_json::Value>(s) {
@@ -606,10 +459,29 @@ mod tests {
     // build_script wrapping tests
     // ---------------------------------------------------------------------------
 
+    // ---------------------------------------------------------------------------
+    // build_script: iter-93 — no eval() in any code path (CSP safety).
+    //
+    // Firefox routes evaluateJSAsync through Debugger.evalInGlobal, which
+    // bypasses page CSP.  However, any eval() call inside the script IS subject
+    // to page CSP.  So build_script must NEVER emit a bare `eval(` substring.
+    // ---------------------------------------------------------------------------
+
     #[test]
     fn build_script_no_isolate_no_stringify_passthrough() {
         let s = build_script("document.title", false, false);
         assert_eq!(s, "document.title");
+        // Must not contain a bare eval() call.
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
+    }
+
+    #[test]
+    fn build_script_isolate_flag_is_noop_passthrough() {
+        // With isolate=true and stringify=false, result is still the raw script.
+        // --isolate is a no-op since iter-93 (no eval() wrapper).
+        let s = build_script("document.title", false, true);
+        assert_eq!(s, "document.title");
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
     }
 
     #[test]
@@ -619,39 +491,19 @@ mod tests {
         assert!(s.contains("JSON.stringify("));
         assert!(s.contains("document.querySelectorAll('a')"));
         assert!(s.contains("circular"));
-        // The stringify helper is inlined as a function — no bare eval().
-        assert!(!s.contains("eval("));
+        // No bare eval() in any stringify path.
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
         // Strings are passed through without double-encoding.
         assert!(s.contains("typeof v===\"string\""));
     }
 
     #[test]
-    fn build_script_isolate_only_wraps_in_strict_eval_iife() {
-        let s = build_script("const x = 1; x", false, true);
-        assert!(s.starts_with("(function()"));
-        assert!(s.contains("\"use strict\""));
-        assert!(s.contains("return eval("));
-        // The encoded source should appear as a JSON-encoded string literal.
-        assert!(s.contains(r#""const x = 1; x""#));
-    }
-
-    #[test]
-    fn build_script_isolate_preserves_single_expression() {
-        // Single expression must still be returnable through eval().
-        let s = build_script("1 + 1", false, true);
-        assert!(s.contains("return eval("));
-        assert!(s.contains(r#""1 + 1""#));
-    }
-
-    #[test]
     fn build_script_isolate_and_stringify_combine() {
+        // isolate=true + stringify=true: result is stringify-wrapped, no eval().
         let s = build_script("document.querySelectorAll('a')", true, true);
-        assert!(s.contains("\"use strict\""));
-        // The stringify helper wraps eval(); JSON.stringify is inside the helper.
         assert!(s.contains("JSON.stringify("));
-        assert!(s.contains("eval("));
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
         assert!(s.contains("circular"));
-        // Strings are not double-encoded.
         assert!(s.contains("typeof v===\"string\""));
     }
 
@@ -663,6 +515,7 @@ mod tests {
         assert!(s.contains("typeof v===\"string\""));
         // The helper is invoked with the user expression as argument.
         assert!(s.contains("document.title"));
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
     }
 
     #[test]
@@ -671,58 +524,39 @@ mod tests {
         let s = build_script("42", true, false);
         assert!(s.contains("JSON.stringify("));
         assert!(s.contains("42"));
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
     }
 
     #[test]
     fn build_script_handles_special_chars() {
-        // Quotes, backslashes, newlines must be JSON-encoded safely.
-        let s = build_script("'a' + \"b\" + `c\nd`", false, true);
-        // The encoded string must not break the surrounding template.
-        assert!(s.starts_with("(function()"));
-        assert!(s.ends_with(")()"));
-        // Encoded string should contain the escaped newline.
-        assert!(s.contains(r"\n"));
+        // Quotes, backslashes, newlines: no-stringify path passes through raw.
+        let input = "'a' + \"b\" + `c\nd`";
+        let s = build_script(input, false, false);
+        assert_eq!(s, input);
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
     }
 
-    // -----------------------------------------------------------------------
-    // Theme H: CSP error detection
-    // -----------------------------------------------------------------------
-
+    /// Invariant: build_script MUST NOT emit a bare `eval(` for any
+    /// combination of flags and user input.  This is the CSP-safety invariant
+    /// introduced in iter-93.
     #[test]
-    fn is_csp_eval_error_detects_blocked_by_csp() {
-        assert!(is_csp_eval_error(
-            "EvalError: call to eval() blocked by CSP"
-        ));
-    }
-
-    #[test]
-    fn is_csp_eval_error_detects_content_security_policy() {
-        assert!(is_csp_eval_error(
-            "EvalError: Content Security Policy of your site blocks the use of 'eval'"
-        ));
-    }
-
-    #[test]
-    fn is_csp_eval_error_rejects_bare_evalerror_without_csp_phrase() {
-        // A bare EvalError without any CSP-specific phrase must NOT trigger
-        // the chrome-context fallback — only true CSP eval blocks should.
-        assert!(!is_csp_eval_error("EvalError: some message"));
-    }
-
-    #[test]
-    fn is_csp_eval_error_detects_message_only_form_firefox149() {
-        // Firefox 149+: extract_exception_message returns preview.message without
-        // the "EvalError:" class prefix.  The message-only form must be detected.
-        assert!(is_csp_eval_error("call to eval() blocked by CSP"));
-        assert!(is_csp_eval_error(
-            "Content Security Policy of your site blocks the use of 'eval'"
-        ));
-    }
-
-    #[test]
-    fn is_csp_eval_error_does_not_match_unrelated_errors() {
-        assert!(!is_csp_eval_error("ReferenceError: foo is not defined"));
-        assert!(!is_csp_eval_error("TypeError: cannot read property"));
-        assert!(!is_csp_eval_error("SyntaxError: unexpected token"));
+    fn build_script_never_emits_eval_for_any_combination() {
+        let scripts = [
+            "document.title",
+            "1 + 1",
+            "const x = 1; x",
+            "throw new Error('boom')",
+        ];
+        for &script in &scripts {
+            for stringify in [false, true] {
+                for isolate in [false, true] {
+                    let s = build_script(script, stringify, isolate);
+                    assert!(
+                        !s.contains("eval("),
+                        "eval() found in build_script({script:?}, stringify={stringify}, isolate={isolate}): {s}"
+                    );
+                }
+            }
+        }
     }
 }
