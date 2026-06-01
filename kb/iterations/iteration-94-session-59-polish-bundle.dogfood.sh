@@ -153,5 +153,5 @@ done
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== All themes PASSED ==="
-touch "$SENTINEL"
-echo "ok > $SENTINEL"
+date -u "+%Y-%m-%dT%H:%M:%SZ ok" > "$SENTINEL"
+echo "written: $SENTINEL"
