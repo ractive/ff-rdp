@@ -14,7 +14,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 for candidate in "$REPO_ROOT/target/debug/ff-rdp" "$REPO_ROOT/target/release/ff-rdp"; do
   if [ -x "$candidate" ]; then
-    export PATH="$(dirname "$candidate"):$PATH"
+    CANDIDATE_DIR="$(dirname "$candidate")"
+    export PATH="$CANDIDATE_DIR:$PATH"
     echo "using ff-rdp: $candidate"
     break
   fi
