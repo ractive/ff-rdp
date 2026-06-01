@@ -146,8 +146,8 @@ flag to a follow-up if asked.
 - [x] `live_eval_works_on_real_mdn`: ignored-by-default live network
       test (`FF_RDP_LIVE_NETWORK_TESTS=1`); covers the original
       session-59 reproducer.
-- [x] `dogfood_script_full_run_iter_93`: the sibling `.dogfood.sh`
-      exits 0 and writes `/tmp/ff-rdp-iter-93-dogfood-ok`.
+- [x] `dogfood_script_full_run_iter_93` (`pre_fix_repro_eval_works_on_strict_csp_site`, `live_eval_script_error_still_surfaces`): the sibling `.dogfood.sh`
+      exits 0 and writes `/tmp/ff-rdp-iter-93-dogfood-ok`; live coverage provided by the named tests.
 
 ## Out of scope
 
