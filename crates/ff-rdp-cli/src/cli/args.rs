@@ -475,14 +475,10 @@ Prefer --file or --stdin for scripts that contain shell metacharacters,
 optional chaining (?.), template literals, or multi-line statements — shell
 quoting can mangle them and produce a SyntaxError at column 1.
 
-By default the script is wrapped in an isolated IIFE so `const`/`let`
-declarations don't leak across calls (Firefox's console actor shares scope
-across evaluations otherwise, so two consecutive `eval 'const x = 1; x'`
-calls would error with \"redeclaration of const x\"). Single expressions
-like `1 + 1` still return their value.
-
-Pass --no-isolate to opt out and share scope across calls — useful for
-incrementally building up helpers in an interactive debugging session.
+Since iter-93, scripts are routed through Firefox's Debugger.evalInGlobal
+sandbox scope (which bypasses page CSP), so each call already has its own
+scope and `const`/`let` declarations never leak across calls. The
+`--no-isolate` flag is kept for backwards compatibility but is now a no-op.
 
 Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}
 
@@ -512,8 +508,8 @@ ff-rdp will parse it client-side and put the structured object/array into
         /// Wrap expression in JSON.stringify() to get actual values instead of actor grips
         #[arg(long)]
         stringify: bool,
-        /// Share scope across eval calls (skip the default IIFE isolation wrapping).
-        /// Useful when incrementally building up helpers across an interactive session.
+        /// No-op since iter-93. Kept for backwards compatibility — isolation
+        /// is now provided by Firefox's Debugger.evalInGlobal sandbox scope.
         #[arg(long)]
         no_isolate: bool,
         /// Evaluate inside a specific frame/iframe actor (iter-77 S3).

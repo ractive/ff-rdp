@@ -96,6 +96,27 @@ Listener kinds: `"PageError"`, `"ConsoleAPI"`, `"FileActivity"`, `"ReflowActivit
 - Workers have a stripped-down listener set — only `worker-listeners.js` is loaded under `isWorker`.
 - Result objects come back as **grips**; complex objects need a follow-up to ObjectActor to inspect properties.
 
+## Iter-93 finding — Debugger.evalInGlobal bypasses page CSP
+
+Firefox routes `evaluateJSAsync` through `Debugger.evalInGlobal` in
+`devtools/server/actors/webconsole/eval-with-debugger.js:119-247`.
+This path is **not** subject to page CSP.  Page CSP restricts `eval()` when
+called *from within a page script*, but the DevTools evaluator operates at the
+Debugger API level, outside the page's scripting environment.
+
+**The bug (iter-93):** the old isolation wrapper
+`(function() { "use strict"; return eval(<encoded>); })()` triggered the CSP
+because the inner `eval()` call IS a page-script `eval()`.  That produced
+`EvalError: call to eval() blocked by CSP` on MDN and other strict-CSP sites.
+
+**The fix:** `build_script` (in `crates/ff-rdp-cli/src/commands/eval.rs`) no
+longer emits any `eval()` call.  The text is sent raw; Firefox evaluates it
+via `Debugger.evalInGlobal`, bypassing page CSP.
+
+References:
+- `devtools/server/actors/webconsole/eval-with-debugger.js:119-247` — `evalInGlobal` call
+- `devtools/server/actors/webconsole.js:761-900` — consuming server code
+
 ## Iter-77 update — EvaluateScope (S3)
 
 - `crates/ff-rdp-core/src/actors/console.rs::EvaluateScope` and
