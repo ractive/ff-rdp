@@ -39,10 +39,17 @@ pub(crate) fn port_still_listening_msg(pid: u32, port: u16) -> String {
 /// When `true`, the message says "SIGTERM+SIGKILL on pid + SIGKILL on pgid"
 /// so a future failure is unambiguous about which escalation path ran.
 fn port_still_listening_after_escalation_msg(pid: u32, port: u16, pgid_killed: bool) -> String {
+    #[cfg(unix)]
     let escalation_detail = if pgid_killed {
         "after SIGTERM+SIGKILL on pid + SIGKILL on pgid, port still listening"
     } else {
-        "after SIGTERM+SIGKILL escalation, port still listening"
+        "after SIGTERM+SIGKILL escalation (pgid kill skipped), port still listening"
+    };
+    #[cfg(not(unix))]
+    let escalation_detail = if pgid_killed {
+        "after TerminateProcess + taskkill /T on pid tree, port still listening"
+    } else {
+        "after TerminateProcess escalation (tree kill skipped), port still listening"
     };
     format!(
         "stopped Firefox (pid {pid}) but port {port} is still listening after {} s \
@@ -155,7 +162,7 @@ pub(crate) fn run_escalation(pid: u32, port: u16, h: &EscalationHooks) -> (bool,
 
     (
         false,
-        port_still_listening_after_escalation_msg(pid, port, true),
+        port_still_listening_after_escalation_msg(pid, port, pgid_safe_to_kill),
     )
 }
 
@@ -1175,61 +1182,75 @@ mod tests {
         use std::net::TcpListener;
         use std::os::unix::process::CommandExt as _;
 
-        // Bind a listener to simulate a port held by a child process.
+        // Pick a free port (bind/release races, but fine for a single-thread test).
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind failed");
         let port = listener.local_addr().unwrap().port();
-        drop(listener); // release so the child can bind to the same port below
+        drop(listener);
 
-        // Spawn `sleep 60` in its own process group.  We use this process as the
-        // "parent" whose PGID we will capture, then simulate the scenario where
-        // the parent exits but a child (the sleep itself — the group leader) holds
-        // the resource.
-        let child = std::process::Command::new("sleep")
-            .arg("60")
+        // Spawn a child in its own pgid that ACTUALLY HOLDS the port — so the
+        // only way the port can free is by killing the child's process group.
+        // We use a tiny Python one-liner because it's available on every dev
+        // machine that runs the live test suite. If `python3` is missing the
+        // test fails loudly rather than silently skipping.
+        let py = format!(
+            "import socket,time;\
+             s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);\
+             s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,0);\
+             s.bind(('127.0.0.1',{port}));s.listen(1);\
+             print('ready',flush=True);time.sleep(60)"
+        );
+        let child = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(&py)
+            .stdout(std::process::Stdio::piped())
             .process_group(0) // new pgid = child's pid
             .spawn()
-            .expect("failed to spawn sleep 60");
+            .expect("failed to spawn python3 port holder");
 
         let child_pid = child.id();
 
-        // Capture PGID before doing anything (use our new helper to avoid
-        // calling libc directly in this module).
+        // Wait for the child to actually bind the port.
+        let mut bound = false;
+        for _ in 0..50 {
+            if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+                bound = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(bound, "child failed to bind port {port} within 5 s");
+
         let pgid = process::get_process_group_id(child_pid)
             .expect("getpgid should succeed for a live child");
         assert!(pgid > 0, "getpgid should return a positive PGID");
-
-        // Rebind the listener on the child's behalf (simulates FD inheritance).
-        let listener2 = TcpListener::bind(format!("127.0.0.1:{port}")).expect("re-bind failed");
-
-        // Verify the port is held.
-        assert!(
-            std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok(),
-            "port {port} should be held by our listener"
+        assert_eq!(
+            i64::from(pgid),
+            i64::from(child_pid),
+            "child should be its own pgid leader"
         );
 
-        // Kill the "parent" by killing the child process (making pgid the only survivor).
-        // In a real Firefox scenario the parent exits and children hold the socket.
-        // Here we simulate: our listener2 is the "child" holding the port.
-        // We call kill_process_tree which will send SIGKILL to the pgid.
+        // Call the helper under test. This is the ONLY thing freeing the port —
+        // the test process holds no listener of its own.
         process::kill_process_tree(child_pid, Some(pgid));
 
-        // Drop the listener to release the port (the OS will also release it after
-        // the child is killed, but we do it explicitly to confirm the test is valid).
-        drop(listener2);
-
-        // Poll for up to 5 s for the child to be reaped and the port to free.
+        // Now assert the port is free without us touching anything.
         let port_free = process::wait_for_port_closed(port, Duration::from_secs(5));
+
+        // Best-effort reap to avoid zombies (the kill above should have done it).
+        let _ = std::process::Command::new("wait")
+            .arg(child_pid.to_string())
+            .status();
+        drop(child);
+
         assert!(
             port_free,
-            "pre_fix_repro: port {port} should be free after kill_process_tree (pgid={pgid})"
+            "pre_fix_repro: port {port} should be free after kill_process_tree(pgid={pgid}) \
+             — only the child held it, so a freed port proves the pgid kill worked"
         );
-
-        // Reap the child to avoid zombies.
-        drop(child);
 
         eprintln!(
             "pre_fix_repro_daemon_stop_kills_process_group_on_port_retention: PASS — \
-             port {port} freed after kill_process_tree(pgid={pgid})"
+             port {port} freed by kill_process_tree(pgid={pgid})"
         );
     }
 }

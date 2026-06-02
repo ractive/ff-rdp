@@ -104,7 +104,7 @@ pub fn kill_process_group(pid: u32) {
 /// **Note:** This function derives the PGID by assuming `pid == pgid`, which
 /// is true when Firefox called `setsid()` at startup. If the parent has already
 /// exited by the time this is called, the PGID may have been re-assigned by the
-/// OS. Prefer [`kill_captured_process_group_force`] when a pre-captured pgid is
+/// OS. Prefer [`kill_process_tree`] when a pre-captured pgid is
 /// available — it targets the correct group even after the parent dies.
 pub fn kill_process_group_force(pid: u32) {
     #[cfg(unix)]

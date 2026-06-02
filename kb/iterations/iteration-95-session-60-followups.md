@@ -2,7 +2,7 @@
 title: "Iteration 95: session-60 follow-ups — daemon stop process-group kill, cascade computed-field population, doctor staleness check"
 type: iteration
 date: 2026-06-01
-status: planned
+status: completed
 branch: iter-95/session-60-followups
 depends_on:
   - iteration-94-session-59-polish-bundle
@@ -122,7 +122,7 @@ separate iter.
       `daemon stop`, assert port freed within 3 s and call completes
       within 15 s. Script at `iteration-95-session-60-followups.dogfood.sh`.
 
-### Theme B — cascade `--prop` populates `computed` field [0/3] [pre_fix_repro_test: pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does]
+### Theme B — cascade `--prop` populates `computed` field [3/3] [pre_fix_repro_test: pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does]
 
 - [x] In `crates/ff-rdp-cli/src/commands/cascade.rs`, find the
       branch that emits the `computed: null` result and trace why it
