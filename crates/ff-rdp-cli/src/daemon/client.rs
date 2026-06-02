@@ -34,13 +34,135 @@ pub(crate) fn port_still_listening_msg(pid: u32, port: u16) -> String {
 }
 
 /// Format the post-escalation "port still listening" error message.
-fn port_still_listening_after_escalation_msg(pid: u32, port: u16) -> String {
+///
+/// `pgid_killed` indicates whether the pgid-level kill step was attempted.
+/// When `true`, the message says "SIGTERM+SIGKILL on pid + SIGKILL on pgid"
+/// so a future failure is unambiguous about which escalation path ran.
+fn port_still_listening_after_escalation_msg(pid: u32, port: u16, pgid_killed: bool) -> String {
+    #[cfg(unix)]
+    let escalation_detail = if pgid_killed {
+        "after SIGTERM+SIGKILL on pid + SIGKILL on pgid, port still listening"
+    } else {
+        "after SIGTERM+SIGKILL escalation (pgid kill skipped), port still listening"
+    };
+    #[cfg(not(unix))]
+    let escalation_detail = if pgid_killed {
+        "after TerminateProcess + taskkill /T on pid tree, port still listening"
+    } else {
+        "after TerminateProcess escalation (tree kill skipped), port still listening"
+    };
     format!(
         "stopped Firefox (pid {pid}) but port {port} is still listening after {} s \
-         (after SIGTERM+SIGKILL escalation, port still listening) — \
+         ({escalation_detail}) — \
          another process may be holding it. Run `ff-rdp doctor` or \
          `lsof -i :{port}` to investigate.",
         PORT_FREE_WAIT_BOUND.as_secs()
+    )
+}
+
+/// The set of injectable operations used by [`run_escalation`].
+///
+/// Using a struct of function pointers (instead of trait objects) keeps the
+/// abstraction minimal and avoids dynamic dispatch overhead. The real
+/// implementation plugs in the actual process helpers; tests inject stubs.
+pub(crate) struct EscalationHooks {
+    /// Returns `true` if the process with `pid` is currently alive.
+    pub is_alive: fn(u32) -> bool,
+    /// Send SIGTERM to the process group of `pid`.
+    pub kill_group_term: fn(u32),
+    /// Send SIGKILL to the process group of `pid` (pid==pgid assumed).
+    pub kill_group_kill: fn(u32),
+    /// Send SIGKILL to the explicitly captured process group `pgid`.
+    /// Also receives the original `pid` for the Windows `taskkill` path.
+    pub kill_process_tree: fn(u32, Option<libc::pid_t>),
+    /// Capture the PGID of `pid` (before escalation starts).
+    pub get_pgid: fn(u32) -> Option<libc::pid_t>,
+    /// Poll `port` until closed or `timeout` elapses; returns `true` if closed.
+    pub wait_port_closed: fn(u16, Duration) -> bool,
+}
+
+impl EscalationHooks {
+    /// Production hooks that call the real process helpers.
+    pub(crate) fn real() -> Self {
+        Self {
+            is_alive: process::is_process_alive,
+            kill_group_term: process::kill_process_group,
+            kill_group_kill: process::kill_process_group_force,
+            kill_process_tree: process::kill_process_tree,
+            get_pgid: process::get_process_group_id,
+            wait_port_closed: process::wait_for_port_closed,
+        }
+    }
+}
+
+/// Core escalation logic, injectable for testing.
+///
+/// Escalation sequence:
+/// 1. Capture the PGID **before** the escalation starts so it survives the
+///    parent's death.
+/// 2. Wait up to `PORT_FREE_WAIT_BOUND` for the port to free.
+/// 3. On timeout: SIGTERM the process group, wait 1 s grace.
+/// 4. SIGKILL the process group (pid-level).
+/// 5. Re-poll for ~500 ms.
+/// 6. If still held: SIGKILL the **captured** PGID (kills every child even if
+///    the parent has already exited and the PGID assumption on step 4 broke).
+/// 7. Re-poll for ~500 ms.
+///
+/// Returns `(port_free, error_message)`.
+pub(crate) fn run_escalation(pid: u32, port: u16, h: &EscalationHooks) -> (bool, String) {
+    // Capture PGID up-front. This is intentionally done before any kill so
+    // the value is reliable even when the parent exits mid-escalation.
+    let captured_pgid = (h.get_pgid)(pid);
+
+    if (h.wait_port_closed)(port, PORT_FREE_WAIT_BOUND) {
+        return (true, String::new());
+    }
+
+    // Bound elapsed — escalate, but only if the original PID is still alive.
+    // PIDs can be recycled by the OS; signaling a stale PGID risks killing an
+    // unrelated process group.
+    if !(h.is_alive)(pid) {
+        return (false, port_still_listening_msg(pid, port));
+    }
+
+    // Step 3: SIGTERM the process group.
+    (h.kill_group_term)(pid);
+    std::thread::sleep(Duration::from_secs(1));
+
+    // Step 4: SIGKILL the process group (assumes pid==pgid).
+    (h.kill_group_kill)(pid);
+    if (h.wait_port_closed)(port, Duration::from_millis(500)) {
+        return (true, String::new());
+    }
+
+    // Step 6: The pid-level kill wasn't sufficient — use the pre-captured
+    // PGID to reach any child processes that may have survived (e.g. because
+    // the parent exited before the kill was delivered, breaking the pid==pgid
+    // assumption). On Windows this sends `taskkill /F /T /PID <pid>`.
+    //
+    // Safety guard: only fire the pgid kill when the captured pgid is the
+    // SAME as the target pid. If Firefox wasn't spawned in its own process
+    // group (older `launch` builds, or a user-supplied wrapper), pgid will
+    // point at whatever group launched ff-rdp — usually the caller's
+    // interactive shell. Killing that group would blast back up the chain
+    // and is never what the user wants. Newer `launch` puts Firefox into a
+    // pgid==pid group, so this guard passes on the happy path. On Windows
+    // `captured_pgid` is `None` and `kill_process_tree` falls through to
+    // `taskkill /F /T /PID`, which is already scoped to the pid subtree.
+    let pgid_safe_to_kill = match captured_pgid {
+        Some(group_id) => i64::from(group_id) == i64::from(pid),
+        None => true, // Windows path is pid-scoped, no group risk.
+    };
+    if pgid_safe_to_kill {
+        (h.kill_process_tree)(pid, captured_pgid);
+    }
+    if (h.wait_port_closed)(port, Duration::from_millis(500)) {
+        return (true, String::new());
+    }
+
+    (
+        false,
+        port_still_listening_after_escalation_msg(pid, port, pgid_safe_to_kill),
     )
 }
 
@@ -50,29 +172,17 @@ fn port_still_listening_after_escalation_msg(pid: u32, port: u16) -> String {
 /// remains in use after the full escalation sequence.
 ///
 /// Escalation:
-/// 1. Wait up to `PORT_FREE_WAIT_BOUND` for the port to free.
-/// 2. On timeout: SIGTERM the process group, wait 1 s grace.
-/// 3. SIGKILL the process group.
-/// 4. Re-poll the port for ~500 ms.
+/// 1. Capture PGID up-front (before the parent can die).
+/// 2. Wait up to `PORT_FREE_WAIT_BOUND` for the port to free.
+/// 3. On timeout: SIGTERM the process group, wait 1 s grace.
+/// 4. SIGKILL the process group (pid-level).
+/// 5. Re-poll for ~500 ms.
+/// 6. SIGKILL the captured PGID (kill_process_tree — reaches surviving children).
+/// 7. Re-poll for ~500 ms.
 ///
 /// Returns `(port_free, error_message)`.
 fn wait_port_free_with_escalation(pid: u32, port: u16) -> (bool, String) {
-    if process::wait_for_port_closed(port, PORT_FREE_WAIT_BOUND) {
-        return (true, String::new());
-    }
-    // Bound elapsed — escalate, but only if the original PID is still alive.
-    // PIDs can be recycled by the OS; signaling a stale PGID risks killing an
-    // unrelated process group.
-    if !process::is_process_alive(pid) {
-        return (false, port_still_listening_msg(pid, port));
-    }
-    process::kill_process_group(pid);
-    std::thread::sleep(Duration::from_secs(1));
-    process::kill_process_group_force(pid);
-    if process::wait_for_port_closed(port, Duration::from_millis(500)) {
-        return (true, String::new());
-    }
-    (false, port_still_listening_after_escalation_msg(pid, port))
+    run_escalation(pid, port, &EscalationHooks::real())
 }
 
 // ---------------------------------------------------------------------------
@@ -973,6 +1083,174 @@ mod tests {
             long_wait,
             "PORT_FREE_WAIT_BOUND ({} s) should succeed after the 4 s hold",
             PORT_FREE_WAIT_BOUND.as_secs()
+        );
+    }
+
+    /// AC: `unit_daemon_stop_uses_killpg_when_kill_pid_fails`
+    ///
+    /// When pid-level SIGKILL leaves the port held, `run_escalation` must
+    /// invoke the `kill_process_tree` hook (the pgid step). Uses injectable
+    /// function-pointer hooks so no Firefox process is needed.
+    #[test]
+    fn unit_daemon_stop_uses_killpg_when_kill_pid_fails() {
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // Track whether kill_process_tree was called. Declared at the top of the
+        // function body (before any statements) to satisfy clippy::items_after_statements.
+        static TREE_KILL_CALLED: AtomicBool = AtomicBool::new(false);
+
+        // Bind a real listener to simulate a port that stays held after pid kills.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind failed");
+        let port = listener.local_addr().unwrap().port();
+
+        let hooks = EscalationHooks {
+            // Process always looks alive so escalation proceeds.
+            is_alive: |_pid| true,
+            // SIGTERM and pid-level SIGKILL are no-ops (don't actually kill the listener).
+            kill_group_term: |_pid| {},
+            kill_group_kill: |_pid| {},
+            // Tree kill: record that we were called, then drop the listener.
+            kill_process_tree: |_pid, _pgid| {
+                TREE_KILL_CALLED.store(true, Ordering::SeqCst);
+                // We can't drop the listener here (it's in the outer scope),
+                // so we just record the call; the port poll will time out and
+                // return false — which is fine for this test's assertion.
+            },
+            // No real PGID capture needed.
+            get_pgid: |_pid| None,
+            // Short timeouts so the test completes quickly.
+            wait_port_closed: |test_port, timeout| {
+                // The listener stays held, so always return false within a short window.
+                // We use 10 ms max to keep the test fast.
+                let deadline = std::time::Instant::now() + timeout.min(Duration::from_millis(10));
+                loop {
+                    if std::net::TcpStream::connect(format!("127.0.0.1:{test_port}")).is_err() {
+                        return true;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            },
+            // Override the 1-second SIGTERM grace sleep via the wait hook above.
+            // (The actual sleep(1) is hardcoded in run_escalation; we live with it
+            // in prod. For the test we accepted the 1 s sleep — see comment below.)
+        };
+
+        // NOTE: `run_escalation` has a hardcoded `sleep(1)` between SIGTERM and
+        // SIGKILL. This test still sleeps for that 1 s. The port_closed hook is
+        // capped at 10 ms per call to avoid the 8 s and 500 ms waits on top of it.
+        let (port_free, msg) = run_escalation(99999, port, &hooks);
+
+        // Port stays held (listener is still open) — escalation reports failure.
+        assert!(!port_free, "port should still be held (listener is open)");
+        // The pgid kill step must have been invoked.
+        assert!(
+            TREE_KILL_CALLED.load(Ordering::SeqCst),
+            "kill_process_tree hook must be called when pid-level kill leaves port held"
+        );
+        // Error message must mention the pgid escalation path.
+        assert!(
+            msg.contains("pgid"),
+            "error message must mention 'pgid' escalation: {msg:?}"
+        );
+
+        // Clean up the listener so the port is released.
+        drop(listener);
+    }
+
+    /// AC: `pre_fix_repro_daemon_stop_kills_process_group_on_port_retention`
+    ///
+    /// Simplified fixture: spawn a child process in its own process group (via
+    /// `process_group(0)`), capture its PGID, kill the child's "parent" (itself —
+    /// we simulate by killing the child immediately and making a sibling hold the
+    /// listener), then assert that `kill_process_tree(pgid)` frees the port.
+    ///
+    /// The simpler version: spawn `sleep 60` in a new process group on a fresh port.
+    /// The child inherits a bound TcpListener via a background thread that accepts
+    /// on the port. Then we kill the child (simulating "parent dies") and verify
+    /// `kill_process_tree` reaps it via the PGID.
+    ///
+    /// Ignored by default — requires Unix process semantics.
+    /// Run with: `FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli -- pre_fix_repro_daemon_stop_kills`
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires Unix process-group semantics — run with FF_RDP_LIVE_TESTS=1"]
+    fn pre_fix_repro_daemon_stop_kills_process_group_on_port_retention() {
+        use std::net::TcpListener;
+        use std::os::unix::process::CommandExt as _;
+
+        // Pick a free port (bind/release races, but fine for a single-thread test).
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind failed");
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        // Spawn a child in its own pgid that ACTUALLY HOLDS the port — so the
+        // only way the port can free is by killing the child's process group.
+        // We use a tiny Python one-liner because it's available on every dev
+        // machine that runs the live test suite. If `python3` is missing the
+        // test fails loudly rather than silently skipping.
+        let py = format!(
+            "import socket,time;\
+             s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);\
+             s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,0);\
+             s.bind(('127.0.0.1',{port}));s.listen(1);\
+             print('ready',flush=True);time.sleep(60)"
+        );
+        let child = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(&py)
+            .stdout(std::process::Stdio::piped())
+            .process_group(0) // new pgid = child's pid
+            .spawn()
+            .expect("failed to spawn python3 port holder");
+
+        let child_pid = child.id();
+
+        // Wait for the child to actually bind the port.
+        let mut bound = false;
+        for _ in 0..50 {
+            if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+                bound = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(bound, "child failed to bind port {port} within 5 s");
+
+        let pgid = process::get_process_group_id(child_pid)
+            .expect("getpgid should succeed for a live child");
+        assert!(pgid > 0, "getpgid should return a positive PGID");
+        assert_eq!(
+            i64::from(pgid),
+            i64::from(child_pid),
+            "child should be its own pgid leader"
+        );
+
+        // Call the helper under test. This is the ONLY thing freeing the port —
+        // the test process holds no listener of its own.
+        process::kill_process_tree(child_pid, Some(pgid));
+
+        // Now assert the port is free without us touching anything.
+        let port_free = process::wait_for_port_closed(port, Duration::from_secs(5));
+
+        // Best-effort reap to avoid zombies (the kill above should have done it).
+        let _ = std::process::Command::new("wait")
+            .arg(child_pid.to_string())
+            .status();
+        drop(child);
+
+        assert!(
+            port_free,
+            "pre_fix_repro: port {port} should be free after kill_process_tree(pgid={pgid}) \
+             — only the child held it, so a freed port proves the pgid kill worked"
+        );
+
+        eprintln!(
+            "pre_fix_repro_daemon_stop_kills_process_group_on_port_retention: PASS — \
+             port {port} freed by kill_process_tree(pgid={pgid})"
         );
     }
 }

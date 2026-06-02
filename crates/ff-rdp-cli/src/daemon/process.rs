@@ -100,6 +100,12 @@ pub fn kill_process_group(pid: u32) {
 ///
 /// Used as a last resort after the SIGTERM grace period expires.
 /// On Windows, falls back to `kill_process`.
+///
+/// **Note:** This function derives the PGID by assuming `pid == pgid`, which
+/// is true when Firefox called `setsid()` at startup. If the parent has already
+/// exited by the time this is called, the PGID may have been re-assigned by the
+/// OS. Prefer [`kill_process_tree`] when a pre-captured pgid is
+/// available — it targets the correct group even after the parent dies.
 pub fn kill_process_group_force(pid: u32) {
     #[cfg(unix)]
     {
@@ -119,6 +125,86 @@ pub fn kill_process_group_force(pid: u32) {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Process-group ID capture
+// ---------------------------------------------------------------------------
+
+/// Return the process-group ID of `pid`, or `None` on error or unsupported platform.
+///
+/// On Unix this calls `getpgid(pid)`.  This should be captured **before** the
+/// escalation ladder begins so it remains valid even if the parent process exits
+/// mid-escalation (the PGID is a kernel attribute of the group, not of the
+/// individual parent process).
+///
+/// Returns `None` on Windows and other non-Unix platforms.
+pub fn get_process_group_id(pid: u32) -> Option<libc::pid_t> {
+    #[cfg(unix)]
+    {
+        // SAFETY: `getpgid(pid)` is a pure query syscall with no side effects.
+        // It returns -1 and sets `errno` on failure (e.g. ESRCH if the process
+        // has already exited).  We convert the error into `None`.
+        #[allow(clippy::cast_possible_wrap)]
+        let raw_pgid = unsafe { libc::getpgid(pid as libc::pid_t) };
+        if raw_pgid == -1 { None } else { Some(raw_pgid) }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Forcibly kill a **pre-captured** process group using SIGKILL (Unix).
+///
+/// Unlike [`kill_process_group_force`] — which derives the PGID from the parent
+/// PID and can race if the parent exits before the signal is sent — this helper
+/// takes a pgid that was resolved once at escalation entry via
+/// [`get_process_group_id`].  The captured value survives the parent's death
+/// because the kernel keeps the PGID alive as long as any member process exists.
+///
+/// On Windows the equivalent "kill the whole tree" operation is
+/// `taskkill /F /T /PID <pid>`, which terminates the process and all its
+/// children regardless of process-group membership. The `pgid` parameter is
+/// unused on Windows; pass the original Firefox PID in `pid_for_windows` to
+/// drive `taskkill`. Both Unix and Windows paths target the same conceptual
+/// goal: reap every descendant of the original Firefox process.
+///
+/// Errors are silently ignored — the caller polls the port to verify.
+pub fn kill_process_tree(pid_for_windows: u32, pgid: Option<libc::pid_t>) {
+    #[cfg(unix)]
+    {
+        if let Some(pgid_val) = pgid {
+            // SAFETY: `kill(-pgid, SIGKILL)` sends SIGKILL to every process in the
+            // group identified by `pgid_val`. The pgid was captured before the
+            // escalation ladder started and remains valid as long as any group
+            // member is alive. SIGKILL cannot be caught or ignored.
+            unsafe {
+                libc::kill(-pgid_val, libc::SIGKILL);
+            }
+        }
+        // If pgid is None (getpgid failed, meaning the process had already exited),
+        // there is nothing left to kill — the group has already dissolved.
+        let _ = pid_for_windows;
+    }
+
+    #[cfg(windows)]
+    {
+        // `taskkill /F /T /PID <pid>` forcibly terminates the process and the
+        // entire process tree it roots (equivalent to Unix killpg on the group).
+        // Errors are silently ignored — the caller polls the port to verify.
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid_for_windows.to_string()])
+            .output();
+        let _ = pgid;
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (pid_for_windows, pgid);
     }
 }
 

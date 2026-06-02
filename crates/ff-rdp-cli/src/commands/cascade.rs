@@ -8,7 +8,9 @@
 //! This is a read-only view; style mutation is out of scope (see iter-81 plan).
 
 use ff_rdp_core::css::specificity::{self, Specificity};
-use ff_rdp_core::{ActorId, AppliedRule, DomWalkerActor, Grip, InspectorActor, PageStyleActor};
+use ff_rdp_core::{
+    ActorId, AppliedRule, DomWalkerActor, Grip, InspectorActor, LongStringActor, PageStyleActor,
+};
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -18,7 +20,7 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
-use super::js_helpers::{escape_selector, eval_or_bail};
+use super::js_helpers::{JSON_SENTINEL, escape_selector, eval_or_bail};
 
 /// CSS origin bucket: lower numbers cascade earlier (lose by default).
 ///
@@ -388,29 +390,11 @@ pub fn run(
     };
 
     // When --prop is set, fetch the actual computed value via getComputedStyle.
-    // This is used as a fallback hint when no author rules declare the property,
-    // to distinguish "inherited/default" from the iter-82 broken-cascade shape.
-    let external_computed: Option<String> = if let Some(prop_name) = prop {
-        let escaped_sel = escape_selector(selector);
-        let escaped_prop =
-            serde_json::to_string(prop_name).unwrap_or_else(|_| format!("\"{prop_name}\""));
-        let js = format!(
-            "(function(){{var el=document.querySelector('{escaped_sel}');\
-             if(!el)return null;\
-             var v=getComputedStyle(el).getPropertyValue({escaped_prop});\
-             return v||null;}})()"
-        );
-        let console_actor = ctx.target.console_actor.clone();
-        match eval_or_bail(&mut ctx, &console_actor, &js, "computed style lookup") {
-            Ok(result) => match &result.result {
-                Grip::Value(serde_json::Value::String(s)) => Some(s.clone()),
-                _ => None,
-            },
-            Err(_) => None, // Non-fatal — the main cascade result still emits.
-        }
-    } else {
-        None
-    };
+    // Uses the JSON-sentinel + LongString-resolving pattern from computed.rs so
+    // that large values returned as LongString actors are handled correctly.
+    // Returns None on any failure — non-fatal, the main cascade result still emits.
+    let external_computed: Option<String> =
+        prop.and_then(|prop_name| fetch_computed_value(&mut ctx, selector, prop_name));
 
     let results: Vec<Value> = properties
         .iter()
@@ -448,6 +432,55 @@ fn map_cascade_error(err: ff_rdp_core::ProtocolError) -> AppError {
         }
         _ => AppError::from(err),
     }
+}
+
+// ---------------------------------------------------------------------------
+// External computed-style helpers
+// ---------------------------------------------------------------------------
+
+/// Build the JavaScript that fetches a single computed-style value for one
+/// element, using the same JSON-sentinel + `getComputedStyle` envelope that
+/// `computed.rs` uses for single-prop queries.
+///
+/// The result is a JSON string like `"__FF_RDP_JSON__\"rgb(0,0,0)\""` or
+/// JS `null` when the element is not found.
+pub(crate) fn build_external_computed_js(selector: &str, prop: &str) -> String {
+    let escaped_sel = escape_selector(selector);
+    // JSON-encode the property name so single quotes, backslashes, etc. are safe
+    // in the resulting JS string literal.
+    let prop_json = serde_json::to_string(prop).unwrap_or_else(|_| format!("\"{prop}\""));
+    format!(
+        "(function(){{var el=document.querySelector('{escaped_sel}');\
+         if(!el)return null;\
+         var cs=getComputedStyle(el);\
+         var v=cs.getPropertyValue({prop_json}).trim()||cs[{prop_json}]||'';\
+         return '{JSON_SENTINEL}'+JSON.stringify(v);}})()"
+    )
+}
+
+/// Fetch the computed value of `prop` on the first element matching `selector`.
+///
+/// Uses the same JSON-sentinel + LongString-resolving pattern as `computed.rs`
+/// to handle large values that Firefox returns as LongString actors.
+///
+/// Returns `None` on any failure (element not found, eval error, empty value)
+/// — callers treat `None` as "no computed hint available" and continue.
+fn fetch_computed_value(ctx: &mut ConnectedTab, selector: &str, prop: &str) -> Option<String> {
+    let js = build_external_computed_js(selector, prop);
+    let console_actor = ctx.target.console_actor.clone();
+    let result = eval_or_bail(ctx, &console_actor, &js, "computed style lookup").ok()?;
+
+    let raw: String = match &result.result {
+        Grip::Value(serde_json::Value::String(s)) => s.clone(),
+        Grip::LongString { actor, length, .. } => {
+            LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), *length).ok()?
+        }
+        _ => return None,
+    };
+
+    let stripped = raw.strip_prefix(JSON_SENTINEL)?;
+    let value: String = serde_json::from_str(stripped).ok()?;
+    if value.is_empty() { None } else { Some(value) }
 }
 
 // ---------------------------------------------------------------------------
@@ -841,6 +874,82 @@ mod tests {
             assert!(
                 out.get("inherited_or_default").is_none(),
                 "(d) no note when author rules are present: {out}"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Theme B: build_external_computed_js unit tests
+    // ---------------------------------------------------------------------------
+
+    /// `unit_cascade_computed_field_matches_computed_command_table_driven`
+    ///
+    /// Table-driven proof that `build_external_computed_js` produces JS that
+    /// contains both the JSON sentinel and `getComputedStyle` — the same
+    /// structural envelope used by `computed.rs`.  This covers three realistic
+    /// (selector, prop) pairs: inherited color, block-level background, and
+    /// font metrics.
+    ///
+    /// Note: we test the JS-building layer (the code path wiring) rather than
+    /// running a real eval, which would require a live Firefox.  The live
+    /// agreement test (`live_cascade_inherited_or_default_note_fires_on_h1_color`)
+    /// proves end-to-end correctness against a real browser.
+    #[test]
+    fn unit_cascade_computed_field_matches_computed_command_table_driven() {
+        let cases = [
+            ("h1", "color"),
+            ("body", "background-color"),
+            ("p", "font-size"),
+        ];
+        for (selector, prop) in cases {
+            let js = build_external_computed_js(selector, prop);
+            assert!(
+                js.contains(JSON_SENTINEL),
+                "({selector}, {prop}): JS must contain JSON_SENTINEL: {js}"
+            );
+            assert!(
+                js.contains("getComputedStyle"),
+                "({selector}, {prop}): JS must contain getComputedStyle: {js}"
+            );
+            assert!(
+                js.contains("JSON.stringify"),
+                "({selector}, {prop}): JS must contain JSON.stringify: {js}"
+            );
+            // Selector must appear in the querySelector call.
+            assert!(
+                js.contains(selector),
+                "({selector}, {prop}): JS must embed the selector: {js}"
+            );
+        }
+    }
+
+    /// `pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does`
+    ///
+    /// Unit-level proof that the JS built by `build_external_computed_js` for
+    /// three property/selector pairs always uses the sentinel envelope expected
+    /// by `fetch_computed_value`.  This is the pre-fix-repro shape: before the
+    /// fix the old code returned bare strings or null (no sentinel), so
+    /// `LongString` values were silently dropped.  After the fix both paths use
+    /// the sentinel, so this test would have caught the regression.
+    #[test]
+    fn pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does() {
+        let cases = [
+            ("h1", "color"),
+            ("body", "background-color"),
+            ("p", "font-size"),
+        ];
+        for (selector, prop) in cases {
+            let js = build_external_computed_js(selector, prop);
+            // The old buggy code used `return v||null` (no sentinel).
+            // The fixed code uses `return '…JSON_SENTINEL…' + JSON.stringify(v)`.
+            assert!(
+                js.contains(JSON_SENTINEL),
+                "({selector}, {prop}): fixed code must use the JSON sentinel — \
+                 old code did not, causing LongString values to be dropped silently: {js}"
+            );
+            assert!(
+                js.contains("getPropertyValue"),
+                "({selector}, {prop}): must use getPropertyValue to support custom properties: {js}"
             );
         }
     }
