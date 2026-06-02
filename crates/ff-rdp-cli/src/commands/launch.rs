@@ -298,6 +298,17 @@ pub(crate) fn build_command(
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::piped());
 
+    // Put Firefox into its own process group (pgid = child pid) so that
+    // `daemon stop`'s SIGTERM/SIGKILL on the process group does not blast
+    // back up to the caller's shell. Without this, the pgid escalation
+    // introduced in iter-95 Theme A would target whatever group launched
+    // ff-rdp — including the user's interactive shell.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        cmd.process_group(0);
+    }
+
     Ok((cmd, profile_path))
 }
 

@@ -132,7 +132,23 @@ pub(crate) fn run_escalation(pid: u32, port: u16, h: &EscalationHooks) -> (bool,
     // PGID to reach any child processes that may have survived (e.g. because
     // the parent exited before the kill was delivered, breaking the pid==pgid
     // assumption). On Windows this sends `taskkill /F /T /PID <pid>`.
-    (h.kill_process_tree)(pid, captured_pgid);
+    //
+    // Safety guard: only fire the pgid kill when the captured pgid is the
+    // SAME as the target pid. If Firefox wasn't spawned in its own process
+    // group (older `launch` builds, or a user-supplied wrapper), pgid will
+    // point at whatever group launched ff-rdp — usually the caller's
+    // interactive shell. Killing that group would blast back up the chain
+    // and is never what the user wants. Newer `launch` puts Firefox into a
+    // pgid==pid group, so this guard passes on the happy path. On Windows
+    // `captured_pgid` is `None` and `kill_process_tree` falls through to
+    // `taskkill /F /T /PID`, which is already scoped to the pid subtree.
+    let pgid_safe_to_kill = match captured_pgid {
+        Some(group_id) => i64::from(group_id) == i64::from(pid),
+        None => true, // Windows path is pid-scoped, no group risk.
+    };
+    if pgid_safe_to_kill {
+        (h.kill_process_tree)(pid, captured_pgid);
+    }
     if (h.wait_port_closed)(port, Duration::from_millis(500)) {
         return (true, String::new());
     }
