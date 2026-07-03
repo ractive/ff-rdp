@@ -3,7 +3,8 @@ title: check-pre-fix-repro alternates PASS/FAIL — worktree reuse check is wron
 type: reference
 date: 2026-07-03
 tags: [backlog, issue, xtask, pre-fix-repro, worktree]
-status: open
+status: fixed
+fixed_in: iter-96/profile-leak-cleanup
 ---
 
 # check-pre-fix-repro worktree flap
@@ -45,7 +46,22 @@ successful creation:
 - Regression test: call `ensure_main_worktree` twice; the second call
   must reuse (not recreate) the worktree.
 
-## Workaround
+## Second bug found during the same investigation
 
-`git worktree prune` in the main checkout immediately before running the
-gate.
+`refresh_worktree` ran `git -C <worktree> fetch origin --depth=1`. A
+linked worktree shares the parent repo's object store and `.git/shallow`
+file, so this **re-shallowed the entire repository** on every gate run,
+which broke `check-discipline-regression` (its iter-61t replay needs the
+deep merge history of `main`). The two sub-checks could never pass in
+the same run.
+
+## Resolution
+
+Fixed on `iter-96/profile-leak-cleanup` in
+`crates/xtask/src/check_pre_fix_repro.rs`: reuse check now compares
+`git rev-parse --path-format=absolute --git-common-dir`, a
+`git worktree prune` runs before `git worktree add`, and the refresh
+fetch is no longer depth-limited. Verified by two consecutive green
+`check-iteration-ready` runs (second run exercises the reuse path).
+If the repo was already shallowed by an earlier run, restore once with
+`git fetch --unshallow origin`.

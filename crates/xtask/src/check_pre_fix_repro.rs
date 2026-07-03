@@ -15,7 +15,9 @@
 //!    side-effecting (`ensure_main_worktree`).  The resolved path is memoised
 //!    per-process via a `std::sync::OnceLock`.
 //! 3. **Worktree refresh** before each gate invocation:
-//!    `git -C <path> fetch origin --depth=1` then
+//!    `git -C <path> fetch origin` (never depth-limited — the linked
+//!    worktree shares the parent repo's object store, so a shallow fetch
+//!    would re-shallow the whole repository) then
 //!    `git -C <path> reset --hard origin/main`.  The post-reset SHA is
 //!    captured and used as the cache key.
 //! 4. **Main-side cargo invocation** uses `CARGO_TARGET_DIR=<worktree>/target`
@@ -206,33 +208,37 @@ fn dirs_home() -> PathBuf {
 /// directory is removed and the worktree is recreated.
 fn ensure_main_worktree(path: &Path) -> Result<()> {
     // If the directory already has a `.git` file/dir, verify it belongs to
-    // the current repository before reusing it.
+    // the current repository before reusing it. Compare `--git-common-dir`:
+    // both the main checkout and a linked worktree resolve it to the parent
+    // repo's `.git`. (`--show-toplevel` inside a linked worktree reports the
+    // worktree's own path, so it can never match the main checkout — that
+    // made every run recreate the worktree and trip over the stale
+    // registration left behind by `remove_dir_all`.)
     if path.join(".git").exists() {
-        // Ask git for the repo root of the *current* working directory.
-        let current_root = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
+        let current_git_dir = Command::new("git")
+            .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
             .output()
-            .context("failed to invoke `git rev-parse --show-toplevel` for current repo")?;
-        let current_root_str = String::from_utf8_lossy(&current_root.stdout)
-            .trim()
-            .to_owned();
+            .context("failed to invoke `git rev-parse --git-common-dir` for current repo")?;
+        let current_git_dir =
+            std::fs::canonicalize(String::from_utf8_lossy(&current_git_dir.stdout).trim()).ok();
 
-        // Ask git for the repo root of the candidate worktree directory.
-        let worktree_root = Command::new("git")
+        let worktree_git_dir = Command::new("git")
             .args([
                 "-C",
                 &path.to_string_lossy(),
                 "rev-parse",
-                "--show-toplevel",
+                "--path-format=absolute",
+                "--git-common-dir",
             ])
             .output()
             .ok()
-            .filter(|o| o.status.success());
+            .filter(|o| o.status.success())
+            .and_then(|o| std::fs::canonicalize(String::from_utf8_lossy(&o.stdout).trim()).ok());
 
-        let roots_match = worktree_root
-            .as_ref()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == current_root_str)
-            .unwrap_or(false);
+        let roots_match = match (&current_git_dir, &worktree_git_dir) {
+            (Some(current), Some(worktree)) => current == worktree,
+            _ => false,
+        };
 
         if roots_match {
             return Ok(());
@@ -249,6 +255,11 @@ fn ensure_main_worktree(path: &Path) -> Result<()> {
             .with_context(|| format!("failed to create worktree parent dir {parent:?}"))?;
     }
 
+    // Deregister any stale worktree entry first (cache dir deleted out from
+    // under git), otherwise `git worktree add` fails with "missing but
+    // already registered worktree".
+    let _ = Command::new("git").args(["worktree", "prune"]).status();
+
     let status = Command::new("git")
         .args(["worktree", "add", &path.to_string_lossy(), "origin/main"])
         .status()
@@ -263,15 +274,12 @@ fn ensure_main_worktree(path: &Path) -> Result<()> {
 /// Fetch latest `origin/main` into the worktree and reset its HEAD to it.
 /// Returns the SHA of `origin/main` after the reset.
 fn refresh_worktree(path: &Path) -> Result<String> {
-    // fetch
+    // fetch — deliberately NOT depth-limited: a linked worktree shares the
+    // parent repo's object store and shallow file, so `--depth=1` here
+    // re-shallowed the ENTIRE repository and broke deep-history consumers
+    // (check-discipline-regression's iter-61 replay baselines).
     let fetch_status = Command::new("git")
-        .args([
-            "-C",
-            &path.to_string_lossy(),
-            "fetch",
-            "origin",
-            "--depth=1",
-        ])
+        .args(["-C", &path.to_string_lossy(), "fetch", "origin"])
         .status()
         .context("failed to invoke `git fetch` in worktree")?;
     if !fetch_status.success() {
