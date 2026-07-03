@@ -241,8 +241,17 @@ pub(crate) fn build_command(
         // process to pre-create the directory and plant a malicious `user.js`
         // symlink that rides our `fs::write` to overwrite arbitrary files.
         //
-        // `into_path()` persists the directory so Firefox can read it; the
-        // existing cleanup path on process exit remains in effect.
+        // `.keep()` persists the directory past this process's exit so
+        // Firefox (a separate process) can keep reading it while it runs.
+        // Cleanup happens in two places, not "on process exit":
+        //   - `daemon stop` removes the *active* profile once the
+        //     SIGTERM→SIGKILL→killpg ladder confirms Firefox is actually
+        //     gone (see `crate::daemon::client::run_daemon_stop`, iter-96
+        //     Theme A).
+        //   - `prune_orphan_profiles` below removes *orphaned* siblings
+        //     older than `FF_RDP_PROFILE_PRUNE_DAYS` to catch crashes,
+        //     `kill -9`, and reboots that never reach `daemon stop`
+        //     (iter-96 Theme B).
         // iter-75 H-1: place the temp profile under the per-user state
         // directory (`~/.local/state/ff-rdp/profiles` on Linux,
         // `~/Library/Application Support/ff-rdp/profiles` on macOS,
@@ -251,6 +260,33 @@ pub(crate) fn build_command(
         // `crate::util::profile_dir::secure_profile_root` for the threat
         // model and Windows ACL rationale.
         let profile_root = crate::util::profile_dir::secure_profile_root()?;
+
+        // iter-96 Theme B: prune stale orphan profile dirs before creating a
+        // new one. Bounded (FF_RDP_PROFILE_PRUNE_MAX) so a large backlog
+        // can't add latency to this launch — later launches pick up the
+        // rest. Env vars are read here, not inside the helper, so the
+        // helper stays unit-testable without env-var juggling.
+        let prune_age_days: u64 = std::env::var("FF_RDP_PROFILE_PRUNE_DAYS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(7);
+        let prune_max: usize = std::env::var("FF_RDP_PROFILE_PRUNE_MAX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50);
+        let pruned = crate::util::profile_dir::prune_orphan_profiles(
+            &profile_root,
+            Duration::from_secs(prune_age_days.saturating_mul(24 * 60 * 60)),
+            prune_max,
+        );
+        if !pruned.removed.is_empty() {
+            tracing::debug!(
+                "launch: pruned {} stale orphan profile dir(s) under {}",
+                pruned.removed.len(),
+                profile_root.display()
+            );
+        }
+
         let tmp = tempfile::Builder::new()
             .prefix("ff-rdp-profile-")
             .rand_bytes(16)
@@ -473,12 +509,19 @@ pub fn run(
             // `temp_profile` is true when the caller requested --temp-profile
             // OR when we auto-created one because no profile flag was given.
             let effective_temp_profile = temp_profile || profile.is_none();
+            let profile_path_str = profile_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().as_ref().to_owned());
             let result = json!({
                 "pid": pid,
                 "host": host,
                 "port": port,
                 "headless": headless,
-                "profile": profile_path.as_ref().map(|p| p.to_string_lossy().as_ref().to_owned()),
+                "profile": profile_path_str,
+                // iter-96: explicit alias of "profile" so `daemon stop`'s
+                // `profile_removed_path` can be compared against the same
+                // field name (see live_daemon_stop_profile_path_matches_launch_json).
+                "profile_path": profile_path_str,
                 "temp_profile": effective_temp_profile,
                 "auto_consent": auto_consent,
             });

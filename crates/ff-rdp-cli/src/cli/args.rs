@@ -80,6 +80,10 @@ COMMAND REFERENCE:
     ff-rdp install-skill --claude --uninstall <name>
     ff-rdp install-skill --claude --from-dir <path> [<name>]
 
+  Profile maintenance:
+    ff-rdp profiles list
+    ff-rdp profiles prune [--older-than 7d | --all] [--dry-run]
+
 AI AGENT TIPS:
   - Use --format text instead of JSON for 3-10x fewer tokens
   - Use eval --stringify '<expr>' to get actual values instead of actor grip metadata
@@ -1271,7 +1275,7 @@ Examples:
   ff-rdp launch --auto-consent       # auto-dismiss cookie banners
   ff-rdp launch --profile ~/my-prof  # reuse an existing profile
 
-Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"temp_profile\": bool, \"auto_consent\": bool}, \"total\": 1, \"meta\": {...}}"
+Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"profile_path\": \"...\", \"temp_profile\": bool, \"auto_consent\": bool}, \"total\": 1, \"meta\": {...}}"
     )]
     Launch {
         /// Run Firefox in headless mode
@@ -1341,6 +1345,29 @@ probe passes, 1 otherwise.
 
 Output: {\"results\": [{\"name\": \"...\", \"status\": \"pass|warn|fail\", \"detail\": \"...\", \"hint\": \"...\"}], \"total\": N, \"meta\": {...}}")]
     Doctor,
+
+    /// Inspect and clean up ff-rdp's ephemeral Firefox profile directories
+    #[command(
+        long_about = "Inspect and clean up the ephemeral Firefox profile directories ff-rdp creates for itself under its secure per-user profile root (see `ff-rdp launch`).
+
+`daemon stop` and `launch` already clean these up automatically (see their --help). This command is the manual escape hatch for whatever they missed — e.g. after a crash or `kill -9` that never reached `daemon stop`.
+
+Only directories matching the `ff-rdp-profile-<16 alphanumeric chars>` naming convention are ever listed or removed — a `--profile` directory you passed to `launch` yourself is never touched, even if it happens to live under the same root.
+
+Examples:
+  ff-rdp profiles list
+  ff-rdp profiles prune                    # remove entries older than 7 days (default)
+  ff-rdp profiles prune --older-than 24h
+  ff-rdp profiles prune --all --dry-run    # preview removing everything
+  ff-rdp profiles prune --all              # remove every managed entry now
+
+Output (list):  {\"results\": {\"path\": \"...\", \"count\": N, \"total_size_bytes\": N, \"oldest_mtime\": \"...\"|null}, \"total\": 1, \"meta\": {...}}
+Output (prune): {\"results\": {\"path\": \"...\", \"would_remove\": [...], \"removed\": [...], \"dry_run\": bool}, \"total\": N, \"meta\": {...}}"
+    )]
+    Profiles {
+        #[command(subcommand)]
+        profiles_command: ProfilesCommand,
+    },
 
     /// Execute a script file (JSON or YAML)
     #[command(long_about = "Execute a script file (JSON or YAML).
@@ -1735,8 +1762,62 @@ Output: {\"results\": {\"running\": bool, \"pid\": N, \"port\": N, \"uptime_seco
 Sends a shutdown RPC to the daemon. Falls back to SIGTERM if the RPC does
 not succeed within 2 seconds. Cleans up daemon.json on success.
 
-Output: {\"results\": {\"stopped\": bool}, \"total\": 1, \"meta\": {...}}")]
+When Firefox was started via `launch`, stopping it also removes its
+temporary profile directory (never a directory passed via --profile).
+
+Output: {\"results\": {\"stopped\": bool, \"profile_removed\": bool, \"profile_removed_path\": \"...\"|null}, \"total\": 1, \"meta\": {...}}")]
     Stop,
+}
+
+#[derive(Subcommand)]
+pub enum ProfilesCommand {
+    /// Report profile-root path, managed-entry count, total size, and oldest mtime
+    #[command(
+        long_about = "Report the profile root path, managed-entry count, total on-disk size, and oldest mtime.
+
+Only entries matching the `ff-rdp-profile-<16 alphanumeric chars>` naming convention are counted.
+
+Output: {\"results\": {\"path\": \"...\", \"count\": N, \"total_size_bytes\": N, \"oldest_mtime\": \"...\"|null}, \"total\": 1, \"meta\": {...}}"
+    )]
+    List,
+    /// Remove stale managed profile directories
+    #[command(
+        long_about = "Remove managed `ff-rdp-profile-*` directories under the profile root.
+
+By default only removes entries whose mtime is at least --older-than old (default 7d).
+Pass --all to remove every managed entry regardless of age (mutually exclusive with --older-than).
+Pass --dry-run to preview without touching disk: `would_remove` is populated and `removed` stays
+empty, and every listed directory still exists afterwards. On a real run it's the other way round:
+`removed` is populated and `would_remove` stays empty.
+
+Duration grammar for --older-than: <N>d, <N>h, <N>m, <N>s, or a bare number of seconds
+(e.g. 7d, 24h, 30m, 45s, 3600). Individual removal failures (permission error, a directory
+vanishing mid-scan) are logged and skipped, not fatal to the rest of the batch.
+
+Examples:
+  ff-rdp profiles prune --dry-run
+  ff-rdp profiles prune --older-than 24h
+  ff-rdp profiles prune --all
+
+Output: {\"results\": {\"path\": \"...\", \"would_remove\": [...], \"removed\": [...], \"dry_run\": bool}, \"total\": N, \"meta\": {...}}"
+    )]
+    Prune {
+        /// Only remove entries whose mtime is at least this old. Accepts <N>d, <N>h, <N>m, <N>s,
+        /// or a bare number of seconds. Mutually exclusive with --all.
+        #[arg(
+            long,
+            default_value = "7d",
+            value_name = "DURATION",
+            conflicts_with = "all"
+        )]
+        older_than: String,
+        /// Remove every managed profile directory regardless of age. Mutually exclusive with --older-than.
+        #[arg(long, conflicts_with = "older_than")]
+        all: bool,
+        /// Preview what would be removed without touching disk.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]

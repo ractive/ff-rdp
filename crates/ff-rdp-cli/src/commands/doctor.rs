@@ -4,6 +4,7 @@
 //! user (or AI agent) sees a single concrete next step. Exits 0 when every
 //! probe passes, 1 when any probe fails — CI friendly.
 
+use std::path::Path;
 use std::time::Duration;
 
 use ff_rdp_core::{
@@ -158,6 +159,10 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     let embedded_sha = env!("FF_RDP_BUILD_VERSION_SHA");
     let head_sha_result = git_head_sha();
     probes.push(probe_binary_staleness(embedded_sha, head_sha_result));
+
+    // 7. Profile disk usage — warn when managed profile dirs have piled up
+    // faster than `launch`'s bounded auto-prune (iter-96 Theme B) keeps up.
+    probes.push(probe_profile_disk_usage());
 
     let any_failed = probes.iter().any(|p| p.status == Status::Fail);
 
@@ -401,6 +406,65 @@ fn probe_binary_staleness(embedded_sha: &str, head_sha_result: Result<String, ()
     }
 }
 
+/// Warning thresholds for `profile_disk_usage` (iter-96 Theme C): beyond
+/// either of these, the check goes from `pass` to `warn`. Chosen generously
+/// — normal usage self-prunes via Theme B (`launch`'s bounded auto-prune); a
+/// warn here means Theme B isn't keeping up, e.g. because Firefox is never
+/// started via `ff-rdp launch` on this machine, or `FF_RDP_PROFILE_PRUNE_MAX`
+/// was lowered.
+const PROFILE_DISK_USAGE_WARN_COUNT: usize = 100;
+const PROFILE_DISK_USAGE_WARN_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
+
+/// Resolve the real profile root and delegate to [`probe_profile_disk_usage_at`].
+///
+/// A missing/unreadable profile root (no per-user state/data directory
+/// available, or `ff-rdp launch` has simply never run here) is reported as
+/// `pass`, not `fail` — this check exists to catch *accumulation*, not to
+/// gate on the root's mere existence.
+fn probe_profile_disk_usage() -> Probe {
+    match crate::util::profile_dir::secure_profile_root() {
+        Ok(root) => probe_profile_disk_usage_at(&root),
+        Err(_) => Probe {
+            name: "profile_disk_usage",
+            status: Status::Pass,
+            detail: "profile root unavailable — nothing to check".to_owned(),
+            hint: None,
+        },
+    }
+}
+
+/// Pure core logic — takes `&Path` so unit tests can point it at a temp dir
+/// instead of the real `secure_profile_root()`.
+fn probe_profile_disk_usage_at(root: &Path) -> Probe {
+    let summary = crate::commands::profiles::aggregate_profiles(root);
+    let detail = format!(
+        "{} managed profile dir(s), {} bytes under {}",
+        summary.count,
+        summary.total_size_bytes,
+        root.display()
+    );
+
+    if summary.count > PROFILE_DISK_USAGE_WARN_COUNT
+        || summary.total_size_bytes > PROFILE_DISK_USAGE_WARN_BYTES
+    {
+        Probe {
+            name: "profile_disk_usage",
+            status: Status::Warn,
+            detail,
+            hint: Some(
+                "run `ff-rdp profiles prune` to remove stale profile directories".to_owned(),
+            ),
+        }
+    } else {
+        Probe {
+            name: "profile_disk_usage",
+            status: Status::Pass,
+            detail,
+            hint: None,
+        }
+    }
+}
+
 fn build_results_json(probes: &[Probe]) -> Value {
     let arr: Vec<Value> = probes
         .iter()
@@ -560,6 +624,59 @@ mod tests {
         assert!(
             hint.contains("cargo install"),
             "hint should mention cargo install: {hint}"
+        );
+    }
+
+    // --- profile_disk_usage tests (iter-96 Theme C) ---
+
+    /// AC: `unit_doctor_profile_disk_usage_warns_above_threshold` — 101
+    /// managed profile dirs (empty is fine — this exercises the count
+    /// threshold, not the size threshold) trips the check to `warn`.
+    #[test]
+    fn unit_doctor_profile_disk_usage_warns_above_threshold() {
+        let root = tempfile::tempdir().expect("tempdir");
+        for i in 0..101 {
+            std::fs::create_dir_all(root.path().join(format!("ff-rdp-profile-{i:016}")))
+                .expect("create fake profile dir");
+        }
+
+        let p = probe_profile_disk_usage_at(root.path());
+
+        assert_eq!(p.status, Status::Warn, "detail: {}", p.detail);
+        let hint = p.hint.expect("Warn probe must have a hint");
+        assert!(
+            hint.contains("profiles prune"),
+            "hint should point at `ff-rdp profiles prune`: {hint}"
+        );
+    }
+
+    #[test]
+    fn unit_doctor_profile_disk_usage_pass_below_threshold() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(
+            root.path()
+                .join(format!("ff-rdp-profile-{}", "a".repeat(16))),
+        )
+        .expect("create fake profile dir");
+
+        let p = probe_profile_disk_usage_at(root.path());
+
+        assert_eq!(p.status, Status::Pass, "detail: {}", p.detail);
+        assert!(p.hint.is_none());
+    }
+
+    #[test]
+    fn unit_doctor_profile_disk_usage_pass_when_root_missing() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let missing = root.path().join("does-not-exist");
+
+        let p = probe_profile_disk_usage_at(&missing);
+
+        assert_eq!(
+            p.status,
+            Status::Pass,
+            "a missing profile root must never be reported as a failure: {}",
+            p.detail
         );
     }
 }

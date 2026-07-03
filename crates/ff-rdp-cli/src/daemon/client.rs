@@ -832,12 +832,29 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
                 return Err(AppError::User(msg));
             }
 
+            // iter-96 Theme A: the escalation ladder reported success (port
+            // freed AND process gone) — safe to reclaim the temp profile dir
+            // now. `cleanup_profile_dir` refuses anything that isn't a
+            // ff-rdp-managed dir under `secure_profile_root()`, so a
+            // user-supplied `--profile` path is never touched here.
+            let profile_removed_path = if stopped {
+                crate::util::profile_dir::cleanup_profile_dir(&rec.profile_dir)
+                    .removed_path()
+                    .map(std::path::Path::to_path_buf)
+            } else {
+                None
+            };
+
             let meta = json!({});
             let envelope = output::envelope(
                 &json!({
                     "stopped": stopped,
                     "pid": rec.pid,
                     "port": rec.port,
+                    "profile_removed": profile_removed_path.is_some(),
+                    "profile_removed_path": profile_removed_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned()),
                 }),
                 1,
                 &meta,

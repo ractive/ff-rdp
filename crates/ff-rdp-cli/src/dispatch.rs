@@ -1,5 +1,6 @@
 use crate::cli::args::{
-    A11yCommand, Cli, Command, DaemonCommand, DomCommand, PerfCommand, RecordCommand, ScrollCommand,
+    A11yCommand, Cli, Command, DaemonCommand, DomCommand, PerfCommand, ProfilesCommand,
+    RecordCommand, ScrollCommand,
 };
 use crate::commands;
 use crate::commands::index::IndexOpts;
@@ -337,6 +338,7 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         | Command::Daemon { .. }
         | Command::DaemonInternal
         | Command::InstallSkill(_)
+        | Command::Profiles { .. }
         | Command::Index { .. } => None,
     }
 }
@@ -946,6 +948,14 @@ fn dispatch_inner(
             DaemonCommand::Stop => crate::daemon::client::run_daemon_stop(cli),
         },
         Command::Doctor => commands::doctor::run(cli),
+        Command::Profiles { profiles_command } => match profiles_command {
+            ProfilesCommand::List => commands::profiles::run_list(cli),
+            ProfilesCommand::Prune {
+                older_than,
+                all,
+                dry_run,
+            } => commands::profiles::run_prune(cli, older_than, *all, *dry_run),
+        },
         Command::Run {
             script,
             vars,
