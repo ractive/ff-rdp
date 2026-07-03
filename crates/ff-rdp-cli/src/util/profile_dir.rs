@@ -32,7 +32,7 @@
 //! <https://learn.microsoft.com/en-us/windows/win32/secauthz/default-acls-for-user-profile-folders>.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use crate::error::AppError;
 
@@ -115,6 +115,43 @@ pub(crate) fn is_managed_profile_basename(name: &str) -> bool {
     }
 }
 
+/// Returns `true` if `path`'s final component satisfies
+/// [`is_managed_profile_basename`].
+///
+/// This is the exact predicate gating every deletion path in this crate
+/// ([`cleanup_profile_dir`], [`prune_orphan_profiles`]; `commands::profiles`
+/// applies [`is_managed_profile_basename`] directly) — factored out so a
+/// future change to the convention cannot land on only some call sites.
+pub(crate) fn is_managed_profile_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(is_managed_profile_basename)
+}
+
+/// Newest modification time among `dir` itself and its direct children.
+///
+/// A running Firefox mostly rewrites the *contents* of existing top-level
+/// files (prefs.js, `*.sqlite-wal`, ...), which bumps those files' mtimes but
+/// not the parent directory's — so the directory mtime alone can look stale
+/// while the profile is still in use by a long-running session. Staleness
+/// decisions in [`prune_orphan_profiles`] and `profiles prune` use this
+/// signal instead. Unreadable entries are skipped; the result is never older
+/// than `dir_mtime`. Cheap by construction: one `read_dir`, no recursion,
+/// and callers only consult it for candidates that already look stale.
+pub(crate) fn latest_profile_activity(dir: &Path, dir_mtime: SystemTime) -> SystemTime {
+    let mut newest = dir_mtime;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if let Ok(modified) = entry.metadata().and_then(|m| m.modified())
+                && modified > newest
+            {
+                newest = modified;
+            }
+        }
+    }
+    newest
+}
+
 // ---------------------------------------------------------------------------
 // Theme A: active-profile cleanup on `daemon stop`
 // ---------------------------------------------------------------------------
@@ -172,11 +209,7 @@ pub fn cleanup_profile_dir(path: &Path) -> ProfileCleanup {
         return ProfileCleanup::Skipped;
     }
 
-    let is_managed = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(is_managed_profile_basename);
-    if !is_managed {
+    if !is_managed_profile_path(path) {
         tracing::debug!(
             "cleanup_profile_dir: refusing to remove {} — basename is not a managed ff-rdp profile dir",
             path.display()
@@ -211,7 +244,10 @@ pub struct PruneSummary {
 }
 
 /// Remove stale `ff-rdp-profile-*` directories directly under
-/// `profile_root` whose `mtime` is at least `age_threshold` old.
+/// `profile_root`. A directory is stale when both its own `mtime` and its
+/// newest top-level file mtime ([`latest_profile_activity`]) are at least
+/// `age_threshold` old — the second signal keeps a long-running live
+/// session's profile off the candidate list.
 ///
 /// Bounded by `max_entries`: stops after removing that many directories so a
 /// large backlog can't add unbounded latency to a single `launch` — the rest
@@ -260,11 +296,7 @@ pub fn prune_orphan_profiles(
         };
 
         let path = entry.path();
-        let is_managed = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(is_managed_profile_basename);
-        if !is_managed {
+        if !is_managed_profile_path(&path) {
             continue;
         }
 
@@ -298,6 +330,19 @@ pub fn prune_orphan_profiles(
 
         // mtime is in the future (clock skew) — treat as fresh, not stale.
         let Ok(age) = now.duration_since(modified) else {
+            continue;
+        };
+        if age < age_threshold {
+            continue;
+        }
+
+        // The directory itself looks stale — but a live Firefox mostly
+        // rewrites the *contents* of existing files, which doesn't bump the
+        // parent dir's mtime. Consult the newest top-level file mtime before
+        // deleting, so a still-running session's profile is never mistaken
+        // for an orphan. Future mtimes (clock skew) again count as fresh.
+        let newest = latest_profile_activity(&path, modified);
+        let Ok(age) = now.duration_since(newest) else {
             continue;
         };
         if age < age_threshold {
@@ -486,6 +531,32 @@ mod tests {
         assert_eq!(summary.removed, vec![old_dir.clone()]);
         assert!(!old_dir.exists(), "8-day-old dir should be pruned");
         assert!(fresh_dir.exists(), "1-hour-old dir should survive");
+    }
+
+    /// A directory whose own mtime is stale but which contains a
+    /// recently-written top-level file (the signature of a live Firefox
+    /// session — content rewrites bump file mtimes, not the parent dir's)
+    /// must NOT be pruned by launch's automatic orphan sweep.
+    #[test]
+    fn unit_prune_orphan_profiles_skips_profile_with_fresh_inner_file() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"c".repeat(16), Duration::from_hours(192));
+        // Simulate live-session activity: write a fresh inner file, then
+        // re-backdate the directory itself (the write bumps its mtime).
+        std::fs::write(dir.join("prefs.js"), b"user_pref!").expect("write fresh inner file");
+        let stale = std::time::SystemTime::now()
+            .checked_sub(Duration::from_hours(192))
+            .expect("age fits before now");
+        filetime::set_file_mtime(&dir, filetime::FileTime::from_system_time(stale))
+            .expect("re-backdate dir mtime");
+
+        let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
+
+        assert!(
+            summary.removed.is_empty(),
+            "a profile with fresh top-level file activity must survive the launch sweep"
+        );
+        assert!(dir.exists(), "{} must survive", dir.display());
     }
 
     /// AC: `unit_prune_orphan_profiles_bounded_by_max` — 60 stale dirs seeded,

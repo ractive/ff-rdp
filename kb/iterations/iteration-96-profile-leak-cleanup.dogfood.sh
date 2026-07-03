@@ -49,14 +49,16 @@ echo "profile root: $PROFILE_ROOT"
 
 seed_orphan() {
   # $1 = 16-char suffix; creates a stale (8 days old) fake profile dir.
+  # Both the dir AND its inner file must be back-dated: pruning treats a
+  # fresh top-level file as live-session activity and (correctly) skips.
   local dir="$PROFILE_ROOT/ff-rdp-profile-$1"
   mkdir -p "$dir"
   printf 'fake' > "$dir/prefs.js"
   # 8 days ago, portable-ish: BSD touch on macOS, GNU touch fallback.
-  if touch -t "$(date -v-8d +%Y%m%d%H%M 2>/dev/null)" "$dir" 2>/dev/null; then
+  if touch -t "$(date -v-8d +%Y%m%d%H%M 2>/dev/null)" "$dir/prefs.js" "$dir" 2>/dev/null; then
     :
   else
-    touch -d '8 days ago' "$dir"
+    touch -d '8 days ago' "$dir/prefs.js" "$dir"
   fi
 }
 

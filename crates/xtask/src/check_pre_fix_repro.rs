@@ -219,6 +219,15 @@ fn ensure_main_worktree(path: &Path) -> Result<()> {
             .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
             .output()
             .context("failed to invoke `git rev-parse --git-common-dir` for current repo")?;
+        // Fail loudly rather than treating a broken current repo as "roots
+        // don't match" — that would silently delete and recreate the cached
+        // worktree on every run.
+        if !current_git_dir.status.success() {
+            anyhow::bail!(
+                "`git rev-parse --git-common-dir` failed for the current repo: {}",
+                String::from_utf8_lossy(&current_git_dir.stderr).trim()
+            );
+        }
         let current_git_dir =
             std::fs::canonicalize(String::from_utf8_lossy(&current_git_dir.stdout).trim()).ok();
 

@@ -86,19 +86,28 @@ fn scan_managed_profiles(root: &Path) -> Vec<ManagedProfileEntry> {
 }
 
 /// Recursively sum the size in bytes of every regular file under `path` (a
-/// single managed profile directory).
+/// single managed profile directory), stopping early once the running total
+/// exceeds `cap` — callers that only need "is it bigger than X" (the doctor
+/// check) must not pay for a full walk of a multi-GiB backlog.
 ///
 /// Uses `walkdir` because a Firefox profile is a deep tree (places.sqlite,
 /// storage/, cache2/, ...), not a flat directory — a plain `read_dir` would
 /// only see the top level and drastically undercount.
-fn dir_size_bytes(path: &Path) -> u64 {
-    walkdir::WalkDir::new(path)
+fn dir_size_bytes_capped(path: &Path, cap: u64) -> u64 {
+    let mut total: u64 = 0;
+    for entry in walkdir::WalkDir::new(path)
         .into_iter()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_file())
-        .filter_map(|entry| entry.metadata().ok())
-        .map(|metadata| metadata.len())
-        .sum()
+    {
+        if let Ok(metadata) = entry.metadata() {
+            total = total.saturating_add(metadata.len());
+            if total > cap {
+                break;
+            }
+        }
+    }
+    total
 }
 
 /// Aggregated view of every managed profile directory under a profile root.
@@ -112,13 +121,35 @@ pub(crate) struct ProfileListSummary {
 /// Count, total on-disk size, and oldest mtime of every managed
 /// `ff-rdp-profile-*` directory directly under `root`.
 ///
-/// Core logic shared by `ff-rdp profiles list` and the `doctor`
-/// `profile_disk_usage` check (`crate::commands::doctor`).
+/// Used by `ff-rdp profiles list`, which reports exact totals.
 pub(crate) fn aggregate_profiles(root: &Path) -> ProfileListSummary {
+    aggregate_profiles_capped(root, u64::MAX)
+}
+
+/// Like [`aggregate_profiles`], but the size walk stops as soon as the
+/// running total exceeds `byte_cap` — `total_size_bytes` is then a lower
+/// bound, not an exact figure. `count` and `oldest_mtime` are always exact
+/// (they only need top-level metadata, which is cheap).
+///
+/// Used by the `doctor` `profile_disk_usage` check
+/// (`crate::commands::doctor`), which only needs to know whether the store
+/// crossed its warn threshold — walking every file of a multi-GiB backlog
+/// would make `ff-rdp doctor` appear hung on exactly the machines the check
+/// exists to help.
+pub(crate) fn aggregate_profiles_capped(root: &Path, byte_cap: u64) -> ProfileListSummary {
     let entries = scan_managed_profiles(root);
     let count = entries.len();
     let oldest_mtime = entries.iter().filter_map(|e| e.mtime).min();
-    let total_size_bytes = entries.iter().map(|e| dir_size_bytes(&e.path)).sum();
+    let mut total_size_bytes: u64 = 0;
+    for entry in &entries {
+        total_size_bytes = total_size_bytes.saturating_add(dir_size_bytes_capped(
+            &entry.path,
+            byte_cap.saturating_sub(total_size_bytes),
+        ));
+        if total_size_bytes > byte_cap {
+            break;
+        }
+    }
     ProfileListSummary {
         count,
         total_size_bytes,
@@ -129,20 +160,33 @@ pub(crate) fn aggregate_profiles(root: &Path) -> ProfileListSummary {
 /// Select the managed profile directories under `root` a prune should touch.
 ///
 /// `older_than = None` means `--all`: age is ignored and every managed entry
-/// is a candidate. `older_than = Some(threshold)` keeps only entries whose
-/// mtime age is at least `threshold`; an entry whose mtime can't be read, or
-/// whose mtime is in the future (clock skew), is treated as "not stale" and
-/// excluded — the same conservative default `prune_orphan_profiles` uses.
+/// is a candidate. `older_than = Some(threshold)` keeps only entries that are
+/// stale by *both* signals `prune_orphan_profiles` uses — the directory's
+/// own mtime AND its newest top-level file mtime
+/// ([`crate::util::profile_dir::latest_profile_activity`]) — so a profile a
+/// long-running Firefox is still writing into is never selected. An entry
+/// whose mtime can't be read, or whose mtime is in the future (clock skew),
+/// is treated as "not stale" and excluded — the same conservative default.
 fn select_prune_targets(root: &Path, older_than: Option<Duration>) -> Vec<ManagedProfileEntry> {
     let now = SystemTime::now();
     scan_managed_profiles(root)
         .into_iter()
         .filter(|entry| match older_than {
             None => true,
-            Some(threshold) => entry
-                .mtime
-                .and_then(|mtime| now.duration_since(mtime).ok())
-                .is_some_and(|age| age >= threshold),
+            Some(threshold) => {
+                let dir_stale = entry
+                    .mtime
+                    .and_then(|mtime| now.duration_since(mtime).ok())
+                    .is_some_and(|age| age >= threshold);
+                dir_stale
+                    && entry.mtime.is_some_and(|mtime| {
+                        let newest =
+                            crate::util::profile_dir::latest_profile_activity(&entry.path, mtime);
+                        now.duration_since(newest)
+                            .ok()
+                            .is_some_and(|age| age >= threshold)
+                    })
+            }
         })
         .collect()
 }
@@ -284,20 +328,24 @@ mod tests {
     use super::*;
 
     /// Create a fake managed profile dir `ff-rdp-profile-<suffix>` under
-    /// `root`, containing one file of `file_bytes` length, and back-date its
-    /// directory mtime by `age`. `suffix` must be exactly 16 alphanumeric
-    /// characters to satisfy `is_managed_profile_basename`.
+    /// `root`, containing one file of `file_bytes` length, and back-date both
+    /// the directory mtime AND the payload file mtime by `age` — an orphan's
+    /// files are as old as the directory itself; a fresh inner file would
+    /// (correctly) make `select_prune_targets`'s activity check treat the
+    /// profile as live. `suffix` must be exactly 16 alphanumeric characters
+    /// to satisfy `is_managed_profile_basename`.
     fn seed_profile(root: &Path, suffix: &str, file_bytes: usize, age: Duration) -> PathBuf {
         assert_eq!(suffix.len(), 16, "test fixture suffix must be 16 chars");
         let dir = root.join(format!("ff-rdp-profile-{suffix}"));
         std::fs::create_dir_all(&dir).expect("create fake profile dir");
-        std::fs::write(dir.join("payload.bin"), vec![0u8; file_bytes])
-            .expect("write fake payload file");
+        let payload = dir.join("payload.bin");
+        std::fs::write(&payload, vec![0u8; file_bytes]).expect("write fake payload file");
         let mtime = SystemTime::now()
             .checked_sub(age)
             .expect("age fits before now");
-        filetime::set_file_mtime(&dir, filetime::FileTime::from_system_time(mtime))
-            .expect("set_file_mtime");
+        let ft = filetime::FileTime::from_system_time(mtime);
+        filetime::set_file_mtime(&payload, ft).expect("set_file_mtime payload");
+        filetime::set_file_mtime(&dir, ft).expect("set_file_mtime dir");
         dir
     }
 
@@ -326,6 +374,29 @@ mod tests {
         assert_eq!(
             summary.total_size_bytes, 400,
             "100 + 250 + 50 (nested) = 400 bytes"
+        );
+        assert!(summary.oldest_mtime.is_some());
+    }
+
+    /// `aggregate_profiles_capped` stops the size walk once the cap is
+    /// crossed but still reports the exact entry count. Each seeded dir
+    /// holds a single 100-byte file, so regardless of walk order the total
+    /// is 100 (≤ cap, keep going) then 200 (> cap, stop) — the third dir is
+    /// never walked.
+    #[test]
+    fn unit_aggregate_profiles_capped_stops_early_but_counts_all() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let fresh = Duration::from_secs(0);
+        seed_profile(root.path(), &"d".repeat(16), 100, fresh);
+        seed_profile(root.path(), &"e".repeat(16), 100, fresh);
+        seed_profile(root.path(), &"f".repeat(16), 100, fresh);
+
+        let summary = aggregate_profiles_capped(root.path(), 150);
+
+        assert_eq!(summary.count, 3, "count must stay exact under a cap");
+        assert_eq!(
+            summary.total_size_bytes, 200,
+            "walk must stop at the first total exceeding the 150-byte cap"
         );
         assert!(summary.oldest_mtime.is_some());
     }
@@ -410,6 +481,33 @@ mod tests {
         assert_eq!(outcome.removed.len(), 1);
         assert!(!old_dir.exists(), "stale dir should be removed");
         assert!(fresh_dir.exists(), "fresh dir should survive");
+    }
+
+    /// A directory whose own mtime is stale but which contains a
+    /// recently-written top-level file (the signature of a live Firefox
+    /// session — content rewrites bump file mtimes, not the parent dir's)
+    /// must NOT be selected by an age-gated prune.
+    #[test]
+    fn unit_profiles_prune_age_gated_skips_profile_with_fresh_inner_file() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_profile(root.path(), &"g".repeat(16), 10, Duration::from_hours(192));
+        // Simulate live-session activity: refresh one inner file's mtime,
+        // then re-backdate the directory itself (the write bumps it).
+        std::fs::write(dir.join("prefs.js"), b"user_pref!").expect("write fresh inner file");
+        let stale = SystemTime::now()
+            .checked_sub(Duration::from_hours(192))
+            .expect("age fits before now");
+        filetime::set_file_mtime(&dir, filetime::FileTime::from_system_time(stale))
+            .expect("re-backdate dir mtime");
+
+        let outcome = prune_profiles(root.path(), Some(Duration::from_hours(168)), false);
+
+        assert_eq!(
+            outcome.removed.len(),
+            0,
+            "a profile with fresh top-level file activity must survive an age-gated prune"
+        );
+        assert!(dir.exists(), "{} must survive", dir.display());
     }
 
     #[test]

@@ -166,6 +166,14 @@ Three themes. Each ships its own pre-fix repro + unit test. **No theme cross-tal
   as "removes everything matching `ff-rdp-profile-*`; do not run while
   Firefox is using one of these profiles". The `daemon stop` cleanup
   in Theme A handles the common case where Firefox *is* running.
+  *PR #133 review addendum:* the same age-only risk applied to the
+  automatic paths, so staleness was hardened in-review to require both
+  the dir mtime AND the newest top-level file mtime past the threshold
+  (`latest_profile_activity`; tests
+  `unit_prune_orphan_profiles_skips_profile_with_fresh_inner_file`,
+  `unit_profiles_prune_age_gated_skips_profile_with_fresh_inner_file`).
+  A positive owner-PID liveness guard is filed as
+  [[iteration-97-profile-liveness-guard]].
 - **Profile snapshot/restore** for debugging — out of scope; if you
   want to keep a specific session's state, use `--profile <path>`.
 - **Migration of the existing 1715-dir backlog** at upgrade time.

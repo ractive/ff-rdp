@@ -436,10 +436,20 @@ fn probe_profile_disk_usage() -> Probe {
 /// Pure core logic — takes `&Path` so unit tests can point it at a temp dir
 /// instead of the real `secure_profile_root()`.
 fn probe_profile_disk_usage_at(root: &Path) -> Probe {
-    let summary = crate::commands::profiles::aggregate_profiles(root);
+    // Capped walk: the size scan stops once it crosses the warn threshold,
+    // so `doctor` stays fast even on a multi-GiB backlog. Past the cap the
+    // reported figure is a lower bound, hence the "at least" wording below.
+    let summary =
+        crate::commands::profiles::aggregate_profiles_capped(root, PROFILE_DISK_USAGE_WARN_BYTES);
+    let size_qualifier = if summary.total_size_bytes > PROFILE_DISK_USAGE_WARN_BYTES {
+        "at least "
+    } else {
+        ""
+    };
     let detail = format!(
-        "{} managed profile dir(s), {} bytes under {}",
+        "{} managed profile dir(s), {}{} bytes under {}",
         summary.count,
+        size_qualifier,
         summary.total_size_bytes,
         root.display()
     );

@@ -1765,7 +1765,7 @@ not succeed within 2 seconds. Cleans up daemon.json on success.
 When Firefox was started via `launch`, stopping it also removes its
 temporary profile directory (never a directory passed via --profile).
 
-Output: {\"results\": {\"stopped\": bool, \"profile_removed\": bool, \"profile_removed_path\": \"...\"|null}, \"total\": 1, \"meta\": {...}}")]
+Output: {\"results\": {\"stopped\": bool, \"pid\": N, \"port\": N, \"profile_removed\": bool, \"profile_removed_path\": \"...\"|null}, \"total\": 1, \"meta\": {...}}")]
     Stop,
 }
 
@@ -1784,8 +1784,12 @@ Output: {\"results\": {\"path\": \"...\", \"count\": N, \"total_size_bytes\": N,
     #[command(
         long_about = "Remove managed `ff-rdp-profile-*` directories under the profile root.
 
-By default only removes entries whose mtime is at least --older-than old (default 7d).
-Pass --all to remove every managed entry regardless of age (mutually exclusive with --older-than).
+By default only removes stale entries (default --older-than 7d). An entry is stale when both
+the directory mtime AND its newest top-level file mtime are at least --older-than old — a
+profile a running Firefox is still writing into is not selected.
+Pass --all to remove every managed entry regardless of age (mutually exclusive with
+--older-than). --all has no liveness guard: do not run it while a Firefox launched by
+ff-rdp is still using one of these profiles.
 Pass --dry-run to preview without touching disk: `would_remove` is populated and `removed` stays
 empty, and every listed directory still exists afterwards. On a real run it's the other way round:
 `removed` is populated and `would_remove` stays empty.
