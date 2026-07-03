@@ -2,7 +2,7 @@
 title: "Iteration 96: temp-profile leak — daemon stop cleans up, launch prunes orphans, profiles subcommand"
 type: iteration
 date: 2026-06-02
-status: planned
+status: completed
 branch: iter-96/profile-leak-cleanup
 depends_on:
   - iteration-95-session-60-followups
