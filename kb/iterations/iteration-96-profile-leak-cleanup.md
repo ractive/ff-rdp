@@ -40,7 +40,7 @@ The daemon record already persists `profile_dir` (`crates/ff-rdp-cli/src/daemon_
 
 ### B. `ff-rdp launch` prunes orphan `ff-rdp-profile-*` siblings older than N days (catches crashes, kill -9, reboots)
 
-Before `tempdir_in(&profile_root)`, walk `profile_root`, list entries matching `ff-rdp-profile-*`, and `remove_dir_all` any whose `mtime` is older than `RALPH_PROFILE_PRUNE_DAYS` (default 7). Bounded work: stops scanning after the first N old entries per launch so a 1700-dir backlog doesn't pause the next launch by 30s. The active profile (created by the current process) is never a candidate — it doesn't exist on disk yet at this point.
+Before `tempdir_in(&profile_root)`, walk `profile_root`, list entries matching `ff-rdp-profile-*`, and `remove_dir_all` any whose `mtime` is older than `FF_RDP_PROFILE_PRUNE_DAYS` (default 7). Bounded work: stops scanning after the first N old entries per launch so a 1700-dir backlog doesn't pause the next launch by 30s. The active profile (created by the current process) is never a candidate — it doesn't exist on disk yet at this point.
 
 ### C. `ff-rdp profiles {list,prune}` subcommand + `doctor` size check
 
@@ -65,12 +65,12 @@ Three themes. Each ships its own pre-fix repro + unit test. **No theme cross-tal
 
 ## Tasks
 
-### Theme A — daemon stop removes active profile [0/4] [pre_fix_repro_test: pre_fix_repro_daemon_stop_removes_active_profile]
+### Theme A — daemon stop removes active profile [4/4] [pre_fix_repro_test: pre_fix_repro_daemon_stop_removes_active_profile]
 
-- [ ] In `crates/ff-rdp-cli/src/daemon/client.rs`, after the existing
+- [x] In `crates/ff-rdp-cli/src/daemon/client.rs`, after the existing
       SIGTERM→SIGKILL→killpg ladder reports success (port freed AND
       process gone), call `cleanup_profile_dir(&record.profile_dir)`.
-- [ ] Add `cleanup_profile_dir` helper in
+- [x] Add `cleanup_profile_dir` helper in
       `crates/ff-rdp-cli/src/util/profile_dir.rs` that only removes the
       path if (a) the path is under
       `secure_profile_root()` and (b) the basename matches
@@ -78,83 +78,85 @@ Three themes. Each ships its own pre-fix repro + unit test. **No theme cross-tal
       the user passed via `--profile`. Log the removal at debug level;
       `daemon stop` JSON output gains a `profile_removed: true|false`
       field.
-- [ ] Land `pre_fix_repro_daemon_stop_removes_active_profile` as a
+- [x] Land `pre_fix_repro_daemon_stop_removes_active_profile` as a
       live test (`FF_RDP_LIVE_TESTS=1`): launch → capture
       `profile_path` from the launch JSON → daemon stop → assert
       `!profile_path.exists()` AND launch JSON's `profile_path`
       equals daemon stop JSON's removed path.
-- [ ] `unit_cleanup_profile_dir_refuses_path_outside_profile_root`:
+- [x] `unit_cleanup_profile_dir_refuses_path_outside_profile_root`:
       pass `/tmp/some-user-dir`; assert no removal and no error
       (silent skip + log).
 
-### Theme B — launch prunes orphan profiles [0/4] [pre_fix_repro_test: pre_fix_repro_launch_prunes_stale_orphan_profiles]
+### Theme B — launch prunes orphan profiles [4/4] [pre_fix_repro_test: pre_fix_repro_launch_prunes_stale_orphan_profiles]
 
-- [ ] In `crates/ff-rdp-cli/src/commands/launch.rs`, before
+- [x] In `crates/ff-rdp-cli/src/commands/launch.rs`, before
       `tempdir_in(&profile_root)`, call a new
       `prune_orphan_profiles(&profile_root, age_threshold)` helper in
       `util/profile_dir.rs`. The helper iterates `read_dir`, filters
       to `ff-rdp-profile-*` basenames, checks `metadata.modified()`
       against `Utc::now() - age_threshold`, and `remove_dir_all` the
       stale ones. Errors are warn-not-fail (never block a launch).
-- [ ] Bound the work: stop after pruning `RALPH_PROFILE_PRUNE_MAX`
+- [x] Bound the work: stop after pruning `FF_RDP_PROFILE_PRUNE_MAX`
       (default 50) entries per launch so a 1700-dir backlog doesn't
       add 30s to a hot launch. Subsequent launches will pick up the
       next batch.
-- [ ] Land `pre_fix_repro_launch_prunes_stale_orphan_profiles` as a
+- [x] Land `pre_fix_repro_launch_prunes_stale_orphan_profiles` as a
       unit test that pre-seeds the profile root with three dated
       directories (using `filetime::set_file_mtime`) and asserts they
       vanish after `prune_orphan_profiles` runs.
-- [ ] `unit_prune_orphan_profiles_respects_age_threshold`: seed
+- [x] `unit_prune_orphan_profiles_respects_age_threshold`: seed
       `aaaa` (8 days old) + `bbbb` (1 hour old); prune at 7-day
       threshold; assert `aaaa` gone, `bbbb` survives.
 
-### Theme C — `profiles` subcommand + `doctor` check [0/5] [pre_fix_repro_test: pre_fix_repro_profiles_subcommand_prune_dry_run_lists_orphans]
+### Theme C — `profiles` subcommand + `doctor` check [5/5] [pre_fix_repro_test: pre_fix_repro_profiles_subcommand_prune_dry_run_lists_orphans]
 
-- [ ] Add `crates/ff-rdp-cli/src/commands/profiles.rs` with two
+- [x] Add `crates/ff-rdp-cli/src/commands/profiles.rs` with two
       subcommands: `list` (path, count, total size, oldest mtime) and
       `prune` (delete with `--older-than`, `--all`, `--dry-run`).
       Wire into `cli/args.rs` clap derive.
-- [ ] Implement size aggregation via `walkdir` (already a dep).
+- [x] Implement size aggregation via `walkdir` (already a dep).
       `--dry-run` prints exactly what `--all` (or `--older-than`)
       would remove, without removing it.
-- [ ] In `commands/doctor.rs`, add a `profile_disk_usage` check:
+- [x] In `commands/doctor.rs`, add a `profile_disk_usage` check:
       walk `profile_root`, count entries + total size. Emit `warn`
       if entries > 100 OR total size > 1 GB, with hint
       `ff-rdp profiles prune` and the current count/size in the
       detail. `ok` otherwise. Never `fail`.
-- [ ] Land `pre_fix_repro_profiles_subcommand_prune_dry_run_lists_orphans`:
+- [x] Land `pre_fix_repro_profiles_subcommand_prune_dry_run_lists_orphans`:
       seed profiles, `profiles prune --dry-run`, assert JSON
       `would_remove` array contains the seeded basenames AND
       directories still on disk.
-- [ ] `unit_doctor_profile_disk_usage_warns_above_threshold`: mock
+- [x] `unit_doctor_profile_disk_usage_warns_above_threshold`: mock
       a `profile_root` with 101 entries; doctor check returns `warn`.
 
-## Acceptance Criteria [0/11]
+## Acceptance Criteria [11/11]
 
-- [ ] `pre_fix_repro_daemon_stop_removes_active_profile`: live;
+- [x] `pre_fix_repro_daemon_stop_removes_active_profile`: live;
       profile dir gone after stop.
-- [ ] `unit_cleanup_profile_dir_refuses_path_outside_profile_root`:
+- [x] `unit_cleanup_profile_dir_refuses_path_outside_profile_root`:
       external paths are never removed.
-- [ ] `live_daemon_stop_profile_path_matches_launch_json`:
+- [x] `live_daemon_stop_profile_path_matches_launch_json`:
       `launch.results.profile_path` == `daemon stop.results.profile_removed_path`.
-- [ ] `pre_fix_repro_launch_prunes_stale_orphan_profiles`: seeded
+- [x] `pre_fix_repro_launch_prunes_stale_orphan_profiles`: seeded
       stale dirs vanish on next launch.
-- [ ] `unit_prune_orphan_profiles_respects_age_threshold`: only
+- [x] `unit_prune_orphan_profiles_respects_age_threshold`: only
       mtime-older-than-threshold entries are removed.
-- [ ] `unit_prune_orphan_profiles_bounded_by_max`: seed 60 stale
+- [x] `unit_prune_orphan_profiles_bounded_by_max`: seed 60 stale
       dirs; assert at most 50 removed per call (the default
-      `RALPH_PROFILE_PRUNE_MAX`).
-- [ ] `pre_fix_repro_profiles_subcommand_prune_dry_run_lists_orphans`:
+      `FF_RDP_PROFILE_PRUNE_MAX`).
+- [x] `pre_fix_repro_profiles_subcommand_prune_dry_run_lists_orphans`:
       dry-run lists without deleting.
-- [ ] `unit_profiles_list_aggregates_size_and_count_correctly`:
+- [x] `unit_profiles_list_aggregates_size_and_count_correctly`:
       seed known sizes; assert sums match.
-- [ ] `unit_doctor_profile_disk_usage_warns_above_threshold`:
+- [x] `unit_doctor_profile_disk_usage_warns_above_threshold`:
       threshold trips.
-- [ ] `live_profiles_prune_removes_all_when_no_firefox_running`:
+- [x] `live_profiles_prune_removes_all_when_no_firefox_running`:
       seed orphans, no Firefox running, `profiles prune --all`,
       assert zero entries remain.
-- [ ] `dogfood_script_full_run_iter_96`: the sibling `.dogfood.sh`
-      exits 0 and writes `/tmp/ff-rdp-iter-96-dogfood-ok`.
+- [x] `dogfood_script_full_run_iter_96`: `.dogfood.sh` drives `prune_orphan_profiles`,
+      `cleanup_profile_dir`, `run_prune`, and the doctor `profile_disk_usage`
+      check end to end; exits 0 and writes `/tmp/ff-rdp-iter-96-dogfood-ok`
+      (verified 2026-07-03, all themes PASS).
 
 ## Out of scope
 
@@ -164,6 +166,14 @@ Three themes. Each ships its own pre-fix repro + unit test. **No theme cross-tal
   as "removes everything matching `ff-rdp-profile-*`; do not run while
   Firefox is using one of these profiles". The `daemon stop` cleanup
   in Theme A handles the common case where Firefox *is* running.
+  *PR #133 review addendum:* the same age-only risk applied to the
+  automatic paths, so staleness was hardened in-review to require both
+  the dir mtime AND the newest top-level file mtime past the threshold
+  (`latest_profile_activity`; tests
+  `unit_prune_orphan_profiles_skips_profile_with_fresh_inner_file`,
+  `unit_profiles_prune_age_gated_skips_profile_with_fresh_inner_file`).
+  A positive owner-PID liveness guard is filed as
+  [[iteration-97-profile-liveness-guard]].
 - **Profile snapshot/restore** for debugging — out of scope; if you
   want to keep a specific session's state, use `--profile <path>`.
 - **Migration of the existing 1715-dir backlog** at upgrade time.

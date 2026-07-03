@@ -25,6 +25,7 @@ pub(crate) mod network_events;
 pub(crate) mod page_text;
 pub(crate) mod perf;
 pub(crate) mod perf_compare;
+pub(crate) mod profiles;
 pub(crate) mod record;
 pub(crate) mod responsive;
 pub(crate) mod run;

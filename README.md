@@ -223,6 +223,16 @@ ff-rdp launch --headless --temp-profile
 # Launch with a specific profile and debug port
 ff-rdp launch --profile /path/to/profile --debug-port 9222
 
+# List temporary profiles managed by ff-rdp (path, count, total size)
+ff-rdp profiles list
+
+# Remove stale temporary profiles (default: older than 7 days)
+ff-rdp profiles prune
+
+# Preview what --all would remove, then remove everything
+ff-rdp profiles prune --all --dry-run
+ff-rdp profiles prune --all
+
 # Inspect a remote object grip (from eval output)
 ff-rdp inspect server1.conn0.child2/obj19
 
@@ -305,6 +315,23 @@ ff-rdp --no-daemon eval "1+1"
 - If the daemon seems stuck, delete `~/.ff-rdp/daemon.json` to force a fresh start
 - Use `--no-daemon` to bypass the daemon and test direct connectivity
 - Check `~/.ff-rdp/daemon.log` for daemon-side errors
+
+**Temporary profile cleanup:**
+- `ff-rdp daemon stop` attempts to delete the temporary profile directory it
+  launched Firefox with (never a directory passed via `--profile`). Cleanup
+  runs only after the daemon has confirmed the stop; the stop JSON reports
+  whether it happened via `profile_removed` / `profile_removed_path`.
+- `ff-rdp launch` prunes orphaned `ff-rdp-profile-*` directories left behind
+  by crashes or `kill -9`: entries older than `FF_RDP_PROFILE_PRUNE_DAYS`
+  (default 7) are removed, at most `FF_RDP_PROFILE_PRUNE_MAX` (default 50)
+  per launch. A directory only counts as stale when both its own mtime and
+  its newest top-level file mtime are past the threshold — a profile that a
+  long-running Firefox is still writing into is not treated as an orphan.
+- `ff-rdp profiles list` / `ff-rdp profiles prune` inspect and reclaim the
+  profile directory explicitly; `ff-rdp doctor` warns when the profile store
+  grows past 100 entries or 1 GiB. `profiles prune --all` skips the age gate
+  entirely — do not run it while a Firefox launched by ff-rdp is still using
+  one of these profiles.
 
 ## Security
 
