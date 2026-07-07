@@ -255,15 +255,17 @@ fn render_hints(hints: &[Hint]) {
     }
 }
 
-/// Render an array of JSON objects as an ASCII table.
+/// Collect ordered column names from an array of row objects.
 ///
-/// Column headers come from the union of all object keys across rows (sorted
-/// alphabetically by serde_json's default BTreeMap ordering, then any extra
-/// keys from subsequent rows are appended).  Each cell is coerced to a string
-/// and padded to the column width.
-fn render_table(rows: &[Value]) {
-    // Collect ordered column names from the first row, then any unseen keys
-    // from subsequent rows.
+/// Column headers come from the union of all object keys across rows, in
+/// first-seen insertion order (the first row's keys, then any new keys
+/// introduced by later rows are appended). This relies on the workspace's
+/// `serde_json` `preserve_order` feature — without it, `serde_json::Map` is
+/// backed by a `BTreeMap` and keys silently come out alphabetically instead,
+/// which is why callers building result objects (e.g. `doctor`'s
+/// `build_results_json`) should put narrow columns first and wide free-text
+/// columns (like `detail`) last.
+fn collect_table_columns(rows: &[Value]) -> Vec<String> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut columns: Vec<String> = Vec::new();
     for row in rows {
@@ -275,6 +277,15 @@ fn render_table(rows: &[Value]) {
             }
         }
     }
+    columns
+}
+
+/// Render an array of JSON objects as an ASCII table.
+///
+/// See [`collect_table_columns`] for the column-ordering contract. Each
+/// cell is coerced to a string and padded to the column width.
+fn render_table(rows: &[Value]) {
+    let columns = collect_table_columns(rows);
 
     if columns.is_empty() {
         return;
@@ -567,5 +578,61 @@ mod tests {
             !rendered.as_bytes().contains(&0x1b),
             "nested JSON must also be sanitized, got: {rendered:?}"
         );
+    }
+
+    // ── regression: text-table column order for a doctor-style envelope ─────
+    //
+    // `doctor`'s `build_results_json` inserts keys as glyph, name, status,
+    // (hint), detail so the wide free-text column ends up last in the
+    // rendered table. This only holds if `serde_json::Map` preserves
+    // insertion order (workspace `preserve_order` feature) — if that
+    // feature regresses, `serde_json::Map` silently reverts to alphabetical
+    // (BTreeMap) ordering and `detail` jumps back to the front. Exercise
+    // `collect_table_columns` directly (the same helper `render_table`
+    // uses) rather than capturing stdout.
+    #[test]
+    fn doctor_style_row_orders_glyph_first_and_detail_after_status() {
+        let row = json!({
+            "glyph": "\u{2713}",
+            "name": "daemon",
+            "status": "pass",
+            "hint": "no daemon running; commands will connect directly",
+            "detail": "no daemon running (commands will connect directly)",
+        });
+        let columns = collect_table_columns(&[row]);
+
+        assert_eq!(
+            columns.first().map(String::as_str),
+            Some("glyph"),
+            "glyph must be the first column, got order: {columns:?}"
+        );
+
+        let status_idx = columns
+            .iter()
+            .position(|c| c == "status")
+            .expect("status column must be present");
+        let detail_idx = columns
+            .iter()
+            .position(|c| c == "detail")
+            .expect("detail column must be present");
+        assert!(
+            detail_idx > status_idx,
+            "detail (wide free-text) must come after status, got order: {columns:?}"
+        );
+    }
+
+    /// `hint` is optional in the JSON shape (omitted when `None`); when
+    /// absent the column list must simply skip it, not shift `detail`
+    /// earlier than intended.
+    #[test]
+    fn doctor_style_row_without_hint_still_orders_detail_last() {
+        let row = json!({
+            "glyph": "\u{2713}",
+            "name": "daemon",
+            "status": "pass",
+            "detail": "no daemon running (commands will connect directly)",
+        });
+        let columns = collect_table_columns(&[row]);
+        assert_eq!(columns, vec!["glyph", "name", "status", "detail"]);
     }
 }
