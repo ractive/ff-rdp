@@ -1168,10 +1168,17 @@ mod tests {
             TREE_KILL_CALLED.load(Ordering::SeqCst),
             "kill_process_tree hook must be called when pid-level kill leaves port held"
         );
-        // Error message must mention the pgid escalation path.
+        // Error message must mention the platform's tree-kill escalation path
+        // (`port_still_listening_after_escalation_msg` words it per platform).
+        #[cfg(unix)]
         assert!(
             msg.contains("pgid"),
             "error message must mention 'pgid' escalation: {msg:?}"
+        );
+        #[cfg(not(unix))]
+        assert!(
+            msg.contains("taskkill"),
+            "error message must mention 'taskkill' escalation: {msg:?}"
         );
 
         // Clean up the listener so the port is released.

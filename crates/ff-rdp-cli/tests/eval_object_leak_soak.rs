@@ -121,26 +121,36 @@ fn live_eval_object_leak_soak() {
         String::from_utf8_lossy(&init.stderr)
     );
 
-    // Allow the daemon a moment to become fully ready.
-    std::thread::sleep(Duration::from_millis(500));
-
-    // Query the daemon status to get its PID for RSS measurement.
-    let status_out = Command::new(ff_rdp_bin())
-        .args(daemon_args())
-        .args(["daemon", "status"])
-        .output()
-        .expect("daemon status");
-    assert!(
-        status_out.status.success(),
-        "live_eval_object_leak_soak: daemon status failed\nstderr: {}",
-        String::from_utf8_lossy(&status_out.stderr)
-    );
-    let status_json: serde_json::Value =
-        serde_json::from_slice(&status_out.stdout).expect("daemon status JSON");
-    let daemon_pid = status_json["results"]["pid"]
-        .as_u64()
-        .and_then(|p| u32::try_from(p).ok())
-        .expect("daemon pid in status response");
+    // Poll `daemon status` until the daemon has registered and reports a PID.
+    // A fixed post-init sleep raced the daemon's registry write on slow CI
+    // runners (`results.pid` absent while the daemon was still coming up).
+    let status_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let daemon_pid = loop {
+        let status_out = Command::new(ff_rdp_bin())
+            .args(daemon_args())
+            .args(["daemon", "status"])
+            .output()
+            .expect("daemon status");
+        assert!(
+            status_out.status.success(),
+            "live_eval_object_leak_soak: daemon status failed\nstderr: {}",
+            String::from_utf8_lossy(&status_out.stderr)
+        );
+        let status_json: serde_json::Value =
+            serde_json::from_slice(&status_out.stdout).expect("daemon status JSON");
+        if let Some(pid) = status_json["results"]["pid"]
+            .as_u64()
+            .and_then(|p| u32::try_from(p).ok())
+        {
+            break pid;
+        }
+        assert!(
+            std::time::Instant::now() < status_deadline,
+            "live_eval_object_leak_soak: daemon never reported a pid within 10 s; \
+             last status: {status_json}"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    };
 
     eprintln!("live_eval_object_leak_soak: daemon pid={daemon_pid}");
 
