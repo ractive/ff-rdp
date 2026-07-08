@@ -1,5 +1,5 @@
 ---
-title: "Iteration 100: daemon lifecycle hardening — thread supervision, honest idle timeout, signal cleanup, spawn/kill races"
+title: "Iteration 100: daemon lifecycle hardening — thread supervision, honest idle timeout, signal cleanup, spawn/kill races, auto-start observability"
 type: iteration
 date: 2026-07-09
 status: planned
@@ -8,6 +8,7 @@ depends_on: []
 firefox_refs: []
 kb_refs:
   - kb/research/deep-review-2026-07-fable5.md
+  - kb/iterations/iteration-99-ci-preexisting-reds.md
 first_call_sites:
   - primitive: >-
       supervised worker-thread wrapper (catch_unwind → state.shutdown) for
@@ -19,6 +20,10 @@ first_call_sites:
     site: crates/ff-rdp-cli/src/daemon/server.rs
   - primitive: >-
       exclusive spawn lock held across the whole check→spawn→register sequence
+    site: crates/ff-rdp-cli/src/daemon/client.rs
+  - primitive: >-
+      daemon_autostart_failed warning in the command envelope when auto-start
+      does not register and the CLI falls back to a direct connection
     site: crates/ff-rdp-cli/src/daemon/client.rs
 dogfood_path: |
   ff-rdp launch --headless
@@ -50,6 +55,18 @@ recyclable raw fd (`server.rs:1102`). One more kill-safety hole:
 `stop_prior_instance` resolves a PID once and kills it later with no
 re-verification (`client.rs:999-1009`).
 
+**Absorbed from iter-99 Theme B (auto-start registration).** The
+`live_eval_object_leak_soak` CI red was only *deflaked* (commit `23c5994`
+widened the status poll to 10 s) — the underlying symptom is that an
+auto-started daemon sometimes never registers within the poll window while
+the CLI **silently** falls back to a direct connection. That silent
+degradation is the same failure surface as the spawn race in Theme D and the
+zombie in Theme A: whatever the root cause (TOCTOU double-spawn, a spawn that
+dies before the registry write, or a slow registry write), the CLI must not
+present "used the daemon" and "quietly went direct" as the same observable
+outcome. This iteration owns both the root-cause fix and the
+`daemon_autostart_failed` warning the iter-99 plan specified.
+
 ## Themes
 
 - **A — Thread supervision.** A worker-thread panic must flip the daemon into
@@ -61,6 +78,9 @@ re-verification (`client.rs:999-1009`).
   doc comment goes away either way.
 - **D — Spawn/kill/identity races.** One daemon per registry, cleanup on every
   client exit path, no fd-reuse confusion, no killing recycled PIDs.
+- **E — Auto-start observability (from iter-99 B).** Auto-start failure is
+  surfaced, not silent; the soak test goes green because the daemon actually
+  registers, not because the poll got longer.
 
 ## Tasks
 
@@ -108,7 +128,25 @@ re-verification (`client.rs:999-1009`).
 - [ ] Re-verify port ownership (or compare process start time) immediately
       before the kill in `stop_prior_instance` (`client.rs:999-1009`).
 
-## Acceptance Criteria [0/8]
+### E. Auto-start observability (absorbed from iter-99 B) [0/3]
+- [ ] Root-cause why the auto-started daemon sometimes fails to register in
+      time (`resolve_connection_target`, `client.rs:263-320`): distinguish
+      "spawn died before the registry write" from "registry write raced /
+      was slow" from "TOCTOU double-spawn orphaned the winner". The Theme D
+      spawn lock removes the double-spawn cause; instrument the remaining
+      path so the failure mode is identifiable, and record the finding in
+      this plan.
+- [ ] When auto-start does not yield a usable daemon and the CLI falls back
+      to a direct connection, add a `daemon_autostart_failed` warning to the
+      command envelope (never a hard error — direct mode still works) with a
+      short reason, so tests and users can tell daemon from direct.
+- [ ] Confirm `live_eval_object_leak_soak` passes because the daemon
+      registers within the *original* window — not because of the widened
+      poll; tighten the poll back toward its pre-`23c5994` budget once the
+      root cause is fixed, or document why the wider budget is legitimately
+      required.
+
+## Acceptance Criteria [0/10]
 
 - [ ] unit_reader_panic_sets_shutdown: an injected worker-loop panic sets
       `state.shutdown` and a subsequent connect receives a shutdown error
@@ -126,6 +164,12 @@ re-verification (`client.rs:999-1009`).
       fails is fully unregistered (no stale rpc_writer, no stale subscriber).
 - [ ] unit_client_identity_survives_fd_reuse: cleanup keyed on the monotonic
       id removes only the intended subscriber when an fd number is reused.
+- [ ] unit_autostart_failure_surfaces_warning: a forced auto-start failure
+      yields a `daemon_autostart_failed` warning in the command envelope
+      instead of a silent direct-mode fallback.
+- [ ] live_eval_object_leak_soak: green because the auto-started daemon
+      registers and `daemon status` reports its pid within the poll window
+      (root cause fixed, not just deflaked).
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
@@ -152,5 +196,9 @@ re-verification (`client.rs:999-1009`).
 ## References
 
 - [[deep-review-2026-07-fable5]] — findings A4, A9, D (signal no-op).
+- [[iteration-99-ci-preexisting-reds]] — Theme B (daemon auto-start
+  registration) moved here; iter-99 keeps only the cookies stack overflow.
 - `crates/ff-rdp-cli/src/daemon/server.rs:369-399, 468-486, 1007-1026, 1174-1207`
 - `crates/ff-rdp-cli/src/daemon/client.rs:263-320, 999-1009`
+- `crates/ff-rdp-cli/tests/eval_object_leak_soak.rs` — the soak test whose red
+  Theme B closes for the right reason.
