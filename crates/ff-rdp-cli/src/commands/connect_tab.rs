@@ -337,4 +337,31 @@ impl ConnectedTab {
             }
         }
     }
+
+    /// Build a `ConnectedTab` directly from a transport and console actor ID,
+    /// bypassing the connect + `getTarget` handshake.
+    ///
+    /// Test-only: lets unit tests elsewhere in the crate (e.g.
+    /// `js_helpers::poll_js_condition` tests) exercise `&mut ConnectedTab`
+    /// APIs against a mock transport without spinning up a full RDP session.
+    #[cfg(test)]
+    pub(crate) fn for_test(transport: RdpTransport, console_actor: ActorId) -> Self {
+        let target = TargetInfo {
+            actor: ActorId::from("conn0/target1"),
+            console_actor,
+            thread_actor: None,
+            inspector_actor: None,
+            screenshot_content_actor: None,
+            accessibility_actor: None,
+            responsive_actor: None,
+            browsing_context_id: None,
+        };
+        Self {
+            session: Session::new(transport),
+            firefox_version: None,
+            target,
+            tab_actor: ActorId::from("conn0/tab1"),
+            via_daemon: false,
+        }
+    }
 }
