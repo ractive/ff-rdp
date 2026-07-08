@@ -401,6 +401,21 @@ fn urls_match_scheme_host_path(a: &str, b: &str) -> bool {
     norm_a == norm_b
 }
 
+/// Split a total wait `timeout_ms` into `(reserved_ms, events_budget)` for the
+/// `Both` wait strategy: `reserved_ms` goes to the readystate fallback,
+/// `events_budget` to the events wait.
+///
+/// `reserved_ms` is 30% of the total, floored at 1 000 ms so the fallback
+/// always gets a meaningful window, but capped at half the total so the
+/// events wait is never starved down to a 1 ms sliver for small timeouts.
+/// Saturating arithmetic keeps degenerate inputs (`timeout_ms` of 0 or 1)
+/// from panicking.
+fn split_wait_budget(timeout_ms: u64) -> (u64, u64) {
+    let reserved_ms = (timeout_ms * 30 / 100).max(1000).min(timeout_ms / 2);
+    let events_budget = timeout_ms.saturating_sub(reserved_ms);
+    (reserved_ms, events_budget)
+}
+
 /// Run the `--wait-for` predicates from `wait_opts`, re-resolving actors first.
 ///
 /// Returns `Some(json)` when predicates were specified, `None` when none were given.
@@ -627,13 +642,14 @@ pub fn run_core(
         //
         // For the `Events`-only strategy, pass the full budget so behaviour
         // is unchanged for users who explicitly opted in to event-only waiting.
+        //
+        // `split_wait_budget` caps the reserve at half the total (not the full
+        // total) so short `--timeout` values, like the 1000 ms used by e2e
+        // tests, still leave the events wait a real window instead of
+        // collapsing it to 1 ms — see the regression tests next to that
+        // function.
         let events_budget = if wait_opts.wait_strategy == WaitStrategy::Both {
-            // Reserve 30% for readystate (or 1 s, whichever is greater).  For
-            // very small timeouts (< ~1.4 s) the reserve clamps to the full
-            // budget — events then get a 1-tick floor and readystate gets the
-            // remainder; the sum still fits inside cli.timeout.
-            let reserved_ms = (cli.timeout * 30 / 100).max(1000).min(cli.timeout);
-            cli.timeout.saturating_sub(reserved_ms).max(1)
+            split_wait_budget(cli.timeout).1
         } else {
             cli.timeout
         };
@@ -1401,22 +1417,24 @@ mod tests {
     /// iter-85 Theme C: the `Both` budget-split formula must always reserve at
     /// least 1 000 ms for the readystate fallback — even at the default 10 s
     /// timeout — so the fallback has a meaningful window instead of 0 ms
-    /// (the bug that caused example.com to always time out).
+    /// (the bug that caused example.com to always time out). Revised for the
+    /// Ubuntu CI regression: the reserve is also capped at half the total, so
+    /// the events wait keeps a real window at small `--timeout` values instead
+    /// of collapsing to 1 ms — see `split_wait_budget_exact_values` below.
     #[test]
     fn navigate_both_strategy_reserves_readystate_budget() {
-        // Mirrors the arithmetic in `run_core` for the `Both` branch.
         let timeout_ms: u64 = 10_000; // default cli.timeout
-        let reserved_ms = (timeout_ms * 30 / 100).max(1000).min(timeout_ms);
-        let events_budget = timeout_ms.saturating_sub(reserved_ms).max(1);
+        let (reserved_ms, events_budget) = split_wait_budget(timeout_ms);
         // Reserved slice must be at least 1 s.
         assert!(
             reserved_ms >= 1000,
             "readystate reserve must be ≥ 1000 ms; got {reserved_ms}"
         );
-        // Events budget must be strictly less than the total so there IS a reserve.
+        // Events budget must get at least half the total timeout.
         assert!(
-            events_budget < timeout_ms,
-            "events budget must be < total timeout; got events_budget={events_budget}"
+            events_budget >= timeout_ms / 2,
+            "events budget must be ≥ half the timeout; got events_budget={events_budget}, \
+             timeout={timeout_ms}"
         );
         // The two slices must not exceed the total budget.
         assert!(
@@ -1424,6 +1442,23 @@ mod tests {
             "events_budget ({events_budget}) + reserved_ms ({reserved_ms}) \
              exceeds timeout ({timeout_ms})"
         );
+    }
+
+    /// Regression test for the Ubuntu CI failure: at `--timeout 1000` (used by
+    /// the e2e tests `navigate_outputs_json_envelope` and
+    /// `navigate_with_jq_extracts_url`), the old formula reserved the *entire*
+    /// 1000 ms for the readystate fallback, leaving `events_budget == 1` and
+    /// causing the events wait to time out instantly ("timed out after 0ms
+    /// (phase: recv)"). Pin the exact split across the timeout range,
+    /// including tiny inputs that must not panic.
+    #[test]
+    fn split_wait_budget_exact_values() {
+        assert_eq!(split_wait_budget(1000), (500, 500));
+        assert_eq!(split_wait_budget(10_000), (3000, 7000)); // unchanged at the default
+        assert_eq!(split_wait_budget(2000), (1000, 1000));
+        assert_eq!(split_wait_budget(10), (5, 5));
+        assert_eq!(split_wait_budget(1), (0, 1));
+        assert_eq!(split_wait_budget(0), (0, 0));
     }
 
     /// iter-83 Theme C: parsing the navigate command without `--wait-strategy`

@@ -23,6 +23,15 @@ fn navigate_server() -> MockRdpServer {
     //   listTabs → getTarget → getWatcher → watchTargets → watchResources →
     //   navigateTo (with dom-loading + dom-complete followups) →
     //   unwatchResources → getTarget (refresh_console_actor after navigate)
+    //
+    // `evaluateJSAsync` is registered defensively (iter-96): the `Both`
+    // wait-strategy readystate fallback calls it twice (readyState condition
+    // poll, then `window.location.href`) if the events wait above ever times
+    // out. Without a handler here that path is guaranteed-fatal — the mock
+    // would reply with an `unknownMethod` error instead of a real timeout,
+    // masking flakiness instead of degrading gracefully. Reuses recorded
+    // fixtures from the `eval` e2e suite; the specific values aren't asserted
+    // on here since the events path above should always win.
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
@@ -46,6 +55,19 @@ fn navigate_server() -> MockRdpServer {
         )
         // refresh_console_actor calls getTarget after the navigate completes.
         .on("getTarget", load_fixture("get_target_response.json"))
+        .on_sequence(
+            "evaluateJSAsync",
+            vec![
+                (
+                    load_fixture("eval_immediate_response.json"),
+                    vec![load_fixture("eval_result_ready_state_complete.json")],
+                ),
+                (
+                    load_fixture("eval_immediate_response.json"),
+                    vec![load_fixture("eval_result_string.json")],
+                ),
+            ],
+        )
 }
 
 fn navigate_with_network_server() -> MockRdpServer {
