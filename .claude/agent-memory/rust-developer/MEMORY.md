@@ -5,3 +5,5 @@
 - [project_daemon_architecture.md](project_daemon_architecture.md) — Daemon architecture review: missing watchTargets, double-boundary bug, no Front cache, no protocol version
 - [project_ff_rdp_registry.md](project_ff_rdp_registry.md) — Actor Registry + Front lifecycle (iter-61p): ActorId as Arc<str>, DashMap registry, call_with_refresh helper
 - [project_xtask_discipline_gates.md](project_xtask_discipline_gates.md) — check-iteration-ready aggregator and find-iteration-plan resolver (iter-75b)
+- [project_serde_json_ordering.md](project_serde_json_ordering.md) — preserve_order enabled workspace-wide; text-table columns follow JSON insertion order now
+- [project_flaky_redact_tests.md](project_flaky_redact_tests.md) — transport::tests::redact_* race under narrow `cargo test -- filter`; pre-existing, not a regression
