@@ -43,6 +43,24 @@ tool I've used."* Two smaller nits ride along: `doctor`'s binary_staleness
 compares against the **cwd repo's** git HEAD even in foreign checkouts, and
 errors are emitted twice (human line + JSON envelope).
 
+## Verified state (2026-07-09) — NOT STARTED, 0/7 ACs
+
+Re-audited after the 2026-07 deep review: no code has landed (the plan was
+triaged from the field report in commit `ea2ea08`, but nothing since). All
+four themes are open. Two cross-plan notes:
+
+- **Theme D (single error emission) overlaps [[iteration-105-error-taxonomy-release-prep]].**
+  Both touch `main.rs` error output (the duplicate lives at ~`main.rs:188-190`:
+  an `eprintln!("error: …")` plus the JSON envelope). iter-105 rewrites the
+  error→exit-code path and freezes the `error_type` table. Do Theme D's
+  one-line removal *first* (it's independent and trivial) or fold it into
+  iter-105 — do not land both branches editing the same emission path
+  concurrently.
+- **Theme C fixes a bug iter-95 shipped.** iter-95's `binary_staleness` check
+  fires against whatever repo the cwd is in (observed against the user's
+  `neon` repo); Theme C scopes it to the ff-rdp checkout. Still needed —
+  keep.
+
 ## Hard rule
 
 ff-rdp must never present a viewport state where the reported width and the

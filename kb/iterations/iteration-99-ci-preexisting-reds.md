@@ -17,6 +17,38 @@ tags: [iteration, ci, windows, daemon, cookies, stack-overflow]
 
 # Iteration 99 — clear the two pre-existing CI reds
 
+## Verified state (2026-07-09) — STILL OPEN, 0/4 ACs
+
+Re-audited against code + live CI after the 2026-07 deep review. The plan is
+**not done**; one symptom is masked, both root causes remain:
+
+- **Theme B — Live Tests lane is now GREEN, but only deflaked, not fixed.**
+  Commit `23c5994` changed *only the test's polling logic* (fixed 500 ms
+  sleep → 10 s status-poll loop, `tests/eval_object_leak_soak.rs:124-153`).
+  The daemon auto-start registration delay was never root-caused, and the
+  `daemon_autostart_failed` warning the plan asks for does not exist anywhere
+  (grep: zero hits). The soak test passing is why this iteration *looks*
+  fixed — it is not. **Root cause is almost certainly in the daemon
+  lifecycle findings from [[deep-review-2026-07-fable5]]:** the auto-spawn
+  check→spawn→register sequence is not serialized (TOCTOU, iter-100 D1), and
+  auto-start failure silently falls back to a direct connection with no
+  signal. Theme B should be **absorbed into
+  [[iteration-100-daemon-lifecycle-hardening]]** (spawn lock + surfaced
+  failure) rather than solved standalone here.
+- **Theme A — CI lane is STILL RED on Windows.** Latest CI run 28977385134:
+  `cookies_help_no_fields_paragraph_leak` exits `3221225725` (0xC00000FD,
+  STATUS_STACK_OVERFLOW) on `windows-latest`. Untouched — the cookies command
+  path has not changed since iter-84. This is the real remaining work in this
+  iteration. macOS/Linux pass because of their 8 MB main-thread stack; the
+  1 MB Windows stack is the only trigger. **Keep this as iter-99's sole
+  focus** once Theme B moves to iter-100.
+
+Recommendation: re-scope iter-99 to Theme A only (cookies stack overflow),
+move Theme B to iter-100, and re-tick nothing until the cookies fix lands
+with the small-stack repro test.
+
+---
+
 PR #135 (fix/ci-navigate-budget-windows-libc) fixed the navigate events-budget
 collapse (Ubuntu green for the first time since 2026-05-27) and the Windows
 `libc::pid_t` compile break (Windows unit suite: 610 passed). Two failures
