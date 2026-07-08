@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use ff_rdp_core::{FramedReader, FramedWriter, RdpTransport};
 
-use super::process;
+use super::process::{self, Pgid};
 use super::registry::{self, DaemonInfo};
 use crate::cli::args::Cli;
 use crate::error::AppError;
@@ -74,9 +74,9 @@ pub(crate) struct EscalationHooks {
     pub kill_group_kill: fn(u32),
     /// Send SIGKILL to the explicitly captured process group `pgid`.
     /// Also receives the original `pid` for the Windows `taskkill` path.
-    pub kill_process_tree: fn(u32, Option<libc::pid_t>),
+    pub kill_process_tree: fn(u32, Option<Pgid>),
     /// Capture the PGID of `pid` (before escalation starts).
-    pub get_pgid: fn(u32) -> Option<libc::pid_t>,
+    pub get_pgid: fn(u32) -> Option<Pgid>,
     /// Poll `port` until closed or `timeout` elapses; returns `true` if closed.
     pub wait_port_closed: fn(u16, Duration) -> bool,
 }

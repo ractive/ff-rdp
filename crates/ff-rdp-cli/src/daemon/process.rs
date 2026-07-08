@@ -7,6 +7,16 @@ use anyhow::{Context, Result};
 
 use super::registry::{self, DaemonInfo};
 
+/// Process-group ID type, aliased so callers don't need to gate on `cfg(unix)`
+/// themselves. `libc` (and therefore `libc::pid_t`) is only a dependency on
+/// Unix targets; on other platforms `get_process_group_id` always returns
+/// `None`, so the concrete integer type is never observed — `i32` just needs
+/// to exist and be the same on both sides of the alias.
+#[cfg(unix)]
+pub(crate) type Pgid = libc::pid_t;
+#[cfg(not(unix))]
+pub(crate) type Pgid = i32;
+
 // ---------------------------------------------------------------------------
 // PID liveness
 // ---------------------------------------------------------------------------
@@ -140,7 +150,7 @@ pub fn kill_process_group_force(pid: u32) {
 /// individual parent process).
 ///
 /// Returns `None` on Windows and other non-Unix platforms.
-pub fn get_process_group_id(pid: u32) -> Option<libc::pid_t> {
+pub fn get_process_group_id(pid: u32) -> Option<Pgid> {
     #[cfg(unix)]
     {
         // SAFETY: `getpgid(pid)` is a pure query syscall with no side effects.
@@ -174,7 +184,7 @@ pub fn get_process_group_id(pid: u32) -> Option<libc::pid_t> {
 /// goal: reap every descendant of the original Firefox process.
 ///
 /// Errors are silently ignored — the caller polls the port to verify.
-pub fn kill_process_tree(pid_for_windows: u32, pgid: Option<libc::pid_t>) {
+pub fn kill_process_tree(pid_for_windows: u32, pgid: Option<Pgid>) {
     #[cfg(unix)]
     {
         if let Some(pgid_val) = pgid {
