@@ -1,7 +1,8 @@
 use std::time::{Duration, Instant};
 
 use ff_rdp_core::{
-    ActorId, EvalResult, Grip, LongStringActor, WebConsoleActor, sanitize_for_terminal,
+    ActorId, EvalResult, Grip, LongStringActor, ProtocolError, WebConsoleActor,
+    sanitize_for_terminal,
 };
 use serde_json::Value;
 
@@ -570,21 +571,35 @@ pub(crate) fn poll_js_condition(
     let started = Instant::now();
 
     loop {
+        // A transport-level recv timeout (Firefox didn't answer within the
+        // socket's read-timeout window) is treated the same as "condition not
+        // yet observed" rather than a hard error: it falls through to the
+        // deadline check below, which raises the descriptive
+        // `timeout_context` message. Without this, `AppError::from` would
+        // convert `ProtocolError::Timeout` into a generic, contextless
+        // `RdpTimeout { phase: "recv", after_ms: 0 }` ("timed out after 0ms
+        // (phase: recv)") that tells the user nothing about which condition
+        // failed to become true.
         let eval_result =
-            WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, js)
-                .map_err(AppError::from)?;
+            match WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, js) {
+                Ok(result) => Some(result),
+                Err(ProtocolError::Timeout) => None,
+                Err(e) => return Err(AppError::from(e)),
+            };
 
-        if let Some(ref exc) = eval_result.exception {
-            if let Some(msg) = exc.message.as_deref() {
-                eprintln!("error: {error_context}: {msg}");
-            } else {
-                eprintln!("error: {error_context}");
+        if let Some(eval_result) = eval_result {
+            if let Some(ref exc) = eval_result.exception {
+                if let Some(msg) = exc.message.as_deref() {
+                    eprintln!("error: {error_context}: {msg}");
+                } else {
+                    eprintln!("error: {error_context}");
+                }
+                return Err(AppError::Exit(1));
             }
-            return Err(AppError::Exit(1));
-        }
 
-        if is_truthy(&eval_result.result) {
-            return Ok(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+            if is_truthy(&eval_result.result) {
+                return Ok(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+            }
         }
 
         // Check timeout before sleeping to avoid an unnecessary extra poll interval.
@@ -667,5 +682,79 @@ mod tests {
         assert!(!is_truthy(&Grip::Value(json!(""))));
         assert!(!is_truthy(&Grip::NaN));
         assert!(!is_truthy(&Grip::NegZero));
+    }
+
+    /// Regression test: a transport-level recv timeout inside
+    /// `poll_js_condition` (Firefox never answers `evaluateJSAsync`) must
+    /// surface as `AppError::Timeout` with the caller's descriptive
+    /// `timeout_context` — not the generic, contextless
+    /// `AppError::RdpTimeout { phase: "recv", after_ms: 0 }` that
+    /// `AppError::from(ProtocolError::Timeout)` would otherwise produce
+    /// ("timed out after 0ms (phase: recv)").
+    #[test]
+    fn poll_js_condition_recv_timeout_surfaces_descriptive_message() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+
+        use ff_rdp_core::transport::{RdpTransport, encode_frame, recv_from};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // Mock Firefox: send the greeting, then read (and drop) the
+        // `evaluateJSAsync` request but never reply — the transport's read
+        // timeout is what must fire, not a clean protocol response.
+        let server_handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+
+            let greeting = json!({
+                "from": "root",
+                "applicationType": "browser",
+                "traits": {}
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+
+            let _ = recv_from(&mut reader);
+            // No reply sent — the client's read timeout must fire.
+            std::thread::sleep(Duration::from_secs(1));
+        });
+
+        // Short read timeout so the test completes quickly; this is the same
+        // timeout that governs every `recv()` call after connect, including
+        // the one inside `evaluate_js_async`.
+        let transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_millis(150)).unwrap();
+
+        let console_actor = ActorId::from("conn0/console1");
+        let mut ctx = ConnectedTab::for_test(transport, console_actor.clone());
+
+        // A tiny loop budget: by the time the first `evaluate_js_async` call
+        // returns (after the ~150ms socket read timeout), the loop's own
+        // deadline has already passed, so it returns immediately instead of
+        // looping again.
+        let result = poll_js_condition(
+            &mut ctx,
+            &console_actor,
+            "true",
+            10,
+            "condition threw",
+            "condition-not-met descriptive message",
+        );
+
+        server_handle.join().unwrap();
+
+        match result {
+            Err(AppError::Timeout(msg)) => {
+                assert!(
+                    msg.contains("condition-not-met descriptive message"),
+                    "expected the descriptive timeout_context, got: {msg:?}"
+                );
+            }
+            other => panic!("expected AppError::Timeout, got: {other:?}"),
+        }
     }
 }
