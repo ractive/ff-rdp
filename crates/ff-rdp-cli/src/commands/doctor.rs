@@ -475,24 +475,34 @@ fn probe_profile_disk_usage_at(root: &Path) -> Probe {
     }
 }
 
+/// Build the JSON `results` array for a set of probes.
+///
+/// Key insertion order matters: with `serde_json`'s `preserve_order` feature
+/// enabled, `Value::Object` preserves insertion order, and the text-table
+/// renderer (`render_table` in `output_pipeline.rs`) derives column order
+/// from the first row's key order. We insert narrow, "at a glance" columns
+/// first (glyph, name, status) and the wide free-text columns (hint, detail)
+/// last, so the table stays readable instead of being pushed off-screen by
+/// `detail`. This does not change the JSON shape — `hint` is still omitted
+/// entirely when `None`.
 fn build_results_json(probes: &[Probe]) -> Value {
     let arr: Vec<Value> = probes
         .iter()
         .map(|p| {
             let mut obj = serde_json::Map::new();
+            obj.insert(
+                "glyph".to_string(),
+                Value::String(p.status.glyph().to_string()),
+            );
             obj.insert("name".to_string(), Value::String(p.name.to_string()));
             obj.insert(
                 "status".to_string(),
                 Value::String(p.status.as_str().to_string()),
             );
-            obj.insert("detail".to_string(), Value::String(p.detail.clone()));
-            obj.insert(
-                "glyph".to_string(),
-                Value::String(p.status.glyph().to_string()),
-            );
             if let Some(hint) = &p.hint {
                 obj.insert("hint".to_string(), Value::String(hint.clone()));
             }
+            obj.insert("detail".to_string(), Value::String(p.detail.clone()));
             Value::Object(obj)
         })
         .collect();
