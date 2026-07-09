@@ -203,6 +203,7 @@ fn parse_json(output: &Output) -> serde_json::Value {
 /// Navigate to a data URL with a 5000px tall page, take `screenshot --full-page`,
 /// assert the PNG height ≥ 4900 px.
 #[test]
+#[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_screenshot_full_page() {
     let Some(ff) = LiveFirefox::launch() else {
         eprintln!("live_screenshot_full_page: Firefox not available — skipping");
@@ -263,6 +264,7 @@ fn live_screenshot_full_page() {
 /// `live_screenshot_viewport`:
 /// Without `--full-page`, height must equal the viewport (much less than 5000).
 #[test]
+#[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_screenshot_viewport_height_is_not_full_page() {
     let Some(ff) = LiveFirefox::launch() else {
         eprintln!(
@@ -330,6 +332,7 @@ fn live_screenshot_viewport_height_is_not_full_page() {
 /// the launch.rs code path.  The live test confirms the process starts
 /// successfully with these env overrides.
 #[test]
+#[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_locale_pin_launch_sets_lang_env() {
     // Verify that the launched Firefox can start successfully even when the
     // parent has LANG=de_DE.UTF-8.  The ff-rdp `launch` command must override
@@ -369,6 +372,7 @@ fn live_locale_pin_launch_sets_lang_env() {
 /// rendered "DNS resolution failed", `error_type: "nav_dns_fail"`, exit 7.
 /// The `FF_RDP_ALLOW_KNOWN_FAILING_DNSFAIL` gate is removed.
 #[test]
+#[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_navigate_dnsfail() {
     if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
         eprintln!(
@@ -433,6 +437,7 @@ fn live_navigate_dnsfail() {
 /// just asserts that navigating to example.com returns success; the race
 /// scenario is best demonstrated by the unit tests for `urls_match_scheme_host_path`.
 #[test]
+#[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_navigate_cross_origin_url_match() {
     if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
         eprintln!(
@@ -484,6 +489,7 @@ fn live_navigate_cross_origin_url_match() {
 /// The chromeContext bypass added in eval.rs should intercept the CSP exception
 /// and retry successfully.
 #[test]
+#[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_eval_csp() {
     let Some(ff) = LiveFirefox::launch() else {
         eprintln!("live_eval_csp: Firefox not available — skipping");
@@ -536,6 +542,7 @@ fn live_eval_csp() {
 /// `live_eval_basic`:
 /// Without CSP, a basic eval should work and not trigger the chrome fallback.
 #[test]
+#[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_eval_basic() {
     let Some(ff) = LiveFirefox::launch() else {
         eprintln!("live_eval_basic: Firefox not available — skipping");
@@ -577,6 +584,7 @@ fn live_eval_basic() {
 /// Navigate to two different pages, run eval after each.  The second eval must
 /// succeed — the consoleActor must be refreshed after navigate.
 #[test]
+#[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_navigate_invalidates_console_actor() {
     let Some(ff) = LiveFirefox::launch() else {
         eprintln!("live_navigate_invalidates_console_actor: Firefox not available — skipping");
