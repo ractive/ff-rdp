@@ -159,26 +159,12 @@ parity tests (every error-shape test runs `--no-daemon`).
 
 ## Acceptance Criteria [7/7]
 
-- [x] live_daemon_follow_survives_cross_process_nav [deferred — new plan:
-      kb/iterations/iteration-102-daemon-live-coverage.md]. The deterministic
-      correctness (top-level-switch buffer purge, no dead-target state) is
-      covered by `top_level_switch_purges_buffer`; the Firefox-only live
-      assertion is filed as a follow-up.
-- [x] unit_concurrent_clients_no_cross_delivery: the loser gets a structured
-      `daemon_busy` error and its message is never forwarded — verified by
-      `unit_concurrent_clients_no_cross_delivery` (server) + the transport-level
-      `recv_reply_from_surfaces_daemon_busy_control_error`.
-- [x] unit_buffer_eviction_per_type: after a 10× overflow of network events,
-      pre-existing console-message entries within the type floor are still
-      drainable (buffer tests).
-- [x] e2e_network_since_no_daemon_explicit: `network --since -1 --no-daemon`
-      exits 1 with `error_type: "since_requires_daemon"` and no results payload
-      (e2e/network.rs).
-- [x] unit_registry_register_atomic_no_revive: concurrent register/invalidate
-      never leaves a dead actor observed alive (registry tests).
-- [x] e2e_error_shape_parity_daemon: the connection-refused scenario yields a
-      byte-identical `error_type`/exit code daemon vs `--no-daemon`
-      (daemon_parity.rs).
+- [x] live_daemon_follow_survives_cross_process_nav [deferred — new plan: kb/iterations/iteration-102-daemon-live-coverage.md] — deterministic coverage via `top_level_switch_purges_buffer`; Firefox-only live assertion filed as follow-up.
+- [x] `unit_concurrent_clients_no_cross_delivery` + `recv_reply_from_surfaces_daemon_busy_control_error`: the loser gets a structured `daemon_busy` error and its message is never forwarded.
+- [x] `unit_buffer_eviction_per_type`: after a 10× overflow of network events, pre-existing console-message entries within the type floor are still drainable.
+- [x] `e2e_network_since_no_daemon_explicit` (`since_requires_daemon`): `network --since -1 --no-daemon` exits 1 with the stable `error_type` and no results payload.
+- [x] `unit_registry_register_atomic_no_revive`: concurrent register/invalidate never leaves a dead actor observed alive.
+- [x] `e2e_error_shape_parity_daemon`: the connection-refused scenario yields a byte-identical `error_type`/exit code daemon vs `--no-daemon`.
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
