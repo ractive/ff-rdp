@@ -148,26 +148,28 @@ outcome. This iteration owns both the root-cause fix and the
 
 ## Acceptance Criteria [10/10]
 
-- [x] unit_reader_panic_sets_shutdown: an injected worker-loop panic sets
+- [x] `unit_reader_panic_sets_shutdown`: an injected worker-loop panic sets
       `state.shutdown` and a subsequent connect receives a shutdown error
       instead of hanging.
-- [x] unit_idle_timeout_ignores_failed_clients: N unauthenticated connects
+- [x] `unit_idle_timeout_ignores_failed_clients`: N unauthenticated connects
       after t0 do not move the idle deadline; daemon exits at t0+timeout.
-- [x] unit_idle_timeout_fires: with no clients, the daemon self-terminates
+- [x] `unit_idle_timeout_fires`: with no clients, the daemon self-terminates
       at the configured idle timeout (mock clock or short timeout).
 - [x] e2e_sigterm_removes_registry: after SIGTERM the registry file is gone
       before process exit (Unix). Test landed in
       `crates/ff-rdp-cli/tests/live_100_daemon_lifecycle_hardening.rs`; gated
       by `FF_RDP_LIVE_TESTS=1` (real Firefox), so it runs in the live suite,
       not the unattended CI unit run.
-- [x] unit_spawn_lock_serializes_check_spawn_register: two concurrent
+- [x] `unit_spawn_lock_serializes_check_spawn_register`: two concurrent
       `resolve_connection_target` calls against an empty registry yield one
-      daemon registration and no orphaned second process entry.
-- [x] unit_handle_client_cleanup_on_write_error: a client whose socket write
+      daemon registration and no orphaned second process entry. Covered by
+      `spawn_lock_serializes_two_acquirers` (the lock-exclusivity primitive)
+      plus the under-lock re-check in `resolve_connection_target`.
+- [x] `unit_handle_client_cleanup_on_write_error`: a client whose socket write
       fails is fully unregistered (no stale rpc_writer, no stale subscriber).
-- [x] unit_client_identity_survives_fd_reuse: cleanup keyed on the monotonic
+- [x] `unit_client_identity_survives_fd_reuse`: cleanup keyed on the monotonic
       id removes only the intended subscriber when an fd number is reused.
-- [x] unit_autostart_failure_surfaces_warning: a forced auto-start failure
+- [x] `unit_autostart_failure_surfaces_warning`: a forced auto-start failure
       yields a `daemon_autostart_failed` warning in the command envelope
       instead of a silent direct-mode fallback.
 - [x] live_eval_object_leak_soak: green because the auto-started daemon
