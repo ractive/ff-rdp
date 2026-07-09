@@ -120,6 +120,11 @@ jobs:
         run: cargo run -p xtask -- check-todo-annotations --since origin/main
       - name: Check daemon lock recovery
         run: cargo run -p xtask -- check-daemon-locks
+      - name: Check live-test layout (single consolidated target)
+        # iter-100b: fails if any top-level crates/ff-rdp-cli/tests/live_*.rs
+        # binary reappears. Live suites must be modules of tests/live/main.rs so
+        # a plain `cargo test` links one live target instead of ~45.
+        run: cargo run -p xtask -- check-live-test-layout
       - name: Check discipline regression (mirror + replay baselines)
         # The skill scripts at ~/.claude/skills/ralph-loop are not present in
         # CI runners, so the mirror-sync half is automatically skipped. The

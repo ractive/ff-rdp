@@ -321,6 +321,11 @@ pub fn run(args: Args) -> Result<()> {
         run_xtask("check-dogfood-script", &[&plan_display])
     }));
 
+    // --- 10. check-live-test-layout (iter-100b)
+    results.push(run_or_skip("check-live-test-layout", &mut || {
+        run_xtask("check-live-test-layout", &[])
+    }));
+
     let total = results.len();
     for (i, result) in results.iter().enumerate() {
         print_result(i + 1, total, result);
@@ -381,6 +386,8 @@ mod tests {
                 "check-discipline-regression",
                 "--skip",
                 "ac-fidelity-check",
+                "--skip",
+                "check-live-test-layout",
             ])
             .output()
             .unwrap();

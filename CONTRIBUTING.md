@@ -12,6 +12,33 @@ cargo test --workspace -q
 
 Never skip a step. Never commit code that fails any of these.
 
+## Test layout
+
+Integration tests for `ff-rdp-cli` are organized into a few consolidated
+targets rather than one binary per file — every extra top-level `tests/*.rs`
+file is a separate test binary that `cargo test` must compile, link, and run,
+which dominates the iteration loop's wall-clock cost.
+
+- **Live-Firefox tests** (anything gated behind `FF_RDP_LIVE_TESTS=1`) go in
+  `crates/ff-rdp-cli/tests/live/<slug>.rs` **plus a `mod` line in
+  `crates/ff-rdp-cli/tests/live/main.rs`**. They compile into the single
+  `live` test target. A new top-level `crates/ff-rdp-cli/tests/live_*.rs` file
+  is a **review defect** — it re-introduces the ~45-binary linking cost
+  iter-100b removed. The `check-live-test-layout` xtask gate (wired into
+  `check-iteration-ready` and the CI `discipline` job) fails the build if one
+  reappears.
+- Shared live-test helpers live in `crates/ff-rdp-cli/tests/common/mod.rs`,
+  declared once from `tests/live/main.rs` via
+  `#[path = "../common/mod.rs"] mod common;`; suites refer to them as
+  `use crate::common::…` (e.g. `live_tests_enabled`,
+  `live_network_tests_enabled`).
+- **Mock-server e2e tests** go under `tests/e2e/` as modules of
+  `tests/e2e/main.rs` (the `e2e` target) — see iter-46.
+- Run one migrated live suite:
+  `FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live <module> -- --include-ignored`.
+  Enumerate every live test name (no Firefox needed):
+  `cargo test -p ff-rdp-cli --test live -- --list`.
+
 ## Iteration discipline tooling
 
 ### Check for dead primitives
@@ -185,6 +212,7 @@ fi
 4. `check-firefox-refs <plan>` — `firefox_refs:` line ranges valid
 5. `check-discipline-regression` — mirror sync + replay baselines
 6. `ac-fidelity-check.sh` — ticked ACs backed by diff evidence
+7. `check-live-test-layout` — no stray top-level `tests/live_*.rs` binaries (iter-100b)
 
 Fix every reported failure before pushing. The `/create-pr` skill runs this
 automatically on iter-* branches.

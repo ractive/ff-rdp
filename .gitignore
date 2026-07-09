@@ -7,3 +7,6 @@
 .DS_Store
 Thumbs.db
 .claude/scheduled_tasks.lock
+
+# ff-rdp runtime cache written to CWD (e.g. when live tests run from a crate dir)
+.ffrdp/

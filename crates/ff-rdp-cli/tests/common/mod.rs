@@ -1,7 +1,10 @@
 //! Shared live-test helpers for `ff-rdp-cli` integration tests.
 //!
-//! Each test binary in `tests/` is compiled independently; include this module
-//! with `#[path = "common/mod.rs"] mod common;` at the top of the file.
+//! Since iter-100b the live tests are consolidated into a single `tests/live/`
+//! target: `main.rs` declares this module once via
+//! `#[path = "../common/mod.rs"] mod common;` and each suite refers to it as
+//! `use crate::common::…`. (The other top-level test binaries still include it
+//! per-file with `#[path = "common/mod.rs"] mod common;`.)
 //!
 //! All items carry `#[allow(dead_code)]` because not every binary uses every
 //! helper — the same pattern used in `ff-rdp-core/tests/support/mod.rs`.
@@ -15,6 +18,24 @@ use std::time::Duration;
 /// Return the path to the compiled `ff-rdp` binary under test.
 pub fn ff_rdp_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
+}
+
+/// True when live Firefox tests are enabled (`FF_RDP_LIVE_TESTS=1`).
+///
+/// Deduped in iter-100b from ~16 byte-identical copies that each live suite
+/// used to define locally. The single divergent copy (`live_bulk_cap`, which
+/// accepts any non-empty non-`0` value) intentionally keeps its own local
+/// definition to preserve exact behavior.
+pub fn live_tests_enabled() -> bool {
+    std::env::var("FF_RDP_LIVE_TESTS").as_deref() == Ok("1")
+}
+
+/// True when live tests that make real network requests are enabled
+/// (`FF_RDP_LIVE_NETWORK_TESTS=1`).
+///
+/// Deduped in iter-100b from 10 byte-identical local copies.
+pub fn live_network_tests_enabled() -> bool {
+    std::env::var("FF_RDP_LIVE_NETWORK_TESTS").as_deref() == Ok("1")
 }
 
 /// Build the common CLI arguments that point at a specific Firefox RDP port
