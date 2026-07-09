@@ -116,3 +116,7 @@ candidates:
   first let `test (windows-latest)` progress far enough to expose this hang.
 - CI run 29052935360, job 86237770363 (`test (windows-latest)`, iter-108,
   2026-07-09) — the run where this was discovered; step timed out at 10 min.
+
+## Hotfix note (2026-07-10)
+
+The immediate CI hang was hotfixed ahead of this iteration: PR `iter-112/gate-ungated-live61l-tests` adds the missing `#[ignore]` gates to 8 live_61l tests that launched Firefox unconditionally (hanging 10-min-timeout on the Firefox-less windows runner). Remaining scope for this iteration: root-cause why an ungated launch hangs forever instead of failing fast (launch needs a timeout), and extend `check-live-test-layout` so every `#[test]` under `tests/live/` must carry `#[ignore]` — making this class of miss impossible.
