@@ -46,9 +46,17 @@ tests covering the files those fixes touched, then rely on CI.
 
 **CI-wait:** merge once the required lanes pass (fmt, clippy, discipline,
 supply-chain, fuzz, ubuntu/macos tests, verify-attestation). Do not block on
-`live-tests` (advisory by design) or `test (windows-latest)` (known-red,
-tracked in [[iteration-108-windows-ci-preexisting-reds]]) — but if windows
-shows failures OTHER than the known 5, that IS a regression: stop and fix.
+`live-tests` (advisory by design).
+[[iteration-108-windows-ci-preexisting-reds]] landed and fixed the windows-latest
+reds (`install_skill::*` + `nav_action::reload_wait_idle_*`) — `test
+(windows-latest)` should be green going forward. If it shows failures, that
+IS a regression: stop and fix (do not assume "known-red" carries over).
+Also note: `test (ubuntu-latest)` has a separate, still-unfixed pre-existing
+flake, `transport::tests::redact_sensitive_key_replaces_value` (found during
+iter-108's PR #147 review, unrelated to this iteration's diff surface) — a
+single failure limited to that one test on ubuntu is a known flake, not a
+regression from this iteration's work; re-run the job once before treating it
+as a real red.
 
 
 Theme C of [[iteration-104-security-pwa-audit-pack]] (network throttling + URL
