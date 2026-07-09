@@ -1,6 +1,9 @@
 use crate::cli::args::{
-    A11yCommand, Cli, Command, DaemonCommand, DomCommand, PerfCommand, ProfilesCommand,
-    RecordCommand, ScrollCommand,
+    A11yArgs, A11yCommand, CascadeArgs, Cli, ClickArgs, Command, ComputedArgs, ConsoleArgs,
+    CookiesArgs, DaemonCommand, DomArgs, DomCommand, EvalArgs, GeometryArgs, IndexArgs,
+    InspectArgs, LaunchArgs, NavigateArgs, NetworkArgs, PerfArgs, PerfCommand, ProfilesCommand,
+    RecordCommand, ReloadArgs, ResponsiveArgs, RunArgs, ScreenshotArgs, ScrollCommand,
+    SnapshotArgs, SourcesArgs, StorageArgs, StylesArgs, TypeArgs, WaitArgs,
 };
 use crate::commands;
 use crate::commands::index::IndexOpts;
@@ -187,18 +190,18 @@ pub(crate) fn resolve_ref_for_script(
 /// not appear in recorded scripts.
 fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Step> {
     match cmd {
-        Command::Navigate {
+        Command::Navigate(NavigateArgs {
             url,
             wait_text,
             wait_selector,
             ..
-        } => Some(Step::Navigate(NavigateStep {
+        }) => Some(Step::Navigate(NavigateStep {
             url: url.clone(),
             wait_text: wait_text.clone(),
             wait_selector: wait_selector.clone(),
             // no_wait and wait_for are not currently representable in the script format.
         })),
-        Command::Click { wait_for, .. } => {
+        Command::Click(ClickArgs { wait_for, .. }) => {
             let sel = resolved_selector?;
             // The `click` step in the script schema only supports `wait_for_text`
             // and `wait_for_selector`.  Capture the first matching predicate of
@@ -240,12 +243,12 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
                 wait_for_selector,
             }))
         }
-        Command::Type {
+        Command::Type(TypeArgs {
             text_pos,
             text_flag,
             clear,
             ..
-        } => {
+        }) => {
             let sel = resolved_selector?;
             let text = text_pos.as_deref().or(text_flag.as_deref())?;
             Some(Step::Type(crate::script::format::TypeStep {
@@ -258,13 +261,13 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
                 secret: false,
             }))
         }
-        Command::Wait {
+        Command::Wait(WaitArgs {
             selector,
             text,
             eval,
             wait_timeout,
             ..
-        } => {
+        }) => {
             let effective_timeout = *wait_timeout;
             // Record whichever condition was used, including the explicit timeout.
             if selector.is_some() || text.is_some() || eval.is_some() || resolved_selector.is_some()
@@ -289,19 +292,19 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
                 None
             }
         }
-        Command::Screenshot {
+        Command::Screenshot(ScreenshotArgs {
             output,
             base64,
             full_page,
             ..
-        } => Some(Step::Screenshot(ScreenshotStep {
+        }) => Some(Step::Screenshot(ScreenshotStep {
             output: output.clone(),
             base64: *base64,
             full_page: *full_page,
         })),
-        Command::Eval {
+        Command::Eval(EvalArgs {
             script, stringify, ..
-        } => {
+        }) => {
             // Only record inline positional evals (not --file or --stdin).
             let script_text = script.as_deref()?;
             Some(Step::Eval(EvalStep {
@@ -310,36 +313,36 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
             }))
         }
         // Reload/Back/Forward, Scroll, inspection-only, and meta commands — never recorded.
-        Command::Reload { .. }
+        Command::Reload(ReloadArgs { .. })
         | Command::Back
         | Command::Forward
         | Command::Scroll { .. }
         | Command::Tabs
-        | Command::Dom { .. }
-        | Command::Console { .. }
-        | Command::Network { .. }
-        | Command::Perf { .. }
+        | Command::Dom(DomArgs { .. })
+        | Command::Console(ConsoleArgs { .. })
+        | Command::Network(NetworkArgs { .. })
+        | Command::Perf(PerfArgs { .. })
         | Command::PageText
-        | Command::Cookies { .. }
-        | Command::Storage { .. }
-        | Command::Sources { .. }
-        | Command::Geometry { .. }
-        | Command::Styles { .. }
-        | Command::Computed { .. }
-        | Command::Cascade { .. }
-        | Command::Responsive { .. }
-        | Command::A11y { .. }
-        | Command::Snapshot { .. }
-        | Command::Inspect { .. }
+        | Command::Cookies(CookiesArgs { .. })
+        | Command::Storage(StorageArgs { .. })
+        | Command::Sources(SourcesArgs { .. })
+        | Command::Geometry(GeometryArgs { .. })
+        | Command::Styles(StylesArgs { .. })
+        | Command::Computed(ComputedArgs { .. })
+        | Command::Cascade(CascadeArgs { .. })
+        | Command::Responsive(ResponsiveArgs { .. })
+        | Command::A11y(A11yArgs { .. })
+        | Command::Snapshot(SnapshotArgs { .. })
+        | Command::Inspect(InspectArgs { .. })
         | Command::Doctor
-        | Command::Launch { .. }
+        | Command::Launch(LaunchArgs { .. })
         | Command::Record { .. }
-        | Command::Run { .. }
+        | Command::Run(RunArgs { .. })
         | Command::Daemon { .. }
         | Command::DaemonInternal
         | Command::InstallSkill(_)
         | Command::Profiles { .. }
-        | Command::Index { .. } => None,
+        | Command::Index(IndexArgs { .. }) => None,
     }
 }
 
@@ -401,7 +404,7 @@ fn dispatch_inner(
 ) -> Result<(), AppError> {
     match &cli.command {
         Command::Tabs => commands::tabs::run(cli),
-        Command::Navigate {
+        Command::Navigate(NavigateArgs {
             url,
             with_network,
             network_timeout,
@@ -412,7 +415,7 @@ fn dispatch_inner(
             wait_for,
             wait,
             wait_strategy,
-        } => {
+        }) => {
             let wait_opts = commands::navigate::WaitAfterNav {
                 wait_text: wait_text.as_deref(),
                 wait_selector: wait_selector.as_deref(),
@@ -428,7 +431,7 @@ fn dispatch_inner(
                 commands::navigate::run(cli, url, &wait_opts)
             }
         }
-        Command::Eval {
+        Command::Eval(EvalArgs {
             script,
             file,
             stdin,
@@ -438,7 +441,7 @@ fn dispatch_inner(
             node,
             inner_window,
             unwrap,
-        } => commands::eval::run(
+        }) => commands::eval::run(
             cli,
             script.as_deref(),
             file.as_deref(),
@@ -452,12 +455,12 @@ fn dispatch_inner(
                 inner_window_id: *inner_window,
             },
         ),
-        Command::Reload {
+        Command::Reload(ReloadArgs {
             wait_idle,
             idle_ms,
             reload_timeout,
             hard,
-        } => {
+        }) => {
             if *wait_idle {
                 commands::nav_action::run_reload_wait_idle(cli, *idle_ms, *reload_timeout, *hard)
             } else {
@@ -467,7 +470,7 @@ fn dispatch_inner(
         Command::Back => commands::nav_action::run(cli, NavAction::Back),
         Command::Forward => commands::nav_action::run(cli, NavAction::Forward),
         Command::PageText => commands::page_text::run(cli),
-        Command::Dom {
+        Command::Dom(DomArgs {
             dom_command,
             selector,
             ref_id,
@@ -480,7 +483,7 @@ fn dispatch_inner(
             first,
             include_style,
             include_style_limit,
-        } => match dom_command {
+        }) => match dom_command {
             Some(DomCommand::Stats) => commands::dom::run_stats(cli),
             Some(DomCommand::Tree {
                 selector,
@@ -527,24 +530,24 @@ fn dispatch_inner(
                 }
             }
         },
-        Command::Console {
+        Command::Console(ConsoleArgs {
             level,
             pattern,
             follow,
-        } => {
+        }) => {
             if *follow {
                 commands::console::run_follow(cli, level.as_deref(), pattern.as_deref())
             } else {
                 commands::console::run(cli, level.as_deref(), pattern.as_deref())
             }
         }
-        Command::Network {
+        Command::Network(NetworkArgs {
             filter,
             method,
             follow,
             headers,
             since,
-        } => {
+        }) => {
             if *follow {
                 commands::network::run_follow(cli, filter.as_deref(), method.as_deref())
             } else {
@@ -558,12 +561,12 @@ fn dispatch_inner(
                 )
             }
         }
-        Command::Perf {
+        Command::Perf(PerfArgs {
             perf_command,
             entry_type,
             filter,
             group_by,
-        } => match perf_command {
+        }) => match perf_command {
             Some(PerfCommand::Vitals) => commands::perf::run_vitals(cli),
             Some(PerfCommand::Summary) => commands::perf::run_summary(cli),
             Some(PerfCommand::Audit) => commands::perf::run_audit(cli),
@@ -582,7 +585,7 @@ fn dispatch_inner(
                 }
             }
         },
-        Command::Click {
+        Command::Click(ClickArgs {
             selector_pos,
             selector_flag,
             ref_id,
@@ -593,7 +596,7 @@ fn dispatch_inner(
             wait_for,
             wait_for_timeout,
             settle,
-        } => {
+        }) => {
             let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
                 selector_flag.as_deref(),
@@ -619,7 +622,7 @@ fn dispatch_inner(
                 },
             )
         }
-        Command::Type {
+        Command::Type(TypeArgs {
             selector_pos,
             text_pos,
             selector_flag,
@@ -630,7 +633,7 @@ fn dispatch_inner(
             wait_for,
             wait_for_timeout,
             settle,
-        } => {
+        }) => {
             let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
                 selector_flag.as_deref(),
@@ -668,13 +671,13 @@ fn dispatch_inner(
                 },
             )
         }
-        Command::Wait {
+        Command::Wait(WaitArgs {
             selector,
             text,
             eval,
             ref_id,
             wait_timeout,
-        } => {
+        }) => {
             let effective_timeout = *wait_timeout;
             // --ref resolves to a JS querySelectorAll expression; treat it as a --selector.
             let resolved_selector: Option<String> = if let Some(id) = ref_id.as_deref() {
@@ -699,7 +702,7 @@ fn dispatch_inner(
                 },
             )
         }
-        Command::A11y {
+        Command::A11y(A11yArgs {
             a11y_command,
             depth,
             max_chars,
@@ -707,7 +710,7 @@ fn dispatch_inner(
             ref_id,
             interactive,
             critical,
-        } => {
+        }) => {
             let resolved_selector: Option<String> = if let Some(id) = ref_id.as_deref() {
                 Some(resolve_ref_via_daemon(cli, id)?)
             } else {
@@ -735,29 +738,31 @@ fn dispatch_inner(
                 }
             }
         }
-        Command::Cookies {
+        Command::Cookies(CookiesArgs {
             name, storage_only, ..
-        } => {
+        }) => {
             // Theme D (iter-83): include document.cookie by default; `--storage-only` opts out.
             // `--include-document-cookie` is kept as a hidden accepted flag for backward compat
             // but is a no-op now that the behavior is the default.
             commands::cookies::run(cli, name.as_deref(), !storage_only)
         }
-        Command::Storage { storage_type, key } => {
+        Command::Storage(StorageArgs { storage_type, key }) => {
             commands::storage::run(cli, storage_type, key.as_deref())
         }
-        Command::Inspect { actor_id, depth } => commands::inspect::run(cli, actor_id, *depth),
-        Command::Sources { filter, pattern } => {
+        Command::Inspect(InspectArgs { actor_id, depth }) => {
+            commands::inspect::run(cli, actor_id, *depth)
+        }
+        Command::Sources(SourcesArgs { filter, pattern }) => {
             commands::sources::run(cli, filter.as_deref(), pattern.as_deref())
         }
-        Command::Screenshot {
+        Command::Screenshot(ScreenshotArgs {
             output,
             base64,
             full_page,
             viewport_height,
             output_root,
             bulk,
-        } => commands::screenshot::run(
+        }) => commands::screenshot::run(
             cli,
             &commands::screenshot::ScreenshotOpts {
                 output_path: output.as_deref(),
@@ -768,7 +773,7 @@ fn dispatch_inner(
                 output_root: output_root.as_deref(),
             },
         ),
-        Command::Launch {
+        Command::Launch(LaunchArgs {
             headless,
             profile,
             temp_profile,
@@ -776,7 +781,7 @@ fn dispatch_inner(
             auto_consent,
             replace,
             force,
-        } => commands::launch::run(
+        }) => commands::launch::run(
             cli,
             *headless,
             profile.as_deref(),
@@ -785,13 +790,13 @@ fn dispatch_inner(
             *auto_consent,
             *replace || *force,
         ),
-        Command::Computed {
+        Command::Computed(ComputedArgs {
             selector_pos,
             selector_flag,
             ref_id,
             prop,
             all,
-        } => {
+        }) => {
             let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
                 selector_flag.as_deref(),
@@ -801,14 +806,14 @@ fn dispatch_inner(
             )?;
             commands::computed::run(cli, &selector, prop, *all)
         }
-        Command::Styles {
+        Command::Styles(StylesArgs {
             selector_pos,
             selector_flag,
             ref_id,
             applied,
             layout,
             properties,
-        } => {
+        }) => {
             let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
                 selector_flag.as_deref(),
@@ -824,14 +829,14 @@ fn dispatch_inner(
                 commands::styles::run(cli, &selector, properties.as_deref())
             }
         }
-        Command::Cascade {
+        Command::Cascade(CascadeArgs {
             selector_pos,
             selector_flag,
             ref_id,
             prop,
             all,
             debug_raw,
-        } => {
+        }) => {
             let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
                 selector_flag.as_deref(),
@@ -841,11 +846,11 @@ fn dispatch_inner(
             )?;
             commands::cascade::run(cli, &selector, prop.as_deref(), *all, *debug_raw)
         }
-        Command::Geometry {
+        Command::Geometry(GeometryArgs {
             selectors,
             ref_id,
             include_hidden,
-        } => {
+        }) => {
             if let Some(id) = ref_id.as_deref() {
                 let resolved = resolve_ref_via_daemon(cli, id)?;
                 commands::geometry::run(cli, &[resolved], *include_hidden)
@@ -853,13 +858,13 @@ fn dispatch_inner(
                 commands::geometry::run(cli, selectors, *include_hidden)
             }
         }
-        Command::Responsive {
+        Command::Responsive(ResponsiveArgs {
             selectors,
             ref_id,
             widths,
             include_hidden,
             strict,
-        } => {
+        }) => {
             if let Some(id) = ref_id.as_deref() {
                 let resolved = resolve_ref_via_daemon(cli, id)?;
                 commands::responsive::run(cli, &[resolved], widths, *include_hidden, *strict)
@@ -867,11 +872,11 @@ fn dispatch_inner(
                 commands::responsive::run(cli, selectors, widths, *include_hidden, *strict)
             }
         }
-        Command::Snapshot {
+        Command::Snapshot(SnapshotArgs {
             depth,
             max_depth,
             max_chars,
-        } => {
+        }) => {
             // --max-depth overrides --depth; must be ≥ 1.
             let effective_depth = if let Some(md) = max_depth {
                 if *md == 0 {
@@ -957,7 +962,7 @@ fn dispatch_inner(
                 dry_run,
             } => commands::profiles::run_prune(cli, older_than, *all, *dry_run),
         },
-        Command::Run {
+        Command::Run(RunArgs {
             script,
             vars,
             vars_file,
@@ -971,7 +976,7 @@ fn dispatch_inner(
             page_map,
             allow_env,
             allow_unsafe_script_paths,
-        } => {
+        }) => {
             // Parse --vars KEY=VALUE flags.
             let mut extra_vars: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
@@ -1059,7 +1064,7 @@ fn dispatch_inner(
             }
             commands::install_skill::run(cli, args)
         }
-        Command::Index {
+        Command::Index(IndexArgs {
             base_url,
             out,
             depth,
@@ -1076,7 +1081,7 @@ fn dispatch_inner(
             page_map,
             report,
             output_root,
-        } => {
+        }) => {
             let opts = IndexOpts {
                 base_url: base_url.as_deref(),
                 out,

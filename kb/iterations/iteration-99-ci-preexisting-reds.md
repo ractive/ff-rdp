@@ -2,7 +2,7 @@
 title: "Iteration 99: cookies --help stack overflow (Windows STATUS_STACK_OVERFLOW)"
 type: iteration
 date: 2026-07-08
-status: planned
+status: complete
 branch: iter-99/cookies-help-stack-overflow
 depends_on: []
 firefox_refs: []
@@ -15,7 +15,12 @@ dogfood_path: |
   # platform (mirroring the Windows main-thread limit that currently overflows):
   cargo test -p ff-rdp-cli --test cli_cookies_help
   # exit 0 on windows-latest CI (was 0xC00000FD STATUS_STACK_OVERFLOW)
-tags: [iteration, ci, windows, cookies, stack-overflow]
+tags:
+  - iteration
+  - ci
+  - windows
+  - cookies
+  - stack-overflow
 ---
 
 # Iteration 99 — `cookies --help` stack overflow
@@ -64,24 +69,51 @@ command hides the same latent bug.
   main-thread limit) and asserts it completes; pre-fix it overflows on all
   platforms, making the Windows-only CI failure reproducible everywhere.
 
+## Root cause (2026-07-09)
+
+The overflow is **not** recursion — it is a single oversized stack frame.
+clap's `#[derive(Subcommand)]` builds every *struct-variant's* inline `#[arg]`
+fields directly inside one monolithic `Command::augment_subcommands` frame.
+With ~36 subcommands and ~148 inline arg fields (each `clap::Arg` is ~600 B,
+each `clap::Command` ~712 B), that single frame exceeded 1 MiB. Windows' 1 MiB
+main-thread stack (vs 8 MiB on Linux/macOS) is why only windows-latest blew up.
+
+Measured on macOS in a capped-stack thread:
+- Pre-fix: bare `Cli::command()` needed **> 1 MiB** (survived only at ≥ 2 MiB);
+  `cookies --help` overflowed a 1 MiB thread on every platform.
+- A standalone clap probe confirmed the mechanism and the fix: 10 struct-variants
+  × 8 inline args needed **768 KiB**; wrapping each variant's fields in a
+  dedicated `#[derive(clap::Args)]` struct dropped it to **128 KiB** (6× smaller),
+  because each variant's args then build in their own `augment_args` frame.
+
+**Fix:** the 25 arg-bearing struct-variants of `Command`
+(`Navigate { … }` → `Navigate(NavigateArgs)`, etc.) now wrap a dedicated
+`#[derive(clap::Args)]` struct; ArgGroups move onto those structs. No CLI
+surface or behaviour change — verified group enforcement, required args, and
+help text are identical. Post-fix, the full `try_parse_from cookies --help`
+path survives a **768 KiB** thread (comfortably under Windows' 1 MiB).
+
 ## Tasks
 
-### Theme A — cookies --help stack overflow [0/3]
+### Theme A — cookies --help stack overflow [3/3]
 
-- [ ] Land `pre_fix_repro_cookies_help_stack_depth` (small-stack thread
+- [x] Land `pre_fix_repro_cookies_help_stack_depth` (small-stack thread
       harness; fails pre-fix on every platform).
-- [ ] Root-cause and fix the overflow in the `cookies --help` path.
-- [ ] `unit_all_subcommand_helps_render_in_small_stack`: iterate every
+- [x] Root-cause and fix the overflow in the `cookies --help` path
+      (`Command` struct-variants → `Variant(VariantArgs)` wrapper structs in
+      `crates/ff-rdp-cli/src/cli/args.rs`).
+- [x] `unit_all_subcommand_helps_render_in_small_stack`: iterate every
       subcommand's `--help` in the same small-stack harness.
 
-## Acceptance Criteria [0/3]
+## Acceptance Criteria [3/3]
 
-- [ ] `pre_fix_repro_cookies_help_stack_depth`: post-fix, `cookies --help`
+- [x] `pre_fix_repro_cookies_help_stack_depth`: post-fix, `cookies --help`
       renders inside a 1 MiB-stack thread without overflow.
-- [ ] `unit_all_subcommand_helps_render_in_small_stack`: every subcommand's
+- [x] `unit_all_subcommand_helps_render_in_small_stack`: every subcommand's
       `--help` renders inside the same harness.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean (and the existing
-      `cookies_help_no_fields_paragraph_leak` passes on windows-latest CI).
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean (and the existing
+      `cookies_help_no_fields_paragraph_leak` still passes — verified locally;
+      windows-latest CI validates the original `0xC00000FD` fix).
 
 ## Out of scope
 
