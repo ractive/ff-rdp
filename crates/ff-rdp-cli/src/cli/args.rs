@@ -49,6 +49,11 @@ COMMAND REFERENCE:
     ff-rdp geometry <SEL>... [--include-hidden]
     ff-rdp responsive <SEL>... [--widths W1,W2,...]
 
+  Page-environment emulation:
+    ff-rdp emulate [--color-scheme light|dark|none] [--user-agent S] [--dppx F]
+                   [--print on|off] [--touch on|off] [--js on|off]
+                   [--offline on|off] [--cache on|off] [--reset]
+
   Accessibility:
     ff-rdp a11y [--depth N] [--selector SEL] [--interactive] [--critical]
     ff-rdp a11y contrast [--selector SEL] [--fail-only]
@@ -745,6 +750,40 @@ Pass --include-hidden to receive those elements as well.
 
 Output: {\"results\": {\"breakpoints\": [{\"width\": 320, \"viewport\": {\"width\": N, \"height\": N}, \"media_query_check\": {\"requested\": 320, \"inner_width\": N, \"matches\": bool}, \"elements\": [{\"selector\": \"...\", \"rect\": {...}, \"visible\": bool}]}, ...], \"original_viewport\": {\"width\": N, \"height\": N}, \"warnings\": [...]}, \"total\": N, \"meta\": {...}}")]
     Responsive(ResponsiveArgs),
+    /// Emulate the page environment via the target-configuration actor
+    #[command(
+        long_about = "Emulate the page environment (server-side) via the Firefox \
+target-configuration actor.
+
+Each flag maps to one field of the actor's configuration and only the flags you
+pass are applied — a call patches the live configuration rather than replacing it.
+
+  --user-agent <S>          override navigator.userAgent / User-Agent header
+  --color-scheme light|dark|none   simulate prefers-color-scheme (none = system)
+  --dppx <F>                override window.devicePixelRatio (positive number)
+  --print on|off            toggle @media print simulation (compose with screenshot)
+  --touch on|off            toggle touch-event simulation
+  --js on|off               enable/disable JavaScript (server reloads the document)
+  --offline on|off          take the tab offline (navigator.onLine, fetch failures)
+  --cache on|off            'off' disables the HTTP cache (cold-load perf)
+  --reset                   restore every field to its default (cannot combine with others)
+
+LIFETIME: configuration lives as long as the RDP connection that set it. Under
+the daemon that means until the daemon restarts; with --no-daemon the one-shot
+process disconnects immediately and the setting is discarded — the envelope then
+carries a `lifetime_warning`. Disabling JavaScript or --reset triggers a
+server-side document reload; reload/re-probe to observe the effect.
+
+Examples:
+  ff-rdp emulate --color-scheme dark --user-agent 'ff-rdp-test/1.0'
+  ff-rdp emulate --dppx 2 --touch on
+  ff-rdp emulate --js off        # then `ff-rdp reload` before probing
+  ff-rdp emulate --reset
+
+Output: {\"results\": {\"applied\": {<wire-field>: <value>, ...}, \"reset\": bool, \
+\"lifetime_warning\"?: \"...\", \"note\"?: \"...\"}, \"total\": 1, \"meta\": {...}}"
+    )]
+    Emulate(EmulateArgs),
     /// Quick wrapper around getComputedStyle for CSS debugging
     #[command(
         long_about = "Quick wrapper around getComputedStyle() for CSS debugging.
@@ -1419,6 +1458,61 @@ pub struct ResponsiveArgs {
     /// object regardless; --strict turns any mismatch into a failure.
     #[arg(long)]
     pub strict: bool,
+}
+
+/// `prefers-color-scheme` simulation value for `emulate --color-scheme`.
+///
+/// Maps to the target-configuration actor's `colorSchemeSimulation` field:
+/// `none` restores the system default.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ColorScheme {
+    Light,
+    Dark,
+    None,
+}
+
+/// A generic on/off toggle used by several `emulate` flags
+/// (`--print`, `--touch`, `--js`, `--offline`, `--cache`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum OnOff {
+    On,
+    Off,
+}
+
+/// Arguments for `emulate` — one option per target-configuration field.
+///
+/// Every flag is optional; a call applies only the fields the user names.
+/// `--reset` restores every field to its documented default and must be used
+/// on its own (enforced at runtime, not by clap, so the error is descriptive).
+#[derive(clap::Args)]
+pub struct EmulateArgs {
+    /// Override navigator.userAgent and the User-Agent request header
+    #[arg(long, value_name = "STRING")]
+    pub user_agent: Option<String>,
+    /// Simulate prefers-color-scheme (none = system default)
+    #[arg(long, value_enum, value_name = "SCHEME")]
+    pub color_scheme: Option<ColorScheme>,
+    /// Override window.devicePixelRatio (positive number, e.g. 2 for retina)
+    #[arg(long, value_name = "FLOAT")]
+    pub dppx: Option<f64>,
+    /// Toggle @media print simulation
+    #[arg(long, value_enum, value_name = "ON_OFF")]
+    pub print: Option<OnOff>,
+    /// Toggle touch-event simulation
+    #[arg(long, value_enum, value_name = "ON_OFF")]
+    pub touch: Option<OnOff>,
+    /// Enable/disable JavaScript (server reloads the document on change)
+    #[arg(long, value_enum, value_name = "ON_OFF")]
+    pub js: Option<OnOff>,
+    /// Take the tab offline (navigator.onLine === false, network requests fail)
+    #[arg(long, value_enum, value_name = "ON_OFF")]
+    pub offline: Option<OnOff>,
+    /// Toggle the HTTP cache ('off' disables it — maps to cacheDisabled=true)
+    #[arg(long, value_enum, value_name = "ON_OFF")]
+    pub cache: Option<OnOff>,
+    /// Restore every emulation field to its default (use on its own)
+    #[arg(long)]
+    pub reset: bool,
 }
 
 #[derive(clap::Args)]

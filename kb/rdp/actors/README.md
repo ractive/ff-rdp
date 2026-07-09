@@ -73,7 +73,7 @@ Specs live in parallel under `devtools/shared/specs/`.
 
 ## Configuration / Misc
 
-- `actors/target-configuration.js` — per-target overrides (CSS color scheme, print sim, cache disabled, viewport).
+- `actors/target-configuration.js` — per-target overrides (CSS color scheme, print sim, cache disabled, viewport). See [[target-configuration]] — the `ff-rdp emulate` command (iter-103).
 - `actors/thread-configuration.js` — pause-on-exception etc.
 - `actors/device.js` — user agent, screen size, GeckoView info.
 - `actors/preference.js` — Services.prefs access.
