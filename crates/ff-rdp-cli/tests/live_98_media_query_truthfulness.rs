@@ -43,7 +43,8 @@ fn live_tests_enabled() -> bool {
 fn navigate(port: u16, url: &str) {
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(port))
-        .args(["navigate", url])
+        // data: URLs require --allow-unsafe-urls (off by default).
+        .args(["navigate", "--allow-unsafe-urls", url])
         .output()
         .expect("ff-rdp navigate");
     assert!(

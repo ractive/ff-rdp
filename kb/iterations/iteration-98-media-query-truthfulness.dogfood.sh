@@ -21,8 +21,12 @@ sleep 2
 
 # A self-contained fixture: #probe is 390px by default and 980px inside
 # @media (min-width: 1024px). Mirrors the field-report scenario.
-FIXTURE="data:text/html;charset=utf-8,<!DOCTYPE html><html><head><style>#probe{width:390px}@media (min-width: 1024px){#probe{width:980px}}</style></head><body><div id='probe'>x</div></body></html>"
-ff-rdp navigate "$FIXTURE"
+# The data-URL body is fully percent-encoded so `navigate` passes it through
+# verbatim (a partially-raw data URL gets its tail re-encoded, corrupting the
+# document). Decoded body:
+#   <style>#probe{width:390px}@media (min-width: 1024px){#probe{width:980px}}</style><div id="probe">x</div>
+FIXTURE='data:text/html,%3Cstyle%3E%23probe%7Bwidth%3A390px%7D%40media%20(min-width%3A%201024px)%7B%23probe%7Bwidth%3A980px%7D%7D%3C%2Fstyle%3E%3Cdiv%20id%3D%22probe%22%3Ex%3C%2Fdiv%3E'
+ff-rdp navigate --allow-unsafe-urls "$FIXTURE"
 
 # --- Theme A: responsive self-check present at 390 and 1280 ---
 # The media_query_check.requested must echo the requested width at each
@@ -37,11 +41,13 @@ test "$REQ_1280" = "1280" || { echo "FAIL Theme A: 1280 media_query_check.reques
 # --- Theme B: cascade winner respects media context and equals computed ---
 # At the headless-default (wide) viewport the (min-width: 1024px) block is
 # active, so computed width is 980px and the media-active override must win.
-COMPUTED=$(ff-rdp cascade '#probe' --prop width --jq '.results[0].computed')
-test "$COMPUTED" = "980px" || { echo "FAIL Theme B: computed width=$COMPUTED (expected 980px)" >&2; exit 1; }
+# The jq filters below emit the literal `true`/`false` of each assertion so we
+# avoid quoting issues from string values in --jq output.
+COMPUTED_OK=$(ff-rdp cascade '#probe' --prop width --jq '.results[0].computed == "980px"')
+test "$COMPUTED_OK" = "true" || { echo "FAIL Theme B: computed width is not 980px (got $(ff-rdp cascade '#probe' --prop width --jq '.results[0].computed'))" >&2; exit 1; }
 
-WINNER_VAL=$(ff-rdp cascade '#probe' --prop width --jq '.results[0].rules[] | select(.winner == true) | .value')
-test "$WINNER_VAL" = "980px" || { echo "FAIL Theme B: winner value=$WINNER_VAL (expected 980px == computed)" >&2; exit 1; }
+WINNER_OK=$(ff-rdp cascade '#probe' --prop width --jq '[.results[0].rules[] | select(.winner == true) | .value] == ["980px"]')
+test "$WINNER_OK" = "true" || { echo "FAIL Theme B: winner value is not 980px == computed" >&2; exit 1; }
 
 VERIFIED=$(ff-rdp cascade '#probe' --prop width --jq '.results[0].winner_verified')
 test "$VERIFIED" = "true" || { echo "FAIL Theme B: winner_verified=$VERIFIED (expected true)" >&2; exit 1; }

@@ -289,11 +289,27 @@ fn render_property_cascade(
         .collect();
 
     // The winner is the highest-ranked entry whose media chain is not
-    // explicitly inactive. Entries are already sorted lowest-to-highest rank,
-    // so we scan from the end.
+    // explicitly inactive (iter-98 Theme B).
+    //
+    // `entries` is pre-sorted by `cascade_rank`, whose final tiebreak is
+    // `source_order` (the index in Firefox's getApplied reply). That index is
+    // NOT reliably CSS source order: Firefox may return an active `@media`
+    // override *before* the unconditional base rule of equal specificity, so a
+    // naive "last among media-active" scan would wrongly pick the base. We
+    // therefore select the winner with an explicit key that, at equal
+    // importance/origin/specificity, ranks a currently-active `@media`-scoped
+    // rule ABOVE an unconditional one — an active media override is authored to
+    // win the tie — and only then falls back to source order.
     let winner_idx = (0..entries.len())
-        .rev()
-        .find(|&i| media_states[i] != Some(false));
+        .filter(|&i| media_states[i] != Some(false))
+        .max_by_key(|&i| {
+            let e = &entries[i];
+            let (importance, origin_rank, spec, source_order) = cascade_rank(e);
+            // media_scoped: an active `@media` rule outranks an unconditional
+            // rule of otherwise-equal cascade rank.
+            let media_scoped = u8::from(!e.media.is_empty());
+            (importance, origin_rank, spec, media_scoped, source_order)
+        });
 
     let computed = winner_idx
         .and_then(|i| entries.get(i))
@@ -378,7 +394,11 @@ fn css_values_agree(declared: &str, computed: &str) -> bool {
     // Whole-token membership only (not raw substring): the shorter value's
     // entire normalised text must appear as a full space-delimited token in the
     // longer value.
-    let (short, long) = if d.len() <= c.len() { (&d, &c) } else { (&c, &d) };
+    let (short, long) = if d.len() <= c.len() {
+        (&d, &c)
+    } else {
+        (&c, &d)
+    };
     long.split(' ').any(|tok| tok == short.as_str())
 }
 

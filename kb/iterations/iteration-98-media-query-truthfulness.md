@@ -247,8 +247,9 @@ behavior are unchanged.
       (`iteration-98-media-query-truthfulness.dogfood.sh`): drives `responsive`
       at 390 and 1280 against a live media-query fixture, asserts the
       `media_query_check` self-check is present at both widths, runs `cascade`
-      on the media-overridden `width` property asserting winner == computed
-      (`winner_verified: true`), and exits 0.
+      on the media-overridden `width` property asserting winner == computed via
+      `winner_verified`, and exits 0. Evidenced by the `media_query_check` /
+      `winner_verified` fields and the `--strict` flag added in this diff.
 
 ## Out of scope
 
