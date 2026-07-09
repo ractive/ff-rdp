@@ -405,7 +405,7 @@ pub fn parse_page_map_str(content: &str, fmt: PageMapFormat) -> anyhow::Result<P
         PageMapFormat::Json => serde_json::from_str(content).context("JSON parse error")?,
         PageMapFormat::Yaml => {
             let value: serde_json::Value =
-                serde_yaml::from_str(content).context("YAML parse error")?;
+                serde_norway::from_str(content).context("YAML parse error")?;
             serde_json::from_value(value).context("YAML→JSON conversion")?
         }
     };

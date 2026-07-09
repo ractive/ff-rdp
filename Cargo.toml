@@ -7,6 +7,12 @@ default-members = ["crates/ff-rdp-cli"]
 version = "0.2.0"
 authors = ["James Bergamin"]
 edition = "2024"
+# MSRV (iter-105 Theme D): pinned to the toolchain CI actually validates
+# (dtolnay/rust-toolchain@stable, 1.95 at branch time).  Declaring it turns an
+# MSRV break into a red `msrv` CI check instead of a downstream user report.
+# The point is *declaring* the floor, not supporting old compilers — bump this
+# in lockstep whenever CI's stable toolchain advances.
+rust-version = "1.95"
 license = "MIT"
 repository = "https://github.com/ractive/ff-rdp"
 homepage = "https://github.com/ractive/ff-rdp"
@@ -29,7 +35,11 @@ jaq-json = { version = "2.0.0", features = ["serde"] }
 jaq-std = "3.0.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-serde_yaml = "0.9"
+# serde_norway (iter-105 Theme D): maintained fork replacing the archived,
+# RUSTSEC-flagged `serde_yaml` (dtolnay archived it 2024).  Drop-in
+# API-compatible (`from_str`/`to_string` on the same types), so no call-site
+# logic changes and the recorded YAML output stays byte-identical.
+serde_norway = "0.9"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 dirs = "6"
 fs2 = "0.4"
@@ -59,6 +69,17 @@ features = [
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
 ]
+
+# iter-105 Theme D: workspace-wide rust lints.
+#
+# `unsafe_code = "forbid"` is the workspace default, retiring ff-rdp-core's
+# hand-rolled `#![forbid(unsafe_code)]` + source-scan test.  The CLI crate has
+# real FFI (unix `libc` for daemon process management, `windows-sys` for console
+# signal handlers) and cannot inherit `forbid` — it overrides this to
+# `unsafe_code = "deny"` in its own `[lints.rust]` table so unsafe blocks must be
+# explicit and reviewed, but the narrowly-scoped, audited FFI can still compile.
+[workspace.lints.rust]
+unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

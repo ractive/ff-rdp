@@ -188,7 +188,7 @@ fn main() {
             // callers parse `error_type`/`context` from it, and the previous
             // duplicate human `error: {err}` line on stderr is gone so the same
             // error is never reported twice.
-            let exit_code = error_exit_code(&err);
+            let exit_code = err.exit_code();
             let json = err.to_error_json();
             println!("{}", serde_json::to_string(&json).unwrap_or_default());
             std::process::exit(exit_code);
@@ -196,41 +196,14 @@ fn main() {
     }
 }
 
-/// Map an `AppError` to a deterministic exit code.
-///
-/// | Variant                    | Exit code |
-/// |----------------------------|-----------|
-/// | Protocol                   | 3         |
-/// | Connection                 | 3         |
-/// | RdpActorDestroyed          | 3         |
-/// | Shape                      | 4         |
-/// | RdpTimeout                 | 5         |
-/// | Transport / RemoteClosed   | 6         |
-/// | Timeout (op-level)         | 124       |
-/// | User / Internal / *        | 1         |
-fn error_exit_code(err: &AppError) -> i32 {
-    match err {
-        AppError::RdpProtocol { .. }
-        | AppError::Connection(_)
-        | AppError::RdpActorDestroyed { .. } => 3,
-        AppError::RdpShape { .. } => 4,
-        AppError::RdpTimeout { .. } => 5,
-        AppError::RdpTransport(_) | AppError::RdpRemoteClosed(_) => 6,
-        AppError::Timeout(_) => 124,
-        AppError::User(_)
-        | AppError::Internal(_)
-        | AppError::Diagnostics { .. }
-        | AppError::DaemonVersionMismatch { .. }
-        // Unsupported (e.g. since_requires_daemon) is a runtime/user error → 1.
-        | AppError::Unsupported { .. } => 1,
-        AppError::Navigation { .. } | AppError::RdpBulkOversize { .. } => err.exit_code(),
-        AppError::Exit(code) => *code,
-    }
-}
+// iter-105 Theme C: the former `error_exit_code(&AppError)` shadow mapping
+// has been folded into the canonical `AppError::exit_code()` in `error.rs`,
+// which is now the single exit-code authority.  `main.rs` calls `exit_code()`
+// directly at the error emission site above.
 
 #[cfg(test)]
 mod main_tests {
-    use super::{error_exit_code, is_type_invocation};
+    use super::is_type_invocation;
     use crate::error::AppError;
 
     #[test]
@@ -310,9 +283,10 @@ mod main_tests {
     #[test]
     fn rdp_actor_destroyed_exit_code() {
         assert_eq!(
-            error_exit_code(&AppError::RdpActorDestroyed {
+            AppError::RdpActorDestroyed {
                 actor: "conn0/tab1".to_owned()
-            }),
+            }
+            .exit_code(),
             3
         );
     }

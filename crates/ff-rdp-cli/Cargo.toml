@@ -27,7 +27,7 @@ dirs = { workspace = true }
 fs2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
+serde_norway = { workspace = true }
 getrandom = { workspace = true }
 tempfile = { workspace = true }
 url = { workspace = true }
@@ -80,5 +80,26 @@ libc = { workspace = true }
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true }
 
-[lints]
-workspace = true
+# iter-105 Theme D: this crate cannot inherit the workspace lints table because
+# the workspace default is `unsafe_code = "forbid"` and this crate has real,
+# audited FFI (unix `libc` process-group signalling in daemon/process.rs, unix
+# `setenv` in script/vars.rs tests, `windows-sys` console handlers).  `forbid`
+# cannot be relaxed per-block, so instead we set `unsafe_code = "deny"` here —
+# every `unsafe` block must be explicit and carry a `// SAFETY:` justification
+# (all current call sites already do), keeping the allowance narrow and
+# reviewable while still letting the FFI compile.  The clippy table mirrors the
+# workspace `[workspace.lints.clippy]` config since a crate-level `[lints]`
+# table replaces (does not merge with) the inherited one.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+doc_markdown = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+too_many_lines = "allow"
+module_name_repetitions = "allow"
+struct_excessive_bools = "allow"

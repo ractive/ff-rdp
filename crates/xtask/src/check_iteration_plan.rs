@@ -59,7 +59,7 @@ pub fn parse_plan(content: &str) -> Result<ParsedPlan> {
         .to_owned();
 
     let frontmatter: PlanFrontmatter =
-        serde_yaml::from_str(yaml_text).context("failed to parse YAML frontmatter")?;
+        serde_norway::from_str(yaml_text).context("failed to parse YAML frontmatter")?;
 
     Ok(ParsedPlan { frontmatter, body })
 }

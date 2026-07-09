@@ -1,8 +1,13 @@
-// Security: forbid any `unsafe` block in the core library.  All FFI / OS-level
-// work lives in the CLI crate (daemon process management, script vars).  If a
-// dependency or generated code ever introduces an `unsafe` here the build
-// fails — see iter-75 (L-9).
-#![forbid(unsafe_code)]
+// Security: no `unsafe` is permitted anywhere in the core library.  All FFI /
+// OS-level work lives in the CLI crate (daemon process management, script vars).
+//
+// As of iter-105 (Theme D), `unsafe_code = "forbid"` is enforced via the
+// workspace `[workspace.lints.rust]` table, which this crate inherits through
+// `[lints] workspace = true` in Cargo.toml.  That retires the former
+// hand-rolled `#![forbid(unsafe_code)]` attribute + source-scan test (iter-75
+// L-9): the lint table is the single, cargo-native enforcement point, so if a
+// dependency or generated code ever introduces an `unsafe` block the build
+// still fails.
 
 pub(crate) mod actor;
 pub(crate) mod actors;
@@ -71,18 +76,8 @@ pub use transport::{FramedReader, FramedWriter, RdpTransport};
 pub use types::{ActorId, Grip};
 pub use util::terminal::sanitize_for_terminal;
 
-#[cfg(test)]
-mod lib_attrs {
-    /// AC: `core_lib_forbids_unsafe` — the `#![forbid(unsafe_code)]` attribute
-    /// must be present at the top of `lib.rs`.  We pin it via a test that
-    /// reads the source so a casual reformat or refactor cannot silently
-    /// drop the guarantee.
-    #[test]
-    fn core_lib_forbids_unsafe() {
-        let src = include_str!("lib.rs");
-        assert!(
-            src.contains("#![forbid(unsafe_code)]"),
-            "lib.rs must contain `#![forbid(unsafe_code)]` (iter-75 L-9)"
-        );
-    }
-}
+// iter-105 Theme D: the former `core_lib_forbids_unsafe` source-scan test
+// (iter-75 L-9) has been retired.  `unsafe_code = "forbid"` is now enforced by
+// the workspace `[workspace.lints.rust]` table this crate inherits, which is a
+// compile-time guarantee — strictly stronger than a runtime source scan, and it
+// cannot be silently dropped by a reformat.

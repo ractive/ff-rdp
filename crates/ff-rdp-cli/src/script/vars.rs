@@ -268,6 +268,12 @@ pub fn check_undefined_vars(template: &str, vars: &HashMap<String, String>) -> a
 
 #[cfg(test)]
 mod tests {
+    // iter-105 Theme D: these tests call `std::env::set_var`/`remove_var`, which
+    // are `unsafe` on edition 2024.  The crate default is
+    // `unsafe_code = "deny"`; scope the allowance to the test module only (each
+    // block carries its own `// SAFETY:` note) so production code stays denied.
+    #![allow(unsafe_code)]
+
     use super::*;
     use serde_json::json;
 

@@ -10,6 +10,11 @@
 //! helper — the same pattern used in `ff-rdp-core/tests/support/mod.rs`.
 
 #![allow(dead_code)]
+// iter-105 Theme D: process-cleanup helpers here call `libc::kill` via FFI.
+// The crate default is `unsafe_code = "deny"`; this file-scoped allowance keeps
+// the `// SAFETY:`-documented test helpers compiling wherever this module is
+// `#[path]`-included, while production code stays denied.
+#![allow(unsafe_code)]
 
 use std::path::PathBuf;
 use std::process::Command;

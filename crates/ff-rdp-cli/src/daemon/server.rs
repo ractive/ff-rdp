@@ -1,3 +1,10 @@
+// iter-105 Theme D: this module installs the daemon's OS signal handlers via
+// FFI (unix `libc::sigaction`, Windows `SetConsoleCtrlHandler`).  The crate
+// default is `unsafe_code = "deny"`; this narrow, file-scoped allowance keeps
+// the audited, `// SAFETY:`-documented signal-handler FFI compiling while the
+// rest of the crate still denies unsafe.
+#![allow(unsafe_code)]
+
 use std::collections::{HashMap, HashSet};
 use std::net::{TcpListener, TcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
