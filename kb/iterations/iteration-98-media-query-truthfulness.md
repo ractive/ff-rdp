@@ -243,7 +243,7 @@ behavior are unchanged.
 - [x] `pre_fix_repro_error_emitted_twice` (e2e, `tests/e2e/exit_codes.rs`):
       post-fix, a failing command emits exactly one error (the JSON envelope)
       and no duplicate human line.
-- [x] `dogfood_script_full_run_iter_98`
+- [x] `dogfood_script_full_run_iter_98` — asserts `media_query_check` and `winner_verified`
       (`iteration-98-media-query-truthfulness.dogfood.sh`): drives `responsive`
       at 390 and 1280 against a live media-query fixture, asserts the
       `media_query_check` self-check is present at both widths, runs `cascade`
