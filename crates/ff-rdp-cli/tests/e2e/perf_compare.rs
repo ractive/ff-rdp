@@ -190,10 +190,14 @@ fn perf_compare_label_mismatch_error() {
     );
     assert_eq!(output.status.code(), Some(1));
 
+    // The mismatch error is emitted as the JSON error envelope on stdout
+    // (iter-98 Theme D removed the duplicate human `error:` stderr line).
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains('1') && stderr.contains('2'),
-        "error should mention label count (1) and URL count (2): {stderr}"
+        combined.contains('1') && combined.contains('2'),
+        "error should mention label count (1) and URL count (2): stderr={stderr:?} stdout={stdout:?}"
     );
 }
 

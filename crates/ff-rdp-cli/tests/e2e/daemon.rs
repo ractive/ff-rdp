@@ -243,9 +243,16 @@ fn registry_not_found_warning_visible_when_direct_fallback_also_fails() {
         stderr.contains("warning:"),
         "broken path must surface the deferred daemon warning; got: {stderr}"
     );
+    // The direct connection failure is now reported as the single JSON error
+    // envelope on stdout (iter-98 Theme D removed the duplicate stderr line);
+    // the `warning:` above still comes from the daemon-registry path on stderr.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout must be a JSON error envelope: {e}\nstdout: {stdout}"));
+    let err_msg = json["error"].as_str().unwrap_or("");
     assert!(
-        stderr.contains("could not connect to Firefox"),
-        "broken path must also report the direct connection failure; got: {stderr}"
+        err_msg.contains("could not connect to Firefox"),
+        "broken path must report the direct connection failure in the JSON envelope; got: {json}"
     );
 }
 

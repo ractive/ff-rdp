@@ -212,14 +212,19 @@ fn tabs_connection_refused_shows_helpful_error() {
     );
     assert_eq!(output.status.code(), Some(3));
 
+    // The helpful connection-failure message is emitted as the single JSON
+    // error envelope on stdout (iter-98 Theme D removed the duplicate human
+    // `error:` stderr line).
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("is Firefox running"),
-        "stderr must mention whether Firefox is running; got: {stderr}"
+        combined.contains("is Firefox running"),
+        "output must mention whether Firefox is running; stderr={stderr:?} stdout={stdout:?}"
     );
     assert!(
-        stderr.contains("ff-rdp doctor"),
-        "stderr must reference `ff-rdp doctor`; got: {stderr}"
+        combined.contains("ff-rdp doctor"),
+        "output must reference `ff-rdp doctor`; stderr={stderr:?} stdout={stdout:?}"
     );
 }
 

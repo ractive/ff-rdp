@@ -63,14 +63,18 @@ fn launch_detects_port_collision() {
         String::from_utf8_lossy(&output.stderr)
     );
 
+    // The port-collision error is emitted as the JSON error envelope on stdout
+    // (iter-98 Theme D removed the duplicate human `error:` stderr line).
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("already in use"),
-        "stderr must mention 'already in use'; got: {stderr}"
+        combined.contains("already in use"),
+        "output must mention 'already in use'; stderr={stderr:?} stdout={stdout:?}"
     );
     assert!(
-        stderr.contains("ff-rdp doctor") || stderr.contains("`ff-rdp doctor`"),
-        "stderr must reference `ff-rdp doctor`; got: {stderr}"
+        combined.contains("ff-rdp doctor") || combined.contains("`ff-rdp doctor`"),
+        "output must reference `ff-rdp doctor`; stderr={stderr:?} stdout={stdout:?}"
     );
 }
 

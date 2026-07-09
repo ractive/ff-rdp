@@ -229,13 +229,17 @@ fn wait_timeout_exits_nonzero() {
     );
     assert_eq!(output.status.code(), Some(124));
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
     // A2: For a selector wait, the message should name the selector, not just
-    // say "timed out".  Accept either form to be resilient to message wording.
+    // say "timed out".  The timeout error is emitted as the JSON error envelope
+    // on stdout (iter-98 Theme D removed the duplicate human `error:` stderr
+    // line).  Accept either stream to be resilient to message wording.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("never-appears")
-            || stderr.contains("not found")
-            || stderr.contains("timed out"),
-        "stderr should mention the selector or timeout: {stderr}"
+        combined.contains("never-appears")
+            || combined.contains("not found")
+            || combined.contains("timed out"),
+        "output should mention the selector or timeout: stderr={stderr:?} stdout={stdout:?}"
     );
 }

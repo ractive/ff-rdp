@@ -92,12 +92,22 @@ struct CascadeEntry {
 }
 
 impl CascadeEntry {
-    fn to_json(&self, winner: bool) -> Value {
+    /// Render one cascade row.
+    ///
+    /// `winner` marks the rule the algorithm selected as the cascade winner.
+    /// `media_active` reports whether the rule's enclosing `@media` chain
+    /// currently matches (iter-98 Theme B): rules whose media context is not
+    /// active are excluded from winner selection, and the field is emitted so
+    /// callers can see *why* a higher-ranked rule did not win. `media_active`
+    /// is `null` when the rule has no `@media` chain (unconditional) or when its
+    /// condition could not be evaluated in-page.
+    fn to_json(&self, winner: bool, media_active: Option<bool>) -> Value {
         json!({
             "selector": self.selector,
             "specificity": [self.specificity.0, self.specificity.1, self.specificity.2],
             "origin": self.origin.as_str(),
             "media": if self.media.is_empty() { Value::Null } else { json!(self.media) },
+            "media_active": media_active,
             "stylesheet": self.stylesheet,
             "line": self.line,
             "value": self.value,
@@ -208,6 +218,36 @@ fn build_cascade_for_property(rules: &[AppliedRule], property: &str) -> Vec<Casc
     entries
 }
 
+/// Whether an entry's enclosing `@media` chain is currently active, given a
+/// lookup from media-condition text to its live `matchMedia(...).matches`
+/// result (iter-98 Theme B).
+///
+/// - An entry with no `@media` chain is unconditional → `Some(true)`.
+/// - An entry whose every `@media` condition is present in `media_matches`
+///   resolves to the AND of those conditions (all must match).
+/// - If any of the entry's conditions is *not* present in the lookup (it could
+///   not be evaluated in-page), the media state is unknown → `None`. Unknown is
+///   treated conservatively as "eligible" for winner selection (we never demote
+///   a rule we could not disprove); the `winner_verified` cross-check is the
+///   backstop that flags any residual disagreement with `computed`.
+fn media_active_for(
+    entry: &CascadeEntry,
+    media_matches: &std::collections::HashMap<String, bool>,
+) -> Option<bool> {
+    if entry.media.is_empty() {
+        return Some(true);
+    }
+    let mut all_match = true;
+    for cond in &entry.media {
+        match media_matches.get(cond.as_str()) {
+            Some(true) => {}
+            Some(false) => all_match = false,
+            None => return None, // could not evaluate this condition
+        }
+    }
+    Some(all_match)
+}
+
 /// Render the cascade for one property to a JSON object (the shape documented
 /// in `kb/iterations/iteration-81-cascade-inspector.md`).
 ///
@@ -219,14 +259,42 @@ fn build_cascade_for_property(rules: &[AppliedRule], property: &str) -> Vec<Casc
 ///
 /// This disambiguates an empty `rules: []` that means "inherited/default" (correct
 /// behaviour) from the iter-82/83/84 bug where empty rules meant "cascade broken".
+///
+/// `media_matches` maps each `@media` condition text to its live
+/// `matchMedia(...).matches` result. Only rules whose enclosing `@media` chain
+/// is currently active compete for the `winner` flag (iter-98 Theme B); a rule
+/// that outranks the winner but sits in an inactive `@media` block carries
+/// `winner: false` and `media_active: false` so the "why this value wins"
+/// answer is media-truthful.
+///
+/// `external_computed`, when present, is cross-checked against the selected
+/// winner's value: on disagreement the output carries `winner_verified: false`
+/// — the command must never silently assert a winner that contradicts the
+/// computed value.
 fn render_property_cascade(
     selector: &str,
     property: &str,
     rules: &[AppliedRule],
     external_computed: Option<&str>,
+    media_matches: &std::collections::HashMap<String, bool>,
 ) -> Value {
     let entries = build_cascade_for_property(rules, property);
-    let winner_idx = entries.len().checked_sub(1);
+
+    // Per-entry live media state. `None` (unconditional or unevaluable) is
+    // treated as eligible; only an explicit `Some(false)` excludes the rule
+    // from winning.
+    let media_states: Vec<Option<bool>> = entries
+        .iter()
+        .map(|e| media_active_for(e, media_matches))
+        .collect();
+
+    // The winner is the highest-ranked entry whose media chain is not
+    // explicitly inactive. Entries are already sorted lowest-to-highest rank,
+    // so we scan from the end.
+    let winner_idx = (0..entries.len())
+        .rev()
+        .find(|&i| media_states[i] != Some(false));
+
     let computed = winner_idx
         .and_then(|i| entries.get(i))
         .map(|e| e.value.clone());
@@ -234,7 +302,7 @@ fn render_property_cascade(
     let rules_json: Vec<Value> = entries
         .iter()
         .enumerate()
-        .map(|(i, e)| e.to_json(Some(i) == winner_idx))
+        .map(|(i, e)| e.to_json(Some(i) == winner_idx, media_states[i]))
         .collect();
 
     // When there are no author rules for this property AND we have an
@@ -252,12 +320,66 @@ fn render_property_cascade(
         });
     }
 
-    json!({
+    let mut out = json!({
         "selector": selector,
         "property": property,
         "computed": computed,
         "rules": rules_json,
-    })
+    });
+
+    // Winner-vs-computed cross-check (iter-98 Theme B). Only meaningful when we
+    // both selected a winner and have an external computed value to compare
+    // against. `winner_verified` is emitted only when the check ran, so callers
+    // never conflate "not checked" with "verified".
+    if let (Some(idx), Some(ext)) = (winner_idx, external_computed.filter(|s| !s.is_empty())) {
+        let winner_value = &entries[idx].value;
+        let verified = css_values_agree(winner_value, ext);
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert("winner_verified".to_string(), Value::Bool(verified));
+        }
+    }
+
+    out
+}
+
+/// True when a rule's declared value and the element's computed value agree for
+/// the purpose of the winner cross-check.
+///
+/// Computed values are canonicalised by the engine (e.g. `red` →
+/// `rgb(255, 0, 0)`, whitespace normalised), so an exact string match is too
+/// strict and would produce false `winner_verified: false` noise. We normalise
+/// both (whitespace collapsed, ASCII-case folded) and accept:
+/// - exact normalised equality, or
+/// - one value appearing as a whole whitespace-delimited *token* in the other
+///   (a declared `1024px` inside a computed shorthand expansion like
+///   `1024px 1024px`). Token membership — not raw substring — avoids the trap
+///   where a short declared value like `0` matches as a character inside an
+///   unrelated computed value like `980px`.
+///
+/// This is deliberately lenient: the check exists to catch *gross* disagreement
+/// (the field-report case where the winner said `0` but computed said `980px`),
+/// not to police serialization nuances.
+fn css_values_agree(declared: &str, computed: &str) -> bool {
+    fn norm(s: &str) -> String {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase()
+    }
+    let d = norm(declared);
+    let c = norm(computed);
+    if d.is_empty() || c.is_empty() {
+        // Nothing to compare against — do not claim a disagreement.
+        return true;
+    }
+    if d == c {
+        return true;
+    }
+    // Whole-token membership only (not raw substring): the shorter value's
+    // entire normalised text must appear as a full space-delimited token in the
+    // longer value.
+    let (short, long) = if d.len() <= c.len() { (&d, &c) } else { (&c, &d) };
+    long.split(' ').any(|tok| tok == short.as_str())
 }
 
 /// True if `decl_name` matches `query` under CSS property-name rules.
@@ -389,16 +511,27 @@ pub fn run(
         None => declared_properties(&applied),
     };
 
-    // When --prop is set, fetch the actual computed value via getComputedStyle.
-    // Uses the JSON-sentinel + LongString-resolving pattern from computed.rs so
-    // that large values returned as LongString actors are handled correctly.
-    // Returns None on any failure — non-fatal, the main cascade result still emits.
-    let external_computed: Option<String> =
-        prop.and_then(|prop_name| fetch_computed_value(&mut ctx, selector, prop_name));
+    // iter-98 Theme B: evaluate every distinct `@media` condition wrapping any
+    // applied rule against the live page (`matchMedia(cond).matches`) so the
+    // winner algorithm only considers rules whose media context is active.
+    // Best-effort — on any failure the map is empty and each entry's media
+    // state is reported as `null` (unknown), leaving the winner_verified
+    // cross-check as the backstop.
+    let media_conditions = distinct_media_conditions(&applied);
+    let media_matches = fetch_media_matches(&mut ctx, &media_conditions);
+
+    // Fetch the live computed value for every rendered property in one batch
+    // round-trip. This powers both the `inherited_or_default` note (when a
+    // property has no author rule) and the winner-vs-computed cross-check
+    // (iter-98 Theme B). Best-effort: absent entries just skip those checks.
+    let computed_by_prop = fetch_computed_values(&mut ctx, selector, &properties);
 
     let results: Vec<Value> = properties
         .iter()
-        .map(|p| render_property_cascade(selector, p, &applied, external_computed.as_deref()))
+        .map(|p| {
+            let ext = computed_by_prop.get(p).map(String::as_str);
+            render_property_cascade(selector, p, &applied, ext, &media_matches)
+        })
         .collect();
 
     let total = results.len();
@@ -438,49 +571,141 @@ fn map_cascade_error(err: ff_rdp_core::ProtocolError) -> AppError {
 // External computed-style helpers
 // ---------------------------------------------------------------------------
 
-/// Build the JavaScript that fetches a single computed-style value for one
-/// element, using the same JSON-sentinel + `getComputedStyle` envelope that
-/// `computed.rs` uses for single-prop queries.
+/// Build JS that fetches the computed values of many properties on the first
+/// element matching `selector` in a single round-trip.
 ///
-/// The result is a JSON string like `"__FF_RDP_JSON__\"rgb(0,0,0)\""` or
-/// JS `null` when the element is not found.
-pub(crate) fn build_external_computed_js(selector: &str, prop: &str) -> String {
+/// Returns a sentinel-prefixed JSON object `{prop: value}` (only non-empty
+/// values are included) or JS `null` when the element is not found. Uses the
+/// same `getComputedStyle` + `getPropertyValue` envelope as
+/// [`build_external_computed_js`] so custom properties resolve correctly.
+pub(crate) fn build_batch_computed_js(selector: &str, props: &[String]) -> String {
     let escaped_sel = escape_selector(selector);
-    // JSON-encode the property name so single quotes, backslashes, etc. are safe
-    // in the resulting JS string literal.
-    let prop_json = serde_json::to_string(prop).unwrap_or_else(|_| format!("\"{prop}\""));
+    // serde_json::to_string is infallible for &[String].
+    let props_json = serde_json::to_string(props)
+        .unwrap_or_else(|e| unreachable!("serde_json::to_string(&[String]) is infallible: {e}"));
     format!(
         "(function(){{var el=document.querySelector('{escaped_sel}');\
          if(!el)return null;\
          var cs=getComputedStyle(el);\
-         var v=cs.getPropertyValue({prop_json}).trim()||cs[{prop_json}]||'';\
-         return '{JSON_SENTINEL}'+JSON.stringify(v);}})()"
+         var props={props_json};var out={{}};\
+         for(var i=0;i<props.length;i++){{\
+           var p=props[i];\
+           var v=cs.getPropertyValue(p).trim()||cs[p]||'';\
+           if(v!=='')out[p]=v;\
+         }}\
+         return '{JSON_SENTINEL}'+JSON.stringify(out);}})()"
     )
 }
 
-/// Fetch the computed value of `prop` on the first element matching `selector`.
+/// Fetch the computed values of `props` on the first element matching
+/// `selector`, in one round-trip.
 ///
 /// Uses the same JSON-sentinel + LongString-resolving pattern as `computed.rs`
-/// to handle large values that Firefox returns as LongString actors.
-///
-/// Returns `None` on any failure (element not found, eval error, empty value)
-/// — callers treat `None` as "no computed hint available" and continue.
-fn fetch_computed_value(ctx: &mut ConnectedTab, selector: &str, prop: &str) -> Option<String> {
-    let js = build_external_computed_js(selector, prop);
+/// so large payloads returned as LongString actors are handled correctly.
+/// Returns an empty map on any failure (element not found, eval error) — callers
+/// treat a missing entry as "no computed hint available" and continue.
+fn fetch_computed_values(
+    ctx: &mut ConnectedTab,
+    selector: &str,
+    props: &[String],
+) -> std::collections::HashMap<String, String> {
+    let empty = std::collections::HashMap::new();
+    if props.is_empty() {
+        return empty;
+    }
+    let js = build_batch_computed_js(selector, props);
     let console_actor = ctx.target.console_actor.clone();
-    let result = eval_or_bail(ctx, &console_actor, &js, "computed style lookup").ok()?;
+    let Ok(result) = eval_or_bail(ctx, &console_actor, &js, "computed style lookup") else {
+        return empty;
+    };
 
     let raw: String = match &result.result {
         Grip::Value(serde_json::Value::String(s)) => s.clone(),
         Grip::LongString { actor, length, .. } => {
-            LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), *length).ok()?
+            match LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), *length) {
+                Ok(s) => s,
+                Err(_) => return empty,
+            }
         }
-        _ => return None,
+        _ => return empty,
     };
 
-    let stripped = raw.strip_prefix(JSON_SENTINEL)?;
-    let value: String = serde_json::from_str(stripped).ok()?;
-    if value.is_empty() { None } else { Some(value) }
+    let Some(stripped) = raw.strip_prefix(JSON_SENTINEL) else {
+        return empty;
+    };
+    serde_json::from_str::<std::collections::HashMap<String, String>>(stripped).unwrap_or(empty)
+}
+
+// ---------------------------------------------------------------------------
+// Media-context helpers (iter-98 Theme B)
+// ---------------------------------------------------------------------------
+
+/// Collect the distinct `@media` condition texts wrapping any applied rule, in
+/// first-seen order.
+fn distinct_media_conditions(rules: &[AppliedRule]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for rule in rules {
+        for cond in &rule.media {
+            if seen.insert(cond.clone()) {
+                out.push(cond.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Build JS that evaluates `matchMedia(cond).matches` for each condition and
+/// returns a sentinel-prefixed JSON object `{cond: bool}`.
+///
+/// A condition that throws in `matchMedia` (malformed text) is simply omitted
+/// from the result object, so the caller's lookup returns `None` for it and the
+/// entry's media state is reported as unknown.
+pub(crate) fn build_media_probe_js(conditions: &[String]) -> String {
+    let conds_json = serde_json::to_string(conditions)
+        .unwrap_or_else(|e| unreachable!("serde_json::to_string(&[String]) is infallible: {e}"));
+    format!(
+        "(function(){{var conds={conds_json};var out={{}};\
+         for(var i=0;i<conds.length;i++){{\
+           var c=conds[i];\
+           try{{out[c]=window.matchMedia(c).matches;}}catch(e){{}}\
+         }}\
+         return '{JSON_SENTINEL}'+JSON.stringify(out);}})()"
+    )
+}
+
+/// Evaluate every `@media` condition against the live page and return the
+/// condition→matches map. Best-effort: any failure yields an empty map (all
+/// media states become "unknown").
+fn fetch_media_matches(
+    ctx: &mut ConnectedTab,
+    conditions: &[String],
+) -> std::collections::HashMap<String, bool> {
+    let empty = std::collections::HashMap::new();
+    if conditions.is_empty() {
+        return empty;
+    }
+    let js = build_media_probe_js(conditions);
+    let console_actor = ctx.target.console_actor.clone();
+    let Ok(result) = eval_or_bail(ctx, &console_actor, &js, "media-query probe") else {
+        return empty;
+    };
+
+    let raw: String = match &result.result {
+        Grip::Value(serde_json::Value::String(s)) => s.clone(),
+        Grip::LongString { actor, length, .. } => {
+            match LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), *length) {
+                Ok(s) => s,
+                Err(_) => return empty,
+            }
+        }
+        _ => return empty,
+    };
+
+    let Some(stripped) = raw.strip_prefix(JSON_SENTINEL) else {
+        return empty;
+    };
+    serde_json::from_str::<std::collections::HashMap<String, bool>>(stripped).unwrap_or(empty)
 }
 
 // ---------------------------------------------------------------------------
@@ -489,8 +714,29 @@ fn fetch_computed_value(ctx: &mut ConnectedTab, selector: &str, prop: &str) -> O
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use ff_rdp_core::RuleProperty;
+
+    /// Test shim: most cascade tests exercise rules with no `@media` context,
+    /// so they call the historical 4-arg `render_property_cascade`. This
+    /// forwards to the real 5-arg function with an empty media-match map (every
+    /// rule's media state is unconditional/unknown → eligible to win).
+    fn render_property_cascade(
+        selector: &str,
+        property: &str,
+        rules: &[AppliedRule],
+        external_computed: Option<&str>,
+    ) -> Value {
+        super::render_property_cascade(
+            selector,
+            property,
+            rules,
+            external_computed,
+            &HashMap::new(),
+        )
+    }
 
     fn rule(
         selector: &str,
@@ -773,6 +1019,245 @@ mod tests {
         assert_eq!(declared_properties(&rules), vec!["color", "display"]);
     }
 
+    // -----------------------------------------------------------------------
+    // Theme B (iter-98): media-aware winner + winner_verified cross-check
+    // -----------------------------------------------------------------------
+
+    /// A media-scoped applied rule helper.
+    fn rule_media(
+        selector: &str,
+        source: Option<&str>,
+        line: u32,
+        media: &[&str],
+        decls: &[(&str, &str, &str)],
+    ) -> AppliedRule {
+        let mut r = rule(selector, source, line, decls);
+        r.media = media.iter().map(|s| (*s).to_string()).collect();
+        r
+    }
+
+    /// `pre_fix_repro_cascade_winner_ignores_media_context` (unit form).
+    ///
+    /// Two rules of equal specificity: a base `width: 0` rule and a
+    /// `(min-width: 1024px)` override `width: 980px`. At a ≥1024px viewport the
+    /// media condition is active, so the override must win. Pre-fix, the winner
+    /// algorithm ignored media context and — because both rules have equal rank
+    /// and the base declares the property too — could mark the wrong rule; here
+    /// we assert the media-active override wins and equals computed.
+    #[test]
+    fn pre_fix_repro_cascade_winner_ignores_media_context() {
+        let rules = vec![
+            rule(
+                "#shell-main",
+                Some("https://example.com/site.css"),
+                10,
+                &[("width", "0", "")],
+            ),
+            rule_media(
+                "#shell-main",
+                Some("https://example.com/site.css"),
+                20,
+                &["(min-width: 1024px)"],
+                &[("width", "980px", "")],
+            ),
+        ];
+        // Media condition is ACTIVE at a ≥1024px viewport.
+        let mut media = HashMap::new();
+        media.insert("(min-width: 1024px)".to_string(), true);
+
+        let out =
+            super::render_property_cascade("#shell-main", "width", &rules, Some("980px"), &media);
+        assert_eq!(out["computed"], "980px");
+        let arr = out["rules"].as_array().unwrap();
+        let winner = arr.iter().find(|r| r["winner"] == true).unwrap();
+        assert_eq!(
+            winner["value"], "980px",
+            "the active (min-width:1024px) override must win: {out}"
+        );
+        // The winner value agrees with computed → verified true.
+        assert_eq!(out["winner_verified"], true, "{out}");
+    }
+
+    /// When the media condition is INACTIVE (narrow viewport), the override
+    /// must NOT win — the unconditional base rule wins instead, and the
+    /// override carries `media_active: false`.
+    #[test]
+    fn unit_cascade_inactive_media_rule_does_not_win() {
+        let rules = vec![
+            rule(
+                "#shell-main",
+                Some("https://example.com/site.css"),
+                10,
+                &[("width", "390px", "")],
+            ),
+            rule_media(
+                "#shell-main",
+                Some("https://example.com/site.css"),
+                20,
+                &["(min-width: 1024px)"],
+                &[("width", "980px", "")],
+            ),
+        ];
+        let mut media = HashMap::new();
+        media.insert("(min-width: 1024px)".to_string(), false);
+
+        let out =
+            super::render_property_cascade("#shell-main", "width", &rules, Some("390px"), &media);
+        assert_eq!(
+            out["computed"], "390px",
+            "with the media block inactive the base rule wins: {out}"
+        );
+        let arr = out["rules"].as_array().unwrap();
+        let override_row = arr
+            .iter()
+            .find(|r| r["value"] == "980px")
+            .expect("override row present");
+        assert_eq!(override_row["winner"], false);
+        assert_eq!(override_row["media_active"], false);
+        assert_eq!(out["winner_verified"], true, "{out}");
+    }
+
+    /// `unit_cascade_winner_disagreement_flagged`: a winner whose value
+    /// disagrees with the computed value carries `winner_verified: false`.
+    #[test]
+    fn unit_cascade_winner_disagreement_flagged() {
+        // Single unconditional rule declares `width: 0`, but computed reports
+        // `980px` — the classic field-report contradiction. The winner is the
+        // only rule, but it disagrees with computed, so it must be flagged.
+        let rules = vec![rule(
+            "#shell-main",
+            Some("https://example.com/site.css"),
+            10,
+            &[("width", "0", "")],
+        )];
+        let out = super::render_property_cascade(
+            "#shell-main",
+            "width",
+            &rules,
+            Some("980px"),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            out["winner_verified"], false,
+            "winner value `0` disagrees with computed `980px` → must be flagged: {out}"
+        );
+    }
+
+    #[test]
+    fn unit_cascade_winner_verified_absent_without_computed() {
+        // No external computed → the cross-check does not run and the field is
+        // omitted entirely (never conflate "unchecked" with "verified").
+        let rules = vec![rule(
+            "h1",
+            Some("https://example.com/site.css"),
+            10,
+            &[("color", "red", "")],
+        )];
+        let out = render_property_cascade("h1", "color", &rules, None);
+        assert!(
+            out.get("winner_verified").is_none(),
+            "winner_verified must be absent when no computed value is available: {out}"
+        );
+    }
+
+    #[test]
+    fn unit_css_values_agree_lenient() {
+        assert!(css_values_agree("980px", "980px"));
+        assert!(css_values_agree("RED", "red"));
+        assert!(css_values_agree("1024px", "1024px "));
+        // Substring acceptance: declared shorthand inside computed expansion.
+        assert!(css_values_agree("1024px", "1024px 1024px"));
+        // Gross disagreement is flagged.
+        assert!(!css_values_agree("0", "980px"));
+        assert!(!css_values_agree("block", "flex"));
+        // Empty on either side → not a disagreement.
+        assert!(css_values_agree("", "980px"));
+        assert!(css_values_agree("980px", ""));
+    }
+
+    /// Build a bare `CascadeEntry` carrying only the media chain we want to
+    /// test — the other fields are irrelevant to `media_active_for`.
+    fn entry_with_media(media: &[&str]) -> CascadeEntry {
+        CascadeEntry {
+            selector: "a".into(),
+            specificity: (0, 0, 1),
+            origin: Origin::Author,
+            media: media.iter().map(|s| (*s).to_string()).collect(),
+            stylesheet: None,
+            line: None,
+            value: "x".into(),
+            important: false,
+            source_order: 0,
+        }
+    }
+
+    #[test]
+    fn unit_media_active_for_resolves_and_chains() {
+        let mut map = HashMap::new();
+        map.insert("(min-width: 1024px)".to_string(), true);
+        map.insert("(orientation: portrait)".to_string(), false);
+
+        // Unconditional entry → Some(true).
+        assert_eq!(media_active_for(&entry_with_media(&[]), &map), Some(true));
+
+        // Single active condition → Some(true).
+        assert_eq!(
+            media_active_for(&entry_with_media(&["(min-width: 1024px)"]), &map),
+            Some(true)
+        );
+
+        // One active + one inactive → Some(false) (AND semantics).
+        assert_eq!(
+            media_active_for(
+                &entry_with_media(&["(min-width: 1024px)", "(orientation: portrait)"]),
+                &map
+            ),
+            Some(false)
+        );
+
+        // Unknown condition → None.
+        assert_eq!(
+            media_active_for(&entry_with_media(&["(min-width: 9999px)"]), &map),
+            None
+        );
+    }
+
+    #[test]
+    fn unit_distinct_media_conditions_dedupes_in_order() {
+        let rules = vec![
+            rule_media("a", Some("x"), 1, &["(min-width: 1024px)"], &[]),
+            rule_media("b", Some("x"), 2, &["(min-width: 600px)"], &[]),
+            rule_media("c", Some("x"), 3, &["(min-width: 1024px)"], &[]),
+        ];
+        assert_eq!(
+            distinct_media_conditions(&rules),
+            vec![
+                "(min-width: 1024px)".to_string(),
+                "(min-width: 600px)".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn unit_build_media_probe_js_shape() {
+        let js = build_media_probe_js(&["(min-width: 1024px)".to_string()]);
+        assert!(js.contains("matchMedia"), "must call matchMedia: {js}");
+        assert!(js.contains(JSON_SENTINEL), "must use the sentinel: {js}");
+        assert!(
+            js.contains("(min-width: 1024px)"),
+            "must embed the condition: {js}"
+        );
+    }
+
+    #[test]
+    fn unit_build_batch_computed_js_shape() {
+        let js = build_batch_computed_js("h1", &["color".to_string(), "width".to_string()]);
+        assert!(js.contains("getComputedStyle"));
+        assert!(js.contains("getPropertyValue"));
+        assert!(js.contains(JSON_SENTINEL));
+        assert!(js.contains("color") && js.contains("width"));
+    }
+
     /// Parse a recorded-fixture–shape JSON entries array (mirrors what
     /// Firefox returns from `getApplied`) into `AppliedRule`s and verify
     /// the cascade picks the correct winner.  This exercises the same
@@ -879,12 +1364,12 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Theme B: build_external_computed_js unit tests
+    // Theme B: batch computed-style JS unit tests
     // ---------------------------------------------------------------------------
 
     /// `unit_cascade_computed_field_matches_computed_command_table_driven`
     ///
-    /// Table-driven proof that `build_external_computed_js` produces JS that
+    /// Table-driven proof that `build_batch_computed_js` produces JS that
     /// contains both the JSON sentinel and `getComputedStyle` — the same
     /// structural envelope used by `computed.rs`.  This covers three realistic
     /// (selector, prop) pairs: inherited color, block-level background, and
@@ -902,7 +1387,7 @@ mod tests {
             ("p", "font-size"),
         ];
         for (selector, prop) in cases {
-            let js = build_external_computed_js(selector, prop);
+            let js = build_batch_computed_js(selector, &[prop.to_string()]);
             assert!(
                 js.contains(JSON_SENTINEL),
                 "({selector}, {prop}): JS must contain JSON_SENTINEL: {js}"
@@ -925,9 +1410,9 @@ mod tests {
 
     /// `pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does`
     ///
-    /// Unit-level proof that the JS built by `build_external_computed_js` for
+    /// Unit-level proof that the JS built by `build_batch_computed_js` for
     /// three property/selector pairs always uses the sentinel envelope expected
-    /// by `fetch_computed_value`.  This is the pre-fix-repro shape: before the
+    /// by `fetch_computed_values`.  This is the pre-fix-repro shape: before the
     /// fix the old code returned bare strings or null (no sentinel), so
     /// `LongString` values were silently dropped.  After the fix both paths use
     /// the sentinel, so this test would have caught the regression.
@@ -939,7 +1424,7 @@ mod tests {
             ("p", "font-size"),
         ];
         for (selector, prop) in cases {
-            let js = build_external_computed_js(selector, prop);
+            let js = build_batch_computed_js(selector, &[prop.to_string()]);
             // The old buggy code used `return v||null` (no sentinel).
             // The fixed code uses `return '…JSON_SENTINEL…' + JSON.stringify(v)`.
             assert!(

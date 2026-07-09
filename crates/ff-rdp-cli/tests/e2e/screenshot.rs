@@ -285,19 +285,23 @@ fn screenshot_module_load_failure_surfaces_clean_version_mismatch_message() {
         "expected non-zero exit when screenshot actor module fails to load"
     );
 
+    // The clean error is emitted as the JSON error envelope on stdout (iter-98
+    // Theme D removed the duplicate human `error:` stderr line).
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("screenshot actor not found in Firefox"),
-        "stderr should include 'screenshot actor not found in Firefox': {stderr}"
+        combined.contains("screenshot actor not found in Firefox"),
+        "output should include 'screenshot actor not found in Firefox': stderr={stderr:?} stdout={stdout:?}"
     );
     assert!(
-        stderr.contains("ff-rdp doctor"),
-        "stderr should reference `ff-rdp doctor`: {stderr}"
+        combined.contains("ff-rdp doctor"),
+        "output should reference `ff-rdp doctor`: stderr={stderr:?} stdout={stdout:?}"
     );
-    // The raw Firefox stack trace must not be echoed.
+    // The raw Firefox stack trace must not be echoed anywhere.
     assert!(
-        !stderr.contains("Unable to load actor module"),
-        "stderr must not echo the raw Firefox stack: {stderr}"
+        !combined.contains("Unable to load actor module"),
+        "output must not echo the raw Firefox stack: stderr={stderr:?} stdout={stdout:?}"
     );
 }
 
@@ -332,14 +336,18 @@ fn screenshot_module_load_failure_in_two_step_protocol_surfaces_clean_message() 
         "expected non-zero exit when prepareCapture fails with module-load error"
     );
 
+    // The clean error is emitted as the JSON error envelope on stdout (iter-98
+    // Theme D removed the duplicate human `error:` stderr line).
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("screenshot actor not found in Firefox"),
-        "stderr should include 'screenshot actor not found in Firefox': {stderr}"
+        combined.contains("screenshot actor not found in Firefox"),
+        "output should include 'screenshot actor not found in Firefox': stderr={stderr:?} stdout={stdout:?}"
     );
     assert!(
-        stderr.contains("ff-rdp doctor"),
-        "stderr should reference `ff-rdp doctor`: {stderr}"
+        combined.contains("ff-rdp doctor"),
+        "output should reference `ff-rdp doctor`: stderr={stderr:?} stdout={stdout:?}"
     );
 }
 
@@ -390,10 +398,14 @@ fn screenshot_viewport_height_flag_returns_error() {
         !output.status.success(),
         "expected failure when --viewport-height is used"
     );
+    // The unsupported-flag error is emitted as the JSON error envelope on
+    // stdout (iter-98 Theme D removed the duplicate human `error:` stderr line).
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("viewport-height") || stderr.contains("not supported"),
-        "expected unsupported error, got: {stderr}"
+        combined.contains("viewport-height") || combined.contains("not supported"),
+        "expected unsupported error, got: stderr={stderr:?} stdout={stdout:?}"
     );
 }
 

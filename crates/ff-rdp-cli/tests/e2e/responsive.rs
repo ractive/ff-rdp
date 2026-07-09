@@ -39,25 +39,32 @@ fn responsive_server(
 ///      a. SET_VIEWPORT_CSS → eval_result_responsive_undefined.json
 ///      b. WAIT_LAYOUT      → eval_result_responsive_undefined.json
 ///      c. geometry IIFE    → eval_result_responsive_geometry.json
+///      d. MEDIA_QUERY_CHECK → eval_result_responsive_mq_check.json (iter-98)
 ///   3. RESTORE_VIEWPORT_CSS (1×) → eval_result_responsive_undefined.json
 ///
-/// Total: 1 + 3×N + 1 calls.
+/// Total: 1 + 4×N + 1 calls.
 fn build_eval_sequence(width_count: usize) -> Vec<(serde_json::Value, Vec<serde_json::Value>)> {
     let immediate = load_fixture("eval_immediate_response.json");
     let viewport = load_fixture("eval_result_responsive_viewport.json");
     let geometry = load_fixture("eval_result_responsive_geometry.json");
     let undefined = load_fixture("eval_result_responsive_undefined.json");
+    // iter-98 Theme A: the per-width media-query self-check. The fixture
+    // reports the media queries did NOT flip (matches:false) — the expected
+    // layout-only-emulation outcome.
+    let mq_check = load_fixture("eval_result_responsive_mq_check.json");
 
     let mut seq = Vec::new();
 
     // Step 1: get current viewport
     seq.push((immediate.clone(), vec![viewport]));
 
-    // Step 2: for each width — set CSS, wait for layout, then collect geometry
+    // Step 2: for each width — set CSS, wait for layout, collect geometry, then
+    // run the media-query self-check.
     for _ in 0..width_count {
         seq.push((immediate.clone(), vec![undefined.clone()])); // SET_VIEWPORT_CSS_JS
         seq.push((immediate.clone(), vec![undefined.clone()])); // WAIT_LAYOUT_STABLE_JS
         seq.push((immediate.clone(), vec![geometry.clone()])); // geometry IIFE
+        seq.push((immediate.clone(), vec![mq_check.clone()])); // MEDIA_QUERY_CHECK_JS
     }
 
     // Step 3: restore CSS styles
@@ -292,9 +299,13 @@ fn responsive_zero_width_rejected() {
 
     assert!(!output.status.success(), "expected failure for zero width");
 
+    // The validation error is emitted as the JSON error envelope on stdout
+    // (iter-98 Theme D removed the duplicate human `error:` stderr line).
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("greater than 0") || stderr.contains("width"),
-        "unexpected stderr: {stderr}"
+        combined.contains("greater than 0") || combined.contains("width"),
+        "unexpected output: stderr={stderr:?} stdout={stdout:?}"
     );
 }

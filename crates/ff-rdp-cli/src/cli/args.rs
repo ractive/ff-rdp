@@ -1114,12 +1114,21 @@ Output: {\"results\": {\"elements\": [{\"selector\": \"...\", \"rect\": {...}, \
     /// the original viewport size.  Returns results keyed by breakpoint width.
     #[command(long_about = "Test responsive layout across viewport widths.
 
-Resizes to each width, collects element geometry at each breakpoint, then restores the original viewport.
+Simulates each width by constraining the page layout (inline CSS on <html>/<body>),
+collects element geometry at each breakpoint, then restores the original viewport.
+
+IMPORTANT — layout-only emulation: over the RDP protocol ff-rdp cannot resize the
+real top-level window, so CSS @media queries continue to evaluate against the
+physical viewport width. Geometry is correct for the requested width, but media
+queries may not flip. Every breakpoint therefore carries a `media_query_check`
+object — {requested, inner_width, matches} — where `matches` is
+matchMedia(\"(width: <requested>px)\").matches. When it is false a warning is
+attached; pass --strict to make a mismatch exit non-zero.
 
 By default, hidden and zero-sized elements are excluded from results at each breakpoint.
 Pass --include-hidden to receive those elements as well.
 
-Output: {\"results\": {\"breakpoints\": [{\"width\": 320, \"viewport\": {\"width\": N, \"height\": N}, \"elements\": [{\"selector\": \"...\", \"rect\": {...}, \"visible\": bool}]}, ...], \"original_viewport\": {\"width\": N, \"height\": N}}, \"total\": N, \"meta\": {...}}")]
+Output: {\"results\": {\"breakpoints\": [{\"width\": 320, \"viewport\": {\"width\": N, \"height\": N}, \"media_query_check\": {\"requested\": 320, \"inner_width\": N, \"matches\": bool}, \"elements\": [{\"selector\": \"...\", \"rect\": {...}, \"visible\": bool}]}, ...], \"original_viewport\": {\"width\": N, \"height\": N}, \"warnings\": [...]}, \"total\": N, \"meta\": {...}}")]
     #[command(group(ArgGroup::new("resp_target").required(true).multiple(false).args(["selectors", "ref_id"])))]
     Responsive {
         /// One or more CSS selectors to query at each breakpoint
@@ -1135,6 +1144,12 @@ Output: {\"results\": {\"breakpoints\": [{\"width\": 320, \"viewport\": {\"width
         /// By default these are excluded.
         #[arg(long)]
         include_hidden: bool,
+        /// Exit non-zero when the media-query self-check detects that the page's
+        /// media queries did not flip to the requested width (layout-only
+        /// emulation). Each breakpoint always carries a `media_query_check`
+        /// object regardless; --strict turns any mismatch into a failure.
+        #[arg(long)]
+        strict: bool,
     },
     /// Quick wrapper around getComputedStyle for CSS debugging
     #[command(

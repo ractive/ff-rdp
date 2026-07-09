@@ -210,10 +210,14 @@ fn type_text_conflict_positional_and_flag_text_errors() {
         .expect("failed to spawn ff-rdp");
 
     assert!(!output.status.success());
+    // The conflict is a runtime AppError::User → emitted as the JSON error
+    // envelope on stdout (iter-98 Theme D removed the duplicate stderr line).
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("--text") && stderr.contains("not both"),
-        "expected explicit conflict message, got: {stderr}"
+        combined.contains("--text") && combined.contains("not both"),
+        "expected explicit conflict message, got: stderr={stderr:?} stdout={stdout:?}"
     );
 }
 

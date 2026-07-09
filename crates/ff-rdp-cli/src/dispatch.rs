@@ -858,12 +858,13 @@ fn dispatch_inner(
             ref_id,
             widths,
             include_hidden,
+            strict,
         } => {
             if let Some(id) = ref_id.as_deref() {
                 let resolved = resolve_ref_via_daemon(cli, id)?;
-                commands::responsive::run(cli, &[resolved], widths, *include_hidden)
+                commands::responsive::run(cli, &[resolved], widths, *include_hidden, *strict)
             } else {
-                commands::responsive::run(cli, selectors, widths, *include_hidden)
+                commands::responsive::run(cli, selectors, widths, *include_hidden, *strict)
             }
         }
         Command::Snapshot {

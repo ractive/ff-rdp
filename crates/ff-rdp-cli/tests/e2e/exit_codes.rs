@@ -115,10 +115,16 @@ fn exit_3_connection_refused_tabs() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The connection failure is reported as the single JSON error envelope on
+    // stdout (iter-98 Theme D removed the duplicate human `error:` stderr line).
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout must be a JSON error envelope: {e}\nstdout: {stdout}"));
     assert!(
-        stderr.contains("could not connect"),
-        "stderr must describe the connection failure; got: {stderr}"
+        json["error"]
+            .as_str()
+            .is_some_and(|m| m.contains("could not connect")),
+        "JSON envelope must describe the connection failure; got: {json}"
     );
 }
 
@@ -190,13 +196,17 @@ fn exit_124_wait_timeout() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
     // A2: selector-wait timeout now says "not found" instead of "timed out".
+    // The message is emitted as the JSON error envelope on stdout (iter-98
+    // Theme D removed the duplicate human `error:` stderr line).
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("never-appears")
-            || stderr.contains("not found")
-            || stderr.contains("timed out"),
-        "stderr must mention the timeout or selector; got: {stderr}"
+        combined.contains("never-appears")
+            || combined.contains("not found")
+            || combined.contains("timed out"),
+        "output must mention the timeout or selector; stderr={stderr:?} stdout={stdout:?}"
     );
 }
 
@@ -241,5 +251,56 @@ fn exit_1_wait_js_exception() {
         Some(1),
         "JS exception during wait must exit 1; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// iter-98 Theme D — errors are emitted exactly once (JSON envelope only)
+// ---------------------------------------------------------------------------
+
+/// `pre_fix_repro_error_emitted_twice`: a failing command must emit the error
+/// exactly once — as the JSON error envelope on stdout — with no duplicate
+/// human `error: {msg}` line on stderr.
+///
+/// Pre-fix, `main.rs` printed both `eprintln!("error: {err}")` and the JSON
+/// envelope, so the same message appeared twice. This asserts the envelope is
+/// the single emission and stderr carries no `error:` duplicate.
+#[test]
+fn pre_fix_repro_error_emitted_twice() {
+    // Connection-refused is the simplest deterministic failure that routes
+    // through the general error arm in `main.rs`.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let mut args = base_args(port);
+    args.push("tabs".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    assert!(!output.status.success(), "command must fail");
+
+    // stdout: exactly one JSON error envelope carrying the message.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout must be a JSON error envelope: {e}\nstdout: {stdout}"));
+    let envelope_msg = json["error"]
+        .as_str()
+        .expect("JSON envelope must carry an `error` message");
+    assert!(
+        !envelope_msg.is_empty(),
+        "envelope message must be non-empty"
+    );
+
+    // stderr: must NOT carry a duplicate human `error:` line — the envelope on
+    // stdout is the single emission.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("error:"),
+        "stderr must not carry a duplicate `error:` line; the JSON envelope is \
+         the single emission. stderr: {stderr}"
     );
 }

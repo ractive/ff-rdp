@@ -200,11 +200,16 @@ fn storage_invalid_type_exits_nonzero_without_connecting() {
     // will mention "cookie" or "invalid storage type".  Before wiring, clap
     // rejects the subcommand with "unrecognized subcommand".  Either message
     // is acceptable here — the important invariant is the non-zero exit code.
+    // The error surfaces either on stderr (clap parse) or as the JSON error
+    // envelope on stdout (iter-98 Theme D — the general error arm no longer
+    // prints a duplicate human `error:` stderr line).
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("cookie")
-            || stderr.contains("invalid storage type")
-            || stderr.contains("storage"),
-        "stderr should be non-empty: {stderr}"
+        combined.contains("cookie")
+            || combined.contains("invalid storage type")
+            || combined.contains("storage"),
+        "expected a storage-related error: stderr={stderr:?} stdout={stdout:?}"
     );
 }

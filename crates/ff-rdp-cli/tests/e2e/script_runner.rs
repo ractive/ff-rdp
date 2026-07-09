@@ -201,9 +201,11 @@ fn dry_run_missing_var_exits_nonzero() {
         "expected failure for missing var, got success"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("missing_url"),
-        "stderr should mention the missing variable: {stderr}"
+        combined.contains("missing_url"),
+        "output should mention the missing variable: stderr={stderr:?} stdout={stdout:?}"
     );
 }
 
@@ -221,9 +223,11 @@ fn rejects_script_with_multiple_targets() {
         "expected failure for multiple targets"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("exactly one"),
-        "stderr should mention 'exactly one': {stderr}"
+        combined.contains("exactly one"),
+        "output should mention 'exactly one': stderr={stderr:?} stdout={stdout:?}"
     );
 }
 
@@ -233,9 +237,11 @@ fn rejects_unsupported_version() {
     let output = run_dry(script, &[]);
     assert!(!output.status.success(), "expected failure for version 99");
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("99"),
-        "stderr should mention version: {stderr}"
+        combined.contains("99"),
+        "output should mention version: stderr={stderr:?} stdout={stdout:?}"
     );
 }
 
@@ -275,9 +281,11 @@ fn typo_field_rejected_at_parse_time() {
         "expected failure for typo'd field 'urll'"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("urll") || stderr.contains("unknown field"),
-        "stderr should mention the unknown field: {stderr}"
+        combined.contains("urll") || combined.contains("unknown field"),
+        "output should mention the unknown field: stderr={stderr:?} stdout={stdout:?}"
     );
 }
 

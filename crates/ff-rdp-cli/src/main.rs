@@ -181,11 +181,13 @@ fn main() {
             std::process::exit(1);
         }
         Err(err) => {
-            // All other errors: emit human-readable message to stderr and
-            // JSON error envelope to stdout so programmatic callers can
-            // parse error_type and context.
+            // All other errors: emit the JSON error envelope to stdout as the
+            // single error emission. Per the JSON-only output convention
+            // (iter-98 Theme D), the envelope is authoritative — programmatic
+            // callers parse `error_type`/`context` from it, and the previous
+            // duplicate human `error: {err}` line on stderr is gone so the same
+            // error is never reported twice.
             let exit_code = error_exit_code(&err);
-            eprintln!("error: {err}");
             let json = err.to_error_json();
             println!("{}", serde_json::to_string(&json).unwrap_or_default());
             std::process::exit(exit_code);

@@ -1,0 +1,8 @@
+{
+  "from": "server1.conn0.child2/consoleActor3",
+  "type": "evaluationResult",
+  "resultID": "1775437183977.373-0",
+  "hasException": false,
+  "result": "{\"inner_width\":1280,\"matches\":false}",
+  "timestamp": 1775437183980.721
+}
