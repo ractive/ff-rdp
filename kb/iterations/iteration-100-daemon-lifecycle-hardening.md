@@ -2,7 +2,7 @@
 title: "Iteration 100: daemon lifecycle hardening — thread supervision, honest idle timeout, signal cleanup, spawn/kill races, auto-start observability"
 type: iteration
 date: 2026-07-09
-status: in-review
+status: completed
 branch: iter-100/daemon-lifecycle-hardening
 depends_on: []
 firefox_refs: []
@@ -18,12 +18,11 @@ first_call_sites:
       real SIGTERM/SIGINT (Unix) and console-ctrl (Windows) handler that runs
       registry cleanup before exit
     site: crates/ff-rdp-cli/src/daemon/server.rs
-  - primitive: >-
-      exclusive spawn lock held across the whole check→spawn→register sequence
+  - primitive: exclusive spawn lock held across the whole check→spawn→register sequence
     site: crates/ff-rdp-cli/src/daemon/client.rs
   - primitive: >-
-      daemon_autostart_failed warning in the command envelope when auto-start
-      does not register and the CLI falls back to a direct connection
+      daemon_autostart_failed warning in the command envelope when auto-start does
+      not register and the CLI falls back to a direct connection
     site: crates/ff-rdp-cli/src/daemon/client.rs
 dogfood_path: |
   ff-rdp launch --headless
@@ -31,7 +30,12 @@ dogfood_path: |
   kill -TERM $(ff-rdp daemon status --jq .pid)
   # expected: registry file removed, next command spawns a clean daemon
   ff-rdp tabs && ff-rdp daemon status
-tags: [iteration, daemon, lifecycle, robustness, review-2026-07]
+tags:
+  - iteration
+  - daemon
+  - lifecycle
+  - robustness
+  - review-2026-07
 ---
 
 # Iteration 100: daemon lifecycle hardening
