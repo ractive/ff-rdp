@@ -41,6 +41,21 @@ iterations still runs its own dogfood script and the specific live tests named
 in its ACs — only the *full-suite* pass is deferred to here, once, after
 iteration 105 merges.
 
+## Theme A0 — fix live-test kill-scoping BEFORE the sweep (2026-07-09 incident)
+
+During iter-106's Theme C audit, the live-test infrastructure **repeatedly
+killed James's interactive (non-headless, non-test-profile) Firefox** that
+happened to be running on the same machine. Kill logic (port probing,
+process-pattern matching, or killpg escalation) is scoping beyond the
+processes the test harness itself spawned. Before running this iteration's
+full sweep: find the offending kill path(s), constrain them to
+harness-spawned PIDs / managed profile dirs (the iter-97 owner-PID marker is
+the right primitive), and add a test proving a foreign Firefox PID is never
+signalled. An ff-rdp test run must never kill a user's real browser.
+Contaminated side effect of the same incident: iter-106's audit inventory
+(68 pass / 31 fail) below is provisional — re-derive from this iteration's
+clean sweep rather than trusting it.
+
 ## Theme A — one full sweep
 
 Run `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo test-live` (the
