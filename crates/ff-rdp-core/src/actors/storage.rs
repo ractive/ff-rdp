@@ -541,8 +541,14 @@ mod tests {
         assert!(!cookie.is_secure);
         assert_eq!(cookie.same_site, "");
         assert!(!cookie.host_only);
-        assert!(cookie.last_accessed == 0.0);
-        assert!(cookie.creation_time == 0.0);
+        // Exact comparison against the documented default (0.0) is intentional
+        // here, not an accumulated float computation — `assert_eq!` on an
+        // exact sentinel is clearer than an epsilon comparison would be.
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(cookie.last_accessed, 0.0);
+            assert_eq!(cookie.creation_time, 0.0);
+        }
     }
 
     #[test]
