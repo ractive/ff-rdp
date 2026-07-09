@@ -266,6 +266,21 @@ impl MockRdpServer {
             // that streaming clients (e.g. `console --follow`) receive EOF and
             // exit cleanly instead of blocking forever on the next recv.
             if self.close_after_followups && has_followups {
+                // Drain (and discard) any request the client sends right after
+                // the followups — e.g. a fire-and-forget `reload` — before
+                // dropping the socket. If we close while the client's bytes
+                // are still unread in our receive buffer, some platforms
+                // (observed on Linux/Windows CI) answer with a TCP RST rather
+                // than a graceful FIN, and a RST can also discard our own
+                // still-buffered-but-unread *outbound* bytes on the client
+                // side — silently losing the followup batch the client hasn't
+                // read yet. A short best-effort read absorbs that request
+                // first so the close is graceful. Any error (including a
+                // timeout because the client never sends anything) is fine to
+                // ignore here.
+                let drain_reader = reader.get_ref();
+                let _ = drain_reader.set_read_timeout(Some(std::time::Duration::from_millis(200)));
+                let _ = recv_from(&mut reader);
                 break;
             }
         }

@@ -129,9 +129,7 @@ fn run_reload_wait_idle_daemon(
 
     // Send reload without reading the ack — events will be streamed inline.
     let reload_packet = build_reload_packet(target_actor, force);
-    ctx.transport_mut()
-        .send(&reload_packet)
-        .map_err(AppError::from)?;
+    send_reload_tolerant(ctx.transport_mut(), &reload_packet)?;
 
     let (requests_observed, idle_at_ms) =
         drain_idle_events(ctx.transport_mut(), idle_ms, timeout_ms, cli.timeout)?;
@@ -149,6 +147,47 @@ fn run_reload_wait_idle_daemon(
     };
 
     emit_reload_result(cli, requests_observed + inflight_count, idle_at_ms, force)
+}
+
+/// True when an I/O error kind signals the peer closed the connection
+/// (as opposed to a real transport failure worth surfacing).
+///
+/// Windows tends to surface a half-closed socket as `ConnectionReset` or
+/// `ConnectionAborted` where Unix accepts a final `write` into the send buffer
+/// and only reveals the close on the next `read` as `UnexpectedEof`. We treat
+/// all of these — plus `BrokenPipe` — as a clean teardown so a `send` that
+/// races the server's close does not abort the whole wait-idle flow. This was
+/// the iter-108 Windows CI red in `reload_wait_idle_no_traffic_returns_idle_quickly`:
+/// the mock closes the connection right after its (empty) followup batch, so on
+/// Windows the fire-and-forget `reload` send failed with `ConnectionReset` and
+/// the command exited non-zero with an empty stderr (the JSON error envelope
+/// went to stdout).
+fn is_conn_closed_kind(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::BrokenPipe
+    )
+}
+
+/// Send the fire-and-forget `reload` packet, tolerating a connection that the
+/// peer has already closed.
+///
+/// The reload ack is intentionally never read here (events are streamed / drained
+/// afterwards), so if the connection is already tearing down we swallow the
+/// teardown error and let the subsequent drain loop observe EOF and return idle.
+/// Any other send error is a genuine failure and is propagated.
+fn send_reload_tolerant(
+    transport: &mut ff_rdp_core::RdpTransport,
+    reload_packet: &serde_json::Value,
+) -> Result<(), AppError> {
+    match transport.send(reload_packet) {
+        Ok(()) => Ok(()),
+        Err(ProtocolError::SendFailed(ref e)) if is_conn_closed_kind(e.kind()) => Ok(()),
+        Err(e) => Err(AppError::from(e)),
+    }
 }
 
 /// Build the JSON `reload` packet, optionally including the
@@ -187,9 +226,7 @@ fn run_reload_wait_idle_direct(
 
     // Send reload without reading the ack.
     let reload_packet = build_reload_packet(target_actor, force);
-    ctx.transport_mut()
-        .send(&reload_packet)
-        .map_err(AppError::from)?;
+    send_reload_tolerant(ctx.transport_mut(), &reload_packet)?;
 
     let (requests_observed, idle_at_ms) =
         drain_idle_events(ctx.transport_mut(), idle_ms, timeout_ms, cli.timeout)?;
@@ -246,11 +283,7 @@ fn drain_idle_events(
                 }
             }
             Err(ProtocolError::Timeout) => {}
-            Err(ProtocolError::RecvFailed(ref e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof
-                    || e.kind() == std::io::ErrorKind::ConnectionReset
-                    || e.kind() == std::io::ErrorKind::BrokenPipe =>
-            {
+            Err(ProtocolError::RecvFailed(ref e)) if is_conn_closed_kind(e.kind()) => {
                 break;
             }
             Err(e) => {
@@ -321,4 +354,78 @@ fn emit_reload_result(
     OutputPipeline::from_cli(cli)?
         .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn conn_closed_kinds_are_treated_as_teardown() {
+        // These four kinds all mean "the peer went away" and must be swallowed
+        // by the tolerant reload send / drain loop so a racing close does not
+        // abort a wait-idle flow (iter-108 Windows CI red).
+        for kind in [
+            ErrorKind::UnexpectedEof,
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::BrokenPipe,
+        ] {
+            assert!(
+                is_conn_closed_kind(kind),
+                "{kind:?} should be classified as a connection-closed teardown"
+            );
+        }
+    }
+
+    #[test]
+    fn real_io_errors_are_not_teardown() {
+        // A genuine failure (timeout, permission, etc.) must still propagate so
+        // it is not silently masked as a clean close.
+        for kind in [
+            ErrorKind::TimedOut,
+            ErrorKind::PermissionDenied,
+            ErrorKind::NotConnected,
+            ErrorKind::AddrInUse,
+        ] {
+            assert!(
+                !is_conn_closed_kind(kind),
+                "{kind:?} must not be classified as a connection-closed teardown"
+            );
+        }
+    }
+
+    #[test]
+    fn send_reload_tolerant_swallows_teardown_but_propagates_real_errors() {
+        // ConnectionReset on send → treated as a clean close (Ok).
+        let reset = ProtocolError::SendFailed(std::io::Error::from(ErrorKind::ConnectionReset));
+        assert!(matches!(classify_send_result(Err(reset)), Ok(())));
+
+        // BrokenPipe on send → also Ok.
+        let broken = ProtocolError::SendFailed(std::io::Error::from(ErrorKind::BrokenPipe));
+        assert!(matches!(classify_send_result(Err(broken)), Ok(())));
+
+        // A genuine send failure (e.g. TimedOut mapped to SendFailed) propagates.
+        let timed = ProtocolError::SendFailed(std::io::Error::from(ErrorKind::PermissionDenied));
+        assert!(classify_send_result(Err(timed)).is_err());
+
+        // A non-send protocol error propagates unchanged.
+        let other = ProtocolError::InvalidPacket("boom".to_string());
+        assert!(classify_send_result(Err(other)).is_err());
+
+        // Ok stays Ok.
+        assert!(matches!(classify_send_result(Ok(())), Ok(())));
+    }
+
+    /// Mirror of the match inside [`send_reload_tolerant`] so the swallow /
+    /// propagate policy is unit-testable without a live transport. Kept in sync
+    /// with `send_reload_tolerant`.
+    fn classify_send_result(res: Result<(), ProtocolError>) -> Result<(), AppError> {
+        match res {
+            Ok(()) => Ok(()),
+            Err(ProtocolError::SendFailed(ref e)) if is_conn_closed_kind(e.kind()) => Ok(()),
+            Err(e) => Err(AppError::from(e)),
+        }
+    }
 }

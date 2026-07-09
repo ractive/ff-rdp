@@ -22,11 +22,19 @@ fn make_skill_src(tmp: &TempDir, skill_name: &str) -> PathBuf {
 }
 
 /// Run `ff-rdp install-skill` with the given extra args and an overridden HOME.
+///
+/// Both `HOME` (Unix) and `USERPROFILE` (Windows) are pointed at the isolated
+/// temp dir so the install location is fully redirected on every platform. See
+/// iter-108: `dirs::home_dir()` reads the Windows known-folder API and ignores
+/// `HOME`, so without the `USERPROFILE` override these tests leaked installs
+/// into the real profile (`C:\Users\runneradmin\...`) and shared state across
+/// tests running in the same binary.
 fn run_install_skill(extra_args: &[&str], home_dir: &std::path::Path) -> std::process::Output {
     std::process::Command::new(ff_rdp_bin())
         .args(["install-skill", "--claude"])
         .args(extra_args)
         .env("HOME", home_dir)
+        .env("USERPROFILE", home_dir)
         // Unset RUST_LOG so verbose mode doesn't pollute stderr.
         .env_remove("RUST_LOG")
         .output()
@@ -337,6 +345,7 @@ fn project_outside_git_repo_errors() {
     let out = std::process::Command::new(ff_rdp_bin())
         .args(["install-skill", "--claude", "--project", "--list"])
         .env("HOME", home_tmp.path())
+        .env("USERPROFILE", home_tmp.path())
         .env_remove("RUST_LOG")
         .current_dir(no_git_dir.path())
         .output()
@@ -382,6 +391,7 @@ fn project_inside_git_repo_installs_correctly() {
             "ff-rdp-debug",
         ])
         .env("HOME", home_tmp.path())
+        .env("USERPROFILE", home_tmp.path())
         .env_remove("RUST_LOG")
         .current_dir(git_dir.path())
         .output()
@@ -474,6 +484,7 @@ fn missing_claude_flag_errors() {
     let out = std::process::Command::new(ff_rdp_bin())
         .args(["install-skill", "--list"])
         .env("HOME", home_tmp.path())
+        .env("USERPROFILE", home_tmp.path())
         .env_remove("RUST_LOG")
         .output()
         .expect("failed to spawn ff-rdp");
