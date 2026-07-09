@@ -151,10 +151,14 @@ fn computed_no_match_errors() {
         !output.status.success(),
         "expected non-zero exit when no elements match"
     );
+    // The error message is emitted as the single JSON error envelope on stdout
+    // (iter-98 Theme D removed the duplicate human `error:` stderr line).
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("no element") || stderr.contains(".nonexistent"),
-        "expected a helpful error, got: {stderr}"
+        combined.contains("no element") || combined.contains(".nonexistent"),
+        "expected a helpful error, got stderr={stderr:?} stdout={stdout:?}"
     );
 }
 

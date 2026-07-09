@@ -35,6 +35,10 @@ enum Status {
     Pass,
     Warn,
     Fail,
+    /// The probe did not apply in this context and was intentionally not run
+    /// (e.g. binary_staleness outside an ff-rdp checkout). Never counts as a
+    /// failure — exit code is unaffected.
+    Skipped,
 }
 
 impl Status {
@@ -43,6 +47,7 @@ impl Status {
             Self::Pass => "pass",
             Self::Warn => "warn",
             Self::Fail => "fail",
+            Self::Skipped => "skipped",
         }
     }
     fn glyph(self) -> &'static str {
@@ -50,6 +55,7 @@ impl Status {
             Self::Pass => "✓",
             Self::Warn => "⚠",
             Self::Fail => "✗",
+            Self::Skipped => "–",
         }
     }
 }
@@ -155,10 +161,19 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     // 5. Firefox version compatibility
     probes.push(probe_version(firefox_version));
 
-    // 6. Binary staleness — compare embedded build SHA to git HEAD in CWD.
+    // 6. Binary staleness — compare embedded build SHA to git HEAD in CWD, but
+    // only when the CWD is actually an ff-rdp checkout. Comparing against a
+    // foreign repo's HEAD (observed firing against the user's `neon` repo)
+    // produces a confidently-wrong staleness warning, so guard it (iter-98
+    // Theme C).
     let embedded_sha = env!("FF_RDP_BUILD_VERSION_SHA");
+    let in_ff_rdp_checkout = is_ff_rdp_checkout();
     let head_sha_result = git_head_sha();
-    probes.push(probe_binary_staleness(embedded_sha, head_sha_result));
+    probes.push(probe_binary_staleness(
+        embedded_sha,
+        head_sha_result,
+        in_ff_rdp_checkout,
+    ));
 
     // 7. Profile disk usage — warn when managed profile dirs have piled up
     // faster than `launch`'s bounded auto-prune (iter-96 Theme B) keeps up.
@@ -351,9 +366,54 @@ fn git_head_sha() -> Result<String, ()> {
     Ok(sha.trim().to_owned())
 }
 
-/// Pure core logic — takes the embedded SHA and the git HEAD result so that
-/// unit tests don't need a git binary.
-fn probe_binary_staleness(embedded_sha: &str, head_sha_result: Result<String, ()>) -> Probe {
+/// True when the CWD sits inside the ff-rdp workspace checkout.
+///
+/// The binary_staleness probe compares the running binary's embedded build SHA
+/// against the CWD repo's git HEAD. That comparison is only meaningful inside
+/// the ff-rdp checkout the binary was built from — run from a *foreign* repo it
+/// produces a confidently-wrong warning (observed firing against the user's
+/// `neon` repo). We resolve the git repo root via `git rev-parse --show-toplevel`
+/// and treat the checkout as ff-rdp iff the workspace membership marker
+/// `crates/ff-rdp-core/Cargo.toml` exists at that root.
+///
+/// Returns `false` when git is unavailable, the CWD is not a repo, or the
+/// marker is absent — in every "not clearly ff-rdp" case the caller reports the
+/// staleness check as `skipped` rather than comparing against a foreign HEAD.
+fn is_ff_rdp_checkout() -> bool {
+    let output = match std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return false,
+    };
+    let Ok(root) = String::from_utf8(output.stdout) else {
+        return false;
+    };
+    let root = root.trim();
+    if root.is_empty() {
+        return false;
+    }
+    // Workspace membership marker — the core crate is unique to this workspace.
+    Path::new(root)
+        .join("crates")
+        .join("ff-rdp-core")
+        .join("Cargo.toml")
+        .is_file()
+}
+
+/// Pure core logic — takes the embedded SHA, the git HEAD result, and whether
+/// the CWD is an ff-rdp checkout, so that unit tests don't need a git binary.
+///
+/// When `in_ff_rdp_checkout` is `false` the probe reports `skipped` with the
+/// reason "not in an ff-rdp checkout" instead of comparing the binary against a
+/// foreign repo's HEAD (iter-98 Theme C). The empty-SHA (tarball/hermetic)
+/// short-circuit still runs first because that verdict holds regardless of CWD.
+fn probe_binary_staleness(
+    embedded_sha: &str,
+    head_sha_result: Result<String, ()>,
+    in_ff_rdp_checkout: bool,
+) -> Probe {
     // Empty embedded SHA means hermetic/tarball build — no provenance to check.
     if embedded_sha.is_empty() {
         return Probe {
@@ -361,6 +421,18 @@ fn probe_binary_staleness(embedded_sha: &str, head_sha_result: Result<String, ()
             status: Status::Pass,
             detail: "binary was built without git provenance (tarball or hermetic build)"
                 .to_owned(),
+            hint: None,
+        };
+    }
+
+    // Repo-identity guard: outside an ff-rdp checkout the CWD repo's HEAD is
+    // unrelated to the binary's build SHA, so a comparison would be
+    // confidently wrong. Report the probe as `skipped` instead (iter-98 Theme C).
+    if !in_ff_rdp_checkout {
+        return Probe {
+            name: "binary_staleness",
+            status: Status::Skipped,
+            detail: "not in an ff-rdp checkout".to_owned(),
             hint: None,
         };
     }
@@ -570,7 +642,7 @@ mod tests {
 
     #[test]
     fn unit_doctor_binary_staleness_check_short_circuits_outside_repo() {
-        let p = probe_binary_staleness("abc123def456", Err(()));
+        let p = probe_binary_staleness("abc123def456", Err(()), true);
         assert_eq!(p.status, Status::Pass);
     }
 
@@ -578,7 +650,7 @@ mod tests {
     fn unit_doctor_binary_staleness_check_short_circuits_without_git() {
         // No-git and outside-repo are the same code path; assert the detail
         // string explicitly so a regression that removes the early-return is caught.
-        let p = probe_binary_staleness("abc123def456", Err(()));
+        let p = probe_binary_staleness("abc123def456", Err(()), true);
         assert_eq!(p.status, Status::Pass);
         let detail_lower = p.detail.to_lowercase();
         assert!(
@@ -590,7 +662,11 @@ mod tests {
 
     #[test]
     fn unit_doctor_binary_staleness_check_empty_embedded_sha() {
-        let p = probe_binary_staleness("", Ok("abc123def4567890abcdef0123456789012345678".into()));
+        let p = probe_binary_staleness(
+            "",
+            Ok("abc123def4567890abcdef0123456789012345678".into()),
+            true,
+        );
         assert_eq!(p.status, Status::Pass);
         let detail_lower = p.detail.to_lowercase();
         assert!(
@@ -605,6 +681,7 @@ mod tests {
         let p = probe_binary_staleness(
             "abc123def456",
             Ok("abc123def4567890abcdef0123456789012345678".into()),
+            true,
         );
         assert_eq!(p.status, Status::Pass);
     }
@@ -614,6 +691,7 @@ mod tests {
         let p = probe_binary_staleness(
             "abc123def456+dirty",
             Ok("abc123def4567890abcdef0123456789012345678".into()),
+            true,
         );
         assert_eq!(
             p.status,
@@ -623,11 +701,42 @@ mod tests {
         );
     }
 
+    /// iter-98 Theme C: outside an ff-rdp checkout the probe reports `skipped`
+    /// with the reason "not in an ff-rdp checkout" — never comparing the binary
+    /// against a foreign repo's HEAD, even when that HEAD differs (which pre-fix
+    /// would have produced a spurious `warn`).
+    #[test]
+    fn unit_doctor_binary_staleness_skipped_outside_ff_rdp_checkout() {
+        let p = probe_binary_staleness(
+            "abc123def456",
+            // A foreign HEAD that differs from the embedded SHA — pre-fix this
+            // would have warned; post-fix it must be skipped.
+            Ok("999999999999000000000000000000000000aaaa".into()),
+            false,
+        );
+        assert_eq!(
+            p.status,
+            Status::Skipped,
+            "outside an ff-rdp checkout the probe must be skipped, not compared: {}",
+            p.detail
+        );
+        assert!(
+            p.detail.contains("not in an ff-rdp checkout"),
+            "detail must carry the skip reason: {}",
+            p.detail
+        );
+        assert!(
+            p.hint.is_none(),
+            "a skipped probe carries no remediation hint: {p:?}"
+        );
+    }
+
     #[test]
     fn pre_fix_repro_doctor_warns_when_installed_sha_differs_from_head() {
         let p = probe_binary_staleness(
             "abc123def456",
             Ok("999999999999000000000000000000000000aaaa".into()),
+            true,
         );
         assert_eq!(p.status, Status::Warn);
         assert!(

@@ -7,7 +7,7 @@ use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_and_get_target;
+use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::js_helpers::resolve_result;
 
 /// JavaScript IIFE template for collecting element geometry at a specific viewport width.
@@ -125,6 +125,31 @@ const RESTORE_VIEWPORT_CSS_JS: &str = "(function(){
   document.body.style.removeProperty('max-width');
 })()";
 
+/// JS template for the media-query self-check (iter-98 Theme A).
+///
+/// After the layout has been constrained to the requested width, this probes
+/// whether the page's media queries actually flipped to that width by reading
+/// `matchMedia("(width: <requested>px)").matches` alongside
+/// `window.innerWidth`. Because the CSS layout-only emulation cannot resize the
+/// real top-level window over RDP, `matches` is expected to be `false` whenever
+/// the physical viewport differs from the requested width — the caller records
+/// that in the envelope and warns rather than presenting a media-query-untruthful
+/// state silently.
+///
+/// `__WIDTH__` is replaced with the requested pixel width. The exact-width query
+/// `(width: Npx)` is the truthful probe: it is `true` only when the media
+/// environment genuinely reports `N` CSS pixels of viewport width.
+const MEDIA_QUERY_CHECK_JS: &str = "(function(){
+  var w = __WIDTH__;
+  var mq = window.matchMedia('(width: ' + w + 'px)');
+  return JSON.stringify({inner_width: window.innerWidth, matches: mq.matches});
+})()";
+
+/// Build the media-query self-check JS for a requested width.
+fn build_media_query_check_js(width: u32) -> String {
+    MEDIA_QUERY_CHECK_JS.replace("__WIDTH__", &width.to_string())
+}
+
 /// Build the geometry IIFE by serializing selectors as a JSON array and
 /// substituting the `__SELECTORS__` and `__VISIBLE_ONLY__` placeholders.
 ///
@@ -168,6 +193,7 @@ pub fn run(
     selectors: &[String],
     widths: &[u32],
     include_hidden: bool,
+    strict: bool,
 ) -> Result<(), AppError> {
     validate_widths(widths)?;
 
@@ -199,6 +225,12 @@ pub fn run(
     // --- Step 2: iterate over each breakpoint width -------------------------
     let geom_js = build_geometry_js(selectors, !include_hidden);
     let mut breakpoints: Vec<Value> = Vec::with_capacity(widths.len());
+
+    // Warnings accumulated across breakpoints — currently the media-query
+    // self-check (iter-98 Theme A). Surfaced in the envelope's `warnings`
+    // array; with --strict any entry makes the command exit non-zero.
+    let mut warnings: Vec<String> = Vec::new();
+    let mut any_mq_mismatch = false;
 
     // We always attempt to restore the page styles, even when an error occurs
     // mid-loop.  Collect the first error encountered and restore before
@@ -282,9 +314,35 @@ pub fn run(
         let elements = geometry["elements"].clone();
         let viewport = geometry["viewport"].clone();
 
+        // Media-query self-check (iter-98 Theme A): while the layout is still
+        // constrained to `width`, probe whether the page's media queries
+        // actually report that width. A `false` here means the emulation is
+        // layout-only (media queries did not flip) — record it truthfully and
+        // warn instead of presenting a media-query-untruthful state silently.
+        let mq_check = match evaluate_media_query_check(&mut ctx, &console_actor, width) {
+            Ok(check) => check,
+            Err(e) => {
+                loop_error = Some(e);
+                break 'bp;
+            }
+        };
+        if mq_check.matches == Some(false) {
+            any_mq_mismatch = true;
+            warnings.push(format!(
+                "at requested width {width}px the page's media queries did not flip \
+                 (matchMedia(\"(width: {width}px)\").matches == false, innerWidth == {}); \
+                 geometry is accurate for the requested width but @media-dependent \
+                 styles reflect the physical viewport, not {width}px",
+                mq_check
+                    .inner_width
+                    .map_or_else(|| "unknown".to_owned(), |w| w.to_string()),
+            ));
+        }
+
         breakpoints.push(json!({
             "width": width,
             "viewport": viewport,
+            "media_query_check": mq_check.to_json(width),
             "elements": elements,
         }));
     }
@@ -305,10 +363,17 @@ pub fn run(
 
     // --- Step 4: build and emit output --------------------------------------
     let breakpoint_count = breakpoints.len();
-    let results = json!({
+    let mut results = json!({
         "breakpoints": breakpoints,
         "original_viewport": original_viewport,
     });
+    // Only attach `warnings` when there are any, so the happy-path envelope
+    // stays lean.
+    if !warnings.is_empty()
+        && let Some(obj) = results.as_object_mut()
+    {
+        obj.insert("warnings".to_string(), json!(warnings));
+    }
 
     let mut meta = json!({
         "selectors": selectors,
@@ -325,6 +390,10 @@ pub fn run(
     // Text short-circuit: render a human-readable breakpoint table instead of JSON.
     if cli.format == "text" && cli.jq.is_none() {
         render_responsive_text(&results);
+        // Even in text mode --strict must still gate the exit code.
+        if strict && any_mq_mismatch {
+            return Err(AppError::Exit(1));
+        }
         return Ok(());
     }
 
@@ -333,7 +402,68 @@ pub fn run(
     let hint_ctx = HintContext::new(HintSource::Responsive);
     OutputPipeline::from_cli(cli)?
         .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+        .map_err(AppError::from)?;
+
+    // --strict: the envelope has been emitted; a media-query mismatch now
+    // becomes a non-zero exit (iter-98 Theme A). The default (non-strict) run
+    // still exits 0 — the warning in the envelope is the signal.
+    if strict && any_mq_mismatch {
+        return Err(AppError::Exit(1));
+    }
+    Ok(())
+}
+
+/// Result of the media-query self-check for one breakpoint.
+///
+/// `inner_width`/`matches` are `None` when the probe could not be parsed (a
+/// shape we never expect from `MEDIA_QUERY_CHECK_JS`, but handled defensively);
+/// a `None` `matches` is treated as "not a mismatch" so a parse failure never
+/// fabricates a warning.
+#[derive(Debug, Clone, Default)]
+struct MediaQueryCheck {
+    inner_width: Option<u64>,
+    matches: Option<bool>,
+}
+
+impl MediaQueryCheck {
+    fn to_json(&self, requested: u32) -> Value {
+        json!({
+            "requested": requested,
+            "inner_width": self.inner_width,
+            "matches": self.matches,
+        })
+    }
+}
+
+/// Run the media-query self-check for `width` on the current page (which must
+/// already be constrained to that layout width) and parse the result.
+fn evaluate_media_query_check(
+    ctx: &mut ConnectedTab,
+    console_actor: &ff_rdp_core::ActorId,
+    width: u32,
+) -> Result<MediaQueryCheck, AppError> {
+    let js = build_media_query_check_js(width);
+    let result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js)
+        .map_err(AppError::from)?;
+    if let Some(ref exc) = result.exception {
+        let msg = exc
+            .message
+            .as_deref()
+            .unwrap_or("media-query self-check failed");
+        return Err(AppError::User(format!(
+            "media-query self-check at {width}: {msg}"
+        )));
+    }
+    let parsed = match &result.result {
+        ff_rdp_core::Grip::Value(Value::String(s)) => {
+            serde_json::from_str::<Value>(s).unwrap_or(Value::Null)
+        }
+        other => other.to_json(),
+    };
+    Ok(MediaQueryCheck {
+        inner_width: parsed.get("inner_width").and_then(Value::as_u64),
+        matches: parsed.get("matches").and_then(Value::as_bool),
+    })
 }
 
 /// Render `responsive` results as human-readable text to stdout.
@@ -359,6 +489,28 @@ fn render_responsive_text(results: &Value) {
             .unwrap_or(0);
 
         println!("=== Breakpoint {width}px (viewport {vp_w}x{vp_h}) ===");
+
+        // Media-query self-check line (iter-98 Theme A): make the layout-only
+        // caveat visible in text mode too. Only printed when the check ran.
+        if let Some(mq) = bp.get("media_query_check") {
+            let matches = mq.get("matches").and_then(Value::as_bool);
+            let inner = mq
+                .get("inner_width")
+                .and_then(Value::as_u64)
+                .map_or_else(|| "?".to_owned(), |w| w.to_string());
+            match matches {
+                Some(true) => {
+                    println!("  media queries: flipped to {width}px (innerWidth {inner})");
+                }
+                Some(false) => {
+                    println!(
+                        "  media queries: NOT flipped — matchMedia(width:{width}px) is false, \
+                         innerWidth {inner} (layout-only; @media styles reflect the physical viewport)"
+                    );
+                }
+                None => {}
+            }
+        }
 
         let elements = match bp.get("elements").and_then(Value::as_array) {
             Some(e) if !e.is_empty() => e,
@@ -510,6 +662,47 @@ mod tests {
         let js = build_set_viewport_js(320);
         assert!(js.contains("var w = 320;"), "expected width substitution");
         assert!(!js.contains("__WIDTH__"), "placeholder should be replaced");
+    }
+
+    // ── media-query self-check (iter-98 Theme A) ─────────────────────────────
+
+    #[test]
+    fn build_media_query_check_js_substitutes_width_and_probes_matchmedia() {
+        let js = build_media_query_check_js(390);
+        assert!(
+            js.contains("var w = 390;"),
+            "expected width substitution: {js}"
+        );
+        assert!(!js.contains("__WIDTH__"), "placeholder should be replaced");
+        assert!(
+            js.contains("matchMedia('(width: ' + w + 'px)')"),
+            "must probe the exact-width media query: {js}"
+        );
+        assert!(
+            js.contains("window.innerWidth"),
+            "must read innerWidth: {js}"
+        );
+    }
+
+    #[test]
+    fn media_query_check_to_json_shape() {
+        let check = MediaQueryCheck {
+            inner_width: Some(1280),
+            matches: Some(false),
+        };
+        let out = check.to_json(390);
+        assert_eq!(out["requested"], 390);
+        assert_eq!(out["inner_width"], 1280);
+        assert_eq!(out["matches"], false);
+    }
+
+    #[test]
+    fn media_query_check_to_json_defaults_are_null() {
+        let check = MediaQueryCheck::default();
+        let out = check.to_json(320);
+        assert_eq!(out["requested"], 320);
+        assert!(out["inner_width"].is_null());
+        assert!(out["matches"].is_null());
     }
 
     #[test]

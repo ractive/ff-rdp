@@ -199,10 +199,14 @@ fn force_overwrites_unmanaged_file() {
         !out_no_force.status.success(),
         "expected failure when overwriting unmanaged file without --force"
     );
+    // The error is emitted as the JSON error envelope on stdout (iter-98 Theme
+    // D removed the duplicate human `error:` stderr line).
     let stderr = String::from_utf8_lossy(&out_no_force.stderr);
+    let stdout = String::from_utf8_lossy(&out_no_force.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("not managed by ff-rdp") || stderr.contains("--force"),
-        "error should mention managed-by or --force; got: {stderr}"
+        combined.contains("not managed by ff-rdp") || combined.contains("--force"),
+        "error should mention managed-by or --force; stderr={stderr:?} stdout={stdout:?}"
     );
 
     // With --force: should succeed and overwrite.
@@ -343,10 +347,14 @@ fn project_outside_git_repo_errors() {
         "should fail outside git repo; stdout: {}",
         String::from_utf8_lossy(&out.stdout)
     );
+    // The error is emitted as the JSON error envelope on stdout (iter-98 Theme
+    // D removed the duplicate human `error:` stderr line).
     let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let combined = format!("{stderr}{stdout}");
     assert!(
-        stderr.contains("git") || stderr.contains("--force"),
-        "error should mention git or --force; got: {stderr}"
+        combined.contains("git") || combined.contains("--force"),
+        "error should mention git or --force; stderr={stderr:?} stdout={stdout:?}"
     );
 }
 

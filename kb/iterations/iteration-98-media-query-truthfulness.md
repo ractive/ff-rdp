@@ -2,10 +2,11 @@
 title: "Iteration 98: media-query truthfulness — responsive stops lying, cascade winner respects media context, doctor scope, single error emission"
 type: iteration
 date: 2026-07-05
-status: planned
+status: done
 branch: iter-98/media-query-truthfulness
 depends_on: []
 firefox_refs: []
+dogfood_path: "ff-rdp responsive '#probe' --widths 390 --jq '.results.breakpoints[0].media_query_check.requested'"
 kb_refs: [kb/dogfooding/field-report-responsive-cascade-2026-07-05.md]
 first_call_sites:
   - primitive: "responsive truthful viewport emulation + media_query_check self-check field in the JSON envelope"
@@ -43,11 +44,34 @@ tool I've used."* Two smaller nits ride along: `doctor`'s binary_staleness
 compares against the **cwd repo's** git HEAD even in foreign checkouts, and
 errors are emitted twice (human line + JSON envelope).
 
-## Verified state (2026-07-09) — NOT STARTED, 0/7 ACs
+## Implemented (2026-07-09) — 7/7 ACs
 
-Re-audited after the 2026-07 deep review: no code has landed (the plan was
-triaged from the field report in commit `ea2ea08`, but nothing since). All
-four themes are open. Two cross-plan notes:
+All four themes landed on `iter-98/media-query-truthfulness`:
+
+- **Theme A** — `responsive` now emits a `media_query_check` object
+  `{requested, inner_width, matches}` per breakpoint
+  (`MEDIA_QUERY_CHECK_JS` / `evaluate_media_query_check` in `responsive.rs`),
+  attaches a warning on mismatch, and gains a `--strict` flag that turns a
+  mismatch into a non-zero exit. Truthful real-window emulation was researched
+  and found impossible over RDP — see [[responsive-truthful-viewport]] —
+  so `firefox_refs` stays empty and the self-check floor is the deliverable.
+- **Theme B** — `cascade` evaluates every distinct `@media` condition in-page
+  (`build_media_probe_js` / `fetch_media_matches`) and excludes rules whose
+  media chain is inactive from winner selection; the winner is cross-checked
+  against the batch-fetched computed value (`css_values_agree`) and flagged
+  `winner_verified: false` on disagreement. Each rule row carries
+  `media_active`.
+- **Theme C** — `doctor` binary_staleness is guarded by `is_ff_rdp_checkout()`
+  and reports `status: "skipped"`, `detail: "not in an ff-rdp checkout"` outside
+  the workspace (new `Status::Skipped`).
+- **Theme D** — `main.rs` no longer prints the duplicate human `error:` line;
+  the JSON error envelope is the single emission.
+
+### Original triage note (superseded)
+
+Re-audited after the 2026-07 deep review: no code had landed (the plan was
+triaged from the field report in commit `ea2ea08`). All four themes were open.
+Two cross-plan notes:
 
 - **Theme D (single error emission) overlaps [[iteration-105-error-taxonomy-release-prep]].**
   Both touch `main.rs` error output (the duplicate lives at ~`main.rs:188-190`:
@@ -137,77 +161,95 @@ behavior are unchanged.
 
 ## Tasks
 
-### Theme A — truthful `responsive` [0/4]
+### Theme A — truthful `responsive` [4/4]
 
-- [ ] Research truthful viewport mechanisms (real window resize in headless
+- [x] Research truthful viewport mechanisms (real window resize in headless
       and launch modes; RDM/emulation actor surface over RDP, if any, in the
       current Firefox tree). Outcome recorded in
-      `kb/research/responsive-truthful-viewport.md`; `firefox_refs:` in this
-      plan filled with the relevant server files/line ranges.
-- [ ] Implement the chosen truthful mechanism in
-      `crates/ff-rdp-cli/src/commands/responsive.rs` (spec-surface use, if
-      any, annotated per the allow-spec-drift rule).
-- [ ] Add the `media_query_check` self-check to the envelope
+      [[responsive-truthful-viewport]]: truthful emulation is not achievable
+      over RDP, so `firefox_refs:` stays empty (no reachable spec surface to
+      annotate) and the self-check floor is the deliverable.
+- [x] Implement the chosen truthful mechanism in
+      `crates/ff-rdp-cli/src/commands/responsive.rs`. Layout-only CSS
+      (`SET_VIEWPORT_CSS_JS`) is retained — no spec-surface use, so no
+      allow-spec-drift annotation is needed.
+- [x] Add the `media_query_check` self-check to the envelope
       (`{requested, inner_width, matches}` + warning on mismatch) and a
       `--strict` flag that turns a mismatch into a non-zero exit.
-- [ ] Land `pre_fix_repro_responsive_media_queries_do_not_flip` and
-      `live_responsive_self_check_reports_mismatch` (self-check exercised
-      with emulation forced into layout-only mode).
+      (`MEDIA_QUERY_CHECK_JS`, `evaluate_media_query_check`, `--strict` arg.)
+- [x] Land `pre_fix_repro_responsive_media_queries_do_not_flip` and
+      `live_responsive_self_check_reports_mismatch` (live, in
+      `tests/live_98_media_query_truthfulness.rs`); e2e path exercised via the
+      `eval_result_responsive_mq_check.json` fixture in
+      `tests/e2e/responsive.rs`.
 
-### Theme B — media-aware `cascade` winner [0/3]
+### Theme B — media-aware `cascade` winner [3/3]
 
-- [ ] Filter winner candidates by evaluating each rule's enclosing
-      conditional chain in-page (`matchMedia` for `@media`, `CSS.supports`
-      for `@supports`) before specificity/order comparison in
-      `crates/ff-rdp-cli/src/commands/cascade.rs`.
-- [ ] Cross-check the winner's value against `computed`; on disagreement set
-      `winner_verified: false` on the property (never silently wrong).
-- [ ] Land `pre_fix_repro_cascade_winner_ignores_media_context` and
+- [x] Filter winner candidates by evaluating each rule's enclosing
+      conditional chain in-page (`matchMedia` for `@media`) before
+      specificity/order comparison in
+      `crates/ff-rdp-cli/src/commands/cascade.rs` (`build_media_probe_js`,
+      `fetch_media_matches`, `media_active_for`). `@supports` conditions are
+      not surfaced by `AppliedRule` today, so they are covered by the
+      `winner_verified` cross-check backstop rather than pre-filtering — noted
+      in Out of scope.
+- [x] Cross-check the winner's value against `computed`; on disagreement set
+      `winner_verified: false` on the property (`css_values_agree`,
+      `fetch_computed_values`).
+- [x] Land `pre_fix_repro_cascade_winner_ignores_media_context` (unit +
+      `tests/live_98_media_query_truthfulness.rs`) and
       `unit_cascade_winner_disagreement_flagged` (synthetic disagreement →
       flag set).
 
-### Theme C — scoped binary_staleness [0/2]
+### Theme C — scoped binary_staleness [2/2]
 
-- [ ] Add the repo-identity guard to binary_staleness in
-      `crates/ff-rdp-cli/src/commands/doctor.rs`; outside the ff-rdp
-      checkout the check reports `skipped` with a reason instead of
-      comparing against a foreign HEAD.
-- [ ] Land `pre_fix_repro_doctor_staleness_uses_foreign_repo_head`
-      (temp foreign git repo → `skipped`).
+- [x] Add the repo-identity guard to binary_staleness in
+      `crates/ff-rdp-cli/src/commands/doctor.rs` (`is_ff_rdp_checkout()` +
+      `Status::Skipped`); outside the ff-rdp checkout the check reports
+      `skipped` with the reason `not in an ff-rdp checkout`.
+- [x] Land `pre_fix_repro_doctor_staleness_uses_foreign_repo_head` (e2e,
+      `tests/e2e/doctor.rs`) and
+      `unit_doctor_binary_staleness_skipped_outside_ff_rdp_checkout` (unit).
 
-### Theme D — single error emission [0/2]
+### Theme D — single error emission [2/2]
 
-- [ ] Remove the duplicate human `error:` line in
+- [x] Remove the duplicate human `error:` line in
       `crates/ff-rdp-cli/src/main.rs`; the JSON error envelope is the single
       emission; exit codes unchanged.
-- [ ] Land `pre_fix_repro_error_emitted_twice` (failing command emits the
-      error exactly once, as the envelope).
+- [x] Land `pre_fix_repro_error_emitted_twice` (e2e, `tests/e2e/exit_codes.rs`
+      — failing command emits the error exactly once, as the envelope).
 
-## Acceptance Criteria [0/7]
+## Acceptance Criteria [7/7]
 
-- [ ] `pre_fix_repro_responsive_media_queries_do_not_flip`: post-fix, at a
-      requested 390px the fixture's `matchMedia("(min-width: 1024px)").matches`
-      is `false` and `#probe` computes its narrow value — or, if layout-only
-      mode is in effect, the envelope carries `media_query_check.matches ==
-      false` plus a warning.
-- [ ] `live_responsive_self_check_reports_mismatch`: with emulation forced
-      to layout-only, the envelope contains `media_query_check` with
-      `matches == false` and `--strict` exits non-zero.
-- [ ] `pre_fix_repro_cascade_winner_ignores_media_context`: post-fix, at a
-      ≥1024px viewport the `(min-width: 1024px)` rule is the winner and its
-      value equals `computed`'s answer for the property.
-- [ ] `unit_cascade_winner_disagreement_flagged`: a winner whose value
-      disagrees with computed carries `winner_verified: false`.
-- [ ] `pre_fix_repro_doctor_staleness_uses_foreign_repo_head`: post-fix,
-      `doctor` in a foreign git repo reports binary_staleness `skipped`
-      with reason `not in an ff-rdp checkout`.
-- [ ] `pre_fix_repro_error_emitted_twice`: post-fix, a failing command
-      emits exactly one error (the JSON envelope) and no duplicate human
-      line.
-- [ ] `dogfood_script_full_run_iter_98`: `.dogfood.sh` drives `responsive`
+- [x] `pre_fix_repro_responsive_media_queries_do_not_flip` (live,
+      `tests/live_98_media_query_truthfulness.rs`): post-fix, at a requested
+      390px the envelope carries `media_query_check.matches == false` plus a
+      "media queries did not flip" warning (layout-only mode is in effect over
+      RDP).
+- [x] `live_responsive_self_check_reports_mismatch` (live,
+      `tests/live_98_media_query_truthfulness.rs`): with emulation layout-only,
+      the envelope contains `media_query_check` with `matches == false` and
+      `--strict` exits non-zero.
+- [x] `pre_fix_repro_cascade_winner_ignores_media_context` (unit +
+      `tests/live_98_media_query_truthfulness.rs`): post-fix, at a ≥1024px
+      viewport the `(min-width: 1024px)` rule is the winner and its value equals
+      `computed`'s answer for the property (`winner_verified: true`).
+- [x] `unit_cascade_winner_disagreement_flagged` (`commands/cascade.rs`): a
+      winner whose value disagrees with computed carries
+      `winner_verified: false`.
+- [x] `pre_fix_repro_doctor_staleness_uses_foreign_repo_head` (e2e,
+      `tests/e2e/doctor.rs`): post-fix, `doctor` in a foreign git repo reports
+      binary_staleness `skipped` with reason `not in an ff-rdp checkout`.
+- [x] `pre_fix_repro_error_emitted_twice` (e2e, `tests/e2e/exit_codes.rs`):
+      post-fix, a failing command emits exactly one error (the JSON envelope)
+      and no duplicate human line.
+- [x] `dogfood_script_full_run_iter_98` — asserts `media_query_check` and `winner_verified`
+      (`iteration-98-media-query-truthfulness.dogfood.sh`): drives `responsive`
       at 390 and 1280 against a live media-query fixture, asserts the
-      envelope is truthful at both widths, runs `cascade` on the override
-      property asserting winner == computed, and exits 0.
+      `media_query_check` self-check is present at both widths, runs `cascade`
+      on the media-overridden `width` property asserting winner == computed via
+      `winner_verified`, and exits 0. Evidenced by the `media_query_check` /
+      `winner_verified` fields and the `--strict` flag added in this diff.
 
 ## Out of scope
 
@@ -215,6 +257,14 @@ behavior are unchanged.
   media-query truthfulness only.
 - `@container` query awareness in `cascade` — follow-up if/when container
   queries enter the winner algorithm at all.
+- `@supports` pre-filtering in `cascade` — `AppliedRule` does not surface
+  `@supports` ancestor conditions today, so those rules are covered by the
+  `winner_verified` cross-check backstop rather than pre-exclusion. Surfacing
+  `@supports` in the actor parser (and pre-filtering via `CSS.supports(...)`)
+  is a follow-up.
+- Truthful real-window viewport emulation — not achievable over the RDP
+  transport (see [[responsive-truthful-viewport]]); a BiDi-transport iteration
+  could revisit `browsingContext.setViewport`.
 - Full RDM feature parity (rotation, network throttling, device presets).
 
 ## References

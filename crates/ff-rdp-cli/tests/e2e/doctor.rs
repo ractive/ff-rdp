@@ -228,3 +228,85 @@ fn doctor_zero_tabs_fails_tabs_probe() {
         "tabs hint should suggest a recovery path; got: {hint}"
     );
 }
+
+/// `pre_fix_repro_doctor_staleness_uses_foreign_repo_head` (iter-98 Theme C):
+/// run `doctor` with the CWD inside a freshly-initialized *foreign* git repo.
+///
+/// Pre-fix the binary_staleness probe compared the running binary's embedded
+/// SHA against that foreign repo's HEAD (observed firing against the user's
+/// `neon` repo) and warned. Post-fix the repo-identity guard detects the CWD is
+/// not the ff-rdp workspace (no `crates/ff-rdp-core/Cargo.toml` at the repo
+/// root) and reports the probe as `skipped` with reason "not in an ff-rdp
+/// checkout".
+///
+/// (When the test binary was built without git provenance — an empty embedded
+/// SHA, e.g. a tarball build — the empty-SHA short-circuit fires first and the
+/// probe is `pass` (tarball). That is still never a `warn` against a foreign
+/// HEAD, so we accept it.)
+#[test]
+fn pre_fix_repro_doctor_staleness_uses_foreign_repo_head() {
+    // Fresh temp dir that is a git repo with exactly one commit — a stand-in
+    // for any non-ff-rdp checkout the user might run `ff-rdp doctor` from.
+    let repo = tempfile::tempdir().expect("tempdir");
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(ok, "git {args:?} failed in the temp foreign repo");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "t"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "foreign repo commit"]);
+
+    // A closed port: doctor still runs every probe (including binary_staleness)
+    // before exiting non-zero on the connection failure.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let mut args = base_args(port);
+    args.push("doctor".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .current_dir(repo.path())
+        .output()
+        .expect("spawn");
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be JSON");
+    let probes = json["results"].as_array().expect("results array");
+    let staleness = probes
+        .iter()
+        .find(|p| p["name"] == "binary_staleness")
+        .expect("binary_staleness probe must be present");
+    let status = staleness["status"].as_str().unwrap_or("");
+
+    assert!(
+        status != "warn" && status != "fail",
+        "in a foreign repo binary_staleness must never warn/fail against the \
+         foreign HEAD; got status={status}, detail={:?}",
+        staleness["detail"]
+    );
+
+    // With git provenance embedded (the normal `cargo test` build) the probe
+    // must be `skipped` with the documented reason. A `pass` is only acceptable
+    // when the binary carries no embedded SHA (tarball/hermetic build).
+    if status == "skipped" {
+        let detail = staleness["detail"].as_str().unwrap_or("");
+        assert!(
+            detail.contains("not in an ff-rdp checkout"),
+            "skipped detail must carry the reason; got: {detail}"
+        );
+    } else {
+        let detail = staleness["detail"].as_str().unwrap_or("");
+        assert!(
+            detail.contains("tarball") || detail.contains("without git"),
+            "a non-skipped status here is only valid for a provenance-free build; \
+             got status={status}, detail={detail}"
+        );
+    }
+}
