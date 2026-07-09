@@ -9,6 +9,7 @@
 
 mod console;
 mod descriptor;
+mod manifest;
 mod network_content;
 mod page_style;
 mod process_descriptor;
@@ -21,6 +22,7 @@ mod watcher;
 
 pub use console::ConsoleFront;
 pub use descriptor::DescriptorFront;
+pub use manifest::{CanonicalManifest, ManifestFront};
 pub use network_content::NetworkContentFront;
 pub use page_style::PageStyleFront;
 pub use process_descriptor::{ProcessDescriptorFront, ProcessTarget};

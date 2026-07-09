@@ -18,6 +18,7 @@ mod hints;
 mod inspect;
 mod install_skill;
 mod launch;
+mod manifest;
 mod nav_action;
 mod navigate;
 mod network;

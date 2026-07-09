@@ -354,6 +354,7 @@ impl ConnectedTab {
             screenshot_content_actor: None,
             accessibility_actor: None,
             responsive_actor: None,
+            manifest_actor: None,
             browsing_context_id: None,
         };
         Self {

@@ -14,6 +14,7 @@ use crate::types::ActorId;
 
 pub mod console;
 pub mod descriptor;
+pub mod manifest;
 pub mod network_event;
 pub mod page_style;
 pub mod root;

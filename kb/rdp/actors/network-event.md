@@ -50,6 +50,37 @@ The `_resource` is built from the nsIChannel: url, method, isXHR, cause, request
 
 **Response bodies are longstrings** — for large responses you receive a LongStringActor reference and have to follow up with `substring(start, end)` to stream it out.
 
+## `getSecurityInfo` (iter-104 — `network --security`)
+
+`getSecurityInfo` returns the request's cached `_securityInfo` (see
+`network-event-actor.js:340-360`). The payload is:
+
+```
+{ state, protocolVersion, cipherSuite, weaknessReasons, hsts, hpkp,
+  cert: { subject.commonName, issuer.commonName, validity.{start,end},
+          fingerprint.sha256 }, kea, sig, errorMessage, usedEch/… }
+```
+
+ff-rdp's `NetworkEventActor::get_security_info` projects the audit-relevant
+subset into `SecurityInfo` (`protocolVersion`, `cipherSuite`, `hsts`,
+`weaknessReasons`, curated `cert` summary) and returns `None` when Firefox
+attaches no security info.
+
+**Population constraint (important):** `_securityInfo` is populated **only when
+the response was observed** by the watcher (`network-event-actor.js:690-710`).
+Consequences for ff-rdp:
+
+- **Plain-HTTP requests** have no TLS handshake → `securityInfo` is `null` →
+  `get_security_info` returns `None`. The `network --security` CLI reports these
+  as `security: null` and counts them under a top-level `insecure_requests`.
+- **A request the watcher never observed** (e.g. it loaded before the daemon
+  subscribed, or the one-shot `--no-daemon` window opened after the response)
+  also returns `None`. Security info therefore exists only for requests captured
+  in a daemon-buffered or `--with-network` observation window — the same
+  requests that carry a NetworkEventActor id in the first place. The
+  performance-api fallback has no NetworkEventActor ids at all, so
+  `network --security` emits a per-entry note there instead of security data.
+
 ## Events (all re-emitted client-side as `networkEventUpdate`)
 
 | Server event | Carries |

@@ -26,7 +26,9 @@ pub use actors::console::{
 pub use actors::device::DeviceActor;
 pub use actors::dom_walker::{DomAttr, DomNode, DomWalkerActor};
 pub use actors::inspector::InspectorActor;
-pub use actors::network::{EventTimings, Header, NetworkEventActor, ResponseContent};
+pub use actors::network::{
+    CertSummary, EventTimings, Header, NetworkEventActor, ResponseContent, SecurityInfo,
+};
 pub use actors::object::{
     GripHandle, GripKind, LongStringGrip, LongStringScopedGrip, ObjectActor, ObjectGrip,
     ObjectScopedGrip, PropertyDescriptor, PrototypeAndProperties, ReleaseQueueRx, ReleaseQueueTx,
@@ -58,9 +60,9 @@ pub use actors::watcher::{
 pub use connection::{COMPATIBLE_FIREFOX_MAX, COMPATIBLE_FIREFOX_MIN, RdpConnection};
 pub use error::{ActorErrorKind, NavCause, ProtocolError, RdpError, RdpResult};
 pub use fronts::{
-    ConsoleFront, DescriptorFront, NetworkContentFront, PageStyleFront, ProcessDescriptorFront,
-    ProcessTarget, RootFront, ScreenshotFront, TargetConfigurationFront, TargetFront, WalkerFront,
-    WatcherFront,
+    CanonicalManifest, ConsoleFront, DescriptorFront, ManifestFront, NetworkContentFront,
+    PageStyleFront, ProcessDescriptorFront, ProcessTarget, RootFront, ScreenshotFront,
+    TargetConfigurationFront, TargetFront, WalkerFront, WatcherFront,
 };
 pub use registry::{Front, FrontKind, IsActorGone, Registry, call_with_refresh};
 pub use resources::{Resource, ResourceCommand, ResourceType, SubscriptionId};

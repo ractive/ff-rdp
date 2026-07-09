@@ -64,6 +64,8 @@ pub mod response {
         pub accessibility_actor: Option<ActorId>,
         #[serde(default)]
         pub responsive_actor: Option<ActorId>,
+        #[serde(default)]
+        pub manifest_actor: Option<ActorId>,
         #[serde(rename = "browsingContextID", default)]
         pub browsing_context_id: Option<u64>,
     }

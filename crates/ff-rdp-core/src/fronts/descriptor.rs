@@ -39,6 +39,7 @@ impl DescriptorFront {
             screenshot_content_actor: frame.screenshot_content_actor,
             accessibility_actor: frame.accessibility_actor,
             responsive_actor: frame.responsive_actor,
+            manifest_actor: frame.manifest_actor,
             browsing_context_id: frame.browsing_context_id,
         })
     }

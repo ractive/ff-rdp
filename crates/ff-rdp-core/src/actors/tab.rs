@@ -50,6 +50,12 @@ pub struct TargetInfo {
     /// command to call `setViewportSize` instead of the browser-blocked
     /// `window.resizeTo()`.
     pub responsive_actor: Option<ActorId>,
+    /// The manifest actor ID (for `fetchCanonicalManifest`).
+    ///
+    /// Present on the target frame as `manifestActor`; created lazily by
+    /// Firefox on first access.  Used by the `manifest` command to fetch the
+    /// parsed Web App Manifest plus its conformance errors.
+    pub manifest_actor: Option<ActorId>,
     /// The browsing context ID for this target.
     ///
     /// Required by the Firefox 149+ two-step screenshot protocol:
@@ -223,6 +229,11 @@ fn parse_target_response_inner(
         .and_then(Value::as_str)
         .map(ActorId::from);
 
+    let manifest_actor = inner
+        .get("manifestActor")
+        .and_then(Value::as_str)
+        .map(ActorId::from);
+
     let browsing_context_id = inner.get("browsingContextID").and_then(Value::as_u64);
 
     Ok(TargetInfo {
@@ -233,6 +244,7 @@ fn parse_target_response_inner(
         screenshot_content_actor,
         accessibility_actor,
         responsive_actor,
+        manifest_actor,
         browsing_context_id,
     })
 }
