@@ -2,36 +2,30 @@
 title: "Iteration 101: daemon session correctness — target-switch re-watch, concurrent clients, type-aware buffer, --since parity"
 type: iteration
 date: 2026-07-09
-status: in-progress
+status: completed
 branch: iter-101/daemon-session-correctness
 depends_on:
   - iteration-100-daemon-lifecycle-hardening
 firefox_refs:
   - lines: 230-281
     path: devtools/shared/commands/target/target-command.js
-    why: >-
-      Reference behavior on server-side target switching: destroy existing
-      targets, re-attach, restart listening — the machinery the daemon
-      currently lacks on target-available-form.
+    why: "Reference behavior on server-side target switching: destroy existing targets, re-attach, restart listening — the machinery the daemon currently lacks on target-available-form."
   - lines: 486-517
     path: devtools/shared/commands/resource/resource-command.js
     why: >-
-      _onTargetAvailable({targetFront, isTargetSwitching}) — how the reference
-      client re-issues resource watching per new target and treats target
-      switching specially.
+      _onTargetAvailable({targetFront, isTargetSwitching}) — how the reference client
+      re-issues resource watching per new target and treats target switching specially.
 kb_refs:
   - kb/research/deep-review-2026-07-fable5.md
   - kb/rdp/from-our-codebase/open-gaps.md
 first_call_sites:
   - primitive: >-
-      top-level target-switch handler in the daemon (re-watch resources,
-      purge/mark destroyed-target buffer entries)
+      top-level target-switch handler in the daemon (re-watch resources, purge/mark
+      destroyed-target buffer entries)
     site: crates/ff-rdp-cli/src/daemon/server.rs
   - primitive: per-resource-type buffer quotas in ResourceBuffer
     site: crates/ff-rdp-cli/src/daemon/buffer.rs
-  - primitive: >-
-      daemon_busy error surface (or serialized RPC queue) for concurrent
-      CLI clients
+  - primitive: daemon_busy error surface (or serialized RPC queue) for concurrent CLI clients
     site: crates/ff-rdp-cli/src/daemon/server.rs
   - primitive: atomic entry()-based Registry::register (no dead-actor revival)
     site: crates/ff-rdp-core/src/registry.rs
@@ -42,7 +36,13 @@ dogfood_path: |
   ff-rdp navigate https://en.wikipedia.org/wiki/Firefox
   # expected: follow stream keeps delivering events from the new page
   ff-rdp network --since -1          # daemon: nav-scoped; one-shot: explicit error
-tags: [iteration, daemon, watcher, resources, parity, review-2026-07]
+tags:
+  - iteration
+  - daemon
+  - watcher
+  - resources
+  - parity
+  - review-2026-07
 ---
 
 # Iteration 101: daemon session correctness
