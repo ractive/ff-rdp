@@ -2,7 +2,7 @@
 title: "Iteration 109: network throttling & URL blocking — carry-over of iter-104 Theme C"
 type: iteration
 date: 2026-07-09
-status: implemented
+status: completed
 branch: iter-109/network-throttle-block
 depends_on: []
 firefox_refs:
