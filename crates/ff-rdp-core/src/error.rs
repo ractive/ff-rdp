@@ -280,11 +280,12 @@ pub enum ProtocolError {
     #[error("unexpected bulk packet: expected actor={actor} kind={kind}")]
     BulkPacketUnexpected { actor: String, kind: String },
 
-    /// A per-actor demux channel is at capacity.
+    /// A per-actor bounded channel is at capacity (back-pressure signal).
     ///
-    /// Returned by [`DemuxReader::dispatch`] when the bounded channel for
-    /// `actor` is full.  The packet is dropped; the caller (reader thread) logs
-    /// a warning and continues reading so the Firefox connection stays healthy.
+    /// Reserved for a future per-actor demux fan-out layer.  The former
+    /// `DemuxReader` prototype that produced this was removed in iter-101
+    /// (it had no production consumer); the variant is retained so the public
+    /// error surface stays stable for downstream matchers.
     #[error("actor channel full: actor={actor}")]
     ActorChannelFull { actor: String },
 

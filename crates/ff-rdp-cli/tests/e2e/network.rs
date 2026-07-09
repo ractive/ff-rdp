@@ -78,6 +78,63 @@ fn network_shows_summary_by_default() {
 }
 
 // ---------------------------------------------------------------------------
+// iter-101 Theme D: `--since` parity — one-shot must fail loudly
+// ---------------------------------------------------------------------------
+
+/// AC: `e2e_network_since_no_daemon_explicit` — `network --since -1 --no-daemon`
+/// exits non-zero with a stable `error_type: "since_requires_daemon"` and does
+/// NOT emit an unfiltered result (the pre-101 silent no-op).
+#[test]
+fn e2e_network_since_no_daemon_explicit() {
+    // The `--since` + `--no-daemon` refusal fires *before* any connection is
+    // opened (iter-101 Theme D), so no mock server is needed — a port with
+    // nothing listening is fine; the command must never reach it.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind for free port");
+    let port = listener.local_addr().expect("local_addr").port();
+    drop(listener);
+
+    let mut args = base_args(port);
+    // `--since -1` works as space-separated thanks to `allow_hyphen_values`
+    // on the arg (matches the plan's dogfood path exactly).
+    args.extend(["network".to_owned(), "--since".to_owned(), "-1".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    assert!(
+        !output.status.success(),
+        "network --since --no-daemon must exit non-zero; stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    // The structured error is emitted as a JSON envelope with the stable
+    // discriminant at the top level (see `AppError::to_error_json`).
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON error envelope");
+    assert_eq!(
+        json["error_type"], "since_requires_daemon",
+        "expected since_requires_daemon error_type, got: {json}"
+    );
+
+    // No unfiltered network results must leak — the payload is an error
+    // envelope only.
+    assert!(
+        json.get("results").is_none() || json["results"].is_null(),
+        "no network results must be emitted on the since_requires_daemon error, got: {json}"
+    );
+
+    // Deterministic exit code 1 (runtime/user-error bucket), never clap's
+    // usage exit code 2.
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "since_requires_daemon must exit 1 (runtime/user error)"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Detail mode (--detail flag)
 // ---------------------------------------------------------------------------
 

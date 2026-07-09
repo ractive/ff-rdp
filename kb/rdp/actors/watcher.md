@@ -155,3 +155,36 @@ The Rust entry points are:
   `%c` consumes its arg silently (no CSS in our text output).
 - `parse_target_event` now rejects empty `actor` strings via the new
   `ActorId::try_new` constructor — closing L2 from the iter-73 review.
+
+## Iter-101 update — top-level target-switch re-watch + buffer purge
+
+**What the watcher re-delivers on a target switch (and what it does not).**
+Because ff-rdp's daemon subscribes to resources at the **tab-scoped
+WatcherActor** level (`watchResources` on the watcher, not on a per-target
+front), a server-side target switch — including a *cross-process* top-level
+switch, which emits `target-destroyed-form` for the old top target and
+`target-available-form` for the new one — is **transparent to resource
+delivery**: Firefox automatically re-emits `resources-available-array` for the
+new target under the same watcher actor. The daemon therefore does **not** need
+to re-issue `watchResources` per new target the way Firefox's own
+`resource-command.js:486-517` client does for its per-target fronts.
+
+What the daemon *did* lack (fixed in iter-101 Theme A) was **buffer hygiene**
+across the switch:
+
+- `handle_target_event` now branches on `is_top_level`
+  (`TargetEvent.is_top_level`, parsed but previously never consumed).
+- `SharedState.top_level_target` tracks the current top-level target actor.
+- On a top-level `target-available-form` whose actor **differs** from the
+  tracked one (a genuine cross-process switch), `handle_top_level_target_switch`
+  calls `ResourceBuffer::purge_destroyed_target`, dropping the outgoing
+  document's stale buffered resources so a post-switch drain window
+  (`network --since`, `console` drain) never mixes in dead-target state.
+  Nav-boundary bookkeeping is left intact (the switch does not rewind
+  `total_inserted`, so existing `store_start` values stay valid).
+- The **first** top-level target (session start) and a same-actor
+  re-announcement do **not** purge — there is no prior document to discard.
+
+Registry invalidation for the destroyed target still runs via
+`dispatch_watcher_event` → `Registry::invalidate_target` (iter-74); Theme A only
+adds the buffer purge on top.

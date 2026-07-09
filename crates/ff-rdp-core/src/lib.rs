@@ -65,7 +65,7 @@ pub use fronts::{
 pub use registry::{Front, FrontKind, IsActorGone, Registry, call_with_refresh};
 pub use resources::{Resource, ResourceCommand, ResourceType, SubscriptionId};
 pub use session::Session;
-pub use transport::{DemuxReader, FramedReader, FramedWriter, Packet, RdpTransport};
+pub use transport::{FramedReader, FramedWriter, RdpTransport};
 pub use types::{ActorId, Grip};
 pub use util::terminal::sanitize_for_terminal;
 

@@ -1,14 +1,12 @@
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Sender, SyncSender, TrySendError};
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::error::{ActorErrorKind, ProtocolError};
-use crate::types::ActorId;
 
 // ---------------------------------------------------------------------------
 // Payload redactor
@@ -369,21 +367,6 @@ impl RdpTransport {
         (FramedReader { reader }, FramedWriter { writer })
     }
 
-    /// Split the transport for per-actor demux dispatch.
-    ///
-    /// Returns a [`DemuxReader`] (pre-configured with the read half; call
-    /// [`DemuxReader::run_loop`] to start dispatching on a background thread)
-    /// and a [`FramedWriter`] for sending requests.
-    ///
-    /// The synchronous CLI path never calls this — it uses `split()` or drives
-    /// the transport directly.  This is only used by daemon mode to fan inbound
-    /// packets into per-actor bounded channels.
-    pub fn split_demux(self) -> (DemuxReader, FramedWriter) {
-        let (reader, writer) = self.into_parts();
-        let demux = DemuxReader::with_reader(reader);
-        (demux, FramedWriter { writer })
-    }
-
     /// Override the socket read timeout.
     ///
     /// Pass `None` to block indefinitely (not recommended in production).
@@ -650,9 +633,6 @@ impl FramedWriter {
 /// Chunk size used when streaming bulk packet bodies to an output writer.
 const BULK_CHUNK_SIZE: usize = 8 * 1024; // 8 KiB
 
-/// Default per-actor channel capacity for [`DemuxReader`].
-pub const DEMUX_CHANNEL_CAPACITY: usize = 64;
-
 /// Discard exactly `length` bytes from `reader` in 8 KiB chunks.
 ///
 /// Used by [`recv_bulk_with_handler_from`] and [`drain_bulk_frame`] to consume
@@ -856,210 +836,6 @@ fn recv_bulk_with_handler_from<W: Write, R: BufRead>(
 }
 
 // ---------------------------------------------------------------------------
-// Per-actor demux reader (Theme C, iter-76)
-// ---------------------------------------------------------------------------
-
-/// A packet routed by [`DemuxReader`].
-///
-/// Each inbound Firefox RDP frame is classified by its `from` actor field and
-/// dispatched to the matching per-actor channel.  Packets from unregistered
-/// actors go to the fallback sink so they are never silently dropped.
-#[derive(Debug)]
-pub struct Packet {
-    /// The raw JSON packet as received from Firefox.
-    pub value: Value,
-}
-
-/// Per-actor demux reader — the read half produced by [`RdpTransport::split_demux`].
-///
-/// `DemuxReader` owns the TCP read half and a `HashMap` of per-actor bounded
-/// channels (default capacity [`DEMUX_CHANNEL_CAPACITY`]).  A background reader
-/// thread drains the socket and dispatches each packet to the correct channel:
-///
-/// - If `from` matches a registered actor, the packet is sent to that actor's
-///   `mpsc::SyncSender`.  A full channel surfaces as
-///   [`ProtocolError::ActorChannelFull`] (back-pressure).
-/// - Packets from unregistered actors go to the fallback sink (if set) so they
-///   are never dropped — consistent with the iter-74 no-drop invariant.
-///
-/// The synchronous CLI path is unaffected; `split_demux` is only called from
-/// daemon mode.
-pub struct DemuxReader {
-    /// Optional TCP reader half (present when created via `split_demux`).
-    reader: Option<BufReader<TcpStream>>,
-    /// Per-actor channels: actor ID → sender half.
-    channels: HashMap<String, SyncSender<Packet>>,
-    /// Optional fallback for packets from unknown actors.
-    fallback: Option<SyncSender<Packet>>,
-}
-
-impl DemuxReader {
-    /// Create an empty `DemuxReader` with no registered actors and no reader.
-    ///
-    /// Useful in tests where you drive [`dispatch`] directly.
-    pub fn new() -> Self {
-        Self {
-            reader: None,
-            channels: HashMap::new(),
-            fallback: None,
-        }
-    }
-
-    /// Create a `DemuxReader` backed by a live TCP `BufReader`.
-    ///
-    /// Called by [`RdpTransport::split_demux`]; use that method rather than
-    /// calling this directly.
-    fn with_reader(reader: BufReader<TcpStream>) -> Self {
-        Self {
-            reader: Some(reader),
-            channels: HashMap::new(),
-            fallback: None,
-        }
-    }
-
-    /// Register an actor and return the receiver half of a bounded channel
-    /// (capacity [`DEMUX_CHANNEL_CAPACITY`]).
-    ///
-    /// If the actor was already registered, the old channel is replaced and the
-    /// previous receiver is dropped.
-    ///
-    /// # Ordering invariant
-    ///
-    /// All actors **must** be registered before the `DemuxReader` is moved
-    /// into the thread that runs [`Self::run_loop`] / [`Self::run_loop_with`].
-    /// `run_loop` consumes `self`, so any `register` call after that point is
-    /// impossible by construction; this note exists to remind callers to
-    /// finish registration before handing off to the reader thread.
-    ///
-    /// See also: [`Self::run_loop`].
-    pub fn register(&mut self, actor: &ActorId) -> mpsc::Receiver<Packet> {
-        let (tx, rx) = mpsc::sync_channel(DEMUX_CHANNEL_CAPACITY);
-        self.channels.insert(actor.as_ref().to_owned(), tx);
-        rx
-    }
-
-    /// Set the fallback sink for packets from unregistered actors.
-    ///
-    /// Pass a `SyncSender` created with `mpsc::sync_channel`; the DemuxReader
-    /// holds the send half and uses it whenever `from` is not in `channels`.
-    /// Pass `None` to clear (unregistered-actor packets are silently dropped).
-    pub fn set_fallback(&mut self, sink: Option<SyncSender<Packet>>) {
-        self.fallback = sink;
-    }
-
-    /// Dispatch a single packet to the appropriate per-actor channel.
-    ///
-    /// Called by the reader loop for each inbound frame.  Returns
-    /// `Err(ProtocolError::ActorChannelFull)` if the target channel is full.
-    pub fn dispatch(&self, value: Value) -> Result<(), ProtocolError> {
-        let actor = value
-            .get("from")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
-
-        if actor.is_empty() {
-            tracing::warn!(
-                target: "ff_rdp_core::transport",
-                "DemuxReader: incoming packet has no `from` field — routing to fallback"
-            );
-        }
-
-        if let Some(tx) = self.channels.get(&actor) {
-            match tx.try_send(Packet {
-                value: value.clone(),
-            }) {
-                Ok(()) => return Ok(()),
-                Err(TrySendError::Full(_)) => {
-                    return Err(ProtocolError::ActorChannelFull { actor });
-                }
-                Err(TrySendError::Disconnected(_)) => {
-                    // Receiver dropped — treat as an unknown actor, fall through.
-                }
-            }
-        }
-
-        // Unknown actor or disconnected receiver → fallback sink.
-        if let Some(sink) = &self.fallback {
-            // Best-effort; ignore if the fallback is also full or disconnected.
-            let _ = sink.try_send(Packet { value });
-        }
-        Ok(())
-    }
-
-    /// Start the demux reader loop using the stored reader half.
-    ///
-    /// Blocks until the reader returns an error (typically EOF / timeout on
-    /// shutdown).  Intended to be run on a dedicated background thread.
-    ///
-    /// Returns the first non-dispatch `ProtocolError` (i.e. an actual I/O or
-    /// framing error), not `ActorChannelFull` (those are logged and skipped).
-    ///
-    /// Returns [`ProtocolError::InvalidState`] if called on a `DemuxReader`
-    /// that was not created via [`RdpTransport::split_demux`] (i.e. the reader
-    /// half is absent).  Use [`Self::run_loop_with`] to pass a custom reader in
-    /// tests.
-    ///
-    /// # Ordering invariant
-    ///
-    /// All actors **must** be registered via [`Self::register`] **before**
-    /// `run_loop` is called.  `run_loop` consumes `self`, so post-start
-    /// registration is impossible by construction — callers must finish
-    /// wiring up all per-actor channels before handing the `DemuxReader`
-    /// off to the thread that will drive the loop.
-    ///
-    /// See also: [`Self::register`].
-    pub fn run_loop(mut self) -> ProtocolError {
-        let Some(reader) = self.reader.take() else {
-            return ProtocolError::InvalidState(
-                "run_loop called without a reader — use split_demux()".to_owned(),
-            );
-        };
-        self.run_loop_with(reader)
-    }
-
-    /// Run a read loop over a custom `reader`, dispatching each packet.
-    ///
-    /// This variant is for testing — pass any `impl BufRead` (e.g. a `Cursor`).
-    /// In production, call [`run_loop`] which uses the stored TCP reader.
-    pub fn run_loop_with(self, mut reader: impl BufRead) -> ProtocolError {
-        loop {
-            match recv_from(&mut reader) {
-                Ok(value) => {
-                    if let Err(e) = self.dispatch(value) {
-                        tracing::warn!(
-                            target: "ff_rdp_core::transport",
-                            error = %e,
-                            "DemuxReader: actor channel full — packet dropped"
-                        );
-                    }
-                }
-                Err(e) => return e,
-            }
-        }
-    }
-}
-
-impl Default for DemuxReader {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Debug for DemuxReader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DemuxReader")
-            .field("has_reader", &self.reader.is_some())
-            .field("actors", &self.channels.keys().collect::<Vec<_>>())
-            .finish_non_exhaustive()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Pure framing helpers — extracted so tests can exercise them without sockets.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Reply / event matching helpers (iter-69)
 // ---------------------------------------------------------------------------
 
@@ -1084,6 +860,15 @@ pub fn recv_reply_from(transport: &mut RdpTransport, actor: &str) -> Result<Valu
         let msg = transport.recv()?;
         let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
         if from != actor {
+            // iter-101 Theme B: a control-error frame injected by the daemon
+            // (e.g. `daemon_busy` when a second client tried to use the RPC
+            // channel) will never be followed by the awaited actor reply
+            // because the request was *not* forwarded.  Surface it promptly as
+            // an ActorError so the caller fails fast instead of blocking until
+            // the socket timeout.
+            if let Some(err) = daemon_control_error(&msg) {
+                return Err(err);
+            }
             // Sibling-actor packet — forward to the event sink so it isn't
             // lost (e.g. watcher events that arrived while we awaited a reply
             // on a different actor).
@@ -1162,10 +947,44 @@ pub fn recv_event_from(
             // to the sink instead of discarding.
             transport.forward_event(msg);
         } else {
+            // iter-101 Theme B: fail fast on a daemon control-error frame
+            // (see `recv_reply_from`) rather than waiting for an actor reply
+            // that will never arrive.
+            if let Some(err) = daemon_control_error(&msg) {
+                return Err(err);
+            }
             // Packet from a sibling actor — forward to the sink.
             transport.forward_event(msg);
         }
     }
+}
+
+/// Recognise a daemon-injected control-error frame (iter-101 Theme B).
+///
+/// The ff-rdp daemon proxies raw Firefox RDP but occasionally needs to signal a
+/// condition of its own (currently only `daemon_busy`) by emitting a frame with
+/// `from == "daemon"` and an `error` field.  Because such a frame is *not* an
+/// actor reply and will never be followed by one for the awaited request, the
+/// reply/event wait loops convert it into a terminal [`ProtocolError::ActorError`]
+/// (with `actor = "daemon"`) so the caller fails fast.
+///
+/// Returns `None` for any frame that is not a daemon control-error, so ordinary
+/// forwarded `from == "daemon"` frames (e.g. the greeting) are unaffected.
+fn daemon_control_error(msg: &Value) -> Option<ProtocolError> {
+    if msg.get("from").and_then(Value::as_str) != Some("daemon") {
+        return None;
+    }
+    let error = msg.get("error").and_then(Value::as_str)?;
+    Some(ProtocolError::ActorError {
+        actor: "daemon".to_owned(),
+        kind: ActorErrorKind::from_code(error),
+        error: error.to_owned(),
+        message: msg
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned(),
+    })
 }
 
 /// Encode a JSON string as a Firefox RDP frame: `"{len}:{json}"`.
@@ -2009,6 +1828,50 @@ mod tests {
         server_thread.join().unwrap();
     }
 
+    /// iter-101 Theme B: a `daemon_busy` control-error frame (`from == "daemon"`)
+    /// arriving while awaiting an actor reply must surface promptly as an
+    /// `ActorError` rather than being forwarded as a sibling event and hanging
+    /// until the socket timeout.
+    #[test]
+    fn recv_reply_from_surfaces_daemon_busy_control_error() {
+        let (mut transport, server) = make_transport_pair();
+        let (tx, rx) = std::sync::mpsc::channel::<Value>();
+        transport.set_event_sink(Some(tx));
+
+        let server_thread = std::thread::spawn(move || {
+            write_frame(
+                &server,
+                &serde_json::json!({
+                    "from": "daemon",
+                    "error": "daemon_busy",
+                    "message": "another CLI client is holding the daemon's RPC channel"
+                }),
+            );
+        });
+
+        let err = recv_reply_from(&mut transport, "actorA").unwrap_err();
+        match err {
+            ProtocolError::ActorError {
+                actor,
+                error,
+                message,
+                ..
+            } => {
+                assert_eq!(actor, "daemon");
+                assert_eq!(error, "daemon_busy");
+                assert!(message.contains("RPC channel"));
+            }
+            other => panic!("expected ActorError from daemon, got {other:?}"),
+        }
+        // The control-error frame must NOT be forwarded to the event sink — it
+        // is terminal, not a stray event.
+        assert!(
+            rx.try_recv().is_err(),
+            "daemon control-error must not leak to the event sink"
+        );
+        server_thread.join().unwrap();
+    }
+
     /// `recv_event_from` must surface an error reply from the target actor
     /// instead of silently skipping it — otherwise callers like
     /// `ThreadActor::attach` would hang until the socket timeout.
@@ -2217,103 +2080,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // DemuxReader (Theme C, iter-76)
-    // -----------------------------------------------------------------------
-
-    /// AC: `demux_reader_per_actor_fifo` — packets from actor A and B interleaved
-    /// on the wire arrive in per-actor FIFO order on their respective channels.
-    #[test]
-    fn demux_reader_per_actor_fifo() {
-        let mut demux = DemuxReader::new();
-        let rx_a = demux.register(&ActorId::from("actorA"));
-        let rx_b = demux.register(&ActorId::from("actorB"));
-
-        // Build a stream: A1, B1, A2, B2, A3.
-        let mut stream: Vec<u8> = Vec::new();
-        for (from, seq) in [
-            ("actorA", 1),
-            ("actorB", 1),
-            ("actorA", 2),
-            ("actorB", 2),
-            ("actorA", 3),
-        ] {
-            let json =
-                serde_json::to_string(&serde_json::json!({"from": from, "seq": seq})).unwrap();
-            stream.extend_from_slice(encode_frame(&json).as_bytes());
-        }
-
-        // A terminator that causes recv_from to return an error (EOF).
-        let cursor = Cursor::new(stream);
-        let err = demux.run_loop_with(cursor);
-        assert!(
-            matches!(err, ProtocolError::RecvFailed(_)),
-            "expected RecvFailed (EOF), got {err:?}"
-        );
-
-        // Actor A: must receive seq 1, 2, 3 in order.
-        let a_seqs: Vec<i64> = std::iter::from_fn(|| rx_a.try_recv().ok())
-            .map(|p| p.value["seq"].as_i64().unwrap())
-            .collect();
-        assert_eq!(a_seqs, vec![1, 2, 3], "actor A FIFO violated");
-
-        // Actor B: must receive seq 1, 2 in order.
-        let b_seqs: Vec<i64> = std::iter::from_fn(|| rx_b.try_recv().ok())
-            .map(|p| p.value["seq"].as_i64().unwrap())
-            .collect();
-        assert_eq!(b_seqs, vec![1, 2], "actor B FIFO violated");
-    }
-
-    /// AC: `demux_reader_unknown_actor_to_sink` — packet from an unregistered
-    /// actor reaches the fallback sink rather than being silently dropped.
-    #[test]
-    fn demux_reader_unknown_actor_to_sink() {
-        let mut demux = DemuxReader::new();
-        let (sink_tx, sink_rx) = mpsc::sync_channel(16);
-        demux.set_fallback(Some(sink_tx));
-
-        let json =
-            serde_json::to_string(&serde_json::json!({"from": "unknownActor", "type": "ping"}))
-                .unwrap();
-        let stream = Cursor::new(encode_frame(&json).into_bytes());
-
-        let err = demux.run_loop_with(stream);
-        assert!(matches!(err, ProtocolError::RecvFailed(_)));
-
-        let pkt = sink_rx
-            .try_recv()
-            .expect("fallback sink must receive the packet");
-        assert_eq!(pkt.value["from"], "unknownActor");
-        assert_eq!(pkt.value["type"], "ping");
-    }
-
-    #[test]
-    fn demux_reader_full_channel_returns_actor_channel_full() {
-        // Channel of capacity 1 — dispatch a second packet to trigger back-pressure.
-        let (tx, _rx) = mpsc::sync_channel::<Packet>(1);
-        let mut channels = HashMap::new();
-        channels.insert("actorA".to_owned(), tx);
-        let demux = DemuxReader {
-            reader: None,
-            channels,
-            fallback: None,
-        };
-
-        // First packet — fits.
-        demux
-            .dispatch(serde_json::json!({"from": "actorA", "n": 1}))
-            .unwrap();
-
-        // Second packet — channel is full.
-        let err = demux
-            .dispatch(serde_json::json!({"from": "actorA", "n": 2}))
-            .unwrap_err();
-        assert!(
-            matches!(err, ProtocolError::ActorChannelFull { .. }),
-            "expected ActorChannelFull, got {err:?}"
-        );
-    }
-
     // ── Theme A: bulk-frame drain tests ─────────────────────────────────────
 
     /// AC: `bulk_recv_drains_on_actor_mismatch` — after a mismatched bulk
@@ -2428,20 +2194,5 @@ mod tests {
             "cursor should be positioned after header, not into body; \
              body bytes should still be unread (total={total_len}, pos={pos})"
         );
-    }
-
-    /// AC: `demux_run_loop_without_reader_returns_error` — typed error, not panic.
-    #[test]
-    fn demux_run_loop_without_reader_returns_error() {
-        let r = DemuxReader::new();
-        match r.run_loop() {
-            ProtocolError::InvalidState(msg) => {
-                assert!(
-                    msg.contains("reader"),
-                    "error message should mention 'reader': {msg}"
-                );
-            }
-            other => panic!("expected InvalidState, got {other:?}"),
-        }
     }
 }

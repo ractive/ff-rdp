@@ -63,6 +63,19 @@ pub enum AppError {
     /// exit 78 (`EX_CONFIG` in BSD sysexits, "configuration error" — the
     /// remote announced a frame larger than ff-rdp is willing to accept).
     RdpBulkOversize { announced: u64, max: u64 },
+    /// A requested feature is well-formed but cannot be honored in the current
+    /// mode, and the CLI refuses to silently do the wrong thing (iter-101
+    /// Theme D) — exit 1 (runtime/user error).
+    ///
+    /// `error_type` is a stable machine-readable discriminant (e.g.
+    /// `"since_requires_daemon"`) so scripts and parity tests can branch on it
+    /// without matching on the human-readable `message`.  Exit code 1 keeps it
+    /// in the documented "runtime / user error" bucket and avoids colliding
+    /// with clap's usage-error exit code 2.
+    Unsupported {
+        error_type: &'static str,
+        message: String,
+    },
 }
 
 impl AppError {
@@ -89,6 +102,7 @@ impl AppError {
                 ff_rdp_core::NavCause::Unknown(_) => "nav_unknown",
             },
             Self::RdpBulkOversize { .. } => "rdp_bulk_oversize",
+            Self::Unsupported { error_type, .. } => error_type,
         }
     }
 
@@ -107,6 +121,9 @@ impl AppError {
                 ff_rdp_core::NavCause::Unknown(_) => 12,
             },
             Self::RdpBulkOversize { .. } => 78,
+            // Everything else — including `Unsupported` (well-formed but not
+            // honorable here) — falls in the runtime/user-error bucket (exit 1),
+            // never clap's usage exit code 2.
             _ => 1,
         }
     }
@@ -157,7 +174,9 @@ impl fmt::Display for AppError {
             | Self::Timeout(msg)
             | Self::RdpTransport(msg)
             | Self::RdpRemoteClosed(msg) => write!(f, "{msg}"),
-            Self::Diagnostics { message, .. } => write!(f, "{message}"),
+            Self::Diagnostics { message, .. } | Self::Unsupported { message, .. } => {
+                write!(f, "{message}")
+            }
             Self::RdpProtocol {
                 actor,
                 name,

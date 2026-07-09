@@ -5,6 +5,22 @@ use serde_json::{Value, json};
 
 const MAX_EVENTS: usize = 50_000;
 const MAX_BOUNDARIES: usize = 1_000;
+
+/// Per-type reserved floor (iter-101 Theme C).
+///
+/// When the buffer is at its global [`MAX_EVENTS`] capacity and a new entry is
+/// pushed, eviction is **type-aware**: the oldest entry belonging to a type
+/// that is *above* this floor is dropped first, so a burst of one resource type
+/// (e.g. thousands of `network-event`s) can never evict the last
+/// [`TYPE_RESERVED_FLOOR`] entries of another type (e.g. `console-message` /
+/// `error-message`).
+///
+/// The floor is a soft reservation, not a hard per-type cap: a single type may
+/// still grow to fill the whole buffer when no other type has entries.  The
+/// guarantee is only that the *oldest* `TYPE_RESERVED_FLOOR` entries of any type
+/// that currently has at most that many entries are protected from cross-type
+/// eviction.
+const TYPE_RESERVED_FLOOR: usize = 500;
 /// Maximum byte length of a navigation URL stored in a [`NavBoundary`].
 ///
 /// URLs longer than this are silently truncated on insert to bound memory usage
@@ -34,8 +50,18 @@ struct Entry {
 }
 
 /// Single-queue resource buffer populated from the `ResourceCommand` bus.
+///
+/// The backing store is one insertion-ordered [`VecDeque`], but eviction is
+/// **type-aware** (iter-101 Theme C): `type_counts` tracks how many live
+/// entries each resource type holds so that overflow eviction can protect the
+/// [`TYPE_RESERVED_FLOOR`] oldest entries of each type from being purged by a
+/// burst of another type.
 pub(crate) struct ResourceBuffer {
     store: VecDeque<Entry>,
+    /// Live entry count per resource type, kept in sync with `store` on every
+    /// push, evict, drain, and Destroyed-prune.  Used by [`Self::evict_one`] to
+    /// pick a victim type that is above its reserved floor.
+    type_counts: HashMap<String, usize>,
     boundaries: Vec<NavBoundary>,
     next_nav_sequence: u64,
     total_inserted: u64,
@@ -45,6 +71,7 @@ impl ResourceBuffer {
     pub(crate) fn new() -> Self {
         Self {
             store: VecDeque::new(),
+            type_counts: HashMap::new(),
             boundaries: Vec::new(),
             next_nav_sequence: 0,
             total_inserted: 0,
@@ -62,10 +89,18 @@ impl ResourceBuffer {
                 // A single resource_id may have multiple buffered entries (e.g.
                 // an initial network-event + subsequent network-event updates),
                 // so we remove ALL of them to avoid stale data.
+                let mut removed = 0usize;
                 self.store.retain(|e| {
-                    !(e.resource_type == *resource_type
-                        && e.resource_id.as_deref() == Some(resource_id.as_str()))
+                    let matches = e.resource_type == *resource_type
+                        && e.resource_id.as_deref() == Some(resource_id.as_str());
+                    if matches {
+                        removed += 1;
+                    }
+                    !matches
                 });
+                if removed > 0 {
+                    Self::dec_type_count(&mut self.type_counts, resource_type, removed);
+                }
             }
             Resource::NetworkEvent(n) => self.push(
                 "network-event",
@@ -91,16 +126,68 @@ impl ResourceBuffer {
 
     fn push(&mut self, resource_type: &str, resource_id: Option<String>, data: Value) {
         if self.store.len() >= MAX_EVENTS {
-            self.store.pop_front();
+            self.evict_one(resource_type);
         }
         let seq = self.total_inserted;
         self.total_inserted = self.total_inserted.saturating_add(1);
+        *self
+            .type_counts
+            .entry(resource_type.to_owned())
+            .or_insert(0) += 1;
         self.store.push_back(Entry {
             resource_type: resource_type.to_owned(),
             resource_id,
             data,
             seq,
         });
+    }
+
+    /// Evict exactly one entry to make room for a new `incoming_type` push,
+    /// respecting the per-type reserved floor (iter-101 Theme C).
+    ///
+    /// Victim selection walks the store from oldest to newest and drops the
+    /// first entry whose type currently holds **more than** [`TYPE_RESERVED_FLOOR`]
+    /// entries — so a type sitting at or below its floor is never chosen.  This
+    /// guarantees that a burst of one type cannot evict the oldest
+    /// `TYPE_RESERVED_FLOOR` entries of another type.
+    ///
+    /// Fallbacks (all types at/below their floor, which only happens once the
+    /// number of *distinct* types times the floor exceeds [`MAX_EVENTS`]):
+    /// evict the oldest entry of `incoming_type` if it has any, otherwise the
+    /// globally-oldest entry.  Either way exactly one entry is removed so the
+    /// caller's subsequent push cannot exceed [`MAX_EVENTS`].
+    fn evict_one(&mut self, incoming_type: &str) {
+        // Preferred: oldest entry of a type that is above its reserved floor.
+        let victim_idx = self.store.iter().position(|e| {
+            self.type_counts.get(&e.resource_type).copied().unwrap_or(0) > TYPE_RESERVED_FLOOR
+        });
+
+        let idx = victim_idx.or_else(|| {
+            // Fallback 1: oldest entry of the incoming type (the type we are
+            // about to grow), so we prefer to cannibalise our own type.
+            self.store
+                .iter()
+                .position(|e| e.resource_type == incoming_type)
+        });
+
+        // Fallback 2: globally-oldest entry (front of the deque).
+        let idx = idx.unwrap_or(0);
+
+        if let Some(entry) = self.store.remove(idx) {
+            Self::dec_type_count(&mut self.type_counts, &entry.resource_type, 1);
+        }
+    }
+
+    /// Decrement the live count for `resource_type` by `n`, removing the map
+    /// entry when it reaches zero so `type_counts` never accumulates stale
+    /// zero-valued keys.
+    fn dec_type_count(counts: &mut HashMap<String, usize>, resource_type: &str, n: usize) {
+        if let Some(c) = counts.get_mut(resource_type) {
+            *c = c.saturating_sub(n);
+            if *c == 0 {
+                counts.remove(resource_type);
+            }
+        }
     }
 
     /// Insert a raw JSON value (for `store-events` IPC back-compat).
@@ -169,19 +256,43 @@ impl ResourceBuffer {
 
         let mut results = Vec::new();
         let mut remaining = VecDeque::new();
+        let mut drained_of_type = 0usize;
         for entry in self.store.drain(..) {
             if entry.resource_type == resource_type && entry.seq >= min_seq {
+                drained_of_type += 1;
                 results.push(entry.data);
             } else {
                 remaining.push_back(entry);
             }
         }
         self.store = remaining;
+        if drained_of_type > 0 {
+            Self::dec_type_count(&mut self.type_counts, resource_type, drained_of_type);
+        }
         (results, boundary)
     }
 
     pub(crate) fn drain(&mut self, resource_type: &str) -> Vec<Value> {
         self.drain_since(resource_type, 0).0
+    }
+
+    /// Purge every entry that was inserted **before** the current insertion
+    /// point, i.e. drop all currently-buffered resource entries (iter-101
+    /// Theme A).
+    ///
+    /// Called when a **top-level, cross-process target switch** is observed
+    /// (`target-destroyed-form` for the old top-level target): the resources
+    /// buffered for the destroyed document are stale and must never be mixed
+    /// into a post-switch drain window.  Nav boundaries are left intact — the
+    /// switch does not reset navigation-scope bookkeeping, and `store_start`
+    /// values remain valid because `total_inserted` is never rewound.
+    ///
+    /// Returns the number of entries purged (for logging / test assertions).
+    pub(crate) fn purge_destroyed_target(&mut self) -> usize {
+        let purged = self.store.len();
+        self.store.clear();
+        self.type_counts.clear();
+        purged
     }
 
     pub(crate) fn sizes(&self) -> HashMap<String, usize> {
@@ -373,6 +484,101 @@ mod tests {
         let events = buf.drain("network-event");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["url"], "https://x.com");
+    }
+
+    fn console(id: u64, msg: &str) -> Resource {
+        Resource::ConsoleMessage(ConsoleResource {
+            level: "log".into(),
+            message: msg.into(),
+            source: "console-api".into(),
+            line: 0,
+            column: 0,
+            timestamp: 0.0,
+            resource_id: Some(id),
+        })
+    }
+
+    /// AC: `unit_buffer_eviction_per_type` — flooding the buffer to overflow
+    /// with `network-event`s must NOT evict pre-existing `console-message`
+    /// entries that sit within the per-type reserved floor.
+    #[test]
+    fn unit_buffer_eviction_per_type() {
+        let mut buf = ResourceBuffer::new();
+
+        // Seed a modest number of console messages (well under the floor).
+        let console_count: usize = 50;
+        for i in 0..console_count {
+            buf.on_resource(&console(i as u64, &format!("hello-{i}")));
+        }
+
+        // Flood with 10× MAX_EVENTS network events to force heavy eviction.
+        for i in 0..(MAX_EVENTS as u64 * 10) {
+            buf.on_resource(&net(1_000_000 + i, "https://flood.example/"));
+        }
+
+        // The store is capped at MAX_EVENTS.
+        assert!(
+            buf.store.len() <= MAX_EVENTS,
+            "store must never exceed MAX_EVENTS; got {}",
+            buf.store.len()
+        );
+
+        // All seeded console messages must still be drainable: they are below
+        // the reserved floor, so the network flood could not evict them.
+        let drained = buf.drain("console-message");
+        assert_eq!(
+            drained.len(),
+            console_count,
+            "all {console_count} console messages must survive a network flood"
+        );
+        // And they must be the original messages, in order.
+        assert_eq!(drained[0]["message"], "hello-0");
+        assert_eq!(
+            drained[console_count - 1]["message"],
+            format!("hello-{}", console_count - 1)
+        );
+    }
+
+    /// The reserved floor is a *soft* reservation: a single type may still fill
+    /// the whole buffer when it is the only type present.
+    #[test]
+    fn single_type_can_fill_buffer() {
+        let mut buf = ResourceBuffer::new();
+        for i in 0..(MAX_EVENTS as u64 + 100) {
+            buf.on_resource(&net(i, "https://a.example/"));
+        }
+        assert_eq!(buf.store.len(), MAX_EVENTS, "single type fills to the cap");
+        assert_eq!(
+            buf.type_counts.get("network-event").copied(),
+            Some(MAX_EVENTS),
+            "type_counts must stay in sync with the store"
+        );
+    }
+
+    /// `purge_destroyed_target` drops all buffered entries and resets the
+    /// per-type counts, but leaves nav-boundary bookkeeping intact.
+    #[test]
+    fn purge_destroyed_target_clears_entries_keeps_boundaries() {
+        let mut buf = ResourceBuffer::new();
+        buf.on_resource(&net(1, "https://old.example/"));
+        buf.on_resource(&console(1, "old-log"));
+        let seq = buf.record_nav_boundary("https://old.example/".into());
+        buf.on_resource(&net(2, "https://old.example/asset"));
+
+        let purged = buf.purge_destroyed_target();
+        assert_eq!(purged, 3, "all three buffered entries must be purged");
+        assert!(buf.store.is_empty(), "store must be empty after purge");
+        assert!(buf.type_counts.is_empty(), "type_counts must be cleared");
+
+        // Boundaries survive so `--since` bookkeeping remains valid.
+        assert_eq!(buf.boundaries.len(), 1);
+        assert_eq!(buf.boundaries[0].sequence, seq);
+
+        // New entries after the purge are drainable and carry monotonic seqs.
+        buf.on_resource(&net(3, "https://new.example/"));
+        let drained = buf.drain("network-event");
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0]["url"], "https://new.example/");
     }
 
     /// Theme I (iter-61x): `record_nav_boundary` truncates URLs longer than
