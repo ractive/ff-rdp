@@ -2,7 +2,7 @@
 title: "Iteration 104: security & PWA audit pack — per-request TLS info, Web App Manifest validation, optional throttling/blocking"
 type: iteration
 date: 2026-07-09
-status: in-progress
+status: completed
 branch: iter-104/security-pwa-audit-pack
 depends_on: []
 firefox_refs:
