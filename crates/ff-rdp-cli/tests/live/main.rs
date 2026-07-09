@@ -20,6 +20,12 @@
 //! new top-level `tests/live_*.rs` file (enforced by
 //! `cargo run -p xtask -- check-live-test-layout`).
 
+// iter-105 Theme D: several live suites call `libc::kill` via FFI for daemon
+// process-lifecycle assertions.  The CLI crate default is
+// `unsafe_code = "deny"`; allow it crate-wide for this test binary only (every
+// block carries its own `// SAFETY:` note) so the FFI-using live suites compile.
+#![allow(unsafe_code)]
+
 // The shared live-test helpers live one directory up so the other top-level
 // test binaries can keep including them per-file. Declare them once here.
 #[path = "../common/mod.rs"]

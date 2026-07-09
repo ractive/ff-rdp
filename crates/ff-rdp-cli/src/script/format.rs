@@ -386,7 +386,7 @@ pub fn parse_script_str(content: &str, fmt: ScriptFormat) -> anyhow::Result<Scri
         ScriptFormat::Yaml => {
             // Parse YAML → serde_json::Value → Script.
             let value: serde_json::Value =
-                serde_yaml::from_str(content).context("YAML parse error")?;
+                serde_norway::from_str(content).context("YAML parse error")?;
             serde_json::from_value(value).context("YAML→JSON conversion")?
         }
     };

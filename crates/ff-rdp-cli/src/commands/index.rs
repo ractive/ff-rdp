@@ -726,7 +726,7 @@ pub fn write_page_map(path: &Path, map: &PageMap, format: &str) -> anyhow::Resul
 
     let format_lower = format.to_lowercase();
     let content = match format_lower.as_str() {
-        "yaml" | "yml" => serde_yaml::to_string(map).context("serialising page-map as YAML")?,
+        "yaml" | "yml" => serde_norway::to_string(map).context("serialising page-map as YAML")?,
         "json" => serde_json::to_string_pretty(map).context("serialising page-map as JSON")?,
         other => {
             anyhow::bail!("--format must be 'json', 'yaml', or 'yml', got: {other:?}");

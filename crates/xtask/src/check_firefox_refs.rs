@@ -149,7 +149,7 @@ fn extract_firefox_refs_frontmatter(content: &str) -> Result<FirefoxRefsFrontmat
         .context("unterminated YAML frontmatter (no closing ---)")?;
     let yaml_text = &after_open[..close_pos];
     let fm: FirefoxRefsFrontmatter =
-        serde_yaml::from_str(yaml_text).context("failed to parse YAML frontmatter")?;
+        serde_norway::from_str(yaml_text).context("failed to parse YAML frontmatter")?;
     Ok(fm)
 }
 

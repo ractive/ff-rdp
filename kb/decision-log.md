@@ -262,3 +262,23 @@ Diffs `tools/ralph-loop/scripts/` against `~/.claude/skills/ralph-loop/scripts/`
 **Trade-off**: The crate gains a ~96 KB binary blob and we take on a manual re-vendor step when upstream releases a new Consent-O-Matic version. Consent-O-Matic is slow-moving (1.1.5 has been current since 2024), so the maintenance overhead is low. A pinned-SHA download was the alternative; vendoring is strictly safer because it also defends against AMO outages and against an attacker who can flip just the hash file.
 
 **Applies to**: `crates/ff-rdp-cli/src/commands/auto_consent.rs`, `crates/ff-rdp-cli/assets/extensions/{consent-o-matic-1.1.5.xpi,LICENSE-consent-o-matic.txt}`, iter-64.
+
+## DEC-018: Transparent `RdpError::Protocol(ProtocolError)` bridge, not a full migration
+
+**Decision** (iter-105, Theme A): Replace the flattening `From<ProtocolError> for RdpError` impl with a single `#[error(transparent)] Protocol(#[from] ProtocolError)` variant that passes `ProtocolError` through **losslessly**. Do NOT collapse the two error types into one (the "full migration" alternative the plan left open).
+
+**Why**: The former impl destroyed information — it fabricated `Timeout { after_ms: 0 }`, dropped the `ActorErrorKind` discriminant (so `noSuchActor` became indistinguishable from `wrongState`), and stringified everything else into `Shape { got: … }`, severing `io::Error` source chains. The transparent variant keeps `ProtocolError`'s carefully-typed surface intact and reaches the CLI's existing `From<ProtocolError> for AppError` mapping, which already distinguishes every `ActorErrorKind`. It is strictly additive: the only in-tree consumer of the old `From` impl (`WatcherActor::unwatch_targets`, which does `actor_send(...)?` into an `RdpResult`) keeps compiling via the `#[from]`.
+
+**Why not the full migration**: A full merge of `RdpError` and `ProtocolError` would be a large, cross-cutting API change touching every actor's return type — it would balloon this release-prep PR and, per the carry-over rule, would need its own plan. `is_transient()`'s in-crate exhaustive match over `ActorErrorKind` (the value of keeping `ProtocolError` typed) is unaffected by the change.
+
+**Trade-off**: `RdpError` now has two "protocol-ish" surfaces during the migration window (`Protocol(ProtocolError)` plus the still-present `Shape`/`Timeout`/`Transport` variants). That is acceptable: `#[non_exhaustive]` (Theme B) means a future full migration can retire the redundant variants without a breaking change.
+
+**Applies to**: `crates/ff-rdp-core/src/error.rs`, `crates/ff-rdp-cli/src/error.rs`, iter-105.
+
+## DEC-019: `FrontKind` keeps `Other(String)` catch-all + gains `#[non_exhaustive]`
+
+**Decision** (iter-105, Theme B look-and-decide pass): Add `#[non_exhaustive]` to the four *error* enums (`RdpError`, `ProtocolError`, `ActorErrorKind`, `NavCause`) as planned. For the adjacent `registry::FrontKind` enum — which the plan flagged as gaining a variant nearly every iteration — add `#[non_exhaustive]` **as well**, since it is the same mechanical fix in the same PR and closes the same breaking-change risk for the `FrontKind::Manifest`/`TargetConfiguration`-style additions.
+
+**Why**: `FrontKind` already carries an `Other(String)` catch-all, which softens the risk for *construction* but does not help downstream `match`es: a non-defining-crate exhaustive match still breaks when a named variant is added. `#[non_exhaustive]` forces those matches to carry a wildcard, making variant additions non-breaking. The `Other(String)` catch-all is retained (it serves a different purpose — round-tripping unrecognised front kinds by name).
+
+**Applies to**: `crates/ff-rdp-core/src/registry.rs`, iter-105.

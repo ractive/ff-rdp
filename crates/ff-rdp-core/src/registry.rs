@@ -24,7 +24,14 @@ use crate::types::ActorId;
 // ---------------------------------------------------------------------------
 
 /// Which kind of Firefox actor this front represents.
+///
+/// `#[non_exhaustive]` (iter-105 Theme B / DEC-019): named variants are added
+/// nearly every iteration (`Manifest` in iter-104, `TargetConfiguration` in
+/// iter-103, …).  The `Other(String)` catch-all already round-trips
+/// unrecognised kinds by name, but the attribute additionally makes adding a
+/// *named* variant non-breaking for downstream `match`es.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FrontKind {
     Root,
     Descriptor,

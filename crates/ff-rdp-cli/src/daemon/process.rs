@@ -1,3 +1,11 @@
+// iter-105 Theme D: this module is the concentrated home of the CLI's OS
+// process-management FFI (unix `libc::kill`/`getpgid`/`setsid`, Windows
+// `OpenProcess`/`TerminateProcess`).  The crate default is
+// `unsafe_code = "deny"`; this narrow, file-scoped allowance keeps the audited,
+// `// SAFETY:`-documented FFI compiling while the rest of the crate still denies
+// unsafe.  Every `unsafe` block below carries its own SAFETY justification.
+#![allow(unsafe_code)]
+
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::process::{Command, Stdio};

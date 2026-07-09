@@ -99,7 +99,9 @@ impl AppError {
                 ff_rdp_core::NavCause::ConnReset => "nav_conn_reset",
                 ff_rdp_core::NavCause::Timeout => "nav_timeout",
                 ff_rdp_core::NavCause::ContentBlocked => "nav_content_blocked",
-                ff_rdp_core::NavCause::Unknown(_) => "nav_unknown",
+                // `NavCause` is `#[non_exhaustive]`; `Unknown` plus any future
+                // cause map to the catch-all `nav_unknown` discriminant.
+                _ => "nav_unknown",
             },
             Self::RdpBulkOversize { .. } => "rdp_bulk_oversize",
             Self::Unsupported { error_type, .. } => error_type,
@@ -108,23 +110,50 @@ impl AppError {
 
     /// Return the process exit code for this error.
     ///
-    /// Navigation errors use dedicated exit codes (7–12) so callers can branch
-    /// on them without parsing `error_type` strings.
+    /// This is the **single** exit-code authority (iter-105 Theme C): the former
+    /// shadow `error_exit_code()` in `main.rs` — which returned 3/4/5/6/124 for
+    /// variants this method used to collapse to 1 — has been folded in and
+    /// deleted, so the documented table below is now the only source of truth.
+    ///
+    /// | Variant                                  | Exit code |
+    /// |------------------------------------------|-----------|
+    /// | `RdpProtocol` / `Connection` / `RdpActorDestroyed` | 3 |
+    /// | `RdpShape`                               | 4         |
+    /// | `RdpTimeout`                             | 5         |
+    /// | `RdpTransport` / `RdpRemoteClosed`       | 6         |
+    /// | `Navigation` (`DnsFail`…`Unknown`)       | 7–12      |
+    /// | `RdpBulkOversize`                        | 78 (`EX_CONFIG`) |
+    /// | `Timeout` (operation-level)              | 124       |
+    /// | `Exit(code)`                             | `code`    |
+    /// | `User` / `Internal` / `Diagnostics` / `DaemonVersionMismatch` / `Unsupported` | 1 |
     pub fn exit_code(&self) -> i32 {
         match self {
+            Self::RdpProtocol { .. } | Self::Connection(_) | Self::RdpActorDestroyed { .. } => 3,
+            Self::RdpShape { .. } => 4,
+            Self::RdpTimeout { .. } => 5,
+            Self::RdpTransport(_) | Self::RdpRemoteClosed(_) => 6,
             Self::Navigation { cause, .. } => match cause {
                 ff_rdp_core::NavCause::DnsFail => 7,
                 ff_rdp_core::NavCause::CertError => 8,
                 ff_rdp_core::NavCause::ConnReset => 9,
                 ff_rdp_core::NavCause::Timeout => 10,
                 ff_rdp_core::NavCause::ContentBlocked => 11,
-                ff_rdp_core::NavCause::Unknown(_) => 12,
+                // `NavCause` is `#[non_exhaustive]`; `Unknown` plus any future
+                // cause map to the catch-all navigation exit code 12.
+                _ => 12,
             },
             Self::RdpBulkOversize { .. } => 78,
-            // Everything else — including `Unsupported` (well-formed but not
+            Self::Timeout(_) => 124,
+            Self::Exit(code) => *code,
+            // Everything else — `User`, `Internal`, `Diagnostics`,
+            // `DaemonVersionMismatch`, and `Unsupported` (well-formed but not
             // honorable here) — falls in the runtime/user-error bucket (exit 1),
             // never clap's usage exit code 2.
-            _ => 1,
+            Self::User(_)
+            | Self::Internal(_)
+            | Self::Diagnostics { .. }
+            | Self::DaemonVersionMismatch { .. }
+            | Self::Unsupported { .. } => 1,
         }
     }
 
@@ -238,15 +267,12 @@ impl From<anyhow::Error> for AppError {
 impl From<ff_rdp_core::RdpError> for AppError {
     fn from(err: ff_rdp_core::RdpError) -> Self {
         match err {
-            ff_rdp_core::RdpError::Protocol {
-                actor,
-                name,
-                message,
-            } => Self::RdpProtocol {
-                actor,
-                name,
-                message,
-            },
+            // iter-105 Theme A: `Protocol` now carries the full `ProtocolError`
+            // losslessly.  Delegate to the `From<ProtocolError>` impl so the
+            // `ActorErrorKind` discriminant, timeout phase/duration, and source
+            // chains all reach the deterministic CLI mapping — no more
+            // fabricated `after_ms: 0` or dropped `noSuchActor`/`wrongState`.
+            ff_rdp_core::RdpError::Protocol(protocol_err) => Self::from(protocol_err),
             ff_rdp_core::RdpError::Shape {
                 path,
                 expected,
@@ -270,6 +296,10 @@ impl From<ff_rdp_core::RdpError> for AppError {
             ff_rdp_core::RdpError::Spec { reason } => {
                 Self::User(format!("spec violation: {reason}"))
             }
+            // `RdpError` is `#[non_exhaustive]` (iter-105 Theme B): a variant
+            // added upstream without a CLI mapping here falls back to a generic
+            // internal error rather than failing to compile downstream.
+            other => Self::Internal(anyhow::anyhow!("{other}")),
         }
     }
 }
@@ -310,23 +340,17 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
                     "{err} — Firefox accepts this method name but has not implemented it.\n\
                      hint: try a newer Firefox build, or report this as a missing feature."
                 )),
-                ff_rdp_core::ActorErrorKind::MissingParameter
-                | ff_rdp_core::ActorErrorKind::BadParameterType
-                | ff_rdp_core::ActorErrorKind::WrongOrder
-                | ff_rdp_core::ActorErrorKind::ProtocolError
-                | ff_rdp_core::ActorErrorKind::UnknownError => Self::RdpProtocol {
+                // Parameter/order/protocol errors, `Other(_)`, and — since
+                // `ActorErrorKind` is `#[non_exhaustive]` (iter-105 Theme B) —
+                // any future kind map to the typed `RdpProtocol` variant so
+                // callers get a deterministic exit code (3).  The explicit
+                // wildcard satisfies the non-exhaustive requirement while
+                // keeping the fallback behaviour unchanged.
+                _ => Self::RdpProtocol {
                     actor: actor.clone(),
                     name: error.clone(),
                     message: message.clone(),
                 },
-                ff_rdp_core::ActorErrorKind::Other(_) => {
-                    // Map to typed Protocol variant so callers get a deterministic exit code.
-                    Self::RdpProtocol {
-                        actor: actor.clone(),
-                        name: error.clone(),
-                        message: message.clone(),
-                    }
-                }
             },
             // I/O errors on the established connection map to Transport (exit 6).
             ff_rdp_core::ProtocolError::RecvFailed(_)
@@ -366,6 +390,10 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
             | ff_rdp_core::ProtocolError::InvalidState(_) => {
                 Self::Internal(anyhow::Error::new(err))
             }
+            // `ProtocolError` is `#[non_exhaustive]` (iter-105 Theme B): a
+            // variant added upstream without an explicit mapping surfaces as an
+            // internal error rather than breaking this match.
+            _ => Self::Internal(anyhow::Error::new(err)),
         }
     }
 }
@@ -459,6 +487,215 @@ mod tests {
                 );
             }
             other => panic!("expected RdpActorDestroyed, got {other:?}"),
+        }
+    }
+
+    // ── iter-105 Theme A: lossless ProtocolError bridge ─────────────────────
+
+    /// AC: `unit_protocol_error_roundtrip_preserves_kind` — an
+    /// `ActorErrorKind::WrongState` protocol error must stay distinguishable
+    /// from `NoSuchActor` (`UnknownActor`) after crossing
+    /// `ProtocolError -> RdpError -> AppError`, and a `ProtocolError::Timeout`
+    /// must NOT be fabricated into `after_ms: 0`.
+    #[test]
+    fn unit_protocol_error_roundtrip_preserves_kind() {
+        // WrongState → RdpProtocol (exit 3), distinct from UnknownActor → User.
+        let wrong_state = ff_rdp_core::ProtocolError::ActorError {
+            actor: "conn0/actor1".to_owned(),
+            kind: ff_rdp_core::ActorErrorKind::WrongState,
+            error: "wrongState".to_owned(),
+            message: "bad state".to_owned(),
+        };
+        let rdp: ff_rdp_core::RdpError = wrong_state.into();
+        let app = AppError::from(rdp);
+        assert!(
+            matches!(app, AppError::User(_)),
+            "WrongState maps to a User hint; got {app:?}"
+        );
+        assert_eq!(app.exit_code(), 1, "WrongState is a runtime/user error");
+
+        let unknown_actor = ff_rdp_core::ProtocolError::ActorError {
+            actor: "conn0/actor1".to_owned(),
+            kind: ff_rdp_core::ActorErrorKind::UnknownActor,
+            error: "noSuchActor".to_owned(),
+            message: String::new(),
+        };
+        let rdp: ff_rdp_core::RdpError = unknown_actor.into();
+        let app_unknown = AppError::from(rdp);
+        // Both are User hints but carry distinct messages — the discriminant
+        // survived (WrongState mentions "unexpected state", UnknownActor mentions
+        // "closed or navigated"), proving the kind was not flattened away.
+        assert_ne!(
+            app.to_string(),
+            app_unknown.to_string(),
+            "WrongState and UnknownActor must remain distinguishable after the bridge"
+        );
+
+        // Timeout must pass through as an RdpTimeout with the recv phase — not a
+        // fabricated `after_ms: 0` on a top-level RdpError::Timeout.
+        let rdp: ff_rdp_core::RdpError = ff_rdp_core::ProtocolError::Timeout.into();
+        let app = AppError::from(rdp);
+        match app {
+            AppError::RdpTimeout { ref phase, .. } => {
+                assert_eq!(
+                    phase, "recv",
+                    "Timeout bridges via the ProtocolError mapping"
+                );
+            }
+            other => panic!("expected RdpTimeout, got {other:?}"),
+        }
+        assert_eq!(app.exit_code(), 5, "RDP timeout exit code");
+    }
+
+    // ── iter-105 Theme C: one exit-code map + frozen discriminants ──────────
+
+    /// AC: `unit_exit_code_and_error_type_frozen` — every `AppError` variant's
+    /// exit code AND `error_type` string is pinned exactly as shipped.  Renaming
+    /// a discriminant or changing an exit code is a breaking change we are not
+    /// taking; new discriminants MUST be snake_case (see the assertion below).
+    #[test]
+    fn unit_exit_code_and_error_type_frozen() {
+        use ff_rdp_core::NavCause;
+
+        // (variant instance, expected exit code, expected error_type)
+        let table: Vec<(AppError, i32, &str)> = vec![
+            (AppError::User("x".to_owned()), 1, "User"),
+            (AppError::Internal(anyhow::anyhow!("x")), 1, "Internal"),
+            (AppError::Exit(1), 1, "Exit"),
+            (AppError::Exit(42), 42, "Exit"),
+            (AppError::Connection("x".to_owned()), 3, "Connection"),
+            (AppError::Timeout("x".to_owned()), 124, "Timeout"),
+            (
+                AppError::Diagnostics {
+                    message: "x".to_owned(),
+                    payload: serde_json::Value::Null,
+                },
+                1,
+                "User",
+            ),
+            (
+                AppError::RdpProtocol {
+                    actor: "a".to_owned(),
+                    name: "n".to_owned(),
+                    message: "m".to_owned(),
+                },
+                3,
+                "Protocol",
+            ),
+            (
+                AppError::RdpShape {
+                    path: "p".to_owned(),
+                    expected: "e".to_owned(),
+                    got: "g".to_owned(),
+                },
+                4,
+                "Shape",
+            ),
+            (
+                AppError::RdpTimeout {
+                    phase: "recv".to_owned(),
+                    after_ms: 10,
+                },
+                5,
+                "Timeout",
+            ),
+            (AppError::RdpTransport("x".to_owned()), 6, "Transport"),
+            (AppError::RdpRemoteClosed("x".to_owned()), 6, "RemoteClosed"),
+            (
+                AppError::DaemonVersionMismatch { daemon: 0, cli: 1 },
+                1,
+                "daemon_version_mismatch",
+            ),
+            (
+                AppError::RdpActorDestroyed {
+                    actor: "a".to_owned(),
+                },
+                3,
+                "actor_destroyed",
+            ),
+            (
+                AppError::Navigation {
+                    cause: NavCause::DnsFail,
+                    url: "u".to_owned(),
+                },
+                7,
+                "nav_dns_fail",
+            ),
+            (
+                AppError::Navigation {
+                    cause: NavCause::CertError,
+                    url: "u".to_owned(),
+                },
+                8,
+                "nav_cert_error",
+            ),
+            (
+                AppError::Navigation {
+                    cause: NavCause::ConnReset,
+                    url: "u".to_owned(),
+                },
+                9,
+                "nav_conn_reset",
+            ),
+            (
+                AppError::Navigation {
+                    cause: NavCause::Timeout,
+                    url: "u".to_owned(),
+                },
+                10,
+                "nav_timeout",
+            ),
+            (
+                AppError::Navigation {
+                    cause: NavCause::ContentBlocked,
+                    url: "u".to_owned(),
+                },
+                11,
+                "nav_content_blocked",
+            ),
+            (
+                AppError::Navigation {
+                    cause: NavCause::Unknown("x".to_owned()),
+                    url: "u".to_owned(),
+                },
+                12,
+                "nav_unknown",
+            ),
+            (
+                AppError::RdpBulkOversize {
+                    announced: 100,
+                    max: 10,
+                },
+                78,
+                "rdp_bulk_oversize",
+            ),
+            (
+                AppError::Unsupported {
+                    error_type: "since_requires_daemon",
+                    message: "x".to_owned(),
+                },
+                1,
+                "since_requires_daemon",
+            ),
+        ];
+
+        for (err, expected_exit, expected_type) in table {
+            assert_eq!(
+                err.exit_code(),
+                expected_exit,
+                "exit code for {err:?} is frozen at {expected_exit}"
+            );
+            assert_eq!(
+                err.error_type(),
+                expected_type,
+                "error_type for {err:?} is frozen at {expected_type:?}"
+            );
+            // JSON envelope must echo the same frozen discriminant.
+            assert_eq!(
+                err.to_error_json()["error_type"].as_str(),
+                Some(expected_type),
+                "JSON error_type must match the frozen discriminant for {err:?}"
+            );
         }
     }
 }

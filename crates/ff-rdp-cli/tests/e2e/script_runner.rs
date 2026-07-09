@@ -46,7 +46,7 @@ fn schema_examples_valid() {
                 .unwrap_or_else(|e| panic!("parsing JSON {}: {e}", path.display()))
         } else {
             // YAML → serde_json::Value
-            serde_yaml::from_str(&content)
+            serde_norway::from_str(&content)
                 .unwrap_or_else(|e| panic!("parsing YAML {}: {e}", path.display()))
         };
         let result = validator.validate(&instance);

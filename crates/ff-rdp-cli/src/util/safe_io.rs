@@ -52,6 +52,13 @@
 //! symlink-at-destination risk as the screenshot/index/auto_consent writers
 //! (which accept arbitrary user-supplied paths), so they are left unchanged.
 
+// iter-105 Theme D: the Windows path performs reparse-point inspection via FFI
+// (`CreateFileW`, `DeviceIoControl`, `CloseHandle`, `GetLastError`).  The crate
+// default is `unsafe_code = "deny"`; this narrow, file-scoped allowance keeps
+// the audited, `// SAFETY:`-documented Windows FFI compiling while the rest of
+// the crate still denies unsafe.
+#![allow(unsafe_code)]
+
 use std::fs::File;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};

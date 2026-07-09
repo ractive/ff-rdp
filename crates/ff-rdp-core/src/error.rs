@@ -11,7 +11,12 @@ use crate::types::ActorId;
 /// Maps the `e=` query-parameter values that Firefox encodes in `about:neterror`
 /// to typed variants so callers (and the CLI exit-code mapper) can branch on them
 /// without parsing raw strings.
+///
+/// `#[non_exhaustive]` (iter-105 Theme B): Firefox keeps adding `about:neterror`
+/// codes, so downstream `match`es must carry a wildcard arm — adding a new cause
+/// is not a breaking change.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum NavCause {
     /// `e=dnsNotFound` — DNS resolution failed.
     #[error("DNS resolution failed")]
@@ -54,19 +59,30 @@ impl NavCause {
 /// New typed-error variants for wire-level failures; existing actors still
 /// return [`ProtocolError`] for now.  Callers (e.g. the CLI) can map these
 /// discriminants to deterministic exit codes.
+///
+/// `#[non_exhaustive]` (iter-105 Theme B): variants have been added most
+/// iterations (`ActorDestroyed`, `Navigation`, `Spec`, …), so downstream
+/// `match`es must carry a wildcard arm — adding a variant is not a breaking
+/// change.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum RdpError {
     /// Low-level I/O or framing failure on the TCP transport.
     #[error("transport error: {0}")]
     Transport(#[from] std::io::Error),
 
-    /// Firefox returned an error packet from an actor.
-    #[error("actor error from {actor}: {name} — {message}")]
-    Protocol {
-        actor: String,
-        name: String,
-        message: String,
-    },
+    /// Firefox returned a lower-level protocol error from an actor (iter-105
+    /// Theme A).
+    ///
+    /// This is a *lossless* passthrough: the full [`ProtocolError`] — including
+    /// the `ActorErrorKind` discriminant, timeout phase/duration, and any
+    /// `io::Error` source chain — is preserved so downstream consumers (the
+    /// CLI's `From<ProtocolError> for AppError`) can distinguish `noSuchActor`
+    /// from `wrongState` and map to deterministic exit codes.  It replaces the
+    /// former flattening `From<ProtocolError>` impl that fabricated
+    /// `Timeout { after_ms: 0 }` and stringified everything into `Shape`.
+    #[error(transparent)]
+    Protocol(#[from] ProtocolError),
 
     /// A received packet does not have the expected JSON shape.
     #[error("unexpected packet shape at {path}: expected {expected}, got {got}")]
@@ -108,37 +124,21 @@ pub enum RdpError {
 /// Convenience alias used throughout `ff-rdp-core`.
 pub type RdpResult<T> = Result<T, RdpError>;
 
-impl From<ProtocolError> for RdpError {
-    fn from(p: ProtocolError) -> Self {
-        match p {
-            ProtocolError::ConnectionFailed(e)
-            | ProtocolError::SendFailed(e)
-            | ProtocolError::RecvFailed(e) => Self::Transport(e),
-            ProtocolError::Timeout => Self::Timeout {
-                phase: "rdp".to_owned(),
-                after_ms: 0,
-            },
-            ProtocolError::ActorError {
-                actor,
-                error,
-                message,
-                ..
-            } => Self::Protocol {
-                actor,
-                name: error,
-                message,
-            },
-            other => Self::Shape {
-                path: "protocol".to_owned(),
-                expected: "ok".to_owned(),
-                got: other.to_string(),
-            },
-        }
-    }
-}
+// NOTE: `From<ProtocolError> for RdpError` is now derived by the `#[from]` on
+// the `RdpError::Protocol(ProtocolError)` variant (iter-105 Theme A).  The
+// former hand-written impl flattened `ProtocolError` lossily — it fabricated
+// `Timeout { after_ms: 0 }`, dropped the `ActorErrorKind` discriminant, and
+// stringified the rest into `Shape`.  The transparent variant keeps the whole
+// typed surface intact.
 
 /// Well-known Firefox RDP actor error codes.
+///
+/// `#[non_exhaustive]` (iter-105 Theme B): new codes have been added most
+/// iterations (`MissingParameter`, `BadParameterType`, …).  The `Other(String)`
+/// catch-all already absorbs unknown codes, but the attribute additionally lets
+/// us add *named* variants without breaking downstream `match`es.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ActorErrorKind {
     /// The actor ID does not exist (expired connection, wrong tab, etc.).
     UnknownActor,
@@ -211,7 +211,15 @@ impl std::fmt::Display for ActorErrorKind {
     }
 }
 
+/// Lower-level Firefox RDP protocol error taxonomy.
+///
+/// `#[non_exhaustive]` (iter-105 Theme B): variants are added most iterations
+/// (`FrameTooLarge`, `BulkFrameTooLarge`, `ActorChannelFull`, …).  The wildcard
+/// requirement it imposes only affects `match`es *outside* `ff-rdp-core`; the
+/// in-crate exhaustive `match` in [`ProtocolError::is_transient`] is unaffected
+/// and still forces a decision when a new variant lands.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ProtocolError {
     #[error("connection failed: {0}")]
     ConnectionFailed(#[source] std::io::Error),
@@ -747,5 +755,62 @@ mod tests {
             message: String::new(),
         };
         assert!(!err.is_transient());
+    }
+
+    // ── iter-105 Theme B: semver armor (source-pin) ─────────────────────────
+
+    /// AC: `unit_error_enums_non_exhaustive` — the four public error enums must
+    /// carry `#[non_exhaustive]` so adding a variant is not a breaking change.
+    ///
+    /// Pinned by scanning the source (same style as `core_lib_forbids_unsafe`)
+    /// so a casual refactor cannot silently drop the attribute and reintroduce
+    /// the semver trap the deep review flagged.
+    #[test]
+    fn unit_error_enums_non_exhaustive() {
+        let src = include_str!("error.rs");
+        for (attr, decl) in [
+            ("#[non_exhaustive]\npub enum RdpError", "RdpError"),
+            ("#[non_exhaustive]\npub enum ProtocolError", "ProtocolError"),
+            (
+                "#[non_exhaustive]\npub enum ActorErrorKind",
+                "ActorErrorKind",
+            ),
+            ("#[non_exhaustive]\npub enum NavCause", "NavCause"),
+        ] {
+            assert!(
+                src.contains(attr),
+                "`{decl}` must be preceded immediately by `#[non_exhaustive]` \
+                 (iter-105 Theme B semver armor); expected to find:\n{attr}"
+            );
+        }
+    }
+
+    /// iter-105 Theme A: the transparent `Protocol` variant preserves the
+    /// `ActorErrorKind` discriminant across `ProtocolError -> RdpError`.  The
+    /// former flattening impl dropped it, so `noSuchActor` became
+    /// indistinguishable from `wrongState`.
+    #[test]
+    fn protocol_error_roundtrips_through_rdp_error_losslessly() {
+        let wrong_state = ProtocolError::ActorError {
+            actor: "conn0/actor1".to_owned(),
+            kind: ActorErrorKind::WrongState,
+            error: "wrongState".to_owned(),
+            message: "bad".to_owned(),
+        };
+        let rdp: RdpError = wrong_state.into();
+        match rdp {
+            RdpError::Protocol(ProtocolError::ActorError { kind, .. }) => {
+                assert_eq!(kind, ActorErrorKind::WrongState);
+            }
+            other => panic!("expected RdpError::Protocol(ActorError), got {other:?}"),
+        }
+
+        // Timeout must survive without an `after_ms: 0` fabrication.
+        let rdp: RdpError = ProtocolError::Timeout.into();
+        assert!(
+            matches!(rdp, RdpError::Protocol(ProtocolError::Timeout)),
+            "ProtocolError::Timeout must pass through as Protocol(Timeout), \
+             not a fabricated RdpError::Timeout"
+        );
     }
 }
