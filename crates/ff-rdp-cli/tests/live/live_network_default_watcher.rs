@@ -88,10 +88,13 @@ fn live_network_watcher_source_after_navigate_with_network() {
         return;
     }
 
-    // Now call `ff-rdp network` (no flags) — should read from watcher buffer.
+    // Now call `ff-rdp network --detail` — should read from the watcher buffer.
+    // `--detail` yields the per-entry array this test's field assertions read;
+    // the default `network` output is a summary object (`total_requests`,
+    // `slowest`, …), not an array (iter-49 output-size controls).
     let network = Command::new(ff_rdp_bin())
         .args(daemon_args())
-        .args(["network", "--format", "json"])
+        .args(["network", "--detail", "--format", "json"])
         .output()
         .expect("network");
 

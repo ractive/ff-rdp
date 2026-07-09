@@ -199,6 +199,38 @@ impl ResourceBuffer {
         self.push(resource_type, resource_id, data);
     }
 
+    /// Record a navigation boundary and insert a batch of raw events under a
+    /// single mutable borrow so no interleaving `tabNavigated` boundary can be
+    /// recorded *between* the boundary and its events (iter-106 Theme D).
+    ///
+    /// `navigate --with-network` calls this from the daemon's `store-events`
+    /// handler after streaming completes.  The navigation has already committed
+    /// by then, so the reader loop's async `tabNavigated` handler may record its
+    /// own boundary for the *same* URL either just before or just after the CLI
+    /// sends `store-events` — a nondeterministic thread interleaving.  If that
+    /// boundary landed *after* the events were inserted, its `store_start`
+    /// would sit past every stored event and `--since -1` (the default nav
+    /// scope) would resolve to an empty window, dropping the whole capture (the
+    /// "cross-invocation daemon buffer empty" bug).
+    ///
+    /// Recording the boundary here, in the same critical section that inserts
+    /// the events, guarantees the events are `seq >= store_start` for a boundary
+    /// that is the most-recent one *at insertion time*.  A duplicate
+    /// `tabNavigated` boundary for the same URL is harmless: it either precedes
+    /// this one (older, so `--since -1` still lands on this boundary) or, if a
+    /// genuinely *new* navigation follows, it correctly starts a fresh epoch.
+    pub(crate) fn record_boundary_and_insert(
+        &mut self,
+        resource_type: &str,
+        nav_url: String,
+        events: &[Value],
+    ) {
+        self.record_nav_boundary(nav_url);
+        for ev in events {
+            self.insert_raw(resource_type, ev.clone());
+        }
+    }
+
     /// URL of the most recent recorded navigation boundary, if any.
     ///
     /// Used by the daemon to compare against the URL on an incoming
@@ -446,6 +478,51 @@ mod tests {
         let (events, boundary) = buf.drain_since("network-event", 0);
         assert_eq!(events.len(), 2);
         assert!(boundary.is_none());
+    }
+
+    /// iter-106 Theme D: `record_boundary_and_insert` scopes the whole batch to
+    /// a boundary that is the most-recent at insertion time, so `--since -1`
+    /// returns every stored event even if a *prior* `tabNavigated` boundary for
+    /// the same URL was already recorded.
+    #[test]
+    fn record_boundary_and_insert_visible_under_since_minus_one() {
+        let mut buf = ResourceBuffer::new();
+        // Simulate the reader-loop recording a boundary for the same nav first…
+        buf.record_nav_boundary("https://example.com/".into());
+        // …then the CLI's atomic store: boundary + three events under one borrow.
+        let events = vec![
+            json!({"resourceId": 1, "method": "GET", "url": "https://example.com/"}),
+            json!({"resourceId": 1, "resourceUpdates": {"status": "200"}}),
+            json!({"resourceId": 2, "method": "GET", "url": "https://example.com/a.css"}),
+        ];
+        buf.record_boundary_and_insert("network-event", "https://example.com/".into(), &events);
+
+        // Default nav scope must see all three stored items, not zero.
+        let (drained, boundary) = buf.drain_since("network-event", -1);
+        assert_eq!(
+            drained.len(),
+            3,
+            "all stored events must be visible under --since -1"
+        );
+        assert!(boundary.is_some());
+        assert_eq!(boundary.unwrap().url, "https://example.com/");
+    }
+
+    /// A later boundary for a *new* navigation still starts a fresh epoch, so a
+    /// stored batch is not leaked into the next navigation's `--since -1`.
+    #[test]
+    fn record_boundary_and_insert_scoped_out_by_next_nav() {
+        let mut buf = ResourceBuffer::new();
+        let events = vec![json!({"resourceId": 1, "url": "https://old.example/"})];
+        buf.record_boundary_and_insert("network-event", "https://old.example/".into(), &events);
+        // A subsequent real navigation.
+        buf.record_nav_boundary("https://new.example/".into());
+        let (drained, _) = buf.drain_since("network-event", -1);
+        assert_eq!(
+            drained.len(),
+            0,
+            "the prior navigation's stored events must not appear in the new nav's scope"
+        );
     }
 
     #[test]

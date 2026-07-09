@@ -1862,16 +1862,27 @@ fn handle_daemon_message(
         // ends and subsequent `ff-rdp network` calls fall back to the
         // Performance API.
         //
-        // Navigation boundaries are recorded exclusively by the
-        // `tabNavigated` handler in the Firefox reader loop.  This handler
-        // must NOT record another boundary — that would produce a duplicate
-        // boundary and cause `--since -1` to resolve past the events just
-        // stored (the "double-boundary" bug from iter-61n).
+        // Nav-boundary handling (iter-106 Theme D): when the request carries a
+        // `navUrl`, record a navigation boundary **atomically with** the event
+        // inserts (`record_boundary_and_insert`).  The navigation has already
+        // committed by the time `navigate --with-network` sends this, but the
+        // Firefox reader loop processes the matching `tabNavigated` on a
+        // *different* thread — so its boundary could land either just before or
+        // just after this insert.  If it landed after, its `store_start` would
+        // sit past every stored event and the default `--since -1` scope would
+        // resolve to an empty window (the "cross-invocation daemon buffer
+        // empty" bug).  Recording the boundary in the same critical section
+        // that inserts the events guarantees the events are visible under
+        // `--since -1`.  A duplicate `tabNavigated` boundary for the same URL is
+        // harmless (see `record_boundary_and_insert`).  Requests without a
+        // `navUrl` keep the legacy insert-only behaviour and rely on the
+        // reader-loop boundary.
         //
         // Request: {
         //   type: "store-events",
         //   resourceType: "network-event",
-        //   events: [...]    ← raw watcher event JSON values
+        //   navUrl: "https://…",   ← optional; scopes the batch to a boundary
+        //   events: [...]          ← raw watcher event JSON values
         // }
         // Response: { from: "daemon", stored: N }
         // ------------------------------------------------------------------
@@ -1892,11 +1903,19 @@ fn handle_daemon_message(
                     "error": "store-events requires an `events` array field",
                 });
             };
+            let nav_url = msg
+                .get("navUrl")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty());
 
             let mut buf = lock_or_recover!(state.buffer);
             let n = events_arr.len();
-            for ev in events_arr {
-                buf.insert_raw(resource_type, ev.clone());
+            if let Some(nav_url) = nav_url {
+                buf.record_boundary_and_insert(resource_type, nav_url.to_owned(), events_arr);
+            } else {
+                for ev in events_arr {
+                    buf.insert_raw(resource_type, ev.clone());
+                }
             }
             drop(buf);
 

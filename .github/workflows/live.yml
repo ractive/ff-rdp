@@ -31,7 +31,13 @@ jobs:
         run: cargo build -p ff-rdp-cli
 
       - name: Run live tests
-        run: cargo test-live
+        # `--no-fail-fast` so a failure in an early-alphabetical test binary no
+        # longer masks every later binary (the exact masking bug iter-106 was
+        # created to fix: `cargo test` otherwise stops the whole invocation on
+        # the first failing binary, hiding late-alphabetical live tests from CI).
+        # `--test-threads=1` because the live tests share one Firefox/daemon per
+        # runner — concurrent tests steal each other's browser state and flake.
+        run: cargo test --workspace --no-fail-fast -- --include-ignored --test-threads=1
 
       - name: Run dogfood-script gate (iter-* branches only)
         # Gated on same-repo PRs to avoid executing arbitrary scripts from

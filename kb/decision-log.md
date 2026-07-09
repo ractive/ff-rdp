@@ -282,3 +282,19 @@ Diffs `tools/ralph-loop/scripts/` against `~/.claude/skills/ralph-loop/scripts/`
 **Why**: `FrontKind` already carries an `Other(String)` catch-all, which softens the risk for *construction* but does not help downstream `match`es: a non-defining-crate exhaustive match still breaks when a named variant is added. `#[non_exhaustive]` forces those matches to carry a wildcard, making variant additions non-breaking. The `Other(String)` catch-all is retained (it serves a different purpose — round-tripping unrecognised front kinds by name).
 
 **Applies to**: `crates/ff-rdp-core/src/registry.rs`, iter-105.
+
+## DEC-020: `eval` CSP "chrome bypass" stays deleted — assert the CSP-safe page-await path, not a `meta.eval_path == "chrome"`
+
+**Decision** (iter-106, Theme A): The un-masked `live_eval_chrome_csp_bypass` test (from iter-61x) failed because it asserted `meta.eval_path == "chrome"`, but that value no longer exists. **Keep the iter-93 design** (the chrome-context bypass was deliberately removed) and rewrite the test to assert the still-load-bearing guarantee: `eval` succeeds and returns the correct value on a `script-src 'none'` page, via the CSP-safe `page-await` path (`meta.eval_path == "page-await"`).
+
+**Why**: Firefox's `evaluateJSAsync` routes through `Debugger.evalInGlobal` (`devtools/server/actors/webconsole/eval-with-debugger.js:119-247`), which operates at the Debugger-API level, *outside* the page's scripting environment, and is therefore not subject to page CSP. iter-93 (`commit 4b18939`) proved the extra `getProcess(0)` → parent-process console-actor hop was unnecessary and removed it; `eval_path` is now hard-set to `"page-await"`. Re-introducing a `"chrome"` path to satisfy an obsolete assertion would restore dead weight and re-open the very CSP-eval failure iter-93 fixed. Verified live: `eval "1+1"` on a CSP-blocked page returns `2`.
+
+**Applies to**: `crates/ff-rdp-cli/src/commands/eval.rs`, `crates/ff-rdp-cli/tests/live/live_61l.rs`, iter-106.
+
+## DEC-021: Cross-invocation daemon network buffer — atomic nav boundary + lossless update serialization
+
+**Decision** (iter-106, Theme D): Fix the "second `ff-rdp network` invocation sees zero entries after a first `navigate --with-network`" bug with **two** changes, not one: (1) `store-events` now carries `navUrl` and the daemon records the nav boundary **atomically** with the event inserts (`ResourceBuffer::record_boundary_and_insert`); (2) `serialize_network_resources_for_buffer` emits the real `resources-updated-array` wire shape (top-level `resourceId` + object-valued `resourceUpdates`) instead of the array-nested shape the drain-side parser could not read.
+
+**Why**: The failure had two compounding causes, confirmed against live Firefox. First, a **thread race**: the daemon's reader loop records the `tabNavigated` boundary asynchronously; it could land *after* the CLI's `store-events` inserts, pushing the boundary's `store_start` past every stored event so the default `--since -1` scope resolved to empty. Recording the boundary in the same critical section as the inserts removes the race (a duplicate reader-loop boundary for the same URL is harmless — it is older). Second, a **serialization mismatch**: `serialize_network_resources_for_buffer` wrote updates as `{"resourceUpdates": [{"resourceId": …}]}`, but `parse_network_resource_updates` reads a top-level `resourceId` and treats `resourceUpdates` as an object — so on the second-invocation drain every update was silently dropped, leaving `status`/`transfer_size` null even once the boundary was fixed. This is a **distinct** root cause from iter-101 Theme B (RPC-writer cross-delivery), exactly as iter-106's plan predicted: the symptom was "empty/partial results", not "wrong client got the reply".
+
+**Applies to**: `crates/ff-rdp-cli/src/daemon/{buffer,server,client}.rs`, `crates/ff-rdp-cli/src/commands/{navigate,network_events}.rs`, iter-106.

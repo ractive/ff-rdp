@@ -658,17 +658,24 @@ pub(crate) fn register_refs(
 /// subsequent `ff-rdp network` calls can read the captured events from the
 /// daemon buffer instead of falling back to the Performance API.
 ///
-/// Navigation boundaries are recorded by the daemon's `tabNavigated` handler
-/// automatically.  Do **not** pass a `nav_url` here — doing so would insert a
-/// second boundary and cause `--since -1` to resolve past the stored events.
+/// `nav_url` is the URL that was navigated to.  The daemon records a navigation
+/// boundary **atomically with** the inserts (iter-106 Theme D), so the stored
+/// batch is always visible under the default `--since -1` scope regardless of
+/// how the reader loop's asynchronous `tabNavigated` boundary for the same
+/// navigation interleaves with this call.  The earlier "do not pass a nav_url"
+/// guidance produced exactly the cross-invocation "empty results" bug this
+/// boundary fixes: the reader-loop boundary could land *after* the inserts and
+/// scope `--since -1` past every stored event.
 pub(crate) fn store_network_events(
     transport: &mut RdpTransport,
+    nav_url: &str,
     events: &[serde_json::Value],
 ) -> Result<()> {
     let msg = json!({
         "to": "daemon",
         "type": "store-events",
         "resourceType": "network-event",
+        "navUrl": nav_url,
         "events": events,
     });
     transport
