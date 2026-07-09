@@ -6,6 +6,7 @@
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::actors::string::LongStringActor;
 use crate::error::ProtocolError;
@@ -101,6 +102,45 @@ impl LongString {
 impl Default for LongString {
     fn default() -> Self {
         Self::Inline(String::new())
+    }
+}
+
+/// Resolve a JSON value slot that Firefox declares `longstring` into its full
+/// string content, fetching from the long-string actor when the slot arrived as
+/// a grip rather than an inline string.
+///
+/// Firefox sends values in a `longstring` spec slot inline as a bare string when
+/// they are below the `DebuggerServer.LONG_STRING_LENGTH` threshold (~10 KB), and
+/// as a `{type:"longString", actor, length, initial}` grip when they exceed it.
+/// A bare `Value::as_str()` therefore returns `None` for the grip form, silently
+/// dropping large values.  This helper handles both shapes uniformly:
+///
+/// - absent slot or JSON `null` → `Ok(None)`
+/// - inline string → `Ok(Some(string))` (no round-trip)
+/// - `longString` grip → one or more `substring` round-trips via
+///   [`LongString::fetch_full`], returning the complete value
+///
+/// Any other JSON shape (number, bool, object without `type:"longString"`)
+/// returns [`ProtocolError::InvalidPacket`] so protocol drift surfaces loudly
+/// instead of being silently coerced to empty.
+pub fn resolve_long_string_slot(
+    transport: &mut RdpTransport,
+    slot: Option<&Value>,
+) -> Result<Option<String>, ProtocolError> {
+    match slot {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(value @ Value::Object(_)) => {
+            let ls: LongString = serde_json::from_value(value.clone()).map_err(|e| {
+                ProtocolError::InvalidPacket(format!(
+                    "longstring slot is an object but not a longString grip: {e}"
+                ))
+            })?;
+            ls.fetch_full(transport).map(Some)
+        }
+        Some(other) => Err(ProtocolError::InvalidPacket(format!(
+            "longstring slot has unexpected JSON shape: {other}"
+        ))),
     }
 }
 
@@ -317,5 +357,117 @@ mod tests {
         let v = serde_json::to_value(&original).unwrap();
         let restored: LongString = serde_json::from_value(v).unwrap();
         assert!(matches!(restored, LongString::Inline(s) if s == "round trip content"));
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_long_string_slot (iter-102 longString sweep)
+    // -----------------------------------------------------------------------
+
+    /// A transport backed by a loopback TCP pair.  Slots that don't require a
+    /// fetch (absent/null/inline) never touch the socket.
+    fn dummy_transport() -> RdpTransport {
+        use std::io::BufReader;
+        use std::net::{TcpListener, TcpStream};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (_server, _) = listener.accept().unwrap();
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        RdpTransport::from_parts(reader, writer)
+    }
+
+    #[test]
+    fn resolve_slot_absent_is_none() {
+        let mut t = dummy_transport();
+        assert_eq!(resolve_long_string_slot(&mut t, None).unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_slot_null_is_none() {
+        let mut t = dummy_transport();
+        let v = Value::Null;
+        assert_eq!(resolve_long_string_slot(&mut t, Some(&v)).unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_slot_inline_returns_string_without_roundtrip() {
+        let mut t = dummy_transport();
+        let v = json!("inline value");
+        assert_eq!(
+            resolve_long_string_slot(&mut t, Some(&v)).unwrap(),
+            Some("inline value".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolve_slot_non_string_scalar_errors() {
+        let mut t = dummy_transport();
+        let v = json!(42);
+        let err = resolve_long_string_slot(&mut t, Some(&v)).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidPacket(_)));
+    }
+
+    #[test]
+    fn resolve_slot_object_without_longstring_type_errors() {
+        let mut t = dummy_transport();
+        let v = json!({ "not": "a grip" });
+        let err = resolve_long_string_slot(&mut t, Some(&v)).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidPacket(_)));
+    }
+
+    /// A `longString` grip slot fetches the full value via `substring`.  A mock
+    /// server answers the single `substring` request with the full content.
+    #[test]
+    fn resolve_slot_longstring_grip_fetches_full_value() {
+        use std::io::{BufReader, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        use crate::transport::{encode_frame, recv_from};
+
+        let full = "Z".repeat(20_000);
+        let full_for_server = full.clone();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = BufReader::new(stream);
+
+            // Greeting (consumed by RdpTransport::connect).
+            let greeting = json!({"from":"root","applicationType":"browser","traits":{}});
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+
+            // Read one substring request and reply with the full content.
+            let req = recv_from(&mut reader).unwrap();
+            assert_eq!(req["type"], "substring");
+            assert_eq!(req["to"], "conn0/longString7");
+            let resp = json!({"from":"conn0/longString7","substring": full_for_server});
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&resp).unwrap()).as_bytes())
+                .unwrap();
+        });
+
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+
+        let grip = json!({
+            "type": "longString",
+            "actor": "conn0/longString7",
+            "length": 20_000,
+            "initial": "Z".repeat(1024),
+        });
+        let resolved = resolve_long_string_slot(&mut transport, Some(&grip))
+            .unwrap()
+            .expect("grip must resolve to Some");
+        assert_eq!(resolved.len(), 20_000);
+        assert_eq!(resolved, full);
+
+        handle.join().unwrap();
     }
 }

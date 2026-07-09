@@ -1,3 +1,4 @@
+use crate::actor::actor_request;
 use crate::error::ProtocolError;
 use crate::registry::{Front, FrontKind, Registry};
 use crate::specs::{NoArgs, call, target as spec};
@@ -46,11 +47,17 @@ impl TargetFront {
     /// reload in the browser UI).
     pub fn reload(&self, transport: &mut RdpTransport, force: bool) -> Result<(), ProtocolError> {
         if force {
-            // Bypass the typed spec (which carries `NoArgs`) so we can attach
-            // the Firefox `options.force` request field directly.
-            let packet = json!({"to": self.id.as_ref(), "type": "reload",
-                "options": {"force": true}});
-            let _ = transport.request(&packet)?;
+            // The typed spec (`spec::Reload`) carries `NoArgs`, so it can't
+            // attach the Firefox `options.force` request field.  Route the
+            // extra param through `actor_request`, which sends the packet and
+            // reads the reply via `recv_reply_from` — the matched-reply path
+            // that routes any interleaved push event (e.g. a `tabNavigated`
+            // fired by the reload itself) to the event sink instead of
+            // mis-consuming it as this call's reply.  (Previously this used the
+            // blind `transport.request` — send + one unmatched recv — which
+            // desynced the actor's reply stream when a push arrived first.)
+            let params = json!({ "options": { "force": true } });
+            actor_request(transport, self.id.as_ref(), "reload", Some(&params))?;
             Ok(())
         } else {
             call::<spec::Reload>(transport, &self.id, &NoArgs {})?;
@@ -157,6 +164,87 @@ mod tests {
         });
 
         front.reload(&mut transport, false).unwrap();
+        t.join().unwrap();
+    }
+
+    /// iter-102 Theme B: `reload(force = true)` sends the Firefox
+    /// `{options:{force:true}}` request shape and routes through the matched
+    /// `actor_request` reply path.
+    #[test]
+    fn reload_force_sends_options_force_and_matches_reply() {
+        let (mut transport, server) = make_transport_pair();
+        let front = TargetFront::new(
+            ActorId::from("server1.conn0.child1/windowGlobalTarget1"),
+            Registry::default(),
+        );
+
+        let t = std::thread::spawn(move || {
+            let req = server_read(&server);
+            assert_eq!(req["type"], "reload");
+            assert_eq!(req["options"]["force"], true);
+            server_reply(
+                &server,
+                json!({"from": "server1.conn0.child1/windowGlobalTarget1"}),
+            );
+        });
+
+        front.reload(&mut transport, true).unwrap();
+        t.join().unwrap();
+    }
+
+    /// iter-102 Theme B (AC `live_reload_force_with_watched_resources`, unit
+    /// analogue): a `tabNavigated` push event from the target actor arrives
+    /// *before* the reload reply.  The matched `recv_reply_from` path must skip
+    /// the push (routing it to the event sink) and consume the correct reply,
+    /// so an immediately-following request on the same actor still gets *its*
+    /// own reply — no stream desync.  The old blind `transport.request` would
+    /// have consumed the `tabNavigated` push as the reply and left the real
+    /// reply queued, desyncing the next call.
+    #[test]
+    fn reload_force_tolerates_tab_navigated_push_before_reply() {
+        use std::sync::mpsc::channel;
+
+        const TARGET: &str = "server1.conn0.child1/windowGlobalTarget1";
+
+        let (mut transport, server) = make_transport_pair();
+        // Route any interleaved push events off the reply path.
+        let (tx, rx) = channel();
+        transport.set_event_sink(Some(tx));
+
+        let front = TargetFront::new(ActorId::from(TARGET), Registry::default());
+
+        let t = std::thread::spawn(move || {
+            // Read the reload request.
+            let req = server_read(&server);
+            assert_eq!(req["type"], "reload");
+            assert_eq!(req["options"]["force"], true);
+            // Push a same-actor typed event BEFORE the reply (the reload's own
+            // tabNavigated — its most likely interleaving).
+            server_reply(&server, json!({"from": TARGET, "type": "tabNavigated"}));
+            // Then the actual reload reply (no `type`).
+            server_reply(&server, json!({"from": TARGET}));
+            // A follow-up request must receive its own distinct reply.
+            let req2 = server_read(&server);
+            assert_eq!(req2["type"], "navigateTo");
+            server_reply(&server, json!({"from": TARGET}));
+        });
+
+        // reload must return Ok despite the interleaved push.
+        front.reload(&mut transport, true).unwrap();
+
+        // The push must have been routed to the event sink, not consumed as the
+        // reply.
+        let event = rx
+            .try_recv()
+            .expect("tabNavigated must reach the event sink");
+        assert_eq!(event["type"], "tabNavigated");
+        assert_eq!(event["from"], TARGET);
+
+        // The follow-up navigate gets its own reply — proves no stream desync.
+        front
+            .navigate_to(&mut transport, "https://example.com")
+            .unwrap();
+
         t.join().unwrap();
     }
 }

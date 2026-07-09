@@ -5,6 +5,7 @@ use crate::actor::actor_request;
 use crate::actors::tab::TabActor;
 use crate::actors::watcher::WatcherActor;
 use crate::error::ProtocolError;
+use crate::specs::types::resolve_long_string_slot;
 use crate::transport::RdpTransport;
 use crate::types::ActorId;
 
@@ -122,7 +123,7 @@ impl StorageActor {
 
                 if let Some(items) = store_response.get("data").and_then(Value::as_array) {
                     for item in items {
-                        if let Some(cookie) = parse_cookie(item) {
+                        if let Some(cookie) = parse_cookie(transport, item)? {
                             cookies.push(cookie);
                         }
                     }
@@ -218,17 +219,28 @@ fn parse_cookie_store_resource(event: &Value) -> Option<CookieStoreResource> {
     None
 }
 
-/// Parse a single cookie entry from a `getStoreObjects` data array item.
+/// Parse a single cookie entry from a `getStoreObjects` data array item,
+/// resolving a `longstring` cookie `value` grip to its full content.
 ///
-/// `name` is required — if absent the item is skipped (returns `None`).
+/// `name` is required — if absent the item is skipped (returns `Ok(None)`).
 /// All other fields use sensible defaults when missing or when Firefox
 /// sends an unexpected type, since this is a read-only inspection tool.
-pub(crate) fn parse_cookie(item: &Value) -> Option<CookieInfo> {
-    let name = item.get("name").and_then(Value::as_str)?;
-    let value = item
-        .get("value")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+///
+/// The cookie `value` slot is declared `longstring` in
+/// `devtools/shared/specs/storage.js`: values above Firefox's long-string
+/// threshold (~10 KB) arrive as `{type:"longString", …}` grips.  A bare
+/// `.as_str()` returned empty for those; [`resolve_long_string_slot`] now
+/// fetches the full value so large cookies are reported in full.  Returns
+/// `Err` only when a long-string fetch fails.
+pub(crate) fn parse_cookie(
+    transport: &mut RdpTransport,
+    item: &Value,
+) -> Result<Option<CookieInfo>, ProtocolError> {
+    let Some(name) = item.get("name").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let name = name.to_owned();
+    let value = resolve_long_string_slot(transport, item.get("value"))?.unwrap_or_default();
     let host = item.get("host").and_then(Value::as_str).unwrap_or_default();
     let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
     let expires = item.get("expires").and_then(Value::as_u64).unwrap_or(0);
@@ -258,9 +270,9 @@ pub(crate) fn parse_cookie(item: &Value) -> Option<CookieInfo> {
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
 
-    Some(CookieInfo {
-        name: name.to_owned(),
-        value: value.to_owned(),
+    Ok(Some(CookieInfo {
+        name,
+        value,
         host: host.to_owned(),
         path: path.to_owned(),
         expires,
@@ -271,7 +283,7 @@ pub(crate) fn parse_cookie(item: &Value) -> Option<CookieInfo> {
         host_only,
         last_accessed,
         creation_time,
-    })
+    }))
 }
 
 /// A cookie entry derived from a `Set-Cookie` response header.
@@ -443,6 +455,21 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A transport backed by a loopback TCP pair.  For inline (non-longString)
+    /// cookie values `parse_cookie` never touches the socket, so the pair only
+    /// satisfies the signature.
+    fn dummy_transport() -> RdpTransport {
+        use std::io::BufReader;
+        use std::net::{TcpListener, TcpStream};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (_server, _) = listener.accept().unwrap();
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        RdpTransport::from_parts(reader, writer)
+    }
+
     // --- parse_cookie ---
 
     #[test]
@@ -462,7 +489,9 @@ mod tests {
             "creationTime": 1775468436089.921_f64
         });
 
-        let cookie = parse_cookie(&item).expect("should parse full cookie");
+        let cookie = parse_cookie(&mut dummy_transport(), &item)
+            .expect("parse_cookie should not error")
+            .expect("should parse full cookie");
         assert_eq!(cookie.name, "probecookie");
         assert_eq!(cookie.value, "discovery123");
         assert_eq!(cookie.host, "example.com");
@@ -487,7 +516,9 @@ mod tests {
             "size": 14
         });
 
-        let cookie = parse_cookie(&item).expect("should parse session cookie");
+        let cookie = parse_cookie(&mut dummy_transport(), &item)
+            .expect("parse_cookie should not error")
+            .expect("should parse session cookie");
         assert_eq!(cookie.name, "session_id");
         assert_eq!(cookie.expires, 0);
     }
@@ -497,7 +528,9 @@ mod tests {
         // Only the required `name` field is present; all others default gracefully.
         let item = json!({ "name": "minimal" });
 
-        let cookie = parse_cookie(&item).expect("should parse minimal cookie");
+        let cookie = parse_cookie(&mut dummy_transport(), &item)
+            .expect("parse_cookie should not error")
+            .expect("should parse minimal cookie");
         assert_eq!(cookie.name, "minimal");
         assert_eq!(cookie.value, "");
         assert_eq!(cookie.host, "");
@@ -515,7 +548,64 @@ mod tests {
     #[test]
     fn parse_cookie_missing_name_returns_none() {
         let item = json!({ "value": "something" });
-        assert!(parse_cookie(&item).is_none());
+        assert!(
+            parse_cookie(&mut dummy_transport(), &item)
+                .expect("parse_cookie should not error")
+                .is_none()
+        );
+    }
+
+    /// iter-102 Theme A: a cookie `value` arriving as a longString grip (a
+    /// cookie value above ~10 KB) is resolved to its full content — previously
+    /// `.as_str()` dropped it to an empty string.
+    #[test]
+    fn parse_cookie_resolves_longstring_value() {
+        use std::io::{BufReader, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        use crate::transport::{encode_frame, recv_from};
+
+        let full = "x".repeat(20_000);
+        let full_for_server = full.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = BufReader::new(stream);
+            let greeting = json!({"from":"root","applicationType":"browser","traits":{}});
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+            let req = recv_from(&mut reader).unwrap();
+            assert_eq!(req["type"], "substring");
+            assert_eq!(req["to"], "conn0/longString9");
+            let resp = json!({"from":"conn0/longString9","substring": full_for_server});
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&resp).unwrap()).as_bytes())
+                .unwrap();
+        });
+
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+        let item = json!({
+            "name": "big",
+            "value": {
+                "type": "longString",
+                "actor": "conn0/longString9",
+                "length": 20_000,
+                "initial": "x".repeat(1024),
+            },
+            "host": "example.com"
+        });
+        let cookie = parse_cookie(&mut transport, &item)
+            .expect("parse_cookie should not error")
+            .expect("cookie should parse");
+        assert_eq!(cookie.name, "big");
+        assert_eq!(cookie.value.len(), 20_000);
+        assert_eq!(cookie.value, full);
+        handle.join().unwrap();
     }
 
     // --- parse_cookie_store_resource ---
@@ -629,7 +719,11 @@ mod tests {
         });
 
         let items = response["data"].as_array().unwrap();
-        let cookies: Vec<CookieInfo> = items.iter().filter_map(parse_cookie).collect();
+        let mut transport = dummy_transport();
+        let cookies: Vec<CookieInfo> = items
+            .iter()
+            .filter_map(|item| parse_cookie(&mut transport, item).unwrap())
+            .collect();
 
         assert_eq!(cookies.len(), 2);
         assert_eq!(cookies[0].name, "cookie_a");
@@ -648,7 +742,11 @@ mod tests {
     fn parse_cookies_empty_data_array() {
         let response = json!({ "data": [], "from": "server1.conn7.storage10", "total": 0 });
         let items = response["data"].as_array().unwrap();
-        let cookies: Vec<CookieInfo> = items.iter().filter_map(parse_cookie).collect();
+        let mut transport = dummy_transport();
+        let cookies: Vec<CookieInfo> = items
+            .iter()
+            .filter_map(|item| parse_cookie(&mut transport, item).unwrap())
+            .collect();
         assert!(cookies.is_empty());
     }
 

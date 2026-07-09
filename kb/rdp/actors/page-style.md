@@ -138,3 +138,16 @@ declarations under `rule.declarations`.
 transition per the iter-87 pre-fix-repro convention and asserts that a
 `color` declaration is among the parsed properties (regression-proofs the
 `rule.declarations` fallback).
+
+## longString computed values (iter-102)
+
+The computed-property `value` slot is declared `longstring` in
+`devtools/shared/specs/style/style-types.js`: a long CSS value (e.g. a large
+custom property or a `background-image` with a big inline data URI) arrives as a
+`{type:"longString", …}` grip once it crosses Firefox's ~10 KB threshold.
+`parse_computed_properties` (`actors/page_style.rs`) resolves each `value` slot
+through `specs::types::resolve_long_string_slot`, so long computed values are
+returned in full rather than dropped. Unit test:
+`parse_computed_properties_resolves_longstring_value`. Live AC:
+`live_computed_longstring_value` (`live_102_longstring_and_reload.rs`). See
+[[lessons-learned#longstring-grips-everywhere]].

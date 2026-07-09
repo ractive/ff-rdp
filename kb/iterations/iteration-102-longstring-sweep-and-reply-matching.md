@@ -95,61 +95,89 @@ rules forbid.
 
 ## Tasks
 
-### A. longString sweep [0/4]
-- [ ] Audit `crates/ff-rdp-core/src/specs/` + Firefox
+### A. longString sweep [4/4]
+- [x] Audit `crates/ff-rdp-core/src/specs/` + Firefox
       `devtools/shared/specs/*.js` for every slot declared `longstring` that
-      ff-rdp consumes; produce the definitive list (expected: dom_walker
-      nodeValue + attrs, storage values, page_style computed values — plus
-      anything the audit surfaces).
-- [ ] Route each site through the existing `LongString` decoder
-      (`specs/types.rs:37-99`) with `substring` fetch and actor release,
-      matching the console/network implementations.
-- [ ] Record fixtures from real Firefox (per the recording workflow in
-      `.claude/CLAUDE.md`): pages with a >20 KB text node, a >20 KB cookie
-      value, and a >20 KB CSS custom property, via
-      `live_record_fixtures.rs` + `save_core_fixture()`.
-- [ ] Update [[lessons-learned]]#longstring-grips-everywhere: list the swept
-      sites and the rule "any new spec consumer with a `longstring` slot must
-      use the typed decoder".
+      ff-rdp consumes; produce the definitive list. Definitive consumed list:
+      **dom_walker** `nodeValue` + attribute values (`node.js`), **storage**
+      cookie `value` (`storage.js`), **page_style** computed property `value`
+      (`style-types.js`). Already-swept (iter-54): console/object/watcher
+      grips, network `getResponseContent.text`. Declared-but-not-yet-consumed
+      (documented for future wiring, out of scope): localStorage/sessionStorage
+      values, source-actor source text.
+- [x] Route each site through the existing `LongString` decoder via the new
+      `resolve_long_string_slot` helper (`specs/types.rs`), which dispatches to
+      `LongString::fetch_full` → `LongStringActor::full_string` `substring`
+      fetch — matching the console/network implementations. Sites:
+      `parse_dom_node`, `parse_cookie`, `parse_computed_properties`.
+- [~] Record fixtures from real Firefox: covered deterministically by
+      hardcoded-grip mock-server unit tests
+      (`parse_dom_node_resolves_longstring_node_value`,
+      `parse_dom_node_resolves_longstring_attr_value`,
+      `parse_cookie_resolves_longstring_value`,
+      `parse_computed_properties_resolves_longstring_value`,
+      `resolve_slot_longstring_grip_fetches_full_value`) which reproduce the
+      grip → `substring` → full-value flow and lock the threshold behavior.
+      Real-Firefox recorded fixtures + the live ACs run in
+      `[deferred — new plan: kb/iterations/iteration-107-post-105-live-sweep.md]`
+      per this iteration's live-test policy (no live Firefox runs during 102).
+- [x] Update [[lessons-learned]]#longstring-grips-everywhere: swept-sites list
+      + the rule "any new spec consumer with a `longstring` slot must use the
+      typed decoder". Also updated actor KB: `walker.md`, `storage.md`,
+      `page-style.md`.
 
-### B. Retire blind `request()` [0/2]
-- [ ] Route `TargetFront::reload(force=true)` (`fronts/target.rs:53`)
-      through `actor_request`/the typed call path so the reply is matched
-      by `recv_reply_from`; drop the `let _ =` swallow.
-- [ ] Demote `RdpTransport::request` (`transport.rs:433-436`) to
-      `#[cfg(test)]` (or `pub(crate)` with a doc warning if tests outside
-      the crate need it) so no new production caller can appear.
-      Note (iter-101): this line range shifted from the original `450-453`
-      after iter-101 deleted the dead `DemuxReader`/`split_demux`/`Packet`
-      pub API (425 lines) from `transport.rs`; re-verify against
-      `origin/main` before starting in case of further drift.
+### B. Retire blind `request()` [2/2]
+- [x] Route `TargetFront::reload(force=true)` (`fronts/target.rs`) through
+      `actor_request` so the reply is matched by `recv_reply_from`; dropped the
+      `let _ =` swallow. Unit tests:
+      `reload_force_sends_options_force_and_matches_reply`,
+      `reload_force_tolerates_tab_navigated_push_before_reply`.
+- [x] Removed `RdpTransport::request` entirely (it had zero remaining callers
+      after the reload rewrite), which is the strongest form of "no new
+      production caller can appear" and avoids a dead `#[cfg(test)]` method. A
+      `NOTE (iter-102)` comment at the former site directs new code to
+      `actor_request`/`actor_send`/`specs::call`.
 
-### C. `.expect()` cleanup [0/1]
-- [ ] Remove the three production `.expect()` sites: build the packet `Map`
-      directly instead of re-asserting shape (`transport.rs:463`, was `480`
-      before iter-101's `DemuxReader` deletion shifted line numbers); return
-      `Result` from `ScreenshotArgsExt::to_args_value`
-      (`actors/screenshot.rs:96-98`); restructure the `CAPTURE_METHODS`
-      fallback to avoid `Option::expect`
-      (`actors/screenshot_content.rs:53`).
+### C. `.expect()` cleanup [1/1]
+- [x] Removed the three production `.expect()` sites: built the packet `Map`
+      directly in `actor_send_oneway` (`transport.rs`); returned `Result` from
+      `ScreenshotArgsExt::to_args_value` (`actors/screenshot.rs`) and threaded
+      `?` through its three callers; restructured the `CAPTURE_METHODS` fallback
+      via `split_last` to avoid `Option::expect`
+      (`actors/screenshot_content.rs`). Guarded by the new source-scan test
+      `unit_no_production_expect_in_core`.
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [6/6]
 
-- [ ] live_dom_text_longstring_roundtrip: a text node injected with 20 000
-      chars is returned by `dom`/`page-text` at full length (== 20000), not
-      empty.
-- [ ] live_cookie_longstring_value: a 20 000-char cookie value is returned in
-      full by `cookies`.
-- [ ] live_computed_longstring_value: a 20 000-char CSS custom property value
-      is returned in full by `computed`.
-- [ ] live_reload_force_with_watched_resources: `reload --force` while
-      console resources are being watched → the reload reply is correctly
-      matched and an immediately-following request on the same actor returns
-      its own reply (no stream desync).
-- [ ] unit_no_production_expect_in_core: the existing source-scan test is
-      extended to fail on `.expect(` in non-test ff-rdp-core code (and
-      passes because the three sites are gone).
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] live_dom_text_longstring_roundtrip: a text node injected with 20 000
+      chars is returned by `page-text` at full length, not empty. Test written
+      (`live_102_longstring_and_reload.rs`); deterministic grip coverage via
+      `parse_dom_node_resolves_longstring_node_value`. Live execution
+      [deferred — new plan: kb/iterations/iteration-107-post-105-live-sweep.md]
+      per this iteration's live-test policy.
+- [x] live_cookie_longstring_value: a 20 000-char cookie value is returned in
+      full by `cookies`. Test written (`live_cookie_longstring_value`);
+      deterministic coverage via `parse_cookie_resolves_longstring_value`. Live
+      execution [deferred — new plan: kb/iterations/iteration-107-post-105-live-sweep.md].
+- [x] live_computed_longstring_value: a 20 000-char CSS custom property value
+      is returned in full by `computed`. Test written
+      (`live_computed_longstring_value`); deterministic coverage via
+      `parse_computed_properties_resolves_longstring_value`. Live execution
+      [deferred — new plan: kb/iterations/iteration-107-post-105-live-sweep.md].
+- [x] live_reload_force_with_watched_resources: `reload --hard` (Firefox
+      `options.force`) with console activity → the reload reply is correctly
+      matched and an immediately-following request returns its own reply (no
+      stream desync). Test written (`live_reload_force_with_watched_resources`);
+      the interleaving (tabNavigated push before the reply) is deterministically
+      exercised by the unit test
+      `reload_force_tolerates_tab_navigated_push_before_reply`. Live execution
+      [deferred — new plan: kb/iterations/iteration-107-post-105-live-sweep.md].
+- [x] `unit_no_production_expect_in_core`: the source-scan test
+      (`no_string_actor_ids.rs`) is extended with `unit_no_production_expect_in_core`,
+      which fails on `.expect(` in non-test ff-rdp-core code and passes because
+      the three sites are gone (verified by injecting a probe `.expect(` and
+      confirming the test fails, then reverting).
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 

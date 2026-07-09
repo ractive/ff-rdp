@@ -429,11 +429,16 @@ impl RdpTransport {
         Ok(value)
     }
 
-    /// Send a request and immediately receive one response.
-    pub fn request(&mut self, message: &Value) -> Result<Value, ProtocolError> {
-        self.send(message)?;
-        self.recv()
-    }
+    // NOTE (iter-102): the blind `pub fn request(&mut self, &Value)` —
+    // send + one *unmatched* `recv` — was removed here.  It bypassed
+    // `recv_reply_from`, so a push event (e.g. a `tabNavigated` fired during a
+    // reload) arriving before the reply would be consumed as the reply,
+    // desyncing the actor's reply stream (the bug class iter-69/74 eliminated
+    // everywhere else).  Its last caller, `TargetFront::reload(force=true)`,
+    // now goes through `actor::actor_request`, which matches the reply via
+    // `recv_reply_from` and routes interleaved pushes to the event sink.  New
+    // code must use `actor_request` / `actor_send` (matched) or the typed
+    // `specs::call` path — never a raw send-then-recv.
 
     /// Send a fire-and-forget (oneway) typed packet to an actor.
     ///
@@ -451,19 +456,21 @@ impl RdpTransport {
         type_: &str,
         body: Value,
     ) -> Result<(), ProtocolError> {
-        let mut packet = match body {
-            Value::Object(map) => Value::Object(map),
-            Value::Null => Value::Object(serde_json::Map::new()),
+        // Build the packet map directly so the `to`/`type` fields are inserted
+        // without a re-assert of the object shape (avoids a production
+        // `.expect()`).
+        let mut obj = match body {
+            Value::Object(map) => map,
+            Value::Null => serde_json::Map::new(),
             other => {
                 return Err(ProtocolError::InvalidPacket(format!(
                     "actor_send_oneway: body must be an object or null, got: {other}"
                 )));
             }
         };
-        let obj = packet.as_object_mut().expect("ensured above");
         obj.insert("to".into(), Value::String(to.to_owned()));
         obj.insert("type".into(), Value::String(type_.to_owned()));
-        self.send(&packet)
+        self.send(&Value::Object(obj))
     }
 
     /// Receive a bulk packet from `actor` with kind `kind`, streaming bytes

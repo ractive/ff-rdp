@@ -93,8 +93,16 @@ impl ScreenshotArgsExt {
 
     /// Serialise to a JSON `Value` for inclusion as the `args` field of the
     /// outbound `capture` request.
-    pub fn to_args_value(&self) -> Value {
-        serde_json::to_value(self).expect("ScreenshotArgsExt is Serialize-safe")
+    ///
+    /// Returns [`ProtocolError::InvalidPacket`] if serialization fails.  In
+    /// practice `ScreenshotArgsExt` is always Serialize-safe (all fields are
+    /// plain scalars/strings/options), but returning a `Result` keeps a
+    /// production `.expect()` out of the core per the project's error-handling
+    /// rules.
+    pub fn to_args_value(&self) -> Result<Value, ProtocolError> {
+        serde_json::to_value(self).map_err(|e| {
+            ProtocolError::InvalidPacket(format!("failed to serialize screenshot args: {e}"))
+        })
     }
 }
 
@@ -167,11 +175,12 @@ impl ScreenshotActor {
         prep: &PrepareCapture,
     ) -> Result<String, ProtocolError> {
         let args = ScreenshotArgsExt::from_prep(browsing_context_id, full_page, prep);
+        let args_value = args.to_args_value()?;
         let response = actor_request(
             transport,
             screenshot_actor.as_ref(),
             "capture",
-            Some(&json!({ "args": args.to_args_value() })),
+            Some(&json!({ "args": args_value })),
         )?;
 
         // The response shape is: `{ "value": { "data": "data:...", ... } }`
@@ -205,11 +214,12 @@ impl ScreenshotActor {
         prep: &PrepareCapture,
     ) -> Result<(), ProtocolError> {
         let args = ScreenshotArgsExt::from_prep(browsing_context_id, full_page, prep);
+        let args_value = args.to_args_value()?;
         actor_send(
             transport,
             screenshot_actor,
             "capture",
-            Some(&json!({ "args": args.to_args_value() })),
+            Some(&json!({ "args": args_value })),
         )
     }
 
@@ -416,6 +426,7 @@ impl ScreenshotActor {
 
         // Step 3: try screenshot methods on the target actor.
         let args = ScreenshotArgsExt::from_prep(browsing_context_id, full_page, prep);
+        let args_value = args.to_args_value()?;
         #[allow(clippy::items_after_statements)]
         const TARGET_SCREENSHOT_METHODS: &[&str] = &["screenshot", "takeScreenshot"];
         let mut last_err: Option<ProtocolError> = None;
@@ -424,7 +435,7 @@ impl ScreenshotActor {
                 transport,
                 target.actor.as_ref(),
                 method,
-                Some(&json!({ "args": args.to_args_value() })),
+                Some(&json!({ "args": args_value })),
             ) {
                 Ok(response) => {
                     let value = response.get("value").unwrap_or(&response);
@@ -727,7 +738,7 @@ mod tests {
             }),
         };
         let args = ScreenshotArgsExt::from_prep(99, true, &prep);
-        let v = args.to_args_value();
+        let v = args.to_args_value().unwrap();
         // Spec-declared fields.
         assert_eq!(v["fullpage"], true);
         assert_eq!(v["dpr"], "2");
@@ -743,7 +754,9 @@ mod tests {
             window_zoom: 1.0,
             rect: None,
         };
-        let unit_v = ScreenshotArgsExt::from_prep(1, false, &unit).to_args_value();
+        let unit_v = ScreenshotArgsExt::from_prep(1, false, &unit)
+            .to_args_value()
+            .unwrap();
         assert!(
             unit_v.get("snapshotScale").is_none(),
             "snapshotScale must be omitted when equal to server default 1.0"

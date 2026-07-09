@@ -37,6 +37,15 @@ is reached through a target. Obtained by calling `getTarget()` on a descriptor.
   `WindowGlobalTarget::reload(transport, target, force)` and `ff-rdp reload
   --hard` so callers can bypass the HTTP cache. See
   [[rdp/actors/targets/window-global-target]] for the wire-level spec.
+  iter-102 Theme B routed the `force=true` path through the matched
+  `actor_request`/`recv_reply_from` reply path (`fronts/target.rs`) — it was
+  the last production caller of the blind `transport.request` (send + one
+  *unmatched* recv), which has been removed. The matched path routes an
+  interleaved `tabNavigated` push (the reload's most likely moment) to the
+  event sink instead of consuming it as the reply, so the actor's reply stream
+  no longer desyncs. Unit test:
+  `reload_force_tolerates_tab_navigated_push_before_reply`. Live AC:
+  `live_reload_force_with_watched_resources`.
 
 ## Status
 

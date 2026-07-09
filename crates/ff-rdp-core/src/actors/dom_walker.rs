@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 use crate::actor::{actor_request, actor_send};
 use crate::error::ProtocolError;
+use crate::specs::types::resolve_long_string_slot;
 use crate::transport::RdpTransport;
 use crate::types::ActorId;
 
@@ -66,7 +67,7 @@ impl DomWalkerActor {
             ProtocolError::InvalidPacket("documentElement response missing 'node' field".into())
         })?;
 
-        parse_dom_node(node_val).ok_or_else(|| {
+        parse_dom_node(transport, node_val)?.ok_or_else(|| {
             ProtocolError::InvalidPacket("documentElement node data is invalid".into())
         })
     }
@@ -95,7 +96,7 @@ impl DomWalkerActor {
         match response.get("node") {
             None => Ok(None),
             Some(node_val) => {
-                let node = parse_dom_node(node_val).ok_or_else(|| {
+                let node = parse_dom_node(transport, node_val)?.ok_or_else(|| {
                     ProtocolError::InvalidPacket("querySelector node data is invalid".into())
                 })?;
                 Ok(Some(node))
@@ -142,13 +143,7 @@ impl DomWalkerActor {
 
         // `items` returns {"nodes": [...], ...}
         let items_response = actor_request(transport, nodelist_actor, "items", None)?;
-        let nodes = items_response
-            .get("nodes")
-            .and_then(Value::as_array)
-            .map(|arr| arr.iter().filter_map(parse_dom_node).collect())
-            .unwrap_or_default();
-
-        Ok(nodes)
+        parse_dom_nodes(transport, &items_response, "nodes")
     }
 
     /// Get children of a node.
@@ -170,13 +165,12 @@ impl DomWalkerActor {
             })),
         )?;
 
-        response
-            .get("nodes")
-            .and_then(Value::as_array)
-            .map(|arr| arr.iter().filter_map(parse_dom_node).collect())
-            .ok_or_else(|| {
-                ProtocolError::InvalidPacket("children response missing 'nodes' array field".into())
-            })
+        if response.get("nodes").and_then(Value::as_array).is_none() {
+            return Err(ProtocolError::InvalidPacket(
+                "children response missing 'nodes' array field".into(),
+            ));
+        }
+        parse_dom_nodes(transport, &response, "nodes")
     }
 
     /// Recursively walk the DOM tree from a root node, respecting depth and character limits.
@@ -293,50 +287,90 @@ fn walk_recursive(
     Ok(result)
 }
 
-/// Parse a single DOM node from a JSON value.
+/// Parse the array of DOM nodes under `response[field]`, resolving `longstring`
+/// grips on each node.  Malformed node entries are skipped; a missing/non-array
+/// field yields an empty vec (callers that require the field validate it first).
+fn parse_dom_nodes(
+    transport: &mut RdpTransport,
+    response: &Value,
+    field: &str,
+) -> Result<Vec<DomNode>, ProtocolError> {
+    let mut nodes = Vec::new();
+    if let Some(arr) = response.get(field).and_then(Value::as_array) {
+        for item in arr {
+            if let Some(node) = parse_dom_node(transport, item)? {
+                nodes.push(node);
+            }
+        }
+    }
+    Ok(nodes)
+}
+
+/// Parse a single DOM node from a JSON value, resolving any `longstring` grips.
 ///
 /// Firefox sends attributes as a flat array of alternating name/value strings:
 /// `["class", "example", "id", "main"]` → `[{name:"class",value:"example"},{name:"id",value:"main"}]`
-pub(crate) fn parse_dom_node(value: &Value) -> Option<DomNode> {
-    let node_type = value
+///
+/// Both the `nodeValue` slot and each attribute *value* slot are declared
+/// `longstring` in `devtools/shared/specs/node.js`: values above Firefox's
+/// long-string threshold (~10 KB) arrive as `{type:"longString", …}` grips
+/// rather than inline strings.  Those slots are resolved through
+/// [`resolve_long_string_slot`], which fetches the full content via the
+/// long-string actor when needed — so a large `nodeValue` (e.g. a big text
+/// node) or a large attribute value (e.g. an inline data URI) is never silently
+/// dropped to empty.  Attribute *names* are always short and stay inline.
+///
+/// Returns `Ok(None)` when the value is not a well-formed node (missing
+/// `nodeType`/`nodeName`); returns `Err` only when a long-string fetch fails.
+pub(crate) fn parse_dom_node(
+    transport: &mut RdpTransport,
+    value: &Value,
+) -> Result<Option<DomNode>, ProtocolError> {
+    let Some(node_type) = value
         .get("nodeType")
         .and_then(Value::as_u64)
-        .and_then(|v| u32::try_from(v).ok())?;
+        .and_then(|v| u32::try_from(v).ok())
+    else {
+        return Ok(None);
+    };
 
-    let node_name = value.get("nodeName")?.as_str()?.to_string();
+    let Some(node_name) = value.get("nodeName").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let node_name = node_name.to_string();
 
     let actor = value.get("actor").and_then(Value::as_str).map(String::from);
 
-    let node_value = value
-        .get("nodeValue")
-        .and_then(Value::as_str)
-        .map(String::from);
+    // `nodeValue` is a `longstring` slot — resolve grips to full content.
+    let node_value = resolve_long_string_slot(transport, value.get("nodeValue"))?;
 
     // Firefox sends attrs as a flat array: ["name1", "val1", "name2", "val2", ...]
-    let attrs = value
-        .get("attrs")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.chunks(2)
-                .filter_map(|pair| {
-                    if pair.len() == 2 {
-                        let name = pair[0].as_str()?.to_string();
-                        let val = pair[1].as_str()?.to_string();
-                        Some(DomAttr { name, value: val })
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // Attribute *values* are `longstring` slots and may arrive as grips.
+    let mut attrs = Vec::new();
+    if let Some(arr) = value.get("attrs").and_then(Value::as_array) {
+        for pair in arr.chunks(2) {
+            if pair.len() != 2 {
+                continue;
+            }
+            let Some(name) = pair[0].as_str() else {
+                continue;
+            };
+            let Some(val) = resolve_long_string_slot(transport, Some(&pair[1]))? else {
+                continue;
+            };
+            attrs.push(DomAttr {
+                name: name.to_string(),
+                value: val,
+            });
+        }
+    }
 
     let num_children = value
         .get("numChildren")
         .and_then(Value::as_u64)
         .and_then(|v| u32::try_from(v).ok());
 
-    Some(DomNode {
+    Ok(Some(DomNode {
         actor,
         node_type,
         node_name,
@@ -345,13 +379,28 @@ pub(crate) fn parse_dom_node(value: &Value) -> Option<DomNode> {
         num_children,
         children: Vec::new(),
         truncated: None,
-    })
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A transport backed by a loopback TCP pair.  For inline (non-longString)
+    /// values `parse_dom_node` never reads or writes the socket, so the pair is
+    /// only needed to satisfy the signature.
+    fn dummy_transport() -> RdpTransport {
+        use std::io::BufReader;
+        use std::net::{TcpListener, TcpStream};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (_server, _) = listener.accept().unwrap();
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        RdpTransport::from_parts(reader, writer)
+    }
 
     #[test]
     fn parse_dom_node_element_with_attrs() {
@@ -362,7 +411,7 @@ mod tests {
             "attrs": ["class", "container", "id", "main"],
             "numChildren": 3
         });
-        let node = parse_dom_node(&v).unwrap();
+        let node = parse_dom_node(&mut dummy_transport(), &v).unwrap().unwrap();
         assert_eq!(node.node_type, 1);
         assert_eq!(node.node_name, "DIV");
         assert_eq!(node.actor.as_deref(), Some("server1.conn0.child0/node1"));
@@ -384,7 +433,7 @@ mod tests {
             "nodeValue": "Hello, world!",
             "numChildren": 0
         });
-        let node = parse_dom_node(&v).unwrap();
+        let node = parse_dom_node(&mut dummy_transport(), &v).unwrap().unwrap();
         assert_eq!(node.node_type, 3);
         assert_eq!(node.node_name, "#text");
         assert_eq!(node.node_value.as_deref(), Some("Hello, world!"));
@@ -396,11 +445,19 @@ mod tests {
     fn parse_dom_node_missing_required_fields_returns_none() {
         // Missing nodeType
         let v = json!({"nodeName": "DIV"});
-        assert!(parse_dom_node(&v).is_none());
+        assert!(
+            parse_dom_node(&mut dummy_transport(), &v)
+                .unwrap()
+                .is_none()
+        );
 
         // Missing nodeName
         let v2 = json!({"nodeType": 1});
-        assert!(parse_dom_node(&v2).is_none());
+        assert!(
+            parse_dom_node(&mut dummy_transport(), &v2)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -410,7 +467,7 @@ mod tests {
             "nodeName": "SPAN",
             "attrs": []
         });
-        let node = parse_dom_node(&v).unwrap();
+        let node = parse_dom_node(&mut dummy_transport(), &v).unwrap().unwrap();
         assert!(node.attrs.is_empty());
     }
 
@@ -421,9 +478,110 @@ mod tests {
             "nodeName": "P",
             "numChildren": 1
         });
-        let node = parse_dom_node(&v).unwrap();
+        let node = parse_dom_node(&mut dummy_transport(), &v).unwrap().unwrap();
         assert!(node.attrs.is_empty());
         assert_eq!(node.num_children, Some(1));
+    }
+
+    /// Serve a greeting then answer every `substring` request with
+    /// `full` (single-chunk), on a fresh loopback listener.  Returns the port
+    /// and the server thread's join handle.
+    fn spawn_substring_server(
+        actor: &'static str,
+        full: String,
+        expected_requests: usize,
+    ) -> (u16, std::thread::JoinHandle<()>) {
+        use std::io::{BufReader, Write};
+        use std::net::TcpListener;
+
+        use crate::transport::{encode_frame, recv_from};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = BufReader::new(stream);
+            let greeting = json!({"from":"root","applicationType":"browser","traits":{}});
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+            for _ in 0..expected_requests {
+                let req = recv_from(&mut reader).unwrap();
+                assert_eq!(req["type"], "substring");
+                assert_eq!(req["to"], actor);
+                let resp = json!({"from": actor, "substring": full.clone()});
+                writer
+                    .write_all(encode_frame(&serde_json::to_string(&resp).unwrap()).as_bytes())
+                    .unwrap();
+            }
+        });
+        (port, handle)
+    }
+
+    /// iter-102 Theme A: a `nodeValue` arriving as a longString grip is
+    /// resolved to its full content (previously `.as_str()` dropped it to
+    /// `None`).
+    #[test]
+    fn parse_dom_node_resolves_longstring_node_value() {
+        use std::time::Duration;
+
+        let full = "T".repeat(20_000);
+        let (port, handle) = spawn_substring_server("conn0/longString1", full.clone(), 1);
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+
+        let v = json!({
+            "actor": "conn0/textNode",
+            "nodeType": 3,
+            "nodeName": "#text",
+            "nodeValue": {
+                "type": "longString",
+                "actor": "conn0/longString1",
+                "length": 20_000,
+                "initial": "T".repeat(1024),
+            },
+            "numChildren": 0
+        });
+        let node = parse_dom_node(&mut transport, &v).unwrap().unwrap();
+        assert_eq!(node.node_value.as_deref().map(str::len), Some(20_000));
+        assert_eq!(node.node_value.unwrap(), full);
+        handle.join().unwrap();
+    }
+
+    /// iter-102 Theme A: a DOM attribute *value* arriving as a longString grip
+    /// (e.g. a large inline data URI) is resolved to full content; the name
+    /// stays inline.
+    #[test]
+    fn parse_dom_node_resolves_longstring_attr_value() {
+        use std::time::Duration;
+
+        let full = "u".repeat(15_000);
+        let (port, handle) = spawn_substring_server("conn0/longString2", full.clone(), 1);
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+
+        let v = json!({
+            "actor": "conn0/imgNode",
+            "nodeType": 1,
+            "nodeName": "IMG",
+            "attrs": [
+                "src",
+                {
+                    "type": "longString",
+                    "actor": "conn0/longString2",
+                    "length": 15_000,
+                    "initial": "u".repeat(1024),
+                }
+            ],
+            "numChildren": 0
+        });
+        let node = parse_dom_node(&mut transport, &v).unwrap().unwrap();
+        assert_eq!(node.attrs.len(), 1);
+        assert_eq!(node.attrs[0].name, "src");
+        assert_eq!(node.attrs[0].value.len(), 15_000);
+        assert_eq!(node.attrs[0].value, full);
+        handle.join().unwrap();
     }
 
     #[test]
