@@ -2,7 +2,7 @@
 title: "Iteration 98: media-query truthfulness — responsive stops lying, cascade winner respects media context, doctor scope, single error emission"
 type: iteration
 date: 2026-07-05
-status: in-progress
+status: done
 branch: iter-98/media-query-truthfulness
 depends_on: []
 firefox_refs: []
