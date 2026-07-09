@@ -2,7 +2,7 @@
 title: "Iteration 106: live-test masking cascade — chrome CSP bypass regression, DNS-failure error shape, cross-invocation daemon buffer visibility"
 type: iteration
 date: 2026-07-09
-status: done
+status: completed
 branch: iter-106/live-test-masking-cascade
 depends_on:
   - iteration-100-daemon-lifecycle-hardening
@@ -27,7 +27,15 @@ dogfood_path: |
   ff-rdp network --detail --jq '.results[0] | {source,status,transfer_size}'
   # expected: {"source":"watcher","status":200,"transfer_size":<n>} in a SECOND
   # invocation reading the daemon buffer (Theme D)
-tags: [iteration, testing, ci, eval, csp, navigate, dns, review-2026-07]
+tags:
+  - iteration
+  - testing
+  - ci
+  - eval
+  - csp
+  - navigate
+  - dns
+  - review-2026-07
 ---
 
 # Iteration 106: live-test masking cascade
