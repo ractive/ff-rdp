@@ -179,6 +179,19 @@ outcome. This iteration owns both the root-cause fix and the
       the Theme D spawn lock; the soak test's 10 s status poll is retained as
       slow-CI slack, documented in `eval_object_leak_soak.rs`. Gated by
       `FF_RDP_LIVE_TESTS=1`.
+      **PR review addendum (2026-07-09):** the live-tests CI check on this PR
+      was red on the FIRST push — reproduced locally too. Root cause was a
+      second, independent bug in the test itself (pre-existing since
+      iter-61t, not a Theme D/E regression): the test used `tabs` as its
+      "daemon init" call, but `tabs.rs` connects to Firefox directly via
+      `RdpConnection::connect` and never goes through
+      `resolve_connection_target` — it has never actually triggered daemon
+      auto-start. Fixed by switching the init call to `eval 1` (which, like
+      the soak loop itself, does route through `connect_tab.rs`), plus
+      checking the init envelope for a `daemon_autostart_failed` warning and
+      retrying once. See commit `f140dee`. Re-ran green locally
+      (`FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test
+      eval_object_leak_soak -- --ignored --nocapture`, 107s, RSS delta 0 MB).
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
