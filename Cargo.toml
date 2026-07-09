@@ -53,6 +53,7 @@ version = "0.2"
 version = "0.59"
 features = [
     "Win32_System_Threading",
+    "Win32_System_Console",      # SetConsoleCtrlHandler for daemon signal cleanup (iter-100 Theme C)
     "Win32_Foundation",
     "Win32_Security",            # CreateFileW's signature references SECURITY_ATTRIBUTES from this feature
     "Win32_Storage_FileSystem",

@@ -130,6 +130,18 @@ impl OutputPipeline {
     ) -> anyhow::Result<()> {
         let mut envelope = envelope.clone();
 
+        // iter-100 Theme E: surface any daemon-lifecycle warnings recorded
+        // during connection resolution (e.g. an auto-start that never
+        // registered and silently fell back to a direct connection).  Injected
+        // as a top-level `"warnings"` array so tests and users can tell
+        // "used the daemon" apart from "quietly went direct".  Omitted
+        // entirely on the happy path to keep default output compact.
+        if let Some(warnings) = crate::daemon_status::take_warnings_json()
+            && let Some(obj) = envelope.as_object_mut()
+        {
+            obj.insert("warnings".to_string(), warnings);
+        }
+
         // Generate and inject hints only when enabled.
         let hints = if self.hints_mode == HintsMode::On {
             let h = hint_ctx.map(generate_hints).unwrap_or_default();

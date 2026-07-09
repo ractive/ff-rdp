@@ -260,7 +260,9 @@ pub(crate) fn resolve_connection_target(
         };
     }
 
-    // 1. Try to find an already-running daemon.
+    // 1. Try to find an already-running daemon (lock-free fast path).
+    //    The common case is "daemon already up" — avoid taking the spawn lock
+    //    at all so steady-state commands stay contention-free.
     match find_running_daemon(firefox_host, firefox_port) {
         Ok(Some(info)) => {
             return ConnectionTarget::Daemon {
@@ -268,7 +270,7 @@ pub(crate) fn resolve_connection_target(
                 auth_token: info.auth_token,
             };
         }
-        Ok(None) => {} // not running — fall through to spawn
+        Ok(None) => {} // not running — fall through to the locked spawn path
         Err(e) => {
             return ConnectionTarget::Direct {
                 deferred_warning: Some(format!(
@@ -283,57 +285,142 @@ pub(crate) fn resolve_connection_target(
     //     there is no point spawning a daemon.  Return Direct immediately so
     //     the caller gets the "Firefox isn't running" error faster, without
     //     waiting for the daemon spawn + registry timeout (up to ~5 seconds).
-    //
-    //     This probe is performed only when there is no running daemon
-    //     (`Ok(None)` above), so we would otherwise try to spawn one.
-    //     It is skipped for registry errors (already returned above) and when
-    //     a daemon is already running (already returned above).
     if !is_firefox_port_open(firefox_host, firefox_port) {
         return ConnectionTarget::Direct {
             deferred_warning: None,
         };
     }
 
-    // 2. Determine the current executable path so we can re-invoke ourselves
+    // 2. Acquire the spawn lock BEFORE the check→spawn→register sequence
+    //    (iter-100 Theme D).  Two CLI invocations that both saw "no daemon" in
+    //    step 1 would otherwise both spawn one and orphan the loser.  With the
+    //    lock, the second invocation blocks here until the first has finished
+    //    registering, then re-checks the registry (step 3) and reuses the
+    //    winner instead of spawning a duplicate.
+    let _spawn_lock = match registry::acquire_spawn_lock() {
+        Ok(lock) => lock,
+        Err(e) => {
+            // Locking failed (e.g. exotic filesystem) — fall back to a direct
+            // connection rather than risk an unserialized double-spawn.
+            return direct_with_autostart_warning(format!(
+                "could not acquire daemon spawn lock: {e:#} — connecting directly"
+            ));
+        }
+    };
+
+    // 3. Re-check under the lock.  A daemon may have been spawned and
+    //    registered by a racing invocation between step 1 and acquiring the
+    //    lock; if so, reuse it and skip the spawn entirely.
+    match find_running_daemon(firefox_host, firefox_port) {
+        Ok(Some(info)) => {
+            return ConnectionTarget::Daemon {
+                port: info.proxy_port,
+                auth_token: info.auth_token,
+            };
+        }
+        Ok(None) => {} // still none — we are the elected spawner
+        Err(e) => {
+            return ConnectionTarget::Direct {
+                deferred_warning: Some(format!(
+                    "warning: failed to re-check daemon status under lock: {e:#}{}",
+                    log_path_hint()
+                )),
+            };
+        }
+    }
+
+    // 4. Determine the current executable path so we can re-invoke ourselves
     //    as a daemon.
     let exe_path = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
-            return ConnectionTarget::Direct {
-                deferred_warning: Some(format!(
-                    "warning: cannot determine executable path: {e}, connecting directly"
-                )),
-            };
+            return direct_with_autostart_warning(format!(
+                "cannot determine executable path: {e} — connecting directly"
+            ));
         }
     };
 
-    // 3. Spawn the daemon.
+    // 5. Spawn the daemon (still holding the lock).
     if let Err(e) =
         process::spawn_daemon(&exe_path, firefox_host, firefox_port, daemon_timeout_secs)
     {
-        return ConnectionTarget::Direct {
-            deferred_warning: Some(format!(
-                "warning: failed to start daemon: {e:#}, connecting directly{}",
-                log_path_hint()
-            )),
-        };
+        return direct_with_autostart_warning(format!(
+            "failed to start daemon: {e:#} — connecting directly{}",
+            log_path_hint()
+        ));
     }
 
-    // 4. Wait for the daemon to write its registry entry.
+    // 6. Wait for the daemon to write its registry entry (still holding the
+    //    lock so no other invocation spawns a competing daemon in the gap).
+    //
+    //    iter-100 Theme E root-cause instrumentation: a failure here now
+    //    distinguishes the three possible causes so the failure mode is
+    //    identifiable in the recorded warning rather than a generic message:
+    //      * the spawned process is already dead  → "spawn died before the
+    //        registry write" (crash on startup: bad port, Firefox refused,
+    //        panic before write_registry);
+    //      * the process is still alive but no registry file appeared in time
+    //        → "registry write raced or was slow".
+    //    The Theme D spawn lock above removes the third cause (TOCTOU
+    //    double-spawn orphaning the winner) structurally.
     match process::wait_for_registry(Duration::from_secs(5), firefox_host, firefox_port) {
         Ok(info) => ConnectionTarget::Daemon {
             port: info.proxy_port,
             auth_token: info.auth_token,
         },
-        Err(e) => ConnectionTarget::Direct {
-            // Deferred so it is silent on the happy path: in the common case
-            // the registry-write race resolves before we'd care, the direct
-            // connection succeeds, and the warning is dropped.
-            deferred_warning: Some(format!(
-                "warning: daemon started but registry not found: {e:#}, connecting directly{}",
+        Err(e) => {
+            let cause = classify_registry_wait_failure(firefox_host, firefox_port);
+            direct_with_autostart_warning(format!(
+                "daemon started but did not register within 5s ({cause}): {e:#} — \
+                 connecting directly{}",
                 log_path_hint()
-            )),
-        },
+            ))
+        }
+    }
+}
+
+/// Build a [`ConnectionTarget::Direct`] whose fallback is *also* recorded as a
+/// `daemon_autostart_failed` envelope warning (iter-100 Theme E).
+///
+/// The `deferred_warning` (printed to stderr only if the direct fallback also
+/// fails) is kept for the human-facing failure path, while the recorded
+/// warning always surfaces in the JSON envelope so scripts/tests can tell
+/// daemon mode from a silent direct fallback even when the command succeeds.
+fn direct_with_autostart_warning(reason: String) -> ConnectionTarget {
+    let deferred = format!("warning: {reason}");
+    // Consume `reason` into the recorder (it wants an owned String).
+    crate::daemon_status::record_autostart_failed(reason);
+    ConnectionTarget::Direct {
+        deferred_warning: Some(deferred),
+    }
+}
+
+/// Classify why the just-spawned daemon failed to register in time
+/// (iter-100 Theme E).
+///
+/// Reads the freshly-written registry (if any) to recover the daemon PID and
+/// checks whether that process is still alive.  Returns a short phrase naming
+/// the most likely cause so the recorded warning is diagnosable:
+///   * no registry + our probe target unreachable → the spawn likely died on
+///     startup before writing;
+///   * a registry exists but its PID is dead → the daemon crashed after (or
+///     during) the write;
+///   * otherwise → the registry write raced or was slow.
+fn classify_registry_wait_failure(firefox_host: &str, firefox_port: u16) -> &'static str {
+    match registry::read_registry() {
+        // A registry entry for OUR target exists AND its PID is still alive —
+        // the process registered, we just polled before/around the write.
+        Ok(Some(info))
+            if info.firefox_host == firefox_host
+                && info.firefox_port == firefox_port
+                && process::is_process_alive(info.pid) =>
+        {
+            "registry write raced or was slow"
+        }
+        // Any other case — no matching entry, or a matching entry whose PID is
+        // already dead — means the spawn never got far enough to leave a live
+        // registered daemon, which almost always means it died during startup.
+        _ => "spawn died before the registry write",
     }
 }
 
@@ -997,14 +1084,34 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> 
     // 3. No registry — try to kill whatever is on the port by PID from
     //    the port-owner helper, then wait for the port to free.
     if let Ok(Some(owner)) = crate::port_owner::find_listener(port) {
-        process::kill_process_group(owner.pid);
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while process::is_process_alive(owner.pid) && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        if process::is_process_alive(owner.pid) {
-            process::kill_process_group_force(owner.pid);
-            std::thread::sleep(Duration::from_millis(300));
+        // iter-100 Theme D: re-verify port ownership immediately before the
+        // kill.  `find_listener` resolves a PID at time T; between T and the
+        // signal the original process may have exited and the OS may have
+        // recycled that PID onto an unrelated process.  Re-query the port
+        // owner right before signalling and only proceed if the SAME pid still
+        // owns the port — otherwise we would blindly SIGKILL a recycled PID.
+        let still_owner = matches!(
+            crate::port_owner::find_listener(port),
+            Ok(Some(ref current)) if current.pid == owner.pid
+        );
+        if still_owner {
+            process::kill_process_group(owner.pid);
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while process::is_process_alive(owner.pid) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            // Re-verify ownership once more before escalating to SIGKILL — the
+            // SIGTERM grace may have freed the port (and the PID could now be
+            // recycled), in which case a force-kill would target the wrong
+            // process.
+            let still_owner_after_term = matches!(
+                crate::port_owner::find_listener(port),
+                Ok(Some(ref current)) if current.pid == owner.pid
+            );
+            if still_owner_after_term && process::is_process_alive(owner.pid) {
+                process::kill_process_group_force(owner.pid);
+                std::thread::sleep(Duration::from_millis(300));
+            }
         }
     }
 
@@ -1040,6 +1147,65 @@ mod tests {
             }
             ConnectionTarget::Daemon { .. } => panic!("--no-daemon must never resolve to Daemon"),
         }
+    }
+
+    /// AC `unit_autostart_failure_surfaces_warning`: when auto-start does not
+    /// yield a usable daemon and the CLI falls back to direct, a
+    /// `daemon_autostart_failed` warning must be recorded (for the envelope)
+    /// **and** the returned `Direct` must carry the deferred human-facing
+    /// warning — never a hard error, since direct mode still works.
+    #[test]
+    fn unit_autostart_failure_surfaces_warning() {
+        // Clear any residue so the assertion is deterministic.
+        let _ = crate::daemon_status::take_warnings();
+
+        let target = direct_with_autostart_warning(
+            "daemon started but did not register within 5s (spawn died before the registry write)"
+                .to_owned(),
+        );
+
+        match target {
+            ConnectionTarget::Direct { deferred_warning } => {
+                assert!(
+                    deferred_warning
+                        .as_deref()
+                        .is_some_and(|w| w.contains("did not register")),
+                    "fallback must carry a deferred human-facing warning; got {deferred_warning:?}"
+                );
+            }
+            ConnectionTarget::Daemon { .. } => {
+                panic!("autostart failure must resolve to Direct, never Daemon")
+            }
+        }
+
+        let warnings = crate::daemon_status::take_warnings();
+        assert_eq!(warnings.len(), 1, "exactly one warning must be recorded");
+        assert_eq!(
+            warnings[0].warning_type,
+            crate::daemon_status::AUTOSTART_FAILED_TYPE,
+            "warning must be tagged daemon_autostart_failed"
+        );
+        assert!(
+            warnings[0].reason.contains("spawn died"),
+            "recorded reason must carry the diagnosed cause; got {:?}",
+            warnings[0].reason
+        );
+    }
+
+    /// The autostart warning surfaces as a top-level `warnings` array via the
+    /// output pipeline recorder (`daemon_status::take_warnings_json`).
+    #[test]
+    fn autostart_warning_serializes_into_envelope_shape() {
+        let _ = crate::daemon_status::take_warnings();
+        let _ = direct_with_autostart_warning("registry write raced or was slow".to_owned());
+        let json = crate::daemon_status::take_warnings_json().expect("warnings present");
+        let arr = json.as_array().expect("warnings is an array");
+        assert_eq!(arr[0]["type"], crate::daemon_status::AUTOSTART_FAILED_TYPE);
+        assert!(
+            arr[0]["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("raced or was slow"))
+        );
     }
 
     /// AC: `unit_daemon_stop_message_reports_actual_bound`

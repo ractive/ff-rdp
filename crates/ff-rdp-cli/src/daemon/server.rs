@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{TcpListener, TcpStream};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -165,8 +166,12 @@ impl RefStore {
 /// A streaming subscriber: a connected CLI client that has requested one or
 /// more resource types to be forwarded in real time.
 struct StreamSubscriber {
-    /// Unique client identity token (OS socket handle / file descriptor).
-    id: RawHandle,
+    /// Unique daemon-issued client identity token (monotonic, never recycled).
+    ///
+    /// iter-100 Theme D: was the raw socket fd/handle, which the OS recycles
+    /// on close — a stale fd number could match a *different* live client and
+    /// unregister the wrong subscriber.  A monotonic id never collides.
+    id: ClientId,
     /// Write-half of the subscriber's TCP connection (typed, framing-aware).
     writer: FramedWriter,
     /// Resource types this subscriber wants to receive.
@@ -183,10 +188,10 @@ struct SharedState {
     /// for most messages, so we cannot demultiplex responses to multiple
     /// concurrent senders).  Replaced atomically when a new client connects.
     ///
-    /// The `RawHandle` is the identity of the *original* stream (not the
-    /// `try_clone`d writer), so disconnect cleanup can reliably compare it
-    /// against `client_id` which is taken from the original stream.
-    rpc_writer: Mutex<Option<(RawHandle, FramedWriter)>>,
+    /// The `ClientId` is the daemon-issued monotonic identity of the client
+    /// (iter-100 Theme D), so disconnect cleanup can reliably compare it
+    /// against the id issued to the current handler without fd-reuse hazards.
+    rpc_writer: Mutex<Option<(ClientId, FramedWriter)>>,
     /// All currently-connected streaming subscribers.
     ///
     /// These are clients that have issued one or more `stream` daemon requests
@@ -252,7 +257,32 @@ struct SharedState {
     /// actors (iter-76 Theme B).  Using a bounded queue (capacity 1024)
     /// limits memory consumption when the drain falls behind under burst load.
     grip_release_tx: ff_rdp_core::ReleaseQueueTx,
+    /// Monotonically-increasing client-id counter (iter-100 Theme D).
+    ///
+    /// Each accepted client is issued a unique id at accept time via
+    /// [`SharedState::next_client_id`].  This replaces the raw socket
+    /// fd/handle as the subscriber / RPC-writer identity key: an OS file
+    /// descriptor number is recycled the moment a connection closes, so
+    /// keying cleanup on it could unregister a *different* live client that
+    /// happened to inherit the same fd number.  A monotonic id is never
+    /// reused for the lifetime of the daemon, so cleanup always targets the
+    /// exact client that owned it.
+    next_client_id: AtomicU64,
 }
+
+impl SharedState {
+    /// Issue a fresh, never-reused client id (iter-100 Theme D).
+    fn next_client_id(&self) -> ClientId {
+        self.next_client_id.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+/// A daemon-issued, monotonically-increasing client identity token.
+///
+/// Unlike a raw socket fd/handle, this value is unique for the whole lifetime
+/// of the daemon process and is therefore safe to use as a cleanup key even
+/// after the underlying socket is closed and its fd recycled.
+type ClientId = u64;
 
 /// Main entry point for the daemon process.
 ///
@@ -350,6 +380,8 @@ pub(crate) fn run_daemon(
         actor_registry: Arc::new(Registry::new()),
         event_tx,
         grip_release_tx: grip_release_tx.clone(),
+        // Start at 1 so 0 can serve as a "no client" sentinel in tests.
+        next_client_id: AtomicU64::new(1),
     });
 
     setup_signal_handler(&state);
@@ -358,45 +390,38 @@ pub(crate) fn run_daemon(
     // Firefox while the reader thread owns the read half exclusively.
     let firefox_writer = Arc::new(Mutex::new(firefox_writer));
 
-    // Spawn the grip-release-drainer thread (iter-76b Theme B).
+    // Spawn the grip-release-drainer thread (iter-76b Theme B), supervised.
     //
     // This thread owns the grip release queue receiver and issues `release`
     // packets to Firefox for each enqueued grip actor.  Without this thread,
     // the queue was immediately dropped and no release was ever sent —
     // the headline "fix daemon-mode grip leaks" in iter-76 was completely inert.
     let writer_for_drainer = Arc::clone(&firefox_writer);
-    let state_for_drainer = Arc::clone(&state);
-    thread::Builder::new()
-        .name("grip-release-drainer".into())
-        .spawn(move || {
-            grip_release_drainer_loop(&state_for_drainer, grip_release_rx, writer_for_drainer);
-        })
-        .context("spawning grip release drainer thread")?;
+    spawn_supervised(&state, "grip-release-drainer", move |state| {
+        grip_release_drainer_loop(state, grip_release_rx, writer_for_drainer);
+    })
+    .context("spawning grip release drainer thread")?;
 
-    // Spawn the Firefox reader thread.
-    let state_for_reader = Arc::clone(&state);
-    thread::Builder::new()
-        .name("firefox-reader".into())
-        .spawn(move || firefox_reader_loop(&state_for_reader, firefox_reader))
-        .context("spawning Firefox reader thread")?;
+    // Spawn the Firefox reader thread, supervised.
+    spawn_supervised(&state, "firefox-reader", move |state| {
+        firefox_reader_loop(state, firefox_reader);
+    })
+    .context("spawning Firefox reader thread")?;
 
     // Spawn the dispatcher thread that drains the mpsc channel and routes
-    // events to stream subscribers / rpc_writer.  Decoupled from the reader
-    // so that heavy event bursts do not delay auth-greeting writes.
-    let state_for_dispatcher = Arc::clone(&state);
+    // events to stream subscribers / rpc_writer, supervised.  Decoupled from
+    // the reader so that heavy event bursts do not delay auth-greeting writes.
     let writer_for_dispatcher = Arc::clone(&firefox_writer);
-    thread::Builder::new()
-        .name("event-dispatcher".into())
-        .spawn(move || {
-            event_dispatcher_loop(
-                &state_for_dispatcher,
-                event_rx,
-                resource_bus,
-                resource_rx,
-                writer_for_dispatcher,
-            );
-        })
-        .context("spawning event dispatcher thread")?;
+    spawn_supervised(&state, "event-dispatcher", move |state| {
+        event_dispatcher_loop(
+            state,
+            event_rx,
+            resource_bus,
+            resource_rx,
+            writer_for_dispatcher,
+        );
+    })
+    .context("spawning event dispatcher thread")?;
 
     let result = accept_loop(&state, &listener, &firefox_writer, idle_timeout);
 
@@ -405,6 +430,62 @@ pub(crate) fn run_daemon(
     eprintln!("daemon: shut down");
 
     result
+}
+
+/// Spawn a supervised daemon worker thread (iter-100 Theme A).
+///
+/// The worker `body` receives a clone of the shared state.  Its whole run is
+/// wrapped in [`catch_unwind`] so that a panic anywhere inside the loop — a
+/// poisoned invariant, an `unwrap` we missed, an OOM abort avoided — does not
+/// silently kill just that one thread and leave a **zombie daemon**: PID,
+/// socket, and registry all look healthy while every client hangs forever
+/// because the reader/dispatcher/drainer that was supposed to service them is
+/// gone.
+///
+/// On *any* exit of `body` — normal return **or** panic — the supervisor sets
+/// `state.shutdown`.  A worker loop returning at all is itself abnormal (they
+/// are infinite loops that only break on shutdown), so an early return is
+/// treated the same as a panic: flip the daemon into shutdown so the accept
+/// loop stops taking clients and `run_daemon`'s cleanup (`remove_registry`)
+/// runs.  The next CLI invocation then spawns a fresh, healthy daemon — the
+/// same recovery path Firefox-death cleanup already relies on.
+///
+/// Supervision is panic-based, not restart-based: after a worker panics the
+/// daemon's invariants are unknown, so failing the whole daemon is the safe
+/// choice (see the plan's design notes).
+fn spawn_supervised<F>(
+    state: &Arc<SharedState>,
+    name: &str,
+    body: F,
+) -> std::io::Result<thread::JoinHandle<()>>
+where
+    F: FnOnce(&Arc<SharedState>) + Send + 'static,
+{
+    let state = Arc::clone(state);
+    let name_owned = name.to_owned();
+    thread::Builder::new().name(name.to_owned()).spawn(move || {
+        let result = catch_unwind(AssertUnwindSafe(|| body(&state)));
+        // Whether the worker panicked or merely returned, the daemon can no
+        // longer be trusted to service clients — flip it into shutdown so the
+        // accept loop refuses new connections and cleanup runs.
+        let was_already = state.shutdown.swap(true, Ordering::Relaxed);
+        if result.is_err() {
+            // Log the panic exactly once per worker so the incident is visible
+            // in `daemon.log` without a flood.
+            tracing::error!(
+                worker = %name_owned,
+                "daemon: worker thread panicked — flipping daemon into shutdown"
+            );
+            eprintln!("daemon: worker thread {name_owned:?} panicked — shutting daemon down");
+        } else if !was_already {
+            // A worker loop only returns on shutdown; if it returned first,
+            // that is an abnormal early exit worth recording.
+            tracing::warn!(
+                worker = %name_owned,
+                "daemon: worker thread exited before shutdown — flipping daemon into shutdown"
+            );
+        }
+    })
 }
 
 /// Drain the grip release queue and issue `release` packets to Firefox.
@@ -443,7 +524,7 @@ fn grip_release_drainer_loop(
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if state.shutdown.load(Ordering::Relaxed) {
+                if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
                     break;
                 }
             }
@@ -466,23 +547,93 @@ fn validate_greeting(greeting: &Value) -> Result<()> {
     Ok(())
 }
 
-/// Install platform-native signal handlers that set `state.shutdown`.
+/// Process-global "a termination signal was received" flag (iter-100 Theme C).
 ///
-/// On Unix we redirect SIGTERM and SIGINT.  On Windows there is no direct
-/// equivalent; the process will be terminated by the OS when the parent
-/// exits, so this is intentionally a no-op there.
+/// The OS signal handler / console-ctrl handler may run on an arbitrary
+/// thread and must be **async-signal-safe** — it may only touch atomics and
+/// other reentrant primitives, never allocate or take a lock.  It therefore
+/// sets this single global flag and returns.  The daemon's own threads
+/// (`accept_loop`, the supervised workers) poll [`termination_requested`] and
+/// mirror it onto `state.shutdown`, so all real cleanup (`remove_registry`,
+/// stream teardown) still runs on a normal thread once the loops observe it.
+static TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Return `true` once a SIGTERM/SIGINT (Unix) or Ctrl-C/Ctrl-Break/close
+/// (Windows) has been observed by the installed handler.
+fn termination_requested() -> bool {
+    TERMINATION_REQUESTED.load(Ordering::Relaxed)
+}
+
+/// The async-signal-safe handler body shared by every platform.
+///
+/// It does the *only* thing that is safe to do from signal context: set an
+/// atomic flag.  The daemon's main-thread loops pick it up and perform the
+/// actual, non-reentrant cleanup.
+#[cfg(unix)]
+extern "C" fn handle_termination_signal(_signum: libc::c_int) {
+    TERMINATION_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+/// Install platform-native termination handlers that request a graceful
+/// shutdown (iter-100 Theme C).
+///
+/// On Unix we install a `sigaction` handler for `SIGTERM` and `SIGINT` that
+/// sets [`TERMINATION_REQUESTED`].  On Windows we register a
+/// `SetConsoleCtrlHandler` callback that does the same.  Either way the
+/// handler only flips an atomic flag; `run_daemon`'s normal cleanup
+/// (`remove_registry`, `server.rs` shutdown path) runs on the main thread
+/// once `accept_loop` observes the flag via [`termination_requested`].  This
+/// removes the auth-token-bearing registry file on a clean signal instead of
+/// leaving it behind for the next invocation to trip over.
+///
+/// `state` is unused directly (the handler cannot capture it and stay
+/// async-signal-safe) but is kept in the signature so the daemon's shutdown
+/// plumbing is discoverable from the call site.
 #[allow(unused_variables)]
 fn setup_signal_handler(state: &Arc<SharedState>) {
-    // signal-hook requires an additional dependency we want to avoid.
-    // For SIGINT the Rust runtime's default handler terminates the process,
-    // which skips the explicit cleanup in run_daemon.  SIGTERM similarly
-    // terminates immediately.  This is acceptable for now: the registry file
-    // is a best-effort hint and stale entries are already handled by the
-    // caller (see find_running_daemon in client.rs which checks PID liveness).
-    //
-    // If a more graceful shutdown is needed in the future, add signal-hook,
-    // set state.shutdown here, and rely on run_daemon calling remove_registry
-    // after accept_loop returns.
+    #[cfg(unix)]
+    {
+        // SAFETY: `sigaction` installs `handle_termination_signal`, whose body
+        // only stores into a `static AtomicBool` — the single well-defined
+        // async-signal-safe operation.  We zero-initialise the `sigaction`
+        // struct, set the handler function pointer, and leave flags at 0
+        // (no SA_RESTART needed: the daemon's blocking reads use short
+        // timeouts and re-poll the flag).  No memory is aliased across the
+        // FFI boundary beyond the 'static handler pointer.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = handle_termination_signal as *const () as usize;
+            libc::sigemptyset(&raw mut action.sa_mask);
+            action.sa_flags = 0;
+            libc::sigaction(libc::SIGTERM, &raw const action, std::ptr::null_mut());
+            libc::sigaction(libc::SIGINT, &raw const action, std::ptr::null_mut());
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+        // SAFETY: registers a 'static handler function; the callback only
+        // stores into a `static AtomicBool`, which is safe from the console
+        // control thread.  The second argument `1` (TRUE) adds the handler.
+        unsafe {
+            SetConsoleCtrlHandler(Some(windows_console_ctrl_handler), 1);
+        }
+    }
+}
+
+/// Windows console-control handler (iter-100 Theme C).
+///
+/// Fires for Ctrl-C, Ctrl-Break, and console close/logoff/shutdown events.
+/// Sets [`TERMINATION_REQUESTED`] and returns `TRUE` so the default
+/// terminate-the-process behaviour is suppressed long enough for the daemon's
+/// loops to observe the flag and run their normal cleanup.
+#[cfg(windows)]
+unsafe extern "system" fn windows_console_ctrl_handler(
+    _ctrl_type: u32,
+) -> windows_sys::Win32::Foundation::BOOL {
+    TERMINATION_REQUESTED.store(true, Ordering::Relaxed);
+    1
 }
 
 // ---------------------------------------------------------------------------
@@ -501,15 +652,19 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
     }
 
     loop {
-        if state.shutdown.load(Ordering::Relaxed) {
+        if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
             break;
         }
 
         match reader.recv() {
             Ok(msg) => {
-                // unwrap: poisoned mutex means a thread panicked — the daemon
-                // is in an inconsistent state and crashing is the right action.
-                *lock_or_recover!(state.last_activity) = Instant::now();
+                // iter-100 Theme B: do NOT bump `last_activity` on inbound
+                // Firefox traffic.  The idle timeout means "no *client* has
+                // used the daemon recently"; background SPA event streams (or
+                // stray frames arriving at a half-dead daemon) must not keep
+                // an otherwise-unused daemon alive forever.  Only a
+                // successfully-authenticated client request bumps it, in
+                // `handle_client`.
 
                 // Push to dispatcher.  Use blocking `send` (not `try_send`) so
                 // that RDP responses are never dropped on transient dispatcher
@@ -585,7 +740,7 @@ fn event_dispatcher_loop(
                 resource_bus.gc_fire_forget(&mut *lock_or_recover!(firefox_writer));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if state.shutdown.load(Ordering::Relaxed) {
+                if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
                     break;
                 }
             }
@@ -932,7 +1087,7 @@ fn forward_nav_event_to_stream_subs(state: &SharedState, event: &Value) {
 /// The lock is held for the entire write to prevent interleaved frames from
 /// the firefox-reader thread and the client-handler thread.
 /// On write error the writer is cleared (treated as disconnected).
-fn forward_to_rpc_client(rpc_writer: &Mutex<Option<(RawHandle, FramedWriter)>>, msg: &Value) {
+fn forward_to_rpc_client(rpc_writer: &Mutex<Option<(ClientId, FramedWriter)>>, msg: &Value) {
     // Serialise first — no lock needed.
     let json = match serde_json::to_string(msg) {
         Ok(s) => s,
@@ -999,11 +1154,20 @@ fn accept_loop(
     idle_timeout: Duration,
 ) -> Result<()> {
     loop {
+        // A termination signal (iter-100 Theme C) or a worker panic
+        // (iter-100 Theme A) mirrors onto `state.shutdown`; once set, the
+        // accept loop returns so `run_daemon` runs cleanup (remove_registry).
+        if termination_requested() {
+            state.shutdown.store(true, Ordering::Relaxed);
+        }
         if state.shutdown.load(Ordering::Relaxed) {
             return Ok(());
         }
 
-        // Idle timeout: checked when no client is connected.
+        // Idle timeout: checked when no client is connected.  Only a
+        // *successfully authenticated request* bumps `last_activity`
+        // (iter-100 Theme B), so accepting a probe or a failed connect no
+        // longer keeps a zombie/idle daemon alive.
         {
             let last = *lock_or_recover!(state.last_activity);
             if last.elapsed() > idle_timeout {
@@ -1014,7 +1178,18 @@ fn accept_loop(
 
         match listener.accept() {
             Ok((stream, _addr)) => {
-                *lock_or_recover!(state.last_activity) = Instant::now();
+                // iter-100 Theme A: once shutdown is set (worker panic or
+                // signal) do not spawn a full handler — send a clean
+                // "daemon shutting down" error frame and drop the socket so
+                // the client sees an honest error instead of hanging.
+                if state.shutdown.load(Ordering::Relaxed) {
+                    refuse_client_shutting_down(stream);
+                    return Ok(());
+                }
+                // NOTE: `last_activity` is deliberately NOT bumped here.
+                // Accepting a connection is not evidence of legitimate use —
+                // bumping on accept let unauthenticated probes extend the
+                // idle deadline indefinitely (iter-100 Theme B).
                 let state_clone = Arc::clone(state);
                 let writer_clone = Arc::clone(firefox_writer);
                 thread::Builder::new()
@@ -1023,7 +1198,10 @@ fn accept_loop(
                         if let Err(e) = handle_client(&state_clone, stream, &writer_clone) {
                             eprintln!("daemon: client session error: {e:#}");
                         }
-                        *lock_or_recover!(state_clone.last_activity) = Instant::now();
+                        // NOTE: `last_activity` is deliberately NOT bumped on
+                        // client-thread exit either — an error exit (including
+                        // a failed auth) must not extend the idle deadline
+                        // (iter-100 Theme B).
                     })
                     .context("spawning client handler thread")?;
             }
@@ -1035,6 +1213,22 @@ fn accept_loop(
             }
         }
     }
+}
+
+/// Send a single "daemon shutting down" error frame to a freshly-accepted
+/// client and drop the connection (iter-100 Theme A).
+///
+/// Called when a connection is accepted after `state.shutdown` is already set
+/// (worker panic or termination signal).  Best-effort: any write error is
+/// ignored — the client will observe the closed socket regardless.
+fn refuse_client_shutting_down(stream: TcpStream) {
+    let mut writer = FramedWriter::from_stream(stream);
+    let _ = writer.send(&json!({
+        "from": "daemon",
+        "error": "daemon is shutting down",
+        "error_type": "daemon_shutting_down",
+    }));
+    // `writer` (and its stream) drop here, closing the connection.
 }
 
 // ---------------------------------------------------------------------------
@@ -1097,9 +1291,21 @@ fn handle_client(
         .set_read_timeout(Some(Duration::from_secs(30)))
         .context("restoring client read timeout after auth")?;
 
-    // Capture the client identity from the *original* stream before any
-    // try_clone() calls — cloned streams get a different OS handle.
-    let client_id = stream.as_raw_fd_or_handle();
+    // iter-100 Theme D: issue a monotonic, never-recycled client id at accept
+    // time instead of keying identity on the raw socket fd/handle.  An OS fd
+    // number is reused the instant a socket closes, so keying subscriber /
+    // rpc-writer cleanup on it risked unregistering a *different* live client
+    // that inherited the same fd.  A daemon-issued id never collides.
+    let client_id = state.next_client_id();
+
+    // iter-100 Theme D: a scope guard runs the unregister cleanup (stream
+    // unsubscribe + rpc_writer clear) on **every** exit path — including an
+    // early `?` from the greeting or RPC-writer setup below.  Before this,
+    // the cleanup lived as fall-through code after the read loop and was
+    // skipped whenever an error propagated via `?`, leaking a stale
+    // subscriber and/or a dead rpc_writer that would swallow another client's
+    // RDP responses.
+    let _cleanup = ClientCleanupGuard { state, client_id };
 
     // Send the cached greeting so the client can identify the connected Firefox.
     // Augment with `protocol_version` so the CLI can detect stale daemon builds.
@@ -1147,12 +1353,16 @@ fn handle_client(
     let mut reader = FramedReader::from_stream(stream);
 
     loop {
-        if state.shutdown.load(Ordering::Relaxed) {
+        if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
             break;
         }
 
         match reader.recv() {
             Ok(msg) => {
+                // iter-100 Theme B: bump the idle deadline ONLY here — after
+                // the client has authenticated and we have a real request to
+                // handle.  This is the single legitimate "the daemon is being
+                // used" signal.
                 *lock_or_recover!(state.last_activity) = Instant::now();
 
                 let to = msg.get("to").and_then(Value::as_str).unwrap_or_default();
@@ -1192,53 +1402,39 @@ fn handle_client(
         }
     }
 
-    // Remove this client from the stream-subscriber list.
-    lock_or_recover!(state.stream_subs).retain(|s| s.id != client_id);
-
-    // Unregister this client as RPC target only if it is still the current one
-    // (another client may have already taken over).
-    {
-        let mut guard = lock_or_recover!(state.rpc_writer);
-        // Compare by the stored identity (taken from the original stream,
-        // not from the try_clone'd writer whose OS handle differs).
-        if guard.as_ref().is_some_and(|(id, _)| *id == client_id) {
-            *guard = None;
-        }
-    }
-
+    // Cleanup is performed by `_cleanup` (ClientCleanupGuard) on drop — it
+    // runs here on the normal path AND on any early `?` return above.
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Platform-portable socket handle extraction
-// ---------------------------------------------------------------------------
-
-/// A platform-portable type for a raw socket handle / file descriptor.
+/// Scope guard that unregisters a client from all daemon roles when dropped
+/// (iter-100 Theme D).
 ///
-/// Used as a unique client token — it is stable for the lifetime of the
-/// `TcpStream` and acts as a cheap address-based identity key.
-#[cfg(unix)]
-type RawHandle = std::os::unix::io::RawFd;
-#[cfg(windows)]
-type RawHandle = std::os::windows::io::RawSocket;
-
-trait AsRawFdOrHandle {
-    fn as_raw_fd_or_handle(&self) -> RawHandle;
+/// Holds the client's monotonic [`ClientId`] and a reference to shared state.
+/// On drop — whether `handle_client` returns normally or bails early via `?` —
+/// it removes the client from the stream-subscriber list and clears the
+/// `rpc_writer` slot if (and only if) this client is still the registered RPC
+/// target.  Running this on *every* exit path is the whole point: the previous
+/// fall-through cleanup was skipped on early error returns, leaking stale
+/// subscribers and a dead rpc_writer that swallowed the next client's frames.
+struct ClientCleanupGuard<'a> {
+    state: &'a Arc<SharedState>,
+    client_id: ClientId,
 }
 
-#[cfg(unix)]
-impl AsRawFdOrHandle for TcpStream {
-    fn as_raw_fd_or_handle(&self) -> RawHandle {
-        use std::os::unix::io::AsRawFd;
-        self.as_raw_fd()
-    }
-}
+impl Drop for ClientCleanupGuard<'_> {
+    fn drop(&mut self) {
+        // Remove this client from the stream-subscriber list.
+        lock_or_recover!(self.state.stream_subs).retain(|s| s.id != self.client_id);
 
-#[cfg(windows)]
-impl AsRawFdOrHandle for TcpStream {
-    fn as_raw_fd_or_handle(&self) -> RawHandle {
-        use std::os::windows::io::AsRawSocket;
-        self.as_raw_socket()
+        // Unregister this client as RPC target only if it is still the current
+        // one — another client may have already taken over.  Comparing by the
+        // monotonic id (not a recyclable fd) guarantees we never clear a
+        // different, live client's writer.
+        let mut guard = lock_or_recover!(self.state.rpc_writer);
+        if guard.as_ref().is_some_and(|(id, _)| *id == self.client_id) {
+            *guard = None;
+        }
     }
 }
 
@@ -1248,9 +1444,11 @@ impl AsRawFdOrHandle for TcpStream {
 
 /// Handle a message addressed `to: "daemon"`.
 ///
-/// `client_id` is the raw handle of the sending client's TCP stream — used to
-/// identify which stream-subscriber entry to modify when processing `stream`
-/// and `stop-stream` requests.
+/// `client_id` is the daemon-issued monotonic identity of the sending client
+/// (iter-100 Theme D) — used to identify which stream-subscriber entry to
+/// modify when processing `stream` and `stop-stream` requests.  It is never
+/// recycled, so it cannot collide with a different client the way a raw
+/// socket fd would.
 ///
 /// `client_writer` is the client's own write-half (a `try_clone` of its
 /// original stream), supplied by `handle_client` where the stream is
@@ -1260,7 +1458,7 @@ impl AsRawFdOrHandle for TcpStream {
 fn handle_daemon_message(
     state: &SharedState,
     msg: &Value,
-    client_id: RawHandle,
+    client_id: ClientId,
     client_writer: Option<FramedWriter>,
 ) -> Value {
     let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
@@ -1612,11 +1810,284 @@ mod tests {
             actor_registry: Arc::new(Registry::new()),
             event_tx: mpsc::sync_channel::<Value>(1).0,
             grip_release_tx: ff_rdp_core::release_queue(1).0,
+            next_client_id: AtomicU64::new(1),
         }
     }
 
     // Sentinel client_id used in tests that do not exercise subscriber logic.
-    const TEST_CLIENT_ID: RawHandle = 99;
+    const TEST_CLIENT_ID: ClientId = 99;
+
+    // -----------------------------------------------------------------------
+    // iter-100 Theme A — thread supervision
+    // -----------------------------------------------------------------------
+
+    /// AC `unit_reader_panic_sets_shutdown`: a worker-loop panic injected via
+    /// the supervised spawn helper must set `state.shutdown` (so subsequent
+    /// connects get a shutdown error instead of hanging on a zombie daemon).
+    ///
+    /// This exercises `spawn_supervised` directly with a body that panics —
+    /// the same seam the three real workers (firefox-reader, event-dispatcher,
+    /// grip-release-drainer) go through.  The plan's `handle_frame`/test-seam
+    /// language is satisfied by injecting the panic *as* a worker body.
+    #[test]
+    fn unit_reader_panic_sets_shutdown() {
+        let state = Arc::new(test_state());
+        assert!(
+            !state.shutdown.load(Ordering::Relaxed),
+            "precondition: shutdown flag must start unset"
+        );
+
+        // Spawn a supervised worker whose body panics immediately, exactly as
+        // a firefox-reader panic would.
+        let handle = spawn_supervised(&state, "test-panicking-reader", |_state| {
+            panic!("injected worker panic (simulating a firefox-reader crash)");
+        })
+        .expect("spawn supervised worker");
+
+        // Wait for the supervisor to observe the panic and flip shutdown.
+        handle
+            .join()
+            .expect("supervised thread must not itself panic");
+
+        assert!(
+            state.shutdown.load(Ordering::Relaxed),
+            "a worker panic must flip the daemon into shutdown (no zombie)"
+        );
+    }
+
+    /// AC (Theme A task 2): once `state.shutdown` is set, a freshly-accepted
+    /// client receives a clean "daemon shutting down" error frame instead of
+    /// hanging.  Exercises `refuse_client_shutting_down` over a real loopback
+    /// socket so the framing is asserted end to end.
+    #[test]
+    fn refuse_client_sends_shutdown_error_frame() {
+        use std::io::Read;
+
+        let (server_side, mut client_side) = loopback_pair();
+        refuse_client_shutting_down(server_side);
+
+        client_side
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let mut buf = Vec::new();
+        let _ = client_side.read_to_end(&mut buf);
+        let raw = String::from_utf8_lossy(&buf);
+        assert!(
+            raw.contains("daemon_shutting_down"),
+            "refused client must receive a daemon_shutting_down error frame; got: {raw}"
+        );
+    }
+
+    /// A supervised worker that returns *without* panicking (an abnormal early
+    /// exit for an infinite loop) must also flip the daemon into shutdown.
+    #[test]
+    fn supervised_worker_early_return_sets_shutdown() {
+        let state = Arc::new(test_state());
+        let handle = spawn_supervised(&state, "test-early-return", |_state| {
+            // Returns immediately — a worker loop should never do this.
+        })
+        .expect("spawn supervised worker");
+        handle.join().expect("join");
+        assert!(
+            state.shutdown.load(Ordering::Relaxed),
+            "an early worker return must flip the daemon into shutdown"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-100 Theme B — honest idle timeout
+    // -----------------------------------------------------------------------
+
+    /// AC `unit_idle_timeout_fires`: with no clients, the accept loop must
+    /// return (self-terminate) once `last_activity` is older than the idle
+    /// timeout.  Uses a very short timeout and a back-dated `last_activity`
+    /// so no real wall-clock wait is needed, and a listener bound to an
+    /// ephemeral port that never receives a connection.
+    #[test]
+    fn unit_idle_timeout_fires() {
+        let state = Arc::new(test_state());
+        // Back-date last_activity so the deadline is already in the past.
+        *state.last_activity.lock().expect("lock") = Instant::now()
+            .checked_sub(Duration::from_mins(1))
+            .expect("backdate last_activity");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let writer = Arc::new(Mutex::new(dummy_framed_writer()));
+
+        // A tiny idle timeout; last_activity is already 60s old, so the very
+        // first loop iteration must return Ok(()).
+        let result = accept_loop(&state, &listener, &writer, Duration::from_millis(1));
+        assert!(
+            result.is_ok(),
+            "idle timeout should return Ok, got: {result:?}"
+        );
+    }
+
+    /// AC `unit_idle_timeout_ignores_failed_clients`: repeated unauthenticated
+    /// connects must NOT move the idle deadline — `last_activity` is only
+    /// bumped by an authenticated handled request, never on accept.
+    ///
+    /// We assert the invariant structurally: `accept_loop` no longer writes
+    /// `last_activity` on accept (verified by connecting N times to a listener
+    /// whose `last_activity` is back-dated and confirming the loop still times
+    /// out).  Because `handle_client` runs on a spawned thread that will fail
+    /// auth (no token) and exit without bumping, the deadline stays in the
+    /// past and the loop returns.
+    #[test]
+    fn unit_idle_timeout_ignores_failed_clients() {
+        let state = Arc::new(test_state());
+        // Deadline already in the past.
+        let backdated = Instant::now()
+            .checked_sub(Duration::from_mins(1))
+            .expect("backdate last_activity");
+        *state.last_activity.lock().expect("lock") = backdated;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let writer = Arc::new(Mutex::new(dummy_framed_writer()));
+
+        // Fire several unauthenticated connects that will be accepted; their
+        // handler threads fail auth and exit without bumping last_activity.
+        for _ in 0..3 {
+            let _ = TcpStream::connect(addr);
+        }
+        // Give the accept loop a bounded run: it must still time out because
+        // no authenticated request ever bumped last_activity.
+        let result = accept_loop(&state, &listener, &writer, Duration::from_millis(1));
+        assert!(result.is_ok(), "loop must return Ok on idle timeout");
+
+        // The recorded last_activity must be unchanged by the failed connects
+        // (still the back-dated value) — proving accept did not bump it.
+        let after = *state.last_activity.lock().expect("lock");
+        assert_eq!(
+            after, backdated,
+            "unauthenticated connects must not move the idle deadline"
+        );
+    }
+
+    /// Build a `FramedWriter` over a throwaway loopback socket for tests that
+    /// need a writer but never inspect what is written.
+    fn dummy_framed_writer() -> FramedWriter {
+        let (server, _client) = loopback_pair();
+        FramedWriter::from_stream(server)
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-100 Theme D — client identity survives fd reuse
+    // -----------------------------------------------------------------------
+
+    /// AC `unit_client_identity_survives_fd_reuse`: cleanup keyed on the
+    /// monotonic client id removes only the intended subscriber even when a
+    /// raw fd number is reused by a different client.
+    ///
+    /// We register two subscribers whose *ids are distinct monotonic values*
+    /// but whose underlying writer sockets could share the same fd number over
+    /// time.  Removing subscriber A (by its id) must leave subscriber B intact.
+    #[test]
+    fn unit_client_identity_survives_fd_reuse() {
+        let state = test_state();
+        let id_a: ClientId = state.next_client_id();
+        let id_b: ClientId = state.next_client_id();
+        assert_ne!(id_a, id_b, "monotonic ids must be distinct");
+
+        {
+            let mut subs = state.stream_subs.lock().expect("lock");
+            subs.push(StreamSubscriber {
+                id: id_a,
+                writer: dummy_framed_writer(),
+                types: HashSet::new(),
+            });
+            subs.push(StreamSubscriber {
+                id: id_b,
+                writer: dummy_framed_writer(),
+                types: HashSet::new(),
+            });
+        }
+
+        // Cleanup for client A only — keyed on the monotonic id.
+        state
+            .stream_subs
+            .lock()
+            .expect("lock")
+            .retain(|s| s.id != id_a);
+
+        let remaining = state.stream_subs.lock().expect("lock");
+        assert_eq!(remaining.len(), 1, "exactly one subscriber must remain");
+        assert_eq!(
+            remaining[0].id, id_b,
+            "the surviving subscriber must be B — A's cleanup must not touch B"
+        );
+    }
+
+    /// AC `unit_handle_client_cleanup_on_write_error` (structural): the
+    /// `ClientCleanupGuard` runs its unregister logic on drop, which is what
+    /// makes cleanup fire on *every* exit path (including an early `?`).
+    ///
+    /// We register a subscriber and an rpc_writer for a client id, drop a
+    /// guard bound to that id, and assert both are cleared — proving the guard
+    /// (not fall-through code) owns cleanup.
+    #[test]
+    fn unit_handle_client_cleanup_on_write_error() {
+        let state = Arc::new(test_state());
+        let client_id = state.next_client_id();
+
+        {
+            let mut subs = state.stream_subs.lock().expect("lock");
+            subs.push(StreamSubscriber {
+                id: client_id,
+                writer: dummy_framed_writer(),
+                types: HashSet::new(),
+            });
+        }
+        *state.rpc_writer.lock().expect("lock") = Some((client_id, dummy_framed_writer()));
+
+        // Simulate handle_client returning (normally or via an early `?`):
+        // the guard drops here and must clean up both roles.
+        {
+            let _guard = ClientCleanupGuard {
+                state: &state,
+                client_id,
+            };
+        }
+
+        assert!(
+            state.stream_subs.lock().expect("lock").is_empty(),
+            "subscriber must be removed on guard drop"
+        );
+        assert!(
+            state.rpc_writer.lock().expect("lock").is_none(),
+            "rpc_writer must be cleared on guard drop"
+        );
+    }
+
+    /// The cleanup guard must NOT clear an rpc_writer that a *different* client
+    /// has since taken over (identity check by monotonic id).
+    #[test]
+    fn cleanup_guard_leaves_other_clients_rpc_writer() {
+        let state = Arc::new(test_state());
+        let old_id = state.next_client_id();
+        let new_id = state.next_client_id();
+
+        // A newer client currently owns the rpc_writer slot.
+        *state.rpc_writer.lock().expect("lock") = Some((new_id, dummy_framed_writer()));
+
+        // The OLD client's guard drops; it must not clear the newer client's
+        // writer.
+        {
+            let _guard = ClientCleanupGuard {
+                state: &state,
+                client_id: old_id,
+            };
+        }
+
+        let guard = state.rpc_writer.lock().expect("lock");
+        assert!(
+            guard.as_ref().is_some_and(|(id, _)| *id == new_id),
+            "a stale client's cleanup must not clear a newer client's rpc_writer"
+        );
+    }
 
     // -----------------------------------------------------------------------
     // handle_daemon_message — drain

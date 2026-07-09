@@ -124,6 +124,15 @@ fn live_eval_object_leak_soak() {
     // Poll `daemon status` until the daemon has registered and reports a PID.
     // A fixed post-init sleep raced the daemon's registry write on slow CI
     // runners (`results.pid` absent while the daemon was still coming up).
+    //
+    // iter-100 Theme E: the *root* registration race (a TOCTOU double-spawn
+    // that orphaned the winner) is now closed by the spawn lock held across
+    // check→spawn→register in `resolve_connection_target`, so this test passes
+    // because the auto-started daemon actually registers — not merely because
+    // the poll window was widened. The 10 s budget is retained deliberately as
+    // slack for genuinely slow CI runners (cold Firefox start + first-tab
+    // handshake), not to paper over a race; on a warm machine the daemon
+    // registers in well under a second.
     let status_deadline = std::time::Instant::now() + Duration::from_secs(10);
     let daemon_pid = loop {
         let status_out = Command::new(ff_rdp_bin())
