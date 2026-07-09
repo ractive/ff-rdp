@@ -356,36 +356,23 @@ fn live_locale_pin_launch_sets_lang_env() {
 /// - process exits non-zero
 /// - stderr contains "dns_not_found" or similar neterror-shaped error
 ///
-/// KNOWN FAILING as of iter-100 PR review (2026-07-09): this test was
-/// previously masked end-to-end by an unrelated bug — `live_100_daemon_lifecycle_hardening`
-/// (which sorts alphabetically before `live_61l`) used `tabs` to trigger
-/// daemon auto-start, which never actually started a daemon, failing that
-/// binary and stopping `cargo test`'s whole invocation before it reached
-/// this one (see the fix + note in `eval_object_leak_soak.rs`). Un-masked,
-/// it fails on CI: `navigate` hits a generic 'readyState did not reach
-/// complete' timeout after ~6s instead of a neterror-shaped DNS failure —
-/// likely a genuine gap in how navigate classifies a DNS-resolution failure
-/// vs. a plain load timeout, or CI-runner DNS-resolver behavior for
-/// `.invalid` TLDs differing from a dev machine. Root-causing this is
-/// unrelated to daemon lifecycle (iter-100's scope) and risks a much larger
-/// diff into `navigate.rs`'s error classification; filed as
-/// [[iteration-106-live-test-masking-cascade]] Theme B rather than guessed
-/// at here. Gated behind `FF_RDP_ALLOW_KNOWN_FAILING_DNSFAIL=1` so it
-/// doesn't block the required `live-tests` check for an iter-100 PR that
-/// doesn't own this area.
+/// # iter-106 Theme B — plain `navigate` now classifies a DNS failure
+///
+/// On a DNS-resolution failure Firefox loads `about:neterror?e=dnsNotFound&…`.
+/// That document never reaches the awaited `dom-complete` / `readyState ===
+/// 'complete'` state, so the plain `navigate` wait (`run_core`) used to exhaust
+/// its budget and return a generic `readyState did not reach 'complete'`
+/// [`AppError::Timeout`] (exit 124) — masking the real cause.  `run_with_network`
+/// already checked `listTabs` for an `about:neterror` landing; `run_core` did
+/// not.  iter-106 adds `reclassify_timeout_as_neterror` to `run_core`, so a
+/// bad-DNS `navigate` now surfaces `AppError::Navigation { DnsFail }` —
+/// rendered "DNS resolution failed", `error_type: "nav_dns_fail"`, exit 7.
+/// The `FF_RDP_ALLOW_KNOWN_FAILING_DNSFAIL` gate is removed.
 #[test]
 fn live_navigate_dnsfail() {
     if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
         eprintln!(
             "live_navigate_dnsfail: requires network (DNS resolution); set FF_RDP_LIVE_NETWORK_TESTS=1 to run"
-        );
-        return;
-    }
-    if std::env::var("FF_RDP_ALLOW_KNOWN_FAILING_DNSFAIL").is_err() {
-        eprintln!(
-            "live_navigate_dnsfail: SKIPPING — KNOWN FAILING (navigate does not classify a DNS \
-             failure as a neterror on CI, see doc comment); set \
-             FF_RDP_ALLOW_KNOWN_FAILING_DNSFAIL=1 to run it anyway"
         );
         return;
     }
@@ -661,40 +648,35 @@ fn live_navigate_invalidates_console_actor() {
 // ---------------------------------------------------------------------------
 
 /// `live_eval_chrome_csp_bypass`:
-/// Navigate to a page with CSP `script-src 'none'` (blocks `eval()`) and assert:
-/// 1. `ff-rdp eval "1+1"` succeeds and returns `2` — the chrome-context bypass
-///    via `getProcess(0)` → parent-process console actor is triggered.
-/// 2. The JSON output's `meta.eval_path` is `"chrome"`.
-/// 3. Eval without CSP on a normal page still uses `"page-await"` path.
+/// Navigate to a page with CSP `script-src 'none'` (blocks `eval()`) and assert
+/// that `ff-rdp eval "1+1"` succeeds and returns `2` — evaluation is not
+/// blocked by the page's CSP.
 ///
-/// This test gates Theme A of iter-61x: the `chromeContext: true` field has been
-/// removed; privileged eval now routes through the parent-process descriptor.
+/// # iter-106 Theme A — CSP bypass no longer needs a separate chrome context
 ///
-/// KNOWN FAILING as of iter-100 PR review (2026-07-09): this test was
-/// previously masked end-to-end by an unrelated bug in
-/// `live_100_daemon_lifecycle_hardening` (see the doc comment on
-/// `live_navigate_dnsfail` above, and the fix + note in
-/// `eval_object_leak_soak.rs`). Un-masked, it fails on CI:
-/// `meta.eval_path` comes back `"page-await"` instead of `"chrome"` — the
-/// CSP-bypass detection in the eval path is not triggering for this CSP
-/// shape. Root-causing this is unrelated to daemon lifecycle (iter-100's
-/// scope) and touches `eval.rs`'s CSP/chrome-context routing logic; filed as
-/// [[iteration-106-live-test-masking-cascade]] Theme A rather than guessed
-/// at here. Gated behind `FF_RDP_ALLOW_KNOWN_FAILING_CHROME_CSP=1` so it
-/// doesn't block the required `live-tests` check for an iter-100 PR that
-/// doesn't own this area.
+/// This test originally (iter-61x Theme A) asserted `meta.eval_path == "chrome"`,
+/// expecting eval on a CSP-restricted page to route through a parent-process
+/// console actor (`getProcess(0)`).  **iter-93 deliberately removed that
+/// chrome-context bypass.**  Firefox's `evaluateJSAsync` routes through
+/// `Debugger.evalInGlobal`
+/// (`devtools/server/actors/webconsole/eval-with-debugger.js:119-247`), which
+/// operates at the Debugger API level — *outside* the page's scripting
+/// environment — and is therefore not subject to page CSP.  So the ordinary
+/// `page-await` path already bypasses CSP; the extra chrome hop was dead weight
+/// and was dropped, and `meta.eval_path` is now always `"page-await"`
+/// (`eval.rs:274-276`).
+///
+/// The `"chrome"` assertion was thus testing behaviour that no longer exists —
+/// which is exactly why it surfaced as `"page-await"` once un-masked by the
+/// iter-100 daemon-autostart fix.  The correct, still-load-bearing guarantee is
+/// the *observable* one: eval must succeed and return the right value on a page
+/// whose CSP blocks `eval()`.  This test now asserts that, unconditionally (the
+/// `FF_RDP_ALLOW_KNOWN_FAILING_CHROME_CSP` gate is gone).  `live_eval_csp` above
+/// covers the same guarantee for `document.title`.
 #[test]
 #[ignore = "requires live Firefox — FF_RDP_LIVE_TESTS=1"]
 fn live_eval_chrome_csp_bypass() {
     if std::env::var("FF_RDP_LIVE_TESTS").as_deref() != Ok("1") {
-        return;
-    }
-    if std::env::var("FF_RDP_ALLOW_KNOWN_FAILING_CHROME_CSP").is_err() {
-        eprintln!(
-            "live_eval_chrome_csp_bypass: SKIPPING — KNOWN FAILING (eval_path is 'page-await' \
-             not 'chrome' on this CSP page, see doc comment); set \
-             FF_RDP_ALLOW_KNOWN_FAILING_CHROME_CSP=1 to run it anyway"
-        );
         return;
     }
 
@@ -723,15 +705,16 @@ fn live_eval_chrome_csp_bypass() {
         String::from_utf8_lossy(&nav.stderr)
     );
 
-    // Eval a simple expression — the chrome bypass path should be triggered.
+    // Eval a simple expression — must succeed via the CSP-safe page-await path
+    // (Debugger.evalInGlobal), not blocked by the page's `script-src 'none'`.
     let output = ff.run(&["eval", "1+1"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         output.status.success(),
-        "eval '1+1' on CSP-restricted page must succeed via parent-process bypass\n\
-         stdout={stdout}\nstderr={stderr}"
+        "eval '1+1' on CSP-restricted page must succeed (Debugger.evalInGlobal \
+         bypasses page CSP)\nstdout={stdout}\nstderr={stderr}"
     );
 
     let json = parse_json(&output);
@@ -739,8 +722,10 @@ fn live_eval_chrome_csp_bypass() {
         json["results"], 2,
         "eval '1+1' should return 2, got: {json}"
     );
+    // iter-93: the chrome-context bypass was removed; eval always reports the
+    // CSP-safe page-await path.
     assert_eq!(
-        json["meta"]["eval_path"], "chrome",
-        "meta.eval_path must be 'chrome' on CSP bypass, got: {json}"
+        json["meta"]["eval_path"], "page-await",
+        "meta.eval_path must be 'page-await' since iter-93 dropped the chrome bypass, got: {json}"
     );
 }

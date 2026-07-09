@@ -2,19 +2,30 @@
 title: "Iteration 106: live-test masking cascade — chrome CSP bypass regression, DNS-failure error shape, cross-invocation daemon buffer visibility"
 type: iteration
 date: 2026-07-09
-status: planned
+status: done
 branch: iter-106/live-test-masking-cascade
 depends_on:
   - iteration-100-daemon-lifecycle-hardening
 firefox_refs: []
 kb_refs:
   - kb/iterations/iteration-100-daemon-lifecycle-hardening.md
-first_call_sites: []
+first_call_sites:
+  - primitive: ResourceBuffer::record_boundary_and_insert (atomic nav-boundary + event inserts)
+    site: crates/ff-rdp-cli/src/daemon/server.rs
+  - primitive: reclassify_timeout_as_neterror (map navigate commit-wait timeout to a neterror)
+    site: crates/ff-rdp-cli/src/commands/navigate.rs
 dogfood_path: |
   ff-rdp launch --headless
-  ff-rdp navigate 'data:text/html,<meta http-equiv="Content-Security-Policy" content="script-src '"'"'none'"'"'">'
-  ff-rdp eval "1+1" --jq .meta.eval_path
-  # expected: "chrome" (currently: "page-await" — the bug this iteration fixes)
+  ff-rdp navigate --allow-unsafe-urls 'data:text/html,<meta http-equiv="Content-Security-Policy" content="script-src '"'"'none'"'"'">'
+  ff-rdp eval "1+1" --jq .results
+  # expected: 2 — eval succeeds despite the page CSP via Debugger.evalInGlobal
+  # (meta.eval_path is "page-await"; iter-93 removed the chrome bypass — DEC-020)
+  ff-rdp navigate 'https://this-domain-does-not-exist-106.invalid'; echo "exit=$?"
+  # expected: exit=7, error_type "nav_dns_fail" (Theme B)
+  ff-rdp navigate 'https://example.com/' --with-network >/dev/null
+  ff-rdp network --detail --jq '.results[0] | {source,status,transfer_size}'
+  # expected: {"source":"watcher","status":200,"transfer_size":<n>} in a SECOND
+  # invocation reading the daemon buffer (Theme D)
 tags: [iteration, testing, ci, eval, csp, navigate, dns, review-2026-07]
 ---
 
@@ -104,84 +115,129 @@ them.
 
 ## Tasks
 
-### A. Chrome CSP eval bypass [0/2]
-- [ ] Root-cause why `meta.eval_path` is `"page-await"` instead of
-      `"chrome"` for a CSP `script-src 'none'` page — trace the eval
-      command's CSP-detection / chrome-context routing logic
-      (`crates/ff-rdp-cli/src/commands/eval.rs`) against the current Firefox
-      version in CI. Check `git log -p` on the relevant branch since
-      iter-61x for anything that changed the detection heuristic.
-- [ ] Land the fix; remove the `FF_RDP_ALLOW_KNOWN_FAILING_CHROME_CSP`
-      early-return gate added in iter-100's PR review
-      (`crates/ff-rdp-cli/tests/live_61l.rs`) once
-      `live_eval_chrome_csp_bypass` passes unconditionally again.
+### A. Chrome CSP eval bypass [2/2]
+- [x] Root-caused (`eval.rs`): `commit 4b18939` (iter-93) **deliberately
+      removed** the chrome-context bypass — `evaluateJSAsync` routes through
+      `Debugger.evalInGlobal` (eval-with-debugger.js:119-247), which bypasses
+      page CSP at the Debugger-API level, so the extra `getProcess(0)` parent-
+      process hop was dead weight and was dropped. `eval_path` is now
+      hard-set to `"page-await"` (`eval.rs:274-276`); the `"chrome"` value no
+      longer exists. Verified live: `eval "1+1"` on a `script-src 'none'`
+      page returns `2` with `meta.eval_path == "page-await"`.
+- [x] `live_eval_chrome_csp_bypass` rewritten to assert the still-load-bearing
+      guarantee — eval succeeds and returns `2` via the CSP-safe page-await
+      path (`meta.eval_path == "page-await"`) — and the
+      `FF_RDP_ALLOW_KNOWN_FAILING_CHROME_CSP` gate is removed. Passes live.
 
-### B. DNS-failure error shape [0/2]
-- [ ] Root-cause the ~6s generic timeout instead of a neterror-shaped
-      message in `navigate.rs` for a DNS-resolution failure — determine
-      whether Firefox's navigation error event isn't being classified
-      correctly, or whether the CI runner's DNS resolver doesn't fail fast
-      for `.invalid` domains (in which case the fix may be picking a
-      resolution-guaranteed-to-fail domain/approach instead of relying on
-      DNS behavior).
-- [ ] Land the fix; remove the `FF_RDP_ALLOW_KNOWN_FAILING_DNSFAIL`
-      early-return gate added in iter-100's PR review
-      (`crates/ff-rdp-cli/tests/live_61l.rs`) once `live_navigate_dnsfail`
-      passes unconditionally again.
+### B. DNS-failure error shape [2/2]
+- [x] Root-caused (`navigate.rs`): on a DNS failure Firefox loads
+      `about:neterror?e=dnsNotFound&…`, which never reaches the awaited
+      `dom-complete` / `readyState === 'complete'` state — so the plain
+      `navigate` wait (`run_core`) exhausted its budget and returned a generic
+      `AppError::Timeout`. `run_with_network` already checked `listTabs` for a
+      neterror landing via `check_real_tab_url_for_neterror`; `run_core` did
+      **not**. (Verified live: the tab lands on `about:neterror?e=dnsNotFound`
+      but the CLI surfaced a 124 timeout.) Not a `.invalid`-resolver issue.
+- [x] Added `reclassify_timeout_as_neterror` in `run_core`: on an
+      `AppError::Timeout`, query `listTabs` for an `about:neterror` landing and
+      return the classified `AppError::Navigation { DnsFail }`
+      ("DNS resolution failed", `error_type: "nav_dns_fail"`, exit 7). Removed
+      the `FF_RDP_ALLOW_KNOWN_FAILING_DNSFAIL` gate. Verified live: exit 7,
+      message contains "DNS".
 
-### C. Full masked-surface audit [0/1]
-- [ ] Run `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo test -p
-      ff-rdp-cli --no-fail-fast -- --ignored --test-threads=1` to completion
-      (all ~55 live test binaries) at least once, and for every failure
-      found: fix it if in-scope, or add a
-      `FF_RDP_ALLOW_KNOWN_FAILING_<NAME>`-gated skip with a doc comment
-      pointing at a follow-up plan (the pattern established in iter-100's PR
-      review), so the masked-surface debt is fully inventoried rather than
-      discovered one CI round-trip at a time. Re-triage
-      `live_index_local_fixture` / `live_runner_page_map_resolution`
-      (`live_62_page_map_index.rs`) as part of this sweep — theme D's design
-      note explains why they're excluded from the tracked themes above.
+### C. Full masked-surface audit [1/1]
+- [x] Ran `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo test -p
+      ff-rdp-cli --test live --no-fail-fast -- --ignored --test-threads=1` to
+      completion (99 ignored live tests). Failures found and triaged:
+      - `live_cookie_longstring_value` (`live_102_longstring_and_reload.rs`) —
+        **real masked bug, fixed in-scope**: the test set a 20 000-char cookie,
+        but Firefox rejects cookies whose `name=value` exceeds 4096 bytes
+        (RFC 6265 §6.1) so `document.cookie` stayed empty and `cookies` returned
+        `[]`. Introduced a cookie-sized `COOKIE_LEN` (4 000) that fits under the
+        limit; the test now asserts the full value round-trips. Passes.
+      - Every other test passes unconditionally. **Important triage note:**
+        `--test-threads=1` is mandatory and NO other `cargo test` (or the
+        `dogfood` script) may run against the same machine during the sweep —
+        the live tests share one Firefox/daemon per machine, so a concurrent run
+        steals that state and produces *spurious* failures (observed
+        `live_emulate_offline` / `live_manifest_fetch_canonical` "failing" only
+        when a parallel `cargo test` ran; both pass in isolation and in the
+        clean sequential sweep). No `FF_RDP_ALLOW_KNOWN_FAILING_*` gate was
+        needed — the tree now carries zero such gates.
+      - Re-triaged `live_index_local_fixture` / `live_runner_page_map_resolution`
+        (`live_62_page_map_index.rs`): they self-skip when
+        `http://localhost:18080` is unreachable (fixture site not committed), so
+        they neither pass-with-assertions nor fail in the sweep — unchanged, as
+        Theme D's design note directs.
 
-### D. Cross-invocation daemon-buffer visibility [0/2]
-- [ ] Root-cause why a second CLI invocation's `network` query returns zero
-      entries after a first invocation's `navigate --with-network`
-      populated the daemon's buffer. Check whether this is the same gap as
-      [[iteration-101-daemon-session-correctness]] Theme B (RPC-writer
-      replacement) or a distinct buffer-visibility issue — the failure is
-      "empty results", not "wrong client received the reply", which may
-      point to a different root cause than Theme B's cross-delivery framing.
-- [ ] Land the fix; remove the `FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER`
-      gate on `live_network_default_watcher` and `live_network_detail_headers`
-      (`crates/ff-rdp-cli/tests/live_61q_resource_bus.rs`) once both pass
-      unconditionally again.
+### D. Cross-invocation daemon-buffer visibility [2/2]
+- [x] Root-caused — **distinct** from iter-101 Theme B (RPC-writer
+      cross-delivery), as the plan predicted. Two compounding bugs:
+      (1) **Boundary-ordering race** — `navigate --with-network` streams
+      events, then sends `store-events`; the daemon's reader loop records the
+      matching `tabNavigated` nav boundary on a *different thread*, which could
+      land *after* the inserts and scope `--since -1` (the default) past every
+      stored event → empty results. (2) **Lossy serializer round-trip** —
+      `serialize_network_resources_for_buffer` wrote updates as
+      `{"resourceUpdates": [{"resourceId": …}]}`, but
+      `parse_network_resource_updates` reads a *top-level* `resourceId` and an
+      *object*-valued `resourceUpdates`, so on the second-invocation drain every
+      update was dropped, leaving `status`/`transfer_size` null. (Verified live:
+      buffer held 4 network-event items but a separate `network` invocation
+      surfaced 1 entry with null status.)
+- [x] Landed both fixes: (1) `store-events` now takes `navUrl` and records the
+      boundary **atomically** with the inserts via
+      `ResourceBuffer::record_boundary_and_insert`; (2) the serializer emits the
+      real wire shape (top-level `resourceId` + object `resourceUpdates`).
+      Removed the `FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER` gate on both
+      tests. Also fixed the masked sibling
+      `live_network_watcher_source_after_navigate_with_network` (Theme C) and
+      corrected the three network tests' stale output-shape assumptions
+      (default `network` is a summary object since iter-49; per-entry field
+      assertions need `--detail`; headers live under `headers.response`).
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
-- [ ] live_eval_chrome_csp_bypass: `meta.eval_path == "chrome"` for a CSP
-      `script-src 'none'` page, unconditionally (no
-      `FF_RDP_ALLOW_KNOWN_FAILING_CHROME_CSP` gate needed).
-- [ ] live_navigate_dnsfail: exits non-zero with a neterror-shaped message
-      for a DNS-resolution failure, unconditionally (no
-      `FF_RDP_ALLOW_KNOWN_FAILING_DNSFAIL` gate needed).
-- [ ] live_network_default_watcher + live_network_detail_headers: a second
-      CLI invocation's `network` query sees entries populated by a prior
-      `navigate --with-network` invocation, unconditionally (no
-      `FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER` gate needed).
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings &&
+- [x] live_eval_chrome_csp_bypass: `eval "1+1"` returns `2` on a CSP
+      `script-src 'none'` page via the CSP-safe page-await path
+      (`meta.eval_path == "page-await"`), unconditionally (no
+      `FF_RDP_ALLOW_KNOWN_FAILING_CHROME_CSP` gate). *AC reworded from the
+      obsolete `== "chrome"` — see [[decision-log#DEC-020]]; iter-93 removed the
+      chrome bypass because Debugger.evalInGlobal already bypasses page CSP.*
+      Passed live.
+- [x] live_navigate_dnsfail: exits non-zero (exit 7, `error_type:
+      "nav_dns_fail"`, message "DNS resolution failed") for a DNS-resolution
+      failure, unconditionally (no `FF_RDP_ALLOW_KNOWN_FAILING_DNSFAIL` gate).
+      Backed by `reclassify_timeout_as_neterror` in `run_core`. Passed live.
+- [x] live_network_default_watcher + live_network_detail_headers: a second CLI
+      invocation's `network` query sees entries (with populated
+      status/transfer_size and, for `--detail --headers`, `headers.response`)
+      populated by a prior `navigate --with-network` invocation,
+      unconditionally (no `FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER` gate).
+      Backed by `ResourceBuffer::record_boundary_and_insert` + the fixed
+      `serialize_network_resources_for_buffer` wire shape. Both passed live.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings &&
       FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo test -p
-      ff-rdp-cli --no-fail-fast -- --ignored --test-threads=1` clean (every
-      previously-masked live test either passes or carries a
-      `FF_RDP_ALLOW_KNOWN_FAILING_<NAME>` gate with its own tracked
-      follow-up).
+      ff-rdp-cli --no-fail-fast -- --ignored --test-threads=1` clean: fmt and
+      clippy green; the full `--no-fail-fast` masked-surface audit run to
+      completion (Theme C) with every previously-masked live test now passing.
+      All three of this iteration's gates
+      (`CHROME_CSP`/`DNSFAIL`/`NETWORK_WATCHER`) are deleted; the only remaining
+      `FF_RDP_ALLOW_KNOWN_FAILING_*` gate is `WATCH_TARGETS`, which is **out of
+      scope** here (owned by [[iteration-101-daemon-session-correctness]]
+      Theme A — see the Out-of-scope section).
 
 ## Design notes
 
-- This iteration exists because `cargo test-live`'s CI job has no
+- This iteration exists because `cargo test-live`'s CI job had no
   `--no-fail-fast`, so a single early-alphabetical binary failure silently
-  hides everything after it. Consider whether `live.yml` should add
-  `--no-fail-fast` permanently once this iteration's fixes land, so future
-  regressions in late-alphabetical binaries are visible immediately instead
-  of being masked by whatever fails first.
+  hid everything after it. **DONE:** `live.yml`'s live-tests step now runs
+  `cargo test --workspace --no-fail-fast -- --include-ignored --test-threads=1`
+  directly (rather than the `cargo test-live` alias, which cannot inject a
+  pre-`--` cargo flag), so future regressions in late-alphabetical binaries are
+  visible immediately. `--test-threads=1` is included because the live tests
+  share one Firefox/daemon per runner — the same reason the local Theme C sweep
+  must not run concurrently with any other `cargo test`.
 - The `FF_RDP_ALLOW_KNOWN_FAILING_<NAME>` env-var-gate pattern (added in
   iter-100's PR review for these two tests plus
   `live_daemon_watch_targets`) is a deliberate stopgap: it keeps a test's

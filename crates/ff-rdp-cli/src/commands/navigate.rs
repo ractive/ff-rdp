@@ -505,6 +505,45 @@ fn check_real_tab_url_for_neterror(
     })
 }
 
+/// Map a commit-wait [`AppError::Timeout`] to a neterror-shaped
+/// [`AppError::Navigation`] when the tab actually landed on `about:neterror`
+/// (iter-106 Theme B).
+///
+/// The plain `navigate` path (`run_core`) waits for `dom-complete` / a fresh
+/// `readyState === 'complete'`.  On a DNS-resolution failure Firefox loads
+/// `about:neterror` instead — that document never reaches the awaited state, so
+/// the wait exhausts its budget and returns a generic
+/// `readyState did not reach 'complete'` [`AppError::Timeout`] (exit code 124).
+/// That masks the real cause: the domain does not resolve.
+///
+/// `run_with_network` already calls [`check_real_tab_url_for_neterror`] after
+/// its drain settles; `run_core` did not, so a bad-DNS `navigate` surfaced a
+/// timeout rather than a `nav_dns_fail`.  This helper closes that gap: on a
+/// `Timeout`, it queries `listTabs` for an `about:neterror` landing and, if
+/// found, returns the classified [`AppError::Navigation`] (rendered as e.g.
+/// "DNS resolution failed", `error_type: "nav_dns_fail"`, exit code 7).  Any
+/// non-timeout error, or a timeout with no neterror landing, passes through
+/// unchanged.
+fn reclassify_timeout_as_neterror(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    requested_url: &str,
+    result: Result<CommitInfo, AppError>,
+) -> Result<CommitInfo, AppError> {
+    match result {
+        Ok(ci) => Ok(ci),
+        Err(AppError::Timeout(msg)) => {
+            // Refresh the console/tab fronts so `listTabs` sees the committed
+            // about:neterror document rather than a stale target.
+            refresh_console_actor(ctx);
+            match check_real_tab_url_for_neterror(ctx, requested_url) {
+                Some(nav_err) => Err(nav_err),
+                None => Err(AppError::Timeout(msg)),
+            }
+        }
+        Err(other) => Err(other),
+    }
+}
+
 /// Navigate to `url` and return the result value without printing.
 ///
 /// Called by the script runner, which handles its own NDJSON output.
@@ -588,7 +627,8 @@ pub fn run_core(
             .map_err(AppError::from)?;
         // Theme K: refresh console actor so eval hits the new document.
         refresh_console_actor(&mut ctx);
-        let ci = wait_for_readystate_complete(&mut ctx, cli.timeout, pre_nav_epoch)?;
+        let rs_result = wait_for_readystate_complete(&mut ctx, cli.timeout, pre_nav_epoch);
+        let ci = reclassify_timeout_as_neterror(&mut ctx, url, rs_result)?;
         Some(ci)
     } else {
         // Events or Both strategy: subscribe to document-event resources before
@@ -715,7 +755,7 @@ pub fn run_core(
             Err(e) => Err(e),
         };
 
-        Some(result?)
+        Some(reclassify_timeout_as_neterror(&mut ctx, url, result)?)
     };
 
     // Theme K: invalidate the cached consoleActor after any navigate so the
@@ -885,7 +925,8 @@ pub fn run_with_network(
             let update_refs: Vec<(u64, &_)> =
                 all_updates.iter().map(|u| (u.resource_id, u)).collect();
             let items = serialize_network_resources_for_buffer(&all_resources, &update_refs);
-            if let Err(e) = crate::daemon::client::store_network_events(ctx.transport_mut(), &items)
+            if let Err(e) =
+                crate::daemon::client::store_network_events(ctx.transport_mut(), url, &items)
                 && cli.is_verbose()
             {
                 eprintln!(

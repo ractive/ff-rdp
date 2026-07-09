@@ -31,6 +31,16 @@ use crate::common::{LiveFirefox, base_args, ff_rdp_bin};
 /// grip, exercising the fetch path rather than the inline fast path.
 const BIG_LEN: usize = 20_000;
 
+/// Cookie-value length used by `live_cookie_longstring_value`.
+///
+/// A single cookie's `name=value` pair is capped at 4096 bytes by Firefox
+/// (RFC 6265 §6.1); a value at `BIG_LEN` (20 000) is **silently rejected** —
+/// `document.cookie` stays empty and `cookies` returns `[]` (iter-106 Theme C
+/// masked-surface audit found the test failing exactly here).  4000 chars is
+/// the largest value that fits under the limit alongside the `big=` name, so
+/// it still exercises the storage actor returning a long value in full.
+const COOKIE_LEN: usize = 4_000;
+
 /// Spawn a minimal HTTP server that serves `body` (with `Content-Type:
 /// text/html`) on any GET.  Bounded to 10 accepts so the thread exits after the
 /// test.  Returns `(port, join-handle)`.
@@ -119,8 +129,9 @@ fn live_dom_text_longstring_roundtrip() {
     );
 }
 
-/// `live_cookie_longstring_value` (AC): a 20 000-char cookie value is returned
-/// in full by `cookies`.
+/// `live_cookie_longstring_value` (AC): a large (near-4 KB) cookie value is
+/// returned in full by `cookies`.  See [`COOKIE_LEN`] for why this is not
+/// `BIG_LEN` — Firefox rejects cookies whose `name=value` exceeds 4096 bytes.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_cookie_longstring_value() {
@@ -147,15 +158,26 @@ fn live_cookie_longstring_value() {
         String::from_utf8_lossy(&nav.stderr)
     );
 
-    // Set a big cookie value via JS (a single cookie can hold ~4 KB per RFC,
-    // but Firefox accepts larger values in practice; if it clamps, the storage
-    // actor still returns whatever it stored — a grip once it exceeds ~10 KB).
-    let set = format!("document.cookie = 'big=' + 'x'.repeat({BIG_LEN})");
+    // Set a large cookie value via JS.  A single cookie's `name=value` pair is
+    // capped at 4096 bytes by Firefox (RFC 6265 §6.1); values above that are
+    // silently rejected (`document.cookie` stays empty).  `COOKIE_LEN` (4000)
+    // fits under the limit alongside the `big=` name, so Firefox stores it and
+    // the storage actor returns the full value.
+    let set = format!(
+        "document.cookie = 'big=' + 'x'.repeat({COOKIE_LEN}); document.cookie.includes('big=')"
+    );
     let ev = run(ff.port(), &["eval", &set]);
     assert!(
         ev.status.success(),
         "eval set-cookie failed: {}",
         String::from_utf8_lossy(&ev.stderr)
+    );
+    let ev_json: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&ev.stdout).trim())
+            .expect("set-cookie eval output must be JSON");
+    assert_eq!(
+        ev_json["results"], true,
+        "Firefox must accept the {COOKIE_LEN}-char cookie (under the 4096-byte limit)"
     );
 
     let out = run(ff.port(), &["cookies"]);
@@ -183,6 +205,12 @@ fn live_cookie_longstring_value() {
     assert!(
         value.chars().all(|c| c == 'x'),
         "cookie value must be all 'x'; got a value of len {}",
+        value.len()
+    );
+    assert_eq!(
+        value.len(),
+        COOKIE_LEN,
+        "cookie value must round-trip at full length ({COOKIE_LEN}); got {}",
         value.len()
     );
     eprintln!(

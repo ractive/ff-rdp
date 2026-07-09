@@ -235,41 +235,52 @@ pub(crate) fn serialize_network_resources_for_buffer(
         }));
     }
     for (rid, u) in updates {
-        // Reconstruct the resourceUpdates wrapper that `drain_network_from_daemon_since`
-        // looks for to identify update items.
-        let mut upd = json!({
-            "resourceId": rid,
-        });
+        // Reconstruct the wire shape that `parse_network_resource_updates`
+        // reads (watcher.rs): a top-level `resourceId` plus a `resourceUpdates`
+        // **object** carrying the mutated fields.
+        //
+        // iter-106 Theme D: the previous shape nested `resourceId` *inside* an
+        // array-valued `resourceUpdates` (`{"resourceUpdates": [{"resourceId":
+        // …}]}`).  On the second-invocation drain, `parse_network_resource_updates`
+        // looks for `item.get("resourceId")` at the top level and treats
+        // `resourceUpdates` as an object — so every stored update was silently
+        // dropped (`resourceId` missing → `continue`), leaving the merged
+        // network entry with `status: null` / `transfer_size: null`.  Matching
+        // the real `resources-updated-array` shape makes the round-trip
+        // lossless.  `drain_network_from_daemon_since` still classifies these as
+        // updates via the presence of `resourceUpdates`.
+        let mut ru = serde_json::Map::new();
         if let Some(ref s) = u.status {
-            upd["status"] = json!(s);
+            ru.insert("status".to_owned(), json!(s));
         }
         if let Some(ref h) = u.http_version {
-            upd["httpVersion"] = json!(h);
+            ru.insert("httpVersion".to_owned(), json!(h));
         }
         if let Some(ref m) = u.mime_type {
-            upd["mimeType"] = json!(m);
+            ru.insert("mimeType".to_owned(), json!(m));
         }
         if let Some(t) = u.total_time {
-            upd["totalTime"] = json!(t);
+            ru.insert("totalTime".to_owned(), json!(t));
         }
         if let Some(c) = u.content_size {
-            upd["contentSize"] = json!(c);
+            ru.insert("contentSize".to_owned(), json!(c));
         }
         if let Some(ts) = u.transferred_size {
-            upd["transferredSize"] = json!(ts);
+            ru.insert("transferredSize".to_owned(), json!(ts));
         }
         if let Some(fc) = u.from_cache {
-            upd["fromCache"] = json!(fc);
+            ru.insert("fromCache".to_owned(), json!(fc));
         }
         if let Some(ref ra) = u.remote_address {
-            upd["remoteAddress"] = json!(ra);
+            ru.insert("remoteAddress".to_owned(), json!(ra));
         }
         if let Some(ref ss) = u.security_state {
-            upd["securityState"] = json!(ss);
+            ru.insert("securityState".to_owned(), json!(ss));
         }
-        // The `resourceUpdates` wrapper is what distinguishes update items from
-        // resource items in `drain_network_from_daemon_since`.
-        items.push(json!({"resourceUpdates": [upd]}));
+        items.push(json!({
+            "resourceId": rid,
+            "resourceUpdates": Value::Object(ru),
+        }));
     }
     items
 }
@@ -593,5 +604,55 @@ mod tests {
             note.contains("method") && note.contains("status"),
             "note should mention both method and status: {note:?}"
         );
+    }
+
+    /// iter-106 Theme D: the buffer serialization must round-trip losslessly
+    /// through `parse_network_resource_updates`.
+    ///
+    /// The daemon stores `serialize_network_resources_for_buffer` output and a
+    /// later, separate `ff-rdp network` invocation drains + re-parses it.  The
+    /// former shape (`{"resourceUpdates": [{"resourceId": …}]}`) nested the id
+    /// inside an *array*, so `parse_network_resource_updates` — which reads a
+    /// top-level `resourceId` and treats `resourceUpdates` as an *object* —
+    /// dropped every update, leaving `status`/`transfer_size` null across the
+    /// invocation boundary.  This guards the corrected shape.
+    #[test]
+    fn serialize_buffer_update_round_trips_through_parser() {
+        use ff_rdp_core::parse_network_resource_updates;
+
+        let update = NetworkResourceUpdate {
+            resource_id: 42,
+            status: Some("200".to_owned()),
+            http_version: Some("HTTP/2".to_owned()),
+            mime_type: Some("text/html".to_owned()),
+            total_time: Some(45),
+            content_size: Some(528),
+            transferred_size: Some(371),
+            from_cache: Some(false),
+            remote_address: Some("93.184.215.14".to_owned()),
+            security_state: Some("secure".to_owned()),
+        };
+
+        let items = serialize_network_resources_for_buffer(&[], &[(42, &update)]);
+        assert_eq!(items.len(), 1, "one update item expected");
+        // The stored item must expose a top-level resourceId + an object-valued
+        // resourceUpdates, exactly what the wire parser consumes.
+        assert_eq!(items[0]["resourceId"], 42);
+        assert!(
+            items[0]["resourceUpdates"].is_object(),
+            "resourceUpdates must be an object, got: {}",
+            items[0]
+        );
+
+        // Reconstruct the resources-updated-array wrapper and re-parse.
+        let wrapper = json!({"array": [["network-event", items]]});
+        let parsed = parse_network_resource_updates(&wrapper);
+        assert_eq!(parsed.len(), 1, "update must survive the round-trip");
+        assert_eq!(parsed[0].resource_id, 42);
+        assert_eq!(parsed[0].status.as_deref(), Some("200"));
+        assert_eq!(parsed[0].transferred_size, Some(371));
+        assert_eq!(parsed[0].content_size, Some(528));
+        assert_eq!(parsed[0].from_cache, Some(false));
+        assert_eq!(parsed[0].remote_address.as_deref(), Some("93.184.215.14"));
     }
 }

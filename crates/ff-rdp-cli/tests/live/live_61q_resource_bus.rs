@@ -47,31 +47,24 @@ fn require_env(var: &str) -> bool {
 ///
 /// Re-greens iter-61l C; exercises the `ResourceCommand` bus network path.
 ///
-/// KNOWN FAILING as of iter-100 PR review (2026-07-09): un-masked by the
-/// same `tabs`-vs-`eval` daemon-autostart fix documented on
-/// `live_navigate_dnsfail` in `live_61l.rs` (see that doc comment and
-/// `eval_object_leak_soak.rs`'s fix). `network` (a second, separate CLI
-/// invocation) returns zero entries after `navigate --with-network` (a
-/// first invocation) populated the daemon's buffer — a genuine
-/// cross-invocation daemon-state gap, not present before because `navigate`
-/// never actually reached a real daemon either. Likely related to
-/// iteration-101 Theme B (concurrent-client RPC-writer replacement) or a
-/// buffer-visibility race between the two invocations; needs live
-/// investigation. Filed as
-/// [[iteration-106-live-test-masking-cascade]] Theme D. Gated behind
-/// `FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER=1`.
+/// # iter-106 Theme D — cross-invocation daemon buffer now visible
+///
+/// This asserts the cross-invocation contract: a first CLI invocation
+/// (`navigate --with-network`) streams events and stores them in the daemon
+/// buffer, then a second, separate invocation (`network`) drains that buffer
+/// under the default `--since -1` scope.  It used to return zero entries — the
+/// daemon's `store-events` handler inserted the batch, but the Firefox reader
+/// loop recorded the matching `tabNavigated` boundary on another thread, which
+/// could land *after* the inserts and scope `--since -1` past every stored
+/// event.  iter-106 makes `navigate --with-network` pass `navUrl` to
+/// `store-events`, and the daemon records the boundary **atomically** with the
+/// inserts (`ResourceBuffer::record_boundary_and_insert`), so the batch is
+/// always visible.  The `FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER` gate is
+/// removed.
 #[test]
 #[ignore = "requires Firefox, network access, FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1"]
 fn live_network_default_watcher() {
     if !require_env("FF_RDP_LIVE_TESTS") || !require_env("FF_RDP_LIVE_NETWORK_TESTS") {
-        return;
-    }
-    if std::env::var("FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER").is_err() {
-        eprintln!(
-            "live_network_default_watcher: SKIPPING — KNOWN FAILING (network buffer empty \
-             after a separate navigate invocation, see doc comment); set \
-             FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER=1 to run it anyway"
-        );
         return;
     }
 
@@ -101,10 +94,13 @@ fn live_network_default_watcher() {
         String::from_utf8_lossy(&nav_output.stderr)
     );
 
-    // Query the network buffer.
+    // Query the network buffer.  Use `--detail` so `results` is the per-entry
+    // array this test's field-level assertions read: the default `network`
+    // output is a summary object (`total_requests`, `slowest`, …), not an
+    // array, and has been since iter-49's output-size controls landed.
     let net_output = std::process::Command::new(ff_rdp_bin())
         .args(base())
-        .args(["network"])
+        .args(["network", "--detail"])
         .output()
         .expect("network");
     assert!(
@@ -147,23 +143,14 @@ fn live_network_default_watcher() {
 ///
 /// Closes iter-61l N1 regression.
 ///
-/// KNOWN FAILING as of iter-100 PR review (2026-07-09): same
-/// cross-invocation daemon-state gap as `live_network_default_watcher`
-/// above — see its doc comment. Filed as
-/// [[iteration-106-live-test-masking-cascade]] Theme D. Gated behind
-/// `FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER=1`.
+/// iter-106 Theme D: same cross-invocation daemon-buffer visibility fix as
+/// `live_network_default_watcher` above (atomic boundary + inserts in the
+/// daemon's `store-events` handler).  The
+/// `FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER` gate is removed.
 #[test]
 #[ignore = "requires Firefox, network access, FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1"]
 fn live_network_detail_headers() {
     if !require_env("FF_RDP_LIVE_TESTS") || !require_env("FF_RDP_LIVE_NETWORK_TESTS") {
-        return;
-    }
-    if std::env::var("FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER").is_err() {
-        eprintln!(
-            "live_network_detail_headers: SKIPPING — KNOWN FAILING (network buffer empty \
-             after a separate navigate invocation, see doc comment); set \
-             FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER=1 to run it anyway"
-        );
         return;
     }
 
@@ -216,15 +203,20 @@ fn live_network_detail_headers() {
         "live_network_detail_headers: expected meta.source=watcher, got: {source:?}"
     );
 
-    // At least one entry should have response headers.
+    // At least one entry should have response headers.  `--headers` attaches
+    // them under `headers.response` (the request/response pair), fetched from
+    // the NetworkEventActor — which stays valid across invocations via the
+    // daemon connection, so the cross-invocation drain can still resolve them.
     let has_headers = entries.iter().any(|e| {
-        e.get("response_headers")
+        e.get("headers")
+            .and_then(|h| h.get("response"))
             .and_then(|h| h.as_array())
             .is_some_and(|a| !a.is_empty())
     });
     assert!(
         has_headers,
-        "live_network_detail_headers: expected at least one entry with response_headers"
+        "live_network_detail_headers: expected at least one entry with headers.response; \
+         entries: {entries:?}"
     );
 }
 
