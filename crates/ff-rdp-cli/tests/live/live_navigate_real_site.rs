@@ -46,8 +46,10 @@ fn live_navigate_dom_complete_within_default_timeout() {
 
     let mut args = base_args(ff.port());
     // Explicitly pass --wait-strategy both for backward compat of this test name.
+    // iter-110 Theme B(a): data: URLs require --allow-unsafe-urls.
     args.extend([
         "navigate".to_owned(),
+        "--allow-unsafe-urls".to_owned(),
         FIXTURE_URL.to_owned(),
         "--wait-strategy".to_owned(),
         "both".to_owned(),
@@ -126,7 +128,12 @@ fn live_navigate_default_completes_within_timeout() {
 
     // NO --wait-strategy flag — uses the default (both).
     let mut args = base_args(ff.port());
-    args.extend(["navigate".to_owned(), FIXTURE_URL.to_owned()]);
+    // iter-110 Theme B(a): data: URLs require --allow-unsafe-urls.
+    args.extend([
+        "navigate".to_owned(),
+        "--allow-unsafe-urls".to_owned(),
+        FIXTURE_URL.to_owned(),
+    ]);
 
     let start = std::time::Instant::now();
     let output = Command::new(ff_rdp_bin())

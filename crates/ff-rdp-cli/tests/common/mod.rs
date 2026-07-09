@@ -73,6 +73,43 @@ fn wait_for_tcp(port: u16, timeout: Duration) -> bool {
     false
 }
 
+/// Return `true` if a process with `pid` is currently alive.
+///
+/// Mirrors the product's `daemon::process::is_process_alive` (unreachable from
+/// an integration-test binary) so the iter-110 Theme A0 kill-scoping test can
+/// assert a foreign browser survives an `ff-rdp launch --replace`.
+#[cfg(unix)]
+pub fn pid_alive(pid: u32) -> bool {
+    // SAFETY: `kill(pid, 0)` delivers no signal — it only probes existence.
+    // Returns 0 if the process exists (and we may signal it), or -1 with ESRCH
+    // when it does not. Any non-ESRCH error (e.g. EPERM) still means it exists.
+    let rc = unsafe { libc::kill(pid.cast_signed(), 0) };
+    if rc == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+/// Return `true` if a process with `pid` is currently alive (Windows).
+#[cfg(windows)]
+pub fn pid_alive(pid: u32) -> bool {
+    unsafe {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        // SAFETY: OpenProcess returns NULL when the PID is invalid/dead, which
+        // we check before closing the handle.
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            false
+        } else {
+            CloseHandle(h);
+            true
+        }
+    }
+}
+
 /// Kill a process by PID, ignoring errors (process may already be gone).
 #[cfg(unix)]
 pub fn kill_pid(pid: u32) {
@@ -252,5 +289,134 @@ impl LiveFirefox {
 impl Drop for LiveFirefox {
     fn drop(&mut self) {
         kill_pid(self.firefox_pid);
+    }
+}
+
+/// Resolve the Firefox binary the same way the product's `commands::launch`
+/// does, so [`RawFirefox`] can spawn Firefox *directly* without going through
+/// `ff-rdp launch` (and therefore without planting an owner-PID marker).
+///
+/// Checks the same macOS/Windows well-known paths, then falls back to
+/// `which`/`where`. Returns `None` if Firefox is not installed.
+pub fn find_firefox_binary() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let well_known: &[&str] = &[
+        "/Applications/Firefox.app/Contents/MacOS/firefox",
+        "/Applications/Firefox Developer Edition.app/Contents/MacOS/firefox",
+        "/Applications/Firefox Nightly.app/Contents/MacOS/firefox",
+    ];
+    #[cfg(target_os = "windows")]
+    let well_known: &[&str] = &[
+        r"C:\Program Files\Mozilla Firefox\firefox.exe",
+        r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+    ];
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let well_known: &[&str] = &[];
+
+    for p in well_known {
+        let path = PathBuf::from(p);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    let (which_cmd, candidates): (&str, &[&str]) = if cfg!(target_os = "windows") {
+        ("where", &["firefox.exe"])
+    } else {
+        (
+            "which",
+            &["firefox", "firefox-esr", "firefox-developer-edition"],
+        )
+    };
+    for candidate in candidates {
+        if let Ok(out) = Command::new(which_cmd).arg(candidate).output()
+            && out.status.success()
+        {
+            let line = String::from_utf8_lossy(&out.stdout);
+            if let Some(first) = line.lines().next() {
+                let path = PathBuf::from(first.trim());
+                if path.is_file() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// A Firefox instance launched **directly** (bypassing `ff-rdp launch`), so it
+/// carries **no** owner-PID marker under ff-rdp's managed profile root.
+///
+/// This models a browser the *user* started by hand — the class of process the
+/// iter-110 Theme A0 kill-scoping guard must never signal. Uses a throwaway
+/// `-profile` dir well outside ff-rdp's managed root so nothing about it looks
+/// ff-rdp-owned. `Drop` kills it and removes the temp profile.
+pub struct RawFirefox {
+    pid: u32,
+    port: u16,
+    profile: PathBuf,
+}
+
+impl RawFirefox {
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Launch a headless Firefox directly on a free port with a throwaway
+    /// profile. Returns `None` if Firefox is unavailable or the debug port
+    /// never comes up.
+    pub fn headless_on_random_port() -> Option<Self> {
+        let firefox = find_firefox_binary()?;
+        let port = free_port()?;
+        // A profile dir that is NOT under ff-rdp's managed root and does NOT
+        // match the `ff-rdp-profile-*` convention.
+        let profile = std::env::temp_dir().join(format!("raw-ff-{}-{port}", std::process::id()));
+        std::fs::create_dir_all(&profile).ok()?;
+
+        // Firefox reads prefs at startup, so the debugger prefs MUST be on disk
+        // before spawn — otherwise the --start-debugger-server port never opens
+        // on a fresh profile.
+        std::fs::write(
+            profile.join("user.js"),
+            "user_pref(\"devtools.debugger.remote-enabled\", true);\n\
+             user_pref(\"devtools.chrome.enabled\", true);\n\
+             user_pref(\"devtools.debugger.prompt-connection\", false);\n\
+             user_pref(\"remote.prefs.recommended\", true);\n",
+        )
+        .ok()?;
+
+        let child = Command::new(&firefox)
+            .args([
+                "-no-remote",
+                "-headless",
+                "-profile",
+                &profile.to_string_lossy(),
+                "--start-debugger-server",
+                &port.to_string(),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let pid = child.id();
+        // Detach: we track the PID and kill it ourselves in Drop.
+        std::mem::forget(child);
+
+        let ff = Self { pid, port, profile };
+        if wait_for_tcp(port, Duration::from_secs(30)) {
+            Some(ff)
+        } else {
+            None // Drop cleans up
+        }
+    }
+}
+
+impl Drop for RawFirefox {
+    fn drop(&mut self) {
+        kill_pid(self.pid);
+        let _ = std::fs::remove_dir_all(&self.profile);
     }
 }

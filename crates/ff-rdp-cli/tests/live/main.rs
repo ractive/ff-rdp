@@ -36,6 +36,7 @@ mod live_102_longstring_and_reload;
 mod live_103_emulate;
 mod live_104_security_pwa;
 mod live_109_throttle_block;
+mod live_110_kill_scoping;
 mod live_61l;
 mod live_61q_resource_bus;
 mod live_61r_eval;

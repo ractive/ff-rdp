@@ -46,8 +46,11 @@ Parent-process network configuration actor. Created by [[watcher]] via `getNetwo
 
 `NetworkParentFront` (`crates/ff-rdp-core/src/fronts/network_parent.rs`) is the
 typed handle. It is obtained from `WatcherFront::get_network_parent_actor`
-(nested `{networkParent: {actor}}` reply — see [[watcher]]) and drives the
-`throttle` CLI command:
+(nested `{network: {actor}}` reply — the key is `network`, NOT `networkParent`;
+iter-109 guessed `networkParent` and shipped a decode bug caught by iter-110's
+live sweep and fixed after capturing the real Firefox 152 reply
+`{"network":{"actor":"…networkParent12"},"from":…}` — see [[watcher]]) and
+drives the `throttle` CLI command:
 
 | Front method | Wire call | CLI surface |
 |---|---|---|

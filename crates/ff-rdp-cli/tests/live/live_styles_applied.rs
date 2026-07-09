@@ -54,7 +54,14 @@ fn live_styles_applied_returns_real_rules() {
     // Navigate to fixture.
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
-        .args(["navigate", FIXTURE_HTML, "--wait-strategy", "readystate"])
+        // iter-110 Theme B(a): data: URLs require --allow-unsafe-urls.
+        .args([
+            "navigate",
+            "--allow-unsafe-urls",
+            FIXTURE_HTML,
+            "--wait-strategy",
+            "readystate",
+        ])
         .output()
         .expect("ff-rdp navigate");
     assert!(

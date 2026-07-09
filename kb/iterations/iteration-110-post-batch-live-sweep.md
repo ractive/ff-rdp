@@ -2,7 +2,7 @@
 title: "Iteration 110: post-batch full live-suite sweep — run everything against real Firefox once, fix all fallout"
 type: iteration
 date: 2026-07-09
-status: planned
+status: in-progress
 branch: iter-110/post-batch-live-sweep
 depends_on:
   - kb/iterations/iteration-109-network-throttle-block.md
@@ -10,7 +10,9 @@ depends_on:
 firefox_refs: []
 kb_refs:
   - kb/iterations/iteration-100b-live-test-consolidation.md
-first_call_sites: []
+first_call_sites:
+  - primitive: "profile_dir::pid_is_ff_rdp_spawned"
+    site: "crates/ff-rdp-cli/src/daemon/client.rs stop_prior_instance port-owner fallback (step 3)"
 dogfood_path: |
   # The sweep itself IS the dogfood: full gated live suite against headless Firefox.
   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo test-live
@@ -100,15 +102,99 @@ consolidated `live` binary. Watch for in this sweep:
 
 ## Acceptance criteria
 
-- [ ] full_sweep_recorded: complete `cargo test-live` inventory (pass/fail per
-      test) attached to Results, run on post-109 main.
-- [ ] no_101_105_regressions: every failure attributable to iterations
-      101–105 is fixed and its test passes in a re-run; fixes carry their own
-      unit/live tests where behaviour changed.
-- [ ] preexisting_reds_crossref: remaining failures are each cross-referenced
-      to iter-106 (or a filed follow-up), none left untracked.
+- [x] full_sweep_recorded: complete `cargo test-live` inventory (pass/fail per
+      test) attached to Results, run on post-109 main. Recorded 2026-07-10:
+      83 passed / 27 failed (see "2026-07-10 clean sweep" below).
+- [x] no_101_105_regressions: every failure attributable to iterations
+      101–109 is fixed and its test passes in a re-run; fixes carry their own
+      unit/live tests where behaviour changed. Fixed:
+      `live_throttle_slow3g_slows_fetch` + `live_block_url_pattern`
+      (`NetworkParentActorRef` key `networkParent`→`network`, iter-109 bug),
+      `live_cross_actor_packet_not_lost` + `live_target_destroyed_invalidates_registry`
+      (`results.result`→`results` eval shape), `live_network_headers`
+      (`headers.response` object→array). All five pass on re-run.
+- [x] preexisting_reds_crossref: remaining 22 failures are each pre-existing
+      (Firefox-152 computed-color drift, port-6000-assuming legacy tests,
+      `localhost:18080` fixture self-skips) and cross-referenced to
+      [[iteration-106-live-test-masking-cascade]] in the Results table below;
+      none left untracked.
+- [x] kill_scoping_foreign_firefox_never_signalled (Theme A0):
+      `live_110_replace_never_kills_foreign_firefox` — a Firefox launched
+      outside ff-rdp survives `ff-rdp launch --replace` on its port; ff-rdp
+      refuses with "which ff-rdp did not launch". Backed by unit tests
+      `unit_pid_is_ff_rdp_spawned_true_only_for_marked_managed_profile`,
+      `unit_pid_is_ff_rdp_spawned_ignores_marker_in_unmanaged_dir`,
+      `unit_pid_is_ff_rdp_spawned_rejects_garbage_marker`.
 
 ## Results
+
+### 2026-07-10 — Theme A0 kill-scoping fix (shipped)
+
+The dangerous path was `daemon::client::stop_prior_instance` step 3: with no
+daemon record / registry match, it resolved the RDP-port *listener* via
+`port_owner::find_listener` and SIGKILL'd it — no proof the process was one
+ff-rdp launched. A user's interactive Firefox on port 6000 was therefore
+killable by `ff-rdp launch --replace` (and by the live harness). Fix: a new
+`profile_dir::pid_is_ff_rdp_spawned(pid)` scans the managed profile root for an
+iter-97 owner-PID marker naming `pid`; `stop_prior_instance` now **refuses**
+(returns a `User` error) rather than signal any PID that lacks a marker. Fails
+closed. Verified manually — a hand-launched Firefox on port 6455 survives
+`ff-rdp launch --replace --debug-port 6455`, which returns:
+`port 6455 is in use by firefox (PID …), which ff-rdp did not launch (no
+owner-PID marker). Refusing to stop a process ff-rdp does not own …`.
+Live-tested by `live_110_replace_never_kills_foreign_firefox` (raw Firefox via
+new `common::RawFirefox`, no marker) + three `pid_is_ff_rdp_spawned` unit tests.
+
+### 2026-07-10 — clean full-suite sweep (post-109 main + Theme A0 fix)
+
+`FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo test -p ff-rdp-cli
+--test live --no-fail-fast -- --ignored --test-threads=1` (Firefox 152.0.5,
+macOS, sequential, no concurrent cargo). **83 passed, 27 failed, 855 s.** This
+supersedes the contaminated iter-106 inventory. Triage of the 27:
+
+**In-scope (iters 101–109) — FIXED in this PR (5):**
+- `live_109_throttle_block::live_throttle_slow3g_slows_fetch` — iter-109
+  reply-shape bug. Real Firefox 152 returns
+  `{"network":{"actor":…},"from":…}`; iter-109 guessed the key `networkParent`.
+  Fixed `NetworkParentActorRef` (`#[serde(rename = "network")]`). ✅ re-run pass.
+- `live_109_throttle_block::live_block_url_pattern` — same root cause. ✅ pass.
+- `live_cross_actor::live_cross_actor_packet_not_lost` — stale eval shape
+  `results.result` (always null) → `results` (scalar). ✅ pass.
+- `live_target_destroyed::live_target_destroyed_invalidates_registry` — same
+  `results.result` → `results`. ✅ pass.
+- `live_network_headers::live_network_headers` — `headers.response` is an array
+  of `{name,value}`, not an object; `.as_object()` → `.as_array()`. ✅ pass.
+
+**Pre-existing → cross-referenced to [[iteration-106-live-test-masking-cascade]] (22):**
+- Firefox-152 computed-color serialization drift (`red` vs `rgb(255, 0, 0)`):
+  `live_cascade::{live_cascade_returns_matched_rules,live_cascade_returns_matched_rules_external_css}`,
+  `live_95_cascade_computed_agreement::{live_cascade_inherited_or_default_note_fires_on_h1_color,pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does}`.
+- Cascade/real-site + legacy port-6000-assuming tests (no self-launched
+  Firefox; navigate to a non-existent :6000 or to a real site that flakes):
+  `live_98_media_query_truthfulness::pre_fix_repro_cascade_winner_ignores_media_context`,
+  `live_a11y_contrast_wai_bad`, `live_cascade_explains_pico_dialog`,
+  `live_cascade_real_site::{live_cascade_real_site_cli,live_cascade_real_site_returns_rules_for_a_element}`,
+  `live_console_printf::live_console_printf_e2e` (console cache across
+  `--no-daemon` connections), `live_cookies_set_cookie_header`,
+  `live_dom_stats_perf_audit_parity`,
+  `live_navigate_default_fast::{live_navigate_default_fast_no_budget_exhaustion,live_navigate_global_timeout_flag_accepted}`,
+  `live_screenshot_ff151::{live_screenshot_ff151_cli,live_screenshot_ff151_produces_valid_png}`,
+  `live_screenshot_bulk_fallback::live_screenshot_bulk_fallback_then_eval`,
+  `live_stale_tab_race::live_stale_tab_race_no_such_actor_after_navigate`,
+  `live_styles_applied_dedupe::live_styles_applied_dedupe_no_duplicate_actor_ids`,
+  `live_wait_timeout_ms_canonical::live_wait_timeout_ms_canonical_flag`.
+- Fixture-server-not-committed self-skip (category d, expected):
+  `live_62_page_map_index::{live_index_local_fixture,live_runner_page_map_resolution}`
+  (`http://localhost:18080` unreachable).
+
+Note: several category-(a) `data:`-URL tests from the iter-106 provisional
+inventory were repaired here by adding `--allow-unsafe-urls` to their navigate
+(`live_cascade`, `live_95_cascade_computed_agreement`,
+`live_cascade_explains_pico_dialog`, `live_a11y_critical`,
+`live_dom_include_style`, `live_snapshot_max_depth`, `live_styles_applied`,
+`live_navigate_real_site`); their *navigate* now succeeds. Where they still
+appear above (`live_cascade`, `live_95`, `live_cascade_explains_pico_dialog`),
+the residual failure is the Firefox-152 computed-color drift, not the gate.
 
 ### 2026-07-09 — full sweep inventory recorded during iter-106 Theme C
 

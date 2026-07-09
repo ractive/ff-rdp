@@ -62,7 +62,8 @@ fn live_cascade_inherited_or_default_note_fires_on_h1_color() {
     // Navigate to fixture.
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
-        .args(["navigate", FIXTURE_HTML])
+        // iter-110 Theme B(a): data: URLs require --allow-unsafe-urls.
+        .args(["navigate", "--allow-unsafe-urls", FIXTURE_HTML])
         .output()
         .expect("ff-rdp navigate");
     assert!(
@@ -183,7 +184,8 @@ fn pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does()
     // Navigate to fixture.
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
-        .args(["navigate", FIXTURE_HTML])
+        // iter-110 Theme B(a): data: URLs require --allow-unsafe-urls.
+        .args(["navigate", "--allow-unsafe-urls", FIXTURE_HTML])
         .output()
         .expect("ff-rdp navigate");
     assert!(

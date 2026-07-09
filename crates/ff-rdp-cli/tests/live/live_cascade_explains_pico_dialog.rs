@@ -42,7 +42,12 @@ fn live_cascade_explains_pico_dialog() {
     };
 
     let mut args = base_args(ff.port());
-    args.extend(["navigate".into(), FIXTURE_HTML.into()]);
+    // iter-110 Theme B(a): data: URLs require --allow-unsafe-urls.
+    args.extend([
+        "navigate".into(),
+        "--allow-unsafe-urls".into(),
+        FIXTURE_HTML.into(),
+    ]);
     let out = Command::new(ff_rdp_bin())
         .args(&args)
         .output()

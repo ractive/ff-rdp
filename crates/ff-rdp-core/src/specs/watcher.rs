@@ -94,7 +94,8 @@ pub mod response {
     /// (`getBlackboxingActor`, `getBreakpointListActor`,
     /// `getThreadConfigurationActor`) share the same latent mismatch but have no
     /// live consumer yet; fixing them is out of scope for iter-103.
-    /// `getNetworkParentActor` was corrected to the nested shape in iter-109 —
+    /// `getNetworkParentActor` was corrected to the nested `network` shape in
+    /// iter-110 (iter-109 guessed `networkParent`; the live key is `network`) —
     /// see `NetworkParentActorRef`.
     #[derive(Debug, Clone, Deserialize)]
     pub struct ActorRef {
@@ -114,17 +115,19 @@ pub mod response {
 
     /// Reply for `getNetworkParentActor`.
     ///
-    /// Firefox returns `{"networkParent": {"actor": "<id>", …}, "from": …}` —
-    /// the actor ID is nested inside the typed-actor `networkParent` object, not
-    /// at the top level. This mirrors the `getTargetConfigurationActor` shape
-    /// corrected in iter-103 (`ConfigurationActorRef`): every `watcher.js`
-    /// accessor returns its actor under a named typed-actor key. iter-109 is the
-    /// first live consumer of `getNetworkParentActor`, so this type reads
-    /// `networkParent.actor` per that verified pattern rather than the flat
-    /// top-level `actor` field.
+    /// Firefox returns `{"network": {"actor": "<id>", …}, "from": …}` — the
+    /// actor ID is nested inside the typed-actor object keyed **`network`**, not
+    /// `networkParent`. iter-109 guessed the key was `networkParent` (by analogy
+    /// to the method name and `ConfigurationActorRef`'s `configuration` key) but
+    /// never live-verified it; iter-110's full-suite sweep caught the mismatch
+    /// (`decode getNetworkParentActor: missing field networkParent`) and the
+    /// real key was captured from Firefox 152:
+    /// `{"network":{"actor":"…networkParent12"},"from":"…"}`. The named key does
+    /// NOT match the method name here — unlike `configuration`/`network`
+    /// asymmetry, each `watcher.js` accessor picks its own key.
     #[derive(Debug, Clone, Deserialize)]
     pub struct NetworkParentActorRef {
-        #[serde(rename = "networkParent")]
+        #[serde(rename = "network")]
         pub network_parent: NestedActorId,
     }
 
@@ -349,12 +352,13 @@ mod tests {
 
     #[test]
     fn network_parent_actor_ref_reads_nested_actor() {
-        // Real Firefox shape: the actor is nested under the typed-actor
-        // `networkParent` object, not at the top level (iter-109 fix, parallel
-        // to the iter-103 `ConfigurationActorRef` correction).
+        // Real Firefox 152 shape (captured live in iter-110): the actor is
+        // nested under the typed-actor object keyed `network` — NOT
+        // `networkParent` as iter-109 guessed. Raw reply:
+        // {"network":{"actor":"…networkParent12"},"from":"…watcher11"}
         let v = json!({
             "from": "server1.conn2.watcher11",
-            "networkParent": {
+            "network": {
                 "actor": "server1.conn2.networkParent13",
                 "traits": {}
             }

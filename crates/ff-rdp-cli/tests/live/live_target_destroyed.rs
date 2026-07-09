@@ -199,7 +199,9 @@ fn live_target_destroyed_invalidates_registry() {
 
     let json: serde_json::Value =
         serde_json::from_slice(&eval_out.stdout).expect("eval stdout is not JSON");
-    let text = json["results"]["result"].as_str().unwrap_or("");
+    // iter-110 Theme B(b): `eval` returns the value directly under `results`
+    // (`{"results":"page2",…}`), not nested under `results.result`.
+    let text = json["results"].as_str().unwrap_or("");
     assert_eq!(
         text, "page2",
         "after second navigation the page title must be 'page2', got: {json}"
