@@ -767,7 +767,10 @@ mod tests {
     /// the semver trap the deep review flagged.
     #[test]
     fn unit_error_enums_non_exhaustive() {
-        let src = include_str!("error.rs");
+        // Normalize CRLF: Git for Windows defaults to core.autocrlf=true on CI
+        // runners (no .gitattributes pins eol), so include_str! sees \r\n
+        // there and the \n-based patterns below would never match.
+        let src = include_str!("error.rs").replace("\r\n", "\n");
         for (attr, decl) in [
             ("#[non_exhaustive]\npub enum RdpError", "RdpError"),
             ("#[non_exhaustive]\npub enum ProtocolError", "ProtocolError"),
