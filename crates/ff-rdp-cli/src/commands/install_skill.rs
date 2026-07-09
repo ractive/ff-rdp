@@ -98,11 +98,32 @@ fn has_any_managed_by(content: &[u8]) -> bool {
 // Path resolution
 // ---------------------------------------------------------------------------
 
+/// Resolve the user's home directory, honoring the `HOME`/`USERPROFILE`
+/// environment variables before falling back to the platform API.
+///
+/// `dirs::home_dir()` reads the OS "known folder" API on Windows and ignores
+/// an overridden `HOME` env var, so a test (or an end user) that sets `HOME`
+/// to redirect the install location has no effect there. That mismatch was the
+/// root cause of the iter-108 Windows CI reds: the `install_skill` e2e tests
+/// set `.env("HOME", tmp)` but the files still landed in the real profile
+/// (`C:\Users\runneradmin\...`) and leaked state across tests in the same
+/// binary. We resolve `HOME` first (Unix convention), then `USERPROFILE`
+/// (Windows convention), then the platform API — matching the precedent in
+/// `daemon::registry::registry_dir` and the `xtask` discipline checks so a
+/// single override works on every platform.
+fn resolve_home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()))
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+}
+
 /// Resolve the installation root directory for the given scope.
 fn resolve_install_root(scope: SkillScope, force: bool) -> Result<PathBuf, AppError> {
     match scope {
         SkillScope::User => {
-            let home = dirs::home_dir()
+            let home = resolve_home_dir()
                 .ok_or_else(|| AppError::User("could not determine home directory".to_string()))?;
             Ok(home.join(".claude").join("skills"))
         }

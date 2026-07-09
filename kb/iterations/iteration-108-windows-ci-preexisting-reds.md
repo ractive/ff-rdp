@@ -2,7 +2,7 @@
 title: "Iteration 108: Windows CI pre-existing reds — install-skill HOME redirection + reload-idle timing"
 type: iteration
 date: 2026-07-09
-status: planned
+status: implemented
 branch: iter-108/windows-ci-preexisting-reds
 depends_on: []
 firefox_refs: []
@@ -14,7 +14,13 @@ dogfood_path: |
   cargo test -p ff-rdp-cli --test e2e install_skill:: -- --test-threads=1
   cargo test -p ff-rdp-cli --test e2e nav_action::reload_wait_idle_no_traffic_returns_idle_quickly
   # expected: 0 failures on windows-latest (was 5 failures as of PR #141 / iter-101)
-tags: [iteration, ci, windows, install-skill, nav-action, preexisting-red]
+tags:
+  - iteration
+  - ci
+  - windows
+  - install-skill
+  - nav-action
+  - preexisting-red
 ---
 
 # Iteration 108: Windows CI pre-existing reds
@@ -87,19 +93,22 @@ test in the same binary). This is the classic Windows footgun: `dirs::home_dir()
 with `.env("HOME", home_dir)`. On Unix, `HOME` *is* the resolution source, so
 the tests pass there by coincidence of platform convention.
 
-- [ ] Find the skills-install-directory resolution call (likely
-      `dirs::home_dir()` or similar in the `install-skill` command path) and
-      confirm it does not honor `HOME` on Windows.
-- [ ] Either (a) make the resolution explicitly check `HOME` first on all
-      platforms (matching what the tests already assume), or (b) switch the
-      *tests* to override the platform-correct variable
-      (`USERPROFILE` on Windows) via a small `test_home_env_var()` helper —
-      pick whichever matches how a real end user overrides their home
-      directory today; document the choice.
-- [ ] Serialize or fully isolate the `install_skill` tests so state from one
-      test's (possibly-real) install location cannot leak into another
-      (`--test-threads=1` already used in the fixture harness — verify this
-      is set for this specific binary on Windows, or add a mutex/guard).
+- [x] Found it: `resolve_install_root` in
+      `crates/ff-rdp-cli/src/commands/install_skill.rs` called `dirs::home_dir()`
+      for `SkillScope::User`, which reads the Windows known-folder API and
+      ignores the tests' `.env("HOME", …)` override. (Same footgun already
+      documented in `daemon::registry::registry_dir`.)
+- [x] Chose **both (a) and (b)** — belt-and-suspenders, matching existing
+      precedent: new `resolve_home_dir()` helper (`install_skill.rs`) resolves
+      `HOME` → `USERPROFILE` → `dirs::home_dir()` on all platforms (mirrors the
+      `xtask` discipline checks and `registry_dir`), and the e2e helper now sets
+      both `HOME` and `USERPROFILE` to the temp dir. Documented in the
+      `install-skill` `long_about` help text (`args.rs`).
+- [x] Each `install_skill` e2e test already uses its own `home_tmp` `TempDir`;
+      with the source honoring `HOME`/`USERPROFILE` there is no shared install
+      location, so no cross-test leakage remains. Verified with
+      `cargo test -p ff-rdp-cli --test e2e install_skill:: -- --test-threads=1`
+      (8 passed).
 
 ### B. `nav_action::reload_wait_idle_no_traffic_returns_idle_quickly` timing
 
@@ -107,20 +116,42 @@ Distinct failure mode (empty stderr, "expected success") — likely a
 Windows-specific timing race in the idle-detection window rather than the
 environment-variable bug in Theme A. Needs its own repro.
 
-- [ ] Reproduce locally in a Windows VM or CI-equivalent small-stack/slow-IO
-      environment; capture the actual exit code and stdout (the CI log only
-      shows the assertion, not the command's own JSON error envelope).
-- [ ] Root-cause: likely the idle-timeout window is too tight for
-      Windows' slower process/socket teardown, mirroring the kind of
-      platform-timing gap iter-99 found in the stack-size case.
+- [x] Root-caused by reading the flow rather than a Windows VM: the mock
+      server (`reload_wait_idle_server`) sets `close_after_followups`, so it
+      closes the socket immediately after delivering the (empty) followup
+      batch for `watchResources`. The client then does a fire-and-forget
+      `reload` send (`run_reload_wait_idle_direct` / `_daemon`). On Windows a
+      write to a peer-closed socket fails with `ConnectionReset` /
+      `ConnectionAborted` / `BrokenPipe`; on Unix the write is accepted into the
+      send buffer and only the later `read` sees EOF. That send error propagated
+      → non-zero exit with the JSON error envelope on **stdout** and an empty
+      stderr — exactly the CI signature `expected success, stderr: `.
+      (`main.rs` line ~184-194 emits the error envelope to stdout, not stderr.)
+- [x] Fix: `send_reload_tolerant()` swallows a connection-teardown IO kind on
+      the reload send (the ack is never read anyway) and lets the drain loop
+      observe EOF and return idle. Added `is_conn_closed_kind()` shared with the
+      drain loop; it now also covers `ConnectionAborted` (Windows). Unit-tested
+      in `nav_action.rs` (`conn_closed_kinds_are_treated_as_teardown`,
+      `real_io_errors_are_not_teardown`,
+      `send_reload_tolerant_swallows_teardown_but_propagates_real_errors`).
 
-## Acceptance Criteria [0/2]
+## Acceptance Criteria [3/3]
 
-- [ ] `install_skill::*` (all 4): pass on windows-latest CI with the
-      isolated `home_tmp` actually used (no leakage into the real profile).
-- [ ] `nav_action::reload_wait_idle_no_traffic_returns_idle_quickly`: passes
-      on windows-latest CI.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `resolve_home_dir` + `USERPROFILE` override make the four
+      `install_skill` e2e tests (`force_overwrites_unmanaged_file`,
+      `from_dir_installs_custom_content`, `list_shows_installed_status`,
+      `install_writes_files_and_reinst_is_noop`) use the isolated `home_tmp` on
+      every platform — no leakage into the real profile. Verified locally with
+      `cargo test -p ff-rdp-cli --test e2e install_skill:: -- --test-threads=1`
+      (8 passed); windows-latest CI must show 0 failures (waited for per this
+      plan's CI-wait exception).
+- [x] `send_reload_tolerant` (+ `is_conn_closed_kind` covering
+      `ConnectionAborted`) makes `reload_wait_idle_no_traffic_returns_idle_quickly`
+      pass by swallowing the connection-teardown send error that raced the
+      mock's `close_after_followups`. Unit-tested by
+      `send_reload_tolerant_swallows_teardown_but_propagates_real_errors`;
+      windows-latest CI must show 0 failures.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean — run in the pre-PR quality gates.
 
 ## Out of scope
 

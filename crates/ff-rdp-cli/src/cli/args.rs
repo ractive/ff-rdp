@@ -896,6 +896,10 @@ Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\":
 ff-rdp ships with Claude Code skills (e.g. ff-rdp-debug) that can be installed
 into ~/.claude/skills/ (--user, default) or <git-root>/.claude/skills/ (--project).
 
+The home directory for --user is resolved from the HOME env var, then
+USERPROFILE (Windows), then the OS home-directory API — so setting HOME (or
+USERPROFILE on Windows) redirects the install location on every platform.
+
 Every installed file gets a managed-by header so re-installs can detect versions
 and skip unchanged files. Files without that header are never overwritten unless
 --force is passed.
