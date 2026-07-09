@@ -209,9 +209,12 @@ fn live_emulate_dppx() {
 
     run_json(port, &["emulate", "--dppx", "2"]);
     let dppx = eval(port, "window.devicePixelRatio");
+    // Compare numerically: devicePixelRatio may come back as the integer `2`
+    // rather than the float `2.0`, and serde_json treats those as distinct
+    // Number variants under ==.
     assert_eq!(
-        dppx,
-        serde_json::json!(2.0),
+        dppx.as_f64(),
+        Some(2.0),
         "devicePixelRatio must equal the --dppx override: {dppx}"
     );
 

@@ -83,13 +83,39 @@ pub mod response {
     #[derive(Debug, Clone, Default, Deserialize)]
     pub struct ClearResources {}
 
-    /// A generic actor reference returned by watcher accessor methods.
+    /// A generic actor reference with a top-level `actor` field.
     ///
-    /// Used by `getNetworkParentActor`, `getBlackboxingActor`,
-    /// `getBreakpointListActor`, `getTargetConfigurationActor`,
-    /// `getThreadConfigurationActor`.
+    /// Retained for the accessor methods that are not yet wired to a live
+    /// consumer. NOTE (iter-103): the real Firefox `watcher.js` spec returns
+    /// these accessors' actors under a *named* key whose value is a typed-actor
+    /// object (`{actor: <id>, …}`), not a top-level `actor` — see
+    /// `ConfigurationActorRef` for the corrected shape used by
+    /// `getTargetConfigurationActor`. The remaining methods
+    /// (`getNetworkParentActor`, `getBlackboxingActor`, `getBreakpointListActor`,
+    /// `getThreadConfigurationActor`) share the same latent mismatch but have no
+    /// live consumer yet; fixing them is out of scope for iter-103.
     #[derive(Debug, Clone, Deserialize)]
     pub struct ActorRef {
+        pub actor: ActorId,
+    }
+
+    /// Reply for `getTargetConfigurationActor`.
+    ///
+    /// Firefox returns `{"configuration": {"actor": "<id>", …}, "from": …}` —
+    /// the actor ID is nested inside the typed-actor `configuration` object, not
+    /// at the top level. This type reads `configuration.actor` (verified against
+    /// a live Firefox trace in iter-103).
+    #[derive(Debug, Clone, Deserialize)]
+    pub struct ConfigurationActorRef {
+        pub configuration: NestedActorId,
+    }
+
+    /// The typed-actor payload wrapped by named-key watcher accessor responses.
+    ///
+    /// Only `actor` is needed by callers; the rest of the payload
+    /// (`configuration`, `traits`) is ignored.
+    #[derive(Debug, Clone, Deserialize)]
+    pub struct NestedActorId {
         pub actor: ActorId,
     }
 
@@ -200,7 +226,7 @@ impl sealed::Sealed for GetTargetConfigurationActor {}
 impl Method for GetTargetConfigurationActor {
     const NAME: &'static str = "getTargetConfigurationActor";
     type Args = NoArgs;
-    type Reply = response::ActorRef;
+    type Reply = response::ConfigurationActorRef;
 }
 
 /// `getThreadConfigurationActor` method marker.
@@ -299,6 +325,25 @@ mod tests {
         let v = json!({"from": "server1.conn0.watcher4", "actor": "server1.conn0.networkParent5"});
         let r: response::ActorRef = serde_json::from_value(v).unwrap();
         assert_eq!(r.actor.as_ref(), "server1.conn0.networkParent5");
+    }
+
+    #[test]
+    fn configuration_actor_ref_reads_nested_actor() {
+        // Real Firefox shape: the actor is nested under the typed-actor
+        // `configuration` object, not at the top level (iter-103 fix).
+        let v = json!({
+            "from": "server1.conn2.watcher11",
+            "configuration": {
+                "actor": "server1.conn2.target-configuration12",
+                "configuration": {},
+                "traits": {"supportedOptions": {"colorSchemeSimulation": true}}
+            }
+        });
+        let r: response::ConfigurationActorRef = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            r.configuration.actor.as_ref(),
+            "server1.conn2.target-configuration12"
+        );
     }
 
     #[test]

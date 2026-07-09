@@ -15,6 +15,7 @@ firefox_refs:
       printSimulationEnabled, setTabOffline, touchEventsOverride, …).
 kb_refs:
   - kb/research/deep-review-2026-07-fable5.md
+dogfood_script: iteration-103-target-configuration-cli.dogfood.sh
 first_call_sites:
   - primitive: >-
       emulate CLI command (clap subcommand + JSON envelope) driving
@@ -120,7 +121,7 @@ comparison (its `set_viewport`/emulation features) without touching BiDi.
       / `--user-agent` / `--reset` sequence is exercised by
       `live_emulate_color_scheme_dark` + `live_emulate_user_agent`.
 
-## Acceptance Criteria [7/7]
+## Acceptance Criteria [8/8]
 
 - [x] live_emulate_color_scheme_dark: after `emulate --color-scheme dark`,
       `matchMedia("(prefers-color-scheme: dark)").matches` evaluates true;
@@ -135,6 +136,13 @@ comparison (its `set_viewport`/emulation features) without touching BiDi.
 - [x] `e2e_emulate_one_shot_lifetime_warning`: `emulate --no-daemon …` envelope
       carries the connection-lifetime warning (`ONE_SHOT_LIFETIME_WARNING`);
       daemon-path envelope does not.
+- [x] `dogfood_script_full_run_iter_103`
+      (`iteration-103-target-configuration-cli.dogfood.sh`): drives
+      `emulate --color-scheme dark` / `--user-agent` / `--reset` over the daemon
+      path against a live Firefox, asserts the applied config echo
+      (`colorSchemeSimulation`), the `prefers-color-scheme` flip via
+      `set_color_scheme_simulation`, the UA override, and the reset revert; exits
+      0 and writes the sentinel.
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes

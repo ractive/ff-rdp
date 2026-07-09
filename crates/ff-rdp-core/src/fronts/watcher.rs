@@ -174,7 +174,9 @@ impl WatcherFront {
         transport: &mut RdpTransport,
     ) -> Result<ActorId, ProtocolError> {
         let reply = call::<spec::GetTargetConfigurationActor>(transport, &self.id, &NoArgs {})?;
-        Ok(reply.actor)
+        // The actor ID is nested under the `configuration` typed-actor object
+        // (see `ConfigurationActorRef`), not at the top level.
+        Ok(reply.configuration.actor)
     }
 
     /// Get the thread configuration actor for this watcher's scope.
