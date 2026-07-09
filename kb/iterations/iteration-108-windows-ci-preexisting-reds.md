@@ -12,8 +12,10 @@ first_call_sites: []
 dogfood_path: |
   # After the fix, these must pass on windows-latest CI (not just locally):
   cargo test -p ff-rdp-cli --test e2e install_skill:: -- --test-threads=1
-  cargo test -p ff-rdp-cli --test e2e nav_action::reload_wait_idle_no_traffic_returns_idle_quickly
+  cargo test -p ff-rdp-cli --test e2e nav_action::reload_wait_idle -- --test-threads=1
   # expected: 0 failures on windows-latest (was 5 failures as of PR #141 / iter-101)
+  # nav_action::reload_wait_idle covers both reload_wait_idle_no_traffic_returns_idle_quickly
+  # and reload_wait_idle_observes_network_events (2nd race found+fixed during /review-pr).
 tags:
   - iteration
   - ci
@@ -152,6 +154,35 @@ environment-variable bug in Theme A. Needs its own repro.
       `send_reload_tolerant_swallows_teardown_but_propagates_real_errors`;
       windows-latest CI must show 0 failures.
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean — run in the pre-PR quality gates.
+
+## Review addendum (2026-07-09, /review-pr local-only)
+
+`send_reload_tolerant` correctly fixed Theme B's original symptom, but
+letting the flow proceed past the send stage exposed a **second, previously
+latent** race in the shared e2e mock server: `close_after_followups` closed
+the socket without draining the client's in-flight `reload` request, which
+on some platforms provokes a TCP RST that can also discard the client's own
+still-unread inbound buffer (the followup batch) — losing the network events
+`drain_idle_events` expected to see. This showed up as
+`nav_action::reload_wait_idle_observes_network_events` failing on
+windows-latest CI with `requests_observed: 0` (expected 2), plus
+`nav_action::reload_wait_idle_no_traffic_returns_idle_quickly` failing on
+macos-latest CI with the same "expected success" signature Theme B
+originally described.
+
+- [x] Fixed in `crates/ff-rdp-cli/tests/e2e/support/mock_server.rs`:
+      `close_after_followups` now does a short best-effort read to absorb the
+      client's pending request before dropping the socket, avoiding the
+      RST-inducing condition. Verified locally with 20x repeated runs of
+      `cargo test -p ff-rdp-cli --test e2e nav_action::reload_wait_idle --
+      --test-threads=1` (0 failures) and the full e2e suite
+      (`cargo test -p ff-rdp-cli --test e2e -q`, 273 passed).
+
+(Ubuntu CI also showed `transport::tests::redact_sensitive_key_replaces_value`
+failing — a pre-existing, unrelated flake in `transport.rs` (untouched by
+this branch's diff), consistent with prior notes on redact-test flakiness.
+Left out of scope for this plan; if it recurs it should get its own
+iter-99/iter-108-style investigation.)
 
 ## Out of scope
 
