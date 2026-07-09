@@ -2,7 +2,7 @@
 title: "Iteration 100b: live-test binary consolidation — one gated live target instead of ~45"
 type: iteration
 date: 2026-07-09
-status: in-progress
+status: completed
 branch: iter-100b/live-test-consolidation
 depends_on:
   - kb/iterations/iteration-100-daemon-lifecycle-hardening.md
