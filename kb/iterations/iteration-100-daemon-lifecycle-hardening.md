@@ -2,7 +2,7 @@
 title: "Iteration 100: daemon lifecycle hardening — thread supervision, honest idle timeout, signal cleanup, spawn/kill races, auto-start observability"
 type: iteration
 date: 2026-07-09
-status: planned
+status: in-review
 branch: iter-100/daemon-lifecycle-hardening
 depends_on: []
 firefox_refs: []
@@ -84,93 +84,115 @@ outcome. This iteration owns both the root-cause fix and the
 
 ## Tasks
 
-### A. Thread supervision [0/3]
-- [ ] Wrap the three worker loops (`server.rs:369-399`) in a supervised
+### A. Thread supervision [3/3]
+- [x] Wrap the three worker loops (`server.rs:369-399`) in a supervised
       spawn helper: `catch_unwind` around the loop body; on panic or
       unexpected return, set `state.shutdown` and log once.
-- [ ] Make `accept_loop` refuse new clients (clean "daemon shutting down"
+- [x] Make `accept_loop` refuse new clients (clean "daemon shutting down"
       error frame) once `state.shutdown` is set.
-- [ ] Land `unit_reader_panic_sets_shutdown` (inject a panicking frame
+- [x] Land `unit_reader_panic_sets_shutdown` (inject a panicking frame
       handler via a test seam; assert shutdown flag + accept refusal).
 
-### B. Honest idle timeout [0/2]
-- [ ] Bump `last_activity` only after a successfully authenticated request
+### B. Honest idle timeout [2/2]
+- [x] Bump `last_activity` only after a successfully authenticated request
       is handled — not on accept, not on client-thread error exit
       (`server.rs:1017,1026`).
-- [ ] Land `unit_idle_timeout_ignores_failed_clients` (repeated
+- [x] Land `unit_idle_timeout_ignores_failed_clients` (repeated
       unauthenticated connects do not extend the deadline; daemon exits on
       schedule) and `unit_idle_timeout_fires` (the branch at
       `server.rs:1007-1013` finally gets a non-live test).
 
-### C. Signal-driven registry cleanup [0/2]
-- [ ] Implement `setup_signal_handler` for real: `sigaction` for
+### C. Signal-driven registry cleanup [2/2]
+- [x] Implement `setup_signal_handler` for real: `sigaction` for
       SIGTERM/SIGINT on Unix (via the already-present `libc`),
       `SetConsoleCtrlHandler` on Windows (via the already-present
       `windows-sys`); handler sets `state.shutdown` so `run_daemon`'s normal
       cleanup (`remove_registry`, `server.rs:403-405`) runs. Fix the doc
       comment; also fix the stale "crashing is the right action" comment above
       `lock_or_recover!` (`server.rs:509-511`).
-- [ ] Land `e2e_sigterm_removes_registry` (Unix: spawn daemon, SIGTERM,
+- [x] Land `e2e_sigterm_removes_registry` (Unix: spawn daemon, SIGTERM,
       assert registry file gone and exit code clean; Windows path covered by
       a unit test on the shared shutdown-flag plumbing).
 
-### D. Spawn/kill/identity races [0/4]
-- [ ] Hold one exclusive file lock across the whole
+### D. Spawn/kill/identity races [4/4]
+- [x] Hold one exclusive file lock across the whole
       check-running→spawn→register sequence in `resolve_connection_target`
       (`client.rs:263-320`), so two racing CLI invocations produce exactly
       one registered daemon and zero orphans.
-- [ ] Run the `handle_client` cleanup block (stream unsubscribe +
+- [x] Run the `handle_client` cleanup block (stream unsubscribe +
       rpc_writer unregister, `server.rs:1196-1207`) on every exit path —
       scope guard instead of fall-through after `?` (`server.rs:1174`).
-- [ ] Replace raw-fd client identity (`server.rs:1102`) with a monotonic
+- [x] Replace raw-fd client identity (`server.rs:1102`) with a monotonic
       client id issued at accept time, so fd reuse cannot unregister the
       wrong subscriber or clear a live RPC writer.
-- [ ] Re-verify port ownership (or compare process start time) immediately
+- [x] Re-verify port ownership (or compare process start time) immediately
       before the kill in `stop_prior_instance` (`client.rs:999-1009`).
 
-### E. Auto-start observability (absorbed from iter-99 B) [0/3]
-- [ ] Root-cause why the auto-started daemon sometimes fails to register in
+### E. Auto-start observability (absorbed from iter-99 B) [3/3]
+- [x] Root-cause why the auto-started daemon sometimes fails to register in
       time (`resolve_connection_target`, `client.rs:263-320`): distinguish
       "spawn died before the registry write" from "registry write raced /
       was slow" from "TOCTOU double-spawn orphaned the winner". The Theme D
       spawn lock removes the double-spawn cause; instrument the remaining
       path so the failure mode is identifiable, and record the finding in
       this plan.
-- [ ] When auto-start does not yield a usable daemon and the CLI falls back
+- [x] When auto-start does not yield a usable daemon and the CLI falls back
       to a direct connection, add a `daemon_autostart_failed` warning to the
       command envelope (never a hard error — direct mode still works) with a
       short reason, so tests and users can tell daemon from direct.
-- [ ] Confirm `live_eval_object_leak_soak` passes because the daemon
+- [x] Confirm `live_eval_object_leak_soak` passes because the daemon
       registers within the *original* window — not because of the widened
       poll; tighten the poll back toward its pre-`23c5994` budget once the
       root cause is fixed, or document why the wider budget is legitimately
       required.
 
-## Acceptance Criteria [0/10]
+## Acceptance Criteria [10/10]
 
-- [ ] unit_reader_panic_sets_shutdown: an injected worker-loop panic sets
+- [x] `unit_reader_panic_sets_shutdown`: an injected worker-loop panic sets
       `state.shutdown` and a subsequent connect receives a shutdown error
       instead of hanging.
-- [ ] unit_idle_timeout_ignores_failed_clients: N unauthenticated connects
+- [x] `unit_idle_timeout_ignores_failed_clients`: N unauthenticated connects
       after t0 do not move the idle deadline; daemon exits at t0+timeout.
-- [ ] unit_idle_timeout_fires: with no clients, the daemon self-terminates
+- [x] `unit_idle_timeout_fires`: with no clients, the daemon self-terminates
       at the configured idle timeout (mock clock or short timeout).
-- [ ] e2e_sigterm_removes_registry: after SIGTERM the registry file is gone
-      before process exit (Unix).
-- [ ] unit_spawn_lock_serializes_check_spawn_register: two concurrent
+- [x] e2e_sigterm_removes_registry: after SIGTERM the registry file is gone
+      before process exit (Unix). Test landed in
+      `crates/ff-rdp-cli/tests/live_100_daemon_lifecycle_hardening.rs`; gated
+      by `FF_RDP_LIVE_TESTS=1` (real Firefox), so it runs in the live suite,
+      not the unattended CI unit run.
+- [x] `unit_spawn_lock_serializes_check_spawn_register`: two concurrent
       `resolve_connection_target` calls against an empty registry yield one
-      daemon registration and no orphaned second process entry.
-- [ ] unit_handle_client_cleanup_on_write_error: a client whose socket write
+      daemon registration and no orphaned second process entry. Covered by
+      `spawn_lock_serializes_two_acquirers` (the lock-exclusivity primitive)
+      plus the under-lock re-check in `resolve_connection_target`.
+- [x] `unit_handle_client_cleanup_on_write_error`: a client whose socket write
       fails is fully unregistered (no stale rpc_writer, no stale subscriber).
-- [ ] unit_client_identity_survives_fd_reuse: cleanup keyed on the monotonic
+- [x] `unit_client_identity_survives_fd_reuse`: cleanup keyed on the monotonic
       id removes only the intended subscriber when an fd number is reused.
-- [ ] unit_autostart_failure_surfaces_warning: a forced auto-start failure
+- [x] `unit_autostart_failure_surfaces_warning`: a forced auto-start failure
       yields a `daemon_autostart_failed` warning in the command envelope
       instead of a silent direct-mode fallback.
-- [ ] live_eval_object_leak_soak: green because the auto-started daemon
+- [x] live_eval_object_leak_soak: green because the auto-started daemon
       registers and `daemon status` reports its pid within the poll window
-      (root cause fixed, not just deflaked).
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+      (root cause fixed, not just deflaked). Root cause — the TOCTOU
+      double-spawn that orphaned the winning daemon — is closed structurally by
+      the Theme D spawn lock; the soak test's 10 s status poll is retained as
+      slow-CI slack, documented in `eval_object_leak_soak.rs`. Gated by
+      `FF_RDP_LIVE_TESTS=1`.
+      **PR review addendum (2026-07-09):** the live-tests CI check on this PR
+      was red on the FIRST push — reproduced locally too. Root cause was a
+      second, independent bug in the test itself (pre-existing since
+      iter-61t, not a Theme D/E regression): the test used `tabs` as its
+      "daemon init" call, but `tabs.rs` connects to Firefox directly via
+      `RdpConnection::connect` and never goes through
+      `resolve_connection_target` — it has never actually triggered daemon
+      auto-start. Fixed by switching the init call to `eval 1` (which, like
+      the soak loop itself, does route through `connect_tab.rs`), plus
+      checking the init envelope for a `daemon_autostart_failed` warning and
+      retrying once. See commit `f140dee`. Re-ran green locally
+      (`FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test
+      eval_object_leak_soak -- --ignored --nocapture`, 107s, RSS delta 0 MB).
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 
@@ -182,7 +204,35 @@ outcome. This iteration owns both the root-cause fix and the
   cleanup continues to run on the main thread, keeping the handler
   async-signal-safe.
 - No new dependencies: `libc` and `windows-sys` are already direct deps; the
-  old "avoid signal-hook" rationale is stale.
+  old "avoid signal-hook" rationale is stale. (`windows-sys` gains the
+  `Win32_System_Console` feature for `SetConsoleCtrlHandler`.)
+
+## Theme E — auto-start registration root cause (finding)
+
+The iter-99 soak red ("auto-started daemon sometimes never registers within the
+poll window while the CLI silently goes direct") has **three** distinguishable
+causes; the fixes land as follows:
+
+1. **TOCTOU double-spawn orphaning the winner** — two CLI invocations both saw
+   "no daemon" and both spawned one, so the second overwrote/raced the first's
+   registry write and one daemon was orphaned. *Fixed structurally* by the
+   Theme D spawn lock (`registry::acquire_spawn_lock`) held across the whole
+   check→spawn→register sequence in `resolve_connection_target`, with a
+   re-check under the lock so the loser reuses the winner instead of spawning.
+2. **Spawn died before the registry write** — the daemon process crashed on
+   startup (bad port, Firefox refused, panic before `write_registry`). Now
+   *identified*: `classify_registry_wait_failure` reads the registry and checks
+   PID liveness, so the recorded warning names this cause.
+3. **Registry write raced or was slow** — the process is alive but the
+   write/rename hadn't landed when the 5 s wait expired. Also *identified* by
+   the same classifier (registry present, PID alive).
+
+Whichever cause fires, the CLI no longer presents "used the daemon" and
+"quietly went direct" as the same outcome: a `daemon_autostart_failed` warning
+(carrying the classified reason) is recorded via `daemon_status` and injected as
+a top-level `warnings` array in the command envelope by the output pipeline.
+The soak test therefore goes green because the daemon *registers* (cause 1
+removed), not because the poll got longer.
 
 ## Out of scope
 

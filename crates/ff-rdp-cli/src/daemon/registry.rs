@@ -208,6 +208,57 @@ pub fn log_path() -> Result<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
+// Spawn serialization lock (iter-100 Theme D)
+// ---------------------------------------------------------------------------
+
+/// An exclusive advisory file lock held across the daemon
+/// check→spawn→register sequence (iter-100 Theme D).
+///
+/// The lock is released automatically when this guard is dropped (the
+/// underlying file handle is closed).  Holding it for the *whole* sequence —
+/// not just the registry write — is what prevents two racing CLI invocations
+/// from both observing "no daemon", both spawning one, and orphaning the
+/// loser: the second invocation blocks on [`acquire_spawn_lock`] until the
+/// first has finished registering, then re-reads the registry and reuses the
+/// winner instead of spawning a second daemon.
+pub(crate) struct SpawnLock {
+    // Kept alive purely for its lock; the `flock`/`LockFile` is released on
+    // drop.  Never read directly.
+    _file: fs::File,
+}
+
+/// Acquire the process-wide daemon spawn lock, blocking until it is available.
+///
+/// Uses a dedicated `daemon.spawn.lock` file (separate from `daemon.json` so
+/// the lock lifetime is independent of registry write/rename churn).  The lock
+/// is advisory and cross-process: `fs2`'s `lock_exclusive` maps to `flock`
+/// (Unix) / `LockFileEx` (Windows), so it serializes across independent
+/// `ff-rdp` processes, which is exactly the auto-start race we must close.
+pub(crate) fn acquire_spawn_lock() -> Result<SpawnLock> {
+    acquire_spawn_lock_in(&registry_dir()?)
+}
+
+/// [`acquire_spawn_lock`] against an explicit directory (testable).
+pub(crate) fn acquire_spawn_lock_in(dir: &Path) -> Result<SpawnLock> {
+    fs::create_dir_all(dir)
+        .with_context(|| format!("creating registry directory {}", dir.display()))?;
+    let lock_path = dir.join("daemon.spawn.lock");
+    let mut opts = fs::OpenOptions::new();
+    opts.create(true).truncate(false).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts
+        .open(&lock_path)
+        .with_context(|| format!("opening spawn lock file {}", lock_path.display()))?;
+    file.lock_exclusive()
+        .with_context(|| format!("acquiring spawn lock {}", lock_path.display()))?;
+    Ok(SpawnLock { _file: file })
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -370,6 +421,69 @@ mod tests {
         // be all zeros — this guards against a broken RNG returning zeroes.
         let token = generate_auth_token().expect("token generation should succeed");
         assert_ne!(token, "0".repeat(64), "token must not be all zeros");
+    }
+
+    /// AC `unit_spawn_lock_serializes_check_spawn_register` (lock half):
+    /// two threads that both try to acquire the spawn lock against the same
+    /// directory are serialized — the second blocks until the first releases,
+    /// so at no instant do both hold the lock.  This is the primitive the
+    /// check→spawn→register serialization in `resolve_connection_target`
+    /// relies on to prevent a double-spawn.
+    #[test]
+    fn spawn_lock_serializes_two_acquirers() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+        let dir = Arc::new(tempfile::tempdir().expect("tempdir"));
+        let concurrent = Arc::new(AtomicBool::new(false));
+        let holders = Arc::new(AtomicU32::new(0));
+
+        let spawn_worker =
+            |dir: Arc<tempfile::TempDir>, concurrent: Arc<AtomicBool>, holders: Arc<AtomicU32>| {
+                std::thread::spawn(move || {
+                    let lock = acquire_spawn_lock_in(dir.path()).expect("acquire spawn lock");
+                    // If another thread is inside the critical section at the same
+                    // time, `holders` will exceed 1.
+                    let now = holders.fetch_add(1, Ordering::SeqCst) + 1;
+                    if now > 1 {
+                        concurrent.store(true, Ordering::SeqCst);
+                    }
+                    // Hold the lock briefly so a racing acquirer would overlap if
+                    // the lock were not exclusive.
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                    holders.fetch_sub(1, Ordering::SeqCst);
+                    drop(lock);
+                })
+            };
+
+        let t1 = spawn_worker(
+            Arc::clone(&dir),
+            Arc::clone(&concurrent),
+            Arc::clone(&holders),
+        );
+        let t2 = spawn_worker(
+            Arc::clone(&dir),
+            Arc::clone(&concurrent),
+            Arc::clone(&holders),
+        );
+        t1.join().expect("t1");
+        t2.join().expect("t2");
+
+        assert!(
+            !concurrent.load(Ordering::SeqCst),
+            "the spawn lock must be exclusive — two acquirers must never overlap"
+        );
+    }
+
+    #[test]
+    fn spawn_lock_released_on_drop_allows_reacquire() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let _lock = acquire_spawn_lock_in(dir.path()).expect("first acquire");
+            // dropped at end of scope
+        }
+        // A second acquire must succeed immediately now that the first is gone.
+        let _lock2 = acquire_spawn_lock_in(dir.path()).expect("second acquire after release");
     }
 
     #[test]

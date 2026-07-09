@@ -78,6 +78,10 @@ name = "live_90_daemon_lifecycle"
 path = "tests/live_90_daemon_lifecycle.rs"
 
 [[test]]
+name = "live_100_daemon_lifecycle_hardening"
+path = "tests/live_100_daemon_lifecycle_hardening.rs"
+
+[[test]]
 name = "error_shapes"
 path = "tests/error_shapes.rs"
 

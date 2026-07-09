@@ -57,7 +57,7 @@ the daemon only bumps a counter and registers the actor
 ever branching on it (`actors/watcher.rs:245-255`). Meanwhile three
 data-integrity issues bite real usage: concurrent CLI invocations can
 cross-deliver responses because each new client *replaces* the single RPC
-writer (`server.rs:1126-1145`, known-limitation comment) while the daemon
+writer (`server.rs:1335-1351`, known-limitation comment) while the daemon
 auto-starts by default; the `ResourceBuffer` is one global `VecDeque` whose
 eviction ignores resource type (`buffer.rs:6,92-95`), so a network burst
 evicts buffered console/error events; and `network --since` silently does
@@ -101,7 +101,7 @@ parity tests (every error-shape test runs `--no-daemon`).
       notes below for the starting position), then implement: either a FIFO
       of RPC clients (one in-flight at a time, others wait with a bounded
       timeout) or an immediate structured `daemon_busy` error with retry
-      hint. Remove the replace-the-writer semantics at `server.rs:1126-1145`.
+      hint. Remove the replace-the-writer semantics at `server.rs:1335-1351`.
 - [ ] Resolve the `DemuxReader` question honestly: wire `split_demux`
       (`transport.rs:887-1056`) into the daemon as iter-77 intended, or
       delete the pub API — and in either case remove the `_demux` decoy at
@@ -169,6 +169,15 @@ parity tests (every error-shape test runs `--no-daemon`).
   kb documentation tasks, and the plan should say so rather than add code.
 - `is_top_level` parsing already exists (`actors/watcher.rs:245-255`); this
   iteration finally consumes it.
+- **Not every command touches the daemon at all.** Found while reviewing
+  iter-100: `tabs.rs` connects to Firefox directly via `RdpConnection::connect`
+  and never calls `resolve_connection_target` — it has never triggered daemon
+  auto-start or gone through the daemon's RPC-writer path, regardless of
+  `--no-daemon`. Before writing `unit_concurrent_clients_no_cross_delivery` or
+  any test that assumes a given subcommand exercises daemon session state,
+  confirm the command actually imports `crate::commands::connect_tab` (grep
+  the command file) — `tabs`, and possibly other list/discovery commands, do
+  not.
 
 ## Out of scope
 
@@ -183,5 +192,8 @@ parity tests (every error-shape test runs `--no-daemon`).
 
 - [[deep-review-2026-07-fable5]] — findings A2, A3, A6, A7, A8, E.
 - [[iteration-100-daemon-lifecycle-hardening]] — lifecycle prerequisites.
-- `crates/ff-rdp-cli/src/daemon/server.rs:1126-1145` — the known-limitation
-  comment this iteration retires.
+- `crates/ff-rdp-cli/src/daemon/server.rs:1335-1351` — the known-limitation
+  comment this iteration retires (line numbers shifted from `1126-1145` after
+  [[iteration-100-daemon-lifecycle-hardening]] added ~200 lines to
+  `server.rs`; reconfirm against HEAD before starting, since further shifts
+  are likely).

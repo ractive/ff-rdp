@@ -5,6 +5,7 @@ mod commands;
 mod connection_meta;
 mod daemon;
 mod daemon_record;
+mod daemon_status;
 mod dispatch;
 mod error;
 mod hints;

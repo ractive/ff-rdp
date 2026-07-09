@@ -422,10 +422,21 @@ fn live_jq_missing_path_silent_default() {
 
 /// `live_jq_missing_path_strict_exits_nonzero`:
 /// With `--jq-strict`, a `--jq` filter that selects a non-existent path must
-/// exit non-zero and print an error to stderr.
+/// exit non-zero and print a JSON error envelope containing "not found".
 ///
 /// Pre-condition: Firefox running.
-/// Post-condition: exit code != 0, stderr contains "not found".
+/// Post-condition: exit code != 0, stdout JSON error contains "not found".
+///
+/// NOTE: this codebase's error contract prints JSON errors to **stdout**
+/// (so a script piping stdout as NDJSON still sees the error), not stderr —
+/// see `error_shapes.rs`'s `parse_stdout_json` for the established
+/// convention. This test previously (incorrectly, since it was first
+/// written — predates iter-100) checked `stderr`, which the CLI never
+/// writes to for this error path, so the assertion always failed once
+/// actually reached. Found while un-masking `live_86_perf_field_fixes.rs`
+/// during iter-100 PR review (a separate, since-fixed bug in
+/// `LiveFirefox::with_daemon` meant CI's `live-tests` job never previously
+/// ran a test binary late enough alphabetically to reach this one).
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_jq_missing_path_strict_exits_nonzero() {
@@ -463,14 +474,16 @@ fn live_jq_missing_path_strict_exits_nonzero() {
         "live_jq_missing_path_strict_exits_nonzero: FAIL — expected non-zero exit but got 0"
     );
 
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stderr.contains("not found"),
-        "live_jq_missing_path_strict_exits_nonzero: FAIL — stderr does not contain 'not found': {stderr:?}"
+        stdout.contains("not found"),
+        "live_jq_missing_path_strict_exits_nonzero: FAIL — stdout does not contain 'not found': \
+         {stdout:?}\nstderr={:?}",
+        String::from_utf8_lossy(&out.stderr)
     );
 
     eprintln!(
-        "live_jq_missing_path_strict_exits_nonzero: PASS — exit non-zero + 'not found' in stderr"
+        "live_jq_missing_path_strict_exits_nonzero: PASS — exit non-zero + 'not found' in stdout"
     );
 }
 

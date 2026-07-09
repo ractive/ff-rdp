@@ -556,13 +556,13 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
         results["lcp_approximate"] = json!(true);
         results["lcp_note"] = json!(
             "LCP estimated via DOM approximation — Firefox does not implement the Chromium LCP observer. \
-             This is a Firefox limitation regardless of headless mode. \
+             This is a Firefox platform limitation, not specific to any launch mode. \
              For canonical LCP, use Lighthouse against Chromium."
         );
     } else if lcp.is_none() {
         results["lcp_note"] = json!(
             "LCP not available — Firefox does not implement the Chromium LCP PerformanceObserver entry. \
-             This is a Firefox limitation regardless of headless mode. \
+             This is a Firefox platform limitation, not specific to any launch mode. \
              For canonical LCP, use Lighthouse against Chromium."
         );
     }
@@ -970,13 +970,13 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
         vitals["lcp_approximate"] = json!(true);
         vitals["lcp_note"] = json!(
             "LCP estimated via DOM approximation — Firefox does not implement the Chromium LCP observer. \
-             This is a Firefox limitation regardless of headless mode. \
+             This is a Firefox platform limitation, not specific to any launch mode. \
              For canonical LCP, use Lighthouse against Chromium."
         );
     } else if lcp.is_none() {
         vitals["lcp_note"] = json!(
             "LCP not available — Firefox does not implement the Chromium LCP PerformanceObserver entry. \
-             This is a Firefox limitation regardless of headless mode. \
+             This is a Firefox platform limitation, not specific to any launch mode. \
              For canonical LCP, use Lighthouse against Chromium."
         );
     }

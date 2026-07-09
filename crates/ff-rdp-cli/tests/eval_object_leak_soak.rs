@@ -109,21 +109,84 @@ fn live_eval_object_leak_soak() {
         ]
     };
 
-    // Start the daemon with an initial tabs call (auto-start path).
-    let init = Command::new(ff_rdp_bin())
-        .args(daemon_args())
-        .arg("tabs")
-        .output()
-        .expect("tabs (daemon init)");
-    assert!(
-        init.status.success(),
-        "live_eval_object_leak_soak: daemon init failed\nstderr: {}",
-        String::from_utf8_lossy(&init.stderr)
-    );
+    // Start the daemon with an initial `eval` call (auto-start path).
+    //
+    // NOTE (found while investigating a CI red on this exact test): `tabs`
+    // does NOT go through `resolve_connection_target` at all — `tabs.rs`
+    // connects to Firefox directly via `RdpConnection::connect`, bypassing
+    // the daemon entirely regardless of `--no-daemon`. That has been true
+    // since this test was first written (iter-61t) and predates iter-100;
+    // using `tabs` as the "daemon init" call never actually started a daemon,
+    // it only happened to pass historically. `eval` (like every other
+    // resource/DOM command) *does* route through `connect_tab.rs` ->
+    // `resolve_connection_target`, so it is the correct command to trigger
+    // auto-start. See `crates/ff-rdp-cli/src/commands/tabs.rs` vs
+    // `crates/ff-rdp-cli/src/commands/eval.rs`.
+    //
+    // iter-100 Theme E: a daemon-aware command succeeds even when auto-start
+    // falls back to a direct connection (the command itself still works
+    // without a daemon) — so `init.status.success()` alone cannot tell us the
+    // daemon actually started.  When that fallback happens,
+    // `resolve_connection_target` records a `daemon_autostart_failed` warning
+    // that the output pipeline injects as a top-level `warnings` array on the
+    // envelope.  Check for it explicitly and retry once: a single
+    // CI-runner-slow autostart (cold Firefox + cold daemon binary racing the
+    // internal 5 s registry wait) should not fail the whole soak, but seeing
+    // the SAME diagnosed cause twice in a row would indicate the structural
+    // fix regressed, not CI noise — so the retry is bounded to one attempt
+    // and the warning's reason is surfaced in the panic message either way.
+    let run_init = || -> serde_json::Value {
+        let init = Command::new(ff_rdp_bin())
+            .args(daemon_args())
+            .args(["eval", "1"])
+            .output()
+            .expect("eval 1 (daemon init)");
+        assert!(
+            init.status.success(),
+            "live_eval_object_leak_soak: daemon init failed\nstderr: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+        serde_json::from_slice(&init.stdout).expect("eval init JSON")
+    };
+
+    let autostart_warning = |envelope: &serde_json::Value| -> Option<String> {
+        envelope["warnings"].as_array().and_then(|warnings| {
+            warnings
+                .iter()
+                .find(|w| w["type"] == "daemon_autostart_failed")
+                .map(|w| w["reason"].as_str().unwrap_or("<no reason>").to_owned())
+        })
+    };
+
+    let mut init_envelope = run_init();
+    if let Some(reason) = autostart_warning(&init_envelope) {
+        eprintln!(
+            "live_eval_object_leak_soak: auto-start fell back to direct on first attempt \
+             ({reason}) — retrying once before failing"
+        );
+        init_envelope = run_init();
+        if let Some(reason) = autostart_warning(&init_envelope) {
+            panic!(
+                "live_eval_object_leak_soak: auto-start fell back to direct on two \
+                 consecutive attempts (reason: {reason}) — this is the exact silent \
+                 degradation iter-100 Theme E should have closed structurally; \
+                 investigate resolve_connection_target rather than widening this retry"
+            );
+        }
+    }
 
     // Poll `daemon status` until the daemon has registered and reports a PID.
     // A fixed post-init sleep raced the daemon's registry write on slow CI
     // runners (`results.pid` absent while the daemon was still coming up).
+    //
+    // iter-100 Theme E: the *root* registration race (a TOCTOU double-spawn
+    // that orphaned the winner) is now closed by the spawn lock held across
+    // check→spawn→register in `resolve_connection_target`, so this test passes
+    // because the auto-started daemon actually registers — not merely because
+    // the poll window was widened. The 10 s budget is retained deliberately as
+    // slack for genuinely slow CI runners (cold Firefox start + first-tab
+    // handshake), not to paper over a race; on a warm machine the daemon
+    // registers in well under a second.
     let status_deadline = std::time::Instant::now() + Duration::from_secs(10);
     let daemon_pid = loop {
         let status_out = Command::new(ff_rdp_bin())
@@ -146,8 +209,8 @@ fn live_eval_object_leak_soak() {
         }
         assert!(
             std::time::Instant::now() < status_deadline,
-            "live_eval_object_leak_soak: daemon never reported a pid within 10 s; \
-             last status: {status_json}"
+            "live_eval_object_leak_soak: daemon never reported a pid within 10 s \
+             (init envelope: {init_envelope}); last status: {status_json}"
         );
         std::thread::sleep(Duration::from_millis(250));
     };

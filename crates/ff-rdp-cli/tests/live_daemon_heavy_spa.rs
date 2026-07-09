@@ -61,12 +61,18 @@ fn live_daemon_auth_completes_during_burst() {
         ]
     };
 
-    // Trigger daemon startup with a first tabs call.
+    // Trigger daemon startup with a first `eval` call. `tabs` does NOT work
+    // for this: `tabs.rs` connects to Firefox directly via
+    // `RdpConnection::connect` and never goes through
+    // `resolve_connection_target`, so it never actually starts a daemon (see
+    // the matching fix in `eval_object_leak_soak.rs`). `eval`, like
+    // `navigate` below, routes through `connect_tab.rs` and genuinely
+    // auto-starts and waits for the daemon to register.
     let init = Command::new(ff_rdp_bin())
         .args(daemon_args(5000))
-        .arg("tabs")
+        .args(["eval", "1"])
         .output()
-        .expect("tabs");
+        .expect("eval 1");
     if !init.status.success() {
         eprintln!("live_daemon_auth_completes_during_burst: daemon init failed — skipping");
         return;
