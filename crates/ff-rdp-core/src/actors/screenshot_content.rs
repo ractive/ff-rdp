@@ -1,3 +1,6 @@
+// allow-actor-kb-skip: iter-102 only restructures the `capture` method-fallback
+// loop to drop a production `.expect()` (Theme C) — no change to the actor's
+// protocol surface described in kb/rdp/actors/screenshot-content.md.
 use serde_json::{Value, json};
 
 use crate::actor::actor_request;
@@ -35,22 +38,26 @@ impl ScreenshotContentActor {
             "ratio": 1.0,
         });
 
-        let mut last_err: Option<ProtocolError> = None;
-        for &method in CAPTURE_METHODS {
+        // `CAPTURE_METHODS` is statically non-empty; split off the last method
+        // so the final `unrecognizedPacketType` error can be returned by value
+        // without an `Option::expect` after the loop.
+        let (&last_method, earlier_methods) = CAPTURE_METHODS
+            .split_last()
+            .ok_or_else(|| ProtocolError::InvalidPacket("CAPTURE_METHODS is empty".into()))?;
+
+        for &method in earlier_methods {
             match actor_request(transport, actor, method, Some(&params)) {
-                Ok(response) => {
-                    return extract_capture_data(&response, method);
-                }
-                Err(e) if e.is_unrecognized_packet_type() => {
-                    // This method name is not known to the actor — try the next one.
-                    last_err = Some(e);
-                }
+                Ok(response) => return extract_capture_data(&response, method),
+                // This method name is not known to the actor — try the next one.
+                Err(e) if e.is_unrecognized_packet_type() => {}
                 Err(e) => return Err(e),
             }
         }
 
-        // All method names were unrecognised — return the last unrecognized error.
-        Err(last_err.expect("CAPTURE_METHODS is non-empty"))
+        // Last method: return its response or its error directly — no `Option`
+        // to unwrap.
+        let response = actor_request(transport, actor, last_method, Some(&params))?;
+        extract_capture_data(&response, last_method)
     }
 
     /// Prepare viewport metadata for the Firefox 149+ two-step screenshot protocol.

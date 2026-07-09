@@ -31,7 +31,10 @@ impl WalkerFront {
         transport: &mut RdpTransport,
     ) -> Result<Option<spec::DomNode>, ProtocolError> {
         let reply = call::<spec::DocumentElement>(transport, &self.id, &NoArgs {})?;
-        Ok(reply.node.as_ref().and_then(parse_dom_node))
+        match reply.node {
+            Some(node) => parse_dom_node(transport, &node),
+            None => Ok(None),
+        }
     }
 
     /// Find a single DOM node matching a CSS selector.
@@ -46,7 +49,10 @@ impl WalkerFront {
             selector: selector.to_string(),
         };
         let reply = call::<spec::QuerySelector>(transport, &self.id, &args)?;
-        Ok(reply.node.as_ref().and_then(parse_dom_node))
+        match reply.node {
+            Some(node) => parse_dom_node(transport, &node),
+            None => Ok(None),
+        }
     }
 
     /// Find all DOM nodes matching a CSS selector (returns a node list actor reference).

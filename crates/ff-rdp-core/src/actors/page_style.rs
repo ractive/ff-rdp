@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 
 use crate::actor::actor_request;
 use crate::error::ProtocolError;
+use crate::specs::types::resolve_long_string_slot;
 use crate::transport::RdpTransport;
 use crate::types::ActorId;
 
@@ -111,11 +112,7 @@ impl PageStyleActor {
             })),
         )?;
 
-        let computed = response.get("computed").ok_or_else(|| {
-            ProtocolError::InvalidPacket("getComputed response missing 'computed' field".into())
-        })?;
-
-        parse_computed_properties(computed)
+        parse_computed_properties(transport, &response)
     }
 
     /// Get the raw `getApplied` reply from Firefox as an uninterpreted JSON value.
@@ -202,30 +199,43 @@ impl PageStyleActor {
     }
 }
 
-/// Parse the `computed` object from a `getComputed` response.
+/// Parse the `computed` object from a `getComputed` response, resolving any
+/// `longstring` grip in each property's `value` slot.
 ///
-/// The object has CSS property names as keys, each mapping to `{"value": "...", "priority": ""}`.
-fn parse_computed_properties(computed: &Value) -> Result<Vec<ComputedProperty>, ProtocolError> {
+/// The `computed` object has CSS property names as keys, each mapping to
+/// `{"value": "...", "priority": ""}`.  The `value` slot is declared
+/// `longstring` in `devtools/shared/specs/style/style-types.js`: long values
+/// (e.g. a large CSS custom property or a `background-image` with a big inline
+/// data URI) arrive as `{type:"longString", …}` grips.  A bare `.as_str()`
+/// dropped those to nothing; [`resolve_long_string_slot`] fetches the full
+/// value.  Entries whose `value` slot is absent or `null` are skipped.
+fn parse_computed_properties(
+    transport: &mut RdpTransport,
+    response: &Value,
+) -> Result<Vec<ComputedProperty>, ProtocolError> {
+    let computed = response.get("computed").ok_or_else(|| {
+        ProtocolError::InvalidPacket("getComputed response missing 'computed' field".into())
+    })?;
     let obj = computed.as_object().ok_or_else(|| {
         ProtocolError::InvalidPacket("'computed' field is not a JSON object".into())
     })?;
 
-    let mut props: Vec<ComputedProperty> = obj
-        .iter()
-        .filter_map(|(name, entry)| {
-            let value = entry.get("value")?.as_str()?.to_string();
-            let priority = entry
-                .get("priority")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            Some(ComputedProperty {
-                name: name.clone(),
-                value,
-                priority,
-            })
-        })
-        .collect();
+    let mut props: Vec<ComputedProperty> = Vec::with_capacity(obj.len());
+    for (name, entry) in obj {
+        let Some(value) = resolve_long_string_slot(transport, entry.get("value"))? else {
+            continue;
+        };
+        let priority = entry
+            .get("priority")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        props.push(ComputedProperty {
+            name: name.clone(),
+            value,
+            priority,
+        });
+    }
 
     // Sort for stable output ordering.
     props.sort_by(|a, b| a.name.cmp(&b.name));
@@ -458,14 +468,29 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A transport backed by a loopback TCP pair.  For inline (non-longString)
+    /// computed values `parse_computed_properties` never touches the socket, so
+    /// the pair only satisfies the signature.
+    fn dummy_transport() -> RdpTransport {
+        use std::io::BufReader;
+        use std::net::{TcpListener, TcpStream};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (_server, _) = listener.accept().unwrap();
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        RdpTransport::from_parts(reader, writer)
+    }
+
     #[test]
     fn parse_computed_properties_extracts_sorted_properties() {
-        let computed = json!({
+        let response = json!({ "computed": {
             "color": {"value": "rgb(0, 0, 0)", "priority": ""},
             "font-size": {"value": "16px", "priority": ""},
             "background-color": {"value": "rgba(0, 0, 0, 0)", "priority": "important"}
-        });
-        let props = parse_computed_properties(&computed).unwrap();
+        }});
+        let props = parse_computed_properties(&mut dummy_transport(), &response).unwrap();
         // Should be sorted alphabetically
         assert_eq!(props.len(), 3);
         assert_eq!(props[0].name, "background-color");
@@ -478,15 +503,75 @@ mod tests {
 
     #[test]
     fn parse_computed_properties_empty_object() {
-        let computed = json!({});
-        let props = parse_computed_properties(&computed).unwrap();
+        let response = json!({ "computed": {} });
+        let props = parse_computed_properties(&mut dummy_transport(), &response).unwrap();
         assert!(props.is_empty());
     }
 
     #[test]
     fn parse_computed_properties_non_object_returns_error() {
-        let computed = json!(["not", "an", "object"]);
-        assert!(parse_computed_properties(&computed).is_err());
+        let response = json!({ "computed": ["not", "an", "object"] });
+        assert!(parse_computed_properties(&mut dummy_transport(), &response).is_err());
+    }
+
+    #[test]
+    fn parse_computed_properties_missing_computed_field_returns_error() {
+        let response = json!({ "other": {} });
+        assert!(parse_computed_properties(&mut dummy_transport(), &response).is_err());
+    }
+
+    /// iter-102 Theme A: a computed property `value` arriving as a longString
+    /// grip (e.g. a large CSS custom property) is resolved to its full content
+    /// — previously `.as_str()` dropped the whole property.
+    #[test]
+    fn parse_computed_properties_resolves_longstring_value() {
+        use std::io::{BufReader, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        use crate::transport::{encode_frame, recv_from};
+
+        let full = "v".repeat(20_000);
+        let full_for_server = full.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = BufReader::new(stream);
+            let greeting = json!({"from":"root","applicationType":"browser","traits":{}});
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+            let req = recv_from(&mut reader).unwrap();
+            assert_eq!(req["type"], "substring");
+            assert_eq!(req["to"], "conn0/longString4");
+            let resp = json!({"from":"conn0/longString4","substring": full_for_server});
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&resp).unwrap()).as_bytes())
+                .unwrap();
+        });
+
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+        let response = json!({ "computed": {
+            "--big-token": {
+                "value": {
+                    "type": "longString",
+                    "actor": "conn0/longString4",
+                    "length": 20_000,
+                    "initial": "v".repeat(1024),
+                },
+                "priority": ""
+            },
+            "color": {"value": "rgb(0, 0, 0)", "priority": ""}
+        }});
+        let props = parse_computed_properties(&mut transport, &response).unwrap();
+        assert_eq!(props.len(), 2);
+        let big = props.iter().find(|p| p.name == "--big-token").unwrap();
+        assert_eq!(big.value.len(), 20_000);
+        assert_eq!(big.value, full);
+        handle.join().unwrap();
     }
 
     #[test]

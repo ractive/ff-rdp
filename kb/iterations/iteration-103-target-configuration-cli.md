@@ -131,6 +131,15 @@ comparison (its `set_viewport`/emulation features) without touching BiDi.
 
 ## Design notes
 
+- Note (iter-102 carry-over): `crates/ff-rdp-core/tests/no_string_actor_ids.rs`
+  now has `unit_no_production_expect_in_core`, a source-scan gate that fails
+  the build on any `.expect(` in non-test `ff-rdp-core/src/` code. New
+  `TargetConfigurationFront` setters and the `emulate` command's core-side
+  plumbing must use `?`/`ok_or_else`/typed errors from the start — don't reach
+  for `.expect()` during development and clean it up later, the gate will
+  catch it in CI anyway. (`ff-rdp-cli` is not covered by this gate, but the
+  project's general "no `.unwrap()`/`.expect()` outside tests" rule still
+  applies there.)
 - The actor is obtained via `watcher.getTargetConfigurationActor()` — the
   plumbing already exists for the two implemented setters; this is field
   completion, not new protocol work. All fields are nullable in the spec

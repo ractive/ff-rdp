@@ -82,11 +82,21 @@ closed-in: iter-61v
 
 ## node-attrs-flat-array
 
-**`WalkerActor` returns DOM node `attrs` as a flat alternating string array `["name", "value", "name2", "value2", ...]`**, not the obvious `[{name, value}, ...]`. We custom-parse via `parse_dom_node` in dom_walker.rs:20-47. Standard serde derive would silently fail.
+**`WalkerActor` returns DOM node `attrs` as a flat alternating string array `["name", "value", "name2", "value2", ...]`**, not the obvious `[{name, value}, ...]`. We custom-parse via `parse_dom_node` in `actors/dom_walker.rs`. Standard serde derive would silently fail. Note (iter-102): each attribute *value* is a `longstring` slot, so `parse_dom_node` resolves grips via `resolve_long_string_slot` — see [[#longstring-grips-everywhere]].
 
 ## longstring-grips-everywhere
 
-**`longString` grips appear wherever a string might exceed ~8 KiB — including `getResponseContent.text` for network bodies.** Before iter-54 task 5 we silently lost big response bodies because we called `as_str()` on the grip object and got `None`. Now we detect the grip shape and chunk-fetch via `LongStringActor::full_string`, capping at `MAX_FRAME_BYTES`.
+**`longString` grips appear wherever a string might exceed Firefox's `DebuggerServer.LONG_STRING_LENGTH` threshold (~10 KB) — not just `getResponseContent.text` for network bodies.** Before iter-54 task 5 we silently lost big response bodies because we called `as_str()` on the grip object and got `None`. Now we detect the grip shape and chunk-fetch via `LongStringActor::full_string`.
+
+**iter-102 (longString sweep) closed the remaining holes.** The sweep was NOT complete after iter-54 — three read paths still did bare `.as_str()` on `longstring` spec slots and reported *empty* for values above the threshold:
+
+- **DOM** — `nodeValue` (text nodes) and each **attribute value** (`devtools/shared/specs/node.js`), in `parse_dom_node` (`actors/dom_walker.rs`).
+- **Storage** — the cookie `value` slot (`devtools/shared/specs/storage.js`), in `parse_cookie` (`actors/storage.rs`). localStorage/sessionStorage value slots are also declared `longstring` but ff-rdp does not yet consume them (documented for future wiring).
+- **Computed style** — each property `value` slot (`devtools/shared/specs/style/style-types.js`), in `parse_computed_properties` (`actors/page_style.rs`).
+
+All three now route through `specs::types::resolve_long_string_slot`, which dispatches inline strings without a round-trip and `longString` grips through the typed `LongString` decoder (`specs/types.rs`) — the same path console/network/object/watcher already used.
+
+**Rule: any new spec consumer reading a slot Firefox declares `longstring` MUST use the typed decoder (`resolve_long_string_slot` / `LongString::fetch_full`), never a bare `Value::as_str()`.** A bare `.as_str()` on a `longstring` slot silently yields `None`/empty once the value crosses the ~10 KB threshold — a confidently-wrong answer. The source-scan test `unit_no_production_expect_in_core` (iter-102) and the grip round-trip unit tests in each module guard against regressions; `check-firefox-refs` pins the spec line ranges.
 
 ## frame-size-cap
 

@@ -715,10 +715,7 @@ pub fn run_core(
             Err(e) => Err(e),
         };
 
-        match result {
-            Ok(ci) => Some(ci),
-            Err(e) => return Err(e),
-        }
+        Some(result?)
     };
 
     // Theme K: invalidate the cached consoleActor after any navigate so the

@@ -73,3 +73,18 @@ a suitable network-events subscription path is added.
 Live test: `live_cookies_set_cookie_header.rs` — `#[ignore]` gated;
 navigates to `httpbin.org/cookies/set?probe=1` and asserts `probe=1` appears
 in `cookies list` output.
+
+## longString cookie values (iter-102)
+
+The cookie `value` slot is declared `longstring` in
+`devtools/shared/specs/storage.js`: a cookie value above Firefox's
+`DebuggerServer.LONG_STRING_LENGTH` threshold (~10 KB) arrives as a
+`{type:"longString", actor, length, initial}` grip, not an inline string.
+`parse_cookie` (`actors/storage.rs`) resolves the slot through
+`specs::types::resolve_long_string_slot`, so large cookie values are returned in
+full rather than dropped to empty. Unit test:
+`parse_cookie_resolves_longstring_value`. Live AC:
+`live_cookie_longstring_value` (`live_102_longstring_and_reload.rs`).
+localStorage/sessionStorage value slots are also `longstring` but ff-rdp does
+not yet consume them — wire them through the same helper when it does. See
+[[lessons-learned#longstring-grips-everywhere]].

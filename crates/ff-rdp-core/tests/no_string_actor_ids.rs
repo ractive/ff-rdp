@@ -119,3 +119,106 @@ fn no_bare_string_actor_ids_in_src() {
         violations.join("\n")
     );
 }
+
+/// Return the (1-indexed line number, line) pairs that belong to **production**
+/// code — i.e. everything NOT inside a `#[cfg(test)]`-gated item or block.
+///
+/// This handles both shapes that appear in this crate:
+/// - a module-level `#[cfg(test)] mod tests { … }` (the trailing test module), and
+/// - an inline `#[cfg(test)] { … }` block or `#[cfg(test)] fn helper() { … }`
+///   *within* a production function (e.g. `transport.rs::trace_raw_enabled`).
+///
+/// When a `#[cfg(test)]` attribute is seen, the scanner tracks brace depth from
+/// the next `{` and skips lines until that block closes, then resumes.  A bare
+/// `#[cfg(test)]` on a `use`/`static`/`const` with no following `{` on its own
+/// item is skipped for that single item line.
+fn production_lines(content: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut lines = content.lines().enumerate().peekable();
+
+    while let Some((idx, line)) = lines.next() {
+        if line.trim_start().starts_with("#[cfg(test)]") {
+            // Skip forward until we open a brace, counting depth, then skip
+            // until the matching close.  If the gated item has no brace before
+            // its terminating `;` (e.g. `static X: … = …;`), we only skip lines
+            // up to and including that item.
+            let mut depth: i32 = 0;
+            let mut opened = false;
+            // Include the attribute line and everything in its item.
+            let mut cur = Some((idx, line));
+            while let Some((_, l)) = cur {
+                for ch in l.chars() {
+                    match ch {
+                        '{' => {
+                            depth += 1;
+                            opened = true;
+                        }
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                if opened && depth <= 0 {
+                    break; // block closed
+                }
+                if !opened && l.trim_end().ends_with(';') {
+                    break; // braceless gated item (single statement)
+                }
+                cur = lines.next();
+            }
+            continue;
+        }
+        out.push((idx, line.to_string()));
+    }
+    out
+}
+
+/// iter-102 Theme C (AC `unit_no_production_expect_in_core`): no production
+/// (non-test) `.rs` source under `src/` may call `.expect(`.  Per the project's
+/// error-handling rules (`CLAUDE.md`: "No `.unwrap()` / `.expect()` outside of
+/// tests"), production code must use `anyhow::Context`/`?` and typed errors.
+///
+/// The three sites this iteration removed were:
+/// - `transport.rs` `actor_send_oneway` (built the packet Map directly)
+/// - `screenshot.rs` `ScreenshotArgsExt::to_args_value` (returns `Result`)
+/// - `screenshot_content.rs` `capture` fallback (restructured the loop)
+#[test]
+fn unit_no_production_expect_in_core() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src_dir = Path::new(manifest_dir).join("src");
+    assert!(src_dir.exists(), "src/ directory not found at {src_dir:?}");
+
+    let rs_files = collect_rs_files(&src_dir);
+    let mut violations: Vec<String> = Vec::new();
+
+    for file in &rs_files {
+        let content = match std::fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("warning: could not read {file:?}: {e}");
+                continue;
+            }
+        };
+
+        for (line_no, line) in production_lines(&content) {
+            let trimmed = line.trim_start();
+            // Skip comment and doc-comment lines (doc examples may mention
+            // `.expect(` illustratively).
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            if line.contains(".expect(") {
+                violations.push(format!(
+                    "{}:{}: production `.expect(` — use `?`/`ok_or_else`/typed error instead",
+                    file.display(),
+                    line_no + 1
+                ));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "Found production `.expect(` in ff-rdp-core/src/ (must be test-only):\n{}",
+        violations.join("\n")
+    );
+}
