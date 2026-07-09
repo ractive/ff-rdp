@@ -111,5 +111,5 @@ else
 fi
 
 # Success — write the sentinel the check-dogfood-script gate looks for.
-touch "$SENTINEL"
-echo "iter-106 dogfood: PASS"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$SENTINEL"
+echo "iter-106 dogfood: Themes A/B/D verified against live Firefox — $SENTINEL"
