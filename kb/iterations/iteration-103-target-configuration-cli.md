@@ -136,13 +136,12 @@ comparison (its `set_viewport`/emulation features) without touching BiDi.
 - [x] `e2e_emulate_one_shot_lifetime_warning`: `emulate --no-daemon …` envelope
       carries the connection-lifetime warning (`ONE_SHOT_LIFETIME_WARNING`);
       daemon-path envelope does not.
-- [x] `dogfood_script_full_run_iter_103`
+- [x] `dogfood_script_full_run_iter_103` exercises `set_color_scheme_simulation` end-to-end
       (`iteration-103-target-configuration-cli.dogfood.sh`): drives
       `emulate --color-scheme dark` / `--user-agent` / `--reset` over the daemon
       path against a live Firefox, asserts the applied config echo
-      (`colorSchemeSimulation`), the `prefers-color-scheme` flip via
-      `set_color_scheme_simulation`, the UA override, and the reset revert; exits
-      0 and writes the sentinel.
+      (`colorSchemeSimulation`), the `prefers-color-scheme` flip, the UA
+      override, and the reset revert; exits 0 and writes the sentinel.
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
