@@ -355,6 +355,10 @@ pub struct RawFirefox {
     pid: u32,
     port: u16,
     profile: PathBuf,
+    // Held so `Drop` can `wait()` after killing — without reaping, the
+    // process would remain a zombie (Unix) until some other code waits on
+    // it, since it is a direct child of this test process.
+    child: std::process::Child,
 }
 
 impl RawFirefox {
@@ -402,10 +406,13 @@ impl RawFirefox {
             .spawn()
             .ok()?;
         let pid = child.id();
-        // Detach: we track the PID and kill it ourselves in Drop.
-        std::mem::forget(child);
 
-        let ff = Self { pid, port, profile };
+        let ff = Self {
+            pid,
+            port,
+            profile,
+            child,
+        };
         if wait_for_tcp(port, Duration::from_secs(30)) {
             Some(ff)
         } else {
@@ -416,7 +423,12 @@ impl RawFirefox {
 
 impl Drop for RawFirefox {
     fn drop(&mut self) {
+        // `kill_pid` signals by raw PID (mirrors `LiveFirefox`, and matches
+        // what the kill-scoping guard under test actually does), then we
+        // `wait()` on the held `Child` to reap it — otherwise a directly
+        // spawned child left un-waited becomes a zombie on Unix.
         kill_pid(self.pid);
+        let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.profile);
     }
 }
