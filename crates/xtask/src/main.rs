@@ -6,6 +6,7 @@ mod check_dogfood_script;
 mod check_firefox_refs;
 mod check_iteration_plan;
 mod check_iteration_ready;
+mod check_live_test_layout;
 mod check_oneway_conformance;
 mod check_pre_fix_repro;
 mod check_todo_annotations;
@@ -41,6 +42,9 @@ enum Commands {
     CheckActorKbSync(check_actor_kb_sync::Args),
     /// Fail if any actor_request call targets a method declared oneway: true in the Firefox spec.
     CheckOnewayConformance(check_oneway_conformance::Args),
+    /// Fail if any top-level crates/ff-rdp-cli/tests/live_*.rs binary exists
+    /// (live suites must be modules of the consolidated tests/live/ target).
+    CheckLiveTestLayout(check_live_test_layout::Args),
     /// Run all iteration discipline gates and aggregate results.
     /// Fails if any sub-check fails; reports all failures before exiting.
     CheckIterationReady(check_iteration_ready::Args),
@@ -65,6 +69,7 @@ fn main() -> Result<()> {
         Commands::CheckFirefoxRefs(args) => check_firefox_refs::run(args),
         Commands::CheckActorKbSync(args) => check_actor_kb_sync::run(args),
         Commands::CheckOnewayConformance(args) => check_oneway_conformance::run(args),
+        Commands::CheckLiveTestLayout(args) => check_live_test_layout::run(args),
         Commands::CheckIterationReady(args) => check_iteration_ready::run(args),
         Commands::FindIterationPlan(args) => find_iteration_plan::run(args),
         Commands::CheckDogfoodScript(args) => check_dogfood_script::run(args),

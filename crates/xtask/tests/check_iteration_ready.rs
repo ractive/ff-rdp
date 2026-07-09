@@ -103,7 +103,7 @@ fn run_aggregator_real_repo_with_skips(
 // Tests
 // ---------------------------------------------------------------------------
 
-/// Happy path: synthetic plan with no ACs + clean diff → all 9 sub-checks PASS.
+/// Happy path: synthetic plan with no ACs + clean diff → all 10 sub-checks PASS.
 ///
 /// We run against the real repo root with `--base HEAD` so the code diff is
 /// empty. That means dead-primitives, todo-annotations, and actor-kb-sync all
@@ -150,15 +150,16 @@ fn check_iteration_ready_happy_path() {
         "aggregator should exit 0 for a clean plan.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
 
-    // Final line must be "9/9 PASS" (9 sub-checks as of iter-87).
+    // Final line must be "10/10 PASS" (10 sub-checks as of iter-100b, which
+    // added check-live-test-layout).
     let last_meaningful = stdout
         .lines()
         .rev()
         .find(|l| !l.trim().is_empty())
         .unwrap_or_default();
     assert!(
-        last_meaningful.contains("9/9 PASS"),
-        "expected '9/9 PASS' as final summary line, got: {last_meaningful:?}\n--- combined ---\n{combined}"
+        last_meaningful.contains("10/10 PASS"),
+        "expected '10/10 PASS' as final summary line, got: {last_meaningful:?}\n--- combined ---\n{combined}"
     );
 }
 
@@ -218,12 +219,12 @@ dogfood_path: |
         combined.contains("ac-fidelity"),
         "expected 'ac-fidelity' in the failure output.\n--- combined ---\n{combined}"
     );
-    // Non-short-circuit: every sub-check header `[N/9]` must appear, proving
+    // Non-short-circuit: every sub-check header `[N/10]` must appear, proving
     // the aggregator continued past the failing sub-check rather than bailing
     // on the first one. This is the iter-74 regression's "see every issue at
     // once" requirement.
-    for i in 1..=9 {
-        let header = format!("[{i}/9]");
+    for i in 1..=10 {
+        let header = format!("[{i}/10]");
         assert!(
             combined.contains(&header),
             "expected sub-check header {header} in output (non-short-circuit).\n\
@@ -244,8 +245,8 @@ fn check_iteration_ready_aggregates_failures() {
     let plan_path = tmp.path().join("plan.md");
 
     // A plan with a ticked AC naming a test that doesn't exist — this will
-    // cause ac-fidelity-check to fail. The other 8 sub-checks should still
-    // run (we can verify by seeing all 9 [N/9] lines in the output).
+    // cause ac-fidelity-check to fail. The other 9 sub-checks should still
+    // run (we can verify by seeing all 10 [N/10] lines in the output).
     fs::write(
         &plan_path,
         "\
@@ -280,11 +281,11 @@ dogfood_path: |
         "aggregator should exit 1.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
 
-    // All 9 sub-check lines must appear — aggregator does NOT short-circuit.
-    for i in 1..=9 {
+    // All 10 sub-check lines must appear — aggregator does NOT short-circuit.
+    for i in 1..=10 {
         assert!(
-            combined.contains(&format!("[{i}/9]")),
-            "expected '[{i}/9]' in output (aggregator must not short-circuit).\n--- combined ---\n{combined}"
+            combined.contains(&format!("[{i}/10]")),
+            "expected '[{i}/10]' in output (aggregator must not short-circuit).\n--- combined ---\n{combined}"
         );
     }
 

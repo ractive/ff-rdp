@@ -53,33 +53,13 @@ path = "tests/e2e/main.rs"
 name = "playbook_evals"
 path = "tests/playbook_evals.rs"
 
+# All live-Firefox suites are consolidated into one gated target (iter-100b).
+# Sibling files under tests/live/ are `mod`-declared from main.rs and are NOT
+# separate test binaries. Adding a new top-level tests/live_*.rs file is a
+# review defect — enforced by `cargo run -p xtask -- check-live-test-layout`.
 [[test]]
-name = "live_61l"
-path = "tests/live_61l.rs"
-
-[[test]]
-name = "live_daemon_watch_targets"
-path = "tests/live_daemon_watch_targets.rs"
-
-[[test]]
-name = "live_network_default_watcher"
-path = "tests/live_network_default_watcher.rs"
-
-[[test]]
-name = "live_daemon_heavy_spa"
-path = "tests/live_daemon_heavy_spa.rs"
-
-[[test]]
-name = "live_network_headers"
-path = "tests/live_network_headers.rs"
-
-[[test]]
-name = "live_90_daemon_lifecycle"
-path = "tests/live_90_daemon_lifecycle.rs"
-
-[[test]]
-name = "live_100_daemon_lifecycle_hardening"
-path = "tests/live_100_daemon_lifecycle_hardening.rs"
+name = "live"
+path = "tests/live/main.rs"
 
 [[test]]
 name = "error_shapes"
