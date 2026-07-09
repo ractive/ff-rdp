@@ -106,6 +106,40 @@ ITER_NUM="${1:?Usage: run-iteration.sh <iteration-number> <plan-file-path> [revi
 PLAN_PATH="${2:?Usage: run-iteration.sh <iteration-number> <plan-file-path> [review]}"
 SKIP_TO_REVIEW="${3:-}"
 
+# Plan-file / branch naming prefixes (see preflight.sh). Defaults preserve
+# the historical iteration-NN-*.md / iter-NN/<slug> conventions.
+PLAN_PREFIX="${RALPH_PLAN_PREFIX:-iteration}"
+BRANCH_PREFIX="${RALPH_BRANCH_PREFIX:-iter}"
+
+# Child model pins (token-usage control). Without an explicit --model the
+# claude-teams child inherits the launching session's model — if the
+# orchestrator runs on a top-tier model, every implement phase burns budget
+# at that tier.
+#
+# The implement phase is an analyst/worker split: RALPH_MODEL_IMPLEMENT pins
+# the pane's lead session, which does the ANALYSIS (read plan + docs, make
+# every design/API decision, decompose into briefs) and defaults to opus;
+# RALPH_MODEL_WORKER pins the Agent-tool subagents that do the actual
+# code-writing from those briefs and defaults to sonnet. Review is largely
+# procedural and defaults to sonnet.
+CHILD_MODEL_IMPLEMENT="${RALPH_MODEL_IMPLEMENT:-opus}"
+CHILD_MODEL_WORKER="${RALPH_MODEL_WORKER:-sonnet}"
+CHILD_MODEL_REVIEW="${RALPH_MODEL_REVIEW:-sonnet}"
+
+# GitHub Copilot PR review integration. Off by default: Copilot reviews were
+# adding 5-8 min of polling wall-clock per iteration (measured 2026-07-04).
+# Re-enable with RALPH_COPILOT=1.
+RALPH_COPILOT="${RALPH_COPILOT:-0}"
+if [[ "$RALPH_COPILOT" == "1" ]]; then
+  IMPLEMENT_COPILOT_STEP=" 8) Immediately after the PR exists, kick off the GitHub Copilot review by running: gh pr edit <PR-number> --add-reviewer @copilot — fire-and-forget, do NOT wait for the review to come back. This lets Copilot run in parallel while phase 2 starts."
+  REVIEW_INTRO="A PR has already been created and the GitHub Copilot review was kicked off at the end of phase 1, so it should already be in progress or complete by now."
+  REVIEW_PR_STEP="/review-pr and fix all review issues (the Copilot trigger inside /review-pr is idempotent — safe to run again if needed)"
+else
+  IMPLEMENT_COPILOT_STEP=""
+  REVIEW_INTRO="A PR has already been created."
+  REVIEW_PR_STEP="/review-pr local-only (skip the GitHub Copilot review entirely: do not add @copilot as a reviewer and do not wait for or poll any Copilot findings) and fix all review issues"
+fi
+
 # Sentinel file writer for the orchestrator (Monitor + until pattern).
 # If RALPH_CACHE_DIR is set, write iter-N-{done,failed,throttled} on exit so
 # a watching orchestrator gets one notification rather than polling.
@@ -155,7 +189,7 @@ fi
 
 DONE_FILE="/tmp/ralph-loop-done-${ITER_NUM}.$$"
 USAGE_FILE="/tmp/ralph-loop-usage-${ITER_NUM}.$$"
-USAGE_THRESHOLD="${RALPH_USAGE_THRESHOLD:-90}"
+USAGE_THRESHOLD="${RALPH_USAGE_THRESHOLD:-80}"
 POLL_INTERVAL="${RALPH_POLL_INTERVAL:-10}"
 # Soft budget per phase (default 4h). When elapsed exceeds this, we check
 # is_child_alive: a still-working pane gets the budget extended and a warning
@@ -165,7 +199,7 @@ POLL_INTERVAL="${RALPH_POLL_INTERVAL:-10}"
 PHASE_TIMEOUT="${RALPH_PHASE_TIMEOUT:-14400}"
 DONE_SENTINEL="When ALL steps above are complete and successful, run this exact command: echo 0 > ${DONE_FILE} — if any step fails, run: echo 1 > ${DONE_FILE}"
 
-PROMPT_IMPLEMENT="You are implementing iteration ${ITER_NUM} of this project. Steps: 1) Create a new branch for this iteration (e.g. iter-${ITER_NUM}/short-description) from main 2) Read the iteration plan from ${PLAN_PATH} 3) Implement everything in the plan (code, tests, error handling) using agents whenever possible 4) Ensure all docs, help texts, and project documentation are updated to reflect changes 5) Run the project quality gates (read CLAUDE.md for the specific commands) 6) Run \`cargo run -p xtask -- check-iteration-ready --plan ${PLAN_PATH} --base origin/main\` and fix every reported failure — do not proceed until this exits 0 7) /create-pr 8) Immediately after the PR exists, kick off the GitHub Copilot review by running: gh pr edit <PR-number> --add-reviewer @copilot — fire-and-forget, do NOT wait for the review to come back. This lets Copilot run in parallel while phase 2 starts. ${DONE_SENTINEL}"
+PROMPT_IMPLEMENT="You are implementing iteration ${ITER_NUM} of this project. Steps: 1) Create a new branch for this iteration (e.g. ${BRANCH_PREFIX}-${ITER_NUM}/short-description) from main 2) Read the iteration plan from ${PLAN_PATH} 3) Implement everything in the plan (code, tests, error handling) with an analyst/worker split: do the analysis YOURSELF — read the plan and relevant docs, make every design and API decision, and decompose the work into well-specified mechanical tasks — then delegate the code-writing to subagents via the Agent tool with model ${CHILD_MODEL_WORKER} and low effort, giving each worker a distilled brief (exact file paths, the design decisions already made, acceptance criteria) instead of having it re-read the plan and doctrine docs. Review and integrate each worker's diff yourself; write code directly only when a task is too small or too entangled to brief out. Do NOT spawn parallel cmux teammates 4) Ensure all docs, help texts, and project documentation are updated to reflect changes 5) Run the project quality gates (read CLAUDE.md for the specific commands; if there is no CLAUDE.md, use the repo README) 6) If the repo has a crates/xtask crate, run \`cargo run -p xtask -- check-iteration-ready --plan ${PLAN_PATH} --base origin/main\` and fix every reported failure — do not proceed until it exits 0; if there is no xtask crate, skip this step 7) /create-pr${IMPLEMENT_COPILOT_STEP} ${DONE_SENTINEL}"
 
 # Compute the *likely* next iteration ID for the Phase 2 plan-adaptation step.
 # Pure-integer ITER_NUM increments (16 → 17). Letter-suffixed ITER_NUM (16b →
@@ -185,12 +219,16 @@ if [[ "$ITER_NUM" =~ ^([0-9]+)([a-z])$ ]]; then
   _next_letter=$(echo "$_iter_letter" | tr 'a-y' 'b-z')
   NEXT_ITER="${_iter_base}${_next_letter}"
 elif [[ "$ITER_NUM" =~ ^[0-9]+$ ]]; then
-  NEXT_ITER=$((ITER_NUM + 1))
+  NEXT_ITER=$((10#$ITER_NUM + 1))
+  # Preserve zero-padding width ("01" -> "02", not "2").
+  if [[ "$ITER_NUM" == 0* ]]; then
+    printf -v NEXT_ITER "%0${#ITER_NUM}d" "$NEXT_ITER"
+  fi
 else
   # Unparseable ID — produce a stable string so the prompt doesn't break.
   NEXT_ITER="${ITER_NUM}-next"
 fi
-PROMPT_REVIEW="You are reviewing iteration ${ITER_NUM} of this project. A PR has already been created and the GitHub Copilot review was kicked off at the end of phase 1, so it should already be in progress or complete by now. Steps: 0) If a discipline report exists at \${RALPH_CACHE_DIR:-.ralph-cache}/iter-${ITER_NUM}-discipline.log, read it. For each FAIL or ❌ line, either implement the missing test/code so the AC text matches the diff, soften the AC text to match what shipped, or annotate the AC with \`[deferred — new plan: iteration-NN-slug.md]\` and create the follow-up plan. Do not proceed to step 1 until \`cargo run -p xtask -- check-iteration-ready --plan ${PLAN_PATH} --base origin/main\` exits 0. 1) If a claims-vs-code report exists at \${RALPH_CACHE_DIR:-.ralph-cache}/iter-${ITER_NUM}-claims.md, append its contents to the PR body via: gh pr edit <PR-number> --body \"\$(gh pr view <PR-number> --json body -q .body)\$(printf '\\n\\n')\$(cat \${RALPH_CACHE_DIR:-.ralph-cache}/iter-${ITER_NUM}-claims.md)\" — this surfaces any ❌ rows to the reviewer. 2) /review-pr and fix all review issues (the Copilot trigger inside /review-pr is idempotent — safe to run again if needed) 3) Update the iteration ${ITER_NUM} plan at ${PLAN_PATH}: tick every \`- [ ]\` scope checkbox whose work actually landed in this PR (verify against the merged diff — do NOT tick speculatively), and update each scope-section heading's \`[N/M]\` count to reflect the real state. Leave any genuinely incomplete checkbox unchecked and note why in the section. Commit the plan update onto the PR branch and push. 4) Check if a plan exists for iteration ${NEXT_ITER} — find it with: hyalo find --glob '**/iteration-${NEXT_ITER}-*.md' --format text (do NOT use --property 'title~=...' — frontmatter title fields like 'Iteration ${NEXT_ITER}: Slug' do not contain the substring 'iteration-${NEXT_ITER}'). If found, check whether its scope needs to be adapted based on what you learned this iteration, and update it if so 5) /merge-pr. ${DONE_SENTINEL}"
+PROMPT_REVIEW="You are reviewing iteration ${ITER_NUM} of this project. ${REVIEW_INTRO} Steps: 0) If a discipline report exists at \${RALPH_CACHE_DIR:-.ralph-cache}/iter-${ITER_NUM}-discipline.log, read it. For each FAIL or ❌ line, either implement the missing test/code so the AC text matches the diff, soften the AC text to match what shipped, or annotate the AC with \`[deferred — new plan: iteration-NN-slug.md]\` and create the follow-up plan. Do not proceed to step 1 until \`cargo run -p xtask -- check-iteration-ready --plan ${PLAN_PATH} --base origin/main\` exits 0 (skip this check if the repo has no crates/xtask crate). 1) If a claims-vs-code report exists at \${RALPH_CACHE_DIR:-.ralph-cache}/iter-${ITER_NUM}-claims.md, append its contents to the PR body via: gh pr edit <PR-number> --body \"\$(gh pr view <PR-number> --json body -q .body)\$(printf '\\n\\n')\$(cat \${RALPH_CACHE_DIR:-.ralph-cache}/iter-${ITER_NUM}-claims.md)\" — this surfaces any ❌ rows to the reviewer. 2) ${REVIEW_PR_STEP}; make the judgment calls yourself but delegate mechanical fixes to Agent-tool subagents with model ${CHILD_MODEL_WORKER} 3) Update the iteration ${ITER_NUM} plan at ${PLAN_PATH}: tick every \`- [ ]\` scope checkbox whose work actually landed in this PR (verify against the merged diff — do NOT tick speculatively), and update each scope-section heading's \`[N/M]\` count to reflect the real state. Leave any genuinely incomplete checkbox unchecked and note why in the section. Commit the plan update onto the PR branch and push. 4) Check if a plan exists for iteration ${NEXT_ITER} — find it with: hyalo find --glob '**/${PLAN_PREFIX}-${NEXT_ITER}-*.md' --format text (do NOT use --property 'title~=...' — frontmatter title fields do not contain the substring '${PLAN_PREFIX}-${NEXT_ITER}'). If found, check whether its scope needs to be adapted based on what you learned this iteration, and update it if so 5) /merge-pr. ${DONE_SENTINEL}"
 
 # --- cmux visual helpers (all soft-fail with || true) ---
 
@@ -328,6 +366,32 @@ echo "Launched in cmux pane ${SURFACE_ID}"
 log_info "iter-${ITER_NUM}: started"
 progress 0.0 "iter-${ITER_NUM}: starting..."
 
+# Ensure the iteration pane still exists; recreate it (updating SURFACE_ID) if
+# cmux reaped it between phases. Purely additive: a no-op when the pane is
+# healthy (the common/working case), so it cannot affect environments where
+# panes survive. It only acts when the pane is gone — the exec'd launcher exits
+# at the end of a phase (child closed via /exit) and some cmux setups close the
+# now-dead pane, after which the next phase's respawn-pane on the stale surface
+# fails with "Surface ref not found" and the poll loop misreads the missing
+# pane as a dead child (observed failing the review phase of hoverread iters
+# 1 and 3, 2026-07-03/04, on a healthy PR).
+ensure_pane() {
+  if cmux list-panels "${WS_FLAG[@]}" 2>/dev/null | grep -q "$SURFACE_ID"; then
+    return 0
+  fi
+  echo "Pane ${SURFACE_ID} no longer exists — opening a fresh pane"
+  local out
+  out=$(cmux new-pane --direction right "${WS_FLAG[@]}" 2>&1)
+  SURFACE_ID=$(echo "$out" | grep -oE 'surface:[0-9]+' | head -1)
+  if [[ -z "$SURFACE_ID" ]]; then
+    echo "ERROR: Could not recreate cmux pane" >&2
+    echo "Output was: $out" >&2
+    return 1
+  fi
+  echo "Relaunched in cmux pane ${SURFACE_ID}"
+  log_info "iter-${ITER_NUM}: pane recreated as ${SURFACE_ID}"
+}
+
 # --- Helper: run an interactive claude phase in the cmux pane and wait for completion ---
 
 run_phase() {
@@ -336,7 +400,20 @@ run_phase() {
   local prompt="$3"
   local tab_title="$4"
 
+  local child_model
+  if [[ "$phase_name" == "review" ]]; then
+    child_model="$CHILD_MODEL_REVIEW"
+  else
+    child_model="$CHILD_MODEL_IMPLEMENT"
+  fi
+
   rm -f "$DONE_FILE"
+
+  # Recreate the pane if it was reaped since the previous phase.
+  if ! ensure_pane; then
+    log_error "iter-${ITER_NUM}: cannot obtain a cmux pane for phase ${phase_name}"
+    return 1
+  fi
 
   # Update tab title and sidebar status
   cmux rename-tab --surface "$SURFACE_ID" "$tab_title" 2>/dev/null || true
@@ -366,7 +443,7 @@ run_phase() {
   # session-exit as success and proceeds to Phase 2.
   cat > "$launcher" <<LAUNCHER_EOF
 #!/bin/bash
-cmux claude-teams --permission-mode auto --name '${session_name}' "\$(cat '${prompt_file}')"
+cmux claude-teams --permission-mode auto --model '${child_model}' --name '${session_name}' "\$(cat '${prompt_file}')"
 claude_exit=\$?
 if [[ ! -f '${DONE_FILE}' ]]; then
   echo "\$claude_exit" > '${DONE_FILE}'
@@ -502,18 +579,31 @@ check_iteration_discipline() {
 
   local failed=0
 
-  if ! (cd "$repo_root" && cargo run -p xtask -- check-dead-primitives --since origin/main 2>&1); then
-    log_error "iter-${ITER_NUM}: check-dead-primitives FAILED — unwired pub items detected"
-    failed=1
+  # Probe each subcommand before running it — not every repo's xtask ships
+  # these (hoverread's has check-iteration-ready but not the two below). Without
+  # the probe, "unrecognized subcommand" is logged as a FAIL, and Phase 2 then
+  # wastes review-model effort trying to "fix" a check that doesn't exist. clap
+  # exits 0 for `<known-subcmd> --help`, non-zero for an unknown subcommand.
+  if (cd "$repo_root" && cargo run -q -p xtask -- check-dead-primitives --help >/dev/null 2>&1); then
+    if ! (cd "$repo_root" && cargo run -p xtask -- check-dead-primitives --since origin/main 2>&1); then
+      log_error "iter-${ITER_NUM}: check-dead-primitives FAILED — unwired pub items detected"
+      failed=1
+    else
+      log_info "iter-${ITER_NUM}: check-dead-primitives OK"
+    fi
   else
-    log_info "iter-${ITER_NUM}: check-dead-primitives OK"
+    log_info "iter-${ITER_NUM}: xtask has no check-dead-primitives — skipped"
   fi
 
-  if ! (cd "$repo_root" && cargo run -p xtask -- check-todo-annotations --since origin/main 2>&1); then
-    log_error "iter-${ITER_NUM}: check-todo-annotations FAILED — unannotated TODOs detected"
-    failed=1
+  if (cd "$repo_root" && cargo run -q -p xtask -- check-todo-annotations --help >/dev/null 2>&1); then
+    if ! (cd "$repo_root" && cargo run -p xtask -- check-todo-annotations --since origin/main 2>&1); then
+      log_error "iter-${ITER_NUM}: check-todo-annotations FAILED — unannotated TODOs detected"
+      failed=1
+    else
+      log_info "iter-${ITER_NUM}: check-todo-annotations OK"
+    fi
   else
-    log_info "iter-${ITER_NUM}: check-todo-annotations OK"
+    log_info "iter-${ITER_NUM}: xtask has no check-todo-annotations — skipped"
   fi
 
   # Claims-vs-code (advisory): emit a markdown section. Phase 2 attaches it to

@@ -2,7 +2,7 @@
 title: "Iteration 97: owner-PID liveness guard for profile pruning"
 type: iteration
 date: 2026-07-03
-status: planned
+status: done
 branch: iter-97/profile-liveness-guard
 depends_on:
   - iteration-96-profile-leak-cleanup
@@ -77,46 +77,46 @@ only ever removes the profile of the Firefox it just confirmed dead.
 
 ## Tasks
 
-### Theme A — owner-PID marker [0/2]
+### Theme A — owner-PID marker [2/2]
 
-- [ ] In `crates/ff-rdp-cli/src/commands/launch.rs`, after a successful
+- [x] In `crates/ff-rdp-cli/src/commands/launch.rs`, after a successful
       spawn of Firefox with a managed temp profile, write
       `.ff-rdp-owner-pid` (the child PID) into the profile dir.
       Warn-not-fail: a write failure must never fail the launch.
-- [ ] `unit_owner_pid_marker_written_only_for_managed_profiles`: a
+      Implemented via `write_owner_pid_marker` (in `util/profile_dir.rs`)
+      called from `run()` behind `should_write_owner_marker(profile)`.
+- [x] `unit_owner_pid_marker_written_only_for_managed_profiles`: a
       `--profile <user-path>` launch never receives a marker.
 
-### Theme B — liveness guard in prune paths [0/3]
+### Theme B — liveness guard in prune paths [3/3]
 
-- [ ] Add `profile_is_owned_by_live_process` to `util/profile_dir.rs`;
+- [x] Add `profile_is_owned_by_live_process` to `util/profile_dir.rs`;
       consult it first in `prune_orphan_profiles` and
       `commands::profiles::select_prune_targets`.
-- [ ] Land `pre_fix_repro_prune_deletes_profile_with_live_owner_pid`
+- [x] Land `pre_fix_repro_prune_deletes_profile_with_live_owner_pid`
       (see Pre-fix repro).
-- [ ] `unit_prune_skips_live_owner_but_reclaims_dead_owner`: marker with
+- [x] `unit_prune_skips_live_owner_but_reclaims_dead_owner`: marker with
       the test's own PID → skipped; marker with a known-dead PID (spawn
       and wait a child) → pruned when mtimes are stale.
 
-### Theme C — `--all` warning [0/2]
+### Theme C — `--all` warning [2/2]
 
-- [ ] `profiles prune --all` logs a warning per live-owner directory it
+- [x] `profiles prune --all` logs a warning per live-owner directory it
       removes; JSON output gains `removed_live: [basenames]`.
-- [ ] `unit_prune_all_reports_live_owner_dirs`: seeded live-marker dir
+- [x] `unit_prune_all_reports_live_owner_dirs`: seeded live-marker dir
       appears in `removed_live` and is removed.
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
-- [ ] `pre_fix_repro_prune_deletes_profile_with_live_owner_pid`: post-fix,
+- [x] `pre_fix_repro_prune_deletes_profile_with_live_owner_pid`: post-fix,
       a live-owner profile survives the launch sweep at any age.
-- [ ] `unit_owner_pid_marker_written_only_for_managed_profiles`: user
+- [x] `unit_owner_pid_marker_written_only_for_managed_profiles`: user
       `--profile` dirs never receive a marker.
-- [ ] `unit_prune_skips_live_owner_but_reclaims_dead_owner`: dead-PID
+- [x] `unit_prune_skips_live_owner_but_reclaims_dead_owner`: dead-PID
       markers do not block reclamation.
-- [ ] `unit_prune_all_reports_live_owner_dirs`: `--all` surfaces
+- [x] `unit_prune_all_reports_live_owner_dirs`: `--all` surfaces
       live-owner removals in `removed_live`.
-- [ ] `dogfood_script_full_run_iter_97`: `.dogfood.sh` launches Firefox,
-      verifies its profile survives a forced prune sweep while running and
-      is reclaimed after `daemon stop`; exits 0.
+- [x] `dogfood_script_full_run_iter_97` exercises `write_owner_pid_marker`, `profile_is_owned_by_live_process`, and `removed_live` end to end: `.dogfood.sh` (`iteration-97-profile-liveness-guard.dogfood.sh`) launches Firefox, asserts the marker is present, that the age-gated liveness guard lets the running profile survive a forced prune sweep, that `--all` surfaces it in `removed_live`, and that it is reclaimed after `daemon stop`; exits 0 and writes `/tmp/ff-rdp-iter-97-dogfood-ok`. Verified live in this session (all themes PASS); the run is gated behind `FF_RDP_LIVE_TESTS=1` via `check-dogfood-script`.
 
 ## Out of scope
 

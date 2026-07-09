@@ -399,6 +399,18 @@ fn wait_for_port(host: &str, port: u16, timeout: Duration) -> Result<(), AppErro
     )))
 }
 
+/// Whether `launch` should drop an [`OWNER_PID_MARKER`](crate::util::profile_dir::OWNER_PID_MARKER)
+/// into the effective profile after a successful spawn.
+///
+/// `true` only for a managed (auto-created) profile — i.e. when no
+/// `--profile <user-path>` was given. `build_command` creates a temp profile
+/// under `secure_profile_root()` iff `profile.is_none()`, so that condition is
+/// exactly the managed case. A user-supplied `--profile` directory is theirs
+/// and must never receive a marker.
+fn should_write_owner_marker(profile: Option<&str>) -> bool {
+    profile.is_none()
+}
+
 /// Launch Firefox with remote debugging.
 ///
 /// `replace` — if `true` and the port is already in use, stop the prior instance
@@ -488,6 +500,19 @@ pub fn run(
                 return Err(AppError::User(format!(
                     "Firefox started (pid {pid}) but {e}"
                 )));
+            }
+
+            // iter-97 Theme A: drop an owner-PID marker into the managed temp
+            // profile so the prune paths can positively confirm this Firefox
+            // is still alive before any age-based deletion. Only managed
+            // (auto-created) profiles get the marker — a `--profile <path>`
+            // dir the user owns must never receive one (see
+            // `should_write_owner_marker`). Warn-not-fail (handled inside the
+            // helper): a marker write must never fail the launch.
+            if should_write_owner_marker(profile)
+                && let Some(dir) = profile_path.as_deref()
+            {
+                crate::util::profile_dir::write_owner_pid_marker(dir, pid);
             }
 
             // Write the shared daemon record so `daemon stop` and
@@ -584,6 +609,47 @@ mod tests {
 
     fn cleanup_fake_firefox(p: &Path) {
         let _ = std::fs::remove_file(p);
+    }
+
+    /// AC: `unit_owner_pid_marker_written_only_for_managed_profiles` — the
+    /// owner-PID marker is written only for a managed (auto-created) profile.
+    /// A `--profile <user-path>` launch (`profile = Some(_)`) never triggers
+    /// a marker write.
+    #[test]
+    fn unit_owner_pid_marker_written_only_for_managed_profiles() {
+        // No --profile: managed temp profile → marker written.
+        assert!(
+            should_write_owner_marker(None),
+            "an auto-created managed profile must receive an owner-PID marker"
+        );
+        // Explicit --profile: user-owned dir → never marked.
+        assert!(
+            !should_write_owner_marker(Some("/home/user/my-firefox-profile")),
+            "a user --profile directory must never receive an owner-PID marker"
+        );
+
+        // End-to-end shape check: build_command with an explicit --profile
+        // returns exactly that path and does NOT write a marker into it (the
+        // marker write lives in run(), gated by should_write_owner_marker).
+        let tmp = fake_firefox();
+        let user_profile = std::env::temp_dir().join(format!(
+            "ff-rdp-user-profile-{:?}",
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&user_profile).unwrap();
+        let user_profile_str = user_profile.to_str().unwrap();
+        let (_, returned) =
+            build_command(&tmp, 6000, false, Some(user_profile_str), false).unwrap();
+        cleanup_fake_firefox(&tmp);
+
+        assert_eq!(returned.as_deref(), Some(user_profile.as_path()));
+        assert!(
+            !user_profile
+                .join(crate::util::profile_dir::OWNER_PID_MARKER)
+                .exists(),
+            "build_command must not plant an owner-PID marker in a user --profile dir"
+        );
+        let _ = std::fs::remove_dir_all(&user_profile);
     }
 
     #[test]

@@ -42,6 +42,11 @@ struct ManagedProfileEntry {
     path: PathBuf,
     basename: String,
     mtime: Option<SystemTime>,
+    /// iter-97 Theme C: set by `select_prune_targets` when the entry carries
+    /// a live owner-PID marker. Only ever `true` on the `--all` path (the
+    /// age-gated path excludes live-owner entries outright); the prune step
+    /// uses it to warn and to populate `removed_live`.
+    live_owner: bool,
 }
 
 /// Scan the direct children of `root`, returning only entries that match the
@@ -80,6 +85,9 @@ fn scan_managed_profiles(root: &Path) -> Vec<ManagedProfileEntry> {
             path,
             basename,
             mtime: metadata.modified().ok(),
+            // Set later by `select_prune_targets` on the `--all` path; the
+            // aggregation callers (`profiles list`, doctor) never read it.
+            live_owner: false,
         });
     }
     out
@@ -167,25 +175,47 @@ pub(crate) fn aggregate_profiles_capped(root: &Path, byte_cap: u64) -> ProfileLi
 /// long-running Firefox is still writing into is never selected. An entry
 /// whose mtime can't be read, or whose mtime is in the future (clock skew),
 /// is treated as "not stale" and excluded — the same conservative default.
+///
+/// iter-97 Theme B/C: a live owner-PID marker
+/// ([`crate::util::profile_dir::profile_is_owned_by_live_process`]) is a
+/// positive "still in use" signal consulted *before* the mtime heuristics.
+/// For an age-gated prune (`Some`) a live owner always wins — the entry is
+/// excluded entirely. `--all` (`None`) keeps its documented sharp edge and
+/// still selects a live-owner dir, but flags it (`live_owner = true`) so the
+/// caller can warn per directory and surface it in `removed_live`.
 fn select_prune_targets(root: &Path, older_than: Option<Duration>) -> Vec<ManagedProfileEntry> {
     let now = SystemTime::now();
     scan_managed_profiles(root)
         .into_iter()
-        .filter(|entry| match older_than {
-            None => true,
-            Some(threshold) => {
-                let dir_stale = entry
-                    .mtime
-                    .and_then(|mtime| now.duration_since(mtime).ok())
-                    .is_some_and(|age| age >= threshold);
-                dir_stale
-                    && entry.mtime.is_some_and(|mtime| {
-                        let newest =
-                            crate::util::profile_dir::latest_profile_activity(&entry.path, mtime);
-                        now.duration_since(newest)
-                            .ok()
-                            .is_some_and(|age| age >= threshold)
-                    })
+        .filter_map(|mut entry| {
+            let live_owner =
+                crate::util::profile_dir::profile_is_owned_by_live_process(&entry.path);
+            match older_than {
+                // `--all`: age ignored, but a live owner never silently
+                // vanishes — it is selected *and* flagged so the caller warns.
+                None => {
+                    entry.live_owner = live_owner;
+                    Some(entry)
+                }
+                // Age-gated: a live owner always wins — skip it entirely.
+                Some(_) if live_owner => None,
+                Some(threshold) => {
+                    let dir_stale = entry
+                        .mtime
+                        .and_then(|mtime| now.duration_since(mtime).ok())
+                        .is_some_and(|age| age >= threshold);
+                    let stale = dir_stale
+                        && entry.mtime.is_some_and(|mtime| {
+                            let newest = crate::util::profile_dir::latest_profile_activity(
+                                &entry.path,
+                                mtime,
+                            );
+                            now.duration_since(newest)
+                                .ok()
+                                .is_some_and(|age| age >= threshold)
+                        });
+                    stale.then_some(entry)
+                }
             }
         })
         .collect()
@@ -198,6 +228,11 @@ pub(crate) struct PruneOutcome {
     pub(crate) would_remove: Vec<String>,
     /// Basenames actually removed. Empty on a dry run.
     pub(crate) removed: Vec<String>,
+    /// iter-97 Theme C: basenames removed (or, on a dry run, that *would* be
+    /// removed) despite carrying a live owner-PID marker. Only ever populated
+    /// on the `--all` path — its documented sharp edge — so an operator can
+    /// see which still-running sessions `--all` reclaimed out from under.
+    pub(crate) removed_live: Vec<String>,
 }
 
 /// Prune managed profile directories under `root`.
@@ -218,16 +253,38 @@ pub(crate) fn prune_profiles(
     let targets = select_prune_targets(root, older_than);
 
     if dry_run {
+        let removed_live = targets
+            .iter()
+            .filter(|e| e.live_owner)
+            .map(|e| e.basename.clone())
+            .collect();
         return PruneOutcome {
             would_remove: targets.into_iter().map(|e| e.basename).collect(),
             removed: Vec::new(),
+            removed_live,
         };
     }
 
     let mut removed = Vec::new();
+    let mut removed_live = Vec::new();
     for entry in targets {
+        // iter-97 Theme C: `--all` is the explicit escape hatch, so it still
+        // removes a live-owner profile — but never silently. Warn per dir and
+        // surface it in `removed_live` so the operator sees what was reclaimed
+        // out from under a still-running session.
+        if entry.live_owner {
+            tracing::warn!(
+                "profiles prune --all: removing {} whose owner Firefox is still alive",
+                entry.path.display()
+            );
+        }
         match std::fs::remove_dir_all(&entry.path) {
-            Ok(()) => removed.push(entry.basename),
+            Ok(()) => {
+                if entry.live_owner {
+                    removed_live.push(entry.basename.clone());
+                }
+                removed.push(entry.basename);
+            }
             Err(e) => {
                 tracing::warn!(
                     "profiles prune: failed to remove {}: {e}",
@@ -239,6 +296,7 @@ pub(crate) fn prune_profiles(
     PruneOutcome {
         would_remove: Vec::new(),
         removed,
+        removed_live,
     }
 }
 
@@ -314,6 +372,10 @@ pub fn run_prune(cli: &Cli, older_than: &str, all: bool, dry_run: bool) -> Resul
         "path": root.display().to_string(),
         "would_remove": outcome.would_remove,
         "removed": outcome.removed,
+        // iter-97 Theme C: basenames reclaimed (or, on a dry run, that would
+        // be) despite a live owner-PID marker. Only ever non-empty under
+        // `--all` — the documented no-age-gate escape hatch.
+        "removed_live": outcome.removed_live,
         "dry_run": dry_run,
     });
 
@@ -524,6 +586,77 @@ mod tests {
         assert!(
             !fresh_dir.exists(),
             "--all must remove even a freshly-created managed dir"
+        );
+    }
+
+    /// AC: `unit_prune_all_reports_live_owner_dirs` — a seeded managed dir
+    /// carrying a live owner-PID marker (naming the test process) is removed
+    /// by `--all` AND surfaced in `removed_live`; a sibling with no marker is
+    /// removed but stays out of `removed_live`.
+    #[test]
+    fn unit_prune_all_reports_live_owner_dirs() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let live = seed_profile(root.path(), &"a".repeat(16), 0, Duration::from_secs(1));
+        std::fs::write(
+            live.join(crate::util::profile_dir::OWNER_PID_MARKER),
+            format!("{}\n", std::process::id()),
+        )
+        .expect("write live owner marker");
+        let plain = seed_profile(root.path(), &"b".repeat(16), 0, Duration::from_secs(1));
+
+        let outcome = prune_profiles(root.path(), None, false);
+
+        let live_basename = live.file_name().unwrap().to_str().unwrap().to_owned();
+        let plain_basename = plain.file_name().unwrap().to_str().unwrap().to_owned();
+        assert!(
+            outcome.removed.contains(&live_basename) && outcome.removed.contains(&plain_basename),
+            "--all must remove both dirs; removed={:?}",
+            outcome.removed
+        );
+        assert_eq!(
+            outcome.removed_live,
+            vec![live_basename],
+            "only the live-owner dir belongs in removed_live"
+        );
+        assert!(!live.exists() && !plain.exists(), "both dirs removed");
+    }
+
+    /// AC companion for the age-gated path: a live owner-PID marker keeps a
+    /// stale dir off the candidate list for an age-gated (non-`--all`) prune,
+    /// while a marker-less stale sibling is still selected.
+    #[test]
+    fn unit_prune_age_gated_skips_live_owner() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let old = Duration::from_hours(192);
+        let live = seed_profile(root.path(), &"a".repeat(16), 0, old);
+        std::fs::write(
+            live.join(crate::util::profile_dir::OWNER_PID_MARKER),
+            format!("{}\n", std::process::id()),
+        )
+        .expect("write live owner marker");
+        // Re-backdate the marker so mtimes alone would flag the dir as stale.
+        let stale = SystemTime::now().checked_sub(old).expect("age fits");
+        filetime::set_file_mtime(
+            live.join(crate::util::profile_dir::OWNER_PID_MARKER),
+            filetime::FileTime::from_system_time(stale),
+        )
+        .expect("backdate marker");
+        filetime::set_file_mtime(&live, filetime::FileTime::from_system_time(stale))
+            .expect("re-backdate dir");
+        let plain = seed_profile(root.path(), &"b".repeat(16), 0, old);
+
+        let outcome = prune_profiles(root.path(), Some(Duration::from_hours(168)), false);
+
+        let plain_basename = plain.file_name().unwrap().to_str().unwrap().to_owned();
+        assert_eq!(
+            outcome.removed,
+            vec![plain_basename],
+            "only the marker-less stale dir is removed"
+        );
+        assert!(live.exists(), "live-owner dir survives an age-gated prune");
+        assert!(
+            outcome.removed_live.is_empty(),
+            "removed_live is only populated on the --all path"
         );
     }
 

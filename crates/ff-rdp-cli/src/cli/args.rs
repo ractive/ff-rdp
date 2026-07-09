@@ -1787,9 +1787,14 @@ Output: {\"results\": {\"path\": \"...\", \"count\": N, \"total_size_bytes\": N,
 By default only removes stale entries (default --older-than 7d). An entry is stale when both
 the directory mtime AND its newest top-level file mtime are at least --older-than old — a
 profile a running Firefox is still writing into is not selected.
+Any age-gated prune (i.e. not --all) also honours a positive liveness guard: a profile whose
+owner Firefox process is still alive (recorded in an `.ff-rdp-owner-pid` marker at launch) is
+never removed, regardless of age.
 Pass --all to remove every managed entry regardless of age (mutually exclusive with
---older-than). --all has no liveness guard: do not run it while a Firefox launched by
-ff-rdp is still using one of these profiles.
+--older-than). --all bypasses the age gate but NOT quietly: a profile whose owner Firefox is
+still alive is still removed (--all is the explicit escape hatch), but each such removal is
+logged as a warning and its basename is listed under `removed_live` in the output. Do not run
+--all while a Firefox launched by ff-rdp is still using one of these profiles.
 Pass --dry-run to preview without touching disk: `would_remove` is populated and `removed` stays
 empty, and every listed directory still exists afterwards. On a real run it's the other way round:
 `removed` is populated and `would_remove` stays empty.
@@ -1803,7 +1808,7 @@ Examples:
   ff-rdp profiles prune --older-than 24h
   ff-rdp profiles prune --all
 
-Output: {\"results\": {\"path\": \"...\", \"would_remove\": [...], \"removed\": [...], \"dry_run\": bool}, \"total\": N, \"meta\": {...}}"
+Output: {\"results\": {\"path\": \"...\", \"would_remove\": [...], \"removed\": [...], \"removed_live\": [...], \"dry_run\": bool}, \"total\": N, \"meta\": {...}}"
     )]
     Prune {
         /// Only remove entries whose mtime is at least this old. Accepts <N>d, <N>h, <N>m, <N>s,
