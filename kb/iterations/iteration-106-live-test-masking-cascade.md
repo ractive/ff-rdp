@@ -14,6 +14,7 @@ first_call_sites:
     site: crates/ff-rdp-cli/src/daemon/server.rs
   - primitive: reclassify_timeout_as_neterror (map navigate commit-wait timeout to a neterror)
     site: crates/ff-rdp-cli/src/commands/navigate.rs
+dogfood_script: iteration-106-live-test-masking-cascade.dogfood.sh
 dogfood_path: |
   ff-rdp launch --headless
   ff-rdp navigate --allow-unsafe-urls 'data:text/html,<meta http-equiv="Content-Security-Policy" content="script-src '"'"'none'"'"'">'
@@ -148,27 +149,45 @@ them.
 ### C. Full masked-surface audit [1/1]
 - [x] Ran `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo test -p
       ff-rdp-cli --test live --no-fail-fast -- --ignored --test-threads=1` to
-      completion (99 ignored live tests). Failures found and triaged:
-      - `live_cookie_longstring_value` (`live_102_longstring_and_reload.rs`) —
-        **real masked bug, fixed in-scope**: the test set a 20 000-char cookie,
-        but Firefox rejects cookies whose `name=value` exceeds 4096 bytes
-        (RFC 6265 §6.1) so `document.cookie` stayed empty and `cookies` returned
-        `[]`. Introduced a cookie-sized `COOKIE_LEN` (4 000) that fits under the
-        limit; the test now asserts the full value round-trips. Passes.
-      - Every other test passes unconditionally. **Important triage note:**
-        `--test-threads=1` is mandatory and NO other `cargo test` (or the
-        `dogfood` script) may run against the same machine during the sweep —
-        the live tests share one Firefox/daemon per machine, so a concurrent run
-        steals that state and produces *spurious* failures (observed
-        `live_emulate_offline` / `live_manifest_fetch_canonical` "failing" only
-        when a parallel `cargo test` ran; both pass in isolation and in the
-        clean sequential sweep). No `FF_RDP_ALLOW_KNOWN_FAILING_*` gate was
-        needed — the tree now carries zero such gates.
+      completion once (clean sequential run, no concurrent cargo): **68 passed,
+      31 failed** of 99 ignored live tests. Triage:
+      - **Fixed in iter-106's scope:** the four themed gated tests
+        (`CHROME_CSP`/`DNSFAIL`/`NETWORK_WATCHER` × 2) now pass; plus
+        `live_cookie_longstring_value` (`live_102_longstring_and_reload.rs`) — a
+        **real masked bug**: the test set a 20 000-char cookie, but Firefox
+        rejects cookies whose `name=value` exceeds 4096 bytes (RFC 6265 §6.1) so
+        `document.cookie` stayed empty and `cookies` returned `[]`. Introduced a
+        cookie-sized `COOKIE_LEN` (4 000) under the limit; the test now asserts
+        the full value round-trips. Passes.
+      - **Inventoried and handed to [[iteration-110-post-batch-live-sweep]]:**
+        the remaining **29** failures are *pre-existing* masked failures
+        unrelated to iter-106's themes (they never ran in CI, masked since
+        iter-61t's tabs-vs-eval bug). Rather than bolt 29
+        `FF_RDP_ALLOW_KNOWN_FAILING_*` gates onto a focused eval/DNS/network PR,
+        the complete pass/fail inventory + root-cause categories are recorded in
+        iter-110's Results section (the plan's designated full-suite-fallout
+        sweep — see its Theme B, which already cross-references iter-106). This
+        satisfies Theme C's goal: the masked-surface debt is now **fully
+        inventoried rather than discovered one CI round-trip at a time.**
+        Dominant category: the `data:`-URL security gate (landed iter-63) — many
+        fixtures navigate to `data:` URLs without `--allow-unsafe-urls`; the
+        symptom is `navigate failed` with empty stderr (the
+        `URL scheme 'data:' is not allowed by default` error is emitted as JSON
+        on stdout). Others are stale test-assertion shapes (same class iter-106
+        fixed for the network tests) and real-site network/timing flakiness.
+      - **Triage-method note (important):** `--test-threads=1` is mandatory and
+        NO other `cargo test` (or the `dogfood` script) may run on the same
+        machine during the sweep — the live tests share one Firefox/daemon per
+        machine, so a concurrent run steals that state and produces *spurious*
+        failures (observed `live_emulate_offline` / `live_manifest_fetch_canonical`
+        "failing" only during an overlapping run; both pass in isolation and in
+        the clean sweep). Category-(a) `data:`-URL failures were confirmed to
+        reproduce in isolation on fresh Firefox, so they are real debt, not load
+        artifacts.
       - Re-triaged `live_index_local_fixture` / `live_runner_page_map_resolution`
         (`live_62_page_map_index.rs`): they self-skip when
         `http://localhost:18080` is unreachable (fixture site not committed), so
-        they neither pass-with-assertions nor fail in the sweep — unchanged, as
-        Theme D's design note directs.
+        they are not real failures — unchanged, as Theme D's design note directs.
 
 ### D. Cross-invocation daemon-buffer visibility [2/2]
 - [x] Root-caused — **distinct** from iter-101 Theme B (RPC-writer
@@ -216,16 +235,19 @@ them.
       unconditionally (no `FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER` gate).
       Backed by `ResourceBuffer::record_boundary_and_insert` + the fixed
       `serialize_network_resources_for_buffer` wire shape. Both passed live.
-- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings &&
-      FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo test -p
-      ff-rdp-cli --no-fail-fast -- --ignored --test-threads=1` clean: fmt and
-      clippy green; the full `--no-fail-fast` masked-surface audit run to
-      completion (Theme C) with every previously-masked live test now passing.
-      All three of this iteration's gates
-      (`CHROME_CSP`/`DNSFAIL`/`NETWORK_WATCHER`) are deleted; the only remaining
-      `FF_RDP_ALLOW_KNOWN_FAILING_*` gate is `WATCH_TARGETS`, which is **out of
-      scope** here (owned by [[iteration-101-daemon-session-correctness]]
-      Theme A — see the Out-of-scope section).
+- [x] fmt + clippy green; the full `--no-fail-fast` masked-surface audit run to
+      completion once (Theme C). Every test in iter-106's scope passes: all
+      three themed gates (`CHROME_CSP`/`DNSFAIL`/`NETWORK_WATCHER`) are deleted
+      and pass unconditionally, and the newly-found `live_cookie_longstring_value`
+      masked bug is fixed. The 29 remaining pre-existing masked failures
+      (unrelated to this iteration's eval/DNS/network themes — dominated by the
+      iter-63 `data:`-URL gate) are **fully inventoried** in
+      [[iteration-110-post-batch-live-sweep]]'s Results and handed to that
+      plan's Theme B (the designated full-suite-fallout sweep), per the plan's
+      own execution policy ("Full-suite validation happens exactly once, in
+      iteration-110"). The only `FF_RDP_ALLOW_KNOWN_FAILING_*` gate left in the
+      tree is `WATCH_TARGETS`, out of scope here (owned by
+      [[iteration-101-daemon-session-correctness]] Theme A).
 
 ## Design notes
 
