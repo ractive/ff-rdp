@@ -2,7 +2,7 @@
 title: "Iteration 105: error taxonomy completion + release hygiene — lossless Protocol bridge, non_exhaustive, one exit-code map, MSRV, serde_yaml"
 type: iteration
 date: 2026-07-09
-status: in-progress
+status: done
 branch: iter-105/error-taxonomy-release-prep
 depends_on: []
 firefox_refs: []
@@ -147,8 +147,13 @@ a source-scan test instead).
       `commands/index.rs`, `page_map/mod.rs`, xtask) with a maintained fork
       (`serde_norway` or equivalent); bump the direct `getrandom` 0.2 pin to
       converge duplicate versions where the tree allows.
-      Swapped all 6 call sites + fuzz to `serde_norway`; getrandom stayed at
-      0.2 (the tree has a single resolved version — no duplicate to converge).
+      Swapped all 6 call sites + fuzz to `serde_norway`. getrandom
+      convergence was **not** attempted: `Cargo.lock` still resolves three
+      versions (0.2.17 direct + transitive 0.3.4/0.4.2 via `ahash`/`tempfile`
+      dev-deps) — `cargo deny check` passes regardless (no advisory/ban hit),
+      so this is deferred rather than a regression. Correcting the plan's
+      original "single resolved version" assumption, found during
+      /review-pr on PR #145.
 
 ## Acceptance Criteria [6/6]
 
