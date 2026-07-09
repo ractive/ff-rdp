@@ -98,7 +98,7 @@ parity tests (every error-shape test runs `--no-daemon`).
       test `top_level_switch_purges_buffer` (server) +
       `purge_destroyed_target_clears_entries_keeps_boundaries` (buffer).
 - [x] `live_daemon_follow_survives_cross_process_nav` [deferred — new plan:
-      kb/iterations/iteration-102-daemon-live-coverage.md]. Live Firefox
+      kb/iterations/iteration-111-daemon-live-coverage.md]. Live Firefox
       coverage is gated by `FF_RDP_LIVE_TESTS`; the correctness this AC probes
       (purge on top-level switch, no dead-target state in the follow window) is
       asserted deterministically by `top_level_switch_purges_buffer`. The live
@@ -154,12 +154,12 @@ parity tests (every error-shape test runs `--no-daemon`).
       ("Connection") and exit code (3). Other scenarios (bad selector, eval
       throw) are covered by existing `exit_codes.rs` tests that already run
       `--no-daemon`; extending them to the daemon path is filed as
-      [deferred — new plan: kb/iterations/iteration-102-daemon-live-coverage.md]
+      [deferred — new plan: kb/iterations/iteration-111-daemon-live-coverage.md]
       since they need live-like mock choreography through the daemon proxy.
 
 ## Acceptance Criteria [7/7]
 
-- [x] live_daemon_follow_survives_cross_process_nav [deferred — new plan: kb/iterations/iteration-102-daemon-live-coverage.md] — deterministic coverage via `top_level_switch_purges_buffer`; Firefox-only live assertion filed as follow-up.
+- [x] live_daemon_follow_survives_cross_process_nav [deferred — new plan: kb/iterations/iteration-111-daemon-live-coverage.md] — deterministic coverage via `top_level_switch_purges_buffer`; Firefox-only live assertion filed as follow-up.
 - [x] `unit_concurrent_clients_no_cross_delivery` + `recv_reply_from_surfaces_daemon_busy_control_error`: the loser gets a structured `daemon_busy` error and its message is never forwarded.
 - [x] `unit_buffer_eviction_per_type`: after a 10× overflow of network events, pre-existing console-message entries within the type floor are still drainable.
 - [x] `e2e_network_since_no_daemon_explicit` (`since_requires_daemon`): `network --since -1 --no-daemon` exits 1 with the stable `error_type` and no results payload.

@@ -20,6 +20,28 @@ tags: [iteration, testing, ci, eval, csp, navigate, dns, review-2026-07]
 
 # Iteration 106: live-test masking cascade
 
+## Execution policies (2026-07-09, per James)
+
+**Live tests:** do NOT run the full live Firefox suite during this iteration.
+Run only the specific live tests this iteration's themes/ACs actually touch
+(filtered, e.g. `cargo test -p ff-rdp-cli --test live <filter> --
+--include-ignored`) plus the dogfood script. Full-suite validation happens
+exactly once, in [[iteration-110-post-batch-live-sweep]], after iteration 109.
+
+**Scoped testing — don't run everything N times:** while developing, run only
+the tests affected by the change (`cargo test -p <crate> <filter>`). Run the
+full `cargo test --workspace -q` exactly ONCE, as part of the final pre-PR
+quality gates. The review agent must NOT re-run the full workspace suite
+(implement's gate run + CI cover it); after review fixes, re-run only the
+tests covering the files those fixes touched, then rely on CI.
+
+**CI-wait:** merge once the required lanes pass (fmt, clippy, discipline,
+supply-chain, fuzz, ubuntu/macos tests, verify-attestation). Do not block on
+`live-tests` (advisory by design) or `test (windows-latest)` (known-red,
+tracked in [[iteration-108-windows-ci-preexisting-reds]]) — but if windows
+shows failures OTHER than the known 5, that IS a regression: stop and fix.
+
+
 While reviewing and merging [[iteration-100-daemon-lifecycle-hardening]]'s
 PR, a single bug (`tabs` was used as the "trigger daemon auto-start" call in
 several live tests, but `tabs.rs` connects to Firefox directly via

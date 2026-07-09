@@ -65,7 +65,7 @@ implementing nor while reviewing. Run ONLY (1) the specific live tests this
 plan's ACs name, filtered (e.g. `cargo test -p ff-rdp-cli --test live
 <filter> -- --include-ignored`), and (2) this iteration's dogfood script
 (required by check-iteration-ready). Full-suite validation is deferred to
-[[iteration-107-post-105-live-sweep]], which runs once after iteration 105
+[[iteration-110-post-batch-live-sweep]], which runs once after iteration 105
 merges and fixes all fallout there.
 
 The deep review ([[deep-review-2026-07-fable5]]) found the single worst
@@ -124,7 +124,7 @@ rules forbid.
       `resolve_slot_longstring_grip_fetches_full_value`) which reproduce the
       grip → `substring` → full-value flow and lock the threshold behavior.
       Real-Firefox recorded fixtures + the live ACs run in
-      `[deferred — new plan: kb/iterations/iteration-107-post-105-live-sweep.md]`
+      `[deferred — new plan: kb/iterations/iteration-110-post-batch-live-sweep.md]`
       per this iteration's live-test policy (no live Firefox runs during 102).
 - [x] Update [[lessons-learned]]#longstring-grips-everywhere: swept-sites list
       + the rule "any new spec consumer with a `longstring` slot must use the
@@ -158,17 +158,17 @@ rules forbid.
       chars is returned by `page-text` at full length, not empty. Test written
       (`live_102_longstring_and_reload.rs`); deterministic grip coverage via
       `parse_dom_node_resolves_longstring_node_value`. Live execution
-      [deferred — new plan: kb/iterations/iteration-107-post-105-live-sweep.md]
+      [deferred — new plan: kb/iterations/iteration-110-post-batch-live-sweep.md]
       per this iteration's live-test policy.
 - [x] live_cookie_longstring_value: a 20 000-char cookie value is returned in
       full by `cookies`. Test written (`live_cookie_longstring_value`);
       deterministic coverage via `parse_cookie_resolves_longstring_value`. Live
-      execution [deferred — new plan: kb/iterations/iteration-107-post-105-live-sweep.md].
+      execution [deferred — new plan: kb/iterations/iteration-110-post-batch-live-sweep.md].
 - [x] live_computed_longstring_value: a 20 000-char CSS custom property value
       is returned in full by `computed`. Test written
       (`live_computed_longstring_value`); deterministic coverage via
       `parse_computed_properties_resolves_longstring_value`. Live execution
-      [deferred — new plan: kb/iterations/iteration-107-post-105-live-sweep.md].
+      [deferred — new plan: kb/iterations/iteration-110-post-batch-live-sweep.md].
 - [x] live_reload_force_with_watched_resources: `reload --hard` (Firefox
       `options.force`) with console activity → the reload reply is correctly
       matched and an immediately-following request returns its own reply (no
@@ -176,7 +176,7 @@ rules forbid.
       the interleaving (tabNavigated push before the reply) is deterministically
       exercised by the unit test
       `reload_force_tolerates_tab_navigated_push_before_reply`. Live execution
-      [deferred — new plan: kb/iterations/iteration-107-post-105-live-sweep.md].
+      [deferred — new plan: kb/iterations/iteration-110-post-batch-live-sweep.md].
 - [x] `unit_no_production_expect_in_core`: the source-scan test
       (`no_string_actor_ids.rs`) is extended with `unit_no_production_expect_in_core`,
       which fails on `.expect(` in non-test ff-rdp-core code and passes because

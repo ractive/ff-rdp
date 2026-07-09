@@ -49,7 +49,7 @@ When waiting on PR checks before merging, wait ONLY for the required lanes:
 fmt, clippy, discipline, supply-chain, fuzz, test (ubuntu-latest),
 test (macos-latest), verify-attestation. Do NOT wait for or block on:
 - `live-tests` — advisory by design (continue-on-error); failures belong to
-  [[iteration-106-live-test-masking-cascade]] / [[iteration-107-post-105-live-sweep]].
+  [[iteration-106-live-test-masking-cascade]] / [[iteration-110-post-batch-live-sweep]].
 - `test (windows-latest)` — known-red with 5 pre-existing failures tracked in
   [[iteration-108-windows-ci-preexisting-reds]]. Do glance at its failure
   list once: if it shows failures OTHER than those 5, that IS a regression —
@@ -63,7 +63,7 @@ implementing nor while reviewing. Run ONLY (1) the specific live tests this
 plan's ACs name, filtered (e.g. `cargo test -p ff-rdp-cli --test live
 <filter> -- --include-ignored`), and (2) this iteration's dogfood script
 (required by check-iteration-ready). Full-suite validation is deferred to
-[[iteration-107-post-105-live-sweep]], which runs once after iteration 105
+[[iteration-110-post-batch-live-sweep]], which runs once after iteration 105
 merges and fixes all fallout there.
 
 The cheapest high-value gap from the 2026-07 review

@@ -19,6 +19,28 @@ tags: [iteration, ci, windows, install-skill, nav-action, preexisting-red]
 
 # Iteration 108: Windows CI pre-existing reds
 
+## Execution policies (2026-07-09, per James)
+
+**Live tests:** do NOT run the full live Firefox suite during this iteration.
+Run only the specific live tests this iteration's themes/ACs actually touch
+(filtered, e.g. `cargo test -p ff-rdp-cli --test live <filter> --
+--include-ignored`) plus the dogfood script. Full-suite validation happens
+exactly once, in [[iteration-110-post-batch-live-sweep]], after iteration 109.
+
+**Scoped testing — don't run everything N times:** while developing, run only
+the tests affected by the change (`cargo test -p <crate> <filter>`). Run the
+full `cargo test --workspace -q` exactly ONCE, as part of the final pre-PR
+quality gates. The review agent must NOT re-run the full workspace suite
+(implement's gate run + CI cover it); after review fixes, re-run only the
+tests covering the files those fixes touched, then rely on CI.
+
+**CI-wait:** merge once the required lanes pass (fmt, clippy, discipline,
+supply-chain, fuzz, ubuntu/macos tests, verify-attestation). Do not block on
+`live-tests` (advisory by design). EXCEPTION for this iteration: turning
+`test (windows-latest)` green is the deliverable — DO wait for the windows
+lane and verify 0 failures before merging.
+
+
 Discovered during the iter-101 (`daemon-session-correctness`, PR #141) merge review.
 `test (windows-latest)` fails with 5 test failures that are **unrelated** to
 iter-101's diff (which touches only `crates/ff-rdp-cli/src/daemon/{server,buffer}.rs`,

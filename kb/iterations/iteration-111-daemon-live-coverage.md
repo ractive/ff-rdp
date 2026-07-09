@@ -1,9 +1,9 @@
 ---
-title: "Iteration 102: daemon live coverage — cross-process follow + full error-shape parity"
+title: "Iteration 111: daemon live coverage — cross-process follow + full error-shape parity"
 type: iteration
 date: 2026-07-09
 status: planned
-branch: iter-102/daemon-live-coverage
+branch: iter-111/daemon-live-coverage
 depends_on:
   - iteration-101-daemon-session-correctness
 kb_refs:
@@ -25,7 +25,7 @@ dogfood_path: |
 tags: [iteration, daemon, watcher, parity, review-2026-07, carry-over]
 ---
 
-# Iteration 102: daemon live coverage
+# Iteration 111: daemon live coverage
 
 Carry-over from [[iteration-101-daemon-session-correctness]]. Iter-101 landed the
 daemon session-correctness fixes (target-switch buffer purge, `daemon_busy`
