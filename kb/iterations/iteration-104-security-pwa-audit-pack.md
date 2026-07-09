@@ -2,31 +2,30 @@
 title: "Iteration 104: security & PWA audit pack — per-request TLS info, Web App Manifest validation, optional throttling/blocking"
 type: iteration
 date: 2026-07-09
-status: planned
+status: in-progress
 branch: iter-104/security-pwa-audit-pack
 depends_on: []
 firefox_refs:
   - lines: 340-360
     path: devtools/server/actors/network-monitor/network-event-actor.js
     why: >-
-      getSecurityInfo implementation — returns the cached _securityInfo for
-      the request (populated when the response is observed).
+      getSecurityInfo implementation — returns the cached _securityInfo for the
+      request (populated when the response is observed).
   - lines: 690-710
     path: devtools/server/actors/network-monitor/network-event-actor.js
     why: >-
-      where _securityInfo is populated from the observed response — explains
-      why the watcher must have seen the request for security info to exist.
+      where _securityInfo is populated from the observed response — explains why the
+      watcher must have seen the request for security info to exist.
   - lines: 14-17
     path: devtools/shared/specs/manifest.js
     why: >-
-      fetchCanonicalManifest spec — one call returning the parsed Web App
-      Manifest plus conformance errors.
+      fetchCanonicalManifest spec — one call returning the parsed Web App Manifest
+      plus conformance errors.
   - lines: 23-67
     path: devtools/shared/specs/network-parent.js
     why: >-
-      setNetworkThrottling / setBlockedUrls / blockRequest specs — the
-      optional theme C surface; note which methods declare no response block
-      but are not oneway.
+      setNetworkThrottling / setBlockedUrls / blockRequest specs — the optional theme
+      C surface; note which methods declare no response block but are not oneway.
 kb_refs:
   - kb/research/deep-review-2026-07-fable5.md
   - kb/rdp/actors/network-event.md
@@ -36,8 +35,8 @@ first_call_sites:
   - primitive: manifest command driving ManifestFront::fetch_canonical_manifest
     site: crates/ff-rdp-cli/src/commands/manifest.rs
   - primitive: >-
-      (stretch) throttle command driving
-      NetworkParentFront::set_network_throttling / set_blocked_urls
+      (stretch) throttle command driving NetworkParentFront::set_network_throttling /
+      set_blocked_urls
     site: crates/ff-rdp-cli/src/commands/throttle.rs
 dogfood_path: |
   ff-rdp launch --headless
@@ -46,7 +45,15 @@ dogfood_path: |
   # expected: {protocolVersion: "TLSv1.3", cipherSuite: "...", cert: {...}, hsts: ...}
   ff-rdp manifest
   # expected: parsed manifest JSON + conformance errors, or a clear "no manifest" result
-tags: [iteration, security, tls, manifest, pwa, network, audit, review-2026-07]
+tags:
+  - iteration
+  - security
+  - tls
+  - manifest
+  - pwa
+  - network
+  - audit
+  - review-2026-07
 ---
 
 # Iteration 104: security & PWA audit pack
@@ -102,30 +109,47 @@ blocked?").
 
 ## Tasks
 
-### A. network --security [0/3]
-- [ ] Add `get_security_info` to the network-event actor surface in core
-      (spec-checked; annotate any drift per the allow-spec-drift rule).
-- [ ] Add `--security` to `ff-rdp network`: for each captured HTTPS request,
+### A. network --security [3/3]
+- [x] Add `get_security_info` to the network-event actor surface in core
+      (`NetworkEventActor::get_security_info` + `SecurityInfo`/`CertSummary` +
+      spec `network_event::GetSecurityInfo`; unit tests
+      `get_security_info_https_returns_some` / `get_security_info_http_returns_none`).
+      No spec drift — `getSecurityInfo` is a declared network-event spec method.
+- [x] Add `--security` to `ff-rdp network`: for each captured HTTPS request,
       attach a `security` object (protocolVersion, cipherSuite, cert summary,
       hsts, weaknessReasons); plain-HTTP requests get `security: null`
       **plus** a top-level `insecure_requests` count so audits can flag
-      mixed content at a glance.
-- [ ] Document the population constraint in `kb/rdp/actors/network-event.md`:
+      mixed content at a glance. (`attach_security` + `count_insecure_requests`
+      in `commands/network.rs`.)
+- [x] Document the population constraint in `kb/rdp/actors/network-event.md`:
       security info exists only for requests the watcher observed
       (daemon-buffered or `--with-network` windows), matching
-      `network-event-actor.js:690-710`.
+      `network-event-actor.js:690-710`. (See the new `getSecurityInfo` section.)
 
-### B. manifest command [0/3]
-- [ ] Add a manifest front in core (`fetchCanonicalManifest` on the tab
-      target's manifest actor) + `kb/rdp/actors/` note (actor-kb-sync).
-- [ ] Add `ff-rdp manifest`: JSON envelope with the parsed manifest and its
+### B. manifest command [3/3]
+- [x] Add a manifest front in core (`ManifestFront::fetch_canonical_manifest`
+      on the tab target's `manifestActor`, read from
+      `TargetInfo::manifest_actor`) + `kb/rdp/actors/manifest.md` note
+      (actor-kb-sync). Unit tests `fetch_canonical_manifest_parses_values_and_errors`
+      / `fetch_canonical_manifest_no_manifest_is_none`.
+- [x] Add `ff-rdp manifest`: JSON envelope with the parsed manifest and its
       conformance `errors` array; "page has no manifest" is a structured
       non-error result (`manifest: null, reason: "..."`), not an exit
-      failure.
-- [ ] Retire the raw-fetch manifest playbook step in the debug skill docs in
-      favor of the command (doc pointer update only).
+      failure. (`commands/manifest.rs`.)
+- [x] Retire the raw-fetch manifest playbook step in the debug skill docs in
+      favor of the command (doc pointer update only) — new preferred step 0 in
+      `skills/ff-rdp-debug/playbooks/E3.md` runs `ff-rdp manifest`.
 
-### C. (stretch — drop before slipping) throttle [0/2]
+### C. (stretch — DROPPED at theme boundary) throttle [0/2]
+
+**Deferred — new plan: [[iteration-109-network-throttle-block]].** Theme C was
+cut at the theme boundary per this plan's own "drop before slipping" rule: its
+`getNetworkParentActor` wire shape could not be live-verified in the
+implementation environment (the iter-103 nested-actor warning makes assuming
+the flat `ActorRef` shape unsafe without a live trace). Filed as a follow-up
+before this PR merges, per the carry-over rule. Themes A & B (the review's
+primary C2/C3 gaps, both with live+e2e ACs) landed in full.
+
 - [ ] Add `set_network_throttling`/`set_blocked_urls` to a network-parent
       front (obtained via `watcher.getNetworkParentActor()`); note the
       protocol quirk: these methods declare **no response block but are NOT
@@ -146,24 +170,30 @@ blocked?").
       `ff-rdp throttle --block <pattern>...`; envelope echoes active
       profile/blocklist.
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [4/6]
 
-- [ ] live_network_security_info_https: for a captured https request,
+- [x] live_network_security_info_https: for a captured https request,
       `security.protocolVersion` starts with "TLS" and `cipherSuite` is
       non-empty; for an http request `security` is null and
-      `insecure_requests` ≥ 1.
-- [ ] live_manifest_fetch_canonical: a fixture page with a linked manifest
+      `insecure_requests` ≥ 1. (Live test `live_network_security_info_https`
+      pins the https side + `insecure_requests` counter; the http→null side is
+      pinned by core unit `get_security_info_http_returns_none` and the
+      URL-scheme classifier `count_insecure_requests`.)
+- [x] live_manifest_fetch_canonical: a fixture page with a linked manifest
       returns its parsed `name`/`start_url` and an `errors` array; a page
-      without a manifest returns `manifest: null` with exit code 0.
-- [ ] e2e_manifest_no_tab_error_shape: `manifest` against a closed/unknown
+      without a manifest returns `manifest: null` with exit code 0. (Live test
+      `live_manifest_fetch_canonical`.)
+- [x] e2e_manifest_no_tab_error_shape: `manifest` against a closed/unknown
       tab produces the standard error envelope (error_type + non-zero exit).
-- [ ] live_throttle_slow3g_slows_fetch (stretch — annotate
-      `[deferred — new plan: …]` if theme C is dropped): a timed in-page
-      fetch under slow-3g takes measurably longer than baseline (≥2×).
-- [ ] live_block_url_pattern (stretch, same annotation rule): a request
-      matching the blocked pattern is reported failed/blocked in `network`
-      output while other requests succeed.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+      (e2e test `manifest_unknown_tab_produces_error_envelope`.)
+- [ ] live_throttle_slow3g_slows_fetch [deferred — new plan:
+      [[iteration-109-network-throttle-block]]]: a timed in-page fetch under
+      slow-3g takes measurably longer than baseline (≥2×).
+- [ ] live_block_url_pattern [deferred — new plan:
+      [[iteration-109-network-throttle-block]]]: a request matching the blocked
+      pattern is reported failed/blocked in `network` output while other
+      requests succeed.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 

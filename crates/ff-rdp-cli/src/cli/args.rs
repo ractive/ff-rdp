@@ -54,6 +54,9 @@ COMMAND REFERENCE:
                    [--print on|off] [--touch on|off] [--js on|off]
                    [--offline on|off] [--cache on|off] [--reset]
 
+  PWA & manifest:
+    ff-rdp manifest                         # parsed Web App Manifest + conformance errors
+
   Accessibility:
     ff-rdp a11y [--depth N] [--selector SEL] [--interactive] [--critical]
     ff-rdp a11y contrast [--selector SEL] [--fail-only]
@@ -68,6 +71,7 @@ COMMAND REFERENCE:
     ff-rdp console [--level LEVEL] [--pattern REGEX] [--follow]
     ff-rdp network [--filter URL] [--method M] [--follow]
     ff-rdp network --detail [--headers]    # include request+response headers per entry
+    ff-rdp network --security              # per-request TLS/cert detail + insecure_requests count
 
   Storage:
     ff-rdp cookies [--name NAME]
@@ -784,6 +788,25 @@ Output: {\"results\": {\"applied\": {<wire-field>: <value>, ...}, \"reset\": boo
 \"lifetime_warning\"?: \"...\", \"note\"?: \"...\"}, \"total\": 1, \"meta\": {...}}"
     )]
     Emulate(EmulateArgs),
+    /// Fetch and validate the page's Web App Manifest (PWA-readiness audit)
+    #[command(
+        long_about = "Fetch and validate the current page's Web App Manifest via the Firefox \
+manifest actor's fetchCanonicalManifest (the WHATWG \"obtain a manifest\" algorithm).
+
+Returns the parsed manifest plus its conformance `errors` array in a single call.
+A page that links no manifest is NOT an error: the envelope reports
+`manifest: null` with a `reason` and exits 0, so scripts can branch on presence
+without parsing error output.
+
+Examples:
+  ff-rdp manifest
+  ff-rdp manifest --jq '.results.manifest.name'
+  ff-rdp manifest --jq '.results.errors'
+
+Output: {\"results\": {\"manifest\": {<parsed manifest> | null}, \"url\": \"...\"|null, \
+\"errors\": [...], \"reason\"?: \"...\"}, \"total\": 1, \"meta\": {...}}"
+    )]
+    Manifest,
     /// Quick wrapper around getComputedStyle for CSS debugging
     #[command(
         long_about = "Quick wrapper around getComputedStyle() for CSS debugging.
@@ -1161,6 +1184,14 @@ pub struct NetworkArgs {
     /// watcher and make headers available.
     #[arg(long)]
     pub headers: bool,
+    /// Attach per-request TLS/certificate detail (protocolVersion, cipherSuite,
+    /// cert summary, hsts, weaknessReasons) to each captured request. HTTPS
+    /// requests get a `security` object; plain-HTTP requests get `security:
+    /// null` and contribute to a top-level `insecure_requests` count. Like
+    /// --headers this is a watcher-source-only, per-entry pull (performance-api
+    /// source has no security info); implies detail output.
+    #[arg(long)]
+    pub security: bool,
     /// Scope the result to a specific navigation window (daemon mode only).
     /// -1 = current navigation (default), -2 = one back, 'all' = full cumulative buffer.
     /// Positive integers are treated as 1-based indices from the oldest boundary.

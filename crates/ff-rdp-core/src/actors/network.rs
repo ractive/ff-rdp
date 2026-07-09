@@ -28,6 +28,120 @@ pub struct ResponseContent {
     pub truncated: bool,
 }
 
+/// A trimmed X.509 certificate summary extracted from a request's security
+/// info.  Only the fields useful for a security audit are surfaced.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CertSummary {
+    /// Certificate subject common name (e.g. the host the cert is issued for).
+    pub subject: Option<String>,
+    /// Issuer common name (the CA that signed the certificate).
+    pub issuer: Option<String>,
+    /// Not-before validity boundary, as Firefox reports it (a formatted string).
+    pub valid_from: Option<String>,
+    /// Not-after validity boundary, as Firefox reports it (a formatted string).
+    pub valid_to: Option<String>,
+    /// SHA-256 fingerprint of the certificate, when present.
+    pub sha256_fingerprint: Option<String>,
+}
+
+/// Per-request TLS / certificate detail returned by
+/// [`NetworkEventActor::get_security_info`].
+///
+/// This is a curated projection of Firefox's raw `securityInfo` payload (see
+/// `kb/rdp/actors/network-event.md`): the fields a TLS/PWA audit cares about.
+/// A plain-HTTP request has no security info at all, so the actor method
+/// returns `None` in that case rather than an empty [`SecurityInfo`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SecurityInfo {
+    /// Connection security state as Firefox classifies it
+    /// (`"secure"`, `"weak"`, `"insecure"`, `"broken"`).
+    pub state: Option<String>,
+    /// Negotiated TLS protocol version, e.g. `"TLSv1.3"`.  Values below
+    /// `"TLSv1.2"` (i.e. TLS 1.0 / 1.1) are worth flagging in an audit.
+    pub protocol_version: Option<String>,
+    /// Negotiated cipher suite, e.g. `"TLS_AES_128_GCM_SHA256"`.
+    pub cipher_suite: Option<String>,
+    /// Whether the server sent an HSTS (`Strict-Transport-Security`) header.
+    pub hsts: Option<bool>,
+    /// Machine-readable reasons the connection was classified weak
+    /// (e.g. `"cipher"`).  Empty for a clean secure connection.
+    pub weakness_reasons: Vec<String>,
+    /// Certificate summary, when Firefox attached one.
+    pub cert: Option<CertSummary>,
+}
+
+impl SecurityInfo {
+    /// Parse Firefox's raw `securityInfo` object into a [`SecurityInfo`].
+    ///
+    /// Tolerant of missing/unknown keys: each field is pulled out
+    /// best-effort so a schema change in a future Firefox does not break the
+    /// whole parse.  Returns a value even for a mostly-empty object; the
+    /// caller decides how to treat an all-`None` result.
+    pub fn from_value(v: &Value) -> Self {
+        let state = v.get("state").and_then(Value::as_str).map(str::to_owned);
+        let protocol_version = v
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let cipher_suite = v
+            .get("cipherSuite")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let hsts = v.get("hsts").and_then(Value::as_bool);
+        let weakness_reasons = v
+            .get("weaknessReasons")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|r| r.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let cert = v.get("cert").map(parse_cert_summary);
+
+        Self {
+            state,
+            protocol_version,
+            cipher_suite,
+            hsts,
+            weakness_reasons,
+            cert,
+        }
+    }
+}
+
+/// Extract a [`CertSummary`] from Firefox's `cert` object.
+///
+/// Firefox nests the common name under `subject.commonName` /
+/// `issuer.commonName`, the validity window under `validity.start` /
+/// `validity.end`, and the fingerprint under `fingerprint.sha256`.
+fn parse_cert_summary(cert: &Value) -> CertSummary {
+    let common_name = |key: &str| {
+        cert.get(key)
+            .and_then(|o| o.get("commonName"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    let validity = |key: &str| {
+        cert.get("validity")
+            .and_then(|v| v.get(key))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    CertSummary {
+        subject: common_name("subject"),
+        issuer: common_name("issuer"),
+        valid_from: validity("start"),
+        valid_to: validity("end"),
+        sha256_fingerprint: cert
+            .get("fingerprint")
+            .and_then(|f| f.get("sha256"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    }
+}
+
 /// Timing information for a network event.
 #[derive(Debug, Clone)]
 pub struct EventTimings {
@@ -117,6 +231,28 @@ impl NetworkEventActor {
             text,
             truncated,
         })
+    }
+
+    /// Fetch per-request TLS / certificate detail for a network event.
+    ///
+    /// Returns `Some(SecurityInfo)` for HTTPS requests whose response Firefox
+    /// observed, and `None` when the request carried no security info — either
+    /// because it was plain HTTP (no TLS handshake) or because the watcher
+    /// never saw the request (security info is populated only when the response
+    /// is observed; see `network-event-actor.js:690-710`).
+    pub fn get_security_info(
+        transport: &mut RdpTransport,
+        actor: &ActorId,
+    ) -> Result<Option<SecurityInfo>, ProtocolError> {
+        let reply = crate::specs::call::<crate::specs::network_event::GetSecurityInfo>(
+            transport,
+            actor,
+            &crate::specs::NoArgs {},
+        )?;
+        Ok(reply
+            .security_info
+            .filter(|v| !v.is_null())
+            .map(|v| SecurityInfo::from_value(&v)))
     }
 
     /// Fetch timing information for a network event.
@@ -267,6 +403,97 @@ mod tests {
         assert_eq!(content.text.as_deref(), Some("hello"));
         assert!(!content.truncated);
 
+        srv.join().unwrap();
+    }
+
+    #[test]
+    fn security_info_from_value_extracts_fields() {
+        let v = json!({
+            "state": "secure",
+            "protocolVersion": "TLSv1.3",
+            "cipherSuite": "TLS_AES_128_GCM_SHA256",
+            "hsts": true,
+            "weaknessReasons": [],
+            "cert": {
+                "subject": {"commonName": "example.com"},
+                "issuer": {"commonName": "DigiCert TLS RSA SHA256 2020 CA1"},
+                "validity": {"start": "Mon, 01 Jan 2024", "end": "Wed, 01 Jan 2025"},
+                "fingerprint": {"sha256": "AA:BB:CC"}
+            }
+        });
+        let si = SecurityInfo::from_value(&v);
+        assert_eq!(si.state.as_deref(), Some("secure"));
+        assert_eq!(si.protocol_version.as_deref(), Some("TLSv1.3"));
+        assert_eq!(si.cipher_suite.as_deref(), Some("TLS_AES_128_GCM_SHA256"));
+        assert_eq!(si.hsts, Some(true));
+        assert!(si.weakness_reasons.is_empty());
+        let cert = si.cert.expect("cert present");
+        assert_eq!(cert.subject.as_deref(), Some("example.com"));
+        assert_eq!(
+            cert.issuer.as_deref(),
+            Some("DigiCert TLS RSA SHA256 2020 CA1")
+        );
+        assert_eq!(cert.valid_from.as_deref(), Some("Mon, 01 Jan 2024"));
+        assert_eq!(cert.valid_to.as_deref(), Some("Wed, 01 Jan 2025"));
+        assert_eq!(cert.sha256_fingerprint.as_deref(), Some("AA:BB:CC"));
+    }
+
+    #[test]
+    fn security_info_from_value_tolerates_missing_keys() {
+        let si = SecurityInfo::from_value(&json!({"state": "weak", "weaknessReasons": ["cipher"]}));
+        assert_eq!(si.state.as_deref(), Some("weak"));
+        assert_eq!(si.weakness_reasons, vec!["cipher".to_owned()]);
+        assert!(si.protocol_version.is_none());
+        assert!(si.cert.is_none());
+    }
+
+    #[test]
+    fn get_security_info_https_returns_some() {
+        let (mut transport, server) = make_transport_pair();
+        let actor: ActorId = "server1.conn0.netEvent1".into();
+
+        let srv = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            let req = crate::transport::recv_from(&mut reader).unwrap();
+            assert_eq!(req["type"], "getSecurityInfo");
+            let resp = json!({
+                "from": "server1.conn0.netEvent1",
+                "securityInfo": {
+                    "state": "secure",
+                    "protocolVersion": "TLSv1.2",
+                    "cipherSuite": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                    "hsts": false,
+                    "weaknessReasons": []
+                }
+            });
+            send_frame(&server, &resp);
+        });
+
+        let si = NetworkEventActor::get_security_info(&mut transport, &actor)
+            .unwrap()
+            .expect("https request has security info");
+        assert_eq!(si.protocol_version.as_deref(), Some("TLSv1.2"));
+        assert!(si.cipher_suite.as_deref().is_some_and(|c| !c.is_empty()));
+        srv.join().unwrap();
+    }
+
+    #[test]
+    fn get_security_info_http_returns_none() {
+        let (mut transport, server) = make_transport_pair();
+        let actor: ActorId = "server1.conn0.netEvent2".into();
+
+        let srv = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            let _req = crate::transport::recv_from(&mut reader).unwrap();
+            let resp = json!({
+                "from": "server1.conn0.netEvent2",
+                "securityInfo": null
+            });
+            send_frame(&server, &resp);
+        });
+
+        let si = NetworkEventActor::get_security_info(&mut transport, &actor).unwrap();
+        assert!(si.is_none(), "plain-HTTP request has no security info");
         srv.join().unwrap();
     }
 

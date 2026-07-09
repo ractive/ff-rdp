@@ -62,7 +62,17 @@ top design debt — worth completing **before the next release cut**:
    admits the migration stalled.
 2. **Semver trap.** None of `RdpError` / `ProtocolError` / `ActorErrorKind`
    / `NavCause` is `#[non_exhaustive]`, yet recent iterations added variants
-   — each addition is a breaking change for downstream matches.
+   — each addition is a breaking change for downstream matches. iter-104
+   is a fresh example of the pattern one layer over: it added `FrontKind::Manifest`
+   to `registry.rs`, also a public, non-`#[non_exhaustive]` enum that gains a
+   variant nearly every iteration (iter-103 added `TargetConfiguration` the
+   same way). `FrontKind` already carries an `Other(String)` catch-all, which
+   softens but does not eliminate the same breaking-change risk. Out of scope
+   for Theme B itself (that's the four error enums), but worth a look-and-decide
+   pass in this PR: either add `#[non_exhaustive]` to `FrontKind` alongside the
+   error enums (same mechanical fix, same PR), or explicitly note in
+   [[decision-log]] why the `Other(String)` catch-all is judged sufficient and
+   defer it.
 3. **Split-brain exit codes.** `AppError::exit_code()` documents itself as
    *the* mapping but returns 1 for variants `main.rs:208-223` maps to 4/5/6;
    correct today only by call-graph accident.

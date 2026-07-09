@@ -41,11 +41,13 @@ fn since_requires_daemon_error() -> AppError {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     cli: &Cli,
     filter: Option<&str>,
     method: Option<&str>,
     headers: bool,
+    security: bool,
     since_nav: i64,
     since_explicit: bool,
 ) -> Result<(), AppError> {
@@ -201,6 +203,16 @@ pub fn run(
         (filtered_watcher, false)
     };
 
+    // Count plain-HTTP (insecure) requests across the *whole* captured set, not
+    // just the shown/limited slice, so `--security` audits can flag mixed
+    // content at a glance regardless of --limit.  The scheme comes straight
+    // from the request URL, so no per-entry RPC is needed for the count.
+    let insecure_requests = if security {
+        Some(count_insecure_requests(&results))
+    } else {
+        None
+    };
+
     // When both the watcher and the Performance API returned nothing, print a
     // hint so the user knows how to get data.
     if results.is_empty() && watcher_was_empty {
@@ -253,7 +265,8 @@ pub fn run(
         || cli.limit.is_some()
         || cli.all
         || cli.fields.is_some()
-        || headers;
+        || headers
+        || security;
 
     let empty_hint = if results.is_empty() && watcher_was_empty {
         let hint = if via_daemon {
@@ -292,7 +305,9 @@ pub fn run(
         let shown = limited.len();
 
         // Fetch request+response headers for each entry when --headers is set
-        // and the entry came from the watcher (has _resource_id).
+        // and the entry came from the watcher (has _resource_id).  The internal
+        // `_resource_id` marker is stripped once at the end, after both the
+        // header and the security joins have had a chance to use it.
         let mut limited = limited;
         if headers && used_perf_fallback {
             // Performance-api source has no response headers. Emit a note per
@@ -311,7 +326,6 @@ pub fn run(
                             }
                         })
                         .or_insert_with(|| json!(HEADERS_NOTE));
-                    obj.remove("_resource_id");
                 }
             }
         } else if headers && !used_perf_fallback {
@@ -341,17 +355,29 @@ pub fn run(
 
                     entry["headers"] = json!({"request": req_hdrs, "response": resp_hdrs});
                 }
-                // Strip the internal marker regardless of whether headers were fetched.
-                if let Some(obj) = entry.as_object_mut() {
-                    obj.remove("_resource_id");
-                }
             }
-        } else {
-            // No headers requested — just strip the internal marker.
-            for entry in &mut limited {
-                if let Some(obj) = entry.as_object_mut() {
-                    obj.remove("_resource_id");
-                }
+        }
+
+        // Attach per-request TLS/certificate detail when --security is set.
+        // HTTPS requests get a `security` object (fetched from the
+        // NetworkEventActor we already hold); plain-HTTP requests get
+        // `security: null`.  Only the watcher source exposes security info; the
+        // performance-api fallback gets a per-entry note instead of silently
+        // dropping the flag.
+        if security {
+            attach_security(
+                &mut limited,
+                &mut ctx,
+                &actor_by_resource_id,
+                used_perf_fallback,
+            );
+        }
+
+        // Strip the internal `_resource_id` marker now that all per-entry joins
+        // are done.
+        for entry in &mut limited {
+            if let Some(obj) = entry.as_object_mut() {
+                obj.remove("_resource_id");
             }
         }
 
@@ -362,6 +388,13 @@ pub fn run(
             && let Some(obj) = envelope.as_object_mut()
         {
             obj.insert("hint".to_string(), hint);
+        }
+        // Surface the mixed-content count at the top level so `--security`
+        // audits can flag insecure requests without scanning every entry.
+        if let Some(count) = insecure_requests
+            && let Some(obj) = envelope.as_object_mut()
+        {
+            obj.insert("insecure_requests".to_string(), json!(count));
         }
         let hint_ctx = HintContext::new(HintSource::Network).with_detail(cli.detail);
         return OutputPipeline::from_cli(cli)?
@@ -400,6 +433,99 @@ pub fn run(
     OutputPipeline::from_cli(cli)?
         .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
+}
+
+/// Count how many entries are plain-HTTP (insecure) requests.
+///
+/// The classification is purely by URL scheme: a `http://` URL is insecure,
+/// everything else (`https://`, `data:`, `blob:`, `about:`, …) is not counted.
+/// This mirrors what a mixed-content audit cares about — HTTP subresources on
+/// an HTTPS page — without needing a per-request RPC.
+fn count_insecure_requests(entries: &[Value]) -> usize {
+    entries
+        .iter()
+        .filter(|e| e["url"].as_str().is_some_and(|u| u.starts_with("http://")))
+        .count()
+}
+
+/// Render a [`SecurityInfo`] as the JSON `security` object attached to a
+/// request entry.
+fn security_to_json(si: &ff_rdp_core::SecurityInfo) -> Value {
+    let cert = si.cert.as_ref().map(|c| {
+        json!({
+            "subject": c.subject,
+            "issuer": c.issuer,
+            "validFrom": c.valid_from,
+            "validTo": c.valid_to,
+            "sha256Fingerprint": c.sha256_fingerprint,
+        })
+    });
+    json!({
+        "state": si.state,
+        "protocolVersion": si.protocol_version,
+        "cipherSuite": si.cipher_suite,
+        "hsts": si.hsts,
+        "weaknessReasons": si.weakness_reasons,
+        "cert": cert,
+    })
+}
+
+/// Attach a `security` field to each entry in `limited`.
+///
+/// HTTPS requests get the fetched [`SecurityInfo`] (or `null` when Firefox has
+/// none — e.g. a request whose response the watcher never observed); plain-HTTP
+/// requests get `security: null` without any RPC.  When the data came from the
+/// performance-api fallback (no NetworkEventActor ids), every entry gets a note
+/// explaining why security info is unavailable, matching the `--headers`
+/// behaviour.
+fn attach_security(
+    limited: &mut [Value],
+    ctx: &mut ConnectedTab,
+    actor_by_resource_id: &HashMap<u64, ff_rdp_core::ActorId>,
+    used_perf_fallback: bool,
+) {
+    const SECURITY_NOTE: &str = "--security ignored (performance-api source has no \
+        per-request security info; use --with-network to engage the watcher)";
+
+    for entry in limited.iter_mut() {
+        if used_perf_fallback {
+            if let Some(obj) = entry.as_object_mut() {
+                obj.entry("note".to_string())
+                    .and_modify(|v| {
+                        if let Some(existing) = v.as_str() {
+                            *v = json!(format!("{existing}; {SECURITY_NOTE}"));
+                        } else {
+                            *v = json!(SECURITY_NOTE);
+                        }
+                    })
+                    .or_insert_with(|| json!(SECURITY_NOTE));
+            }
+            continue;
+        }
+
+        let is_http = entry["url"]
+            .as_str()
+            .is_some_and(|u| u.starts_with("http://"));
+        if is_http {
+            // Plain-HTTP request: no TLS, so no security object. Skip the RPC.
+            entry["security"] = Value::Null;
+            continue;
+        }
+
+        // HTTPS (or other secure-ish scheme): fetch security info from the
+        // NetworkEventActor we already hold for this request.
+        let security_value = entry
+            .get("_resource_id")
+            .and_then(Value::as_u64)
+            .and_then(|rid| actor_by_resource_id.get(&rid))
+            .and_then(|actor| {
+                NetworkEventActor::get_security_info(ctx.transport_mut(), actor)
+                    .ok()
+                    .flatten()
+            })
+            .map_or(Value::Null, |si| security_to_json(&si));
+        entry["security"] = security_value;
+    }
 }
 
 /// Render network summary as human-readable text to `out`.

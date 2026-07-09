@@ -332,6 +332,7 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         | Command::Cascade(CascadeArgs { .. })
         | Command::Responsive(ResponsiveArgs { .. })
         | Command::Emulate(EmulateArgs { .. })
+        | Command::Manifest
         | Command::A11y(A11yArgs { .. })
         | Command::Snapshot(SnapshotArgs { .. })
         | Command::Inspect(InspectArgs { .. })
@@ -547,6 +548,7 @@ fn dispatch_inner(
             method,
             follow,
             headers,
+            security,
             since,
         }) => {
             if *follow {
@@ -558,6 +560,7 @@ fn dispatch_inner(
                     filter.as_deref(),
                     method.as_deref(),
                     *headers,
+                    *security,
                     since_nav,
                     // iter-101 Theme D: whether the user *explicitly* passed
                     // `--since`.  One-shot (`--no-daemon`) cannot honor nav-scoping,
@@ -879,6 +882,7 @@ fn dispatch_inner(
             }
         }
         Command::Emulate(args) => commands::emulate::run(cli, args),
+        Command::Manifest => commands::manifest::run(cli),
         Command::Snapshot(SnapshotArgs {
             depth,
             max_depth,
