@@ -184,6 +184,19 @@ this branch's diff), consistent with prior notes on redact-test flakiness.
 Left out of scope for this plan; if it recurs it should get its own
 iter-99/iter-108-style investigation.)
 
+With the mock-server race fixed, `test (windows-latest)` progressed further
+than ever before and exposed a **third**, distinct pre-existing Windows CI
+issue: `cargo test --workspace`'s `Run tests` step hung and hit its 10-minute
+timeout inside `tests/live/main.rs` — `live_61l::live_eval_basic` and three
+sibling tests were still "running for over 60 seconds" when the job was
+killed (CI run 29052935360, job 86237770363). This is unrelated to
+iter-108's diff (none of the changed files are on the `live_61l` /
+`ff-rdp launch` code path) and is a substantial, separate root-cause
+investigation (likely a Windows subprocess-handle-inheritance hang in
+`LiveFirefox::launch()` / `ff-rdp launch --headless`), so it is
+**[deferred — new plan: kb/iterations/iteration-112-windows-live-firefox-launch-hang.md]**
+rather than fixed inline here.
+
 ## Out of scope
 
 - `live-tests` workflow failures — that job runs with `continue-on-error: true`
