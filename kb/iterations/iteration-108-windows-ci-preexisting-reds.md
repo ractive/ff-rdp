@@ -2,7 +2,7 @@
 title: "Iteration 108: Windows CI pre-existing reds — install-skill HOME redirection + reload-idle timing"
 type: iteration
 date: 2026-07-09
-status: implemented
+status: completed
 branch: iter-108/windows-ci-preexisting-reds
 depends_on: []
 firefox_refs: []
