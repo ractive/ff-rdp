@@ -197,6 +197,22 @@ investigation (likely a Windows subprocess-handle-inheritance hang in
 **[deferred — new plan: kb/iterations/iteration-112-windows-live-firefox-launch-hang.md]**
 rather than fixed inline here.
 
+**Reconfirmed** on the next push (CI run 29053685757, job 86240165643,
+2026-07-09T22:14Z, commit f0bda39): `test (windows-latest)` hit the identical
+10-minute `Run tests` timeout again, purely inside `live_61l` Firefox-launch
+tests (`live_eval_basic`, `live_navigate_invalidates_console_actor`,
+`live_screenshot_full_page`, `live_screenshot_viewport_height_is_not_full_page`
+all "running for over 60 seconds"). Every required lane — fmt, clippy, msrv,
+discipline, supply-chain, `test (ubuntu-latest)`, `test (macos-latest)`,
+`fuzz`, `verify-attestation` — passed cleanly on this run, confirming this
+iteration's 5 originally-scoped failures (Theme A ×4, Theme B) and the
+review-time mock-server race are all fixed; the only remaining windows-latest
+red is iter-112's pre-existing, out-of-scope, filed hang. Merging without
+waiting further on `test (windows-latest)`, consistent with there being no
+branch-protection requirement on that check and with this exact "known,
+already-diagnosed, unrelated pre-existing red" pattern being the reason
+iter-99 and iter-108 itself exist.
+
 ## Out of scope
 
 - `live-tests` workflow failures — that job runs with `continue-on-error: true`
