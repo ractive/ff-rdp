@@ -788,6 +788,43 @@ Output: {\"results\": {\"applied\": {<wire-field>: <value>, ...}, \"reset\": boo
 \"lifetime_warning\"?: \"...\", \"note\"?: \"...\"}, \"total\": 1, \"meta\": {...}}"
     )]
     Emulate(EmulateArgs),
+    /// Throttle the network and/or block request URLs (network-parent actor)
+    #[command(
+        long_about = "Throttle network speed and/or block request URLs (server-side) via the \
+Firefox network-parent actor.
+
+Throttling and blocking are configured on the parent-process network-parent
+actor obtained from the watcher.  A positional PROFILE sets a throttling tier;
+`--block` replaces the URL block-list.  At least one must be supplied.
+
+  throttle slow-3g          ~400 kbit/s, 400 ms latency
+  throttle fast-3g          ~1.6 Mbit/s, 150 ms latency
+  throttle off              clear throttling (full speed)
+  throttle --block <PAT>    block requests whose URL matches PAT (repeatable)
+  throttle --unblock        clear the URL block-list
+
+PROFILE and --block compose: `throttle slow-3g --block '*.png'` throttles AND
+blocks in one call.  Blocked requests fail with NS_ERROR_ABORT and show up as
+errored entries in `network` output while other requests succeed.
+
+PREREQUISITE: this command subscribes to network-event resources first (the
+network-parent actor throws \"Not listening for network events\" otherwise).
+
+LIFETIME: throttling and blocking live as long as the RDP connection that set
+them.  Under the daemon that means until the daemon restarts; with --no-daemon
+the one-shot process disconnects immediately and the setting is discarded — the
+envelope then carries a `lifetime_warning`.
+
+Examples:
+  ff-rdp throttle slow-3g
+  ff-rdp throttle fast-3g --block 'ads.example.com' --block '*.gif'
+  ff-rdp throttle off
+  ff-rdp throttle --unblock
+
+Output: {\"results\": {\"profile\": \"slow-3g\"|\"fast-3g\"|\"off\"|null, \
+\"blocked_urls\": [\"...\"]|null, \"lifetime_warning\"?: \"...\"}, \"total\": 1, \"meta\": {...}}"
+    )]
+    Throttle(ThrottleArgs),
     /// Fetch and validate the page's Web App Manifest (PWA-readiness audit)
     #[command(
         long_about = "Fetch and validate the current page's Web App Manifest via the Firefox \
@@ -1548,6 +1585,42 @@ pub struct EmulateArgs {
     /// Restore every emulation field to its default (use on its own)
     #[arg(long)]
     pub reset: bool,
+}
+
+/// Network-throttling profile for `throttle` (positional).
+///
+/// Maps to the network-parent actor's `setNetworkThrottling` options.
+/// `off` clears any active throttling (Firefox restores full speed).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ThrottleProfileArg {
+    /// Slow 3G: ~400 kbit/s, 400 ms round-trip latency.
+    #[value(name = "slow-3g")]
+    Slow3g,
+    /// Fast 3G: ~1.6 Mbit/s, 150 ms round-trip latency.
+    #[value(name = "fast-3g")]
+    Fast3g,
+    /// Clear throttling and restore full-speed network behaviour.
+    Off,
+}
+
+/// Arguments for `throttle` — network throttling and URL blocking.
+///
+/// The positional PROFILE sets a throttling tier (or `off`); `--block` replaces
+/// the URL block-list. At least one must be supplied. The envelope echoes the
+/// active profile and block-list so scripts can confirm what was applied.
+#[derive(clap::Args)]
+pub struct ThrottleArgs {
+    /// Throttling profile: slow-3g, fast-3g, or off (clears throttling)
+    #[arg(value_enum, value_name = "PROFILE")]
+    pub profile: Option<ThrottleProfileArg>,
+    /// Block requests whose URL matches PATTERN (repeatable; substring/glob
+    /// match). Pass `--block` with no value list, or an empty `--block ''`,
+    /// to clear the block-list.
+    #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)]
+    pub block: Vec<String>,
+    /// Clear the URL block-list (equivalent to `--block` with no patterns)
+    #[arg(long, conflicts_with = "block")]
+    pub unblock: bool,
 }
 
 #[derive(clap::Args)]

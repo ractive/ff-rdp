@@ -43,6 +43,7 @@ pub enum FrontKind {
     PageStyle,
     NetworkContent,
     TargetConfiguration,
+    NetworkParent,
     Manifest,
     /// Any actor kind not yet given a dedicated variant.
     Other(String),

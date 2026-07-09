@@ -91,9 +91,11 @@ pub mod response {
     /// object (`{actor: <id>, …}`), not a top-level `actor` — see
     /// `ConfigurationActorRef` for the corrected shape used by
     /// `getTargetConfigurationActor`. The remaining methods
-    /// (`getNetworkParentActor`, `getBlackboxingActor`, `getBreakpointListActor`,
+    /// (`getBlackboxingActor`, `getBreakpointListActor`,
     /// `getThreadConfigurationActor`) share the same latent mismatch but have no
     /// live consumer yet; fixing them is out of scope for iter-103.
+    /// `getNetworkParentActor` was corrected to the nested shape in iter-109 —
+    /// see `NetworkParentActorRef`.
     #[derive(Debug, Clone, Deserialize)]
     pub struct ActorRef {
         pub actor: ActorId,
@@ -108,6 +110,22 @@ pub mod response {
     #[derive(Debug, Clone, Deserialize)]
     pub struct ConfigurationActorRef {
         pub configuration: NestedActorId,
+    }
+
+    /// Reply for `getNetworkParentActor`.
+    ///
+    /// Firefox returns `{"networkParent": {"actor": "<id>", …}, "from": …}` —
+    /// the actor ID is nested inside the typed-actor `networkParent` object, not
+    /// at the top level. This mirrors the `getTargetConfigurationActor` shape
+    /// corrected in iter-103 (`ConfigurationActorRef`): every `watcher.js`
+    /// accessor returns its actor under a named typed-actor key. iter-109 is the
+    /// first live consumer of `getNetworkParentActor`, so this type reads
+    /// `networkParent.actor` per that verified pattern rather than the flat
+    /// top-level `actor` field.
+    #[derive(Debug, Clone, Deserialize)]
+    pub struct NetworkParentActorRef {
+        #[serde(rename = "networkParent")]
+        pub network_parent: NestedActorId,
     }
 
     /// The typed-actor payload wrapped by named-key watcher accessor responses.
@@ -199,7 +217,7 @@ impl sealed::Sealed for GetNetworkParentActor {}
 impl Method for GetNetworkParentActor {
     const NAME: &'static str = "getNetworkParentActor";
     type Args = NoArgs;
-    type Reply = response::ActorRef;
+    type Reply = response::NetworkParentActorRef;
 }
 
 /// `getBlackboxingActor` method marker.
@@ -322,9 +340,30 @@ mod tests {
 
     #[test]
     fn actor_ref_response_deserializes() {
-        let v = json!({"from": "server1.conn0.watcher4", "actor": "server1.conn0.networkParent5"});
+        // Flat shape retained for the accessors (blackboxing/breakpoint-list/
+        // thread-configuration) that still deserialize as `ActorRef`.
+        let v = json!({"from": "server1.conn0.watcher4", "actor": "server1.conn0.blackboxing5"});
         let r: response::ActorRef = serde_json::from_value(v).unwrap();
-        assert_eq!(r.actor.as_ref(), "server1.conn0.networkParent5");
+        assert_eq!(r.actor.as_ref(), "server1.conn0.blackboxing5");
+    }
+
+    #[test]
+    fn network_parent_actor_ref_reads_nested_actor() {
+        // Real Firefox shape: the actor is nested under the typed-actor
+        // `networkParent` object, not at the top level (iter-109 fix, parallel
+        // to the iter-103 `ConfigurationActorRef` correction).
+        let v = json!({
+            "from": "server1.conn2.watcher11",
+            "networkParent": {
+                "actor": "server1.conn2.networkParent13",
+                "traits": {}
+            }
+        });
+        let r: response::NetworkParentActorRef = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            r.network_parent.actor.as_ref(),
+            "server1.conn2.networkParent13"
+        );
     }
 
     #[test]

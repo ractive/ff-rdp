@@ -138,13 +138,19 @@ impl WatcherFront {
 
     /// Get the network parent actor for this watcher's scope.
     ///
-    /// This actor is the entry point for CORS-aware response-body fetching.
+    /// The `NetworkParentFront` obtained from this actor drives parent-process
+    /// network configuration: request throttling (`setNetworkThrottling`) and
+    /// URL blocking (`setBlockedUrls`).
+    ///
+    /// The actor ID is nested under the `networkParent` typed-actor object
+    /// (see [`spec::response::NetworkParentActorRef`]), not at the top level —
+    /// the same named-key shape as `getTargetConfigurationActor`.
     pub fn get_network_parent_actor(
         &self,
         transport: &mut RdpTransport,
     ) -> Result<ActorId, ProtocolError> {
         let reply = call::<spec::GetNetworkParentActor>(transport, &self.id, &NoArgs {})?;
-        Ok(reply.actor)
+        Ok(reply.network_parent.actor)
     }
 
     /// Get the blackboxing actor for this watcher's scope.
