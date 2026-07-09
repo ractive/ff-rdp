@@ -3,7 +3,8 @@ use crate::cli::args::{
     CookiesArgs, DaemonCommand, DomArgs, DomCommand, EmulateArgs, EvalArgs, GeometryArgs,
     IndexArgs, InspectArgs, LaunchArgs, NavigateArgs, NetworkArgs, PerfArgs, PerfCommand,
     ProfilesCommand, RecordCommand, ReloadArgs, ResponsiveArgs, RunArgs, ScreenshotArgs,
-    ScrollCommand, SnapshotArgs, SourcesArgs, StorageArgs, StylesArgs, TypeArgs, WaitArgs,
+    ScrollCommand, SnapshotArgs, SourcesArgs, StorageArgs, StylesArgs, ThrottleArgs, TypeArgs,
+    WaitArgs,
 };
 use crate::commands;
 use crate::commands::index::IndexOpts;
@@ -332,6 +333,7 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         | Command::Cascade(CascadeArgs { .. })
         | Command::Responsive(ResponsiveArgs { .. })
         | Command::Emulate(EmulateArgs { .. })
+        | Command::Throttle(ThrottleArgs { .. })
         | Command::Manifest
         | Command::A11y(A11yArgs { .. })
         | Command::Snapshot(SnapshotArgs { .. })
@@ -882,6 +884,7 @@ fn dispatch_inner(
             }
         }
         Command::Emulate(args) => commands::emulate::run(cli, args),
+        Command::Throttle(args) => commands::throttle::run(cli, args),
         Command::Manifest => commands::manifest::run(cli),
         Command::Snapshot(SnapshotArgs {
             depth,

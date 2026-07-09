@@ -93,7 +93,7 @@ State of the `WatcherFront` (`crates/ff-rdp-core/src/fronts/watcher.rs`) after i
 | `unwatchResources` | yes (oneway) | `unwatch_resources` | yes | |
 | `clearResources` | yes (oneway) | `clear_resources` | primitive | Front exists; no production call site yet. |
 | `getParentBrowsingContextID` | yes | `get_parent_browsing_context_id` | primitive | iter-61u — Front only. |
-| `getNetworkParentActor` | yes | `get_network_parent_actor` | primitive | iter-61u — Front only.  Needed for throttling/blocking once implemented. |
+| `getNetworkParentActor` | yes | `get_network_parent_actor` | wired | iter-109 — `NetworkParentFront` + `throttle` CLI command (network throttling / URL blocking).  Reply shape corrected to the nested `{networkParent: {actor}}` form (was flat `ActorRef`) — see below. |
 | `getBlackboxingActor` | yes | `get_blackboxing_actor` | primitive | iter-61u — Front only. |
 | `getBreakpointListActor` | yes | `get_breakpoint_list_actor` | primitive | iter-61u — Front only. |
 | `getTargetConfigurationActor` | yes | `get_target_configuration_actor` | primitive | iter-61u; `TargetConfigurationFront` exists but not yet called from a CLI command. |
@@ -124,6 +124,7 @@ The Rust entry points are:
 - **Throttle delay** means a tiny burst of network events can be batched into one `resources-available-array` packet — your handler must iterate.
 - A WatcherActor will not see anything until you `watchTargets("frame")` AND `watchResources([...])`. Resources alone get nothing.
 - `getNetworkParentActor()` must be the path to set throttling — the per-event NetworkEventActor only reads, never writes.
+- **`getNetworkParentActor` reply is nested (iter-109):** like `getTargetConfigurationActor` (iter-103), the actor ID is returned under a named typed-actor key — `{"networkParent": {"actor": "<id>", …}, "from": …}` — not at the top level. `spec::response::NetworkParentActorRef` reads `networkParent.actor`; `WatcherFront::get_network_parent_actor` unwraps it. The flat `ActorRef` shape (still used by the blackboxing/breakpoint-list/thread-configuration accessors) was wrong for this method.
 - The registry lives in `ParentProcessWatcherRegistry.sys.mjs` (singleton, `global: "shared"`) — devtools can only have one logical view of the watcher set per process tree.
 
 ## Iter-76 update — ResourceGripGuard

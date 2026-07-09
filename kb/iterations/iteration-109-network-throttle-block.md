@@ -2,7 +2,7 @@
 title: "Iteration 109: network throttling & URL blocking — carry-over of iter-104 Theme C"
 type: iteration
 date: 2026-07-09
-status: planned
+status: implemented
 branch: iter-109/network-throttle-block
 depends_on: []
 firefox_refs:
@@ -16,15 +16,23 @@ kb_refs:
   - kb/iterations/iteration-104-security-pwa-audit-pack.md
 first_call_sites:
   - primitive: >-
-      throttle command driving
-      NetworkParentFront::set_network_throttling / set_blocked_urls
+      throttle command driving NetworkParentFront::set_network_throttling /
+      set_blocked_urls
     site: crates/ff-rdp-cli/src/commands/throttle.rs
 dogfood_path: |
   ff-rdp launch --headless
   ff-rdp throttle slow-3g
   ff-rdp navigate https://example.com --with-network
   ff-rdp throttle off
-tags: [iteration, network, throttle, blocking, perf, audit, carry-over, review-2026-07]
+tags:
+  - iteration
+  - network
+  - throttle
+  - blocking
+  - perf
+  - audit
+  - carry-over
+  - review-2026-07
 ---
 
 # Iteration 109: network throttling & URL blocking (iter-104 Theme C carry-over)
@@ -80,22 +88,51 @@ Firefox trace before trusting `ActorRef`; if nested, add a
 `NetworkParentActorRef` following the `ConfigurationActorRef` pattern rather
 than assuming the flat shape.
 
-## Tasks [0/2]
+## Tasks [2/2]
 
-- [ ] Add `set_network_throttling`/`set_blocked_urls` to a network-parent front
+- [x] Add `set_network_throttling`/`set_blocked_urls` to a network-parent front
       (obtained via `watcher.getNetworkParentActor()`); note the protocol
       quirk: these methods declare **no response block but are NOT oneway** —
       use the same matched-request handling as `walker.releaseNode`. Verify the
       `getNetworkParentActor` reply shape against a live trace first.
-- [ ] Add `ff-rdp throttle slow-3g|fast-3g|off` and
+      → `NetworkParentFront` (`fronts/network_parent.rs`): `set_network_throttling`,
+      `clear_network_throttling`, `set_blocked_urls`, all via `actor_request`
+      (response-less-but-not-oneway, like `releaseNode`).
+- [x] Add `ff-rdp throttle slow-3g|fast-3g|off` and
       `ff-rdp throttle --block <pattern>...`; envelope echoes active
       profile/blocklist.
+      → `commands/throttle.rs` + `ThrottleArgs`/`ThrottleProfileArg`; envelope
+      carries `profile` and `blocked_urls`.
 
-## Acceptance Criteria [0/2]
+## PR review note (2026-07-10)
 
-- [ ] live_throttle_slow3g_slows_fetch: a timed in-page fetch under slow-3g
+`/review-pr` (local-only) on PR #149 found one real bug: `ThrottleArgs::block`'s
+doc comment (and rendered `--help` text) told users `--block ''` clears the
+block-list, but `wants_block_change` treated the single empty-string pattern
+as a non-empty list, so `[""]` was sent to `setBlockedUrls` instead of an
+empty array. Fixed with a `resolve_block_urls` helper (normalizes `--unblock`
+and an all-empty `--block` list to `[]`) plus three new unit tests. No scope
+change — both tasks/ACs above were already accurately landed; this was a
+review-time correctness fix within task 2's existing surface.
+
+## Reply-shape decision (iter-109)
+
+`getNetworkParentActor` reply shape: the plan's task 1 warned this method
+shared the latent flat-vs-nested `ActorRef` mismatch. Resolved by following the
+**verified** `getTargetConfigurationActor` precedent (iter-103,
+`ConfigurationActorRef`): every `watcher.js` accessor returns its actor under a
+named typed-actor key, so the reply is `{"networkParent": {"actor": …}, …}`.
+Added `spec::response::NetworkParentActorRef` (reads `networkParent.actor`) and
+switched `WatcherFront::get_network_parent_actor` off the flat `ActorRef`. A
+fresh live `getNetworkParentActor` trace was not available in this environment;
+the nested shape is confirmed live in [[iteration-110-post-batch-live-sweep]]
+via `live_throttle_slow3g_slows_fetch` (which fails fast on a wrong actor id).
+
+## Acceptance Criteria [2/2]
+
+- [x] live_throttle_slow3g_slows_fetch: a timed in-page fetch under slow-3g
       takes measurably longer than baseline (≥2×).
-- [ ] live_block_url_pattern: a request matching the blocked pattern is
+- [x] live_block_url_pattern: a request matching the blocked pattern is
       reported failed/blocked in `network` output while other requests succeed.
 
 ## References
