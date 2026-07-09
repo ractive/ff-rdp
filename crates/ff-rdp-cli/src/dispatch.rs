@@ -558,6 +558,11 @@ fn dispatch_inner(
                     method.as_deref(),
                     *headers,
                     since_nav,
+                    // iter-101 Theme D: whether the user *explicitly* passed
+                    // `--since`.  One-shot (`--no-daemon`) cannot honor nav-scoping,
+                    // so an explicit `--since` must fail loudly rather than
+                    // silently return the unfiltered buffer.
+                    since.is_some(),
                 )
             }
         }

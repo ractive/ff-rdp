@@ -11,9 +11,9 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 use ff_rdp_core::{
-    DemuxReader, FramedReader, FramedWriter, FrontKind, ProtocolError, RdpTransport, Registry,
-    ResourceCommand, ResourceGripGuard, ResourceType, RootActor, TabActor, WatcherActor,
-    WatcherEvent, dispatch_watcher_event, release_queue,
+    FramedReader, FramedWriter, FrontKind, ProtocolError, RdpTransport, Registry, ResourceCommand,
+    ResourceGripGuard, ResourceType, RootActor, TabActor, WatcherActor, WatcherEvent,
+    dispatch_watcher_event, release_queue,
 };
 
 use super::buffer::ResourceBuffer;
@@ -268,6 +268,15 @@ struct SharedState {
     /// reused for the lifetime of the daemon, so cleanup always targets the
     /// exact client that owned it.
     next_client_id: AtomicU64,
+    /// Actor ID of the current **top-level** target, if one has been observed
+    /// (iter-101 Theme A).
+    ///
+    /// Updated by [`handle_target_event`] on each top-level
+    /// `target-available-form`.  Used to detect a *cross-process target
+    /// switch*: when a new top-level target actor differs from this one, the
+    /// resources buffered for the outgoing document are stale and must be
+    /// purged so a post-switch drain window never mixes in dead-target state.
+    top_level_target: Mutex<Option<ff_rdp_core::ActorId>>,
 }
 
 impl SharedState {
@@ -358,11 +367,12 @@ pub(crate) fn run_daemon(
     // Capacity 1024 accommodates burst resource events without blocking.
     let (grip_release_tx, grip_release_rx) = release_queue(1024);
 
-    // Build a DemuxReader for potential future per-actor pipelining (iter-76
-    // Theme C); not yet wired into the reader loop, but constructed here so
-    // the type is used at a non-test call site as required by the discipline gate.
-    // allow-todo: iter-77 will wire DemuxReader into the reader loop.
-    let _demux: DemuxReader = DemuxReader::new();
+    // iter-101 Theme B: the `_demux` decoy that previously lived here (a
+    // `DemuxReader::new()` constructed purely to satisfy `check-dead-primitives`
+    // while never being wired into the reader loop) has been removed.  The
+    // daemon's real fan-out architecture is the bounded `event_tx`/`event_rx`
+    // channel drained by the dispatcher thread below — per-actor demux was never
+    // adopted, so keeping a constructed-but-unused reader was dishonest.
 
     let state = Arc::new(SharedState {
         buffer: Mutex::new(ResourceBuffer::new()),
@@ -382,6 +392,7 @@ pub(crate) fn run_daemon(
         grip_release_tx: grip_release_tx.clone(),
         // Start at 1 so 0 can serve as a "no client" sentinel in tests.
         next_client_id: AtomicU64::new(1),
+        top_level_target: Mutex::new(None),
     });
 
     setup_signal_handler(&state);
@@ -918,15 +929,12 @@ fn is_target_event(msg: &Value) -> bool {
 /// signals a target going away and invalidates it in the registry (including
 /// all dependent fronts — inspector, walker, console scoped to that target).
 fn handle_target_event(state: &SharedState, msg: &Value) {
-    let target_obj = msg.get("target");
-    let url = target_obj
+    let url = msg
+        .get("target")
         .and_then(|t| t.get("url"))
         .and_then(Value::as_str)
-        .unwrap_or("<no url>");
-    let is_top_level = target_obj
-        .and_then(|t| t.get("isTopLevelTarget"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+        .unwrap_or("<no url>")
+        .to_owned();
 
     // `dispatch_watcher_event` handles registry invalidation for
     // `target-destroyed-form` and returns the parsed event.
@@ -938,17 +946,27 @@ fn handle_target_event(state: &SharedState, msg: &Value) {
                 .register(target.actor.clone(), FrontKind::Target, None);
             tracing::info!(
                 event = "target-available-form",
-                url,
-                is_top_level,
+                url = %url,
+                is_top_level = target.is_top_level,
                 "daemon: target available"
             );
+
+            // iter-101 Theme A: branch on `is_top_level`.  The daemon watches
+            // resources via the tab-scoped WatcherActor, so Firefox re-delivers
+            // resources for the new target *automatically* on a server-side
+            // target switch — no per-target `watchResources` re-issue is needed
+            // (see kb/rdp/actors/watcher.md).  What the daemon DID lack was
+            // purging the outgoing top-level target's stale buffered resources.
+            if target.is_top_level {
+                handle_top_level_target_switch(state, &target.actor, &url);
+            }
         }
-        Some(WatcherEvent::TargetDestroyed { .. }) => {
+        Some(WatcherEvent::TargetDestroyed { ref target, .. }) => {
             // Registry invalidation already performed by dispatch_watcher_event.
             tracing::info!(
                 event = "target-destroyed-form",
-                url,
-                is_top_level,
+                url = %url,
+                is_top_level = target.is_top_level,
                 "daemon: target destroyed"
             );
         }
@@ -956,6 +974,45 @@ fn handle_target_event(state: &SharedState, msg: &Value) {
             // Non-target event in the target-event path — log and continue.
             tracing::debug!("handle_target_event: unexpected packet type");
         }
+    }
+}
+
+/// Handle a top-level `target-available-form` (iter-101 Theme A).
+///
+/// Detects a **cross-process target switch** — a new top-level target actor
+/// that differs from the one previously seen — and purges the resource buffer
+/// so the stale, dead-target resources of the outgoing document can never be
+/// mixed into a post-switch drain window.  The very first top-level target
+/// (session start) records the actor without purging, since there is no prior
+/// document to discard.
+///
+/// Firefox's own client re-issues resource watching per new target
+/// (`resource-command.js:486-517`); ff-rdp does not need to because it watches
+/// at the tab-scoped Watcher level, where the switch is transparent — the only
+/// remaining obligation is this buffer hygiene.
+fn handle_top_level_target_switch(
+    state: &SharedState,
+    new_target: &ff_rdp_core::ActorId,
+    url: &str,
+) {
+    let mut current = lock_or_recover!(state.top_level_target);
+    let switched = match current.as_ref() {
+        Some(prev) => prev != new_target,
+        None => false,
+    };
+    *current = Some(new_target.clone());
+    // Release the lock before touching the buffer to avoid nesting locks.
+    drop(current);
+
+    if switched {
+        let purged = lock_or_recover!(state.buffer).purge_destroyed_target();
+        tracing::info!(
+            event = "target-switch",
+            url = %url,
+            new_target = %new_target,
+            purged_entries = purged,
+            "daemon: top-level target switch — purged stale buffered resources"
+        );
     }
 }
 
@@ -1080,6 +1137,61 @@ fn forward_nav_event_to_stream_subs(state: &SharedState, event: &Value) {
     for i in dead.into_iter().rev() {
         subs.remove(i);
     }
+}
+
+/// Outcome of a lazy RPC-writer-slot claim (iter-101 Theme B).
+enum RpcClaim {
+    /// This client now owns the RPC-writer slot (either it was free or this
+    /// client already owned it).
+    Claimed,
+    /// Another live client owns the slot — the caller must refuse with
+    /// `daemon_busy` and not forward.
+    Busy,
+}
+
+/// Attempt to claim the single RPC-writer slot for `client_id` (iter-101
+/// Theme B).
+///
+/// - Slot free → move `pending_writer` in, mark the client the owner, return
+///   [`RpcClaim::Claimed`].
+/// - Slot already owned by `client_id` → [`RpcClaim::Claimed`] (idempotent;
+///   should not normally happen because the caller only claims once).
+/// - Slot owned by a *different* client → [`RpcClaim::Busy`]; the slot is left
+///   untouched and `pending_writer` is preserved so a later retry (after the
+///   owner disconnects) can still succeed.
+///
+/// Firefox RDP responses lack per-request correlation IDs, so at most one
+/// client may have Firefox-bound requests in flight at a time; this is the
+/// gate that enforces it.
+fn try_claim_rpc_slot(
+    rpc_writer: &Mutex<Option<(ClientId, FramedWriter)>>,
+    client_id: ClientId,
+    pending_writer: &mut Option<FramedWriter>,
+) -> RpcClaim {
+    let mut guard = lock_or_recover!(rpc_writer);
+    match guard.as_ref() {
+        Some((owner, _)) if *owner != client_id => RpcClaim::Busy,
+        Some(_) => RpcClaim::Claimed, // already ours
+        None => {
+            if let Some(writer) = pending_writer.take() {
+                *guard = Some((client_id, writer));
+            }
+            RpcClaim::Claimed
+        }
+    }
+}
+
+/// The structured refusal frame sent to a second concurrent RPC client
+/// (iter-101 Theme B).  The stable `error` discriminant `"daemon_busy"` lets
+/// callers detect the condition and retry with `--no-daemon` or after a delay.
+fn daemon_busy_response() -> Value {
+    json!({
+        "from": "daemon",
+        "error": "daemon_busy",
+        "error_type": "daemon_busy",
+        "message": "another CLI client is holding the daemon's RPC channel; \
+                    retry shortly or use --no-daemon for parallel invocations",
+    })
 }
 
 /// Forward a message to the current RPC client, if one is connected.
@@ -1329,26 +1441,34 @@ fn handle_client(
             .map_err(|e| anyhow::anyhow!("sending greeting to CLI client: {e}"))?;
     }
 
-    // Register this client as the current RPC forwarding target.
-    // The previous RPC client (if any) is simply replaced.
+    // iter-101 Theme B: the RPC-writer slot is claimed *lazily* — only when
+    // this client sends its first Firefox-forwarded (`to != "daemon"`) message,
+    // and only if no other live client already owns the slot.  A second client
+    // that tries to forward while the slot is taken receives a structured
+    // `daemon_busy` error and its message is NOT forwarded, so Firefox RDP
+    // responses (which lack per-request correlation IDs) can never be
+    // cross-delivered to the wrong client.
     //
-    // KNOWN LIMITATION: When multiple CLI clients connect simultaneously,
-    // the last one becomes the RPC writer and may receive RDP responses
-    // intended for a previous client.  Firefox RDP lacks per-request
-    // correlation IDs, so there is no way to demultiplex responses to
-    // the correct client.  This is not a security concern (all clients
-    // run as the same local user on localhost) but can cause confusing
-    // behaviour when running parallel CLI invocations through the daemon.
-    // Workaround: use `--no-daemon` for parallel CLI usage.
-    {
-        let rpc_writer = FramedWriter::from_stream(
-            stream
-                .try_clone()
-                .context("cloning client stream for RPC forwarding")?,
-        );
-        let mut guard = lock_or_recover!(state.rpc_writer);
-        *guard = Some((client_id, rpc_writer));
-    }
+    // Stream-only clients (`console --follow`, `network --follow`, `drain`,
+    // `status`) send only `to == "daemon"` messages and therefore never touch
+    // the RPC slot — multiple concurrent streamers remain fully supported.
+    //
+    // The previous design registered *every* connecting client as the RPC
+    // writer eagerly, so the last connection silently stole responses from an
+    // in-flight peer (the "KNOWN LIMITATION" this iteration retires).
+    //
+    // A pre-cloned writer for this client is kept ready so the lazy claim does
+    // not have to re-clone the socket under the `rpc_writer` lock.
+    let rpc_writer_for_client = FramedWriter::from_stream(
+        stream
+            .try_clone()
+            .context("cloning client stream for RPC forwarding")?,
+    );
+    // Whether this client currently owns the RPC-writer slot.  Set true on a
+    // successful lazy claim; the cleanup guard clears the shared slot on drop.
+    let mut owns_rpc_slot = false;
+    // Held until the first forward attempt claims it (moved into the slot).
+    let mut pending_rpc_writer = Some(rpc_writer_for_client);
 
     let mut reader = FramedReader::from_stream(stream);
 
@@ -1377,15 +1497,47 @@ fn handle_client(
                     let response = handle_daemon_message(state, &msg, client_id, writer_for_sub);
                     let resp_json =
                         serde_json::to_string(&response).context("serialising daemon response")?;
-                    // Write through the rpc_writer mutex to prevent interleaving
-                    // with forward_to_rpc_client on the firefox-reader thread.
-                    let mut guard = lock_or_recover!(state.rpc_writer);
-                    if let Some((_id, w)) = guard.as_mut() {
-                        w.send_raw(&resp_json).map_err(|e| {
+                    // iter-101 Theme B: daemon-local responses go back over
+                    // *this* client's own connection, not the shared rpc_writer
+                    // slot.  Previously they were written through rpc_writer,
+                    // which only worked because every client eagerly owned that
+                    // slot; with lazy claiming a stream-only client no longer
+                    // owns it, so route the ack to the client directly.
+                    if let Ok(mut own_writer) =
+                        reader.try_clone_stream().map(FramedWriter::from_stream)
+                    {
+                        own_writer.send_raw(&resp_json).map_err(|e| {
                             anyhow::anyhow!("sending daemon response to CLI client: {e}")
                         })?;
                     }
                 } else {
+                    // iter-101 Theme B: lazily claim the RPC-writer slot before
+                    // forwarding the first Firefox-bound message.  If another
+                    // live client already owns it, refuse with `daemon_busy`
+                    // and do NOT forward — never cross-deliver an RDP response.
+                    if !owns_rpc_slot {
+                        match try_claim_rpc_slot(
+                            &state.rpc_writer,
+                            client_id,
+                            &mut pending_rpc_writer,
+                        ) {
+                            RpcClaim::Claimed => owns_rpc_slot = true,
+                            RpcClaim::Busy => {
+                                if let Ok(mut own_writer) =
+                                    reader.try_clone_stream().map(FramedWriter::from_stream)
+                                {
+                                    let busy = daemon_busy_response();
+                                    let busy_json = serde_json::to_string(&busy)
+                                        .context("serialising daemon_busy response")?;
+                                    own_writer.send_raw(&busy_json).map_err(|e| {
+                                        anyhow::anyhow!("sending daemon_busy to CLI client: {e}")
+                                    })?;
+                                }
+                                // Skip forwarding — the slot belongs to a peer.
+                                continue;
+                            }
+                        }
+                    }
                     // Forward to Firefox.
                     lock_or_recover!(firefox_writer)
                         .send(&msg)
@@ -1811,6 +1963,7 @@ mod tests {
             event_tx: mpsc::sync_channel::<Value>(1).0,
             grip_release_tx: ff_rdp_core::release_queue(1).0,
             next_client_id: AtomicU64::new(1),
+            top_level_target: Mutex::new(None),
         }
     }
 
@@ -2086,6 +2239,185 @@ mod tests {
         assert!(
             guard.as_ref().is_some_and(|(id, _)| *id == new_id),
             "a stale client's cleanup must not clear a newer client's rpc_writer"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-101 Theme B: concurrent-client RPC-slot safety
+    // -----------------------------------------------------------------------
+
+    /// AC: `unit_concurrent_clients_no_cross_delivery` — when two clients both
+    /// try to forward Firefox-bound requests, exactly one claims the single RPC
+    /// writer slot and the other is refused with `daemon_busy`.  The refused
+    /// client's message is therefore never forwarded, so a Firefox RDP response
+    /// (which lacks per-request correlation IDs) can never be cross-delivered.
+    #[test]
+    fn unit_concurrent_clients_no_cross_delivery() {
+        let state = Arc::new(test_state());
+        let client_a = state.next_client_id();
+        let client_b = state.next_client_id();
+
+        // Client A claims first — the slot is free, so it wins.
+        let mut a_pending = Some(dummy_framed_writer());
+        assert!(
+            matches!(
+                try_claim_rpc_slot(&state.rpc_writer, client_a, &mut a_pending),
+                RpcClaim::Claimed
+            ),
+            "first client must claim the free RPC slot"
+        );
+        assert!(
+            a_pending.is_none(),
+            "a successful claim consumes the pending writer"
+        );
+        assert!(
+            state
+                .rpc_writer
+                .lock()
+                .expect("lock")
+                .as_ref()
+                .is_some_and(|(id, _)| *id == client_a),
+            "the slot must be owned by client A"
+        );
+
+        // Client B tries to claim while A holds the slot — it is refused and its
+        // pending writer is preserved so a later retry can still succeed.
+        let mut b_pending = Some(dummy_framed_writer());
+        assert!(
+            matches!(
+                try_claim_rpc_slot(&state.rpc_writer, client_b, &mut b_pending),
+                RpcClaim::Busy
+            ),
+            "second concurrent client must be refused with Busy"
+        );
+        assert!(
+            b_pending.is_some(),
+            "a refused claim must NOT consume the pending writer"
+        );
+        // The slot is unchanged — still A's.
+        assert!(
+            state
+                .rpc_writer
+                .lock()
+                .expect("lock")
+                .as_ref()
+                .is_some_and(|(id, _)| *id == client_a),
+            "a refused claim must not disturb the current owner"
+        );
+
+        // The refusal frame carries the stable discriminant clients branch on.
+        let busy = daemon_busy_response();
+        assert_eq!(busy["from"], "daemon");
+        assert_eq!(busy["error"], "daemon_busy");
+        assert_eq!(busy["error_type"], "daemon_busy");
+
+        // After A releases the slot (disconnect), B can claim on retry.
+        *state.rpc_writer.lock().expect("lock") = None;
+        assert!(
+            matches!(
+                try_claim_rpc_slot(&state.rpc_writer, client_b, &mut b_pending),
+                RpcClaim::Claimed
+            ),
+            "client B must claim once the slot is free again"
+        );
+        assert!(
+            state
+                .rpc_writer
+                .lock()
+                .expect("lock")
+                .as_ref()
+                .is_some_and(|(id, _)| *id == client_b),
+            "the slot must now be owned by client B"
+        );
+    }
+
+    /// A re-claim by the *same* client that already owns the slot is idempotent
+    /// (returns `Claimed`, leaves the slot and any leftover pending writer as-is).
+    #[test]
+    fn rpc_slot_reclaim_by_owner_is_idempotent() {
+        let state = Arc::new(test_state());
+        let client = state.next_client_id();
+
+        let mut pending = Some(dummy_framed_writer());
+        assert!(matches!(
+            try_claim_rpc_slot(&state.rpc_writer, client, &mut pending),
+            RpcClaim::Claimed
+        ));
+
+        // Same client claims again — idempotent, still Claimed, slot unchanged.
+        let mut pending2 = Some(dummy_framed_writer());
+        assert!(matches!(
+            try_claim_rpc_slot(&state.rpc_writer, client, &mut pending2),
+            RpcClaim::Claimed
+        ));
+        assert!(
+            state
+                .rpc_writer
+                .lock()
+                .expect("lock")
+                .as_ref()
+                .is_some_and(|(id, _)| *id == client),
+            "owner re-claim must keep the slot owned by the same client"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-101 Theme A: top-level target-switch buffer purge
+    // -----------------------------------------------------------------------
+
+    /// A cross-process top-level target switch purges the stale buffer, but the
+    /// first top-level target (session start) and a same-target re-announcement
+    /// do not.
+    #[test]
+    fn top_level_switch_purges_buffer() {
+        let state = test_state();
+
+        // Seed some buffered events from the initial document.
+        state
+            .buffer
+            .lock()
+            .expect("lock")
+            .insert_raw("network-event", json!({"url": "https://old.example/"}));
+
+        let target_a = ff_rdp_core::ActorId::from("conn0/target-a");
+        let target_b = ff_rdp_core::ActorId::from("conn0/target-b");
+
+        // First top-level target: records the actor, does NOT purge.
+        handle_top_level_target_switch(&state, &target_a, "https://old.example/");
+        assert_eq!(
+            state
+                .buffer
+                .lock()
+                .expect("lock")
+                .sizes()
+                .get("network-event"),
+            Some(&1),
+            "the first top-level target must not purge the buffer"
+        );
+
+        // Same target re-announced: still no purge.
+        handle_top_level_target_switch(&state, &target_a, "https://old.example/");
+        assert_eq!(
+            state
+                .buffer
+                .lock()
+                .expect("lock")
+                .sizes()
+                .get("network-event"),
+            Some(&1),
+            "a same-target re-announcement must not purge the buffer"
+        );
+
+        // A DIFFERENT top-level target: cross-process switch → purge.
+        handle_top_level_target_switch(&state, &target_b, "https://new.example/");
+        assert!(
+            !state
+                .buffer
+                .lock()
+                .expect("lock")
+                .sizes()
+                .contains_key("network-event"),
+            "a top-level target switch must purge stale buffered resources"
         );
     }
 

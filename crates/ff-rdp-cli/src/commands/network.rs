@@ -28,15 +28,46 @@ use super::network_events::{
 /// to deliver all buffered events before we give up.
 const DAEMON_DRAIN_FLOOR_MS: u64 = 15_000;
 
+/// Build the structured `since_requires_daemon` error (iter-101 Theme D).
+fn since_requires_daemon_error() -> AppError {
+    AppError::Unsupported {
+        error_type: "since_requires_daemon",
+        message: "network --since requires the daemon: navigation-scoped \
+                  filtering is only available when the persistent daemon is \
+                  buffering events.\n\
+                  hint: drop --no-daemon so the command routes through the \
+                  daemon, or omit --since for a one-shot capture."
+            .to_owned(),
+    }
+}
+
 pub fn run(
     cli: &Cli,
     filter: Option<&str>,
     method: Option<&str>,
     headers: bool,
     since_nav: i64,
+    since_explicit: bool,
 ) -> Result<(), AppError> {
+    // iter-101 Theme D: `--since` nav-scoping is only implemented against the
+    // daemon's navigation-boundary buffer.  When the user forced direct mode
+    // with `--no-daemon` there is no boundary bookkeeping, so an
+    // explicitly-requested `--since` cannot be honored.  Refuse *before* opening
+    // any connection — there is no point connecting just to fail — with a stable
+    // `since_requires_daemon` discriminant instead of the pre-101 silent no-op.
+    if since_explicit && cli.no_daemon {
+        return Err(since_requires_daemon_error());
+    }
+
     let mut ctx = connect_and_get_target(cli)?;
     let via_daemon = ctx.via_daemon;
+
+    // Also refuse when the connection resolved to direct mode despite the daemon
+    // being enabled (e.g. daemon auto-start failed and we fell back to a direct
+    // connect): the buffer semantics `--since` needs still aren't present.
+    if since_explicit && !via_daemon {
+        return Err(since_requires_daemon_error());
+    }
 
     let drain_timeout_ms = cli.timeout.max(DAEMON_DRAIN_FLOOR_MS);
 

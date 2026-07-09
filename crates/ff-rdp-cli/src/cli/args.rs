@@ -522,6 +522,10 @@ Navigation scoping (daemon mode only):
     --since -1   current navigation (default)
     --since -2   one navigation back
     --since all  the full cumulative buffer (pre-61g behaviour)
+  --since requires the daemon: nav-scoped filtering reads the daemon's
+  navigation-boundary buffer. With --no-daemon (or if the daemon can't be
+  reached) an explicit --since fails with error_type \"since_requires_daemon\"
+  rather than silently returning the unfiltered buffer.
 
 Source precedence (daemon mode):
   1. Daemon watcher buffer (source=watcher): used when the daemon has buffered
@@ -1121,7 +1125,10 @@ pub struct NetworkArgs {
     /// Scope the result to a specific navigation window (daemon mode only).
     /// -1 = current navigation (default), -2 = one back, 'all' = full cumulative buffer.
     /// Positive integers are treated as 1-based indices from the oldest boundary.
-    #[arg(long, value_name = "NAV_INDEX_OR_ALL")]
+    ///
+    /// `allow_hyphen_values` lets the negative forms be passed as either
+    /// `--since -1` or `--since=-1` without clap mistaking `-1` for a flag.
+    #[arg(long, value_name = "NAV_INDEX_OR_ALL", allow_hyphen_values = true)]
     pub since: Option<String>,
 }
 

@@ -116,13 +116,18 @@ rules forbid.
 - [ ] Route `TargetFront::reload(force=true)` (`fronts/target.rs:53`)
       through `actor_request`/the typed call path so the reply is matched
       by `recv_reply_from`; drop the `let _ =` swallow.
-- [ ] Demote `RdpTransport::request` (`transport.rs:450-453`) to
+- [ ] Demote `RdpTransport::request` (`transport.rs:433-436`) to
       `#[cfg(test)]` (or `pub(crate)` with a doc warning if tests outside
       the crate need it) so no new production caller can appear.
+      Note (iter-101): this line range shifted from the original `450-453`
+      after iter-101 deleted the dead `DemuxReader`/`split_demux`/`Packet`
+      pub API (425 lines) from `transport.rs`; re-verify against
+      `origin/main` before starting in case of further drift.
 
 ### C. `.expect()` cleanup [0/1]
 - [ ] Remove the three production `.expect()` sites: build the packet `Map`
-      directly instead of re-asserting shape (`transport.rs:480`); return
+      directly instead of re-asserting shape (`transport.rs:463`, was `480`
+      before iter-101's `DemuxReader` deletion shifted line numbers); return
       `Result` from `ScreenshotArgsExt::to_args_value`
       (`actors/screenshot.rs:96-98`); restructure the `CAPTURE_METHODS`
       fallback to avoid `Option::expect`

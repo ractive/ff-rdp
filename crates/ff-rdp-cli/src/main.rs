@@ -220,7 +220,9 @@ fn error_exit_code(err: &AppError) -> i32 {
         AppError::User(_)
         | AppError::Internal(_)
         | AppError::Diagnostics { .. }
-        | AppError::DaemonVersionMismatch { .. } => 1,
+        | AppError::DaemonVersionMismatch { .. }
+        // Unsupported (e.g. since_requires_daemon) is a runtime/user error → 1.
+        | AppError::Unsupported { .. } => 1,
         AppError::Navigation { .. } | AppError::RdpBulkOversize { .. } => err.exit_code(),
         AppError::Exit(code) => *code,
     }

@@ -121,18 +121,40 @@ impl Registry {
     /// re-register attempt.  With iter-74's registry-invalidation lifecycle
     /// in place this branch should be effectively unreachable in
     /// production; the warn lets us spot regressions.
+    ///
+    /// # Atomicity (iter-101 Theme E)
+    ///
+    /// The check-and-install is performed under a single `DashMap::entry`
+    /// lock so a concurrent [`Registry::invalidate_target`] cannot slip
+    /// between the "is the existing entry dead?" test and the insert.  The
+    /// previous non-atomic `get()` + `insert()` had a window in which thread A
+    /// passed the alive check, thread B marked the actor dead, and thread A's
+    /// insert then *revived* it with a fresh `alive=true` state — the exact
+    /// race this API now closes.
     pub fn register(&self, id: ActorId, kind: FrontKind, target_root: Option<ActorId>) {
-        if let Some(existing) = self.inner.get(&id)
-            && !existing.is_alive()
-        {
-            tracing::warn!(
-                actor = %id,
-                kind = ?kind,
-                "registry: refusing to revive dead actor — keeping alive=false"
-            );
-            return;
+        use dashmap::mapref::entry::Entry;
+
+        match self.inner.entry(id) {
+            Entry::Occupied(mut occ) => {
+                // Hold the shard lock across the alive check and the mutation so
+                // `invalidate_target` (which sets `alive=false` under the same
+                // shard lock via `get`) is serialized with respect to us.
+                if occ.get().is_alive() {
+                    // Live re-registration: install the fresh state.
+                    occ.insert(FrontState::new(kind, target_root));
+                } else {
+                    tracing::warn!(
+                        actor = %occ.key(),
+                        kind = ?kind,
+                        "registry: refusing to revive dead actor — keeping alive=false"
+                    );
+                    // Leave the dead entry untouched.
+                }
+            }
+            Entry::Vacant(vac) => {
+                vac.insert(FrontState::new(kind, target_root));
+            }
         }
-        self.inner.insert(id, FrontState::new(kind, target_root));
     }
 
     /// Register an actor with an explicit parent for chain-based invalidation.
@@ -671,6 +693,86 @@ mod tests {
         assert!(
             matches!(reg.assert_alive(&id), Err(RdpError::ActorDestroyed { .. })),
             "re-register of a dead actor must keep alive=false"
+        );
+    }
+
+    // ── iter-101 Theme E: atomic register vs invalidate ──────────────────────
+
+    /// AC: `unit_registry_register_atomic_no_revive` — a concurrent
+    /// `register` must never observably revive an actor that
+    /// `invalidate_target` marked dead.
+    ///
+    /// Two threads hammer the *same* actor id: one repeatedly re-registers it,
+    /// the other repeatedly invalidates it.  Because `register`'s check-and-
+    /// install now runs under a single `DashMap::entry` shard lock (iter-101),
+    /// once the actor is dead it can never flip back to alive.  We assert the
+    /// monotonic-death invariant *during* the race (not just at the end): the
+    /// instant `assert_alive` reports the actor dead, it must stay dead for the
+    /// remainder of the run.
+    #[test]
+    fn unit_registry_register_atomic_no_revive() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::thread;
+
+        let reg = Registry::new();
+        let id = make_id("conn0/target-race");
+        // Seed one alive registration so both threads start from a known state.
+        reg.register(id.clone(), FrontKind::Target, None);
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let observed_dead = Arc::new(AtomicBool::new(false));
+
+        let iterations = 50_000;
+
+        let reg_registrar = reg.clone();
+        let id_registrar = id.clone();
+        let registrar = thread::spawn(move || {
+            for _ in 0..iterations {
+                reg_registrar.register(id_registrar.clone(), FrontKind::Target, None);
+            }
+        });
+
+        let reg_invalidator = reg.clone();
+        let id_invalidator = id.clone();
+        let invalidator = thread::spawn(move || {
+            for _ in 0..iterations {
+                reg_invalidator.invalidate_target(&id_invalidator);
+            }
+        });
+
+        // Observer thread: once it sees the actor dead, any subsequent
+        // observation of "alive" is a revival bug.
+        let reg_observer = reg.clone();
+        let id_observer = id.clone();
+        let stop_observer = Arc::clone(&stop);
+        let observed_dead_observer = Arc::clone(&observed_dead);
+        let observer = thread::spawn(move || {
+            let mut seen_dead = false;
+            while !stop_observer.load(Ordering::Relaxed) {
+                let dead = reg_observer.assert_alive(&id_observer).is_err();
+                if dead {
+                    seen_dead = true;
+                    observed_dead_observer.store(true, Ordering::Relaxed);
+                } else if seen_dead {
+                    // Revived after being observed dead — the exact race we
+                    // are guarding against.
+                    return Err("actor revived after being observed dead");
+                }
+            }
+            Ok(())
+        });
+
+        registrar.join().expect("registrar thread");
+        invalidator.join().expect("invalidator thread");
+        stop.store(true, Ordering::Relaxed);
+        let observer_result = observer.join().expect("observer thread");
+
+        assert!(observer_result.is_ok(), "{}", observer_result.unwrap_err());
+        // The invalidator ran to completion, so the final state must be dead.
+        assert!(
+            matches!(reg.assert_alive(&id), Err(RdpError::ActorDestroyed { .. })),
+            "after both threads finish, the actor must be dead (invalidator ran last-or-equal)"
         );
     }
 

@@ -346,3 +346,93 @@ fn daemon_network_shows_summary() {
         "by_cause_type must be an object"
     );
 }
+
+// ---------------------------------------------------------------------------
+// iter-101 Theme E: error-shape / exit-code parity, daemon vs --no-daemon
+// ---------------------------------------------------------------------------
+
+/// Run `ff-rdp <args>` in an isolated HOME and return `(exit_code, error_type)`
+/// parsed from the JSON error envelope on stdout.
+fn run_and_extract_error(args: &[String], home: &std::path::Path) -> (Option<i32>, String) {
+    let output = Command::new(ff_rdp_bin())
+        .env("FF_RDP_HOME", home)
+        .args(args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let error_type = serde_json::from_str::<serde_json::Value>(stdout.trim())
+        .ok()
+        .and_then(|v| {
+            v.get("error_type")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_default();
+    (output.status.code(), error_type)
+}
+
+/// AC: `e2e_error_shape_parity_daemon` — the same failure scenario produces a
+/// byte-identical `error_type` and exit code whether it is routed through the
+/// daemon (default) or forced direct with `--no-daemon`.
+///
+/// Scenario covered here: **Firefox gone** (connection refused).  We bind then
+/// immediately drop a listener to obtain a port nothing accepts on.  A command
+/// that goes through `connect_and_get_target` (`eval`) is then run both ways.
+/// In daemon mode the auto-start cannot reach Firefox and falls back to a direct
+/// connect, which fails exactly as `--no-daemon` does — so the surfaced error
+/// shape must match.
+#[test]
+fn e2e_error_shape_parity_daemon() {
+    let _guard = daemon_test_mutex().lock().expect("daemon test mutex");
+    let home = isolated_home();
+
+    // A port with nothing listening — "Firefox gone".
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind for free port");
+    let dead_port = listener.local_addr().expect("local_addr").port();
+    drop(listener);
+
+    let common = |extra: &[&str]| -> Vec<String> {
+        let mut v = vec![
+            "--host".to_owned(),
+            "127.0.0.1".to_owned(),
+            "--port".to_owned(),
+            dead_port.to_string(),
+            // Keep the daemon-autostart / connect attempt short so the fallback
+            // path is reached quickly.
+            "--timeout".to_owned(),
+            "1500".to_owned(),
+        ];
+        v.extend(extra.iter().map(|s| (*s).to_owned()));
+        v.push("eval".to_owned());
+        v.push("1 + 1".to_owned());
+        v
+    };
+
+    // Direct (`--no-daemon`) run.
+    let (direct_code, direct_type) = run_and_extract_error(&common(&["--no-daemon"]), home.path());
+
+    // Daemon-mode run (no `--no-daemon`): auto-start fails against the dead
+    // port and falls back to direct.
+    let (daemon_code, daemon_type) = run_and_extract_error(&common(&[]), home.path());
+
+    // Both must be a non-zero connection failure.
+    assert_eq!(
+        direct_code,
+        Some(3),
+        "direct connection-refused must exit 3; got {direct_code:?}"
+    );
+    assert_eq!(
+        direct_type, "Connection",
+        "direct connection-refused error_type must be Connection"
+    );
+
+    // Parity: identical error_type and exit code across both modes.
+    assert_eq!(
+        daemon_code, direct_code,
+        "exit code must be identical daemon vs --no-daemon (daemon={daemon_code:?}, direct={direct_code:?})"
+    );
+    assert_eq!(
+        daemon_type, direct_type,
+        "error_type must be identical daemon vs --no-daemon (daemon={daemon_type:?}, direct={direct_type:?})"
+    );
+}
