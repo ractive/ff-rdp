@@ -327,11 +327,19 @@ ff-rdp --no-daemon eval "1+1"
   per launch. A directory only counts as stale when both its own mtime and
   its newest top-level file mtime are past the threshold — a profile that a
   long-running Firefox is still writing into is not treated as an orphan.
+- Every managed profile carries an `.ff-rdp-owner-pid` marker (the launching
+  Firefox's PID), written right after launch. Any age-gated prune — the
+  automatic launch sweep and `profiles prune --older-than` — first checks
+  whether that owner process is still alive and, if so, keeps the profile
+  regardless of age. This is a positive "still in use" signal that closes the
+  gap where a fully-idle-but-running Firefox could look stale by mtime alone.
 - `ff-rdp profiles list` / `ff-rdp profiles prune` inspect and reclaim the
   profile directory explicitly; `ff-rdp doctor` warns when the profile store
   grows past 100 entries or 1 GiB. `profiles prune --all` skips the age gate
   entirely — do not run it while a Firefox launched by ff-rdp is still using
-  one of these profiles.
+  one of these profiles. `--all` still removes a live-owner profile (it is the
+  explicit escape hatch) but logs a warning per directory and lists each such
+  basename under `removed_live` in the JSON output.
 
 ## Security
 

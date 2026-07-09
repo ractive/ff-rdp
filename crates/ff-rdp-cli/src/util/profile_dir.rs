@@ -91,6 +91,17 @@ pub fn secure_profile_root() -> Result<PathBuf, AppError> {
 /// itself (see `commands::launch::build_command`).
 const MANAGED_PROFILE_PREFIX: &str = "ff-rdp-profile-";
 
+/// Name of the owner-PID marker file `launch` drops into a managed profile
+/// directory right after spawning the Firefox that owns it (iter-97 Theme A).
+///
+/// The file holds the owning Firefox process's PID as plain text, newline
+/// terminated. The prune paths read it back through
+/// [`profile_is_owned_by_live_process`] to positively confirm the profile is
+/// still in use before any age-based deletion — a stronger signal than the
+/// iter-96 mtime heuristic, which stays the fallback for profiles that have
+/// no marker (pre-97 dirs, or an owner whose PID has since been reused).
+pub(crate) const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
+
 /// Number of random alphanumeric characters `tempfile::Builder::rand_bytes`
 /// appends after [`MANAGED_PROFILE_PREFIX`].
 const MANAGED_PROFILE_SUFFIX_LEN: usize = 16;
@@ -150,6 +161,55 @@ pub(crate) fn latest_profile_activity(dir: &Path, dir_mtime: SystemTime) -> Syst
         }
     }
     newest
+}
+
+// ---------------------------------------------------------------------------
+// iter-97: owner-PID liveness guard
+// ---------------------------------------------------------------------------
+
+/// Write the owner-PID marker ([`OWNER_PID_MARKER`]) holding `pid` into the
+/// managed profile directory `dir`.
+///
+/// Called by `launch` immediately after spawning the Firefox that owns `dir`,
+/// so [`profile_is_owned_by_live_process`] can later confirm the profile is
+/// still in use before any age-based prune deletes it.
+///
+/// Warn-not-fail: a write failure is logged at `warn` and swallowed. The
+/// marker is a hint that *strengthens* the prune heuristics — losing it only
+/// falls back to the iter-96 mtime signal, so it must never fail a launch.
+/// Only ever call this for a managed (`ff-rdp-profile-*`) directory ff-rdp
+/// created for itself; a user `--profile` dir must never receive a marker.
+pub(crate) fn write_owner_pid_marker(dir: &Path, pid: u32) {
+    let marker = dir.join(OWNER_PID_MARKER);
+    if let Err(e) = std::fs::write(&marker, format!("{pid}\n")) {
+        tracing::warn!(
+            "write_owner_pid_marker: could not write {}: {e}",
+            marker.display()
+        );
+    }
+}
+
+/// Returns `true` iff `dir` carries an [`OWNER_PID_MARKER`] whose PID parses
+/// and names a process that is currently alive.
+///
+/// This is the positive ownership signal the prune paths consult *before* the
+/// iter-96 mtime heuristics: a live owner always wins, so a still-running
+/// (even fully idle) Firefox never has its profile deleted out from under it.
+///
+/// A missing or unparsable marker returns `false` — the caller then falls
+/// back to the mtime heuristic, so pre-97 profiles (no marker) behave exactly
+/// as before. A PID-reuse false positive errs toward *keeping* the directory
+/// (the safe direction); the mtime heuristic still reclaims it once the
+/// recycled PID dies.
+pub(crate) fn profile_is_owned_by_live_process(dir: &Path) -> bool {
+    let marker = dir.join(OWNER_PID_MARKER);
+    let Ok(contents) = std::fs::read_to_string(&marker) else {
+        return false;
+    };
+    let Ok(pid) = contents.trim().parse::<u32>() else {
+        return false;
+    };
+    crate::daemon::process::is_process_alive(pid)
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +357,18 @@ pub fn prune_orphan_profiles(
 
         let path = entry.path();
         if !is_managed_profile_path(&path) {
+            continue;
+        }
+
+        // iter-97 Theme B: a live owner-PID marker is a positive "still in
+        // use" signal that overrides the mtime heuristics below — a running
+        // (even fully idle) Firefox never has its profile pruned. A missing
+        // or dead marker falls through to the mtime checks unchanged.
+        if profile_is_owned_by_live_process(&path) {
+            tracing::debug!(
+                "prune_orphan_profiles: keeping {} — owner PID is alive",
+                path.display()
+            );
             continue;
         }
 
@@ -557,6 +629,137 @@ mod tests {
             "a profile with fresh top-level file activity must survive the launch sweep"
         );
         assert!(dir.exists(), "{} must survive", dir.display());
+    }
+
+    /// Spawn a trivial child process, wait for it to exit, and return its
+    /// now-dead PID. Used to exercise the dead-owner branch of the liveness
+    /// guard portably (no reliance on a magic large PID that could collide).
+    fn spawn_and_reap_child_pid() -> u32 {
+        #[cfg(unix)]
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn `true`");
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .spawn()
+            .expect("spawn cmd exit");
+        let pid = child.id();
+        child.wait().expect("child exits");
+        // Give the OS a beat to fully reap so `is_process_alive` reports dead.
+        std::thread::sleep(Duration::from_millis(50));
+        pid
+    }
+
+    /// `write_owner_pid_marker` + `profile_is_owned_by_live_process` round
+    /// trip: the current process is alive, so a marker naming it reports
+    /// `true`; a dir with no marker or a garbage marker reports `false`.
+    #[test]
+    fn unit_owner_pid_marker_roundtrip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // No marker yet.
+        assert!(!profile_is_owned_by_live_process(dir.path()));
+
+        write_owner_pid_marker(dir.path(), std::process::id());
+        assert!(
+            profile_is_owned_by_live_process(dir.path()),
+            "a marker naming the live test process must report alive"
+        );
+
+        // Garbage marker → not owned by a live process.
+        std::fs::write(dir.path().join(OWNER_PID_MARKER), b"not-a-pid\n").expect("overwrite");
+        assert!(!profile_is_owned_by_live_process(dir.path()));
+    }
+
+    /// AC: `pre_fix_repro_prune_deletes_profile_with_live_owner_pid` — a
+    /// managed profile dir with fully back-dated mtimes (dir + all files) AND
+    /// an `.ff-rdp-owner-pid` naming the current (live) test process must NOT
+    /// be pruned by `prune_orphan_profiles` at a 7-day threshold. On pre-97
+    /// code the dir is deleted (the heuristic gap this iteration closes);
+    /// post-fix the live-owner guard keeps it.
+    #[test]
+    fn pre_fix_repro_prune_deletes_profile_with_live_owner_pid() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"a".repeat(16), Duration::from_hours(192));
+        // Marker naming this live test process; back-date it too so mtimes
+        // alone scream "stale".
+        std::fs::write(
+            dir.join(OWNER_PID_MARKER),
+            format!("{}\n", std::process::id()),
+        )
+        .expect("write owner-pid marker");
+        let stale = std::time::SystemTime::now()
+            .checked_sub(Duration::from_hours(192))
+            .expect("age fits before now");
+        let ft = filetime::FileTime::from_system_time(stale);
+        filetime::set_file_mtime(dir.join(OWNER_PID_MARKER), ft).expect("backdate marker");
+        filetime::set_file_mtime(&dir, ft).expect("re-backdate dir");
+
+        let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
+
+        assert!(
+            summary.removed.is_empty(),
+            "a profile whose owner PID is alive must survive the sweep at any age"
+        );
+        assert!(
+            dir.exists(),
+            "{} must survive a live-owner sweep",
+            dir.display()
+        );
+    }
+
+    /// AC: `unit_prune_skips_live_owner_but_reclaims_dead_owner` — a marker
+    /// naming the live test process blocks pruning; a marker naming a
+    /// known-dead PID does not, so a stale dir with a dead owner is reclaimed.
+    #[test]
+    fn unit_prune_skips_live_owner_but_reclaims_dead_owner() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let old = Duration::from_hours(192);
+
+        // Live owner → kept.
+        let live = seed_fake_profile(root.path(), &"1".repeat(16), old);
+        std::fs::write(
+            live.join(OWNER_PID_MARKER),
+            format!("{}\n", std::process::id()),
+        )
+        .expect("write live marker");
+
+        // Dead owner → reclaimed. Back-date the marker file and re-backdate
+        // the dir so writing the marker doesn't count as fresh top-level
+        // activity (which the iter-96 mtime heuristic would treat as live).
+        let dead = seed_fake_profile(root.path(), &"2".repeat(16), old);
+        let dead_pid = spawn_and_reap_child_pid();
+        std::fs::write(dead.join(OWNER_PID_MARKER), format!("{dead_pid}\n"))
+            .expect("write dead marker");
+        let stale = std::time::SystemTime::now()
+            .checked_sub(old)
+            .expect("age fits before now");
+        let ft = filetime::FileTime::from_system_time(stale);
+        filetime::set_file_mtime(dead.join(OWNER_PID_MARKER), ft).expect("backdate dead marker");
+        filetime::set_file_mtime(&dead, ft).expect("re-backdate dead dir");
+
+        let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
+
+        assert_eq!(summary.removed, vec![dead.clone()]);
+        assert!(live.exists(), "live-owner dir must survive");
+        assert!(!dead.exists(), "dead-owner dir must be reclaimed");
+    }
+
+    /// A missing marker falls back to the iter-96 mtime heuristic (pre-97
+    /// profiles have no marker), so a stale dir with no marker is still
+    /// pruned exactly as before.
+    #[test]
+    fn unit_prune_no_marker_falls_back_to_mtime_heuristic() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"3".repeat(16), Duration::from_hours(192));
+
+        let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
+
+        assert_eq!(summary.removed, vec![dir.clone()]);
+        assert!(
+            !dir.exists(),
+            "a marker-less stale dir must still be pruned"
+        );
     }
 
     /// AC: `unit_prune_orphan_profiles_bounded_by_max` — 60 stale dirs seeded,

@@ -33,11 +33,19 @@ if ! [[ "$END" =~ ^[0-9]+[a-z]?$ ]]; then
   exit 1
 fi
 
+# Plan-file / branch naming prefixes. Defaults preserve the historical
+# iteration-NN-*.md plan names and iter-NN/<slug> branches; override per run
+# for repos whose waves use a different prefix, e.g.
+#   RALPH_PLAN_PREFIX=migration RALPH_BRANCH_PREFIX=migration preflight.sh 01 07
+# for migration-01-enablers.md + migration-01/<slug> branches.
+PLAN_PREFIX="${RALPH_PLAN_PREFIX:-iteration}"
+BRANCH_PREFIX="${RALPH_BRANCH_PREFIX:-iter}"
+
 # Split each ID into integer base and optional letter suffix.
 START_NUM="${START%%[a-z]*}"; START_LETTER="${START#"$START_NUM"}"
 END_NUM="${END%%[a-z]*}";     END_LETTER="${END#"$END_NUM"}"
 
-if (( START_NUM > END_NUM )); then
+if (( 10#$START_NUM > 10#$END_NUM )); then
   echo "ERROR: start ($START) must be <= end ($END)" >&2
   exit 1
 fi
@@ -71,8 +79,17 @@ else
     echo "ERROR: cross-integer letter ranges not supported (start=$START, end=$END)" >&2
     exit 1
   fi
-  for ((n=START_NUM; n<=END_NUM; n++)); do
-    ITERS+=("$n")
+  # 10# forces base-10 so "08"/"09" don't trip octal parsing; zero-padded
+  # ranges (e.g. "01".."07") keep their width.
+  PAD_WIDTH=0
+  if [[ "$START_NUM" == 0* && ${#START_NUM} -gt 1 ]]; then PAD_WIDTH=${#START_NUM}; fi
+  for ((n=10#$START_NUM; n<=10#$END_NUM; n++)); do
+    if (( PAD_WIDTH > 0 )); then
+      printf -v _id "%0${PAD_WIDTH}d" "$n"
+    else
+      _id="$n"
+    fi
+    ITERS+=("$_id")
   done
 fi
 
@@ -123,7 +140,7 @@ discover_plan() {
     # per file (path on first line in quotes, then indented properties) — not
     # what we want. --property 'title~=' won't work either: frontmatter title
     # is typically "Iteration N: Slug" which doesn't contain "iteration-N".
-    path=$(cd "$REPO_ROOT" && hyalo find --glob "**/iteration-${n}-*.md" \
+    path=$(cd "$REPO_ROOT" && hyalo find --glob "**/${PLAN_PREFIX}-${n}-*.md" \
              --jq '.results[0].file // empty' 2>/dev/null || true)
     # hyalo returns paths relative to its auto-detected knowledgebase root,
     # which may be a subdirectory of $REPO_ROOT (e.g. <repo>/foo-knowledgebase/).
@@ -137,7 +154,7 @@ discover_plan() {
   if [[ -z "$path" ]]; then
     # Fallback: shell find. Take first match without piping to head (SIGPIPE
     # interacts badly with set -o pipefail).
-    path=$(cd "$REPO_ROOT" && find . -type f -name "iteration-${n}-*.md" 2>/dev/null \
+    path=$(cd "$REPO_ROOT" && find . -type f -name "${PLAN_PREFIX}-${n}-*.md" 2>/dev/null \
              | sed -n '1p' | sed 's|^\./||' || true)
   fi
 
@@ -167,9 +184,18 @@ check_completion() {
   # closes the pipe early on match, git gets SIGPIPE, and `set -o pipefail`
   # then flags the whole pipeline as failed — which would make the `if` see
   # "no match" even when there was one.
-  local log_out
+  local log_out branch_re
+  # With the default prefix, match both historical spellings (iter-N/ and
+  # iteration-N/). With an explicit override, match ONLY that prefix —
+  # otherwise legacy iter-N/ merges false-positive same-numbered waves of a
+  # different series (e.g. iter-01/ marking migration-01 as complete).
+  if [[ "$BRANCH_PREFIX" == "iter" ]]; then
+    branch_re="(iter|iteration)-${n}/"
+  else
+    branch_re="${BRANCH_PREFIX}-${n}/"
+  fi
   log_out=$(git -C "$REPO_ROOT" log origin/main --merges --oneline 2>/dev/null || true)
-  if printf '%s\n' "$log_out" | grep -qiE "(iter|iteration)-${n}/"; then
+  if printf '%s\n' "$log_out" | grep -qiE "$branch_re"; then
     echo "skipped"
     return
   fi
@@ -200,7 +226,7 @@ MISSING=()
 
 for n in "${ITERS[@]}"; do
   # Extract the numeric prefix for use as a sort key (avoids string "10" < "9" bugs).
-  n_int="${n%%[a-z]*}"
+  n_int=$((10#${n%%[a-z]*}))
   plan=$(discover_plan "$n")
   if [[ -z "$plan" ]]; then
     MISSING+=("$n")
@@ -254,9 +280,13 @@ jq -n \
   --arg start "$START" \
   --arg end "$END" \
   --arg current "$CURRENT" \
+  --arg plan_prefix "$PLAN_PREFIX" \
+  --arg branch_prefix "$BRANCH_PREFIX" \
   --argjson iters "$ITER_JSON" \
   '{
     version: 1,
+    plan_prefix: $plan_prefix,
+    branch_prefix: $branch_prefix,
     repo_root: $root,
     started_at: $now,
     range: [$start, $end],
@@ -277,7 +307,7 @@ if [[ -n "$CMUX_WORKSPACE" ]]; then
   echo "Workspace: $CMUX_WORKSPACE (cmux)"
 fi
 echo
-jq -r '.iterations[] | "  iter-\(.n)  \(.status)\(if .plan_path then "  " + .plan_path else "  (no plan found)" end)"' "$STATE_FILE"
+jq -r --arg bp "$BRANCH_PREFIX" '.iterations[] | "  \($bp)-\(.n)  \(.status)\(if .plan_path then "  " + .plan_path else "  (no plan found)" end)"' "$STATE_FILE"
 echo
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
@@ -287,7 +317,7 @@ fi
 SKIPPED=$(jq -r '[.iterations[] | select(.status=="skipped" or .status=="done")] | length' "$STATE_FILE")
 PENDING=$(jq -r '[.iterations[] | select(.status=="pending")] | length' "$STATE_FILE")
 echo "Summary: $PENDING pending, $SKIPPED already complete"
-echo "Next:    iter-$CURRENT"
+echo "Next:    ${BRANCH_PREFIX}-$CURRENT"
 
 # Defensive sweep: clear any stale `iter-*` sidebar entries / progress bar
 # left behind by a previous crashed orchestrator run.
