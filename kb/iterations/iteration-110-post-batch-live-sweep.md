@@ -74,6 +74,30 @@ For every failure:
   exercised (port contention, daemon-registry sharing, buffer state leaking
   between modules in the consolidated binary) are in scope here.
 
+### iter-109 carry-in: `live_109_throttle_block` first full-suite run
+
+iter-109 (network throttling / URL blocking, PR #149) landed
+`live_throttle_slow3g_slows_fetch` and `live_block_url_pattern`
+(`crates/ff-rdp-cli/tests/live/live_109_throttle_block.rs`) but — per iter-109's
+own scoped-testing policy — only ran them filtered
+(`--test live live_109 -- --include-ignored`), never inside the full
+consolidated `live` binary. Watch for in this sweep:
+- Both tests use the **daemon path** (no `--no-daemon`) so throttling set by
+  one `ff-rdp throttle` call is visible to the next command over the same
+  connection — confirm this survives running back-to-back with other daemon-
+  path live tests in the same process (port/daemon-registry reuse from the
+  bullet above).
+- `live_throttle_slow3g_slows_fetch`'s `throttled >= baseline * 2.0` assertion
+  is a real-network timing threshold — same class of flake as the Theme B(c)
+  real-site-timing group above if the sweep runs under load; triage
+  accordingly before treating a failure as a product bug.
+- The `getNetworkParentActor` reply-shape fix
+  (`spec::response::NetworkParentActorRef`, nested `{networkParent: {actor}}`)
+  was never live-verified in iter-109's implementation environment (see
+  iter-109's "Reply-shape decision" section) — if `live_throttle_slow3g_slows_fetch`
+  fails with an actor-not-found/no-such-actor error rather than a timing
+  assertion, suspect the reply shape first, not the throttling values.
+
 ## Acceptance criteria
 
 - [ ] full_sweep_recorded: complete `cargo test-live` inventory (pass/fail per
