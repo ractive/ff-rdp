@@ -1,5 +1,5 @@
 ---
-title: "Iteration 106: live-test masking cascade — chrome CSP bypass regression, DNS-failure error shape, tabs-vs-eval daemon routing audit"
+title: "Iteration 106: live-test masking cascade — chrome CSP bypass regression, DNS-failure error shape, cross-invocation daemon buffer visibility"
 type: iteration
 date: 2026-07-09
 status: planned
@@ -59,6 +59,26 @@ CI progress further and reveals genuine gaps this iteration must close:
   addendum) may hide more. Run the *entire* `cargo test-live` suite locally
   with `--no-fail-fast` at least once and triage every result before this
   iteration closes, not just the two failures found so far.
+- **D — Cross-invocation daemon-buffer visibility.** `live_network_default_watcher`
+  and `live_network_detail_headers` (`live_61q_resource_bus.rs`) navigate
+  with `--with-network` in one CLI invocation, then query `ff-rdp network`
+  in a second, separate invocation against the same (now genuinely-started)
+  daemon — and get zero entries back. This reproduced identically on both a
+  local macOS sandbox and CI's `ubuntu-latest` live-tests runner, so it is
+  not environment flakiness. Likely related to the daemon RPC-writer
+  replacement / buffer-visibility gap [[iteration-101-daemon-session-correctness]]
+  Theme B already targets, but confirm whether it is the *same* root cause
+  or a distinct one before assuming Theme B's fix covers it.
+
+Found during the same review but explicitly **not** included above because
+they are unconfirmed in real CI (only reproduced in a heavily-loaded local
+sandbox against a stray local server) and self-documented as incomplete:
+`live_index_local_fixture` / `live_runner_page_map_resolution`
+(`live_62_page_map_index.rs`) both target `http://localhost:18080`, and the
+file's own doc comment says "the fixture site is not yet committed... skip
+if unreachable." If these ever show up as a genuine CI failure (not just a
+local port collision), re-triage them then — don't assume Theme A-D covers
+them.
 
 ## Tasks
 
@@ -95,9 +115,25 @@ CI progress further and reveals genuine gaps this iteration must close:
       `FF_RDP_ALLOW_KNOWN_FAILING_<NAME>`-gated skip with a doc comment
       pointing at a follow-up plan (the pattern established in iter-100's PR
       review), so the masked-surface debt is fully inventoried rather than
-      discovered one CI round-trip at a time.
+      discovered one CI round-trip at a time. Re-triage
+      `live_index_local_fixture` / `live_runner_page_map_resolution`
+      (`live_62_page_map_index.rs`) as part of this sweep — theme D's design
+      note explains why they're excluded from the tracked themes above.
 
-## Acceptance Criteria [0/3]
+### D. Cross-invocation daemon-buffer visibility [0/2]
+- [ ] Root-cause why a second CLI invocation's `network` query returns zero
+      entries after a first invocation's `navigate --with-network`
+      populated the daemon's buffer. Check whether this is the same gap as
+      [[iteration-101-daemon-session-correctness]] Theme B (RPC-writer
+      replacement) or a distinct buffer-visibility issue — the failure is
+      "empty results", not "wrong client received the reply", which may
+      point to a different root cause than Theme B's cross-delivery framing.
+- [ ] Land the fix; remove the `FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER`
+      gate on `live_network_default_watcher` and `live_network_detail_headers`
+      (`crates/ff-rdp-cli/tests/live_61q_resource_bus.rs`) once both pass
+      unconditionally again.
+
+## Acceptance Criteria [0/4]
 
 - [ ] live_eval_chrome_csp_bypass: `meta.eval_path == "chrome"` for a CSP
       `script-src 'none'` page, unconditionally (no
@@ -105,6 +141,10 @@ CI progress further and reveals genuine gaps this iteration must close:
 - [ ] live_navigate_dnsfail: exits non-zero with a neterror-shaped message
       for a DNS-resolution failure, unconditionally (no
       `FF_RDP_ALLOW_KNOWN_FAILING_DNSFAIL` gate needed).
+- [ ] live_network_default_watcher + live_network_detail_headers: a second
+      CLI invocation's `network` query sees entries populated by a prior
+      `navigate --with-network` invocation, unconditionally (no
+      `FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER` gate needed).
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings &&
       FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo test -p
       ff-rdp-cli --no-fail-fast -- --ignored --test-threads=1` clean (every
