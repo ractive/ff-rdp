@@ -104,6 +104,17 @@ than assuming the flat shape.
       → `commands/throttle.rs` + `ThrottleArgs`/`ThrottleProfileArg`; envelope
       carries `profile` and `blocked_urls`.
 
+## PR review note (2026-07-10)
+
+`/review-pr` (local-only) on PR #149 found one real bug: `ThrottleArgs::block`'s
+doc comment (and rendered `--help` text) told users `--block ''` clears the
+block-list, but `wants_block_change` treated the single empty-string pattern
+as a non-empty list, so `[""]` was sent to `setBlockedUrls` instead of an
+empty array. Fixed with a `resolve_block_urls` helper (normalizes `--unblock`
+and an all-empty `--block` list to `[]`) plus three new unit tests. No scope
+change — both tasks/ACs above were already accurately landed; this was a
+review-time correctness fix within task 2's existing surface.
+
 ## Reply-shape decision (iter-109)
 
 `getNetworkParentActor` reply shape: the plan's task 1 warned this method
