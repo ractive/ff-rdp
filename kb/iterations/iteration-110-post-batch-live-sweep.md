@@ -100,28 +100,27 @@ consolidated `live` binary. Watch for in this sweep:
   fails with an actor-not-found/no-such-actor error rather than a timing
   assertion, suspect the reply shape first, not the throttling values.
 
-## Acceptance criteria
+## Acceptance Criteria [4/4]
 
 - [x] full_sweep_recorded: complete `cargo test-live` inventory (pass/fail per
       test) attached to Results, run on post-109 main. Recorded 2026-07-10:
       83 passed / 27 failed (see "2026-07-10 clean sweep" below).
-- [x] no_101_105_regressions: every failure attributable to iterations
-      101–109 is fixed and its test passes in a re-run; fixes carry their own
-      unit/live tests where behaviour changed. Fixed:
+- [x] no_101_105_regressions: `live_throttle_slow3g_slows_fetch` + `live_block_url_pattern` + `live_cross_actor_packet_not_lost` + `live_target_destroyed_invalidates_registry` + `live_network_headers` — every failure attributable to
+      iterations 101–109 is fixed and its test passes in a re-run; fixes carry
+      their own unit/live tests where behaviour changed. Fixed:
       `live_throttle_slow3g_slows_fetch` + `live_block_url_pattern`
       (`NetworkParentActorRef` key `networkParent`→`network`, iter-109 bug),
       `live_cross_actor_packet_not_lost` + `live_target_destroyed_invalidates_registry`
       (`results.result`→`results` eval shape), `live_network_headers`
       (`headers.response` object→array). All five pass on re-run.
-- [x] preexisting_reds_crossref: remaining 22 failures are each pre-existing
-      (Firefox-152 computed-color drift, port-6000-assuming legacy tests,
-      `localhost:18080` fixture self-skips) and cross-referenced to
+- [x] preexisting_reds_crossref [deferred — not applicable: triage/doc-only AC, no code diff — see Results table cross-refs to [[iteration-106-live-test-masking-cascade]]]: remaining 22 failures are each
+      pre-existing (Firefox-152 computed-color drift, port-6000-assuming legacy
+      tests, `localhost:18080` fixture self-skips) and cross-referenced to
       [[iteration-106-live-test-masking-cascade]] in the Results table below;
       none left untracked.
-- [x] kill_scoping_foreign_firefox_never_signalled (Theme A0):
-      `live_110_replace_never_kills_foreign_firefox` — a Firefox launched
-      outside ff-rdp survives `ff-rdp launch --replace` on its port; ff-rdp
-      refuses with "which ff-rdp did not launch". Backed by unit tests
+- [x] kill_scoping_foreign_firefox_never_signalled: `live_110_replace_never_kills_foreign_firefox` (Theme A0) — a Firefox
+      launched outside ff-rdp survives `ff-rdp launch --replace` on its port;
+      ff-rdp refuses with "which ff-rdp did not launch". Backed by unit tests
       `unit_pid_is_ff_rdp_spawned_true_only_for_marked_managed_profile`,
       `unit_pid_is_ff_rdp_spawned_ignores_marker_in_unmanaged_dir`,
       `unit_pid_is_ff_rdp_spawned_rejects_garbage_marker`.
