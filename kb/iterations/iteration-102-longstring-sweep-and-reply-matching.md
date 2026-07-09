@@ -52,6 +52,17 @@ tags: [iteration, longstring, protocol, correctness, review-2026-07]
 
 # Iteration 102: longString sweep + retiring blind `transport.request`
 
+## Live-test policy (2026-07-09, per James)
+
+Do NOT run the full live Firefox suite (`cargo test-live`, or `--test live --
+--include-ignored` without a filter) during this iteration — neither while
+implementing nor while reviewing. Run ONLY (1) the specific live tests this
+plan's ACs name, filtered (e.g. `cargo test -p ff-rdp-cli --test live
+<filter> -- --include-ignored`), and (2) this iteration's dogfood script
+(required by check-iteration-ready). Full-suite validation is deferred to
+[[iteration-107-post-105-live-sweep]], which runs once after iteration 105
+merges and fixes all fallout there.
+
 The deep review ([[deep-review-2026-07-fable5]]) found the single worst
 "confidently wrong answer" bug left in the core: **DOM, storage, and
 computed-style paths drop longString grips**. `nodeValue`, DOM attribute
