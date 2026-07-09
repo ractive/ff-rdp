@@ -116,13 +116,7 @@ only ever removes the profile of the Firefox it just confirmed dead.
       markers do not block reclamation.
 - [x] `unit_prune_all_reports_live_owner_dirs`: `--all` surfaces
       live-owner removals in `removed_live`.
-- [x] `dogfood_script_full_run_iter_97`: `.dogfood.sh`
-      (`iteration-97-profile-liveness-guard.dogfood.sh`) launches Firefox,
-      verifies its profile survives a forced prune sweep while running and
-      is reclaimed after `daemon stop`; exits 0. Script committed and
-      lint-clean (`tools/lint-dogfood-script.sh`); the live Firefox run is
-      gated behind `FF_RDP_LIVE_TESTS=1` (run via
-      `check-dogfood-script`).
+- [x] `dogfood_script_full_run_iter_97` exercises `write_owner_pid_marker`, `profile_is_owned_by_live_process`, and `removed_live` end to end: `.dogfood.sh` (`iteration-97-profile-liveness-guard.dogfood.sh`) launches Firefox, asserts the marker is present, that the age-gated liveness guard lets the running profile survive a forced prune sweep, that `--all` surfaces it in `removed_live`, and that it is reclaimed after `daemon stop`; exits 0 and writes `/tmp/ff-rdp-iter-97-dogfood-ok`. Verified live in this session (all themes PASS); the run is gated behind `FF_RDP_LIVE_TESTS=1` via `check-dogfood-script`.
 
 ## Out of scope
 
