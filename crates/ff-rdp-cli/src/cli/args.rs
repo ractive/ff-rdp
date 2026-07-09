@@ -430,43 +430,7 @@ Examples:
   ff-rdp navigate https://example.com --no-wait
 
 Output: {\"results\": {\"navigated\": \"...\", \"committed_url\": \"...\", \"ready_state\": \"...\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}")]
-    Navigate {
-        /// The URL to navigate to (positional, not a flag)
-        url: String,
-        /// Also capture network requests made during navigation
-        #[arg(long)]
-        with_network: bool,
-        /// Total time limit for network event collection in milliseconds (--with-network only).
-        /// Collection runs for this duration then returns all captured events.
-        #[arg(long, default_value_t = 10000)]
-        network_timeout: u64,
-        /// After navigating, wait for this text to appear in the page's visible content. Runs after the navigation load event completes.
-        #[arg(long, conflicts_with = "wait_selector")]
-        wait_text: Option<String>,
-        /// After navigating, wait for this CSS selector to match an element in the DOM. Runs after the navigation load event completes.
-        #[arg(long, conflicts_with = "wait_text")]
-        wait_selector: Option<String>,
-        /// Timeout for the --wait-text/--wait-selector condition in milliseconds. If the condition is not met within this time, the command fails with an error showing the elapsed time.
-        #[arg(long, default_value_t = 5000)]
-        wait_timeout: u64,
-        /// Skip waiting for the new document to commit; return immediately after the navigate request is acknowledged (pre-61g fire-and-forget behaviour).
-        #[arg(long)]
-        no_wait: bool,
-        /// Readiness level to wait for before returning: `loading` (dom-loading), `interactive` (dom-interactive), or `complete` (dom-complete, default). Ignored when `--with-network` is set: that mode uses the network-drain settle as its commit signal.
-        #[arg(long, value_name = "LEVEL", default_value = "complete", value_enum)]
-        wait: crate::commands::navigate::WaitLevel,
-        /// After the document commits, additionally wait for a predicate. Accepts selector:<css>, text:<substr>, url:<regex>, or gone:<css>.
-        /// Uses the --timeout budget. On failure surfaces a descriptive error.
-        #[arg(long, value_name = "PREDICATE")]
-        wait_for: Vec<String>,
-        /// Strategy for waiting for navigation readiness.
-        /// `both` (default): try events first; if they time out, fall back to
-        ///         readystate poll within the remaining budget.
-        /// `events`: wait for document-event resources (dom-complete).
-        /// `readystate`: poll `document.readyState == "complete"` until timeout.
-        #[arg(long, value_name = "STRATEGY", default_value = "both", value_enum)]
-        wait_strategy: crate::commands::navigate::WaitStrategy,
-    },
+    Navigate(NavigateArgs),
     /// Evaluate JavaScript in the target tab
     #[command(long_about = "Evaluate JavaScript in the target tab.
 
@@ -494,53 +458,7 @@ Pass --unwrap when the expression itself already returns a JSON-encoded string
 (e.g. `localStorage.getItem('user')` or a server endpoint that returns text):
 ff-rdp will parse it client-side and put the structured object/array into
 `results`. Primitive or non-JSON strings are passed through unchanged.")]
-    #[command(group(
-        ArgGroup::new("eval_source")
-            .required(true)
-            .multiple(false)
-            .args(["script", "file", "stdin"])
-    ))]
-    Eval {
-        /// JavaScript expression to evaluate (positional)
-        script: Option<String>,
-        /// Read JavaScript source from a file
-        #[arg(long, value_name = "PATH")]
-        file: Option<String>,
-        /// Read JavaScript source from stdin until EOF
-        #[arg(long)]
-        stdin: bool,
-        /// Wrap expression in JSON.stringify() to get actual values instead of actor grips
-        #[arg(long)]
-        stringify: bool,
-        /// No-op since iter-93. Kept for backwards compatibility — isolation
-        /// is now provided by Firefox's Debugger.evalInGlobal sandbox scope.
-        #[arg(long)]
-        no_isolate: bool,
-        /// Evaluate inside a specific frame/iframe actor (iter-77 S3).
-        ///
-        /// Pass the frame actor ID — e.g. obtained from a `watcher`
-        /// `target-available-form` event with `targetType=frame`.  Wires the
-        /// spec-declared `frameActor` field of `evaluateJSAsync`
-        /// (devtools/shared/specs/webconsole.js:149-164).
-        #[arg(long, value_name = "ACTOR")]
-        frame: Option<String>,
-        /// Pre-bind `$0` to a DOM node actor before evaluating (iter-77 S3).
-        ///
-        /// Maps to `selectedNodeActor` in the `evaluateJSAsync` request.
-        #[arg(long, value_name = "ACTOR")]
-        node: Option<String>,
-        /// Scope the eval to a specific inner-window ID (iter-77 S3).
-        ///
-        /// Maps to `innerWindowID` in the `evaluateJSAsync` request.
-        #[arg(long, value_name = "ID")]
-        inner_window: Option<u64>,
-        /// When the result is a JSON-encoded string for an object or array, parse it
-        /// on the client and replace `results` with the structured value.  Pairs
-        /// naturally with `--stringify` and with scripts that already return
-        /// `JSON.stringify(...)`.  Non-JSON strings are left unchanged.
-        #[arg(long)]
-        unwrap: bool,
-    },
+    Eval(EvalArgs),
     /// Extract visible page text (document.body.innerText)
     #[command(long_about = "Extract visible page text (document.body.innerText).
 
@@ -561,56 +479,7 @@ With --count: {\"results\": {\"count\": N}, \"total\": N, \"meta\": {...}}
 See also:
   ff-rdp styles <SEL>    — declared (matched) CSS rules for an element.
   ff-rdp computed <SEL>  — resolved computed style values for an element.")]
-    #[command(group(ArgGroup::new("dom_target").required(false).multiple(false).args(["selector", "ref_id"])))]
-    Dom {
-        #[command(subcommand)]
-        dom_command: Option<DomCommand>,
-
-        /// CSS selector to match elements
-        #[arg(group = "dom_target")]
-        selector: Option<String>,
-        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
-        #[arg(long = "ref", value_name = "REF_ID", group = "dom_target")]
-        ref_id: Option<String>,
-        /// Output outer HTML (default)
-        #[arg(long, group = "output_mode")]
-        outer_html: bool,
-        /// Output inner HTML
-        #[arg(long, group = "output_mode")]
-        inner_html: bool,
-        /// Output text content only
-        #[arg(long, group = "output_mode")]
-        text: bool,
-        /// Output element attributes as JSON objects
-        #[arg(long, group = "output_mode")]
-        attrs: bool,
-        /// Output both text content and attributes per element
-        #[arg(long, group = "output_mode")]
-        text_attrs: bool,
-        /// Return only the count of matching elements
-        #[arg(long, group = "output_mode")]
-        count: bool,
-        /// Return just the first match as a single value (or null) instead of an array.
-        /// Provided for callers who want the legacy pre-iter-61i single-element shape.
-        /// Mutually exclusive with --count.
-        #[arg(long, conflicts_with = "count")]
-        first: bool,
-        /// Attach computed CSS values for each match (comma-separated property list).
-        /// Each result element gets an extra `style` field with the named getComputedStyle
-        /// values, e.g. `--include-style color,display`. Capped by `--include-style-limit`.
-        #[arg(long, value_name = "PROPS")]
-        include_style: Option<String>,
-        /// Cap the number of matches that receive computed styles when
-        /// `--include-style` is set. Default 50. Elements beyond the cap omit the
-        /// `style` field and the response sets `meta.style_truncated: true`.
-        #[arg(
-            long,
-            value_name = "N",
-            default_value_t = 50,
-            requires = "include_style"
-        )]
-        include_style_limit: usize,
-    },
+    Dom(DomArgs),
     /// Read console messages
     #[command(long_about = "Read console messages.
 
@@ -619,17 +488,7 @@ Output always includes a `summary` field with totals and per-level counts so
 callers can tell at a glance whether the filter caught what they expected.
 
 Output: {\"results\": [{\"level\": \"...\", \"message\": \"...\", \"source\": \"...\", \"line\": N, \"timestamp\": N}], \"summary\": {\"total\": N, \"shown\": Z, \"by_level\": {...}, \"matched\": M}, \"total\": N, \"meta\": {...}}")]
-    Console {
-        /// Filter by log level (error, warn, info, log, debug)
-        #[arg(long)]
-        level: Option<String>,
-        /// Filter by message content (regex pattern)
-        #[arg(long)]
-        pattern: Option<String>,
-        /// Stream console messages in real time (connection closed or Ctrl-C to stop)
-        #[arg(long)]
-        follow: bool,
-    },
+    Console(ConsoleArgs),
     /// Show network requests captured by the WatcherActor.
     ///
     /// In direct mode (--no-daemon), only requests made after connection are
@@ -679,29 +538,7 @@ Default: 20 results, sorted by duration (slowest first).
 Output (summary mode): {\"results\": {\"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false}, \"total\": N, \"meta\": {...}}
 Output (--detail): {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"status\": 200, \"duration_ms\": N, ...}], \"total\": N, \"meta\": {...}}
 Output (--detail --headers): adds {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}} per entry.")]
-    Network {
-        /// Filter by URL pattern (substring match)
-        #[arg(long)]
-        filter: Option<String>,
-        /// Filter by HTTP method (GET, POST, etc.)
-        #[arg(long)]
-        method: Option<String>,
-        /// Stream network events in real time (Ctrl-C to stop)
-        #[arg(long)]
-        follow: bool,
-        /// Include request and response headers in --detail output.
-        /// Headers are fetched per-entry from the NetworkEventActor (watcher source
-        /// only). When the source is performance-api, a per-entry note is emitted
-        /// explaining why headers are missing; use --with-network to engage the
-        /// watcher and make headers available.
-        #[arg(long)]
-        headers: bool,
-        /// Scope the result to a specific navigation window (daemon mode only).
-        /// -1 = current navigation (default), -2 = one back, 'all' = full cumulative buffer.
-        /// Positive integers are treated as 1-based indices from the oldest boundary.
-        #[arg(long, value_name = "NAV_INDEX_OR_ALL")]
-        since: Option<String>,
-    },
+    Network(NetworkArgs),
     /// Query browser Performance API entries and Core Web Vitals
     #[command(
         long_about = "Query browser Performance API entries and Core Web Vitals.
@@ -709,22 +546,7 @@ Output (--detail --headers): adds {\"headers\": {\"request\": [{\"name\": \"...\
 Default: 20 resources, sorted by duration (slowest first).
 Output: {\"results\": [{\"url\": \"...\", \"duration_ms\": N, \"transfer_size\": N, ...}], \"total\": N, \"meta\": {...}}"
     )]
-    Perf {
-        #[command(subcommand)]
-        perf_command: Option<PerfCommand>,
-
-        /// Performance entry type to query (resource, navigation, paint, lcp, cls, longtask)
-        #[arg(long = "type", default_value = "resource")]
-        entry_type: String,
-
-        /// Filter by URL substring (resource/navigation types)
-        #[arg(long)]
-        filter: Option<String>,
-
-        /// Group results by a field (e.g., "domain" for resource entries)
-        #[arg(long)]
-        group_by: Option<String>,
-    },
+    Perf(PerfArgs),
     /// Capture a screenshot
     #[command(long_about = "Capture a screenshot.
 
@@ -735,33 +557,7 @@ explicit override.
 
 Output: {\"results\": {\"path\": \"...\", \"width\": N, \"height\": N}, \"total\": 1, \"meta\": {...}}
 With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
-    Screenshot {
-        /// Output file path
-        #[arg(long, short, conflicts_with = "base64")]
-        output: Option<String>,
-        /// Return the screenshot as base64 PNG data in JSON output instead of saving to a file
-        #[arg(long, conflicts_with = "output")]
-        base64: bool,
-        /// Capture the entire scrollable page (document.scrollingElement.scrollHeight)
-        #[arg(long, conflicts_with = "viewport_height")]
-        full_page: bool,
-        /// Capture at this explicit height (pixels) instead of the viewport height
-        #[arg(long, value_name = "PX", conflicts_with = "full_page")]
-        viewport_height: Option<u32>,
-        /// Restrict output to paths under this directory (rejects path traversal)
-        #[arg(long, value_name = "DIR")]
-        output_root: Option<std::path::PathBuf>,
-        /// Attempt to receive the screenshot via a bulk-frame streaming path.
-        ///
-        /// When set, the command sends the capture request and then tries to
-        /// read the response as a bulk binary frame via
-        /// `Transport::recv_bulk_with_handler` (no full base64 allocation in
-        /// memory).  If Firefox responds with a JSON frame (the current
-        /// behaviour for all Firefox versions), the command falls back to the
-        /// standard base64 path transparently.
-        #[arg(long)]
-        bulk: bool,
-    },
+    Screenshot(ScreenshotArgs),
     /// Click an element matching a CSS selector
     #[command(long_about = "Click an element matching a CSS selector.
 
@@ -787,40 +583,7 @@ Dispatch modes (--dispatch):
 
 Output: {\"results\": {\"clicked\": true, \"tag\": \"...\", \"text\": \"...\"}, \"total\": 1, \"meta\": {...}}
 With --wait-for-network: adds {\"network\": {\"url\": \"...\", \"method\": \"...\", \"status\": N, ...}} to results.")]
-    #[command(group(ArgGroup::new("click_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
-    Click {
-        /// CSS selector of the element to click (positional, or use --selector)
-        #[arg(group = "click_target")]
-        selector_pos: Option<String>,
-        /// CSS selector of the element to click (flag form)
-        #[arg(long = "selector", value_name = "SELECTOR", group = "click_target")]
-        selector_flag: Option<String>,
-        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
-        #[arg(long = "ref", value_name = "REF_ID", group = "click_target")]
-        ref_id: Option<String>,
-        /// After clicking, wait for a network request whose URL contains this pattern.
-        /// Returns the matched request record in the output.
-        #[arg(long, value_name = "PATTERN")]
-        wait_for_network: Option<String>,
-        /// Timeout in milliseconds for --wait-for-network (default: global --timeout)
-        #[arg(long, value_name = "MS", requires = "wait_for_network")]
-        network_timeout: Option<u64>,
-        /// Skip auto-wait and click immediately (reverts to pre-iter-59 fire-and-forget)
-        #[arg(long)]
-        no_wait: bool,
-        /// Event dispatch mode: pointer (default), legacy (mouse events only), click-only
-        #[arg(long, default_value = "pointer", value_name = "MODE")]
-        dispatch: String,
-        /// After clicking, wait for this condition. Repeatable. Forms: selector:<css>, text:<substr>, url:<regex>, gone:<css>
-        #[arg(long, value_name = "PREDICATE", action = clap::ArgAction::Append)]
-        wait_for: Vec<String>,
-        /// Timeout in milliseconds for --wait-for predicates (default: same as --timeout)
-        #[arg(long, value_name = "MS")]
-        wait_for_timeout: Option<u64>,
-        /// After clicking, wait for network and DOM to idle (no XHR/fetch for 500ms, no DOM mutations for 200ms)
-        #[arg(long)]
-        settle: bool,
-    },
+    Click(ClickArgs),
     /// Type text into an input element matching a CSS selector
     #[command(long_about = "Type text into an input element matching a CSS selector.
 
@@ -841,38 +604,7 @@ prototype setter so React/Vue/Svelte value trackers are invalidated, and `input`
 and `change` events are dispatched after the assignment.
 
 Output: {\"results\": {\"typed\": true, \"tag\": \"INPUT\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
-    #[command(group(ArgGroup::new("type_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
-    Type {
-        /// CSS selector of the input element (positional, or use --selector)
-        #[arg(group = "type_target")]
-        selector_pos: Option<String>,
-        /// Text to type into the element (positional, or use --text)
-        text_pos: Option<String>,
-        /// CSS selector of the input element (flag form)
-        #[arg(long = "selector", value_name = "SELECTOR", group = "type_target")]
-        selector_flag: Option<String>,
-        /// Text to type into the element (flag form)
-        #[arg(long = "text", value_name = "TEXT")]
-        text_flag: Option<String>,
-        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
-        #[arg(long = "ref", value_name = "REF_ID", group = "type_target")]
-        ref_id: Option<String>,
-        /// Clear the element's current value before typing
-        #[arg(long)]
-        clear: bool,
-        /// Skip auto-wait and type immediately (reverts to pre-iter-59 fire-and-forget)
-        #[arg(long)]
-        no_wait: bool,
-        /// After typing, wait for this condition. Repeatable. Forms: selector:<css>, text:<substr>, url:<regex>, gone:<css>
-        #[arg(long, value_name = "PREDICATE", action = clap::ArgAction::Append)]
-        wait_for: Vec<String>,
-        /// Timeout in milliseconds for --wait-for predicates (default: same as --timeout)
-        #[arg(long, value_name = "MS")]
-        wait_for_timeout: Option<u64>,
-        /// After typing, wait for network and DOM to idle
-        #[arg(long)]
-        settle: bool,
-    },
+    Type(TypeArgs),
     /// Wait for a condition to become true (polls every 100ms).
     /// Exactly one of --selector, --text, --eval, or --ref must be specified.
     #[command(long_about = "Wait for a condition to become true (polls every 100ms).
@@ -883,98 +615,27 @@ Use --ref <id> to wait for an element identified by its ARIA-tree ref ID
 (daemon mode only). Equivalent to --selector but uses a stable ref handle.
 
 Output: {\"results\": {\"matched\": true, \"elapsed_ms\": N, \"condition\": \"selector|text|eval\"}, \"total\": 1, \"meta\": {...}}")]
-    #[command(group(ArgGroup::new("condition").required(true).multiple(false)))]
-    Wait {
-        /// Wait until an element matching this CSS selector exists in the DOM
-        #[arg(long, group = "condition")]
-        selector: Option<String>,
-        /// Wait until this text appears anywhere on the page
-        #[arg(long, group = "condition")]
-        text: Option<String>,
-        /// Wait until this JavaScript expression returns a truthy value
-        #[arg(long, group = "condition")]
-        eval: Option<String>,
-        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
-        #[arg(long = "ref", value_name = "REF_ID", group = "condition")]
-        ref_id: Option<String>,
-        /// Timeout in milliseconds before giving up (canonical flag — use this one).
-        /// The legacy spelling `--wait-timeout` is also accepted as a hidden alias.
-        #[arg(long = "timeout-ms", alias = "wait-timeout", default_value_t = 5000)]
-        wait_timeout: u64,
-    },
+    Wait(WaitArgs),
     /// List cookies via the Firefox StorageActor (includes httpOnly, secure, sameSite, etc.)
     #[command(
         long_about = "List cookies via the Firefox StorageActor (includes httpOnly, secure, sameSite, etc.).
 
 Output: {\"results\": [{\"name\": \"...\", \"value\": \"...\", \"domain\": \"...\", \"path\": \"...\", \"secure\": true, \"httpOnly\": true}], \"total\": N, \"meta\": {...}}"
     )]
-    Cookies {
-        /// Filter by cookie name (exact match)
-        #[arg(long)]
-        name: Option<String>,
-        /// Also evaluate `document.cookie` and merge any entries not already
-        /// present in the StorageActor reply (marked with `source: "document.cookie"`).
-        /// Useful for cookies that lack a `Domain=` attribute and are not surfaced
-        /// by `getStoreObjects`.
-        ///
-        /// This is enabled by default. Pass `--storage-only` to disable.
-        #[arg(
-            long,
-            hide = true,
-            default_value_t = false,
-            conflicts_with = "storage_only"
-        )]
-        include_document_cookie: bool,
-        /// Return only cookies from the StorageActor (skip `document.cookie` evaluation).
-        /// Use this when you need the raw StorageActor view, e.g. to debug httpOnly cookies.
-        #[arg(long)]
-        storage_only: bool,
-    },
+    Cookies(CookiesArgs),
     /// Read web storage (localStorage or sessionStorage)
     #[command(long_about = "Read web storage (localStorage or sessionStorage).
 
 Output: {\"results\": [{\"key\": \"...\", \"value\": \"...\"}], \"total\": N, \"meta\": {...}}
 With --key: {\"results\": {\"key\": \"...\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
-    Storage {
-        /// Storage type: "local" (or "localStorage") / "session" (or "sessionStorage")
-        storage_type: String,
-        /// Get a specific key only
-        #[arg(long)]
-        key: Option<String>,
-    },
+    Storage(StorageArgs),
     /// Inspect accessibility tree and check WCAG compliance
     #[command(long_about = "Inspect accessibility tree and check WCAG compliance.
 
 Output: {\"results\": {\"role\": \"...\", \"name\": \"...\", \"children\": [...]}, \"total\": 1, \"meta\": {...}}
 With a11y summary: {\"results\": [{\"role\": \"...\", \"name\": \"...\", \"level\": N}], \"total\": N, \"meta\": {...}}
 With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"passes_aa\": bool, ...}], \"total\": N, \"meta\": {...}}")]
-    #[command(group(ArgGroup::new("a11y_target").required(false).multiple(false).args(["selector", "ref_id"])))]
-    A11y {
-        #[command(subcommand)]
-        a11y_command: Option<A11yCommand>,
-
-        /// Maximum tree depth to traverse (default: 6)
-        #[arg(long, default_value_t = 6)]
-        depth: u32,
-        /// Maximum total characters of text content to include (default: 50000)
-        #[arg(long, default_value_t = 50000)]
-        max_chars: u32,
-        /// CSS selector to root the tree at a specific element
-        #[arg(long, group = "a11y_target")]
-        selector: Option<String>,
-        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
-        #[arg(long = "ref", value_name = "REF_ID", group = "a11y_target")]
-        ref_id: Option<String>,
-        /// Only show interactive elements (buttons, links, inputs, etc.)
-        #[arg(long)]
-        interactive: bool,
-        /// Surface only nodes that fail a basic WCAG audit (e.g. `<img>` without
-        /// alt, form controls without an accessible name). Returns a flat array
-        /// of violation records `{role, name?, selector, violation, severity}`
-        /// instead of the full accessibility tree; empty when nothing critical.
-        #[arg(long, conflicts_with = "interactive")]
-        critical: bool,
-    },
+    A11y(A11yArgs),
     /// Reload the page
     #[command(long_about = "Reload the page.
 
@@ -993,21 +654,7 @@ Examples:
 
 Output (plain):    {\"results\": {\"action\": \"reload\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
 Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requests_observed\": M[, \"force\": true]}, \"total\": 1, \"meta\": {...}}")]
-    Reload {
-        /// Block until network is idle after reload
-        #[arg(long)]
-        wait_idle: bool,
-        /// Milliseconds of network inactivity that counts as idle (--wait-idle only)
-        #[arg(long, default_value_t = 500, requires = "wait_idle")]
-        idle_ms: u64,
-        /// Maximum total milliseconds to wait for idle (--wait-idle only)
-        #[arg(long, default_value_t = 10000, requires = "wait_idle")]
-        reload_timeout: u64,
-        /// Hard reload — bypass the HTTP cache (sends Firefox's `options.force`,
-        /// equivalent to Cmd-Shift-R in the browser UI). Default is a soft reload.
-        #[arg(long)]
-        hard: bool,
-    },
+    Reload(ReloadArgs),
     /// Go back in history
     #[command(long_about = "Navigate back in browser history.
 
@@ -1026,25 +673,12 @@ Actor IDs appear in eval results when the return value is a non-primitive
 Use --depth to control how many levels of nested objects are resolved.
 
 Output: {\"results\": {\"actor\": \"...\", \"prototype\": {...}, \"ownProperties\": {...}}, \"total\": 1, \"meta\": {...}}")]
-    Inspect {
-        /// The actor ID of the object grip to inspect
-        actor_id: String,
-        /// Recursion depth for nested objects (default: 1)
-        #[arg(long, default_value_t = 1)]
-        depth: u32,
-    },
+    Inspect(InspectArgs),
     /// List JavaScript/WASM sources loaded on the page
     #[command(long_about = "List JavaScript/WASM sources loaded on the page.
 
 Output: {\"results\": [{\"url\": \"...\", \"actor\": \"...\", \"isBlackBoxed\": bool}], \"total\": N, \"meta\": {...}}")]
-    Sources {
-        /// Filter sources by URL substring
-        #[arg(long)]
-        filter: Option<String>,
-        /// Filter sources by URL regex pattern
-        #[arg(long)]
-        pattern: Option<String>,
-    },
+    Sources(SourcesArgs),
     /// Dump structured page snapshot for LLM consumption: DOM tree with semantic roles,
     /// key attributes, interactive elements, and text content
     #[command(
@@ -1052,18 +686,7 @@ Output: {\"results\": [{\"url\": \"...\", \"actor\": \"...\", \"isBlackBoxed\": 
 
 Output: {\"results\": {\"tag\": \"HTML\", \"children\": [...], ...}, \"total\": 1, \"meta\": {...}}"
     )]
-    Snapshot {
-        /// Maximum tree depth to traverse (default: 6). Alias: --max-depth.
-        #[arg(long, default_value_t = 6)]
-        depth: u32,
-        /// Maximum tree depth to traverse (alias for --depth, matches `dom tree --max-depth` / CDP convention).
-        /// Mutually exclusive with --depth. Must be ≥ 1.
-        #[arg(long, value_name = "N", conflicts_with = "depth")]
-        max_depth: Option<u32>,
-        /// Maximum total characters of text content to include (default: 50000)
-        #[arg(long, default_value_t = 50000)]
-        max_chars: u32,
-    },
+    Snapshot(SnapshotArgs),
     /// Internal: run as background daemon (not for direct use)
     #[command(name = "_daemon", hide = true)]
     DaemonInternal,
@@ -1096,19 +719,7 @@ NOTE: behavior change — prior versions included hidden elements by default and
 
 Output: {\"results\": {\"elements\": [{\"selector\": \"...\", \"rect\": {...}, \"visible\": bool, \"z_index\": N}], \"overlaps\": [...]}, \"total\": 1, \"meta\": {...}}"
     )]
-    #[command(group(ArgGroup::new("geo_target").required(true).multiple(false).args(["selectors", "ref_id"])))]
-    Geometry {
-        /// One or more CSS selectors to query
-        #[arg(group = "geo_target")]
-        selectors: Vec<String>,
-        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
-        #[arg(long = "ref", value_name = "REF_ID", group = "geo_target")]
-        ref_id: Option<String>,
-        /// Include hidden elements (zero-size, display:none, visibility:hidden, opacity:0).
-        /// By default these are excluded.
-        #[arg(long)]
-        include_hidden: bool,
-    },
+    Geometry(GeometryArgs),
     /// Test responsive layout across viewport widths: resize to each width,
     /// collect geometry + computed styles for the given selectors, then restore
     /// the original viewport size.  Returns results keyed by breakpoint width.
@@ -1129,28 +740,7 @@ By default, hidden and zero-sized elements are excluded from results at each bre
 Pass --include-hidden to receive those elements as well.
 
 Output: {\"results\": {\"breakpoints\": [{\"width\": 320, \"viewport\": {\"width\": N, \"height\": N}, \"media_query_check\": {\"requested\": 320, \"inner_width\": N, \"matches\": bool}, \"elements\": [{\"selector\": \"...\", \"rect\": {...}, \"visible\": bool}]}, ...], \"original_viewport\": {\"width\": N, \"height\": N}, \"warnings\": [...]}, \"total\": N, \"meta\": {...}}")]
-    #[command(group(ArgGroup::new("resp_target").required(true).multiple(false).args(["selectors", "ref_id"])))]
-    Responsive {
-        /// One or more CSS selectors to query at each breakpoint
-        #[arg(group = "resp_target")]
-        selectors: Vec<String>,
-        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
-        #[arg(long = "ref", value_name = "REF_ID", group = "resp_target")]
-        ref_id: Option<String>,
-        /// Comma-separated viewport widths in pixels
-        #[arg(long, value_delimiter = ',', default_value = "320,768,1024,1440")]
-        widths: Vec<u32>,
-        /// Include hidden elements (zero-size, display:none, visibility:hidden, opacity:0).
-        /// By default these are excluded.
-        #[arg(long)]
-        include_hidden: bool,
-        /// Exit non-zero when the media-query self-check detects that the page's
-        /// media queries did not flip to the requested width (layout-only
-        /// emulation). Each breakpoint always carries a `media_query_check`
-        /// object regardless; --strict turns any mismatch into a failure.
-        #[arg(long)]
-        strict: bool,
-    },
+    Responsive(ResponsiveArgs),
     /// Quick wrapper around getComputedStyle for CSS debugging
     #[command(
         long_about = "Quick wrapper around getComputedStyle() for CSS debugging.
@@ -1167,26 +757,7 @@ Output (multi-match): {\"results\": [{\"selector\": \"...\", \"index\": 0, \"com
 Output (--prop): single string value per match
 Output (--all): full resolved-style object per match (dumps every property)"
     )]
-    #[command(group(ArgGroup::new("computed_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
-    Computed {
-        /// CSS selector to match elements (positional, or use --selector)
-        #[arg(group = "computed_target")]
-        selector_pos: Option<String>,
-        /// CSS selector to match elements (flag form)
-        #[arg(long = "selector", value_name = "SELECTOR", group = "computed_target")]
-        selector_flag: Option<String>,
-        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
-        #[arg(long = "ref", value_name = "REF_ID", group = "computed_target")]
-        ref_id: Option<String>,
-        /// Return only specific property values (repeatable: --prop color --prop font-size).
-        /// Also accepts CSS custom properties like --prop=--bg-color.
-        /// Comma-separated lists are also accepted: --prop color,font-size,--bg-color
-        #[arg(long, value_name = "NAME", action = clap::ArgAction::Append)]
-        prop: Vec<String>,
-        /// Include every resolved property, not just non-default values
-        #[arg(long, conflicts_with = "prop")]
-        all: bool,
-    },
+    Computed(ComputedArgs),
     /// Inspect CSS styles for an element matching a CSS selector
     #[command(
         long_about = "Inspect CSS styles for an element matching a CSS selector.
@@ -1195,27 +766,7 @@ Output (computed):  {\"results\": [{\"selector\": \"...\", \"computed\": {\"colo
 Output (--applied): {\"results\": [{\"selector\": \"...\", \"rules\": [{\"selector\": \"...\", \"properties\": [...]}]}], \"total\": N, \"meta\": {...}}
 Output (--layout):  {\"results\": [{\"selector\": \"...\", \"box\": {\"margin\": {...}, \"border\": {...}, \"padding\": {...}, \"content\": {...}}}], \"total\": N, \"meta\": {...}}"
     )]
-    #[command(group(ArgGroup::new("styles_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
-    Styles {
-        /// CSS selector to match the element (positional, or use --selector)
-        #[arg(group = "styles_target")]
-        selector_pos: Option<String>,
-        /// CSS selector to match the element (flag form)
-        #[arg(long = "selector", value_name = "SELECTOR", group = "styles_target")]
-        selector_flag: Option<String>,
-        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
-        #[arg(long = "ref", value_name = "REF_ID", group = "styles_target")]
-        ref_id: Option<String>,
-        /// Show applied CSS rules with source locations instead of computed styles
-        #[arg(long, group = "style_mode")]
-        applied: bool,
-        /// Show box model layout (margin/border/padding/content) instead of computed styles
-        #[arg(long, group = "style_mode")]
-        layout: bool,
-        /// Comma-separated list of CSS property names to include (computed mode only)
-        #[arg(long, value_delimiter = ',', conflicts_with_all = ["applied", "layout"])]
-        properties: Option<Vec<String>>,
-    },
+    Styles(StylesArgs),
     /// Explain *why* a CSS property has the value it does (cascade view)
     #[command(
         long_about = "Show the ordered list of CSS rules that determine a property's value.
@@ -1233,29 +784,7 @@ Examples:
   ff-rdp cascade h1 --prop color
   ff-rdp cascade '.btn'                # all properties declared on the element"
     )]
-    #[command(group(ArgGroup::new("cascade_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
-    Cascade {
-        /// CSS selector to match the element (positional, or use --selector)
-        #[arg(group = "cascade_target")]
-        selector_pos: Option<String>,
-        /// CSS selector to match the element (flag form)
-        #[arg(long = "selector", value_name = "SELECTOR", group = "cascade_target")]
-        selector_flag: Option<String>,
-        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
-        #[arg(long = "ref", value_name = "REF_ID", group = "cascade_target")]
-        ref_id: Option<String>,
-        /// CSS property to explain (e.g. `--prop display`).  Defaults to all
-        /// properties declared on the element.
-        #[arg(long, value_name = "NAME", conflicts_with = "all")]
-        prop: Option<String>,
-        /// Explain every property declared on the element (the default).
-        #[arg(long)]
-        all: bool,
-        /// Dump the raw PageStyle `getApplied` reply to stderr before parsing.
-        /// Use to diagnose field-name drift between ff-rdp and Firefox.
-        #[arg(long)]
-        debug_raw: bool,
-    },
+    Cascade(CascadeArgs),
     /// Scroll the page or a specific element
     #[command(long_about = "Scroll the page or a specific element.
 
@@ -1292,31 +821,7 @@ Examples:
 
 Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"profile_path\": \"...\", \"temp_profile\": bool, \"auto_consent\": bool}, \"total\": 1, \"meta\": {...}}"
     )]
-    Launch {
-        /// Run Firefox in headless mode
-        #[arg(long)]
-        headless: bool,
-        /// Path to a Firefox profile directory
-        #[arg(long, conflicts_with = "temp_profile")]
-        profile: Option<String>,
-        /// Create a temporary profile for a clean session
-        #[arg(long, conflicts_with = "profile")]
-        temp_profile: bool,
-        /// Override the debug server port (defaults to --port value)
-        #[arg(long)]
-        debug_port: Option<u16>,
-        /// Install Consent-O-Matic extension to auto-dismiss cookie consent banners
-        #[arg(long)]
-        auto_consent: bool,
-        /// If the debug port is already occupied, stop the prior Firefox instance
-        /// gracefully (SIGTERM → SIGKILL after 2 s) and then launch a fresh one.
-        /// Alias: --force.
-        #[arg(long)]
-        replace: bool,
-        /// Alias for --replace (stop the prior instance and relaunch).
-        #[arg(long, hide = true)]
-        force: bool,
-    },
+    Launch(LaunchArgs),
     /// Install Claude Code skill files to the user or project filesystem
     #[command(
         name = "install-skill",
@@ -1399,59 +904,7 @@ Examples:
   ff-rdp run login.json --dry-run
   ff-rdp run login.json --continue-on-failure
   ff-rdp run login.json --record session.json")]
-    Run {
-        /// Path to the script file (.json or .yaml)
-        script: std::path::PathBuf,
-        /// Ad-hoc variable overrides (format: KEY=VALUE)
-        #[arg(long = "vars", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
-        vars: Vec<String>,
-        /// Load variables from a dotenv-style file (values go to {{vars.X}}, not the process env)
-        #[arg(long = "vars-file", value_name = "PATH")]
-        vars_file: Option<std::path::PathBuf>,
-        /// Deprecated alias for --vars-file (will be removed in a future release)
-        #[arg(long = "env-file", value_name = "PATH", hide = true)]
-        env_file: Option<std::path::PathBuf>,
-        /// Continue running steps after a failure (default: stop on first failure)
-        #[arg(long = "continue-on-failure")]
-        continue_on_failure: bool,
-        /// Parse and validate the script; resolve variables; print steps without executing
-        #[arg(long = "dry-run")]
-        dry_run: bool,
-        /// Show secret values in step output (default: redact fields matching *password*, *token*, *secret*)
-        #[arg(long = "show-secrets")]
-        show_secrets: bool,
-        /// Record executed steps to this file
-        #[arg(long = "record", value_name = "OUTPUT")]
-        record: Option<std::path::PathBuf>,
-        /// Fail the run if recording a step fails (default: log to stderr and continue)
-        #[arg(long = "record-strict")]
-        record_strict: bool,
-        /// Force a specific input format (json|yaml), overriding file extension detection
-        #[arg(long = "script-format", value_name = "FORMAT")]
-        script_format: Option<String>,
-        /// Page-map file for resolving page_map:/field:/api_route: targets.
-        /// Falls back to .ffrdp/page-map.json when this flag is not set and that file exists.
-        #[arg(long = "page-map", value_name = "PATH")]
-        page_map: Option<std::path::PathBuf>,
-        /// Comma-separated list of env var names that {{env.X}} references may resolve.
-        /// HOME/USER/LANG/LC_ALL/TZ are always allowed. Names matching the
-        /// secret-name pattern (*password*, *passwd*, *pwd*, *token*, *secret*,
-        /// *key*) are refused unconditionally — even an explicit entry here will
-        /// not unlock them. Rename the variable or pass the value via --vars.
-        #[arg(
-            long = "allow-env",
-            value_name = "NAMES",
-            value_delimiter = ',',
-            num_args = 1..,
-            action = clap::ArgAction::Append
-        )]
-        allow_env: Vec<String>,
-        /// Allow sub-script `run:` paths that are absolute or escape the
-        /// top-level script's directory. Only enable when you author every
-        /// file in the include chain.
-        #[arg(long = "allow-unsafe-script-paths")]
-        allow_unsafe_script_paths: bool,
-    },
+    Run(RunArgs),
 
     /// Record browser commands to a replayable script
     #[command(long_about = "Record browser commands to a replayable script.
@@ -1496,70 +949,687 @@ Examples:
 Output: writes page-map JSON/YAML to --out (default: .ffrdp/page-map.json)
         and emits a summary to stdout:
         {\"results\": {\"pages\": N, \"forms\": N, \"api_routes\": N, \"out\": \"...\"}}")]
-    Index {
-        /// Base URL to crawl (defaults to the current daemon tab's origin)
-        base_url: Option<String>,
+    Index(IndexArgs),
+}
 
-        /// Output path for the page-map file
-        #[arg(long, default_value = ".ffrdp/page-map.json")]
-        out: std::path::PathBuf,
+#[derive(clap::Args)]
+pub struct NavigateArgs {
+    /// The URL to navigate to (positional, not a flag)
+    pub url: String,
+    /// Also capture network requests made during navigation
+    #[arg(long)]
+    pub with_network: bool,
+    /// Total time limit for network event collection in milliseconds (--with-network only).
+    /// Collection runs for this duration then returns all captured events.
+    #[arg(long, default_value_t = 10000)]
+    pub network_timeout: u64,
+    /// After navigating, wait for this text to appear in the page's visible content. Runs after the navigation load event completes.
+    #[arg(long, conflicts_with = "wait_selector")]
+    pub wait_text: Option<String>,
+    /// After navigating, wait for this CSS selector to match an element in the DOM. Runs after the navigation load event completes.
+    #[arg(long, conflicts_with = "wait_text")]
+    pub wait_selector: Option<String>,
+    /// Timeout for the --wait-text/--wait-selector condition in milliseconds. If the condition is not met within this time, the command fails with an error showing the elapsed time.
+    #[arg(long, default_value_t = 5000)]
+    pub wait_timeout: u64,
+    /// Skip waiting for the new document to commit; return immediately after the navigate request is acknowledged (pre-61g fire-and-forget behaviour).
+    #[arg(long)]
+    pub no_wait: bool,
+    /// Readiness level to wait for before returning: `loading` (dom-loading), `interactive` (dom-interactive), or `complete` (dom-complete, default). Ignored when `--with-network` is set: that mode uses the network-drain settle as its commit signal.
+    #[arg(long, value_name = "LEVEL", default_value = "complete", value_enum)]
+    pub wait: crate::commands::navigate::WaitLevel,
+    /// After the document commits, additionally wait for a predicate. Accepts selector:<css>, text:<substr>, url:<regex>, or gone:<css>.
+    /// Uses the --timeout budget. On failure surfaces a descriptive error.
+    #[arg(long, value_name = "PREDICATE")]
+    pub wait_for: Vec<String>,
+    /// Strategy for waiting for navigation readiness.
+    /// `both` (default): try events first; if they time out, fall back to
+    ///         readystate poll within the remaining budget.
+    /// `events`: wait for document-event resources (dom-complete).
+    /// `readystate`: poll `document.readyState == "complete"` until timeout.
+    #[arg(long, value_name = "STRATEGY", default_value = "both", value_enum)]
+    pub wait_strategy: crate::commands::navigate::WaitStrategy,
+}
 
-        /// Maximum crawl depth from the base URL
-        #[arg(long, default_value_t = 2)]
-        depth: u32,
+#[derive(clap::Args)]
+#[command(group(ArgGroup::new("eval_source").required(true).multiple(false).args(["script", "file", "stdin"])))]
+pub struct EvalArgs {
+    /// JavaScript expression to evaluate (positional)
+    pub script: Option<String>,
+    /// Read JavaScript source from a file
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<String>,
+    /// Read JavaScript source from stdin until EOF
+    #[arg(long)]
+    pub stdin: bool,
+    /// Wrap expression in JSON.stringify() to get actual values instead of actor grips
+    #[arg(long)]
+    pub stringify: bool,
+    /// No-op since iter-93. Kept for backwards compatibility — isolation
+    /// is now provided by Firefox's Debugger.evalInGlobal sandbox scope.
+    #[arg(long)]
+    pub no_isolate: bool,
+    /// Evaluate inside a specific frame/iframe actor (iter-77 S3).
+    ///
+    /// Pass the frame actor ID — e.g. obtained from a `watcher`
+    /// `target-available-form` event with `targetType=frame`.  Wires the
+    /// spec-declared `frameActor` field of `evaluateJSAsync`
+    /// (devtools/shared/specs/webconsole.js:149-164).
+    #[arg(long, value_name = "ACTOR")]
+    pub frame: Option<String>,
+    /// Pre-bind `$0` to a DOM node actor before evaluating (iter-77 S3).
+    ///
+    /// Maps to `selectedNodeActor` in the `evaluateJSAsync` request.
+    #[arg(long, value_name = "ACTOR")]
+    pub node: Option<String>,
+    /// Scope the eval to a specific inner-window ID (iter-77 S3).
+    ///
+    /// Maps to `innerWindowID` in the `evaluateJSAsync` request.
+    #[arg(long, value_name = "ID")]
+    pub inner_window: Option<u64>,
+    /// When the result is a JSON-encoded string for an object or array, parse it
+    /// on the client and replace `results` with the structured value.  Pairs
+    /// naturally with `--stringify` and with scripts that already return
+    /// `JSON.stringify(...)`.  Non-JSON strings are left unchanged.
+    #[arg(long)]
+    pub unwrap: bool,
+}
 
-        /// Maximum number of pages to crawl
-        #[arg(long = "max-pages", default_value_t = 50)]
-        max_pages: usize,
+#[derive(clap::Args)]
+#[command(group(ArgGroup::new("dom_target").required(false).multiple(false).args(["selector", "ref_id"])))]
+pub struct DomArgs {
+    #[command(subcommand)]
+    pub dom_command: Option<DomCommand>,
 
-        /// Only crawl URLs matching this regex
-        #[arg(long)]
-        include: Option<String>,
+    /// CSS selector to match elements
+    #[arg(group = "dom_target")]
+    pub selector: Option<String>,
+    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    #[arg(long = "ref", value_name = "REF_ID", group = "dom_target")]
+    pub ref_id: Option<String>,
+    /// Output outer HTML (default)
+    #[arg(long, group = "output_mode")]
+    pub outer_html: bool,
+    /// Output inner HTML
+    #[arg(long, group = "output_mode")]
+    pub inner_html: bool,
+    /// Output text content only
+    #[arg(long, group = "output_mode")]
+    pub text: bool,
+    /// Output element attributes as JSON objects
+    #[arg(long, group = "output_mode")]
+    pub attrs: bool,
+    /// Output both text content and attributes per element
+    #[arg(long, group = "output_mode")]
+    pub text_attrs: bool,
+    /// Return only the count of matching elements
+    #[arg(long, group = "output_mode")]
+    pub count: bool,
+    /// Return just the first match as a single value (or null) instead of an array.
+    /// Provided for callers who want the legacy pre-iter-61i single-element shape.
+    /// Mutually exclusive with --count.
+    #[arg(long, conflicts_with = "count")]
+    pub first: bool,
+    /// Attach computed CSS values for each match (comma-separated property list).
+    /// Each result element gets an extra `style` field with the named getComputedStyle
+    /// values, e.g. `--include-style color,display`. Capped by `--include-style-limit`.
+    #[arg(long, value_name = "PROPS")]
+    pub include_style: Option<String>,
+    /// Cap the number of matches that receive computed styles when
+    /// `--include-style` is set. Default 50. Elements beyond the cap omit the
+    /// `style` field and the response sets `meta.style_truncated: true`.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 50,
+        requires = "include_style"
+    )]
+    pub include_style_limit: usize,
+}
 
-        /// Skip URLs matching this regex
-        #[arg(long)]
-        exclude: Option<String>,
+#[derive(clap::Args)]
+pub struct ConsoleArgs {
+    /// Filter by log level (error, warn, info, log, debug)
+    #[arg(long)]
+    pub level: Option<String>,
+    /// Filter by message content (regex pattern)
+    #[arg(long)]
+    pub pattern: Option<String>,
+    /// Stream console messages in real time (connection closed or Ctrl-C to stop)
+    #[arg(long)]
+    pub follow: bool,
+}
 
-        /// Output format: json (default) or yaml
-        #[arg(long, default_value = "json")]
-        format: String,
+#[derive(clap::Args)]
+pub struct NetworkArgs {
+    /// Filter by URL pattern (substring match)
+    #[arg(long)]
+    pub filter: Option<String>,
+    /// Filter by HTTP method (GET, POST, etc.)
+    #[arg(long)]
+    pub method: Option<String>,
+    /// Stream network events in real time (Ctrl-C to stop)
+    #[arg(long)]
+    pub follow: bool,
+    /// Include request and response headers in --detail output.
+    /// Headers are fetched per-entry from the NetworkEventActor (watcher source
+    /// only). When the source is performance-api, a per-entry note is emitted
+    /// explaining why headers are missing; use --with-network to engage the
+    /// watcher and make headers available.
+    #[arg(long)]
+    pub headers: bool,
+    /// Scope the result to a specific navigation window (daemon mode only).
+    /// -1 = current navigation (default), -2 = one back, 'all' = full cumulative buffer.
+    /// Positive integers are treated as 1-based indices from the oldest boundary.
+    #[arg(long, value_name = "NAV_INDEX_OR_ALL")]
+    pub since: Option<String>,
+}
 
-        /// Also crawl cross-origin links (default: same-origin only)
-        #[arg(long)]
-        cross_origin: bool,
+#[derive(clap::Args)]
+pub struct PerfArgs {
+    #[command(subcommand)]
+    pub perf_command: Option<PerfCommand>,
 
-        /// Ignore robots.txt (useful for internal admin tools)
-        #[arg(long)]
-        ignore_robots: bool,
+    /// Performance entry type to query (resource, navigation, paint, lcp, cls, longtask)
+    #[arg(long = "type", default_value = "resource")]
+    pub entry_type: String,
 
-        /// Load Netscape-format cookie jar before crawling
-        #[arg(long, value_name = "PATH")]
-        cookies_from: Option<std::path::PathBuf>,
+    /// Filter by URL substring (resource/navigation types)
+    #[arg(long)]
+    pub filter: Option<String>,
 
-        /// Inject Authorization: Bearer <token> on each navigate
-        #[arg(long, value_name = "TOKEN")]
-        bearer: Option<String>,
+    /// Group results by a field (e.g., "domain" for resource entries)
+    #[arg(long)]
+    pub group_by: Option<String>,
+}
 
-        /// Run this iter-61 script before crawling (for authentication)
-        #[arg(long, value_name = "PATH")]
-        login_script: Option<std::path::PathBuf>,
+#[derive(clap::Args)]
+pub struct ScreenshotArgs {
+    /// Output file path
+    #[arg(long, short, conflicts_with = "base64")]
+    pub output: Option<String>,
+    /// Return the screenshot as base64 PNG data in JSON output instead of saving to a file
+    #[arg(long, conflicts_with = "output")]
+    pub base64: bool,
+    /// Capture the entire scrollable page (document.scrollingElement.scrollHeight)
+    #[arg(long, conflicts_with = "viewport_height")]
+    pub full_page: bool,
+    /// Capture at this explicit height (pixels) instead of the viewport height
+    #[arg(long, value_name = "PX", conflicts_with = "full_page")]
+    pub viewport_height: Option<u32>,
+    /// Restrict output to paths under this directory (rejects path traversal)
+    #[arg(long, value_name = "DIR")]
+    pub output_root: Option<std::path::PathBuf>,
+    /// Attempt to receive the screenshot via a bulk-frame streaming path.
+    ///
+    /// When set, the command sends the capture request and then tries to
+    /// read the response as a bulk binary frame via
+    /// `Transport::recv_bulk_with_handler` (no full base64 allocation in
+    /// memory).  If Firefox responds with a JSON frame (the current
+    /// behaviour for all Firefox versions), the command falls back to the
+    /// standard base64 path transparently.
+    #[arg(long)]
+    pub bulk: bool,
+}
 
-        /// Check mode: re-crawl and report drifted selectors vs. an existing map
-        #[arg(long, conflicts_with_all = ["out", "format"])]
-        check: bool,
+#[derive(clap::Args)]
+#[command(group(ArgGroup::new("click_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
+pub struct ClickArgs {
+    /// CSS selector of the element to click (positional, or use --selector)
+    #[arg(group = "click_target")]
+    pub selector_pos: Option<String>,
+    /// CSS selector of the element to click (flag form)
+    #[arg(long = "selector", value_name = "SELECTOR", group = "click_target")]
+    pub selector_flag: Option<String>,
+    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    #[arg(long = "ref", value_name = "REF_ID", group = "click_target")]
+    pub ref_id: Option<String>,
+    /// After clicking, wait for a network request whose URL contains this pattern.
+    /// Returns the matched request record in the output.
+    #[arg(long, value_name = "PATTERN")]
+    pub wait_for_network: Option<String>,
+    /// Timeout in milliseconds for --wait-for-network (default: global --timeout)
+    #[arg(long, value_name = "MS", requires = "wait_for_network")]
+    pub network_timeout: Option<u64>,
+    /// Skip auto-wait and click immediately (reverts to pre-iter-59 fire-and-forget)
+    #[arg(long)]
+    pub no_wait: bool,
+    /// Event dispatch mode: pointer (default), legacy (mouse events only), click-only
+    #[arg(long, default_value = "pointer", value_name = "MODE")]
+    pub dispatch: String,
+    /// After clicking, wait for this condition. Repeatable. Forms: selector:<css>, text:<substr>, url:<regex>, gone:<css>
+    #[arg(long, value_name = "PREDICATE", action = clap::ArgAction::Append)]
+    pub wait_for: Vec<String>,
+    /// Timeout in milliseconds for --wait-for predicates (default: same as --timeout)
+    #[arg(long, value_name = "MS")]
+    pub wait_for_timeout: Option<u64>,
+    /// After clicking, wait for network and DOM to idle (no XHR/fetch for 500ms, no DOM mutations for 200ms)
+    #[arg(long)]
+    pub settle: bool,
+}
 
-        /// Existing page-map to check against (--check mode only)
-        #[arg(long, value_name = "PATH", requires = "check")]
-        page_map: Option<std::path::PathBuf>,
+#[derive(clap::Args)]
+#[command(group(ArgGroup::new("type_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
+pub struct TypeArgs {
+    /// CSS selector of the input element (positional, or use --selector)
+    #[arg(group = "type_target")]
+    pub selector_pos: Option<String>,
+    /// Text to type into the element (positional, or use --text)
+    pub text_pos: Option<String>,
+    /// CSS selector of the input element (flag form)
+    #[arg(long = "selector", value_name = "SELECTOR", group = "type_target")]
+    pub selector_flag: Option<String>,
+    /// Text to type into the element (flag form)
+    #[arg(long = "text", value_name = "TEXT")]
+    pub text_flag: Option<String>,
+    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    #[arg(long = "ref", value_name = "REF_ID", group = "type_target")]
+    pub ref_id: Option<String>,
+    /// Clear the element's current value before typing
+    #[arg(long)]
+    pub clear: bool,
+    /// Skip auto-wait and type immediately (reverts to pre-iter-59 fire-and-forget)
+    #[arg(long)]
+    pub no_wait: bool,
+    /// After typing, wait for this condition. Repeatable. Forms: selector:<css>, text:<substr>, url:<regex>, gone:<css>
+    #[arg(long, value_name = "PREDICATE", action = clap::ArgAction::Append)]
+    pub wait_for: Vec<String>,
+    /// Timeout in milliseconds for --wait-for predicates (default: same as --timeout)
+    #[arg(long, value_name = "MS")]
+    pub wait_for_timeout: Option<u64>,
+    /// After typing, wait for network and DOM to idle
+    #[arg(long)]
+    pub settle: bool,
+}
 
-        /// Write drift report to this file (--check mode only, default: stdout)
-        #[arg(long, value_name = "PATH", requires = "check")]
-        report: Option<std::path::PathBuf>,
+#[derive(clap::Args)]
+#[command(group(ArgGroup::new("condition").required(true).multiple(false)))]
+pub struct WaitArgs {
+    /// Wait until an element matching this CSS selector exists in the DOM
+    #[arg(long, group = "condition")]
+    pub selector: Option<String>,
+    /// Wait until this text appears anywhere on the page
+    #[arg(long, group = "condition")]
+    pub text: Option<String>,
+    /// Wait until this JavaScript expression returns a truthy value
+    #[arg(long, group = "condition")]
+    pub eval: Option<String>,
+    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    #[arg(long = "ref", value_name = "REF_ID", group = "condition")]
+    pub ref_id: Option<String>,
+    /// Timeout in milliseconds before giving up (canonical flag — use this one).
+    /// The legacy spelling `--wait-timeout` is also accepted as a hidden alias.
+    #[arg(long = "timeout-ms", alias = "wait-timeout", default_value_t = 5000)]
+    pub wait_timeout: u64,
+}
 
-        /// Restrict output to paths under this directory (rejects path traversal)
-        #[arg(long, value_name = "DIR")]
-        output_root: Option<std::path::PathBuf>,
-    },
+#[derive(clap::Args)]
+pub struct CookiesArgs {
+    /// Filter by cookie name (exact match)
+    #[arg(long)]
+    pub name: Option<String>,
+    /// Also evaluate `document.cookie` and merge any entries not already
+    /// present in the StorageActor reply (marked with `source: "document.cookie"`).
+    /// Useful for cookies that lack a `Domain=` attribute and are not surfaced
+    /// by `getStoreObjects`.
+    ///
+    /// This is enabled by default. Pass `--storage-only` to disable.
+    #[arg(
+        long,
+        hide = true,
+        default_value_t = false,
+        conflicts_with = "storage_only"
+    )]
+    pub include_document_cookie: bool,
+    /// Return only cookies from the StorageActor (skip `document.cookie` evaluation).
+    /// Use this when you need the raw StorageActor view, e.g. to debug httpOnly cookies.
+    #[arg(long)]
+    pub storage_only: bool,
+}
+
+#[derive(clap::Args)]
+pub struct StorageArgs {
+    /// Storage type: "local" (or "localStorage") / "session" (or "sessionStorage")
+    pub storage_type: String,
+    /// Get a specific key only
+    #[arg(long)]
+    pub key: Option<String>,
+}
+
+#[derive(clap::Args)]
+#[command(group(ArgGroup::new("a11y_target").required(false).multiple(false).args(["selector", "ref_id"])))]
+pub struct A11yArgs {
+    #[command(subcommand)]
+    pub a11y_command: Option<A11yCommand>,
+
+    /// Maximum tree depth to traverse (default: 6)
+    #[arg(long, default_value_t = 6)]
+    pub depth: u32,
+    /// Maximum total characters of text content to include (default: 50000)
+    #[arg(long, default_value_t = 50000)]
+    pub max_chars: u32,
+    /// CSS selector to root the tree at a specific element
+    #[arg(long, group = "a11y_target")]
+    pub selector: Option<String>,
+    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    #[arg(long = "ref", value_name = "REF_ID", group = "a11y_target")]
+    pub ref_id: Option<String>,
+    /// Only show interactive elements (buttons, links, inputs, etc.)
+    #[arg(long)]
+    pub interactive: bool,
+    /// Surface only nodes that fail a basic WCAG audit (e.g. `<img>` without
+    /// alt, form controls without an accessible name). Returns a flat array
+    /// of violation records `{role, name?, selector, violation, severity}`
+    /// instead of the full accessibility tree; empty when nothing critical.
+    #[arg(long, conflicts_with = "interactive")]
+    pub critical: bool,
+}
+
+#[derive(clap::Args)]
+pub struct ReloadArgs {
+    /// Block until network is idle after reload
+    #[arg(long)]
+    pub wait_idle: bool,
+    /// Milliseconds of network inactivity that counts as idle (--wait-idle only)
+    #[arg(long, default_value_t = 500, requires = "wait_idle")]
+    pub idle_ms: u64,
+    /// Maximum total milliseconds to wait for idle (--wait-idle only)
+    #[arg(long, default_value_t = 10000, requires = "wait_idle")]
+    pub reload_timeout: u64,
+    /// Hard reload — bypass the HTTP cache (sends Firefox's `options.force`,
+    /// equivalent to Cmd-Shift-R in the browser UI). Default is a soft reload.
+    #[arg(long)]
+    pub hard: bool,
+}
+
+#[derive(clap::Args)]
+pub struct InspectArgs {
+    /// The actor ID of the object grip to inspect
+    pub actor_id: String,
+    /// Recursion depth for nested objects (default: 1)
+    #[arg(long, default_value_t = 1)]
+    pub depth: u32,
+}
+
+#[derive(clap::Args)]
+pub struct SourcesArgs {
+    /// Filter sources by URL substring
+    #[arg(long)]
+    pub filter: Option<String>,
+    /// Filter sources by URL regex pattern
+    #[arg(long)]
+    pub pattern: Option<String>,
+}
+
+#[derive(clap::Args)]
+pub struct SnapshotArgs {
+    /// Maximum tree depth to traverse (default: 6). Alias: --max-depth.
+    #[arg(long, default_value_t = 6)]
+    pub depth: u32,
+    /// Maximum tree depth to traverse (alias for --depth, matches `dom tree --max-depth` / CDP convention).
+    /// Mutually exclusive with --depth. Must be ≥ 1.
+    #[arg(long, value_name = "N", conflicts_with = "depth")]
+    pub max_depth: Option<u32>,
+    /// Maximum total characters of text content to include (default: 50000)
+    #[arg(long, default_value_t = 50000)]
+    pub max_chars: u32,
+}
+
+#[derive(clap::Args)]
+#[command(group(ArgGroup::new("geo_target").required(true).multiple(false).args(["selectors", "ref_id"])))]
+pub struct GeometryArgs {
+    /// One or more CSS selectors to query
+    #[arg(group = "geo_target")]
+    pub selectors: Vec<String>,
+    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    #[arg(long = "ref", value_name = "REF_ID", group = "geo_target")]
+    pub ref_id: Option<String>,
+    /// Include hidden elements (zero-size, display:none, visibility:hidden, opacity:0).
+    /// By default these are excluded.
+    #[arg(long)]
+    pub include_hidden: bool,
+}
+
+#[derive(clap::Args)]
+#[command(group(ArgGroup::new("resp_target").required(true).multiple(false).args(["selectors", "ref_id"])))]
+pub struct ResponsiveArgs {
+    /// One or more CSS selectors to query at each breakpoint
+    #[arg(group = "resp_target")]
+    pub selectors: Vec<String>,
+    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    #[arg(long = "ref", value_name = "REF_ID", group = "resp_target")]
+    pub ref_id: Option<String>,
+    /// Comma-separated viewport widths in pixels
+    #[arg(long, value_delimiter = ',', default_value = "320,768,1024,1440")]
+    pub widths: Vec<u32>,
+    /// Include hidden elements (zero-size, display:none, visibility:hidden, opacity:0).
+    /// By default these are excluded.
+    #[arg(long)]
+    pub include_hidden: bool,
+    /// Exit non-zero when the media-query self-check detects that the page's
+    /// media queries did not flip to the requested width (layout-only
+    /// emulation). Each breakpoint always carries a `media_query_check`
+    /// object regardless; --strict turns any mismatch into a failure.
+    #[arg(long)]
+    pub strict: bool,
+}
+
+#[derive(clap::Args)]
+#[command(group(ArgGroup::new("computed_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
+pub struct ComputedArgs {
+    /// CSS selector to match elements (positional, or use --selector)
+    #[arg(group = "computed_target")]
+    pub selector_pos: Option<String>,
+    /// CSS selector to match elements (flag form)
+    #[arg(long = "selector", value_name = "SELECTOR", group = "computed_target")]
+    pub selector_flag: Option<String>,
+    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    #[arg(long = "ref", value_name = "REF_ID", group = "computed_target")]
+    pub ref_id: Option<String>,
+    /// Return only specific property values (repeatable: --prop color --prop font-size).
+    /// Also accepts CSS custom properties like --prop=--bg-color.
+    /// Comma-separated lists are also accepted: --prop color,font-size,--bg-color
+    #[arg(long, value_name = "NAME", action = clap::ArgAction::Append)]
+    pub prop: Vec<String>,
+    /// Include every resolved property, not just non-default values
+    #[arg(long, conflicts_with = "prop")]
+    pub all: bool,
+}
+
+#[derive(clap::Args)]
+#[command(group(ArgGroup::new("styles_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
+pub struct StylesArgs {
+    /// CSS selector to match the element (positional, or use --selector)
+    #[arg(group = "styles_target")]
+    pub selector_pos: Option<String>,
+    /// CSS selector to match the element (flag form)
+    #[arg(long = "selector", value_name = "SELECTOR", group = "styles_target")]
+    pub selector_flag: Option<String>,
+    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    #[arg(long = "ref", value_name = "REF_ID", group = "styles_target")]
+    pub ref_id: Option<String>,
+    /// Show applied CSS rules with source locations instead of computed styles
+    #[arg(long, group = "style_mode")]
+    pub applied: bool,
+    /// Show box model layout (margin/border/padding/content) instead of computed styles
+    #[arg(long, group = "style_mode")]
+    pub layout: bool,
+    /// Comma-separated list of CSS property names to include (computed mode only)
+    #[arg(long, value_delimiter = ',', conflicts_with_all = ["applied", "layout"])]
+    pub properties: Option<Vec<String>>,
+}
+
+#[derive(clap::Args)]
+#[command(group(ArgGroup::new("cascade_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
+pub struct CascadeArgs {
+    /// CSS selector to match the element (positional, or use --selector)
+    #[arg(group = "cascade_target")]
+    pub selector_pos: Option<String>,
+    /// CSS selector to match the element (flag form)
+    #[arg(long = "selector", value_name = "SELECTOR", group = "cascade_target")]
+    pub selector_flag: Option<String>,
+    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    #[arg(long = "ref", value_name = "REF_ID", group = "cascade_target")]
+    pub ref_id: Option<String>,
+    /// CSS property to explain (e.g. `--prop display`).  Defaults to all
+    /// properties declared on the element.
+    #[arg(long, value_name = "NAME", conflicts_with = "all")]
+    pub prop: Option<String>,
+    /// Explain every property declared on the element (the default).
+    #[arg(long)]
+    pub all: bool,
+    /// Dump the raw PageStyle `getApplied` reply to stderr before parsing.
+    /// Use to diagnose field-name drift between ff-rdp and Firefox.
+    #[arg(long)]
+    pub debug_raw: bool,
+}
+
+#[derive(clap::Args)]
+pub struct LaunchArgs {
+    /// Run Firefox in headless mode
+    #[arg(long)]
+    pub headless: bool,
+    /// Path to a Firefox profile directory
+    #[arg(long, conflicts_with = "temp_profile")]
+    pub profile: Option<String>,
+    /// Create a temporary profile for a clean session
+    #[arg(long, conflicts_with = "profile")]
+    pub temp_profile: bool,
+    /// Override the debug server port (defaults to --port value)
+    #[arg(long)]
+    pub debug_port: Option<u16>,
+    /// Install Consent-O-Matic extension to auto-dismiss cookie consent banners
+    #[arg(long)]
+    pub auto_consent: bool,
+    /// If the debug port is already occupied, stop the prior Firefox instance
+    /// gracefully (SIGTERM → SIGKILL after 2 s) and then launch a fresh one.
+    /// Alias: --force.
+    #[arg(long)]
+    pub replace: bool,
+    /// Alias for --replace (stop the prior instance and relaunch).
+    #[arg(long, hide = true)]
+    pub force: bool,
+}
+
+#[derive(clap::Args)]
+pub struct RunArgs {
+    /// Path to the script file (.json or .yaml)
+    pub script: std::path::PathBuf,
+    /// Ad-hoc variable overrides (format: KEY=VALUE)
+    #[arg(long = "vars", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+    pub vars: Vec<String>,
+    /// Load variables from a dotenv-style file (values go to {{vars.X}}, not the process env)
+    #[arg(long = "vars-file", value_name = "PATH")]
+    pub vars_file: Option<std::path::PathBuf>,
+    /// Deprecated alias for --vars-file (will be removed in a future release)
+    #[arg(long = "env-file", value_name = "PATH", hide = true)]
+    pub env_file: Option<std::path::PathBuf>,
+    /// Continue running steps after a failure (default: stop on first failure)
+    #[arg(long = "continue-on-failure")]
+    pub continue_on_failure: bool,
+    /// Parse and validate the script; resolve variables; print steps without executing
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
+    /// Show secret values in step output (default: redact fields matching *password*, *token*, *secret*)
+    #[arg(long = "show-secrets")]
+    pub show_secrets: bool,
+    /// Record executed steps to this file
+    #[arg(long = "record", value_name = "OUTPUT")]
+    pub record: Option<std::path::PathBuf>,
+    /// Fail the run if recording a step fails (default: log to stderr and continue)
+    #[arg(long = "record-strict")]
+    pub record_strict: bool,
+    /// Force a specific input format (json|yaml), overriding file extension detection
+    #[arg(long = "script-format", value_name = "FORMAT")]
+    pub script_format: Option<String>,
+    /// Page-map file for resolving page_map:/field:/api_route: targets.
+    /// Falls back to .ffrdp/page-map.json when this flag is not set and that file exists.
+    #[arg(long = "page-map", value_name = "PATH")]
+    pub page_map: Option<std::path::PathBuf>,
+    /// Comma-separated list of env var names that {{env.X}} references may resolve.
+    /// HOME/USER/LANG/LC_ALL/TZ are always allowed. Names matching the
+    /// secret-name pattern (*password*, *passwd*, *pwd*, *token*, *secret*,
+    /// *key*) are refused unconditionally — even an explicit entry here will
+    /// not unlock them. Rename the variable or pass the value via --vars.
+    #[arg(
+        long = "allow-env",
+        value_name = "NAMES",
+        value_delimiter = ',',
+        num_args = 1..,
+        action = clap::ArgAction::Append
+    )]
+    pub allow_env: Vec<String>,
+    /// Allow sub-script `run:` paths that are absolute or escape the
+    /// top-level script's directory. Only enable when you author every
+    /// file in the include chain.
+    #[arg(long = "allow-unsafe-script-paths")]
+    pub allow_unsafe_script_paths: bool,
+}
+
+#[derive(clap::Args)]
+pub struct IndexArgs {
+    /// Base URL to crawl (defaults to the current daemon tab's origin)
+    pub base_url: Option<String>,
+
+    /// Output path for the page-map file
+    #[arg(long, default_value = ".ffrdp/page-map.json")]
+    pub out: std::path::PathBuf,
+
+    /// Maximum crawl depth from the base URL
+    #[arg(long, default_value_t = 2)]
+    pub depth: u32,
+
+    /// Maximum number of pages to crawl
+    #[arg(long = "max-pages", default_value_t = 50)]
+    pub max_pages: usize,
+
+    /// Only crawl URLs matching this regex
+    #[arg(long)]
+    pub include: Option<String>,
+
+    /// Skip URLs matching this regex
+    #[arg(long)]
+    pub exclude: Option<String>,
+
+    /// Output format: json (default) or yaml
+    #[arg(long, default_value = "json")]
+    pub format: String,
+
+    /// Also crawl cross-origin links (default: same-origin only)
+    #[arg(long)]
+    pub cross_origin: bool,
+
+    /// Ignore robots.txt (useful for internal admin tools)
+    #[arg(long)]
+    pub ignore_robots: bool,
+
+    /// Load Netscape-format cookie jar before crawling
+    #[arg(long, value_name = "PATH")]
+    pub cookies_from: Option<std::path::PathBuf>,
+
+    /// Inject Authorization: Bearer <token> on each navigate
+    #[arg(long, value_name = "TOKEN")]
+    pub bearer: Option<String>,
+
+    /// Run this iter-61 script before crawling (for authentication)
+    #[arg(long, value_name = "PATH")]
+    pub login_script: Option<std::path::PathBuf>,
+
+    /// Check mode: re-crawl and report drifted selectors vs. an existing map
+    #[arg(long, conflicts_with_all = ["out", "format"])]
+    pub check: bool,
+
+    /// Existing page-map to check against (--check mode only)
+    #[arg(long, value_name = "PATH", requires = "check")]
+    pub page_map: Option<std::path::PathBuf>,
+
+    /// Write drift report to this file (--check mode only, default: stdout)
+    #[arg(long, value_name = "PATH", requires = "check")]
+    pub report: Option<std::path::PathBuf>,
+
+    /// Restrict output to paths under this directory (rejects path traversal)
+    #[arg(long, value_name = "DIR")]
+    pub output_root: Option<std::path::PathBuf>,
 }
 
 /// Subcommands for `ff-rdp record`.
@@ -1928,6 +1998,106 @@ impl InstallSkillArgs {
             SkillScope::Project
         } else {
             SkillScope::User
+        }
+    }
+}
+
+#[cfg(test)]
+mod help_stack_tests {
+    //! iter-99: guard the `cookies --help` (and every other subcommand's `--help`)
+    //! stack-overflow regression.
+    //!
+    //! Background: on Windows the process main thread has a 1 MiB stack (vs 8 MiB
+    //! on Linux/macOS).  clap's derive builds every struct-variant subcommand's
+    //! argument list inside one monolithic `Command::augment_subcommands` stack
+    //! frame; with ~40 subcommands and ~150 inline args that single frame grew
+    //! past 1 MiB, so `ff-rdp cookies --help` exited `0xC00000FD`
+    //! (STATUS_STACK_OVERFLOW) on windows-latest CI while staying green on the
+    //! 8 MiB Linux/macOS runners.
+    //!
+    //! iter-99 moved each arg-heavy variant's fields into a dedicated
+    //! `#[derive(clap::Args)]` struct (`Navigate(NavigateArgs)` …), so each
+    //! subcommand's args build in their own frame.  These tests pin the fix by
+    //! rendering help inside a deliberately small (1 MiB) thread stack, mirroring
+    //! the Windows main-thread limit so the latent overflow is reproducible on
+    //! every platform.
+
+    use super::Cli;
+    use clap::CommandFactory;
+
+    /// Size of the guard thread's stack: 1 MiB, matching the Windows main-thread
+    /// stack that overflowed pre-fix.  Rendering `--help` must complete within it.
+    const SMALL_STACK: usize = 1 << 20;
+
+    /// Render one subcommand's long help into a byte buffer.  Returns the number
+    /// of bytes written so the closure has an observable result (and so the
+    /// optimizer can't elide the work).
+    fn render_subcommand_help(name: &str) -> usize {
+        let mut cmd = Cli::command();
+        // `build()` finalizes the whole tree exactly as `try_parse_from` does
+        // before rendering help — this is the code path that overflowed.
+        cmd.build();
+        let sub = cmd
+            .find_subcommand_mut(name)
+            .unwrap_or_else(|| panic!("subcommand {name:?} not found"));
+        let mut buf: Vec<u8> = Vec::new();
+        sub.write_long_help(&mut buf)
+            .expect("write_long_help must not fail");
+        buf.len()
+    }
+
+    /// Run `f` on a thread whose stack is capped at [`SMALL_STACK`].  Panics with
+    /// a clear message if the thread overflowed / panicked.
+    fn in_small_stack<F, T>(what: &str, f: F) -> T
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        std::thread::Builder::new()
+            .stack_size(SMALL_STACK)
+            .spawn(f)
+            .expect("spawn small-stack thread")
+            .join()
+            .unwrap_or_else(|_| {
+                panic!("{what} overflowed a {SMALL_STACK}-byte stack (STATUS_STACK_OVERFLOW regression)")
+            })
+    }
+
+    /// iter-99 AC / pre-fix repro: `cookies --help` must render inside a 1 MiB
+    /// stack.  Pre-fix this overflowed on every platform (the Windows-only CI
+    /// failure made reproducible everywhere); post-fix it completes.
+    #[test]
+    fn pre_fix_repro_cookies_help_stack_depth() {
+        let bytes = in_small_stack("cookies --help", || render_subcommand_help("cookies"));
+        assert!(
+            bytes > 0,
+            "cookies --help rendered no output — help text missing?"
+        );
+    }
+
+    /// iter-99 AC: every subcommand's `--help` must render inside the same 1 MiB
+    /// stack, so no other command hides the same latent oversized-frame bug.
+    #[test]
+    fn unit_all_subcommand_helps_render_in_small_stack() {
+        // Collect the externally-visible subcommand names from the built tree so
+        // this test automatically covers subcommands added in future iterations.
+        let names: Vec<String> = {
+            let mut cmd = Cli::command();
+            cmd.build();
+            cmd.get_subcommands()
+                .map(|s| s.get_name().to_owned())
+                .collect()
+        };
+        assert!(
+            names.iter().any(|n| n == "cookies"),
+            "expected the cookies subcommand to be present; got {names:?}"
+        );
+        for name in names {
+            let owned = name.clone();
+            let bytes = in_small_stack(&format!("{owned} --help"), move || {
+                render_subcommand_help(&owned)
+            });
+            assert!(bytes > 0, "subcommand {name:?} --help rendered no output");
         }
     }
 }

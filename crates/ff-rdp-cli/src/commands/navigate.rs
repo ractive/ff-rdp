@@ -1470,7 +1470,8 @@ mod tests {
             crate::cli::args::Cli::try_parse_from(["ff-rdp", "navigate", "https://example.com/"])
                 .expect("clap parse navigate");
         match cli.command {
-            crate::cli::args::Command::Navigate { wait_strategy, .. } => {
+            crate::cli::args::Command::Navigate(args) => {
+                let wait_strategy = args.wait_strategy;
                 assert_eq!(
                     wait_strategy,
                     WaitStrategy::Both,

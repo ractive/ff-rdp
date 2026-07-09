@@ -553,10 +553,10 @@ mod tests {
     fn clap_screenshot_full_page_flag_parsed() {
         let cli = Cli::try_parse_from(["ff-rdp", "screenshot", "--full-page"])
             .expect("should parse --full-page");
-        let Command::Screenshot { full_page, .. } = cli.command else {
+        let Command::Screenshot(args) = cli.command else {
             panic!("expected Screenshot command");
         };
-        assert!(full_page, "--full-page flag must be set");
+        assert!(args.full_page, "--full-page flag must be set");
     }
 
     #[test]
@@ -565,7 +565,7 @@ mod tests {
             .expect("should parse a11y --limit 5 --format text");
         assert_eq!(cli.limit, Some(5));
         assert_eq!(cli.format, "text");
-        assert!(matches!(cli.command, Command::A11y { .. }));
+        assert!(matches!(cli.command, Command::A11y(_)));
     }
 
     #[test]
