@@ -1,9 +1,9 @@
 ---
-title: "Iteration 107: Windows CI pre-existing reds — install-skill HOME redirection + reload-idle timing"
+title: "Iteration 108: Windows CI pre-existing reds — install-skill HOME redirection + reload-idle timing"
 type: iteration
 date: 2026-07-09
 status: planned
-branch: iter-107/windows-ci-preexisting-reds
+branch: iter-108/windows-ci-preexisting-reds
 depends_on: []
 firefox_refs: []
 kb_refs:
@@ -17,7 +17,7 @@ dogfood_path: |
 tags: [iteration, ci, windows, install-skill, nav-action, preexisting-red]
 ---
 
-# Iteration 107: Windows CI pre-existing reds
+# Iteration 108: Windows CI pre-existing reds
 
 Discovered during the iter-101 (`daemon-session-correctness`, PR #141) merge review.
 `test (windows-latest)` fails with 5 test failures that are **unrelated** to
