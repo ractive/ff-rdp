@@ -235,18 +235,21 @@ them.
       unconditionally (no `FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER` gate).
       Backed by `ResourceBuffer::record_boundary_and_insert` + the fixed
       `serialize_network_resources_for_buffer` wire shape. Both passed live.
-- [x] fmt + clippy green; the full `--no-fail-fast` masked-surface audit run to
-      completion once (Theme C). Every test in iter-106's scope passes: all
-      three themed gates (`CHROME_CSP`/`DNSFAIL`/`NETWORK_WATCHER`) are deleted
-      and pass unconditionally, and the newly-found `live_cookie_longstring_value`
-      masked bug is fixed. The 29 remaining pre-existing masked failures
-      (unrelated to this iteration's eval/DNS/network themes — dominated by the
-      iter-63 `data:`-URL gate) are **fully inventoried** in
-      [[iteration-110-post-batch-live-sweep]]'s Results and handed to that
-      plan's Theme B (the designated full-suite-fallout sweep), per the plan's
-      own execution policy ("Full-suite validation happens exactly once, in
-      iteration-110"). The only `FF_RDP_ALLOW_KNOWN_FAILING_*` gate left in the
-      tree is `WATCH_TARGETS`, out of scope here (owned by
+- [x] live_cookie_longstring_value: the masked-surface audit's one in-scope
+      real bug — `COOKIE_LEN` (4 000) replaces the rejected 20 000-char cookie so
+      the full value round-trips. fmt + clippy green; the full `--no-fail-fast`
+      audit ran to completion once (Theme C). Every test in iter-106's scope
+      passes: the three themed gates (`CHROME_CSP`/`DNSFAIL`/`NETWORK_WATCHER`)
+      are deleted and pass unconditionally, backed by `record_boundary_and_insert`
+      and `reclassify_timeout_as_neterror`. The 29 remaining pre-existing masked
+      failures (unrelated to this iteration's eval/DNS/network themes — dominated
+      by the iter-63 `data:`-URL gate) are **fully inventoried** in
+      [[iteration-110-post-batch-live-sweep]]'s Results and handed to that plan's
+      Theme B (the designated full-suite-fallout sweep), per this plan's
+      execution policy ("Full-suite validation happens exactly once, in
+      iteration-110"). [deferred — new plan: kb/iterations/iteration-110-post-batch-live-sweep.md]
+      The only `FF_RDP_ALLOW_KNOWN_FAILING_*` gate left in the tree is
+      `WATCH_TARGETS`, out of scope here (owned by
       [[iteration-101-daemon-session-correctness]] Theme A).
 
 ## Design notes
