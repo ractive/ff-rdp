@@ -26,6 +26,17 @@ tags: [iteration, errors, semver, release, hygiene, msrv, review-2026-07]
 
 # Iteration 105: error taxonomy completion + release hygiene
 
+## Live-test policy (2026-07-09, per James)
+
+Do NOT run the full live Firefox suite (`cargo test-live`, or `--test live --
+--include-ignored` without a filter) during this iteration — neither while
+implementing nor while reviewing. Run ONLY (1) the specific live tests this
+plan's ACs name, filtered (e.g. `cargo test -p ff-rdp-cli --test live
+<filter> -- --include-ignored`), and (2) this iteration's dogfood script
+(required by check-iteration-ready). Full-suite validation is deferred to
+[[iteration-107-post-105-live-sweep]], which runs once after iteration 105
+merges and fixes all fallout there.
+
 ff-rdp-core is published (0.2.x) but its error story is a half-finished
 migration the deep review ([[deep-review-2026-07-fable5]]) flagged as the
 top design debt — worth completing **before the next release cut**:

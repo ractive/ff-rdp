@@ -51,6 +51,17 @@ tags: [iteration, security, tls, manifest, pwa, network, audit, review-2026-07]
 
 # Iteration 104: security & PWA audit pack
 
+## Live-test policy (2026-07-09, per James)
+
+Do NOT run the full live Firefox suite (`cargo test-live`, or `--test live --
+--include-ignored` without a filter) during this iteration — neither while
+implementing nor while reviewing. Run ONLY (1) the specific live tests this
+plan's ACs name, filtered (e.g. `cargo test -p ff-rdp-cli --test live
+<filter> -- --include-ignored`), and (2) this iteration's dogfood script
+(required by check-iteration-ready). Full-suite validation is deferred to
+[[iteration-107-post-105-live-sweep]], which runs once after iteration 105
+merges and fixes all fallout there.
+
 The RDP surface audit ([[deep-review-2026-07-fable5]], gaps C2/C3/C5) found
 two small-effort actors that directly serve the site-audit workflows ff-rdp
 already targets (`/site-audit`'s Security category, dogfooding session 51's
