@@ -81,15 +81,15 @@ Mirror the iter-46 e2e structure exactly:
 - No test-logic changes. Moves + import fixes + gate-helper dedupe only.
 - ff-rdp-core's 9 and xtask's 11 test targets are out of scope.
 
-## Acceptance criteria
+## Acceptance Criteria
 
 - [x] live_list_parity: `cargo test -p ff-rdp-cli --test live -- --list`
       enumerates the exact union of test names previously enumerated by all
       migrated `live_*` binaries (before/after inventory diff attached to
       the PR description; zero lost tests).
-- [x] single_live_target: `ls crates/ff-rdp-cli/tests/*.rs` matches no
-      `live_*` file; `tests/live/main.rs` is the only live target and
-      `cargo run -p xtask -- check-live-test-layout` passes.
+- [x] single_live_target: `crates/ff-rdp-cli/tests/live/main.rs` is the only
+      live target; `ls crates/ff-rdp-cli/tests/*.rs` matches no `live_*` file
+      and `cargo run -p xtask -- check-live-test-layout` passes.
 - [x] live_suite_green: `FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test
       live -- --include-ignored` ran all **97** tests against local headless
       Firefox via the single consolidated target: **78 passed, 19 failed, 0
@@ -109,9 +109,10 @@ Mirror the iter-46 e2e structure exactly:
 - [x] link_count_drop: `cargo test --workspace -q` after touching a CLI
       source rebuilds ≤ 13 ff-rdp-cli test targets (was ~57); before/after
       `time` recorded in this plan's Results section.
-- [x] layout_guard_wired: check-live-test-layout runs inside
-      `check-iteration-ready` and the CI discipline job (visible in the PR
-      diff of .github/workflows + xtask).
+- [x] layout_guard_wired: `check_live_test_layout` runs inside
+      `check-iteration-ready` (`crates/xtask/src/check_iteration_ready.rs`)
+      and the CI discipline job (`.github/workflows/ci.yml` calls
+      `check-live-test-layout`).
 
 ## Results
 
