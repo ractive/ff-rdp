@@ -26,6 +26,18 @@ tags: [iteration, errors, semver, release, hygiene, msrv, review-2026-07]
 
 # Iteration 105: error taxonomy completion + release hygiene
 
+## CI-wait policy (2026-07-09, per James)
+
+When waiting on PR checks before merging, wait ONLY for the required lanes:
+fmt, clippy, discipline, supply-chain, fuzz, test (ubuntu-latest),
+test (macos-latest), verify-attestation. Do NOT wait for or block on:
+- `live-tests` — advisory by design (continue-on-error); failures belong to
+  [[iteration-106-live-test-masking-cascade]] / [[iteration-107-post-105-live-sweep]].
+- `test (windows-latest)` — known-red with 5 pre-existing failures tracked in
+  [[iteration-108-windows-ci-preexisting-reds]]. Do glance at its failure
+  list once: if it shows failures OTHER than those 5, that IS a regression —
+  stop and fix before merging.
+
 ## Live-test policy (2026-07-09, per James)
 
 Do NOT run the full live Firefox suite (`cargo test-live`, or `--test live --
