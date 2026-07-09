@@ -45,10 +45,21 @@ fn to_core_profile(arg: ThrottleProfileArg) -> Option<ThrottleProfile> {
 }
 
 /// Return `true` when the user asked to touch the block-list at all
-/// (`--block …` or `--unblock`). An empty `--block` list without `--unblock`
-/// means "no block flag was given".
+/// (`--block …` or `--unblock`). No `--block`/`--unblock` at all means "no
+/// block flag was given".
 fn wants_block_change(args: &ThrottleArgs) -> bool {
     args.unblock || !args.block.is_empty()
+}
+
+/// Resolve the block-list to send, treating `--unblock` and a single empty
+/// `--block ''` pattern as "clear the list" (per the documented shorthand),
+/// and any other `--block <pattern>…` as a literal replacement list.
+fn resolve_block_urls(args: &ThrottleArgs) -> Vec<String> {
+    if args.unblock || args.block.iter().all(String::is_empty) {
+        Vec::new()
+    } else {
+        args.block.clone()
+    }
 }
 
 pub fn run(cli: &Cli, args: &ThrottleArgs) -> Result<(), AppError> {
@@ -106,14 +117,10 @@ pub fn run(cli: &Cli, args: &ThrottleArgs) -> Result<(), AppError> {
         Value::Null
     };
 
-    // Apply blocking (if requested). `--unblock` and an empty `--block` both
-    // clear the list; `--block <pats>` replaces it.
+    // Apply blocking (if requested). `--unblock` and a single empty
+    // `--block ''` both clear the list; `--block <pats>` replaces it.
     let blocked_echo: Value = if wants_block_change(args) {
-        let urls: Vec<String> = if args.unblock {
-            Vec::new()
-        } else {
-            args.block.clone()
-        };
+        let urls = resolve_block_urls(args);
         network_parent
             .set_blocked_urls(ctx.transport_mut(), &urls)
             .map_err(AppError::from)?;
@@ -198,6 +205,32 @@ mod tests {
         let mut a = base_args();
         a.unblock = true;
         assert!(wants_block_change(&a));
+    }
+
+    #[test]
+    fn resolve_block_urls_clears_for_unblock() {
+        let mut a = base_args();
+        a.unblock = true;
+        assert_eq!(resolve_block_urls(&a), Vec::<String>::new());
+    }
+
+    #[test]
+    fn resolve_block_urls_clears_for_single_empty_pattern() {
+        // Documented shorthand (see `ThrottleArgs::block` doc comment / --help):
+        // `--block ''` clears the list, same as `--unblock`.
+        let mut a = base_args();
+        a.block = vec![String::new()];
+        assert_eq!(resolve_block_urls(&a), Vec::<String>::new());
+    }
+
+    #[test]
+    fn resolve_block_urls_keeps_nonempty_patterns() {
+        let mut a = base_args();
+        a.block = vec!["*.png".to_owned(), "ads.example.com".to_owned()];
+        assert_eq!(
+            resolve_block_urls(&a),
+            vec!["*.png".to_owned(), "ads.example.com".to_owned()]
+        );
     }
 
     #[test]
