@@ -2,7 +2,7 @@
 title: "Iteration 103: emulate command — expose the target-configuration actor (UA, color-scheme, DPR, print, touch, JS, offline, cache)"
 type: iteration
 date: 2026-07-09
-status: in-progress
+status: completed
 branch: iter-103/emulate-target-configuration
 depends_on: []
 firefox_refs:
@@ -10,9 +10,9 @@ firefox_refs:
     path: devtools/shared/specs/target-configuration.js
     why: >-
       SUPPORTED_OPTIONS dict — the full set of configuration fields the
-      TargetConfigurationActor accepts (cacheDisabled, colorSchemeSimulation,
-      customUserAgent, javascriptEnabled, overrideDPPX,
-      printSimulationEnabled, setTabOffline, touchEventsOverride, …).
+      TargetConfigurationActor accepts (cacheDisabled, colorSchemeSimulation, customUserAgent,
+      javascriptEnabled, overrideDPPX, printSimulationEnabled, setTabOffline,
+      touchEventsOverride, …).
 kb_refs:
   - kb/research/deep-review-2026-07-fable5.md
 dogfood_script: iteration-103-target-configuration-cli.dogfood.sh
@@ -22,8 +22,8 @@ first_call_sites:
       TargetConfigurationFront::update_configuration
     site: crates/ff-rdp-cli/src/commands/emulate.rs
   - primitive: >-
-      TargetConfigurationFront setters beyond cache/color-scheme (user agent,
-      dppx, print, touch, javascript, offline)
+      TargetConfigurationFront setters beyond cache/color-scheme (user agent, dppx,
+      print, touch, javascript, offline)
     site: crates/ff-rdp-core/src/fronts/target_configuration.rs
 dogfood_path: |
   ff-rdp launch --headless
@@ -33,7 +33,12 @@ dogfood_path: |
   ff-rdp eval 'navigator.userAgent'                                  # → ff-rdp-test/1.0
   ff-rdp emulate --reset
   ff-rdp eval 'matchMedia("(prefers-color-scheme: dark)").matches'   # → false (system)
-tags: [iteration, emulate, target-configuration, cli, review-2026-07]
+tags:
+  - iteration
+  - emulate
+  - target-configuration
+  - cli
+  - review-2026-07
 ---
 
 # Iteration 103: `emulate` — expose the target-configuration actor
