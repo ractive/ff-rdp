@@ -11,6 +11,7 @@ pub(crate) mod cookies;
 pub(crate) mod doctor;
 pub(crate) mod dom;
 pub(crate) mod dom_tree;
+pub(crate) mod emulate;
 pub(crate) mod eval;
 pub(crate) mod geometry;
 pub(crate) mod index;

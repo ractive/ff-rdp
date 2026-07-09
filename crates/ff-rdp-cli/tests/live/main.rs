@@ -27,6 +27,7 @@ mod common;
 
 mod live_100_daemon_lifecycle_hardening;
 mod live_102_longstring_and_reload;
+mod live_103_emulate;
 mod live_61l;
 mod live_61q_resource_bus;
 mod live_61r_eval;

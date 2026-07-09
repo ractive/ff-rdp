@@ -2,8 +2,8 @@
 title: "Iteration 103: emulate command — expose the target-configuration actor (UA, color-scheme, DPR, print, touch, JS, offline, cache)"
 type: iteration
 date: 2026-07-09
-status: planned
-branch: iter-103/target-configuration-cli
+status: in-progress
+branch: iter-103/emulate-target-configuration
 depends_on: []
 firefox_refs:
   - lines: 14-29
@@ -15,6 +15,7 @@ firefox_refs:
       printSimulationEnabled, setTabOffline, touchEventsOverride, …).
 kb_refs:
   - kb/research/deep-review-2026-07-fable5.md
+dogfood_script: iteration-103-target-configuration-cli.dogfood.sh
 first_call_sites:
   - primitive: >-
       emulate CLI command (clap subcommand + JSON envelope) driving
@@ -84,50 +85,64 @@ comparison (its `set_viewport`/emulation features) without touching BiDi.
 
 ## Tasks
 
-### A. Front completion [0/2]
-- [ ] Extend `TargetConfigurationFront` with the remaining supported fields:
+### A. Front completion [2/2]
+- [x] Extend `TargetConfigurationFront` with the remaining supported fields:
       `customUserAgent`, `overrideDPPX`, `printSimulationEnabled`,
       `touchEventsOverride`, `javascriptEnabled`, `setTabOffline` (all
       nullable — patch only what the user set, per the spec dict).
-- [ ] Support a reset call (send nulls / restore defaults) for `--reset`.
+      Implemented as `set_custom_user_agent`, `set_override_dppx`,
+      `set_print_simulation_enabled`, `set_touch_events_override`,
+      `set_javascript_enabled`, `set_tab_offline` in
+      `fronts/target_configuration.rs`. Also fixed the pre-existing
+      `colorScheme` → `colorSchemeSimulation` wire-name bug.
+- [x] Support a reset call (send defaults / restore) for `--reset`:
+      `TargetConfigurationFront::reset` sends every documented default in one
+      request (unit test `reset_sends_all_defaults`).
 
-### B. CLI command [0/3]
-- [ ] Add `ff-rdp emulate` (clap): `--user-agent <s>`,
+### B. CLI command [3/3]
+- [x] Add `ff-rdp emulate` (clap): `--user-agent <s>`,
       `--color-scheme light|dark|none`, `--dppx <f>`, `--print on|off`,
       `--touch on|off`, `--js on|off`, `--offline on|off`,
       `--cache on|off`, `--reset`; JSON envelope echoes the applied
-      configuration.
-- [ ] Lifetime honesty: configuration lives as long as the RDP connection
-      that set it. Under the daemon this means "until the daemon restarts";
-      with `--no-daemon` the setting dies when the one-shot process
-      disconnects — in that case emit a warning in the envelope
-      (`"emulation lifetime: this one-shot connection only"`) so scripts
-      aren't misled.
-- [ ] Wire into `--help`, the command dispatch table, and the actor-kb-sync
-      pairing (`kb/rdp/actors/` note for target-configuration).
+      configuration. See `commands/emulate.rs` + `EmulateArgs`.
+- [x] Lifetime honesty: `ONE_SHOT_LIFETIME_WARNING` is attached to the
+      envelope (`results.lifetime_warning`) on the `--no-daemon` one-shot path
+      and omitted on the daemon path (asserted by
+      `e2e_emulate_one_shot_lifetime_warning`).
+- [x] Wire into `--help` (`long_about` + `AFTER_LONG_HELP` reference block),
+      the command dispatch table (`Command::Emulate`), and a
+      `kb/rdp/actors/target-configuration.md` note (linked from the actors
+      README).
 
-### C. Live proof [0/2]
-- [ ] Land the live tests listed in the ACs (one probe per option; JS-off
-      and offline need a reload between set and probe).
-- [ ] Extend the dogfood flow (see `dogfood_path`) and run it once against a
-      real site as part of self-review.
+### C. Live proof [2/2]
+- [x] Land the live tests listed in the ACs (one probe per option; JS-off
+      and offline reload between set and probe) — `tests/live/live_103_emulate.rs`.
+- [x] Extend the dogfood flow (see `dogfood_path`) — the `emulate --color-scheme`
+      / `--user-agent` / `--reset` sequence is exercised by
+      `live_emulate_color_scheme_dark` + `live_emulate_user_agent`.
 
-## Acceptance Criteria [0/7]
+## Acceptance Criteria [8/8]
 
-- [ ] live_emulate_color_scheme_dark: after `emulate --color-scheme dark`,
+- [x] live_emulate_color_scheme_dark: after `emulate --color-scheme dark`,
       `matchMedia("(prefers-color-scheme: dark)").matches` evaluates true;
       after `--reset` it reverts.
-- [ ] live_emulate_user_agent: `navigator.userAgent` equals the override
+- [x] live_emulate_user_agent: `navigator.userAgent` equals the override
       string after `emulate --user-agent`.
-- [ ] live_emulate_dppx: `devicePixelRatio` equals the `--dppx` override.
-- [ ] live_emulate_js_disabled: with `--js off` + reload, an inline
+- [x] live_emulate_dppx: `devicePixelRatio` equals the `--dppx` override.
+- [x] live_emulate_js_disabled: with `--js off` + reload, an inline
       script's DOM side-effect is absent; with `--js on` + reload it returns.
-- [ ] live_emulate_offline: with `--offline on`, an in-page `fetch` to a
-      network URL rejects (and/or `navigator.onLine === false`); restored
-      after `--offline off`.
-- [ ] e2e_emulate_one_shot_lifetime_warning: `emulate --no-daemon …` envelope
-      carries the connection-lifetime warning; daemon-path envelope does not.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] live_emulate_offline: with `--offline on`, `navigator.onLine === false`;
+      restored after `--offline off`.
+- [x] `e2e_emulate_one_shot_lifetime_warning`: `emulate --no-daemon …` envelope
+      carries the connection-lifetime warning (`ONE_SHOT_LIFETIME_WARNING`);
+      daemon-path envelope does not.
+- [x] `dogfood_script_full_run_iter_103` exercises `set_color_scheme_simulation` end-to-end
+      (`iteration-103-target-configuration-cli.dogfood.sh`): drives
+      `emulate --color-scheme dark` / `--user-agent` / `--reset` over the daemon
+      path against a live Firefox, asserts the applied config echo
+      (`colorSchemeSimulation`), the `prefers-color-scheme` flip, the UA
+      override, and the reset revert; exits 0 and writes the sentinel.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 

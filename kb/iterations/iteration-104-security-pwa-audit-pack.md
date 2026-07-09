@@ -131,6 +131,17 @@ blocked?").
       protocol quirk: these methods declare **no response block but are NOT
       oneway** — use the same matched-request handling as
       `walker.releaseNode`.
+      **iter-103 carry-over:** `watcher.getNetworkParentActor()` currently
+      deserializes its reply as `response::ActorRef` (top-level `actor`
+      field) — the same shape that turned out to be *wrong* for
+      `getTargetConfigurationActor` (real Firefox nests the actor under a
+      named typed-actor object, e.g. `{networkParent: {actor: "..."}}`, not a
+      top-level `actor`; see `specs/watcher.rs` `ConfigurationActorRef` and
+      the doc comment on `ActorRef` added in iter-103). This is the first
+      live consumer of `getNetworkParentActor` — verify the real wire shape
+      against a live Firefox trace before trusting `ActorRef` here; if it's
+      also nested, add a `NetworkParentActorRef` following the
+      `ConfigurationActorRef` pattern rather than assuming the flat shape.
 - [ ] Add `ff-rdp throttle slow-3g|fast-3g|off` and
       `ff-rdp throttle --block <pattern>...`; envelope echoes active
       profile/blocklist.
@@ -180,3 +191,9 @@ blocked?").
   C5 (throttling).
 - [[iteration-103-target-configuration-cli]] — sibling review-driven feature
   pack; cache-disabled there complements throttling here for perf audits.
+  Also the source of the `getNetworkParentActor` nested-actor-shape warning
+  in Theme C above, and a reminder that `check-iteration-ready`'s
+  `check-dogfood-script` sub-check needs `FF_RDP_LIVE_TESTS=1` set (with
+  Firefox reachable) to pass — run
+  `FF_RDP_LIVE_TESTS=1 cargo run -p xtask -- check-iteration-ready --plan
+  <this-plan> --base origin/main` before `/create-pr`, not the bare command.

@@ -1,10 +1,19 @@
 //! Typed front for the Firefox `TargetConfigurationActor`.
 //!
 //! The target configuration actor accepts `updateConfiguration` requests that
-//! change per-target settings such as cache behaviour, viewport size overrides,
-//! and colour-scheme simulation.  It is obtained from `WatcherFront::get_target_configuration_actor`.
+//! change per-target settings such as cache behaviour, custom user agent,
+//! device-pixel-ratio override, print-media simulation, touch-event override,
+//! JavaScript-disabled testing, tab-offline emulation, and colour-scheme
+//! simulation.  It is obtained from `WatcherFront::get_target_configuration_actor`.
+//!
+//! Every field in the server's `SUPPORTED_OPTIONS` dict is `nullable:*`, so a
+//! partial patch only touches the keys it names — this front therefore exposes
+//! one setter per option plus a [`TargetConfigurationFront::reset`] that sends
+//! the documented "restore defaults" value for each field in a single request.
 //!
 //! Mirrors <https://searchfox.org/mozilla-central/source/devtools/shared/specs/target-configuration.js>
+//! (`target-configuration.configuration` dict, verified against the Firefox
+//! checkout during iter-103).
 
 use serde_json::{Value, json};
 
@@ -52,14 +61,129 @@ impl TargetConfigurationFront {
 
     /// Set the preferred colour scheme for this target.
     ///
-    /// `scheme` should be `"light"`, `"dark"`, or `"no-preference"`.
+    /// `scheme` should be `"light"`, `"dark"`, or `"none"` (system default).
     /// Useful for testing `@media (prefers-color-scheme: dark)` rules.
+    ///
+    /// The wire field is `colorSchemeSimulation` (verified against the server's
+    /// `SUPPORTED_OPTIONS` dict); the browsing context maps the value onto
+    /// `prefersColorSchemeOverride`.
     pub fn set_color_scheme_simulation(
         &self,
         transport: &mut RdpTransport,
         scheme: &str,
     ) -> Result<(), ProtocolError> {
-        self.update_configuration(transport, &json!({"colorScheme": scheme}))
+        self.update_configuration(transport, &json!({"colorSchemeSimulation": scheme}))
+    }
+
+    /// Override the reported user agent for this target.
+    ///
+    /// Sets `navigator.userAgent` and the `User-Agent` request header for
+    /// subsequent loads.  Pass an empty string to restore the original UA.
+    pub fn set_custom_user_agent(
+        &self,
+        transport: &mut RdpTransport,
+        user_agent: &str,
+    ) -> Result<(), ProtocolError> {
+        self.update_configuration(transport, &json!({"customUserAgent": user_agent}))
+    }
+
+    /// Override the device pixel ratio (`window.devicePixelRatio`) for this target.
+    ///
+    /// The wire field is `overrideDPPX` (device pixels per CSS px).  A value of
+    /// `0.0` clears the override and restores the physical ratio.
+    pub fn set_override_dppx(
+        &self,
+        transport: &mut RdpTransport,
+        dppx: f64,
+    ) -> Result<(), ProtocolError> {
+        self.update_configuration(transport, &json!({"overrideDPPX": dppx}))
+    }
+
+    /// Enable or disable print-media simulation for this target.
+    ///
+    /// When enabled the page renders as if `@media print` were active — useful
+    /// for auditing print stylesheets (compose with `screenshot`).
+    pub fn set_print_simulation_enabled(
+        &self,
+        transport: &mut RdpTransport,
+        enabled: bool,
+    ) -> Result<(), ProtocolError> {
+        self.update_configuration(transport, &json!({"printSimulationEnabled": enabled}))
+    }
+
+    /// Enable or disable touch-event simulation for this target.
+    ///
+    /// The wire field is `touchEventsOverride`, a string enum: `"enabled"`
+    /// turns touch simulation on, `"none"` restores the default.  When `on` is
+    /// `true` the value `"enabled"` is sent; when `false`, `"none"`.
+    pub fn set_touch_events_override(
+        &self,
+        transport: &mut RdpTransport,
+        on: bool,
+    ) -> Result<(), ProtocolError> {
+        let value = if on { "enabled" } else { "none" };
+        self.update_configuration(transport, &json!({"touchEventsOverride": value}))
+    }
+
+    /// Enable or disable JavaScript execution for this target.
+    ///
+    /// `enabled = false` disables scripting.  The server reloads the document
+    /// when this flag changes, so callers must reload (or wait for the
+    /// server-initiated reload) before probing the effect.
+    pub fn set_javascript_enabled(
+        &self,
+        transport: &mut RdpTransport,
+        enabled: bool,
+    ) -> Result<(), ProtocolError> {
+        self.update_configuration(transport, &json!({"javascriptEnabled": enabled}))
+    }
+
+    /// Put the target's tab into (or out of) offline mode.
+    ///
+    /// When `offline` is `true`, network requests fail and
+    /// `navigator.onLine` reports `false` — useful for exercising PWA/offline
+    /// UX.  A reload is generally required for `navigator.onLine` to update.
+    pub fn set_tab_offline(
+        &self,
+        transport: &mut RdpTransport,
+        offline: bool,
+    ) -> Result<(), ProtocolError> {
+        self.update_configuration(transport, &json!({"setTabOffline": offline}))
+    }
+
+    /// Restore every configurable option to its documented default in a single
+    /// `updateConfiguration` request.
+    ///
+    /// The reset values mirror the server's teardown logic
+    /// (`_onTargetConfigurationDestroy` in `target-configuration.js`):
+    ///
+    /// | field                   | reset value |
+    /// |-------------------------|-------------|
+    /// | `cacheDisabled`         | `false`     |
+    /// | `colorSchemeSimulation` | `"none"`    |
+    /// | `customUserAgent`       | `""`        |
+    /// | `overrideDPPX`          | `0`         |
+    /// | `printSimulationEnabled`| `false`     |
+    /// | `touchEventsOverride`   | `"none"`    |
+    /// | `javascriptEnabled`     | `true`      |
+    /// | `setTabOffline`         | `false`     |
+    ///
+    /// Note: a full reset re-enables JavaScript, which triggers a
+    /// server-side reload if scripting had been disabled.
+    pub fn reset(&self, transport: &mut RdpTransport) -> Result<(), ProtocolError> {
+        self.update_configuration(
+            transport,
+            &json!({
+                "cacheDisabled": false,
+                "colorSchemeSimulation": "none",
+                "customUserAgent": "",
+                "overrideDPPX": 0,
+                "printSimulationEnabled": false,
+                "touchEventsOverride": "none",
+                "javascriptEnabled": true,
+                "setTabOffline": false,
+            }),
+        )
     }
 
     /// Override the viewport size for this target (in CSS pixels).
@@ -193,13 +317,144 @@ mod tests {
         let t = std::thread::spawn(move || {
             let req = server_read(&server);
             assert_eq!(req["type"], "updateConfiguration");
-            assert_eq!(req["configuration"]["colorScheme"], "dark");
+            // The server dict field is `colorSchemeSimulation`, not `colorScheme`.
+            assert_eq!(req["configuration"]["colorSchemeSimulation"], "dark");
             server_reply(&server, json!({"from": actor_id.as_ref()}));
         });
 
         front
             .set_color_scheme_simulation(&mut transport, "dark")
             .unwrap();
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn set_custom_user_agent_sends_string() {
+        let (mut transport, server) = make_transport_pair();
+        let (front, actor_id) = make_front("server1.conn0.targetConf5");
+
+        let t = std::thread::spawn(move || {
+            let req = server_read(&server);
+            assert_eq!(req["type"], "updateConfiguration");
+            assert_eq!(req["configuration"]["customUserAgent"], "ff-rdp-test/1.0");
+            server_reply(&server, json!({"from": actor_id.as_ref()}));
+        });
+
+        front
+            .set_custom_user_agent(&mut transport, "ff-rdp-test/1.0")
+            .unwrap();
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn set_override_dppx_sends_number() {
+        let (mut transport, server) = make_transport_pair();
+        let (front, actor_id) = make_front("server1.conn0.targetConf6");
+
+        let t = std::thread::spawn(move || {
+            let req = server_read(&server);
+            assert_eq!(req["type"], "updateConfiguration");
+            assert_eq!(req["configuration"]["overrideDPPX"], 2.0);
+            server_reply(&server, json!({"from": actor_id.as_ref()}));
+        });
+
+        front.set_override_dppx(&mut transport, 2.0).unwrap();
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn set_print_simulation_enabled_sends_bool() {
+        let (mut transport, server) = make_transport_pair();
+        let (front, actor_id) = make_front("server1.conn0.targetConf7");
+
+        let t = std::thread::spawn(move || {
+            let req = server_read(&server);
+            assert_eq!(req["configuration"]["printSimulationEnabled"], true);
+            server_reply(&server, json!({"from": actor_id.as_ref()}));
+        });
+
+        front
+            .set_print_simulation_enabled(&mut transport, true)
+            .unwrap();
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn set_touch_events_override_maps_bool_to_enum() {
+        let (mut transport, server) = make_transport_pair();
+        let (front, actor_id) = make_front("server1.conn0.targetConf8");
+
+        let t = std::thread::spawn(move || {
+            // on == true -> "enabled"
+            let req = server_read(&server);
+            assert_eq!(req["configuration"]["touchEventsOverride"], "enabled");
+            server_reply(&server, json!({"from": actor_id.as_ref()}));
+            // off == false -> "none"
+            let req = server_read(&server);
+            assert_eq!(req["configuration"]["touchEventsOverride"], "none");
+            server_reply(&server, json!({"from": actor_id.as_ref()}));
+        });
+
+        front
+            .set_touch_events_override(&mut transport, true)
+            .unwrap();
+        front
+            .set_touch_events_override(&mut transport, false)
+            .unwrap();
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn set_javascript_enabled_sends_bool() {
+        let (mut transport, server) = make_transport_pair();
+        let (front, actor_id) = make_front("server1.conn0.targetConf9");
+
+        let t = std::thread::spawn(move || {
+            let req = server_read(&server);
+            assert_eq!(req["configuration"]["javascriptEnabled"], false);
+            server_reply(&server, json!({"from": actor_id.as_ref()}));
+        });
+
+        front.set_javascript_enabled(&mut transport, false).unwrap();
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn set_tab_offline_sends_bool() {
+        let (mut transport, server) = make_transport_pair();
+        let (front, actor_id) = make_front("server1.conn0.targetConf10");
+
+        let t = std::thread::spawn(move || {
+            let req = server_read(&server);
+            assert_eq!(req["configuration"]["setTabOffline"], true);
+            server_reply(&server, json!({"from": actor_id.as_ref()}));
+        });
+
+        front.set_tab_offline(&mut transport, true).unwrap();
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn reset_sends_all_defaults() {
+        let (mut transport, server) = make_transport_pair();
+        let (front, actor_id) = make_front("server1.conn0.targetConf11");
+
+        let t = std::thread::spawn(move || {
+            let req = server_read(&server);
+            assert_eq!(req["type"], "updateConfiguration");
+            let cfg = &req["configuration"];
+            assert_eq!(cfg["cacheDisabled"], false);
+            assert_eq!(cfg["colorSchemeSimulation"], "none");
+            assert_eq!(cfg["customUserAgent"], "");
+            assert_eq!(cfg["overrideDPPX"], 0);
+            assert_eq!(cfg["printSimulationEnabled"], false);
+            assert_eq!(cfg["touchEventsOverride"], "none");
+            assert_eq!(cfg["javascriptEnabled"], true);
+            assert_eq!(cfg["setTabOffline"], false);
+            server_reply(&server, json!({"from": actor_id.as_ref()}));
+        });
+
+        front.reset(&mut transport).unwrap();
         t.join().unwrap();
     }
 

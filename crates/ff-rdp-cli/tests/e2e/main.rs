@@ -10,6 +10,7 @@ mod daemon_parity;
 mod doctor;
 mod dom;
 mod dom_tree;
+mod emulate;
 mod eval;
 mod exit_codes;
 mod geometry;

@@ -1,9 +1,9 @@
 use crate::cli::args::{
     A11yArgs, A11yCommand, CascadeArgs, Cli, ClickArgs, Command, ComputedArgs, ConsoleArgs,
-    CookiesArgs, DaemonCommand, DomArgs, DomCommand, EvalArgs, GeometryArgs, IndexArgs,
-    InspectArgs, LaunchArgs, NavigateArgs, NetworkArgs, PerfArgs, PerfCommand, ProfilesCommand,
-    RecordCommand, ReloadArgs, ResponsiveArgs, RunArgs, ScreenshotArgs, ScrollCommand,
-    SnapshotArgs, SourcesArgs, StorageArgs, StylesArgs, TypeArgs, WaitArgs,
+    CookiesArgs, DaemonCommand, DomArgs, DomCommand, EmulateArgs, EvalArgs, GeometryArgs,
+    IndexArgs, InspectArgs, LaunchArgs, NavigateArgs, NetworkArgs, PerfArgs, PerfCommand,
+    ProfilesCommand, RecordCommand, ReloadArgs, ResponsiveArgs, RunArgs, ScreenshotArgs,
+    ScrollCommand, SnapshotArgs, SourcesArgs, StorageArgs, StylesArgs, TypeArgs, WaitArgs,
 };
 use crate::commands;
 use crate::commands::index::IndexOpts;
@@ -331,6 +331,7 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         | Command::Computed(ComputedArgs { .. })
         | Command::Cascade(CascadeArgs { .. })
         | Command::Responsive(ResponsiveArgs { .. })
+        | Command::Emulate(EmulateArgs { .. })
         | Command::A11y(A11yArgs { .. })
         | Command::Snapshot(SnapshotArgs { .. })
         | Command::Inspect(InspectArgs { .. })
@@ -877,6 +878,7 @@ fn dispatch_inner(
                 commands::responsive::run(cli, selectors, widths, *include_hidden, *strict)
             }
         }
+        Command::Emulate(args) => commands::emulate::run(cli, args),
         Command::Snapshot(SnapshotArgs {
             depth,
             max_depth,
