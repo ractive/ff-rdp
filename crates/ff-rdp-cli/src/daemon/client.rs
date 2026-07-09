@@ -828,14 +828,15 @@ pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
             // Pull live stats from the daemon. If the RPC fails, surface
             // whatever registry data we have with null stats so callers can
             // still see the PID/port.
-            let (uptime_seconds, connections, buffer_sizes) =
+            let (uptime_seconds, connections, buffer_sizes, target_count) =
                 match daemon_rpc(cli, &json!({"to": "daemon", "type": "status"})) {
                     Ok(resp) => (
                         resp.get("uptime_secs").and_then(Value::as_u64),
                         resp.get("stream_subscriber_count").and_then(Value::as_u64),
                         resp.get("buffer_sizes").cloned(),
+                        resp.get("target_count").and_then(Value::as_u64),
                     ),
-                    Err(_) => (None, None, None),
+                    Err(_) => (None, None, None, None),
                 };
             json!({
                 "running": true,
@@ -844,6 +845,7 @@ pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
                 "uptime_seconds": uptime_seconds,
                 "connections": connections,
                 "buffer_sizes": buffer_sizes,
+                "target_count": target_count,
             })
         }
     };

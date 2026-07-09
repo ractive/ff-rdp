@@ -30,7 +30,11 @@ fn registry_path(home: &std::path::Path) -> PathBuf {
 /// Auto-start a daemon for `port` inside an isolated `FF_RDP_HOME` and return
 /// its PID (read from `daemon status`).
 fn autostart_daemon(home: &std::path::Path, port: u16) -> Option<u32> {
-    // A tabs call without --no-daemon auto-starts the daemon.
+    // `eval` (unlike `tabs`, which connects to Firefox directly via
+    // RdpConnection::connect and never touches resolve_connection_target)
+    // routes through connect_tab.rs, so a call without --no-daemon genuinely
+    // auto-starts the daemon. See the matching fix + note in
+    // eval_object_leak_soak.rs.
     let init = Command::new(ff_rdp_bin())
         .env("FF_RDP_HOME", home)
         .args([
@@ -40,13 +44,14 @@ fn autostart_daemon(home: &std::path::Path, port: u16) -> Option<u32> {
             &port.to_string(),
             "--timeout",
             "10000",
-            "tabs",
+            "eval",
+            "1",
         ])
         .output()
         .ok()?;
     if !init.status.success() {
         eprintln!(
-            "autostart_daemon: tabs failed: {}",
+            "autostart_daemon: eval failed: {}",
             String::from_utf8_lossy(&init.stderr)
         );
         return None;

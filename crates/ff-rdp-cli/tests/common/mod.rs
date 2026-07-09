@@ -171,7 +171,11 @@ impl LiveFirefox {
     /// Mirrors the `start_daemon_for` logic from `live_daemon_watch_targets.rs`.
     /// Returns `None` if the daemon doesn't start within a reasonable timeout.
     pub fn with_daemon(&self) -> Option<u16> {
-        // Trigger daemon startup: a tabs call without --no-daemon causes auto-start.
+        // Trigger daemon startup: an `eval` call without --no-daemon causes
+        // auto-start. `tabs` does NOT work here — `tabs.rs` connects to
+        // Firefox directly via `RdpConnection::connect` and never goes
+        // through `resolve_connection_target`, so it never actually starts a
+        // daemon (see the fix + note in `eval_object_leak_soak.rs`).
         let out = Command::new(ff_rdp_bin())
             .args([
                 "--host",
@@ -180,7 +184,8 @@ impl LiveFirefox {
                 &self.port.to_string(),
                 "--timeout",
                 "5000",
-                "tabs",
+                "eval",
+                "1",
             ])
             .output()
             .ok()?;
