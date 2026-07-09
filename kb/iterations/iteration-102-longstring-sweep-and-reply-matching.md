@@ -2,31 +2,31 @@
 title: "Iteration 102: longString sweep + retiring blind transport.request — no silently-truncated values, no unmatched replies"
 type: iteration
 date: 2026-07-09
-status: planned
+status: completed
 branch: iter-102/longstring-sweep
 depends_on: []
 firefox_refs:
   - lines: 15-78
     path: devtools/shared/specs/node.js
     why: >-
-      nodeValue and attribute-value slots are declared longstring — Firefox
-      sends a longString grip instead of an inline string past the
-      DebuggerServer longStringLength threshold.
+      nodeValue and attribute-value slots are declared longstring — Firefox sends a
+      longString grip instead of an inline string past the DebuggerServer
+      longStringLength threshold.
   - lines: 55-270
     path: devtools/shared/specs/storage.js
     why: >-
-      cookie/localStorage/sessionStorage value slots declared longstring —
-      large stored values arrive as grips.
+      cookie/localStorage/sessionStorage value slots declared longstring — large
+      stored values arrive as grips.
   - lines: 40-50
     path: devtools/shared/specs/style/style-types.js
     why: >-
-      computed-style value slot declared longstring — long CSS custom
-      property values arrive as grips.
+      computed-style value slot declared longstring — long CSS custom property values
+      arrive as grips.
   - lines: 64-85
     path: devtools/shared/specs/string.js
     why: >-
-      the reference read() handles inline-string-or-grip transparently — the
-      behavior our typed LongString decoder mirrors and these call sites skip.
+      the reference read() handles inline-string-or-grip transparently — the behavior
+      our typed LongString decoder mirrors and these call sites skip.
 kb_refs:
   - kb/research/deep-review-2026-07-fable5.md
   - kb/rdp/from-our-codebase/lessons-learned.md
@@ -47,7 +47,12 @@ dogfood_path: |
   ff-rdp eval 'document.body.append("y".repeat(20000))'
   ff-rdp page-text --jq '.text | length'
   # expected: full length, no silent truncation
-tags: [iteration, longstring, protocol, correctness, review-2026-07]
+tags:
+  - iteration
+  - longstring
+  - protocol
+  - correctness
+  - review-2026-07
 ---
 
 # Iteration 102: longString sweep + retiring blind `transport.request`
