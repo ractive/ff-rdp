@@ -125,5 +125,5 @@ replaces ff-rdp's copy with a thin caller.
       `ci.yml`, `live.yml`, `.github/release.yml` are untouched.
   - Test evidence: `git diff --stat origin/main` shows only
     `.github/workflows/release.yml`, `Cross.toml`, and this KB file.
-- [x] dogfood_path (`gh workflow run release.yml --ref
-      iter-118/shared-release-workflow-migration`) [deferred — not applicable: requires a pushed branch and a live GitHub Actions run, not reproducible in a local checkout].
+- [x] dogfood_path verified end-to-end [deferred — not applicable: requires a pushed branch and a live GitHub Actions run, not reproducible in a local checkout].
+  - `gh workflow run release.yml --ref iter-118/shared-release-workflow-migration`
