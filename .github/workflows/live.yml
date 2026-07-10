@@ -1,9 +1,16 @@
 name: Live Tests
 
+# iter-117 Theme B (pre-landed): no longer runs per-PR. The lane was
+# permanently red from environmental runner failures (~27 min/PR, advisory,
+# no signal — see DEC-022 context and iter-114 Results); the real live gate
+# is local and enforced per-iteration via check-iteration-ready. Runs
+# on-demand, at release, and as a weekly drift canary instead.
 on:
-  pull_request:
-    branches:
-      - main
+  workflow_dispatch:
+  release:
+    types: [published]
+  schedule:
+    - cron: "0 3 * * 1"
 
 env:
   CARGO_TERM_COLOR: always

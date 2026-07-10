@@ -17,7 +17,7 @@ dogfood_path: |
   # expected: no output (lane runs on workflow_dispatch/release/schedule only)
   FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live live_92_screenshot -- --include-ignored
   gh release view v0.3.0 --json tagName,isDraft
-  # expected: tag v0.3.0, isDraft false, release.yml run green
+  # expected: tag v0.3.0, isDraft TRUE (James publishes; agent never publishes)
 tags:
   - iteration
   - release
@@ -58,15 +58,18 @@ Bugzilla account — if the implementing session cannot file, it annotates with
 found existing bug numbers and lists the remaining novel gaps in Results for
 James to file, replacing those TBDs in a follow-up commit before the cut.
 
-## Theme B — retrigger the CI live lane (per DEC-022 context)
+## Theme B — retrigger the CI live lane (per DEC-022 context) [PRE-LANDED]
 
-`live.yml` currently runs on every `pull_request`: ~27 min/PR,
-`continue-on-error`, permanently red from environmental runner failures —
-cost without signal (the real live gate is local, enforced per-iteration).
-Change triggers to `workflow_dispatch` + `release: {types: [published]}` +
-weekly `schedule` cron; keep `continue-on-error: true` for now. Making a
-curated runner-green subset blocking on release is explicitly deferred until
-the first release-triggered run shows what is environmental vs real.
+**Pre-landed on main 2026-07-10 (per James)** before this iteration's launch,
+because the per-PR lane would otherwise stop the ralph loop's review agent on
+this very iteration's PR (see [[iteration-115-cascade-rule-actor-id]]'s manual
+finish and the project_ralph_advisory_lane_gotcha memory note). The change:
+`live.yml` triggers are now `workflow_dispatch` + `release: {types: [published]}`
++ weekly `schedule` cron instead of `pull_request`; `continue-on-error: true`
+kept. The implementing agent VERIFIES the AC grep below and records the
+pre-landing in Results — no further Theme B work needed. Making a curated
+runner-green subset blocking on release stays deferred until the first
+release-triggered run shows what is environmental vs real.
 
 ## Theme C — version bump + cut v0.3.0
 
@@ -74,14 +77,15 @@ the first release-triggered run shows what is environmental vs real.
   the `0.2` intra-workspace dep constraint line still resolves).
 - Pre-cut ritual: full serial `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1
   cargo test-live` green except explicitly justified reds; TBD grep clean.
-- Publish GitHub release `v0.3.0` (release.yml triggers on publish; includes
-  provenance attestation per iter-75). Release notes as highlights — FF152
-  compatibility (`index`, `console`), cascade `rule_actor_id`, daemon
-  hardening, live-suite trust restoration — linking kb iteration plans rather
-  than itemizing ~500 commits.
-- Babysit the pipeline: past cuts hit Windows/macOS/cross-compile failures
-  (see kb/research + memory); budget a fix-forward pass rather than assuming
-  fire-and-forget.
+- **Prepare but do NOT publish** (per James, 2026-07-10): draft the release
+  notes as highlights — FF152 compatibility (`index`, `console`), cascade
+  `rule_actor_id`, daemon hardening, live-suite trust restoration — linking
+  kb iteration plans rather than itemizing ~500 commits. Save the draft to
+  `kb/releases/v0.3.0-notes.md` and create the release as a **draft**
+  (`gh release create v0.3.0 --draft --notes-file …`) or record the exact
+  ready-to-run publish command in Results. James reviews and publishes;
+  pipeline babysitting (past cuts hit Windows/macOS/cross-compile failures)
+  happens after his publish, outside this iteration.
 
 ## Out of scope
 
@@ -100,9 +104,10 @@ the first release-triggered run shows what is environmental vs real.
 - [ ] live_lane_retriggered: `grep -n "pull_request" .github/workflows/live.yml`
       returns no output; workflow_dispatch + release + schedule triggers
       present.
-- [ ] release_cut: workspace version 0.3.0; GitHub release v0.3.0 published;
-      release.yml run green with artifact attestation (run URL recorded in
-      Results).
+- [ ] release_ready: workspace version 0.3.0 merged; release notes drafted;
+      v0.3.0 exists as an UNPUBLISHED draft release (or the exact publish
+      command is recorded in Results); publishing itself is James's action
+      and NOT part of this iteration's ACs.
 
 ## Results
 
