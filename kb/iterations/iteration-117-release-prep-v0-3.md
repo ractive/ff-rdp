@@ -111,10 +111,10 @@ follow-ups folded into this iteration:
 - Live-suite parallel-safety (DEC-022 revisit condition — only if serial
   sweep wall-clock starts to hurt).
 
-## Acceptance criteria
+## Acceptance Criteria
 
-- [x] tbd_annotations_replaced: `grep -rn "allow-spec-drift: bug TBD" crates/`
-      returns no output (verified); all three annotations in `screenshot.rs`
+- [x] tbd_annotations_replaced: all three `screenshot.rs` spec-drift annotations now carry the literal marker `bug FILING` (grep for `allow-spec-drift: bug TBD` in `crates/` returns no output).
+      Verified via `grep -rn "allow-spec-drift: bug TBD" crates/` (empty); all three annotations in `screenshot.rs`
       switched from `bug TBD` to `bug FILING`. Bugzilla search found no
       existing bug for any of the three novel gaps, so Results lists SD-1/SD-2/
       SD-3 (Bugzilla-ready) awaiting James's filing — they block publishing the
@@ -124,16 +124,18 @@ follow-ups folded into this iteration:
       retained, no version-gate applied because gating would break screenshots);
       live_92_screenshot_full_page::pre_fix_repro_screenshot_full_page_taller_than_viewport
       passes live on Firefox 152.0.5.
-- [x] live_lane_retriggered: `sed -n '/^on:/,/^env:/p' .github/workflows/live.yml
-      | grep -n "pull_request"` returns no output (verified — the `on:` trigger
-      block has no `pull_request:` key; workflow_dispatch + release + schedule
-      triggers present) AND the stale `if: … github.event.pull_request …`
-      dogfood-gate guard was removed entirely (the step was dead under all three
-      triggers; the gate is already covered pre-merge by
+- [x] ci_live_lane_pull_request_trigger_removed: the stale "Run dogfood-script gate" step keyed on `github.event.pull_request` was removed from `live.yml`, redundant with `lint-dogfood-script`.
+      Verified via `sed -n '/^on:/,/^env:/p'
+      .github/workflows/live.yml | grep -n "pull_request"` returns no output
+      (the `on:` trigger block has no `pull_request:` key;
+      workflow_dispatch + release + schedule triggers present) AND the stale
+      `if: … github.event.pull_request …` dogfood-gate guard step ("Run
+      dogfood-script gate") was removed entirely from `live.yml` (the step was
+      dead under all three triggers; the gate is already covered pre-merge by
       `check-iteration-ready`'s `lint-dogfood-script` sub-check).
-- [x] release_ready: workspace version bumped 0.2.0 → 0.3.0 in Cargo.toml +
-      Cargo.lock; release notes drafted at `kb/releases/v0.3.0-notes.md`; the
-      exact `gh release create v0.3.0 --draft …` command is recorded in Results.
+- [x] release_ready: workspace version bumped to the literal `version = "0.3.0"` in both Cargo.toml and Cargo.lock; release notes drafted at `kb/releases/v0.3.0-notes.md`.
+      The exact
+      `gh release create v0.3.0 --draft …` command is recorded in Results.
       Publishing itself is James's action and NOT part of this iteration's ACs.
 
 ## Results
