@@ -496,6 +496,10 @@ Default: 50 messages, sorted by timestamp (newest first).
 Output always includes a `summary` field with totals and per-level counts so
 callers can tell at a glance whether the filter caught what they expected.
 
+The command primes Firefox's message cache (startListeners) before reading it,
+so messages a separate earlier `ff-rdp eval 'console.log(...)'` emitted are
+visible on a fresh --no-daemon connection. Use --follow to stream live messages.
+
 Output: {\"results\": [{\"level\": \"...\", \"message\": \"...\", \"source\": \"...\", \"line\": N, \"timestamp\": N}], \"summary\": {\"total\": N, \"shown\": Z, \"by_level\": {...}, \"matched\": M}, \"total\": N, \"meta\": {...}}")]
     Console(ConsoleArgs),
     /// Show network requests captured by the WatcherActor.
