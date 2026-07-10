@@ -27,6 +27,25 @@ which dominates the iteration loop's wall-clock cost.
   iter-100b removed. The `check-live-test-layout` xtask gate (wired into
   `check-iteration-ready` and the CI `discipline` job) fails the build if one
   reappears.
+- **Every `#[test]` under `tests/live/` must carry `#[ignore]`** (iter-113
+  Theme B). A plain `cargo test` must stay Firefox-free and fast; a bare
+  (ungated) live test hangs a Firefox-less CI job for the whole job budget
+  before the job timeout fires — exactly the iter-112 failure. The
+  `check-live-test-layout` gate now also scans `tests/live/` and fails on any
+  `#[test]` that is neither `#[ignore]`-gated nor annotated. Convention:
+  `#[test]` immediately followed by `#[ignore = "requires a live Firefox
+  instance — set FF_RDP_LIVE_TESTS=1"]` (an intervening `#[cfg(unix)]` between
+  the two is fine). For the rare runtime-gated fast probe that *must* run by
+  default — e.g. a `check-pre-fix-repro` target (run via `cargo test --exact`
+  without `--include-ignored`) or a Firefox-free mock probe — add an
+  `// allow-ungated-live: <reason>` comment in the attribute block above the
+  `#[test]` instead.
+- **Launch waits are bounded and env-overridable** (iter-113 Theme A). The
+  live launchers wait for Firefox's remote-debugging port via a bound that
+  defaults to 30 s and is overridable with `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`
+  (whole seconds). `common::wait_for_debugger_port` panics with a message
+  naming the launcher binary and port when the port never opens, so a wedged
+  or absent Firefox fails fast and self-describingly instead of hanging.
 - Shared live-test helpers live in `crates/ff-rdp-cli/tests/common/mod.rs`,
   declared once from `tests/live/main.rs` via
   `#[path = "../common/mod.rs"] mod common;`; suites refer to them as
@@ -212,7 +231,9 @@ fi
 4. `check-firefox-refs <plan>` — `firefox_refs:` line ranges valid
 5. `check-discipline-regression` — mirror sync + replay baselines
 6. `ac-fidelity-check.sh` — ticked ACs backed by diff evidence
-7. `check-live-test-layout` — no stray top-level `tests/live_*.rs` binaries (iter-100b)
+7. `check-live-test-layout` — no stray top-level `tests/live_*.rs` binaries
+   (iter-100b) **and** every `#[test]` under `tests/live/` is `#[ignore]`-gated
+   or `// allow-ungated-live:`-annotated (iter-113 Theme B)
 
 Fix every reported failure before pushing. The `/create-pr` skill runs this
 automatically on iter-* branches.

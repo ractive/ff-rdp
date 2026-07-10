@@ -26,6 +26,11 @@ fn live_tests_enabled() -> bool {
 /// announces `bulk … length:<2*max_frame>`, assert `BulkFrameTooLarge`
 /// returned within 50ms, no buffer allocation observed (no body bytes sent
 /// — if we tried to read them we'd block on the read timeout instead).
+///
+// allow-ungated-live: no real Firefox — this connects to an in-process mock TCP
+// server and is fast, so it runs by default under FF_RDP_LIVE_TESTS=1 (no-op
+// pass when unset). #[ignore] would hide a cheap, Firefox-free probe behind the
+// live-Firefox gate for no benefit. See iter-75 / iter-113 Theme B.
 #[test]
 fn live_bulk_frame_oversize_rejected() {
     if !live_tests_enabled() {

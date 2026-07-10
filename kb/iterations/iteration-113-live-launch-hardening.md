@@ -2,7 +2,7 @@
 title: "Iteration 113: live-launch hardening — launch timeout, mandatory #[ignore] guard, eol pinning"
 type: iteration
 date: 2026-07-10
-status: planned
+status: in-progress
 branch: iter-113/live-launch-hardening
 depends_on:
   - kb/iterations/iteration-112-windows-live-firefox-launch-hang.md
@@ -74,12 +74,12 @@ lane stays green on the PR.
 
 ## Acceptance criteria
 
-- [ ] launch_times_out_fast: a harness test pointing the live launcher at an
+- [x] launch_times_out_fast: a harness test pointing the live launcher at an
       unreachable/nonexistent Firefox fails within the bounded wait (not
       indefinitely) with a message naming binary + port.
-- [ ] layout_guard_rejects_ungated_test: xtask unit test proves
+- [x] layout_guard_rejects_ungated_test: xtask unit test proves
       check-live-test-layout fails when a bare `#[test]` (no `#[ignore]`, no
       allow annotation) is injected under tests/live/, and passes on the
       current tree.
-- [ ] eol_pinned_windows_green: .gitattributes lands and `test
+- [x] eol_pinned_windows_green: .gitattributes lands and `test
       (windows-latest)` passes on this PR's final head (0 failures).

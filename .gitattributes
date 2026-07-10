@@ -1,0 +1,18 @@
+# iter-113 Theme C: pin line endings so Windows checkouts stop producing CRLF
+# sources. Git for Windows defaults to core.autocrlf=true, which rewrites LF ->
+# CRLF on checkout; that broke `include_str!`-based source-pin tests (e.g.
+# `unit_error_enums_non_exhaustive`) whose `\n` patterns never matched the CRLF
+# working tree. `text=auto eol=lf` normalizes every text file to LF in the repo
+# AND in the working tree on all platforms, making those tests platform-stable.
+# The iter-112 CRLF normalization inside that test is kept as belt-and-braces.
+* text=auto eol=lf
+
+# Binary fixtures must never be line-ending munged.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary

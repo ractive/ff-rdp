@@ -73,6 +73,60 @@ fn wait_for_tcp(port: u16, timeout: Duration) -> bool {
     false
 }
 
+/// Environment variable that overrides the bounded launch-wait timeout
+/// ([`launch_wait_timeout`]). Value is whole seconds.
+pub const LAUNCH_TIMEOUT_ENV: &str = "FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS";
+
+/// The bounded wait a live launcher applies before giving up on the Firefox
+/// debugger port (iter-113 Theme A).
+///
+/// Defaults to 30 s — enough for a cold headless Firefox to open its port even
+/// under parallel-test contention — but is overridable via
+/// [`LAUNCH_TIMEOUT_ENV`] so the `launch_times_out_fast` harness test can force
+/// a sub-second bound, and so a wedged CI runner fails fast instead of hanging
+/// for the whole job timeout (the failure mode that turned ungated live tests
+/// into 10-minute CI stalls in iter-112).
+///
+/// A non-numeric or empty override falls back to the 30 s default rather than
+/// panicking — a malformed env var should not itself break the harness.
+pub fn launch_wait_timeout() -> Duration {
+    match std::env::var(LAUNCH_TIMEOUT_ENV) {
+        Ok(v) => match v.trim().parse::<u64>() {
+            Ok(secs) => Duration::from_secs(secs),
+            Err(_) => Duration::from_secs(30),
+        },
+        Err(_) => Duration::from_secs(30),
+    }
+}
+
+/// Wait for Firefox's remote-debugging port to accept a TCP connection, within
+/// the bounded [`launch_wait_timeout`]. Panics with a diagnostic naming the
+/// launcher `bin` and `port` if the port never opens (iter-113 Theme A).
+///
+/// The pre-iter-113 launchers *silently skipped* when the port never came up,
+/// which — combined with a bare (ungated) `#[test]` — let an absent or wedged
+/// Firefox burn the entire CI job budget before timing out. This helper turns
+/// that into an immediate, self-describing failure: the message names the
+/// binary path, the port waited on, and the bound, so CI logs point straight at
+/// the cause instead of an opaque hang.
+///
+/// Live suites gate their own bodies on [`live_tests_enabled`] and return early
+/// when Firefox is unavailable, so this only fires once a launch has actually
+/// been attempted and the port genuinely failed to open in time.
+pub fn wait_for_debugger_port(bin: &std::path::Path, port: u16) {
+    let timeout = launch_wait_timeout();
+    if wait_for_tcp(port, timeout) {
+        return;
+    }
+    panic!(
+        "live launch timed out after {}s waiting for the Firefox remote-debugging \
+         port {port} to open (launcher: {}). Set {LAUNCH_TIMEOUT_ENV} to change the \
+         bound; a stuck port here usually means Firefox is absent or wedged.",
+        timeout.as_secs(),
+        bin.display(),
+    );
+}
+
 /// Return `true` if a process with `pid` is currently alive.
 ///
 /// Mirrors the product's `daemon::process::is_process_alive` (unreachable from
@@ -196,7 +250,11 @@ impl LiveFirefox {
 
         eprintln!("LiveFirefox: pid={firefox_pid} port={port}");
 
-        if !wait_for_tcp(port, Duration::from_secs(30)) {
+        // Bounded, env-overridable wait (iter-113 Theme A). Retried up to 3× by
+        // `headless_on_random_port`, so a single miss stays a `None` skip rather
+        // than a panic — but the bound is now `launch_wait_timeout()` so a wedged
+        // runner gives up within the (overridable) budget instead of a fixed 30 s.
+        if !wait_for_tcp(port, launch_wait_timeout()) {
             kill_pid(firefox_pid);
             return None;
         }
@@ -413,7 +471,8 @@ impl RawFirefox {
             profile,
             child,
         };
-        if wait_for_tcp(port, Duration::from_secs(30)) {
+        // Bounded, env-overridable wait (iter-113 Theme A).
+        if wait_for_tcp(port, launch_wait_timeout()) {
             Some(ff)
         } else {
             None // Drop cleans up

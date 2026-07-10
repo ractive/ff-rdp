@@ -88,9 +88,12 @@ impl LiveFirefox {
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
         let firefox_pid = u32::try_from(json["results"]["pid"].as_u64()?).ok()?;
 
-        // Wait for the RDP port to become available.  Use 30 s because multiple
-        // parallel live tests each spawn Firefox and contention can delay startup.
-        if !wait_for_tcp(port, Duration::from_secs(30)) {
+        // Wait for the RDP port to become available.  The bound defaults to 30 s
+        // (multiple parallel live tests each spawn Firefox and contention can
+        // delay startup) but is env-overridable via
+        // `crate::common::launch_wait_timeout()` (iter-113 Theme A) so a wedged
+        // runner gives up within the budget instead of a fixed 30 s.
+        if !wait_for_tcp(port, crate::common::launch_wait_timeout()) {
             // Firefox failed to start — kill it and skip.
             kill_pid(firefox_pid);
             return None;
