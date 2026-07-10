@@ -72,7 +72,7 @@ producing CRLF sources; keep the iter-112 CRLF normalization in
 `unit_error_enums_non_exhaustive` as belt-and-braces. Verify the windows
 lane stays green on the PR.
 
-## Acceptance Criteria
+## Acceptance Criteria [3/3]
 
 - [x] `launch_times_out_fast`: a harness test pointing the live launcher at an
       unreachable/nonexistent Firefox fails within the bounded wait (not
