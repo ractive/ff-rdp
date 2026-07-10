@@ -14,7 +14,7 @@
 
 use std::process::Command;
 
-use crate::common::{LiveFirefox, base_args, ff_rdp_bin};
+use crate::common::{LiveFirefox, assert_colors_equal, base_args, ff_rdp_bin};
 
 /// A small HTML page with known computed values that Firefox resolves
 /// deterministically regardless of UA stylesheet differences.
@@ -138,11 +138,16 @@ fn live_cascade_inherited_or_default_note_fires_on_h1_color() {
         computed_json["results"][0]
     );
 
-    // The key assertion: both commands must agree byte-for-byte.
-    assert_eq!(
-        cascade_computed, standalone_computed,
-        "live_cascade_inherited_or_default_note_fires_on_h1_color: \
-         cascade computed={cascade_computed:?} must match standalone computed={standalone_computed:?}"
+    // The key assertion: both commands must agree canonically. `color` is a
+    // color-valued property, and iter-114 found the two code paths
+    // (cascade's `external_computed` vs. standalone `computed`) can now
+    // serialize the same color differently (keyword vs. `rgb()`) since
+    // Firefox 152 — so compare via the canonical-color helper rather than
+    // byte-for-byte.
+    assert_colors_equal(
+        cascade_computed,
+        standalone_computed,
+        "live_cascade_inherited_or_default_note_fires_on_h1_color: cascade vs standalone computed",
     );
 
     eprintln!(
@@ -260,11 +265,23 @@ fn pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does()
             computed_json["results"][0]
         );
 
-        assert_eq!(
-            cascade_computed, standalone_computed,
-            "pre_fix_repro ({selector}, {prop}): cascade computed={cascade_computed:?} \
-             must equal standalone computed={standalone_computed:?}"
-        );
+        // Color-valued properties may serialize differently between the
+        // cascade and standalone `computed` code paths since Firefox 152
+        // (keyword vs. `rgb()`) — compare those canonically. Every other
+        // property (e.g. `font-size`) keeps the byte-for-byte comparison.
+        if prop == "color" || prop == "background-color" {
+            assert_colors_equal(
+                cascade_computed,
+                standalone_computed,
+                &format!("pre_fix_repro ({selector}, {prop}): cascade vs standalone computed"),
+            );
+        } else {
+            assert_eq!(
+                cascade_computed, standalone_computed,
+                "pre_fix_repro ({selector}, {prop}): cascade computed={cascade_computed:?} \
+                 must equal standalone computed={standalone_computed:?}"
+            );
+        }
 
         eprintln!("pre_fix_repro ({selector}, {prop}): PASS — computed={cascade_computed:?}");
     }
