@@ -34,6 +34,26 @@ const FIXTURE_HTML: &str = "data:text/html;charset=utf-8,\
 @media (min-width: 1024px){#probe{width:980px}}\
 </style></head><body><div id='probe'>x</div></body></html>";
 
+/// Percent-encoded twin of the HTML body used by [`FIXTURE_HTML`], for use by
+/// [`pre_fix_repro_cascade_winner_ignores_media_context`].
+///
+/// Root-cause note: a raw (unescaped) `data:` URL body containing `{`, `}`,
+/// `@`, `(`, `)`, `:`, or spaces — as in [`FIXTURE_HTML`] — is silently
+/// truncated/mis-parsed somewhere in Firefox's navigation pipeline: the tab's
+/// `committed_url` (and the resulting DOM) ends up cut off at the first `}`,
+/// so `<style>` and `<body>` load empty and `#probe` never exists. This does
+/// not affect the two sibling tests above because their assertions happen to
+/// hold either way (an empty/never-found element still yields
+/// `media_query_check.matches == false` and a warning) — but it makes the
+/// `cascade` command legitimately fail to find `#probe` at all. Percent-encoding
+/// the HTML payload (leaving only the `data:text/html;charset=utf-8,` prefix
+/// raw) avoids the mis-parse and lets Firefox load the intended markup/CSS.
+const FIXTURE_HTML_ENCODED: &str = "data:text/html;charset=utf-8,\
+%3C%21DOCTYPE%20html%3E%3Chtml%3E%3Chead%3E%3Cstyle%3E\
+%23probe%7Bwidth%3A390px%7D\
+%40media%20%28min-width%3A%201024px%29%7B%23probe%7Bwidth%3A980px%7D%7D\
+%3C%2Fstyle%3E%3C%2Fhead%3E%3Cbody%3E%3Cdiv%20id%3D%27probe%27%3Ex%3C%2Fdiv%3E%3C%2Fbody%3E%3C%2Fhtml%3E";
+
 fn navigate(port: u16, url: &str) {
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(port))
@@ -156,6 +176,11 @@ fn live_responsive_self_check_reports_mismatch() {
 /// must be the winner and its value must equal `computed`'s answer for the
 /// property. Pre-fix the winner algorithm ignored media context; post-fix the
 /// winner is media-aware and agrees with computed (`winner_verified: true`).
+///
+/// Uses [`FIXTURE_HTML_ENCODED`] rather than the shared [`FIXTURE_HTML`] — see
+/// its doc comment for why the raw (unescaped) `data:` body breaks navigation
+/// for this particular test (it needs `#probe` to actually exist in the DOM,
+/// unlike the two sibling tests above).
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn pre_fix_repro_cascade_winner_ignores_media_context() {
@@ -167,7 +192,7 @@ fn pre_fix_repro_cascade_winner_ignores_media_context() {
         eprintln!("Firefox not available — skipping");
         return;
     };
-    navigate(ff.port(), FIXTURE_HTML);
+    navigate(ff.port(), FIXTURE_HTML_ENCODED);
 
     let out = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
