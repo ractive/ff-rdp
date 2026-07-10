@@ -103,3 +103,21 @@ missing_panics_doc = "allow"
 too_many_lines = "allow"
 module_name_repetitions = "allow"
 struct_excessive_bools = "allow"
+
+[package.metadata.deb]
+maintainer = "ractive"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/ff-rdp", "usr/bin/", "755"],
+    ["../../LICENSE", "usr/share/doc/ff-rdp/", "644"],
+    ["../../README.md", "usr/share/doc/ff-rdp/", "644"],
+]
+extended-description = "A CLI for the Firefox Remote Debugging Protocol."
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/ff-rdp", dest = "/usr/bin/ff-rdp", mode = "755" },
+    { source = "../../LICENSE", dest = "/usr/share/doc/ff-rdp/LICENSE", mode = "644", doc = true },
+    { source = "../../README.md", dest = "/usr/share/doc/ff-rdp/README.md", mode = "644", doc = true },
+]
