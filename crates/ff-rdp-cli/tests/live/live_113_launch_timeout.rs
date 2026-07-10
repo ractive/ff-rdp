@@ -4,19 +4,28 @@
 //! and, when it never opened, silently skipped. Combined with an *ungated*
 //! `#[test]`, an absent or wedged Firefox burned the whole CI job budget before
 //! the job-level timeout fired (the iter-112 failure mode). This suite pins the
-//! replacement: [`common::wait_for_debugger_port`] gives up within a bounded,
-//! env-overridable budget and panics with a message naming the launcher binary
-//! and the port it waited on.
+//! replacement: [`common::wait_for_debugger_port_within`] gives up within a
+//! bounded budget and panics with a message naming the launcher binary and the
+//! port it waited on.
 //!
 //! Unlike the rest of `tests/live/`, this suite needs **no Firefox** — it points
 //! the wait at a port nothing is listening on — so it must run by default (that
 //! is the entire value: proving the bound fires in ordinary CI). It is therefore
 //! intentionally not `#[ignore]`-gated; see the `// allow-ungated-live:` note.
+//!
+//! Neither test mutates the process-wide `LAUNCH_TIMEOUT_ENV` var: `cargo
+//! test-live` (unlike CI's `--test-threads=1` live job) runs test binaries with
+//! multiple threads by default, and these tests are intentionally ungated, so
+//! they can run concurrently with `#[ignore]`-gated live suites that spawn real
+//! Firefox and read [`common::launch_wait_timeout`] on another thread.
+//! `std::env::set_var` on that key would risk truncating an in-flight real
+//! launch's wait. [`common::wait_for_debugger_port_within`] takes the bound as
+//! a parameter instead, keeping both tests hermetic.
 
 use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
 
-use crate::common::{LAUNCH_TIMEOUT_ENV, ff_rdp_bin, launch_wait_timeout, wait_for_debugger_port};
+use crate::common::{ff_rdp_bin, wait_for_debugger_port_within};
 
 /// Bind an ephemeral port, then drop the listener so the port is (almost
 /// certainly) closed — nothing will accept a connection on it. Returns the port.
@@ -36,19 +45,10 @@ fn dead_port() -> u16 {
 // worth anything, so #[ignore] would defeat its purpose (iter-113 Theme A).
 #[test]
 fn launch_times_out_fast() {
-    // Force a sub-second bound so the test itself is fast and deterministic.
-    // (Serial within this binary; no other test reads this env var.)
-    // SAFETY: set_var is unsafe as of Rust 2024; this test binary is
-    // single-suite for this env key and does not spawn threads that read it.
-    unsafe {
-        std::env::set_var(LAUNCH_TIMEOUT_ENV, "1");
-    }
-    // The override is observed by launch_wait_timeout().
-    assert_eq!(
-        launch_wait_timeout(),
-        Duration::from_secs(1),
-        "the env override must be honored so the wait is bounded, not indefinite",
-    );
+    // Sub-second bound passed explicitly (not via env — see module docs) so the
+    // test itself is fast, deterministic, and safe to run alongside concurrent
+    // live suites that read the real env-backed timeout on other threads.
+    let bound = Duration::from_secs(1);
 
     let port = dead_port();
     let bin = ff_rdp_bin();
@@ -59,16 +59,10 @@ fn launch_times_out_fast() {
     std::panic::set_hook(Box::new(|_| {}));
     let start = Instant::now();
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        wait_for_debugger_port(&bin, port);
+        wait_for_debugger_port_within(&bin, port, bound);
     }));
     let elapsed = start.elapsed();
     std::panic::set_hook(prev_hook);
-
-    // Restore the env so we don't leak a 1 s bound into any later test.
-    // SAFETY: same single-suite justification as above.
-    unsafe {
-        std::env::remove_var(LAUNCH_TIMEOUT_ENV);
-    }
 
     // 1. It must have failed (panicked), not succeeded on a dead port.
     let payload = result.expect_err("wait on a dead port must panic, not return");
@@ -93,6 +87,35 @@ fn launch_times_out_fast() {
         msg.contains(&bin.display().to_string()),
         "panic message must name the launcher binary {}; got: {msg}",
         bin.display(),
+    );
+}
+
+/// AC: the [`common::LAUNCH_TIMEOUT_ENV`] override parsing rules are honored —
+/// numeric ⇒ that many seconds, missing/non-numeric ⇒ the 30 s default.
+///
+/// Exercises [`common::parse_launch_timeout`] (the pure half of
+/// [`common::launch_wait_timeout`]) directly with in-memory `Option<&str>`
+/// inputs rather than mutating the process-wide env var, so this cannot race
+/// concurrently-running live suites that read the real var on another thread.
+///
+// allow-ungated-live: no Firefox needed — exercises pure parsing logic; must
+// run by default to guard the parsing rules (iter-113 Theme A).
+#[test]
+fn launch_timeout_env_override_is_honored() {
+    assert_eq!(
+        crate::common::parse_launch_timeout(Some("1")),
+        Duration::from_secs(1),
+        "a numeric override must be honored so the wait is bounded, not indefinite",
+    );
+    assert_eq!(
+        crate::common::parse_launch_timeout(None),
+        Duration::from_secs(30),
+        "an unset override must fall back to the 30s default",
+    );
+    assert_eq!(
+        crate::common::parse_launch_timeout(Some("not-a-number")),
+        Duration::from_secs(30),
+        "a malformed override must fall back to the 30s default, not panic",
     );
 }
 

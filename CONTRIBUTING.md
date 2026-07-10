@@ -43,9 +43,10 @@ which dominates the iteration loop's wall-clock cost.
 - **Launch waits are bounded and env-overridable** (iter-113 Theme A). The
   live launchers wait for Firefox's remote-debugging port via a bound that
   defaults to 30 s and is overridable with `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`
-  (whole seconds). `common::wait_for_debugger_port` panics with a message
-  naming the launcher binary and port when the port never opens, so a wedged
-  or absent Firefox fails fast and self-describingly instead of hanging.
+  (whole seconds). `common::wait_for_debugger_port_within` panics with a
+  message naming the launcher binary and port when the port never opens, so a
+  wedged or absent Firefox fails fast and self-describingly instead of
+  hanging.
 - Shared live-test helpers live in `crates/ff-rdp-cli/tests/common/mod.rs`,
   declared once from `tests/live/main.rs` via
   `#[path = "../common/mod.rs"] mod common;`; suites refer to them as

@@ -90,12 +90,24 @@ pub const LAUNCH_TIMEOUT_ENV: &str = "FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS";
 /// A non-numeric or empty override falls back to the 30 s default rather than
 /// panicking — a malformed env var should not itself break the harness.
 pub fn launch_wait_timeout() -> Duration {
-    match std::env::var(LAUNCH_TIMEOUT_ENV) {
-        Ok(v) => match v.trim().parse::<u64>() {
+    parse_launch_timeout(std::env::var(LAUNCH_TIMEOUT_ENV).ok().as_deref())
+}
+
+/// Pure parsing half of [`launch_wait_timeout`]: given the raw
+/// [`LAUNCH_TIMEOUT_ENV`] value (or `None` if unset), returns the bound.
+///
+/// Split out so the parsing rules (missing/non-numeric ⇒ 30 s default;
+/// numeric ⇒ that many seconds) are unit-testable without touching the
+/// process-wide env var — reading/writing `LAUNCH_TIMEOUT_ENV` itself is
+/// unsafe to do from a test that might run concurrently with a live suite
+/// reading it on another thread (see `live_113_launch_timeout`'s module docs).
+pub fn parse_launch_timeout(raw: Option<&str>) -> Duration {
+    match raw {
+        Some(v) => match v.trim().parse::<u64>() {
             Ok(secs) => Duration::from_secs(secs),
             Err(_) => Duration::from_secs(30),
         },
-        Err(_) => Duration::from_secs(30),
+        None => Duration::from_secs(30),
     }
 }
 
@@ -113,8 +125,20 @@ pub fn launch_wait_timeout() -> Duration {
 /// Live suites gate their own bodies on [`live_tests_enabled`] and return early
 /// when Firefox is unavailable, so this only fires once a launch has actually
 /// been attempted and the port genuinely failed to open in time.
-pub fn wait_for_debugger_port(bin: &std::path::Path, port: u16) {
-    let timeout = launch_wait_timeout();
+///
+/// Takes `timeout` explicitly (rather than reading [`LAUNCH_TIMEOUT_ENV`]
+/// itself, i.e. callers pass [`launch_wait_timeout`]) so
+/// `launch_times_out_fast` can force a sub-second bound without mutating the
+/// process-wide `LAUNCH_TIMEOUT_ENV` env var — `cargo test-live` (unlike CI's
+/// `--test-threads=1` live job) runs test binaries with multiple threads by
+/// default, and that harness test is intentionally *ungated* (see
+/// `// allow-ungated-live:` on it), so it can run concurrently with
+/// `#[ignore]`-gated live suites that spawn real Firefox and read
+/// [`launch_wait_timeout`] on another thread. `std::env::set_var` mutates
+/// process-global state visible to every thread, so racing the two would risk
+/// truncating an in-flight real launch's wait to the test's 1 s override.
+/// Taking the bound as a parameter keeps the test hermetic.
+pub fn wait_for_debugger_port_within(bin: &std::path::Path, port: u16, timeout: Duration) {
     if wait_for_tcp(port, timeout) {
         return;
     }
