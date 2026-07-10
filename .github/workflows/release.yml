@@ -12,13 +12,15 @@ permissions:
 
 jobs:
   release:
-    uses: ractive/release-workflows/.github/workflows/release.yml@v0.1.0
+    uses: ractive/release-workflows/.github/workflows/release.yml@v0.1.1
     secrets: inherit
     with:
       bin-name: ff-rdp
       version-package: ff-rdp-cli
       publish-crates: ff-rdp-core,ff-rdp-cli
       winget-identifier: ractive.ff-rdp
+      # SBOMs for both published crates, matching the pre-migration pipeline:
+      sbom-packages: ff-rdp-cli,ff-rdp-core
       dry-run: ${{ github.event_name == 'workflow_dispatch' }}
       targets: >-
         [
