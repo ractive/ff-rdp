@@ -124,3 +124,15 @@ The immediate CI hang was hotfixed ahead of this iteration: PR `iter-112/gate-un
 ## Closure note (2026-07-10)
 
 Completed by hotfix PR #148 (gating + CRLF tolerance). Remaining hardening scope moved to [[iteration-113-live-launch-hardening]].
+
+## Post-closure corroboration (iter-111, 2026-07-10)
+
+[[iteration-111-daemon-live-coverage]] added a new live test
+(`live_daemon_follow_survives_cross_process_nav`) that spawns Firefox via
+`LiveFirefox::headless_on_random_port()` on macOS and confirmed the
+hotfix's `#[ignore]` convention holds: the new test carries an explicit
+`#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]`
+and was verified skipping cleanly without `FF_RDP_LIVE_TESTS=1` and
+completing in ~22s with it set — no hang observed. This is corroborating
+evidence for iter-113 Theme B (the `#[ignore]` guard is still manual today;
+nothing yet enforces it beyond convention + code review), not new scope.
