@@ -4,7 +4,7 @@ members = ["crates/*"]
 default-members = ["crates/ff-rdp-cli"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 authors = ["James Bergamin"]
 edition = "2024"
 # MSRV (iter-105 Theme D): pinned to the toolchain CI actually validates
@@ -23,7 +23,7 @@ description = "CLI for Firefox Remote Debugging Protocol"
 
 [workspace.dependencies]
 # Internal crates
-ff-rdp-core = { path = "crates/ff-rdp-core", version = "0.2.0" }
+ff-rdp-core = { path = "crates/ff-rdp-core", version = "0.3.0" }
 
 # External dependencies
 anyhow = "1"

@@ -31,12 +31,15 @@ use crate::types::{ActorId, Grip};
 /// This typed shim makes the spec drift explicit (rather than scattered
 /// `json!({…})` blocks) so the `rdp-spec-reviewer` agent can flag it.
 ///
-// allow-spec-drift: bug TBD (Mozilla Bugzilla entry to be filed in a follow-up
-// iter — screenshot.args dict at devtools/shared/specs/screenshot.js:13-35
-// omits browsingContextID/snapshotScale/rect even though the server in
-// devtools/server/actors/screenshot.js reads all three).  Per the `TBD`
-// rule in CLAUDE.md, this annotation MUST be replaced with the real
-// Bugzilla number before the next release cut; tracked via iter-78.
+// allow-spec-drift: bug FILING (SD-1: screenshot.args dict at
+// devtools/shared/specs/screenshot.js:13-35 omits
+// browsingContextID/snapshotScale/rect even though the server in
+// devtools/server/actors/screenshot.js reads all three).  iter-117 searched
+// Mozilla Bugzilla and found no existing bug — this is a novel gap awaiting
+// James's Bugzilla-account filing (see
+// kb/rdp/from-our-codebase/open-gaps.md#spec-drift-bugs-awaiting-filing and
+// iter-117 Results).  `FILING` blocks publishing the v0.3.0 draft: replace
+// with the real Bugzilla number in a follow-up commit before publish.
 #[derive(Debug, Clone, Serialize)]
 pub struct ScreenshotArgsExt {
     // ── spec-declared fields ────────────────────────────────────────────────
@@ -252,10 +255,19 @@ impl ScreenshotActor {
     /// Requires Firefox 87+ (`getProcess` and `IOUtils` were added in FF 87).
     /// `drawSnapshot` on `WindowGlobalParent` is available in Firefox 73+.
     ///
-    // allow-spec-drift: bug TBD (BrowsingContext.drawSnapshot used via parent-process eval
-    // as a workaround for Firefox 151 regression where screenshotActor.capture fails to
-    // load capture-screenshot.js in the DevTools distinct global.  This workaround must be
-    // removed or hidden behind a version check once Mozilla fixes bug in capture-screenshot.js.)
+    // allow-spec-drift: bug FILING (SD-2: BrowsingContext.drawSnapshot used via
+    // parent-process eval as a workaround for the Firefox 151 regression where
+    // screenshotActor.capture fails to load capture-screenshot.js in the
+    // DevTools distinct global.  iter-117 REASSESSED the regression against
+    // Firefox 152.0.5: it STILL reproduces — a live `screenshot` probe logs
+    // "screenshotActor module load failure; retrying via
+    // screenshot_via_process_drawsnapshot".  The workaround therefore stays;
+    // removing it or gating it behind a version check on FF152 would break
+    // screenshots.  Remove or version-gate it only once Mozilla fixes the
+    // module-load path.  iter-117 found no existing Bugzilla bug — novel gap
+    // awaiting James's filing; see
+    // kb/rdp/from-our-codebase/open-gaps.md#spec-drift-bugs-awaiting-filing and
+    // iter-117 Results.  `FILING` blocks publishing the v0.3.0 draft.)
     /// Returns raw PNG bytes (not a data URL).
     ///
     /// The caller (CLI screenshot command) is responsible for encoding the bytes
@@ -398,11 +410,14 @@ impl ScreenshotActor {
     ///
     /// Returns the `data:image/png;base64,...` string on success, or a
     /// [`ProtocolError`] when neither method is recognised by the target.
-    // allow-spec-drift: bug TBD (WindowGlobalTarget.screenshot not declared in
-    // devtools/shared/specs/targets/window-global.js on main — the method was
-    // observed in the server-side implementation on FF 151 but the spec dict
-    // has not been updated.  This annotation must be replaced once the Bugzilla
-    // number is available.)
+    // allow-spec-drift: bug FILING (SD-3: WindowGlobalTarget.screenshot not
+    // declared in devtools/shared/specs/targets/window-global.js on main — the
+    // method was observed in the server-side implementation on FF 151 but the
+    // spec dict has not been updated.  iter-117 searched Mozilla Bugzilla and
+    // found no existing bug — novel gap awaiting James's filing; see
+    // kb/rdp/from-our-codebase/open-gaps.md#spec-drift-bugs-awaiting-filing and
+    // iter-117 Results.  `FILING` blocks publishing the v0.3.0 draft: replace
+    // with the real Bugzilla number in a follow-up commit before publish.)
     pub fn screenshot_via_target(
         transport: &mut RdpTransport,
         browsing_context_id: u64,
