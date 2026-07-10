@@ -17,6 +17,15 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
+    // Prime the server-side message cache before reading it. Firefox's
+    // WebConsole actor only records messages into the cache that
+    // `getCachedMessages` reads *after* `startListeners` has been called on
+    // that actor (see kb/rdp/actors/console.md). On a fresh --no-daemon
+    // connection the listeners have never been started, so without this call
+    // `getCachedMessages` legitimately returns nothing — even for a
+    // `console.log` an earlier `ff-rdp eval` just emitted.
+    prime_console_cache(cli, ctx.transport_mut(), &console_actor);
+
     // Retrieve all cached console messages.
     // If the combined request fails (Firefox may reject PageError serialization),
     // fall back to ConsoleAPI-only to recover partial results.
@@ -160,6 +169,39 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
         .map_err(AppError::from)
 }
 
+/// Prime the WebConsole actor's message cache so a following
+/// `getCachedMessages` sees `console.log` / page-error output that was emitted
+/// before this connection was opened.
+///
+/// Firefox only records messages into the cache that `getCachedMessages` reads
+/// *after* `startListeners` has run on the target's console actor (see the
+/// `getCachedMessages` / `startListeners` sections of
+/// `kb/rdp/actors/console.md`). A fresh `--no-daemon` `ff-rdp console`
+/// invocation has never started listeners, so without this call the very first
+/// `getCachedMessages` legitimately returns an empty set — even for a message
+/// an earlier `ff-rdp eval 'console.log(...)'` just logged.
+///
+/// This is best-effort: `startListeners` is a legacy path that some Firefox
+/// builds answer differently, and a failure here must not abort the read (a
+/// primed-but-empty cache and a start-listeners error are both handled by the
+/// subsequent `getCachedMessages`). Failures are surfaced only under
+/// `--verbose`. This does NOT double-deliver against the `--follow` watcher
+/// path: the `console` command and the script runner's `assert_no_console_errors`
+/// step (`run_get_errors`) are short-lived single reads that never subscribe to
+/// the watcher bus (`live_console_no_double_delivery` covers the combined case).
+fn prime_console_cache(
+    cli: &Cli,
+    transport: &mut ff_rdp_core::RdpTransport,
+    console_actor: &ff_rdp_core::ActorId,
+) {
+    if let Err(e) =
+        WebConsoleActor::start_listeners(transport, console_actor, &["PageError", "ConsoleAPI"])
+        && cli.is_verbose()
+    {
+        eprintln!("debug: startListeners(PageError+ConsoleAPI) failed ({e}); reading cache anyway");
+    }
+}
+
 /// Return all cached console error messages as a JSON array.
 ///
 /// Used by the script runner's `assert_no_console_errors` step.  Returns
@@ -167,6 +209,12 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
 pub fn run_get_errors(cli: &Cli) -> Result<Vec<serde_json::Value>, crate::error::AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
+
+    // Prime the server-side cache — see the note in `run`. Without a prior
+    // `startListeners`, `getCachedMessages` returns nothing on a fresh
+    // connection, so `assert_no_console_errors` would silently pass even when
+    // the page had logged errors before this connection was opened.
+    prime_console_cache(cli, ctx.transport_mut(), &console_actor);
 
     let messages = match WebConsoleActor::get_cached_messages(
         ctx.transport_mut(),

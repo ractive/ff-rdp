@@ -65,6 +65,22 @@ Returns `{ matches: string[], matchProp }` — uses `jsPropertyProvider`.
 
 Returns cached page errors, console-api calls etc. recorded **since the listeners were started**. Types: `"PageError"`, `"ConsoleAPI"`. Returns `{ messages | error, …}`.
 
+> **iter-116 — `ff-rdp console` primes the cache.** Because the cache is only
+> populated *after* `startListeners` has run on the console actor, a fresh
+> `--no-daemon` connection would otherwise read back an empty cache even for a
+> `console.log` that an earlier, separate `ff-rdp eval` connection just emitted.
+> `commands::console::run` and `run_get_errors`
+> (`crates/ff-rdp-cli/src/commands/console.rs`) therefore call
+> `WebConsoleActor::start_listeners(["PageError", "ConsoleAPI"])` (via the
+> private `prime_console_cache` helper) *before* `getCachedMessages`. The call
+> is best-effort — a `startListeners` failure only warns under `--verbose` and
+> the read proceeds. `console --follow` is unaffected: it uses the Watcher
+> `watchResources(console-message, error-message)` subscription, not this
+> legacy pair. Live coverage: `live_console_printf_e2e` (round-trips a
+> printf-formatted `console.log` through a fresh `console` read) and
+> `live_console_no_double_delivery` (the combined legacy + watcher path stays
+> single-delivery).
+
 ### `startListeners(listeners: string[]) → { startedListeners }`
 
 Listener kinds: `"PageError"`, `"ConsoleAPI"`, `"FileActivity"`, `"ReflowActivity"`, `"ContentProcessMessages"`, `"DocumentEvents"`. Listeners populate the cache and fire live events.

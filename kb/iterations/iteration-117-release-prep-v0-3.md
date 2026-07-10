@@ -71,6 +71,24 @@ pre-landing in Results — no further Theme B work needed. Making a curated
 runner-green subset blocking on release stays deferred until the first
 release-triggered run shows what is environmental vs real.
 
+**Discovered during iter-116 review (2026-07-10):** the `on:` trigger block
+itself is clean (no `pull_request:` key — confirmed), but the "Run
+dogfood-script gate (iter-* branches only)" step's `if:` guard was not updated
+alongside the trigger swap — it still reads
+`if: startsWith(github.head_ref, 'iter-') && github.event.pull_request.head.repo.full_name == github.repository`
+(`.github/workflows/live.yml:52`). `github.event.pull_request` is unset under
+all three current triggers, so that `if:` now always evaluates false and the
+dogfood-script gate step is silently dead — it never runs on any trigger. Two
+follow-ups folded into this iteration:
+1. Fix or remove the stale `if:` guard (either drop the step, since
+   `check-iteration-ready`'s local `check-dogfood-script` sub-check already
+   covers this pre-merge, or rewrite the condition to fire on
+   `workflow_dispatch`/`schedule`/`release` appropriately).
+2. The `live_lane_retriggered` AC's grep is too literal — a bare
+   `grep -n "pull_request" .github/workflows/live.yml` still matches this
+   leftover `if:` guard (a false failure even though the trigger block itself
+   is correct). Reworded below to check the `on:` block specifically.
+
 ## Theme C — version bump + cut v0.3.0
 
 - Workspace `version = "0.2.0"` → `"0.3.0"` in the root Cargo.toml (verify
@@ -101,9 +119,13 @@ release-triggered run shows what is environmental vs real.
 - [ ] drawsnapshot_workaround_reassessed: FF152 repro outcome recorded in
       Results; live_92_screenshot_full_page::pre_fix_repro_screenshot_full_page_taller_than_viewport
       passes live after any version-gate change.
-- [ ] live_lane_retriggered: `grep -n "pull_request" .github/workflows/live.yml`
-      returns no output; workflow_dispatch + release + schedule triggers
-      present.
+- [ ] live_lane_retriggered: `sed -n '/^on:/,/^env:/p' .github/workflows/live.yml
+      | grep -n "pull_request"` returns no output (the `on:` trigger block has
+      no `pull_request:` key; workflow_dispatch + release + schedule triggers
+      present) AND the stale `if: … github.event.pull_request …` dogfood-gate
+      guard (`.github/workflows/live.yml:52`, dead since the Theme B
+      pre-landing — see iter-116-review discovery note above) is fixed or the
+      step removed.
 - [ ] release_ready: workspace version 0.3.0 merged; release notes drafted;
       v0.3.0 exists as an UNPUBLISHED draft release (or the exact publish
       command is recorded in Results); publishing itself is James's action

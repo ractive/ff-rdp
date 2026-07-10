@@ -12,13 +12,14 @@
 //! 4. Runs `ff-rdp console --pattern '<marker>'` and asserts that at least one
 //!    result has `message == "hello world, you are 42 <marker>"`.
 //!
-//! # iter-114 status: LEFT RED — product-side gap, not a test-fixture issue
+//! # iter-116 status: GREEN — product-side gap fixed
 //!
-//! This test was ALREADY self-launching (no hardcoded-default-port dependency)
-//! before iter-114; the iter-110 sweep recorded it red regardless. Diagnosis:
+//! This test was LEFT RED through iter-114 pending a product fix, then
+//! un-redded in iter-116 once that fix landed. Root cause and resolution:
 //!
-//! - `commands::console::run` (`crates/ff-rdp-cli/src/commands/console.rs`)
-//!   calls `WebConsoleActor::get_cached_messages` directly — it never calls
+//! - Before iter-116, `commands::console::run`
+//!   (`crates/ff-rdp-cli/src/commands/console.rs`) called
+//!   `WebConsoleActor::get_cached_messages` directly — it never called
 //!   `WebConsoleActor::start_listeners` first.
 //! - Per the Firefox WebConsole actor protocol (documented at
 //!   `kb/rdp/actors/console.md`, `getCachedMessages` section, sourced from
@@ -27,34 +28,18 @@
 //!   actor. Before `startListeners` ever runs, the server-side cache buffer
 //!   for that target is simply never populated — `getCachedMessages` legally
 //!   returns `{ messages: [] }` no matter how recently a `console.log` ran.
-//! - Verified live (2026-07-10, Firefox 152.0.5): with the fixture/flow as
-//!   written, `console --pattern hello` after the `eval` returns
-//!   `results: []` (`total: 0`) every time — even for a plain page-script
+//! - Verified live (2026-07-10, Firefox 152.0.5): with the previous flow,
+//!   `console --pattern hello` after the `eval` returned `results: []`
+//!   (`total: 0`) every time — even for a plain page-script
 //!   `<script>console.log(...)</script>` with no `eval`/CSP involvement at
 //!   all, ruling out a printf-substitution or eval-path bug.
-//! - Confirmed the mechanism directly: temporarily patching
-//!   `commands::console::run` to call `start_listeners(["PageError","ConsoleAPI"])`
-//!   before `get_cached_messages` (experiment only, NOT committed — reverted
-//!   before finishing this file) made the exact same eval-then-console
-//!   sequence pass, returning the printf-substituted message correctly. This
-//!   isolates the gap to the missing `start_listeners` call in the CLI
-//!   command — the printf substitution itself (`parse_console_resources`,
-//!   the iter-77 Theme C fix this test targets) works correctly once the
-//!   cache is actually primed.
-//! - Every currently-available CLI entry point that reaches `start_listeners`
-//!   is `console --follow` (`commands::console::run_follow`), which uses the
-//!   unrelated Watcher-based `watchResources(console-message, error-message)`
-//!   subscription (not the legacy `startListeners`/`getCachedMessages` pair)
-//!   and blocks forever streaming — it does not prime the legacy cache either
-//!   (verified live: priming with a `--follow` burst before `eval` does not
-//!   help). There is therefore no test-side sequencing that can make a plain,
-//!   short-lived `console` invocation see a message logged by an earlier,
-//!   separate `--no-daemon` connection: only a product change (calling
-//!   `start_listeners` inside `commands::console::run`, mirroring what
-//!   `run_follow` already implies via `watchResources`) can fix this.
-//! - Per this iteration's scope, product code under `crates/*/src/` must not
-//!   be modified here — this test is intentionally left red pending a
-//!   product-side fix in `commands::console::run`.
+//! - iter-116 fix: `commands::console::run` now calls
+//!   `start_listeners(["PageError","ConsoleAPI"])` (via the private
+//!   `prime_console_cache` helper) *before* `get_cached_messages`, priming the
+//!   cache so a fresh `--no-daemon` connection sees a message an earlier,
+//!   separate `eval` connection logged. The printf substitution itself
+//!   (`parse_console_resources`, the iter-77 Theme C fix this test targets)
+//!   was already correct once the cache is actually primed.
 //!
 //! # Running
 //!
@@ -83,9 +68,9 @@ fn parse_json(output: &Output) -> serde_json::Value {
 /// `ff-rdp console --pattern '<marker>'` and assert that the `message` field
 /// was printf-substituted to `"hello world, you are 42 <marker>"`.
 ///
-/// See the module-level doc comment: this is currently LEFT RED by design —
-/// see the "iter-114 status" section above for the full product-side
-/// diagnosis (`commands::console::run` never calls `start_listeners`).
+/// See the module-level doc comment ("iter-116 status"): this is now GREEN —
+/// `commands::console::run` primes the cache via `start_listeners` before
+/// reading it.
 ///
 /// Gated on `FF_RDP_LIVE_TESTS=1`.
 #[test]
@@ -179,11 +164,11 @@ fn live_console_printf_e2e() {
         found,
         "live_console_printf_e2e: expected a console message with \
          message == {expected:?} but got:\n{}\n\
-         See this file's module-level doc comment (\"iter-114 status\") for the \
-         product-side root-cause diagnosis if this is failing: \
-         commands::console::run never calls WebConsoleActor::start_listeners, \
-         so getCachedMessages legitimately returns nothing for messages logged \
-         before listeners were ever started on this actor.",
+         Regression check: `commands::console::run` must call \
+         `WebConsoleActor::start_listeners` (via `prime_console_cache`) before \
+         `getCachedMessages`, otherwise Firefox returns nothing for messages \
+         logged before listeners were ever started on this actor. See this \
+         file's module-level doc comment (\"iter-116 status\").",
         serde_json::to_string_pretty(results).unwrap_or_default()
     );
 
