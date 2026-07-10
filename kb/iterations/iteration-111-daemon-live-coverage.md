@@ -2,7 +2,7 @@
 title: "Iteration 111: daemon live coverage — cross-process follow + full error-shape parity"
 type: iteration
 date: 2026-07-09
-status: in-review
+status: completed
 branch: iter-111/daemon-live-coverage
 depends_on:
   - iteration-101-daemon-session-correctness
@@ -10,11 +10,10 @@ kb_refs:
   - kb/rdp/actors/watcher.md
 first_call_sites:
   - primitive: >-
-      live cross-process follow test asserting post-nav events reach a
-      still-running --follow stream
+      live cross-process follow test asserting post-nav events reach a still-running
+      --follow stream
     site: crates/ff-rdp-cli/tests/live/live_111_daemon_follow_cross_process.rs
-  - primitive: >-
-      daemon-routed error-shape parity for bad-selector / eval-throw scenarios
+  - primitive: daemon-routed error-shape parity for bad-selector / eval-throw scenarios
     site: crates/ff-rdp-cli/tests/e2e/daemon_parity.rs
 dogfood_path: |
   ff-rdp launch --headless
@@ -22,7 +21,13 @@ dogfood_path: |
   ff-rdp console --follow &
   ff-rdp navigate https://en.wikipedia.org/wiki/Firefox
   # expected: follow stream keeps delivering events from the new page
-tags: [iteration, daemon, watcher, parity, review-2026-07, carry-over]
+tags:
+  - iteration
+  - daemon
+  - watcher
+  - parity
+  - review-2026-07
+  - carry-over
 ---
 
 # Iteration 111: daemon live coverage
