@@ -49,7 +49,7 @@ distinctness on `selector:specificity`; the real fix is to expose the actor id.
 - Any RDP protocol/actor changes (the data is already on the wire).
 - Upstream Firefox work on inline-stylesheet line reporting.
 
-## Acceptance criteria
+## Acceptance Criteria [2/2]
 
 - [x] live_cascade_explains_pico_dialog: the two inline-`<style>` cascade
       entries carry distinct non-empty `rule_actor_id` values.
