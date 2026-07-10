@@ -254,6 +254,17 @@ Fix: `crawl_page` now uses `WaitStrategy::Both` (readystate fallback,
 matching the CLI navigate default). The two live_62 tests are its live
 coverage.
 
+### Review round (PR #153)
+
+Local + Copilot reviews converged on one substantive finding: four Theme B
+ports hand-rolled in-file HTTP servers (leaked, never-joined accept threads)
+instead of the `FixtureServer` this branch itself introduced. Fixed post-review:
+all four (navigate_default_fast, dom_stats_perf_audit_parity,
+cookies_set_cookie_header, stale_tab_race) now use `common::FixtureServer`;
+`FixtureRoute` gained a backward-compatible `extra_headers` field +
+`with_header()` builder for the Set-Cookie case. All affected tests re-verified
+live (8 passed serially, 90.99s).
+
 ### Sweep methodology finding — `cargo test-live` was not the baseline
 
 The first full sweep ran `cargo test-live` as then defined (default libtest
