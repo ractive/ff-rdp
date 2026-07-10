@@ -1,5 +1,9 @@
 [alias]
 # Run the full test suite including live (Firefox-dependent) tests.
 # Requires FF_RDP_LIVE_TESTS=1 at runtime; Firefox must be available.
+# `--test-threads=1` because live tests interfere across threads (daemon
+# stop/kill and profile-prune tests collide with concurrently launched
+# Firefox instances) — same setting the CI live lane and the iter-110 sweep
+# baseline use.
 # Usage: FF_RDP_LIVE_TESTS=1 cargo test-live
-test-live = "test --workspace -- --include-ignored"
+test-live = "test --workspace -- --include-ignored --test-threads=1"

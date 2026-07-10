@@ -16,7 +16,17 @@ use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
 use ff_rdp_core::ProtocolError;
-use ff_rdp_core::transport::{RdpTransport, set_max_frame_bytes};
+use ff_rdp_core::transport::{RdpTransport, max_frame_bytes, set_max_frame_bytes};
+
+/// Restores the process-global transport frame cap on drop (panic-safe), so
+/// this test's 1 KiB cap can't leak into later tests in the same binary.
+struct FrameCapGuard(usize);
+
+impl Drop for FrameCapGuard {
+    fn drop(&mut self) {
+        set_max_frame_bytes(self.0);
+    }
+}
 
 fn live_tests_enabled() -> bool {
     std::env::var("FF_RDP_LIVE_TESTS").is_ok_and(|v| !v.is_empty() && v != "0")
@@ -38,7 +48,12 @@ fn live_bulk_frame_oversize_rejected() {
         return;
     }
 
-    // Pick a small cap to keep the announcement modest.
+    // Pick a small cap to keep the announcement modest. The cap is a
+    // process-global knob shared with every other test in this binary, so
+    // restore it on exit — including panic unwind — or later in-process
+    // transport users fail with FrameTooLarge on ordinary Firefox packets
+    // (observed as live_console_no_double_delivery red in the iter-114 sweep).
+    let _cap_guard = FrameCapGuard(max_frame_bytes());
     set_max_frame_bytes(1024);
     let cap = 1024u64;
     let announced = cap * 2;
