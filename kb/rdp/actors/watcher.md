@@ -189,3 +189,28 @@ across the switch:
 Registry invalidation for the destroyed target still runs via
 `dispatch_watcher_event` → `Registry::invalidate_target` (iter-74); Theme A only
 adds the buffer purge on top.
+
+## Iter-111 update — live coverage for the target-switch path
+
+[[iteration-111-daemon-live-coverage]] adds the live end-to-end proof that the
+transparent-re-delivery + buffer-purge behaviour above actually holds through a
+real cross-process switch:
+`live_daemon_follow_survives_cross_process_nav`
+(`crates/ff-rdp-cli/tests/live/live_111_daemon_follow_cross_process.rs`) opens a
+daemon-proxied `network --follow` stream, drives a top-level (and, under
+`FF_RDP_LIVE_NETWORK_TESTS=1`, a genuine Fission example.com → wikipedia.org)
+navigation, and asserts a **post-nav-sourced** `navigation` event still reaches
+the still-open stream — i.e. the watcher subscription is not stranded on the
+destroyed target.
+
+Two practical constraints this test surfaced (relevant to anyone building on the
+watcher follow path):
+
+- `console --follow` is **not** a viable live signal for the switch: ordinary
+  `console.log` is delivered as a direct console-actor push and is *not* routed
+  through the watcher `console-message` resource stream on the tested Firefox,
+  so a daemon follow never observes it. `network --follow` (navigation /
+  network-event resources) is the reliable stream.
+- A follow stream holds the daemon's single RPC-writer slot (iter-101 Theme B),
+  so the page must be driven with `--no-daemon` while a daemon-proxied follow is
+  open — a second daemon-routed command is refused with `daemon_busy`.

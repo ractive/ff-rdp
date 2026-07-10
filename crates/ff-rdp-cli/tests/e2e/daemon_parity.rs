@@ -436,3 +436,149 @@ fn e2e_error_shape_parity_daemon() {
         "error_type must be identical daemon vs --no-daemon (daemon={daemon_type:?}, direct={direct_type:?})"
     );
 }
+
+// ---------------------------------------------------------------------------
+// iter-111 Theme B: extend error-shape parity beyond connection-refused.
+//
+// Where `e2e_error_shape_parity_daemon` covers the *Firefox-gone* case (the
+// daemon can't reach the port and falls back to a direct connect), the two
+// scenarios below run against a *live-like* mock server that IS reachable, so
+// the failing actor response is genuinely relayed **through the daemon proxy**
+// and must surface with the identical error shape a `--no-daemon` direct
+// connect produces.
+//
+// Both scenarios fail inside `evaluateJSAsync`:
+//   * bad-selector — `click --no-wait button.missing` runs a helper script that
+//     `throw`s "Element not found: …" when the selector matches nothing.
+//   * eval-throw   — `eval "throw new Error('boom')"` throws directly.
+//
+// Either way Firefox answers `evaluateJSAsync` with an `evaluationResult` whose
+// `exception` is set; the CLI maps that to `AppError::Exit(1)` (the thrown
+// message is printed to stderr, no JSON error envelope is emitted on stdout).
+// Parity here therefore means: **exit code 1 and an identical (absent)
+// `error_type` whether routed through the daemon or forced direct.**  The load
+// -bearing behaviour under test is that the daemon proxy forwards the
+// `evaluateJSAsync` request and streams its `evaluationResult` followup back to
+// the CLI byte-for-byte, so the exception is observed in daemon mode exactly as
+// in direct mode (rather than being swallowed or reshaped by the proxy).
+// ---------------------------------------------------------------------------
+
+/// Mock server that answers both the daemon-startup handshake and a
+/// CLI-forwarded `evaluateJSAsync`, replying with an `evaluationResult` whose
+/// `exception` field is populated (loaded from `eval_result_fixture`).
+///
+/// The daemon-startup handlers (`getWatcher`, `watchTargets`, `watchResources`)
+/// are harmless no-ops in `--no-daemon` direct mode — a direct `eval`/`click`
+/// only touches `listTabs`, `getTarget`, and `evaluateJSAsync` — so the same
+/// builder serves both modes.
+fn eval_exception_daemon_server(eval_result_fixture: &str) -> MockRdpServer {
+    MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
+        .on(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture(eval_result_fixture),
+        )
+}
+
+/// Run one failing scenario both ways and assert `(exit_code, error_type)`
+/// parity.  `extra_before_cmd` and `cmd` together form the CLI subcommand
+/// (e.g. `["eval", "throw new Error('boom')"]`).
+///
+/// A fresh mock server + isolated HOME is used for each mode so the two runs
+/// never share a daemon registry or a TCP connection.
+fn assert_eval_exception_parity(scenario: &str, eval_result_fixture: &str, cmd: &[&str]) {
+    // --- Direct (`--no-daemon`) run -------------------------------------
+    let direct_home = isolated_home();
+    let direct_server = eval_exception_daemon_server(eval_result_fixture);
+    let direct_port = direct_server.port();
+    let direct_handle = std::thread::spawn(move || direct_server.serve_one());
+
+    let mut direct_args = vec![
+        "--host".to_owned(),
+        "127.0.0.1".to_owned(),
+        "--port".to_owned(),
+        direct_port.to_string(),
+        "--timeout".to_owned(),
+        "5000".to_owned(),
+        "--no-daemon".to_owned(),
+    ];
+    direct_args.extend(cmd.iter().map(|s| (*s).to_owned()));
+    let (direct_code, direct_type) = run_and_extract_error(&direct_args, direct_home.path());
+    let _ = direct_handle.join();
+
+    // --- Daemon-mode run ------------------------------------------------
+    let daemon_home = isolated_home();
+    let daemon_server = eval_exception_daemon_server(eval_result_fixture);
+    let daemon_port = daemon_server.port();
+    let daemon_mock_handle = std::thread::spawn(move || daemon_server.serve_one());
+
+    let mut daemon = start_daemon(daemon_port, daemon_home.path());
+    let _proxy_port =
+        wait_for_daemon_ready(daemon_port, Duration::from_secs(5), daemon_home.path());
+
+    let mut daemon_args_full = daemon_args(daemon_port);
+    daemon_args_full.extend(cmd.iter().map(|s| (*s).to_owned()));
+    let (daemon_code, daemon_type) = run_and_extract_error(&daemon_args_full, daemon_home.path());
+
+    // Kill the daemon before asserting so its persistent connection drops and
+    // the mock thread unblocks even if an assertion below panics.
+    daemon.kill();
+    let _ = daemon_mock_handle.join();
+
+    // --- Assertions -----------------------------------------------------
+    // Sanity: the direct run must actually reproduce the eval exception
+    // (exit 1); otherwise the parity comparison below would be vacuous.
+    assert_eq!(
+        direct_code,
+        Some(1),
+        "[{scenario}] direct (--no-daemon) eval-exception must exit 1; got {direct_code:?} \
+         (error_type={direct_type:?})"
+    );
+
+    assert_eq!(
+        daemon_code, direct_code,
+        "[{scenario}] exit code must be identical daemon vs --no-daemon \
+         (daemon={daemon_code:?}, direct={direct_code:?})"
+    );
+    assert_eq!(
+        daemon_type, direct_type,
+        "[{scenario}] error_type must be identical daemon vs --no-daemon \
+         (daemon={daemon_type:?}, direct={direct_type:?})"
+    );
+}
+
+/// AC: `e2e_error_shape_parity_daemon_extended` — the bad-selector and
+/// eval-throw failure scenarios each produce a byte-identical `error_type` and
+/// exit code whether routed through the daemon (default) or forced direct with
+/// `--no-daemon`.  See the module comment above for why both collapse to
+/// exit 1 / absent `error_type`.
+#[test]
+fn e2e_error_shape_parity_daemon_extended() {
+    let _guard = daemon_test_mutex().lock().expect("daemon test mutex");
+
+    // eval-throw: `eval "throw new Error('test error')"` — the exception
+    // fixture's message matches this thrown error.
+    assert_eval_exception_parity(
+        "eval-throw",
+        "eval_result_exception.json",
+        &["eval", "throw new Error('test error')"],
+    );
+
+    // bad-selector: `click --no-wait button.missing` — the helper script the
+    // CLI evaluates `throw`s "Element not found: button.missing" when the
+    // selector matches nothing; `--no-wait` takes the immediate not-found path
+    // rather than the auto-wait timeout path.
+    assert_eval_exception_parity(
+        "bad-selector",
+        "eval_result_element_not_found.json",
+        &["click", "--no-wait", "button.missing"],
+    );
+}

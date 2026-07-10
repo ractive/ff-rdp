@@ -57,6 +57,14 @@ explicit `// allow-ungated-live: <reason>` annotation the check understands.
 Wire stays in check-iteration-ready + the CI discipline job (already
 consuming the check — no new pub surface).
 
+Note (iter-111): a new file landed in this directory since this plan was
+written — `live_111_daemon_follow_cross_process.rs` — and correctly follows
+the manual `#[ignore = "requires a live Firefox instance — set
+FF_RDP_LIVE_TESTS=1"]` convention this theme aims to make mandatory. Use it
+(alongside the existing `live_61l.rs` set) as a positive fixture when writing
+the layout-guard's test: the guard must pass on the current tree without
+requiring any change to this file.
+
 ## Theme C — pin line endings
 
 Add `.gitattributes` (`* text=auto eol=lf`) so Windows checkouts stop
