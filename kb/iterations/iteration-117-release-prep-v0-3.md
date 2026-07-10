@@ -111,7 +111,7 @@ follow-ups folded into this iteration:
 - Live-suite parallel-safety (DEC-022 revisit condition — only if serial
   sweep wall-clock starts to hurt).
 
-## Acceptance Criteria
+## Acceptance Criteria [4/4]
 
 - [x] tbd_annotations_replaced: all three `screenshot.rs` spec-drift annotations now carry the literal marker `bug FILING` (grep for `allow-spec-drift: bug TBD` in `crates/` returns no output).
       Verified via `grep -rn "allow-spec-drift: bug TBD" crates/` (empty); all three annotations in `screenshot.rs`
@@ -234,3 +234,32 @@ The agent does NOT create the release (it would require pushing a tag and
 `gh release create` on `main` outside the PR); James runs the command above
 after merge. Pipeline babysitting (past cuts hit Windows/macOS/cross-compile
 failures) happens after his publish, outside this iteration.
+
+### PR review addendum (2026-07-10)
+
+Local `/review-pr` pass (no Copilot; local-only mode) found one real,
+pre-existing issue unrelated to this iteration's diff: `cargo test
+--workspace -q` intermittently failed
+`transport::tests::redact_sensitive_key_replaces_value`. Root cause: `redact()`
+reads a shared `TEST_TRACE_RAW_OVERRIDE` guarded by `ENV_LOCK`, but only
+`redact_noop_when_ff_rdp_trace_raw_set` took that lock — six sibling tests
+that also call `redact()` did not, so they could race against it and
+intermittently observe raw-trace mode. Fixed by having every `redact()`-calling
+test acquire `ENV_LOCK`, matching the existing `REDACT_LOCK` pattern. Verified
+via 5 consecutive `cargo test -p ff-rdp-core --lib -q` runs plus a full
+`cargo test --workspace -q` pass, all green. `cargo fmt` / `cargo clippy
+--workspace --all-targets -D warnings` / `check-iteration-ready` all clean
+after the fix (10/10 PASS with `FF_RDP_LIVE_TESTS=1`).
+
+Also fixed during review-prep (both mechanical, no behavior change): the
+`## Acceptance criteria` heading case was corrected to `## Acceptance
+Criteria` so `ac-fidelity-check.sh`'s section extraction (which is
+case-sensitive) actually inspects the block instead of silently reporting
+"nothing to check"; and the four AC bullets were reworded so their
+diff-evidence tokens (e.g. `bug FILING`, `version = "0.3.0"`) sit on the same
+physical line as the `- [x]` marker, since the checker only reads that one
+line per AC. No AC's substantive claim changed — all four were independently
+re-verified against the real diff (`grep -rn "allow-spec-drift: bug TBD"
+crates/` empty; `bug FILING` present at all three screenshot.rs sites;
+`version = "0.3.0"` in Cargo.toml/Cargo.lock; the dogfood-gate step removed
+from `live.yml`) before the wording changed.
