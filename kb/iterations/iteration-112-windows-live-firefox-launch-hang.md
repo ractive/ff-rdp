@@ -2,7 +2,7 @@
 title: "Iteration 112: windows-latest CI hangs launching live Firefox in tests/live/live_61l.rs"
 type: iteration
 date: 2026-07-10
-status: planned
+status: completed
 branch: iter-112/windows-live-firefox-launch-hang
 depends_on:
   - kb/iterations/iteration-108-windows-ci-preexisting-reds.md
@@ -120,3 +120,7 @@ candidates:
 ## Hotfix note (2026-07-10)
 
 The immediate CI hang was hotfixed ahead of this iteration: PR `iter-112/gate-ungated-live61l-tests` adds the missing `#[ignore]` gates to 8 live_61l tests that launched Firefox unconditionally (hanging 10-min-timeout on the Firefox-less windows runner). Remaining scope for this iteration: root-cause why an ungated launch hangs forever instead of failing fast (launch needs a timeout), and extend `check-live-test-layout` so every `#[test]` under `tests/live/` must carry `#[ignore]` — making this class of miss impossible.
+
+## Closure note (2026-07-10)
+
+Completed by hotfix PR #148 (gating + CRLF tolerance). Remaining hardening scope moved to [[iteration-113-live-launch-hardening]].
