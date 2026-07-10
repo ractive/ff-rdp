@@ -222,7 +222,7 @@ pub enum LogLevel {
 /// Build the version string displayed by `ff-rdp --version`.
 ///
 /// When the binary was built from a git checkout, includes the short sha and
-/// commit date: `0.2.0 (abc123def456 2026-05-26)`.  When `+dirty` is appended
+/// commit date: `0.3.0 (abc123def456 2026-05-26)`.  When `+dirty` is appended
 /// to the sha it means the working tree had uncommitted changes at build time.
 ///
 /// When the sha is empty (crates.io tarball, offline build, or

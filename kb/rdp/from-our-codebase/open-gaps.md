@@ -10,6 +10,8 @@ closed-in:
   - iter-61v
   - iter-74
   - iter-61w
+updated-in:
+  - iter-117
 ---
 
 # Open Protocol-Level Gaps
@@ -76,6 +78,61 @@ before removing the legacy `WebConsoleActor::start_listeners` call sites in
 **Protocol layer**: ThreadActor's `sources` method + per-source SourceActor exists but we don't wire it through. Fallback works fine but bypasses the canonical path.
 
 **Sessions**: [[dogfooding-session-48]] #3 (resolved non-issue), tracked in iter-61g.
+
+## spec-drift-bugs-awaiting-filing
+
+**Status (iter-117)**: three `allow-spec-drift` annotations in
+`crates/ff-rdp-core/src/actors/screenshot.rs` carried a `bug TBD` marker that
+CLAUDE.md requires be replaced with a real Mozilla Bugzilla number before the
+next release cut. Bugzilla searches (iter-117) found **no existing bug** for
+any of the three gaps — they are novel, discovered by ff-rdp's own testing
+against FF149–152. Filing needs a Bugzilla account (James's action), so the
+annotations were switched from `bug TBD` to `bug FILING` (a distinct,
+grep-detectable "awaiting-filing" marker) and the Bugzilla-ready descriptions
+recorded below. **These block publishing v0.3.0**: James files the three bugs,
+then a follow-up commit replaces each `bug FILING` with the real number before
+the draft release is published. The v0.3.0 release is created as a **draft**
+for exactly this reason.
+
+### SD-1 — screenshot.args spec dict omits browsingContextID/snapshotScale/rect
+
+- **Site**: `screenshot.rs:34` (`ScreenshotArgsExt`).
+- **Component**: DevTools :: Framework / Server.
+- **Summary**: The published `screenshot` actor spec dict at
+  `devtools/shared/specs/screenshot.js:13-35` declares only
+  `fullpage`/`file`/`clipboard`/`selector`/`dpr`/`delay`, but the server-side
+  `devtools/server/actors/screenshot.js` reads three additional fields
+  (`browsingContextID`, `snapshotScale`, `rect`) that a client must send for
+  the two-step FF149+ capture protocol to work. The spec dict should declare
+  these fields so out-of-tree clients can send them without spec-drift.
+
+### SD-2 — screenshotActor.capture fails to load capture-screenshot.js (FF151, still repros on FF152)
+
+- **Site**: `screenshot.rs:255` (`screenshot_via_process_drawsnapshot`).
+- **Component**: DevTools :: Framework / Server.
+- **Summary**: On Firefox 151 the root/target `screenshotActor.capture` path
+  fails to load `capture-screenshot.js` in the DevTools distinct global
+  (`moz-src:` scheme not supported there), so a full-page or even a plain
+  capture throws a module-load failure. **iter-117 reassessment: the
+  regression STILL reproduces on Firefox 152.0.5** — a live probe
+  (`RUST_LOG=ff_rdp_cli::screenshot=debug ff-rdp screenshot`) logs
+  `screenshotActor module load failure; retrying via
+  screenshot_via_process_drawsnapshot`. The workaround (parent-process
+  `BrowsingContext.drawSnapshot` eval) is therefore still required; a
+  version-gate removing it on FF152 would break screenshots. The workaround
+  must stay until Mozilla fixes the module-load path, at which point it is
+  gated behind a version check or removed.
+
+### SD-3 — WindowGlobalTarget.screenshot implemented server-side but undeclared in spec
+
+- **Site**: `screenshot.rs:401` (`screenshot_via_target`).
+- **Component**: DevTools :: Framework / Server.
+- **Summary**: The `screenshot` method observed on the
+  `WindowGlobalTarget` actor (FF151+ moved the capability onto the target
+  actor) is read by the server but is not declared in
+  `devtools/shared/specs/targets/window-global.js`. The spec dict should
+  declare the `screenshot` method so out-of-tree clients can call it without
+  spec-drift.
 
 ## summary
 

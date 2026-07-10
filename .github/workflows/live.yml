@@ -46,12 +46,13 @@ jobs:
         # runner — concurrent tests steal each other's browser state and flake.
         run: cargo test --workspace --no-fail-fast -- --include-ignored --test-threads=1
 
-      - name: Run dogfood-script gate (iter-* branches only)
-        # Gated on same-repo PRs to avoid executing arbitrary scripts from
-        # forked PRs that happen to use an `iter-` branch prefix.
-        if: startsWith(github.head_ref, 'iter-') && github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          FF_RDP_LIVE_TESTS: "1"
-        run: |
-          plan=$(cargo run -q -p xtask -- find-iteration-plan "${{ github.head_ref }}")
-          cargo run -q -p xtask -- check-dogfood-script "$plan"
+      # iter-117 Theme B follow-up: the former "Run dogfood-script gate (iter-*
+      # branches only)" step was removed here.  Its `if:` guard keyed on a
+      # per-PR event context that is unset under all three current triggers
+      # (workflow_dispatch, release, schedule) after the Theme B pre-landing
+      # swapped the `on:` block away from the per-PR trigger.  The guard
+      # therefore always evaluated false and the step was silently dead.  The
+      # dogfood-script gate is already enforced pre-merge locally by
+      # `check-iteration-ready`'s `lint-dogfood-script` sub-check (see
+      # CLAUDE.md), so the CI step is redundant as well as dead — dropped rather
+      # than rewritten.

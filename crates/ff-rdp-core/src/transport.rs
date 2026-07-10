@@ -1387,7 +1387,11 @@ mod tests {
     /// redact regardless.
     #[test]
     fn redact_threshold_tunable() {
-        // Serialise + restore on panic.
+        // Serialise + restore on panic. Also hold ENV_LOCK: `redact()` reads
+        // the shared trace-raw override, which `redact_noop_when_ff_rdp_trace_raw_set`
+        // mutates under that lock — without it this test can race and see raw
+        // (non-redacted) output.
+        let _env_g = ENV_LOCK.lock().unwrap();
         let _g = REDACT_LOCK.lock().unwrap();
         let _restore = RedactThresholdGuard::new();
 
@@ -1428,6 +1432,10 @@ mod tests {
 
     #[test]
     fn redact_sensitive_key_replaces_value() {
+        // Hold ENV_LOCK: `redact()` reads the shared trace-raw override, which
+        // `redact_noop_when_ff_rdp_trace_raw_set` mutates under that lock —
+        // without it this test can race and see raw (non-redacted) output.
+        let _env_g = ENV_LOCK.lock().unwrap();
         let v = serde_json::json!({"cookie": "session=abc123"});
         let r = redact(&v);
         let s = r["cookie"].as_str().unwrap();
@@ -1436,6 +1444,7 @@ mod tests {
 
     #[test]
     fn redact_source_key_replaces_value() {
+        let _env_g = ENV_LOCK.lock().unwrap();
         let v = serde_json::json!({"text": "console.log('hello')"});
         let r = redact(&v);
         let s = r["text"].as_str().unwrap();
@@ -1445,7 +1454,9 @@ mod tests {
     #[test]
     fn redact_long_string_replaces_value() {
         // Serialise with other tests that mutate REDACT_THRESHOLD so that
-        // the read+redact pair sees a stable cap.
+        // the read+redact pair sees a stable cap. Also holds ENV_LOCK for the
+        // same trace-raw-override race described on redact_sensitive_key_replaces_value.
+        let _env_g = ENV_LOCK.lock().unwrap();
         let _g = REDACT_LOCK.lock().unwrap();
         let long = "x".repeat(redact_threshold() + 1);
         let v = serde_json::json!({"data": long});
@@ -1459,6 +1470,7 @@ mod tests {
 
     #[test]
     fn redact_short_string_passes_through() {
+        let _env_g = ENV_LOCK.lock().unwrap();
         let short = "short";
         let v = serde_json::json!({"data": short});
         let r = redact(&v);
@@ -1484,6 +1496,7 @@ mod tests {
 
     #[test]
     fn redact_nested_object_handles_sensitive_key() {
+        let _env_g = ENV_LOCK.lock().unwrap();
         let v =
             serde_json::json!({"headers": {"cookie": "session=abc", "content-type": "text/html"}});
         let r = redact(&v);
