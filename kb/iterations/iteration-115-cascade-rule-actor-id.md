@@ -2,7 +2,7 @@
 title: "Iteration 115: cascade entries carry rule_actor_id — distinguish same-line inline stylesheets"
 type: iteration
 date: 2026-07-10
-status: done
+status: completed
 branch: iter-115/cascade-rule-actor-id
 depends_on:
   - kb/iterations/iteration-114-live-suite-debt-zero.md
