@@ -8,51 +8,26 @@
 ///
 /// AC: live_cookies_set_cookie_header — results contains {name:"probe",value:"1"}
 ///     within one invocation of `cookies`
-use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::collections::HashMap;
 use std::process::Command;
-use std::thread;
-use std::time::Duration;
 
-use crate::common::{LiveFirefox, base_args, ff_rdp_bin, live_tests_enabled};
+use crate::common::{
+    FixtureRoute, FixtureServer, LiveFirefox, base_args, ff_rdp_bin, live_tests_enabled,
+};
 
 /// Minimal HTML body served alongside the `Set-Cookie` header.
-const FIXTURE_BODY: &[u8] = b"<!DOCTYPE html><html><head></head><body>probe</body></html>";
+const FIXTURE_BODY: &str = "<!DOCTYPE html><html><head></head><body>probe</body></html>";
 
-/// Spawn a minimal single-shot HTTP server on a random port that responds to
-/// any `GET` with `Set-Cookie: probe=1` plus a minimal HTML body — mirroring
-/// what `httpbin.org/cookies/set?probe=1` used to do via its redirect.
-///
-/// Bounded to 10 accepts so the thread exits after the test. Returns
-/// `(port, join-handle)`.
-fn spawn_fixture_server() -> Option<(u16, thread::JoinHandle<()>)> {
-    let listener = TcpListener::bind("127.0.0.1:0").ok()?;
-    let port = listener.local_addr().ok()?.port();
-
-    let handle = thread::spawn(move || {
-        listener.set_nonblocking(false).ok();
-        for stream in listener.incoming().take(10) {
-            let Ok(mut stream) = stream else { continue };
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-            // Drain the HTTP request so the browser doesn't see a reset.
-            let mut buf = [0u8; 2048];
-            let _ = stream.read(&mut buf);
-
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\n\
-                 Content-Type: text/html; charset=utf-8\r\n\
-                 Set-Cookie: probe=1\r\n\
-                 Content-Length: {}\r\n\
-                 Cache-Control: no-store\r\n\
-                 Connection: close\r\n\r\n",
-                FIXTURE_BODY.len()
-            );
-            let _ = stream.write_all(resp.as_bytes());
-            let _ = stream.write_all(FIXTURE_BODY);
-        }
-    });
-
-    Some((port, handle))
+/// Start a fixture server on `/` that responds with `Set-Cookie: probe=1`
+/// plus a minimal HTML body — mirroring what `httpbin.org/cookies/set?probe=1`
+/// used to do via its redirect.
+fn spawn_fixture_server() -> Option<FixtureServer> {
+    let mut routes = HashMap::new();
+    routes.insert(
+        "/".to_owned(),
+        FixtureRoute::html(FIXTURE_BODY).with_header("Set-Cookie", "probe=1"),
+    );
+    FixtureServer::start(routes)
 }
 
 /// Theme L: cookies set via `Set-Cookie` response header (now served by a
@@ -79,14 +54,14 @@ fn live_cookies_set_cookie_header_visible_after_navigate() {
         return;
     };
 
-    let Some((http_port, _server)) = spawn_fixture_server() else {
+    let Some(server) = spawn_fixture_server() else {
         eprintln!(
             "live_cookies_set_cookie_header_visible_after_navigate: could not bind HTTP server — skipping"
         );
         return;
     };
 
-    let fixture_url = format!("http://127.0.0.1:{http_port}/");
+    let fixture_url = server.base_url();
 
     // This URL sets a cookie via a Set-Cookie response header.
     let nav = Command::new(ff_rdp_bin())

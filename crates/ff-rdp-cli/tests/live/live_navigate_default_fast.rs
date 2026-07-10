@@ -11,42 +11,22 @@
 /// exercise the events/readystate budget split under test).
 ///
 /// AC: live_navigate_default_fast — completes in ≤ timeout_ms with status:ok
-use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::collections::HashMap;
 use std::process::Command;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use crate::common::{LiveFirefox, base_args, ff_rdp_bin, live_tests_enabled};
+use crate::common::{
+    FixtureRoute, FixtureServer, LiveFirefox, base_args, ff_rdp_bin, live_tests_enabled,
+};
 
-const FIXTURE_BODY: &[u8] =
-    b"<!DOCTYPE html><html><head></head><body><p>navigate fast fixture</p></body></html>";
+const FIXTURE_BODY: &str =
+    "<!DOCTYPE html><html><head></head><body><p>navigate fast fixture</p></body></html>";
 
-/// Spawn a minimal HTTP server serving `FIXTURE_BODY` on any GET. Bounded to
-/// 10 accepts so the thread exits after the test. Returns `(port, join-handle)`.
-fn spawn_html_server() -> Option<(u16, thread::JoinHandle<()>)> {
-    let listener = TcpListener::bind("127.0.0.1:0").ok()?;
-    let port = listener.local_addr().ok()?.port();
-    let handle = thread::spawn(move || {
-        listener.set_nonblocking(false).ok();
-        for stream in listener.incoming().take(10) {
-            let Ok(mut stream) = stream else { continue };
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-            let mut buf = [0u8; 2048];
-            let _ = stream.read(&mut buf);
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\n\
-                 Content-Type: text/html; charset=utf-8\r\n\
-                 Content-Length: {}\r\n\
-                 Cache-Control: no-store\r\n\
-                 Connection: close\r\n\r\n",
-                FIXTURE_BODY.len()
-            );
-            let _ = stream.write_all(resp.as_bytes());
-            let _ = stream.write_all(FIXTURE_BODY);
-        }
-    });
-    Some((port, handle))
+/// Start a fixture server serving `FIXTURE_BODY` at `/`.
+fn spawn_html_server() -> Option<FixtureServer> {
+    let mut routes = HashMap::new();
+    routes.insert("/".to_owned(), FixtureRoute::html(FIXTURE_BODY));
+    FixtureServer::start(routes)
 }
 
 /// Theme C: navigate with default `--wait both` strategy does not exhaust
@@ -71,13 +51,13 @@ fn live_navigate_default_fast_no_budget_exhaustion() {
         return;
     };
 
-    let Some((http_port, _server)) = spawn_html_server() else {
+    let Some(server) = spawn_html_server() else {
         eprintln!(
             "live_navigate_default_fast_no_budget_exhaustion: could not bind HTTP server — skipping"
         );
         return;
     };
-    let url = format!("http://127.0.0.1:{http_port}/");
+    let url = server.base_url();
 
     let start = Instant::now();
     let mut args = base_args(ff.port());
@@ -121,13 +101,13 @@ fn live_navigate_global_timeout_flag_accepted() {
         return;
     };
 
-    let Some((http_port, _server)) = spawn_html_server() else {
+    let Some(server) = spawn_html_server() else {
         eprintln!(
             "live_navigate_global_timeout_flag_accepted: could not bind HTTP server — skipping"
         );
         return;
     };
-    let url = format!("http://127.0.0.1:{http_port}/");
+    let url = server.base_url();
 
     let mut args = base_args(ff.port());
     args.push("--timeout".to_owned());

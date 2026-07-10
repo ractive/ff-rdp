@@ -73,6 +73,7 @@ fn start_fixture_site() -> Option<FixtureServer> {
         FixtureRoute {
             content_type: "application/json",
             body: b"{}".to_vec(),
+            extra_headers: Vec::new(),
         },
     );
     FixtureServer::start(routes)

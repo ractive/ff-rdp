@@ -528,7 +528,7 @@ impl Drop for RawFirefox {
 // Firefox 152 started serializing some computed `color`/`background-color`
 // values as CSS keywords (e.g. `red`) where older versions always returned
 // `rgb(255, 0, 0)`. Tests that hard-coded the `rgb()` form broke on upgrade.
-// `parse_css_color` normalizes keyword / `#rgb` / `#rrggbb` / `#rrggbba` /
+// `parse_css_color` normalizes keyword / `#rgb` / `#rrggbb` / `#rrggbbaa` /
 // `#rgba` / `rgb(...)` / `rgba(...)` into one `(r, g, b, a)` tuple (alpha
 // 0..=255) so assertions survive serialization drift in either direction.
 
@@ -765,11 +765,16 @@ mod color_tests {
 // Self-hosted fixture HTTP server (iter-114 Theme C)
 // ---------------------------------------------------------------------------
 
-/// One route served by [`FixtureServer`]: response `Content-Type` and body.
-#[derive(Clone)]
+/// One route served by [`FixtureServer`]: response `Content-Type`, body, and
+/// any extra response headers.
+#[derive(Clone, Default)]
 pub struct FixtureRoute {
     pub content_type: &'static str,
     pub body: Vec<u8>,
+    /// Additional `Name: value` response headers, e.g. `Set-Cookie`. Empty by
+    /// default so existing struct-literal and `html()` construction sites are
+    /// unaffected — use [`FixtureRoute::with_header`] to add one.
+    pub extra_headers: Vec<(String, String)>,
 }
 
 impl FixtureRoute {
@@ -779,7 +784,14 @@ impl FixtureRoute {
         Self {
             content_type: "text/html; charset=utf-8",
             body: body.into().into_bytes(),
+            extra_headers: Vec::new(),
         }
+    }
+
+    /// Builder method: append an extra `name: value` response header.
+    pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.extra_headers.push((name.into(), value.into()));
+        self
     }
 }
 
@@ -878,15 +890,21 @@ fn handle_connection(mut stream: TcpStream, routes: &HashMap<String, FixtureRout
         .unwrap_or("/");
 
     if let Some(route) = routes.get(path) {
-        let header = format!(
+        let mut header = format!(
             "HTTP/1.1 200 OK\r\n\
              Content-Type: {}\r\n\
              Content-Length: {}\r\n\
-             Cache-Control: no-store\r\n\
-             Connection: close\r\n\r\n",
+             Cache-Control: no-store\r\n",
             route.content_type,
             route.body.len()
         );
+        for (name, value) in &route.extra_headers {
+            header.push_str(name);
+            header.push_str(": ");
+            header.push_str(value);
+            header.push_str("\r\n");
+        }
+        header.push_str("Connection: close\r\n\r\n");
         let _ = stream.write_all(header.as_bytes());
         let _ = stream.write_all(&route.body);
     } else {

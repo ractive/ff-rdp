@@ -12,14 +12,13 @@
 /// AC: live_dom_stats_perf_parity — dom_stats.images_without_lazy ==
 ///     perf_audit.images_without_lazy on a local out-of-viewport-images fixture,
 ///     and the shared value is non-zero.
+use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::process::Command;
-use std::thread;
-use std::time::Duration;
 
-use crate::common::{LiveFirefox, base_args, ff_rdp_bin, live_tests_enabled};
+use crate::common::{
+    FixtureRoute, FixtureServer, LiveFirefox, base_args, ff_rdp_bin, live_tests_enabled,
+};
 
 /// Number of `<img>` tags placed below the spacer (out of viewport, no
 /// `loading="lazy"`), so `images_without_lazy` is deterministically this count.
@@ -30,7 +29,7 @@ const IMG_COUNT: usize = 4;
 /// use tiny inline `data:` sources — `dom stats`/`perf audit` count markup via
 /// `getBoundingClientRect`, not fetched image bytes, so the src need not
 /// resolve to a real image.
-fn fixture_body() -> Vec<u8> {
+fn fixture_body() -> String {
     let mut imgs = String::new();
     for i in 0..IMG_COUNT {
         let _ = writeln!(
@@ -44,35 +43,13 @@ fn fixture_body() -> Vec<u8> {
          {imgs}\
          </body></html>"
     )
-    .into_bytes()
 }
 
-/// Spawn a minimal HTTP server that serves `body` (with `Content-Type:
-/// text/html`) on any GET. Bounded to 10 accepts so the thread exits after the
-/// test. Returns `(port, join-handle)`.
-fn spawn_html_server(body: Vec<u8>) -> Option<(u16, thread::JoinHandle<()>)> {
-    let listener = TcpListener::bind("127.0.0.1:0").ok()?;
-    let port = listener.local_addr().ok()?.port();
-    let handle = thread::spawn(move || {
-        listener.set_nonblocking(false).ok();
-        for stream in listener.incoming().take(10) {
-            let Ok(mut stream) = stream else { continue };
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-            let mut buf = [0u8; 2048];
-            let _ = stream.read(&mut buf);
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\n\
-                 Content-Type: text/html; charset=utf-8\r\n\
-                 Content-Length: {}\r\n\
-                 Cache-Control: no-store\r\n\
-                 Connection: close\r\n\r\n",
-                body.len()
-            );
-            let _ = stream.write_all(resp.as_bytes());
-            let _ = stream.write_all(&body);
-        }
-    });
-    Some((port, handle))
+/// Start a fixture server serving the out-of-viewport-images fixture at `/`.
+fn spawn_html_server(body: String) -> Option<FixtureServer> {
+    let mut routes = HashMap::new();
+    routes.insert("/".to_owned(), FixtureRoute::html(body));
+    FixtureServer::start(routes)
 }
 
 /// Theme H: `dom stats` and `perf audit` agree on `images_without_lazy`.
@@ -98,13 +75,13 @@ fn live_dom_stats_perf_audit_parity_images_without_lazy() {
         return;
     };
 
-    let Some((http_port, _server)) = spawn_html_server(fixture_body()) else {
+    let Some(server) = spawn_html_server(fixture_body()) else {
         eprintln!(
             "live_dom_stats_perf_audit_parity_images_without_lazy: could not bind HTTP server — skipping"
         );
         return;
     };
-    let url = format!("http://127.0.0.1:{http_port}/");
+    let url = server.base_url();
 
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))

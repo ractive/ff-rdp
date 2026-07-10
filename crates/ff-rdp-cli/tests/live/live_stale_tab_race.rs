@@ -18,39 +18,15 @@
 ///
 /// AC: live_stale_tab_race — dom stats succeeds immediately after navigate
 ///     on a fresh Firefox session (no "No such actor" error)
-use crate::common::{LiveFirefox, base_args, ff_rdp_bin};
-use std::io::{Read, Write};
-use std::net::TcpListener;
+use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, base_args, ff_rdp_bin};
+use std::collections::HashMap;
 use std::process::Command;
-use std::thread;
-use std::time::Duration;
 
-/// Spawn a minimal HTTP server that serves `body` (with `Content-Type:
-/// text/html`) on any GET. Bounded to 10 accepts so the thread exits after
-/// the test. Returns `(port, join-handle)`.
-fn spawn_html_server(body: &'static [u8]) -> Option<(u16, thread::JoinHandle<()>)> {
-    let listener = TcpListener::bind("127.0.0.1:0").ok()?;
-    let port = listener.local_addr().ok()?.port();
-    let handle = thread::spawn(move || {
-        listener.set_nonblocking(false).ok();
-        for stream in listener.incoming().take(10) {
-            let Ok(mut stream) = stream else { continue };
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-            let mut buf = [0u8; 2048];
-            let _ = stream.read(&mut buf);
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\n\
-                 Content-Type: text/html; charset=utf-8\r\n\
-                 Content-Length: {}\r\n\
-                 Cache-Control: no-store\r\n\
-                 Connection: close\r\n\r\n",
-                body.len()
-            );
-            let _ = stream.write_all(resp.as_bytes());
-            let _ = stream.write_all(body);
-        }
-    });
-    Some((port, handle))
+/// Start a fixture server serving `body` at `/`.
+fn spawn_html_server(body: &'static str) -> Option<FixtureServer> {
+    let mut routes = HashMap::new();
+    routes.insert("/".to_owned(), FixtureRoute::html(body));
+    FixtureServer::start(routes)
 }
 
 /// Theme I: running `navigate` then immediately `dom stats` does not produce
@@ -74,16 +50,16 @@ fn live_stale_tab_race_no_such_actor_after_navigate() {
         return;
     };
 
-    let Some((port_a, _server_a)) =
-        spawn_html_server(b"<!DOCTYPE html><html><body><p id=\"a\">site A</p></body></html>")
+    let Some(server_a) =
+        spawn_html_server("<!DOCTYPE html><html><body><p id=\"a\">site A</p></body></html>")
     else {
         eprintln!(
             "live_stale_tab_race_no_such_actor_after_navigate: could not bind HTTP server A — skipping"
         );
         return;
     };
-    let Some((port_b, _server_b)) =
-        spawn_html_server(b"<!DOCTYPE html><html><body><p id=\"b\">site B</p></body></html>")
+    let Some(server_b) =
+        spawn_html_server("<!DOCTYPE html><html><body><p id=\"b\">site B</p></body></html>")
     else {
         eprintln!(
             "live_stale_tab_race_no_such_actor_after_navigate: could not bind HTTP server B — skipping"
@@ -94,8 +70,10 @@ fn live_stale_tab_race_no_such_actor_after_navigate() {
     // Two different host strings (127.0.0.1 vs localhost) on different ports
     // are distinct sites under Fission, so this reproduces the cross-site
     // process swap the original example.com → example.org pair relied on.
-    let url_a = format!("http://127.0.0.1:{port_a}/");
-    let url_b = format!("http://localhost:{port_b}/");
+    // `base_url()` hardcodes 127.0.0.1, so server B's localhost URL is built
+    // from its port directly.
+    let url_a = server_a.base_url();
+    let url_b = format!("http://localhost:{}/", server_b.port());
 
     // First navigate — establishes a tab actor.
     let nav1 = Command::new(ff_rdp_bin())
