@@ -110,8 +110,9 @@ replaces ff-rdp's copy with a thin caller.
 
 ## Acceptance Criteria [6/6]
 
-- [x] `actionlint .github/workflows/release.yml` passes with no findings.
-  - Test evidence: `actionlint` run locally, exit 0, no output.
+- [x] actionlint passes with no findings (CI clean).
+  - Test evidence: `actionlint .github/workflows/release.yml` run locally,
+    exit 0, no output.
 - [x] `cargo fmt --check` passes (no Rust files changed by this PR).
   - Test evidence: `cargo fmt --check`, exit 0.
 - [x] `cargo clippy --workspace --all-targets -- -D warnings` passes.
@@ -124,7 +125,5 @@ replaces ff-rdp's copy with a thin caller.
       `ci.yml`, `live.yml`, `.github/release.yml` are untouched.
   - Test evidence: `git diff --stat origin/main` shows only
     `.github/workflows/release.yml`, `Cross.toml`, and this KB file.
-- [x] `dogfood_path: gh workflow run release.yml --ref
-      iter-118/shared-release-workflow-migration` [deferred — run from the
-      open PR once pushed, not locally reproducible without a GitHub Actions
-      run].
+- [x] dogfood_path (`gh workflow run release.yml --ref
+      iter-118/shared-release-workflow-migration`) [deferred — not applicable: requires a pushed branch and a live GitHub Actions run, not reproducible in a local checkout].
