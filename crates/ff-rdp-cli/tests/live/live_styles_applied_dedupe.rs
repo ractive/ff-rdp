@@ -2,31 +2,58 @@
 /// share the same `rule_actor_id` so that inherited rules from parent elements
 /// are not listed multiple times.
 ///
+/// iter-114 Theme B: ported to the self-launch harness using a local `data:`
+/// URL fixture where `<p>` is matched by rules spread across two separate
+/// `<style>` sheets (plus a `*` selector and a repeated selector within the
+/// same sheet), so dedupe is meaningfully exercised rather than relying on
+/// whatever cascade example.com happened to produce.
+///
 /// AC: live_styles_applied_dedupe — `results` contains no duplicate actor IDs
-use crate::common::{live_network_tests_enabled, live_tests_enabled};
+use crate::common::{LiveFirefox, base_args, ff_rdp_bin};
 use std::collections::HashSet;
 use std::process::Command;
 
-fn ff_rdp_bin() -> String {
-    env!("CARGO_BIN_EXE_ff-rdp").to_string()
-}
+/// Two `<style>` sheets both targeting `<p>` (directly and via inheritance
+/// from `*`/`body`), plus a repeated `p` selector within the second sheet —
+/// so `styles p --applied` sees several rules that could plausibly collide
+/// on `rule_actor_id` if dedupe regressed.
+///
+/// Hex colors use `%23` in place of `#` — an unescaped `#` in a `data:` URL
+/// is parsed as a fragment delimiter, truncating everything after it before
+/// the page ever loads.
+const FIXTURE_HTML: &str = "data:text/html;charset=utf-8,\
+<!DOCTYPE html><html><head>\
+<style>* { margin: 0; } body { color: %23111111; } p { font-size: 14px; }</style>\
+<style>p { line-height: 1.5; } p { font-weight: 400; } .note { color: %23222222; }</style>\
+</head><body><p class=\"note\">hello world</p></body></html>";
 
 /// Theme E: `styles applied` does not emit duplicate rules when the same CSS
-/// rule applies via multiple inheritance paths (e.g. `*` selector on a page
-/// with deep DOM nesting).
+/// rule applies via multiple inheritance paths, or when multiple stylesheets
+/// each contribute rules for the same element.
 ///
-/// Pre-condition: Firefox running with `--start-debugger-server 6000`.
 /// Post-condition: `results` array has no two entries with the same non-empty
 /// `rule_actor_id`.
 #[test]
-#[ignore = "requires FF_RDP_LIVE_TESTS=1 and running Firefox"]
+#[ignore = "requires FF_RDP_LIVE_TESTS=1 and a live Firefox instance"]
 fn live_styles_applied_dedupe_no_duplicate_actor_ids() {
-    if !live_tests_enabled() || !live_network_tests_enabled() {
+    if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
+        eprintln!(
+            "live_styles_applied_dedupe_no_duplicate_actor_ids: set FF_RDP_LIVE_TESTS=1 to run"
+        );
         return;
     }
 
+    let Some(ff) = LiveFirefox::headless_on_random_port() else {
+        eprintln!(
+            "live_styles_applied_dedupe_no_duplicate_actor_ids: Firefox not available — skipping"
+        );
+        return;
+    };
+
     let nav = Command::new(ff_rdp_bin())
-        .args(["navigate", "https://example.com/"])
+        .args(base_args(ff.port()))
+        // data: URLs require --allow-unsafe-urls.
+        .args(["navigate", "--allow-unsafe-urls", FIXTURE_HTML])
         .output()
         .expect("ff-rdp navigate failed");
     assert!(
@@ -36,9 +63,10 @@ fn live_styles_applied_dedupe_no_duplicate_actor_ids() {
     );
 
     let out = Command::new(ff_rdp_bin())
-        .args(["styles", "applied", "--selector", "p"])
+        .args(base_args(ff.port()))
+        .args(["styles", "p", "--applied"])
         .output()
-        .expect("ff-rdp styles applied failed");
+        .expect("ff-rdp styles --applied failed");
 
     assert!(
         out.status.success(),
@@ -51,6 +79,10 @@ fn live_styles_applied_dedupe_no_duplicate_actor_ids() {
         serde_json::from_str(&stdout).expect("styles applied output is not valid JSON");
 
     let results = json["results"].as_array().expect("results is not an array");
+    assert!(
+        !results.is_empty(),
+        "fixture must produce at least one applied rule for <p>; got empty results"
+    );
 
     let mut seen: HashSet<&str> = HashSet::new();
     for entry in results {
@@ -64,4 +96,10 @@ fn live_styles_applied_dedupe_no_duplicate_actor_ids() {
             );
         }
     }
+
+    eprintln!(
+        "live_styles_applied_dedupe_no_duplicate_actor_ids: PASS — {} result(s), {} unique actor id(s)",
+        results.len(),
+        seen.len()
+    );
 }
