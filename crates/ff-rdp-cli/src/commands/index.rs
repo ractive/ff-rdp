@@ -350,7 +350,11 @@ fn crawl_page(
         no_wait: false,
         wait_for: &[],
         wait_level: WaitLevel::Complete,
-        wait_strategy: crate::commands::navigate::WaitStrategy::Events,
+        // iter-114: Events-only never completes on Firefox 152 (the
+        // dom-complete document-event subscription doesn't reliably fire —
+        // reproduced even against zero-network data: URLs); Both adds the
+        // readystate fallback that plain `ff-rdp navigate` already defaults to.
+        wait_strategy: crate::commands::navigate::WaitStrategy::Both,
     };
     navigate_run(cli, url, &wait_opts).map_err(|e| anyhow::anyhow!("navigate: {e}"))?;
 
