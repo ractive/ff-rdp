@@ -50,7 +50,7 @@ that fixed the exact failing sequence. No existing CLI path primes this cache
 
 - `console --follow` rework (its Watcher subscription path is separate).
 
-## Acceptance criteria
+## Acceptance Criteria [0/2]
 
 - [ ] live_console_printf_e2e: printf-formatted message
       `hello world, you are 42` returned by `ff-rdp console` on a fresh

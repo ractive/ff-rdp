@@ -2,8 +2,14 @@
 //!
 //! For a single element (matched by CSS selector), returns the ordered list
 //! of matching CSS rules per property, annotated with origin, specificity,
-//! source location, `!important` flag, and a `winner: true` marker on the
+//! source location (`stylesheet`, `line`), the rule's stable RDP actor id
+//! (`rule_actor_id`), `!important` flag, and a `winner: true` marker on the
 //! rule whose declaration would become the computed value.
+//!
+//! `rule_actor_id` (added in iter-115) is the only field that distinguishes
+//! two *distinct* inline `<style>` blocks styling the same element: since
+//! Firefox 152 such blocks both report `stylesheet: null, line: 1`, so the
+//! `(stylesheet, line)` pair collides while the per-rule actor id stays unique.
 //!
 //! This is a read-only view; style mutation is out of scope (see iter-81 plan).
 
@@ -11,6 +17,7 @@ use ff_rdp_core::css::specificity::{self, Specificity};
 use ff_rdp_core::{
     ActorId, AppliedRule, DomWalkerActor, Grip, InspectorActor, LongStringActor, PageStyleActor,
 };
+// `ActorId` is re-used for the per-rule actor id copied onto each cascade entry.
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -85,6 +92,16 @@ struct CascadeEntry {
     line: Option<u32>,
     value: String,
     important: bool,
+    /// The stable RDP actor ID of the rule this entry came from
+    /// (e.g. `"conn0/styleRuleActor12"`), copied from
+    /// [`AppliedRule::rule_actor_id`].
+    ///
+    /// This is the only field that distinguishes two *distinct* inline
+    /// `<style>` blocks that style the same element: since Firefox 152 such
+    /// blocks report `stylesheet: null, line: 1`, so `(stylesheet, line)`
+    /// collides while the rule actor id stays unique per compiled rule.
+    /// `None` when Firefox omitted the `actor` field (unusual but safe).
+    rule_actor_id: Option<ActorId>,
     /// Order of appearance in the underlying `getApplied` response (0-based).
     /// Used as the final tiebreaker — Firefox returns entries in document
     /// order, so a higher value means "later in the source".
@@ -110,6 +127,7 @@ impl CascadeEntry {
             "media_active": media_active,
             "stylesheet": self.stylesheet,
             "line": self.line,
+            "rule_actor_id": self.rule_actor_id.as_ref().map(AsRef::as_ref),
             "value": self.value,
             "important": self.important,
             "winner": winner,
@@ -206,6 +224,7 @@ fn build_cascade_for_property(rules: &[AppliedRule], property: &str) -> Vec<Casc
                     media: rule.media.clone(),
                     stylesheet: rule.source.clone(),
                     line: rule.line,
+                    rule_actor_id: rule.rule_actor_id.clone(),
                     value: p.value.clone(),
                     important: p.priority.eq_ignore_ascii_case("important"),
                     source_order: idx,
@@ -953,6 +972,7 @@ mod tests {
             media: vec![],
             stylesheet: None,
             line: None,
+            rule_actor_id: None,
             value: "block".into(),
             important: true,
             source_order: 0,
@@ -1205,6 +1225,7 @@ mod tests {
             media: media.iter().map(|s| (*s).to_string()).collect(),
             stylesheet: None,
             line: None,
+            rule_actor_id: None,
             value: "x".into(),
             important: false,
             source_order: 0,
@@ -1322,6 +1343,64 @@ mod tests {
             .collect();
         let out = render_property_cascade("dialog#lightbox", "display", &rules, None);
         assert_eq!(out["computed"], "flex");
+    }
+
+    /// `unit_cascade_entries_carry_distinct_rule_actor_id` (iter-115).
+    ///
+    /// Two rules that collide on *every* other cascade field — same selector
+    /// (`h1`), same specificity, same `stylesheet: null`, same `line: 1` (the
+    /// Firefox-152 inline-`<style>` shape) — must still be tellable apart via
+    /// their distinct `rule_actor_id` values in the emitted cascade JSON. This
+    /// is the non-live mirror of the `live_cascade_explains_pico_dialog`
+    /// distinct-source assertion.
+    #[test]
+    fn unit_cascade_entries_carry_distinct_rule_actor_id() {
+        let mut r1 = rule("h1", None, 1, &[("color", "red", "")]);
+        r1.rule_actor_id = ActorId::try_new("server1.conn0/styleRuleActor10");
+        let mut r2 = rule("h1", None, 1, &[("color", "blue", "")]);
+        r2.rule_actor_id = ActorId::try_new("server1.conn0/styleRuleActor11");
+
+        let out = render_property_cascade("h1", "color", &[r1, r2], None);
+        let arr = out["rules"].as_array().unwrap();
+        assert_eq!(
+            arr.len(),
+            2,
+            "both same-line inline rules must appear: {out}"
+        );
+
+        // Every entry carries a non-empty rule_actor_id...
+        let ids: Vec<&str> = arr
+            .iter()
+            .map(|r| {
+                let id = r["rule_actor_id"].as_str().unwrap_or("");
+                assert!(!id.is_empty(), "rule_actor_id must be present: {r}");
+                id
+            })
+            .collect();
+        // ...and the two ids are distinct even though stylesheet/line collide.
+        assert_ne!(
+            ids[0], ids[1],
+            "distinct inline sheets need distinct ids: {out}"
+        );
+        // The colliding fields really do collide (documents the failure mode).
+        assert!(arr[0]["stylesheet"].is_null() && arr[1]["stylesheet"].is_null());
+        assert_eq!(arr[0]["line"], arr[1]["line"]);
+    }
+
+    /// A rule whose `rule_actor_id` is `None` (Firefox omitted the `actor`
+    /// field) still serializes the `rule_actor_id` key, as JSON `null`, so
+    /// downstream `--jq` filters see a stable shape.
+    #[test]
+    fn unit_cascade_null_rule_actor_id_serializes_as_null() {
+        let r = rule("h1", None, 1, &[("color", "red", "")]);
+        assert!(r.rule_actor_id.is_none());
+        let out = render_property_cascade("h1", "color", &[r], None);
+        let arr = out["rules"].as_array().unwrap();
+        assert!(
+            arr[0].get("rule_actor_id").is_some(),
+            "rule_actor_id key must be present even when null: {out}"
+        );
+        assert!(arr[0]["rule_actor_id"].is_null(), "expected null id: {out}");
     }
 
     /// AC: `unit_cascade_note_only_when_prop_set_and_computed_non_null`
