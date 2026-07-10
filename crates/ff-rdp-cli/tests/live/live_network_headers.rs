@@ -121,15 +121,18 @@ fn live_network_headers() {
          Full response: {net_json}"
     );
 
+    // iter-110 Theme B(b): `headers.response` is an ARRAY of `{name, value}`
+    // pairs (see commands::network — Firefox header order is preserved), not a
+    // name→value object. The stale `.as_object()` read always returned None.
     let has_content_type_or_server = entries.iter().any(|entry| {
-        let Some(response_headers) = entry["headers"]["response"].as_object() else {
+        let Some(response_headers) = entry["headers"]["response"].as_array() else {
             return false;
         };
         if response_headers.is_empty() {
             return false;
         }
-        response_headers.keys().any(|k| {
-            let lower = k.to_lowercase();
+        response_headers.iter().any(|h| {
+            let lower = h["name"].as_str().unwrap_or_default().to_lowercase();
             lower == "content-type" || lower == "server"
         })
     });

@@ -26,7 +26,8 @@ fn dom_include_style_attaches_computed_values() {
     let url = "data:text/html,<title>include-style</title><p style=\"color:red\">a</p><p style=\"color:red\">b</p>";
 
     let mut args = base_args(ff.port());
-    args.extend(["navigate".into(), url.into()]);
+    // iter-110 Theme B(a): data: URLs require --allow-unsafe-urls.
+    args.extend(["navigate".into(), "--allow-unsafe-urls".into(), url.into()]);
     let out = Command::new(ff_rdp_bin())
         .args(&args)
         .output()

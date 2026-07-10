@@ -160,7 +160,11 @@ fn live_cross_actor_packet_not_lost() {
 
     let json: serde_json::Value =
         serde_json::from_slice(&eval_out.stdout).expect("eval stdout is not JSON");
-    let result = &json["results"]["result"];
+    // iter-110 Theme B(b): `eval` returns the scalar directly under `results`
+    // (`{"results":2,…}`), not nested under `results.result`. The stale
+    // `results.result` path always read `null`, so this assertion never passed
+    // once the eval envelope settled on the flat shape.
+    let result = &json["results"];
     assert_eq!(
         result
             .as_u64()

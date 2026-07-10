@@ -43,7 +43,8 @@ fn live_cascade_returns_matched_rules() {
     // Navigate to fixture.
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
-        .args(["navigate", FIXTURE_HTML])
+        // iter-110 Theme B(a): data: URLs require --allow-unsafe-urls.
+        .args(["navigate", "--allow-unsafe-urls", FIXTURE_HTML])
         .output()
         .expect("ff-rdp navigate");
     assert!(
@@ -151,7 +152,14 @@ fn live_cascade_returns_matched_rules_external_css() {
     // Navigate to fixture.
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
-        .args(["navigate", &fixture, "--wait-strategy", "readystate"])
+        // iter-110 Theme B(a): data: URLs require --allow-unsafe-urls.
+        .args([
+            "navigate",
+            "--allow-unsafe-urls",
+            &fixture,
+            "--wait-strategy",
+            "readystate",
+        ])
         .output()
         .expect("ff-rdp navigate");
     assert!(

@@ -1093,6 +1093,21 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> 
     // 3. No registry — try to kill whatever is on the port by PID from
     //    the port-owner helper, then wait for the port to free.
     if let Ok(Some(owner)) = crate::port_owner::find_listener(port) {
+        // iter-110 Theme A0: never signal a process we did not spawn. The
+        // port-owner lookup finds whatever is *listening on the RDP port* —
+        // which may be a Firefox the user launched by hand on ff-rdp's default
+        // port 6000. Killing it (the 2026-07-09 incident) is never acceptable.
+        // Require a positive ownership proof — an owner-PID marker naming this
+        // PID under our managed profile root — before any signal is sent.
+        // Fails closed: no marker ⇒ no kill (see `pid_is_ff_rdp_spawned`).
+        if !crate::util::profile_dir::pid_is_ff_rdp_spawned(owner.pid) {
+            return Err(AppError::User(format!(
+                "port {port} is in use by {} (PID {}), which ff-rdp did not launch \
+                 (no owner-PID marker). Refusing to stop a process ff-rdp does not own — \
+                 stop it yourself, or pass --port to use a different port.",
+                owner.process_name, owner.pid
+            )));
+        }
         // iter-100 Theme D: re-verify port ownership immediately before the
         // kill.  `find_listener` resolves a PID at time T; between T and the
         // signal the original process may have exited and the OS may have

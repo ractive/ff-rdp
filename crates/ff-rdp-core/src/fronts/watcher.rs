@@ -142,9 +142,10 @@ impl WatcherFront {
     /// network configuration: request throttling (`setNetworkThrottling`) and
     /// URL blocking (`setBlockedUrls`).
     ///
-    /// The actor ID is nested under the `networkParent` typed-actor object
+    /// The actor ID is nested under the `network` typed-actor object
     /// (see [`spec::response::NetworkParentActorRef`]), not at the top level —
-    /// the same named-key shape as `getTargetConfigurationActor`.
+    /// the same named-key shape as `getTargetConfigurationActor`, though the key
+    /// is `network` here (verified live in iter-110), not `networkParent`.
     pub fn get_network_parent_actor(
         &self,
         transport: &mut RdpTransport,

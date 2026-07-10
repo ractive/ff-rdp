@@ -212,6 +212,67 @@ pub(crate) fn profile_is_owned_by_live_process(dir: &Path) -> bool {
     crate::daemon::process::is_process_alive(pid)
 }
 
+/// Read and parse the owner PID recorded in `dir`'s [`OWNER_PID_MARKER`], if
+/// any. Returns `None` when the marker is absent or unparsable.
+///
+/// Split out from [`profile_is_owned_by_live_process`] so the kill-scoping
+/// guard (iter-110 Theme A0) can compare a marker PID against a candidate PID
+/// without also asserting liveness (the caller already knows the candidate is
+/// the live port owner).
+fn read_owner_pid_marker(dir: &Path) -> Option<u32> {
+    let contents = std::fs::read_to_string(dir.join(OWNER_PID_MARKER)).ok()?;
+    contents.trim().parse::<u32>().ok()
+}
+
+/// Returns `true` iff some managed profile directory under
+/// [`secure_profile_root`] carries an [`OWNER_PID_MARKER`] naming `pid` — i.e.
+/// `pid` identifies a Firefox that **ff-rdp itself spawned** (iter-110 Theme
+/// A0).
+///
+/// This is the ownership gate the port-owner kill fallback in `daemon::client`
+/// consults before signalling a process it discovered merely by *listening on
+/// the RDP port*. A foreign Firefox the user launched by hand — even one on
+/// ff-rdp's default port 6000 — never planted a marker under our per-user
+/// profile root, so this returns `false` and the kill is skipped. Without this
+/// guard the fallback would SIGKILL an unrelated browser (the 2026-07-09
+/// incident: the live-test harness repeatedly killed James's interactive
+/// Firefox).
+///
+/// Only markers in *managed* (`ff-rdp-profile-*`) directories count — a user
+/// `--profile` dir never receives a marker (see [`write_owner_pid_marker`]),
+/// so this cannot be spoofed into authorising a kill by a hand-planted file in
+/// a user profile that happens to sit under the root.
+///
+/// Fails **closed**: any error resolving or reading the profile root returns
+/// `false` (do not kill). The cost of a false negative is a leftover foreign
+/// process the user can stop themselves; the cost of a false positive is
+/// killing the user's browser — always err toward not killing.
+pub(crate) fn pid_is_ff_rdp_spawned(pid: u32) -> bool {
+    let Ok(root) = secure_profile_root() else {
+        return false;
+    };
+    pid_is_ff_rdp_spawned_under(&root, pid)
+}
+
+/// Root-parameterised core of [`pid_is_ff_rdp_spawned`] so the ownership gate
+/// can be unit-tested against a temp profile root without touching the real
+/// per-user directory.
+fn pid_is_ff_rdp_spawned_under(root: &Path, pid: u32) -> bool {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !is_managed_profile_path(&path) {
+            continue;
+        }
+        if read_owner_pid_marker(&path) == Some(pid) {
+            return true;
+        }
+    }
+    false
+}
+
 // ---------------------------------------------------------------------------
 // Theme A: active-profile cleanup on `daemon stop`
 // ---------------------------------------------------------------------------
@@ -669,6 +730,74 @@ mod tests {
         // Garbage marker → not owned by a live process.
         std::fs::write(dir.path().join(OWNER_PID_MARKER), b"not-a-pid\n").expect("overwrite");
         assert!(!profile_is_owned_by_live_process(dir.path()));
+    }
+
+    // -----------------------------------------------------------------
+    // iter-110 Theme A0: kill-scoping ownership gate
+    // -----------------------------------------------------------------
+
+    /// AC: `unit_pid_is_ff_rdp_spawned_true_only_for_marked_managed_profile`
+    ///
+    /// The kill-scoping gate must authorise a kill ONLY when a managed profile
+    /// under the root carries an owner-PID marker naming the exact candidate
+    /// PID. Proves: (a) a marked managed dir → `true` for that PID; (b) a
+    /// *different* (foreign) PID → `false`; (c) an empty root → `false`. This
+    /// is the primitive that stops ff-rdp from killing a user's own Firefox.
+    #[test]
+    fn unit_pid_is_ff_rdp_spawned_true_only_for_marked_managed_profile() {
+        let root = tempfile::tempdir().expect("tempdir");
+
+        // Empty root: no profile owns anything.
+        assert!(
+            !pid_is_ff_rdp_spawned_under(root.path(), 4242),
+            "an empty profile root must never authorise a kill"
+        );
+
+        // A managed dir whose marker names PID 4242.
+        let dir = seed_fake_profile(root.path(), &"a".repeat(16), Duration::from_secs(1));
+        std::fs::write(dir.join(OWNER_PID_MARKER), b"4242\n").expect("write marker");
+
+        assert!(
+            pid_is_ff_rdp_spawned_under(root.path(), 4242),
+            "the marked managed PID must be recognised as ff-rdp-spawned"
+        );
+        assert!(
+            !pid_is_ff_rdp_spawned_under(root.path(), 9999),
+            "a foreign PID with no marker naming it must NEVER be authorised — \
+             this is the guard that spared James's interactive Firefox"
+        );
+    }
+
+    /// AC: `unit_pid_is_ff_rdp_spawned_ignores_marker_in_unmanaged_dir` — a
+    /// marker planted in a directory under the root that does NOT match the
+    /// `ff-rdp-profile-*` convention (e.g. a user `--profile` dir, or an
+    /// attacker-planted dir) must be ignored, so it cannot spoof authorisation
+    /// to kill an arbitrary PID.
+    #[test]
+    fn unit_pid_is_ff_rdp_spawned_ignores_marker_in_unmanaged_dir() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let unmanaged = root.path().join("my-own-firefox-profile");
+        std::fs::create_dir_all(&unmanaged).expect("create unmanaged dir");
+        std::fs::write(unmanaged.join(OWNER_PID_MARKER), b"4242\n").expect("write marker");
+
+        assert!(
+            !pid_is_ff_rdp_spawned_under(root.path(), 4242),
+            "a marker in a non-managed dir must not authorise a kill"
+        );
+    }
+
+    /// A garbage / unparsable marker in a managed dir yields no ownership
+    /// claim — `read_owner_pid_marker` returns `None`, so no PID matches.
+    #[test]
+    fn unit_pid_is_ff_rdp_spawned_rejects_garbage_marker() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"b".repeat(16), Duration::from_secs(1));
+        std::fs::write(dir.join(OWNER_PID_MARKER), b"not-a-pid\n").expect("write garbage marker");
+
+        assert!(
+            !pid_is_ff_rdp_spawned_under(root.path(), 4242),
+            "an unparsable marker must not authorise any kill"
+        );
     }
 
     /// AC: `pre_fix_repro_prune_deletes_profile_with_live_owner_pid` — a
