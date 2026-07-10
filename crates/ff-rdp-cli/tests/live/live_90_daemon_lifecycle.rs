@@ -226,6 +226,11 @@ fn live_launch_replace_handles_prior_instance() {
 ///
 /// Uses a fixed port (6090) to keep the test deterministic; if that port is
 /// in use the test skips gracefully.
+///
+// allow-ungated-live: intentionally NOT #[ignore] — `xtask check-pre-fix-repro`
+// runs this via `cargo test --exact` WITHOUT `--include-ignored`, so #[ignore]
+// would make the pre-fix-repro gate unable to see it. Gated at runtime on
+// FF_RDP_LIVE_TESTS=1 (no-op pass when unset). See iter-90 / iter-113 Theme B.
 #[test]
 fn pre_fix_repro_daemon_state_sharing_red_then_green() {
     if !live_tests_enabled() {
