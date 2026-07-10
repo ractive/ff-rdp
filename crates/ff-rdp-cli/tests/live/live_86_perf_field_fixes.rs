@@ -24,8 +24,8 @@ use crate::common::{LiveFirefox, base_args, ff_rdp_bin};
 // ---------------------------------------------------------------------------
 
 /// `live_daemon_stop_frees_port`:
-/// After `ff-rdp daemon stop`, the Firefox RDP port 6000 must be closed
-/// (i.e. no TCP listener) within 3 seconds.
+/// After `ff-rdp daemon stop`, the Firefox RDP port (random, self-launched)
+/// must be closed (i.e. no TCP listener) within 3 seconds.
 ///
 /// Pre-condition: Firefox running (launched by this test), daemon started.
 /// Post-condition: `TcpStream::connect("127.0.0.1:<port>")` fails after stop.
@@ -99,7 +99,7 @@ fn live_daemon_stop_frees_port() {
 /// When a prior Firefox instance holds the default port, `ff-rdp launch --replace`
 /// must stop the prior instance and succeed.
 ///
-/// Pre-condition: Firefox running on port 6000 (launched by test).
+/// Pre-condition: Firefox running on a random self-launched port.
 /// Post-condition: `launch --replace` exits 0.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]

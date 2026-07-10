@@ -1,32 +1,62 @@
-/// Live test for Theme J (iter-84): `a11y contrast` detects failures on the
-/// WAI bad-example page (https://www.w3.org/WAI/demos/bad/) which is the
-/// canonical reference for low-contrast text.
+/// Live test for Theme J (iter-84): `a11y contrast` detects failures on a
+/// low-contrast fixture page — originally the WAI bad-example page
+/// (https://www.w3.org/WAI/demos/bad/before/), the canonical reference for
+/// low-contrast text, now reproduced locally as a `data:` URL (iter-114
+/// Theme B) so the test no longer depends on real network access.
 ///
 /// The fix widens element detection to include containers where all children
 /// are inline elements (span, a, b, etc.) — not just leaf text nodes.
 ///
-/// AC: live_a11y_contrast_wai_bad — aa_fail ≥ 1 on WAI bad demo page
-use crate::common::{live_network_tests_enabled, live_tests_enabled};
+/// AC: live_a11y_contrast_low_contrast_fixture — aa_fail ≥ 1 on the local
+///     low-contrast fixture page
+use crate::common::{LiveFirefox, base_args, ff_rdp_bin};
 use std::process::Command;
 
-fn ff_rdp_bin() -> String {
-    env!("CARGO_BIN_EXE_ff-rdp").to_string()
-}
+/// A local low-contrast fixture: several elements combining light-gray text
+/// on a white background (ratio well under the WCAG AA 4.5:1 threshold for
+/// normal text), spanning leaf elements, an all-inline-children container,
+/// and a `<td>` (the WAI bad-demo pattern this AC guards against
+/// regressing). Mirrors the shape of real low-contrast violations without
+/// depending on the external WAI page staying reachable or unchanged.
+///
+/// Hex colors use `%23` in place of `#` — an unescaped `#` in a `data:` URL
+/// is parsed as a fragment delimiter, truncating everything after it before
+/// the page ever loads.
+const FIXTURE_HTML: &str = "data:text/html;charset=utf-8,\
+<!DOCTYPE html><html><head></head><body>\
+<p id=\"p1\" style=\"color:%23cccccc;background:%23ffffff\">low contrast paragraph</p>\
+<div id=\"d1\" style=\"color:%23d9d9d9;background:%23ffffff\">\
+<span>low contrast</span> <b>inline children</b></div>\
+<table><tr><td id=\"td1\" style=\"color:%23e0e0e0;background:%23ffffff\">\
+low contrast cell</td></tr></table>\
+</body></html>";
 
 /// Theme J: `a11y contrast` with `--fail-only` returns at least one failure
-/// on the WAI bad-example page which deliberately contains low-contrast text.
+/// on a fixture page that deliberately contains low-contrast text across
+/// leaf, inline-children-container, and table-cell elements.
 ///
-/// Pre-condition: Firefox running with `--start-debugger-server 6000`.
 /// Post-condition: `summary.aa_fail` ≥ 1.
 #[test]
-#[ignore = "requires FF_RDP_LIVE_TESTS=1 and running Firefox"]
-fn live_a11y_contrast_wai_bad_detects_failures() {
-    if !live_tests_enabled() || !live_network_tests_enabled() {
+#[ignore = "requires FF_RDP_LIVE_TESTS=1 and a live Firefox instance"]
+fn live_a11y_contrast_low_contrast_fixture_detects_failures() {
+    if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
+        eprintln!(
+            "live_a11y_contrast_low_contrast_fixture_detects_failures: set FF_RDP_LIVE_TESTS=1 to run"
+        );
         return;
     }
 
+    let Some(ff) = LiveFirefox::headless_on_random_port() else {
+        eprintln!(
+            "live_a11y_contrast_low_contrast_fixture_detects_failures: Firefox not available — skipping"
+        );
+        return;
+    };
+
     let nav = Command::new(ff_rdp_bin())
-        .args(["navigate", "https://www.w3.org/WAI/demos/bad/before/"])
+        .args(base_args(ff.port()))
+        // data: URLs require --allow-unsafe-urls.
+        .args(["navigate", "--allow-unsafe-urls", FIXTURE_HTML])
         .output()
         .expect("ff-rdp navigate failed");
     assert!(
@@ -36,6 +66,7 @@ fn live_a11y_contrast_wai_bad_detects_failures() {
     );
 
     let out = Command::new(ff_rdp_bin())
+        .args(base_args(ff.port()))
         .args(["a11y", "contrast", "--fail-only"])
         .output()
         .expect("ff-rdp a11y contrast failed");
@@ -57,7 +88,7 @@ fn live_a11y_contrast_wai_bad_detects_failures() {
 
     assert!(
         aa_fail >= 1,
-        "Theme J regression: WAI bad demo reported 0 AA failures \
+        "Theme J regression: low-contrast fixture reported 0 AA failures \
          (contrast detection too narrow — may have missed inline-child containers)"
     );
 
@@ -66,4 +97,6 @@ fn live_a11y_contrast_wai_bad_detects_failures() {
         total >= 1,
         "Theme J: --fail-only returned 0 results (aa_fail={aa_fail})"
     );
+
+    eprintln!("live_a11y_contrast_low_contrast_fixture_detects_failures: PASS — aa_fail={aa_fail}");
 }

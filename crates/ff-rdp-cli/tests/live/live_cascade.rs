@@ -4,7 +4,9 @@
 //! Loads a data URL with `<style>h1 { color: red }</style><h1>x</h1>`,
 //! runs `ff-rdp cascade h1 --prop color`, and asserts:
 //!   - `rules[].selector` is the string `"h1"`
-//!   - `computed == "rgb(255, 0, 0)"`
+//!   - `computed` is canonically equal to `red` (iter-114: compared via
+//!     `common::assert_colors_equal` since Firefox 152 serializes this as
+//!     the keyword `red` rather than the pre-152 `rgb(255, 0, 0)`)
 //!
 //! # Running
 //!
@@ -13,7 +15,7 @@
 
 use std::process::Command;
 
-use crate::common::{LiveFirefox, base_args, ff_rdp_bin};
+use crate::common::{LiveFirefox, assert_colors_equal, base_args, ff_rdp_bin};
 use base64::Engine as _;
 
 const FIXTURE_HTML: &str = "data:text/html;charset=utf-8,\
@@ -81,11 +83,13 @@ fn live_cascade_returns_matched_rules() {
         "cascade entry property must be 'color'; got {entry}"
     );
 
-    // computed must be the red rgb value.
+    // computed must be red, in whatever serialization form Firefox uses
+    // (keyword or rgb() — iter-114: Firefox 152 switched to keywords).
     let computed = entry["computed"].as_str().unwrap_or("");
-    assert_eq!(
-        computed, "rgb(255, 0, 0)",
-        "cascade computed must be 'rgb(255, 0, 0)'; got {computed:?}"
+    assert_colors_equal(
+        computed,
+        "red",
+        "live_cascade_returns_matched_rules: cascade computed",
     );
 
     // At least one rule must have a selector of "h1".
@@ -195,12 +199,13 @@ fn live_cascade_returns_matched_rules_external_css() {
 
     let entry = &json["results"][0];
 
-    // computed must be the red rgb value.
+    // computed must be red, in whatever serialization form Firefox uses
+    // (keyword or rgb() — iter-114: Firefox 152 switched to keywords).
     let computed = entry["computed"].as_str().unwrap_or("");
-    assert_eq!(
-        computed, "rgb(255, 0, 0)",
-        "live_cascade_returns_matched_rules_external_css: computed must be 'rgb(255, 0, 0)'; \
-         got {computed:?}; full entry={entry}"
+    assert_colors_equal(
+        computed,
+        "red",
+        "live_cascade_returns_matched_rules_external_css: cascade computed",
     );
 
     // At least one rule must reference h1.

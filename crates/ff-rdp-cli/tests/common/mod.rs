@@ -16,8 +16,13 @@
 // `#[path]`-included, while production code stays denied.
 #![allow(unsafe_code)]
 
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// Return the path to the compiled `ff-rdp` binary under test.
@@ -513,5 +518,405 @@ impl Drop for RawFirefox {
         kill_pid(self.pid);
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.profile);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Canonical-color comparison (iter-114 Theme A)
+// ---------------------------------------------------------------------------
+//
+// Firefox 152 started serializing some computed `color`/`background-color`
+// values as CSS keywords (e.g. `red`) where older versions always returned
+// `rgb(255, 0, 0)`. Tests that hard-coded the `rgb()` form broke on upgrade.
+// `parse_css_color` normalizes keyword / `#rgb` / `#rrggbb` / `#rrggbbaa` /
+// `#rgba` / `rgb(...)` / `rgba(...)` into one `(r, g, b, a)` tuple (alpha
+// 0..=255) so assertions survive serialization drift in either direction.
+
+/// An 8-bit RGBA color, used as the canonical form for [`parse_css_color`].
+pub type Rgba = (u8, u8, u8, u8);
+
+/// CSS keyword → RGB table, intentionally minimal: only the named colors
+/// actually produced by this suite's fixtures, not all 148 CSS keywords.
+const CSS_KEYWORDS: &[(&str, (u8, u8, u8))] = &[
+    ("red", (255, 0, 0)),
+    ("green", (0, 128, 0)),
+    ("blue", (0, 0, 255)),
+    ("white", (255, 255, 255)),
+    ("black", (0, 0, 0)),
+    ("yellow", (255, 255, 0)),
+    ("transparent", (0, 0, 0)),
+];
+
+/// Parse a CSS color string (keyword, `#rgb`, `#rrggbb`, `#rgba`, `#rrggbbaa`,
+/// `rgb(...)`, or `rgba(...)`) into a canonical [`Rgba`] tuple.
+///
+/// Returns `None` for unrecognized input (e.g. `currentcolor`, unsupported
+/// keywords, or malformed syntax) — callers should treat that as "cannot
+/// compare canonically" rather than "colors differ".
+pub fn parse_css_color(s: &str) -> Option<Rgba> {
+    let s = s.trim();
+
+    if let Some(hex) = s.strip_prefix('#') {
+        return parse_hex_color(hex);
+    }
+
+    if let Some(inner) = s.strip_prefix("rgba(").and_then(|r| r.strip_suffix(')')) {
+        return parse_rgb_components(inner, true);
+    }
+    if let Some(inner) = s.strip_prefix("rgb(").and_then(|r| r.strip_suffix(')')) {
+        return parse_rgb_components(inner, false);
+    }
+
+    let lower = s.to_ascii_lowercase();
+    if lower == "transparent" {
+        return Some((0, 0, 0, 0));
+    }
+    CSS_KEYWORDS
+        .iter()
+        .find(|(kw, _)| *kw == lower)
+        .map(|(_, (r, g, b))| (*r, *g, *b, 255))
+}
+
+fn parse_hex_color(hex: &str) -> Option<Rgba> {
+    let digit = |c: u8| -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    };
+    let pair = |hi: u8, lo: u8| -> Option<u8> { Some(digit(hi)? * 16 + digit(lo)?) };
+    let nibble_dup = |c: u8| -> Option<u8> { Some(digit(c)? * 17) };
+
+    let bytes = hex.as_bytes();
+    match bytes.len() {
+        3 => Some((
+            nibble_dup(bytes[0])?,
+            nibble_dup(bytes[1])?,
+            nibble_dup(bytes[2])?,
+            255,
+        )),
+        4 => Some((
+            nibble_dup(bytes[0])?,
+            nibble_dup(bytes[1])?,
+            nibble_dup(bytes[2])?,
+            nibble_dup(bytes[3])?,
+        )),
+        6 => Some((
+            pair(bytes[0], bytes[1])?,
+            pair(bytes[2], bytes[3])?,
+            pair(bytes[4], bytes[5])?,
+            255,
+        )),
+        8 => Some((
+            pair(bytes[0], bytes[1])?,
+            pair(bytes[2], bytes[3])?,
+            pair(bytes[4], bytes[5])?,
+            pair(bytes[6], bytes[7])?,
+        )),
+        _ => None,
+    }
+}
+
+/// Round `v` (assumed already within `0.0..=255.0`) to the nearest `u8`.
+///
+/// Callers are expected to validate or clamp the input range beforehand —
+/// this only performs the float-to-int conversion, isolated here so the
+/// sign-loss/truncation lints are acknowledged in exactly one place instead
+/// of at every call site.
+fn round_to_u8(v: f64) -> u8 {
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "v is always clamped/validated to 0.0..=255.0 by the caller before this call"
+    )]
+    let rounded = v.round() as u8;
+    rounded
+}
+
+/// Parse the comma-separated inner content of `rgb(...)`/`rgba(...)`.
+///
+/// Accepts an integer or percentage alpha (`0.5` or `50%`) when
+/// `has_alpha` is true; otherwise defaults alpha to 255 (fully opaque).
+fn parse_rgb_components(inner: &str, has_alpha: bool) -> Option<Rgba> {
+    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
+    let expected = if has_alpha { 4 } else { 3 };
+    if parts.len() != expected {
+        return None;
+    }
+    let parse_channel = |p: &str| -> Option<u8> {
+        let v: f64 = p.parse().ok()?;
+        if !(0.0..=255.0).contains(&v) {
+            return None;
+        }
+        Some(round_to_u8(v))
+    };
+    let r = parse_channel(parts[0])?;
+    let g = parse_channel(parts[1])?;
+    let b = parse_channel(parts[2])?;
+    let a = if has_alpha {
+        let raw = parts[3];
+        if let Some(pct) = raw.strip_suffix('%') {
+            let v: f64 = pct.parse().ok()?;
+            round_to_u8(v.clamp(0.0, 100.0) / 100.0 * 255.0)
+        } else {
+            let v: f64 = raw.parse().ok()?;
+            round_to_u8(v.clamp(0.0, 1.0) * 255.0)
+        }
+    } else {
+        255
+    };
+    Some((r, g, b, a))
+}
+
+/// Assert that two CSS color strings are equal under [`parse_css_color`]'s
+/// canonical form, regardless of which literal syntax each uses.
+///
+/// Panics with both the original strings and their parsed forms if either
+/// fails to parse, or if the parsed colors differ — the panic message is the
+/// diagnostic a live-test failure needs, so callers don't have to build
+/// their own.
+pub fn assert_colors_equal(actual: &str, expected: &str, context: &str) {
+    let a = parse_css_color(actual);
+    let e = parse_css_color(expected);
+    assert!(
+        a.is_some() && e.is_some() && a == e,
+        "{context}: color mismatch — actual={actual:?} (parsed={a:?}), \
+         expected={expected:?} (parsed={e:?})"
+    );
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+
+    #[test]
+    fn keyword_matches_rgb_both_directions() {
+        assert_eq!(parse_css_color("red"), parse_css_color("rgb(255, 0, 0)"));
+        assert_eq!(parse_css_color("rgb(255, 0, 0)"), parse_css_color("red"));
+        assert_eq!(parse_css_color("blue"), parse_css_color("rgb(0, 0, 255)"));
+        assert_eq!(parse_css_color("rgb(0, 0, 255)"), parse_css_color("blue"));
+    }
+
+    #[test]
+    fn hex_matches_rgb_both_directions() {
+        assert_eq!(
+            parse_css_color("#ff0000"),
+            parse_css_color("rgb(255, 0, 0)")
+        );
+        assert_eq!(
+            parse_css_color("rgb(255, 0, 0)"),
+            parse_css_color("#ff0000")
+        );
+        assert_eq!(parse_css_color("#f00"), parse_css_color("rgb(255, 0, 0)"));
+        assert_eq!(
+            parse_css_color("rgb(0, 128, 0)"),
+            parse_css_color("#008000")
+        );
+    }
+
+    #[test]
+    fn keyword_matches_hex_both_directions() {
+        assert_eq!(parse_css_color("red"), parse_css_color("#ff0000"));
+        assert_eq!(parse_css_color("#ff0000"), parse_css_color("red"));
+        assert_eq!(parse_css_color("white"), parse_css_color("#fff"));
+        assert_eq!(parse_css_color("#fff"), parse_css_color("white"));
+    }
+
+    #[test]
+    fn rgba_alpha_channel_parses() {
+        assert_eq!(
+            parse_css_color("rgba(255, 0, 0, 1)"),
+            Some((255, 0, 0, 255))
+        );
+        assert_eq!(parse_css_color("rgba(255, 0, 0, 0)"), Some((255, 0, 0, 0)));
+        assert_eq!(parse_css_color("rgba(0, 0, 0, 0.5)"), Some((0, 0, 0, 128)));
+    }
+
+    #[test]
+    fn eight_digit_hex_matches_rgba() {
+        assert_eq!(
+            parse_css_color("#ff000080"),
+            parse_css_color("rgba(255, 0, 0, 0.5)")
+        );
+    }
+
+    #[test]
+    fn unrecognized_input_returns_none() {
+        assert_eq!(parse_css_color("currentcolor"), None);
+        assert_eq!(parse_css_color("not-a-color"), None);
+    }
+
+    #[test]
+    fn assert_colors_equal_passes_for_equivalent_forms() {
+        assert_colors_equal("red", "rgb(255, 0, 0)", "test context");
+        assert_colors_equal("rgb(0, 0, 255)", "blue", "test context");
+    }
+
+    #[test]
+    #[should_panic(expected = "color mismatch")]
+    fn assert_colors_equal_panics_for_different_colors() {
+        assert_colors_equal("red", "blue", "test context");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Self-hosted fixture HTTP server (iter-114 Theme C)
+// ---------------------------------------------------------------------------
+
+/// One route served by [`FixtureServer`]: response `Content-Type`, body, and
+/// any extra response headers.
+#[derive(Clone, Default)]
+pub struct FixtureRoute {
+    pub content_type: &'static str,
+    pub body: Vec<u8>,
+    /// Additional `Name: value` response headers, e.g. `Set-Cookie`. Empty by
+    /// default so existing struct-literal and `html()` construction sites are
+    /// unaffected — use [`FixtureRoute::with_header`] to add one.
+    pub extra_headers: Vec<(String, String)>,
+}
+
+impl FixtureRoute {
+    /// Convenience constructor for `text/html; charset=utf-8` routes, which
+    /// is what every current fixture-server consumer serves.
+    pub fn html(body: impl Into<String>) -> Self {
+        Self {
+            content_type: "text/html; charset=utf-8",
+            body: body.into().into_bytes(),
+            extra_headers: Vec::new(),
+        }
+    }
+
+    /// Builder method: append an extra `name: value` response header.
+    pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.extra_headers.push((name.into(), value.into()));
+        self
+    }
+}
+
+/// A minimal, std-only, single-threaded static HTTP server for live tests
+/// that need to crawl a small set of interlinked local pages instead of
+/// depending on a real network origin.
+///
+/// Binds `127.0.0.1:0` (an ephemeral port — never fixed, so parallel test
+/// runs never collide), serves an in-source route map passed by the caller,
+/// and shuts down cleanly on `Drop`: a shutdown flag is set, then a final
+/// connection is made to the listener to unblock `accept()` so the
+/// background thread can observe the flag and exit instead of blocking
+/// forever on the next `incoming()` call.
+///
+/// Every response is `Connection: close` — no keep-alive — matching the
+/// existing single-shot servers (`spawn_html_server`, `spawn_fixture_server`)
+/// this is modeled on and could later replace.
+pub struct FixtureServer {
+    port: u16,
+    shutdown: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl FixtureServer {
+    /// Start serving `routes` (request path → response) on an ephemeral
+    /// localhost port. Unknown paths get a `404`. Returns `None` if the
+    /// ephemeral port cannot be bound.
+    pub fn start(routes: HashMap<String, FixtureRoute>) -> Option<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+        let port = listener.local_addr().ok()?.port();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_for_thread = Arc::clone(&shutdown);
+
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if shutdown_for_thread.load(Ordering::Acquire) {
+                    break;
+                }
+                let Ok(stream) = stream else { continue };
+                handle_connection(stream, &routes);
+            }
+        });
+
+        Some(Self {
+            port,
+            shutdown,
+            handle: Some(handle),
+        })
+    }
+
+    /// The `http://127.0.0.1:<port>` base URL routes are relative to.
+    pub fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+impl Drop for FixtureServer {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
+        // Unblock the background thread's `accept()` with a dummy connection
+        // so it observes the shutdown flag and exits instead of hanging until
+        // process teardown.
+        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", self.port)) {
+            let _ = stream.write_all(b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n");
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Read one HTTP request line off `stream`, look up its path in `routes`,
+/// and write back the matching response (or a `404`).
+fn handle_connection(mut stream: TcpStream, routes: &HashMap<String, FixtureRoute>) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+
+    let mut buf = [0u8; 4096];
+    let Ok(n) = stream.read(&mut buf) else {
+        return;
+    };
+    let request = String::from_utf8_lossy(&buf[..n]);
+    let Some(request_line) = request.lines().next() else {
+        return;
+    };
+    // Request line form: "GET /path HTTP/1.1"
+    let path = request_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("/")
+        .split('?')
+        .next()
+        .unwrap_or("/");
+
+    if let Some(route) = routes.get(path) {
+        let mut header = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Content-Type: {}\r\n\
+             Content-Length: {}\r\n\
+             Cache-Control: no-store\r\n",
+            route.content_type,
+            route.body.len()
+        );
+        for (name, value) in &route.extra_headers {
+            header.push_str(name);
+            header.push_str(": ");
+            header.push_str(value);
+            header.push_str("\r\n");
+        }
+        header.push_str("Connection: close\r\n\r\n");
+        let _ = stream.write_all(header.as_bytes());
+        let _ = stream.write_all(&route.body);
+    } else {
+        let body = b"Not Found";
+        let header = format!(
+            "HTTP/1.1 404 Not Found\r\n\
+             Content-Type: text/plain\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(header.as_bytes());
+        let _ = stream.write_all(body);
     }
 }
