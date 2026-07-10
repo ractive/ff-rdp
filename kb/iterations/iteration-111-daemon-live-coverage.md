@@ -27,6 +27,17 @@ tags: [iteration, daemon, watcher, parity, review-2026-07, carry-over]
 
 # Iteration 111: daemon live coverage
 
+## Execution policies (standing, per James)
+
+This iteration's deliverable IS live daemon tests — run the specific live
+tests it adds (filtered), not the full live suite (next batch sweep covers
+integration). Scoped testing: affected tests only during development; one
+full `cargo test --workspace -q` in the final pre-PR gates; the review agent
+does not re-run the full workspace suite. CI-wait: merge on required lanes
+only; `test (windows-latest)` is expected GREEN since PR #148 — any windows
+failure is real and blocks. `live-tests` stays advisory.
+
+
 Carry-over from [[iteration-101-daemon-session-correctness]]. Iter-101 landed the
 daemon session-correctness fixes (target-switch buffer purge, `daemon_busy`
 concurrency, per-type buffering, `--since` parity, atomic registry) with
