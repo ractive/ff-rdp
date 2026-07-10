@@ -2,7 +2,7 @@
 title: "Iteration 113: live-launch hardening — launch timeout, mandatory #[ignore] guard, eol pinning"
 type: iteration
 date: 2026-07-10
-status: in-progress
+status: completed
 branch: iter-113/live-launch-hardening
 depends_on:
   - kb/iterations/iteration-112-windows-live-firefox-launch-hang.md
