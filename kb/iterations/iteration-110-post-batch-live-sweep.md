@@ -2,7 +2,7 @@
 title: "Iteration 110: post-batch full live-suite sweep — run everything against real Firefox once, fix all fallout"
 type: iteration
 date: 2026-07-09
-status: in-progress
+status: completed
 branch: iter-110/post-batch-live-sweep
 depends_on:
   - kb/iterations/iteration-109-network-throttle-block.md
@@ -11,8 +11,10 @@ firefox_refs: []
 kb_refs:
   - kb/iterations/iteration-100b-live-test-consolidation.md
 first_call_sites:
-  - primitive: "profile_dir::pid_is_ff_rdp_spawned"
-    site: "crates/ff-rdp-cli/src/daemon/client.rs stop_prior_instance port-owner fallback (step 3)"
+  - primitive: profile_dir::pid_is_ff_rdp_spawned
+    site: >-
+      crates/ff-rdp-cli/src/daemon/client.rs stop_prior_instance port-owner fallback
+      (step 3)
 dogfood_path: |
   # The sweep itself IS the dogfood: full gated live suite against headless Firefox.
   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo test-live
