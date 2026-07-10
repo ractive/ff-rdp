@@ -14,6 +14,12 @@
 
 use crate::common::{LiveFirefox, base_args, ff_rdp_bin};
 
+/// A small deterministic fixture with a non-empty `document.title`, so the
+/// eval-after-bulk-screenshot assertion (title must be non-empty) is
+/// verified against fixed content rather than depending on a real external
+/// site (`https://example.com`).
+const FIXTURE_HTML: &str = "data:text/html;charset=utf-8,<!DOCTYPE html><html><head><title>x</title></head><body><h1>live_screenshot_bulk_fallback</h1></body></html>";
+
 /// AC: `live_screenshot_bulk_fallback_then_eval` — `--bulk` screenshot then
 /// `eval` both succeed against the same Firefox instance (regression for the
 /// stream-poison bug).
@@ -41,10 +47,11 @@ fn live_screenshot_bulk_fallback_then_eval() {
         return;
     };
 
-    // Navigate to a simple page.
+    // Navigate to a simple, deterministic local page (no real network access
+    // required — this file has no `live_network_tests_enabled()` gate to drop).
     let nav = std::process::Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
-        .args(["navigate", "https://example.com"])
+        .args(["navigate", "--allow-unsafe-urls", FIXTURE_HTML])
         .output()
         .expect("navigate command should run");
     assert!(
@@ -53,12 +60,13 @@ fn live_screenshot_bulk_fallback_then_eval() {
         String::from_utf8_lossy(&nav.stderr)
     );
 
-    // Take a --bulk screenshot.  The bulk path is now a no-op (always falls
-    // through to JSON capture), so this should succeed cleanly.
+    // Take a --bulk screenshot.  `--bulk` is now a boolean flag (the bulk path
+    // is a no-op that always falls through to JSON capture) — the output path
+    // is a separate `-o/--output` argument, so this should succeed cleanly.
     let tmp_path = std::env::temp_dir().join("test-bulk-76b.png");
     let screenshot = std::process::Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
-        .args(["screenshot", "--bulk", tmp_path.to_str().unwrap()])
+        .args(["screenshot", "--bulk", "-o", tmp_path.to_str().unwrap()])
         .output()
         .expect("screenshot command should run");
     assert!(
@@ -67,6 +75,7 @@ fn live_screenshot_bulk_fallback_then_eval() {
         String::from_utf8_lossy(&screenshot.stderr),
         String::from_utf8_lossy(&screenshot.stdout),
     );
+    let _ = std::fs::remove_file(&tmp_path);
 
     // Immediately run eval on the same Firefox — must succeed (stream not poisoned).
     let eval = std::process::Command::new(ff_rdp_bin())
@@ -87,10 +96,12 @@ fn live_screenshot_bulk_fallback_then_eval() {
         !stdout.trim().is_empty(),
         "eval returned empty output — expected a page title"
     );
-    // The JSON output must contain a non-null result.
+    // The JSON output must contain a non-null, non-empty result. `eval`'s
+    // current envelope carries the evaluated value directly under `results`
+    // (e.g. `{"results": "x", ...}` for a string), not `results[0].result`.
     let json: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("eval stdout is not JSON: {e}\nstdout={stdout}"));
-    let result = &json["results"][0]["result"];
+    let result = &json["results"];
     assert!(
         !result.is_null() && result != &serde_json::Value::String(String::new()),
         "eval result should be non-empty, got: {result}"

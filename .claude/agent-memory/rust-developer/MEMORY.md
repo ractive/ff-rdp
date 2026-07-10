@@ -7,3 +7,4 @@
 - [project_xtask_discipline_gates.md](project_xtask_discipline_gates.md) — check-iteration-ready aggregator and find-iteration-plan resolver (iter-75b)
 - [project_serde_json_ordering.md](project_serde_json_ordering.md) — preserve_order enabled workspace-wide; text-table columns follow JSON insertion order now
 - [project_flaky_redact_tests.md](project_flaky_redact_tests.md) — transport::tests::redact_* race under narrow `cargo test -- filter`; pre-existing, not a regression
+- [project_console_actor_cache_gap.md](project_console_actor_cache_gap.md) — console command never starts WebConsoleActor listeners before reading cache; live_console_printf_e2e left red, needs product fix in own PR
