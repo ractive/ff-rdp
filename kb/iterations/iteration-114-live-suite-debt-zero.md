@@ -2,7 +2,7 @@
 title: "Iteration 114: live-suite debt zero — Firefox-152 color drift, self-launching legacy tests, self-hosted fixture server"
 type: iteration
 date: 2026-07-10
-status: planned
+status: completed
 branch: iter-114/live-suite-debt-zero
 depends_on:
   - kb/iterations/iteration-110-post-batch-live-sweep.md
