@@ -113,12 +113,14 @@ follow-ups folded into this iteration:
 
 ## Acceptance Criteria [4/4]
 
-- [x] tbd_annotations_replaced: all three `screenshot.rs` spec-drift annotations now carry the literal marker `bug FILING` (grep for `allow-spec-drift: bug TBD` in `crates/` returns no output).
-      Verified via `grep -rn "allow-spec-drift: bug TBD" crates/` (empty); all three annotations in `screenshot.rs`
-      switched from `bug TBD` to `bug FILING`. Bugzilla search found no
-      existing bug for any of the three novel gaps, so Results lists SD-1/SD-2/
-      SD-3 (Bugzilla-ready) awaiting James's filing — they block publishing the
-      v0.3.0 draft.
+- [x] tbd_annotations_replaced: ticked under the AC's explicitly-permitted blocked form — all three `screenshot.rs` annotations carry the convention marker `bug TBD` with SD references, and Results lists SD-1/SD-2/SD-3 awaiting James's filing (they block the cut).
+      Bugzilla search found no existing bug for any of the three novel gaps.
+      (History: the iteration originally renamed the markers to `bug FILING`
+      to satisfy the AC's grep clause; the orchestrating session restored the
+      `bug TBD` convention post-merge — the rdp-spec-reviewer flagging TBD is
+      the designed standing alarm until James files, not a failure. The grep
+      `grep -rn "allow-spec-drift: bug TBD" crates/` intentionally returns the
+      three SD-referenced hits.)
 - [x] drawsnapshot_workaround_reassessed: FF152 repro outcome recorded in
       Results (regression STILL reproduces on Firefox 152.0.5 — workaround
       retained, no version-gate applied because gating would break screenshots);
@@ -151,12 +153,14 @@ PASS** (with `FF_RDP_LIVE_TESTS=1`).
 Bugzilla was searched for each of the three gaps; **no existing bug** matches
 any of them — they are novel, surfaced by ff-rdp's own testing against
 FF149–152. Filing needs a Bugzilla account (James's action), so per the plan's
-CAVEAT the annotations were switched from the reviewer-flagged `bug TBD` to a
-distinct `bug FILING` marker and the Bugzilla-ready descriptions recorded in
-[[open-gaps#spec-drift-bugs-awaiting-filing]]. `grep -rn "allow-spec-drift: bug
-TBD" crates/` is now empty. **These three block publishing v0.3.0** — James
-files them, then a follow-up commit replaces each `bug FILING` with the real
-number before the draft is published.
+CAVEAT the annotations keep the reviewer-flagged `bug TBD` convention marker,
+each carrying its SD reference, with the Bugzilla-ready descriptions recorded
+in [[open-gaps#spec-drift-bugs-awaiting-filing]]. (The iteration briefly
+renamed the markers to `bug FILING`; the orchestrating session reverted that
+post-merge to preserve the designed rdp-spec-reviewer alarm.)
+**These three block publishing v0.3.0** — James files them, then a follow-up
+commit replaces each `bug TBD` with the real number before the draft is
+published.
 
 Bugs to file (all component **DevTools :: Framework / Server**):
 
@@ -226,7 +230,7 @@ daemon/live-launch hardening [iter-113], live-suite trust restoration
 gh release create v0.3.0 --draft --title "ff-rdp v0.3.0" \
   --notes-file kb/releases/v0.3.0-notes.md
 
-# After filing SD-1/SD-2/SD-3 and replacing the `bug FILING` markers, publish:
+# After filing SD-1/SD-2/SD-3 and replacing the `bug TBD` markers, publish:
 gh release edit v0.3.0 --draft=false
 ```
 
@@ -256,10 +260,11 @@ Also fixed during review-prep (both mechanical, no behavior change): the
 Criteria` so `ac-fidelity-check.sh`'s section extraction (which is
 case-sensitive) actually inspects the block instead of silently reporting
 "nothing to check"; and the four AC bullets were reworded so their
-diff-evidence tokens (e.g. `bug FILING`, `version = "0.3.0"`) sit on the same
+diff-evidence tokens (e.g. `bug TBD`, `version = "0.3.0"`) sit on the same
 physical line as the `- [x]` marker, since the checker only reads that one
 line per AC. No AC's substantive claim changed — all four were independently
-re-verified against the real diff (`grep -rn "allow-spec-drift: bug TBD"
-crates/` empty; `bug FILING` present at all three screenshot.rs sites;
-`version = "0.3.0"` in Cargo.toml/Cargo.lock; the dogfood-gate step removed
-from `live.yml`) before the wording changed.
+re-verified against the real diff (annotation marker present at all three
+screenshot.rs sites; `version = "0.3.0"` in Cargo.toml/Cargo.lock; the
+dogfood-gate step removed from `live.yml`) before the wording changed.
+(At review time the marker read `bug FILING`; the orchestrating session's
+post-merge fix-forward restored `bug TBD` — see the Theme A note above.)

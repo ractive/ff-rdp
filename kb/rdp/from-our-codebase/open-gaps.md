@@ -87,10 +87,10 @@ CLAUDE.md requires be replaced with a real Mozilla Bugzilla number before the
 next release cut. Bugzilla searches (iter-117) found **no existing bug** for
 any of the three gaps — they are novel, discovered by ff-rdp's own testing
 against FF149–152. Filing needs a Bugzilla account (James's action), so the
-annotations were switched from `bug TBD` to `bug FILING` (a distinct,
-grep-detectable "awaiting-filing" marker) and the Bugzilla-ready descriptions
-recorded below. **These block publishing v0.3.0**: James files the three bugs,
-then a follow-up commit replaces each `bug FILING` with the real number before
+annotations keep the convention `bug TBD` marker — the grep-detectable
+awaiting-filing form the rdp-spec-reviewer flags by design — each carrying
+its SD reference, with the Bugzilla-ready descriptions recorded below. **These block publishing v0.3.0**: James files the three bugs,
+then a follow-up commit replaces each `bug TBD` with the real number before
 the draft release is published. The v0.3.0 release is created as a **draft**
 for exactly this reason.
 
