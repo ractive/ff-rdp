@@ -2,7 +2,7 @@
 title: "Iteration 115: cascade entries carry rule_actor_id — distinguish same-line inline stylesheets"
 type: iteration
 date: 2026-07-10
-status: planned
+status: done
 branch: iter-115/cascade-rule-actor-id
 depends_on:
   - kb/iterations/iteration-114-live-suite-debt-zero.md
@@ -51,11 +51,32 @@ distinctness on `selector:specificity`; the real fix is to expose the actor id.
 
 ## Acceptance criteria
 
-- [ ] live_cascade_explains_pico_dialog: the two inline-`<style>` cascade
+- [x] live_cascade_explains_pico_dialog: the two inline-`<style>` cascade
       entries carry distinct non-empty `rule_actor_id` values.
-- [ ] live_cascade_returns_matched_rules: cascade JSON still passes (field
+- [x] live_cascade_returns_matched_rules: cascade JSON still passes (field
       addition is backward-compatible; no other assertion drifts).
 
 ## Results
 
-(to be filled by the implementing iteration)
+Implemented on `iter-115/cascade-rule-actor-id`.
+
+- Added `rule_actor_id: Option<ActorId>` to `CascadeEntry`
+  (`crates/ff-rdp-cli/src/commands/cascade.rs`), populated in
+  `build_cascade_for_property` from the already-fetched
+  `AppliedRule::rule_actor_id` and emitted by `CascadeEntry::to_json` as the
+  `rule_actor_id` JSON field (always present; `null` when Firefox omits the
+  `actor`). No new RDP traffic, no spec drift — the field is already read from
+  the `getApplied` reply by `styles --applied`.
+- `live_cascade_explains_pico_dialog` now keys its distinct-source assertion on
+  `rule_actor_id` (each entry must carry a non-empty id; ≥ 2 distinct ids),
+  keeping the `selector:specificity` check as a secondary assertion.
+  `live_cascade_returns_matched_rules` is unchanged and still passes — the field
+  addition is backward-compatible (existing assertions do not reference it).
+- Non-live coverage: `unit_cascade_entries_carry_distinct_rule_actor_id` proves
+  two rules that collide on selector/specificity/`stylesheet:null`/`line:1` are
+  still distinguished by distinct emitted `rule_actor_id` values;
+  `unit_cascade_null_rule_actor_id_serializes_as_null` proves the key is always
+  present (as `null`) for a stable `--jq` shape.
+
+Gates: `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, and
+`cargo test --workspace -q` all green.

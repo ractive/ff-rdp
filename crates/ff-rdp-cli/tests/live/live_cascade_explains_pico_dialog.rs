@@ -88,15 +88,29 @@ fn live_cascade_explains_pico_dialog() {
     // The two rules must be genuinely distinct rules, not the same rule
     // counted twice. This used to be checked via `stylesheet:line`, but as
     // of Firefox 152 both of this fixture's inline `<style>` blocks report
-    // `stylesheet: null, line: 1` — cascade.rs never copies the RDP
-    // response's per-rule `actor` id (`AppliedRule::rule_actor_id`, see
-    // `crates/ff-rdp-core/src/actors/page_style.rs`) into `CascadeEntry`, so
-    // there is currently no cascade-only field that distinguishes two inline
-    // `<style>` elements sharing the same reported line (PRODUCT GAP, not
-    // test drift — flagged in the iter-114 report, not fixed here since this
-    // iteration is test-infra only). `selector:specificity` is still exact
-    // for this fixture (`dialog` @ [0,0,1] vs `dialog#lightbox` @ [1,0,1])
-    // and is available today, so use that as the distinctness key instead.
+    // `stylesheet: null, line: 1`, so that key collided. iter-115 fixed the
+    // PRODUCT GAP flagged in the iter-114 report: `cascade` now copies the
+    // RDP response's per-rule `actor` id (`AppliedRule::rule_actor_id`, see
+    // `crates/ff-rdp-core/src/actors/page_style.rs`) into each `CascadeEntry`
+    // and emits it as the `rule_actor_id` field. Two distinct inline `<style>`
+    // blocks compile to distinct rules, so their actor ids differ even when
+    // `stylesheet`/`line` collide — the authoritative distinctness key.
+    let mut actor_ids = std::collections::HashSet::new();
+    for r in rules {
+        let id = r["rule_actor_id"].as_str().unwrap_or("");
+        assert!(
+            !id.is_empty(),
+            "each cascade rule must carry a non-empty rule_actor_id: {r}"
+        );
+        actor_ids.insert(id.to_string());
+    }
+    assert!(
+        actor_ids.len() >= 2,
+        "expected distinct rule_actor_id values, got: {actor_ids:?}"
+    );
+
+    // Secondary distinctness check (still exact for this fixture:
+    // `dialog` @ [0,0,1] vs `dialog#lightbox` @ [1,0,1]).
     let mut keys = std::collections::HashSet::new();
     for r in rules {
         keys.insert(format!(
