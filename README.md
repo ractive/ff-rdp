@@ -10,10 +10,16 @@ A fast Rust CLI for the Firefox Remote Debugging Protocol. Communicates directly
 ### Homebrew (macOS & Linux)
 
 ```sh
+brew trust --formula ractive/tap/ff-rdp   # Homebrew 6+: third-party taps need one-time trust
 brew install ractive/tap/ff-rdp
 ```
 
 Covers macOS (Apple Silicon) and Linux (x86_64 and ARM64). The Linux bottles are statically linked (musl), so they run on any glibc or musl distribution.
+
+Homebrew 6 introduced [tap trust](https://docs.brew.sh/Tap-Trust): formulae
+from third-party taps refuse to load until trusted. `brew trust --formula`
+scopes the trust to just this formula; `brew trust ractive/tap` trusts the
+whole tap instead.
 
 ### apt (Debian / Ubuntu)
 
