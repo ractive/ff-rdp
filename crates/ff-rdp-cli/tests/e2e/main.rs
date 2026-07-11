@@ -2,6 +2,7 @@ mod support;
 
 mod a11y;
 mod click;
+mod completions;
 mod computed;
 mod console;
 mod cookies;

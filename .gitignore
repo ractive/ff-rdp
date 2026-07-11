@@ -10,3 +10,9 @@ Thumbs.db
 
 # ff-rdp runtime cache written to CWD (e.g. when live tests run from a crate dir)
 .ffrdp/
+
+# Shell completion scripts staged by the release workflow's pre-package-command
+# before `cargo deb`/`cargo generate-rpm` package them (also generated locally
+# during packaging verification) — always regenerated, never committed.
+/completions/
+crates/ff-rdp-cli/completions/

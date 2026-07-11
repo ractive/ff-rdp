@@ -346,7 +346,8 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         | Command::DaemonInternal
         | Command::InstallSkill(_)
         | Command::Profiles { .. }
-        | Command::Index(IndexArgs { .. }) => None,
+        | Command::Index(IndexArgs { .. })
+        | Command::Completions { .. } => None,
     }
 }
 
@@ -1115,5 +1116,6 @@ fn dispatch_inner(
             };
             commands::index::run(cli, &opts)
         }
+        Command::Completions { shell } => commands::completions::run(*shell),
     }
 }
