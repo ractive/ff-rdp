@@ -1,5 +1,8 @@
 # ff-rdp
 
+[![crates.io](https://img.shields.io/crates/v/ff-rdp-cli.svg)](https://crates.io/crates/ff-rdp-cli)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A fast Rust CLI for the Firefox Remote Debugging Protocol. Communicates directly over TCP with Firefox's built-in debugger for minimal latency.
 
 ## Installation
@@ -7,14 +10,31 @@ A fast Rust CLI for the Firefox Remote Debugging Protocol. Communicates directly
 ### Homebrew (macOS & Linux)
 
 ```sh
-brew tap ractive/tap
 brew install ractive/tap/ff-rdp
+```
+
+Covers macOS (Apple Silicon) and Linux (x86_64 and ARM64). The Linux bottles are statically linked (musl), so they run on any glibc or musl distribution.
+
+### apt (Debian / Ubuntu)
+
+```sh
+curl -sLf 'https://dl.cloudsmith.io/public/ractive/ff-rdp/cfg/setup/bash.deb.sh' | sudo bash
+sudo apt install ff-rdp
+```
+
+This one-time setup script registers the [Cloudsmith](https://cloudsmith.io/~ractive/repos/ff-rdp/packages/)-hosted apt repository; afterwards `apt upgrade` picks up new releases automatically.
+
+### dnf / yum / zypper (Fedora / RHEL / openSUSE)
+
+```sh
+curl -sLf 'https://dl.cloudsmith.io/public/ractive/ff-rdp/cfg/setup/bash.rpm.sh' | sudo bash
+sudo dnf install ff-rdp   # or: yum install ff-rdp / zypper install ff-rdp
 ```
 
 ### Scoop (Windows)
 
 ```powershell
-scoop bucket add ff-rdp https://github.com/ractive/scoop-ff-rdp
+scoop bucket add ractive https://github.com/ractive/scoop-bucket
 scoop install ff-rdp
 ```
 
@@ -27,12 +47,18 @@ winget install ractive.ff-rdp
 ### Cargo (from crates.io)
 
 ```sh
-cargo install ff-rdp-cli
+cargo install ff-rdp-cli   # installs the `ff-rdp` binary
 ```
 
 ### Manual download
 
-Download pre-built binaries from the [GitHub Releases](https://github.com/ractive/ff-rdp/releases) page. Binaries are available for Linux (x86_64, ARM64, glibc and musl), macOS (Apple Silicon), and Windows (x86_64, ARM64).
+Download pre-built binaries from the [GitHub Releases](https://github.com/ractive/ff-rdp/releases) page. Archives are named `ff-rdp-v<version>-<target>.{tar.gz,zip}` and bundle the binary, `LICENSE`, `README`, and shell completions. Targets:
+
+- **Linux** — x86_64 (glibc and static musl), ARM64 (static musl)
+- **macOS** — Apple Silicon (aarch64)
+- **Windows** — x86_64 and ARM64
+
+Standalone `.deb` and `.rpm` packages (x86_64) are attached to each release as well; they install `ff-rdp` plus bash/zsh/fish completions system-wide.
 
 ## First contact (for AI agents)
 
@@ -256,7 +282,13 @@ ff-rdp forward
 # Reload and wait until network is idle (replaces sleep)
 ff-rdp reload --wait-idle
 ff-rdp reload --wait-idle --idle-ms 1000 --reload-timeout 30000
+
+# Generate a shell completion script (bash, zsh, fish, elvish, powershell)
+ff-rdp completions zsh > ~/.zsh/completions/_ff-rdp
+eval "$(ff-rdp completions zsh)"          # or load straight into the current shell
 ```
+
+The `.deb`/`.rpm` packages already install bash/zsh/fish completions system-wide, so `completions` is mainly for other shells or for refreshing the script after an upgrade.
 
 ## Using ff-rdp from Claude Code
 
@@ -362,21 +394,33 @@ ff-rdp has the same power as Firefox DevTools — it can read httpOnly cookies, 
 
 ## Releasing
 
-1. Bump the version in `Cargo.toml`
-2. Commit: `git commit -am "Bump version to X.Y.Z"`
-3. Create a GitHub release with tag `vX.Y.Z` (must match `Cargo.toml`)
+Releases run through the shared [`ractive/release-workflows`](https://github.com/ractive/release-workflows) pipeline. The repo-local [`release.yml`](.github/workflows/release.yml) is a thin caller that pins the shared workflow version and passes the ff-rdp-specific inputs (targets, package names, winget identifier, Cloudsmith repo, completions packaging).
 
-The [release workflow](.github/workflows/release.yml) automatically builds binaries for all platforms, publishes to crates.io, and updates Homebrew/Scoop/winget.
+1. Bump the workspace version in `Cargo.toml` (`[workspace.package] version`) and commit.
+2. Cut the release: `gh release create vX.Y.Z --generate-notes` (the tag must match the workspace version).
+
+On a published release the shared pipeline builds every target, publishes `ff-rdp-core` and `ff-rdp-cli` to crates.io, updates Homebrew / Scoop / winget, uploads the versioned archives, SBOMs, and `.deb`/`.rpm` packages to the GitHub release, and pushes the `.deb`/`.rpm` to the hosted Cloudsmith apt/rpm repos.
+
+**Dry-run rehearsal:** `gh workflow run release.yml` (a `workflow_dispatch`) builds, tests, and packages everything as workflow artifacts without touching any external channel — use it to validate a release before tagging.
+
+**Recovery workflows** (both `workflow_dispatch`):
+
+- [`cloudsmith-republish.yml`](.github/workflows/cloudsmith-republish.yml) — re-push an existing release's `.deb`/`.rpm` to Cloudsmith (the release-time Cloudsmith step is non-blocking).
+- The shared repo's `publish-crates.yml` re-publishes a crate to crates.io if that step failed during a release.
+
+[`live.yml`](.github/workflows/live.yml) runs the Firefox-dependent live tests on each release and weekly as a drift canary (not per-PR).
 
 ### Verifying release artifacts
 
 Every release binary is signed via Sigstore-backed [build provenance attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds). To verify a downloaded artifact:
 
 ```sh
-gh attestation verify ff-rdp-v0.2.0-aarch64-apple-darwin.tar.gz --owner ractive
+gh attestation verify ff-rdp-v0.3.0-aarch64-apple-darwin.tar.gz --owner ractive
 ```
 
-The same command runs as a PR-time smoke check in [`ci.yml`](.github/workflows/ci.yml) (`verify-attestation` job), so a regression in the attestation pipeline is caught before release.
+Each native target also ships a CycloneDX SBOM for both `ff-rdp-cli` and `ff-rdp-core` (the `*.cdx.json` files on the release).
+
+The same verification command runs as a PR-time smoke check in [`ci.yml`](.github/workflows/ci.yml) (`verify-attestation` job), so a regression in the attestation pipeline is caught before release.
 
 ## Package repository hosting
 
