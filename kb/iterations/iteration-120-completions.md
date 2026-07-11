@@ -2,9 +2,10 @@
 title: "Iteration 120: completions subcommand + package shell completions"
 type: iteration
 date: 2026-07-11
-status: completed
+status: done
 branch: iter-120/completions
-depends_on: ["iter-119/linux-packages"]
+depends_on:
+  - iter-119/linux-packages
 firefox_refs: []
 kb_refs: []
 first_call_sites: []
@@ -21,7 +22,6 @@ tags:
   - release
   - infra
   - packaging
-
 ---
 
 # Iteration 120: completions subcommand + package shell completions

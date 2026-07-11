@@ -2,9 +2,10 @@
 title: "Iteration 119: deb/rpm packaging + Cloudsmith publishing"
 type: iteration
 date: 2026-07-11
-status: planned
+status: done
 branch: iter-119/linux-packages
-depends_on: ["iter-118/shared-release-workflow-migration"]
+depends_on:
+  - iter-118/shared-release-workflow-migration
 firefox_refs: []
 kb_refs: []
 first_call_sites: []
