@@ -30,7 +30,7 @@ Iteration 118 migrated ff-rdp's release pipeline to the shared
 `ractive/release-workflows` reusable workflow, but left Linux packaging
 disabled. `ractive/hoppy` already exercises the shared workflow's
 `enable-linux-packages`/`cloudsmith-repo` inputs (built natively via
-`cargo deb`/`cargo generate-rpm`, published to the `ractive/ractive-pkgs`
+`cargo deb`/`cargo generate-rpm`, published to the `ractive/ff-rdp`
 apt/yum repos on Cloudsmith). This iteration turns the same inputs on for
 ff-rdp so `ff-rdp` ships as a native Linux package, not just a tarball.
 
@@ -65,9 +65,9 @@ payload is just the binary plus `LICENSE`/`README.md` — no
   alongside the existing tarballs/zips, all covered by one `SHA256SUMS`.
 - **Cloudsmith publishing**: a new `cloudsmith` job (gated on
   `enable-linux-packages && cloudsmith-repo != '' && !dry-run`) pushes the
-  `.deb`/`.rpm` to `ractive/ractive-pkgs` via
+  `.deb`/`.rpm` to `ractive/ff-rdp` via
   `uvx --from cloudsmith-cli==1.19.0 cloudsmith push {deb,rpm}
-  ractive/ractive-pkgs/any-distro/any-version`, using the repo's existing
+  ractive/ff-rdp/any-distro/any-version`, using the repo's existing
   `CLOUDSMITH_API_KEY` secret (already present — no new secret to
   provision). This job is independent of the GitHub release upload, so a
   publishing failure there does not affect the tarball release.
@@ -86,11 +86,11 @@ payload is just the binary plus `LICENSE`/`README.md` — no
 
 ```sh
 # Debian/Ubuntu
-curl -1sLf 'https://dl.cloudsmith.io/public/ractive/ractive-pkgs/cfg/setup/bash.deb.sh' | sudo bash
+curl -1sLf 'https://dl.cloudsmith.io/public/ractive/ff-rdp/cfg/setup/bash.deb.sh' | sudo bash
 sudo apt install ff-rdp
 
 # Fedora/RHEL
-curl -1sLf 'https://dl.cloudsmith.io/public/ractive/ractive-pkgs/cfg/setup/bash.rpm.sh' | sudo bash
+curl -1sLf 'https://dl.cloudsmith.io/public/ractive/ff-rdp/cfg/setup/bash.rpm.sh' | sudo bash
 sudo dnf install ff-rdp
 ```
 

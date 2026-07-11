@@ -25,7 +25,7 @@ jobs:
       linux-package-crate: ff-rdp-cli
       # Publishes the .deb/.rpm to the hosted apt/yum repos at Cloudsmith
       # (non-blocking; needs the CLOUDSMITH_API_KEY repo secret):
-      cloudsmith-repo: ractive/ractive-pkgs
+      cloudsmith-repo: ractive/ff-rdp
       extra-archive-paths: completions
       # Runs on every matrix target and again in the linux-packages job.
       # Non-runnable targets (CROSS=true, or aarch64-pc-windows-msvc which
