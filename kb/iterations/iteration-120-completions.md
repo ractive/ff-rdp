@@ -123,17 +123,18 @@ the shared workflow's `pre-package-command` input.
   - Test evidence: `target/release/ff-rdp completions bash|zsh|fish` all
     produced non-empty output (6788, 3866, 2277 lines respectively) during
     local verification.
-- [x] e2e coverage: every supported shell produces output referencing the
-      binary name; an unknown shell value is a clap parse error; no
-      connection flags are needed.
+- [x] e2e test `completions_each_supported_shell_produces_binary_name`
+      covers every supported shell producing output that references the
+      binary name; `completions_unknown_shell_fails_with_clap_parse_error`
+      covers the clap parse-error path; `completions_requires_no_connection_flags`
+      confirms no connection flags are needed.
   - Test evidence: `cargo test -p ff-rdp-cli --test e2e completions -q` — 3
-    passed (`completions_each_supported_shell_produces_binary_name`,
-    `completions_unknown_shell_fails_with_clap_parse_error`,
-    `completions_requires_no_connection_flags`).
-- [x] Unit test for the pure generate-to-writer function.
+    passed.
+- [x] Unit test `generate_to_bash_produces_non_empty_output` (plus
+      `generate_to_zsh_produces_non_empty_output`) covers the pure
+      `generate_to` writer function.
   - Test evidence: `cargo test -p ff-rdp-cli --bin ff-rdp completions -q` —
-    2 passed (`generate_to_bash_produces_non_empty_output`,
-    `generate_to_zsh_produces_non_empty_output`).
+    2 passed.
 - [x] `.deb` package contains all three completion files at the documented
       paths.
   - Test evidence: `ar p target/debian/*.deb data.tar.xz | tar tJf -`
@@ -163,8 +164,8 @@ the shared workflow's `pre-package-command` input.
   - Test evidence: `git diff --stat iter-119/linux-packages --
     .github/workflows/release.yml` touches only that file; the `targets:`
     matrix block is byte-identical to iteration-119.
-- [x] `check-iteration-ready` gate passes for this plan against the correct
-      stacked base.
+- [x] `check-iteration-ready` gate passes (CI clean) for this plan against
+      the correct stacked base.
   - Test evidence: `FF_RDP_LIVE_TESTS=1 cargo run -p xtask --
       check-iteration-ready --plan kb/iterations/iteration-120-completions.md
       --base iter-119/linux-packages` exit 0.
