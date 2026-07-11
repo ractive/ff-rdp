@@ -373,10 +373,19 @@ The [release workflow](.github/workflows/release.yml) automatically builds binar
 Every release binary is signed via Sigstore-backed [build provenance attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds). To verify a downloaded artifact:
 
 ```sh
-gh attestation verify ff-rdp-x86_64-apple-darwin.tar.gz --owner ractive
+gh attestation verify ff-rdp-v0.2.0-aarch64-apple-darwin.tar.gz --owner ractive
 ```
 
 The same command runs as a PR-time smoke check in [`ci.yml`](.github/workflows/ci.yml) (`verify-attestation` job), so a regression in the attestation pipeline is caught before release.
+
+## Package repository hosting
+
+[![OSS hosting by Cloudsmith](https://img.shields.io/badge/OSS%20hosting%20by-cloudsmith-blue?logo=cloudsmith&style=flat-square)](https://cloudsmith.com)
+
+Package repository hosting is graciously provided by [Cloudsmith](https://cloudsmith.com).
+Cloudsmith is the only fully hosted, cloud-native, universal package management solution, that
+enables your organization to create, store and share packages in any format, to any place, with total
+confidence.
 
 ## License
 
