@@ -26,6 +26,27 @@ jobs:
       # Publishes the .deb/.rpm to the hosted apt/yum repos at Cloudsmith
       # (non-blocking; needs the CLOUDSMITH_API_KEY repo secret):
       cloudsmith-repo: ractive/ractive-pkgs
+      extra-archive-paths: completions
+      # Runs on every matrix target and again in the linux-packages job.
+      # Non-runnable targets (CROSS=true, or aarch64-pc-windows-msvc which
+      # cross-compiles natively on the Windows x86_64 host) can't execute
+      # their own binary, so those cases fall back to a host build via
+      # `cargo run --release`.
+      pre-package-command: |
+        mkdir -p completions
+        if [ "$CROSS" = "true" ] || [ "$TARGET" = "aarch64-pc-windows-msvc" ]; then
+          cargo run --release -p ff-rdp-cli --bin ff-rdp -- completions bash > completions/ff-rdp.bash
+          cargo run --release -p ff-rdp-cli --bin ff-rdp -- completions zsh  > completions/_ff-rdp
+          cargo run --release -p ff-rdp-cli --bin ff-rdp -- completions fish > completions/ff-rdp.fish
+        else
+          "$BIN_PATH" completions bash > completions/ff-rdp.bash
+          "$BIN_PATH" completions zsh  > completions/_ff-rdp
+          "$BIN_PATH" completions fish > completions/ff-rdp.fish
+        fi
+        # cargo-deb / cargo-generate-rpm resolve [package.metadata.*] asset
+        # paths relative to the crate directory, not the workspace root.
+        mkdir -p crates/ff-rdp-cli/completions
+        cp completions/* crates/ff-rdp-cli/completions/
       dry-run: ${{ github.event_name == 'workflow_dispatch' }}
       targets: >-
         [

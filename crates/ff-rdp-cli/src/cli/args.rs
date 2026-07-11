@@ -1061,6 +1061,29 @@ Output: writes page-map JSON/YAML to --out (default: .ffrdp/page-map.json)
         and emits a summary to stdout:
         {\"results\": {\"pages\": N, \"forms\": N, \"api_routes\": N, \"out\": \"...\"}}")]
     Index(IndexArgs),
+
+    /// Generate shell completions
+    #[command(long_about = "Generate a shell completion script for ff-rdp.
+
+Supported shells: bash, zsh, fish, elvish, powershell.
+
+The script is written to stdout — no JSON envelope, just the raw completion
+source for the requested shell. Pipe it to your shell's completion loader or
+save it to a file in the appropriate completions directory.
+
+Examples:
+  eval \"$(ff-rdp completions zsh)\"                 # load into the current zsh session
+  ff-rdp completions bash > /etc/bash_completion.d/ff-rdp
+  ff-rdp completions fish > ~/.config/fish/completions/ff-rdp.fish
+
+The deb/rpm packages already install bash/zsh/fish completions system-wide —
+this command is mainly useful for shells outside those three, or for
+generating a fresh script after upgrading ff-rdp.")]
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(clap::Args)]

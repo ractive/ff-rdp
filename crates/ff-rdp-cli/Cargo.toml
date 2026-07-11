@@ -18,6 +18,7 @@ ff-rdp-core = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 clap = { workspace = true }
+clap_complete = { workspace = true }
 jaq-core = { workspace = true }
 jaq-json = { workspace = true }
 jaq-std = { workspace = true }
@@ -112,6 +113,9 @@ assets = [
     ["target/release/ff-rdp", "usr/bin/", "755"],
     ["../../LICENSE", "usr/share/doc/ff-rdp/", "644"],
     ["../../README.md", "usr/share/doc/ff-rdp/", "644"],
+    ["completions/ff-rdp.bash", "usr/share/bash-completion/completions/ff-rdp", "644"],
+    ["completions/_ff-rdp", "usr/share/zsh/vendor-completions/_ff-rdp", "644"],
+    ["completions/ff-rdp.fish", "usr/share/fish/vendor_completions.d/ff-rdp.fish", "644"],
 ]
 extended-description = "A CLI for the Firefox Remote Debugging Protocol."
 
@@ -120,4 +124,7 @@ assets = [
     { source = "target/release/ff-rdp", dest = "/usr/bin/ff-rdp", mode = "755" },
     { source = "../../LICENSE", dest = "/usr/share/doc/ff-rdp/LICENSE", mode = "644", doc = true },
     { source = "../../README.md", dest = "/usr/share/doc/ff-rdp/README.md", mode = "644", doc = true },
+    { source = "completions/ff-rdp.bash", dest = "/usr/share/bash-completion/completions/ff-rdp", mode = "644" },
+    { source = "completions/_ff-rdp", dest = "/usr/share/zsh/site-functions/_ff-rdp", mode = "644" },
+    { source = "completions/ff-rdp.fish", dest = "/usr/share/fish/vendor_completions.d/ff-rdp.fish", mode = "644" },
 ]
