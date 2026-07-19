@@ -8,9 +8,10 @@
 //! ## File location
 //!
 //! `~/.ff-rdp/launch-record.json` on all platforms — shares the same parent
-//! directory as the proxy-daemon registry (`~/.ff-rdp/daemon.json`) so a single
+//! directory as the per-port proxy-daemon registry files
+//! (`~/.ff-rdp/daemon.<port>.json`, iter-123 Theme B) so a single
 //! `FF_RDP_HOME` cleanup wipes all ff-rdp state. The file name differs to
-//! avoid colliding with the existing registry file.
+//! avoid colliding with the existing registry files.
 //!
 //! The `FF_RDP_HOME` env-var overrides the home directory (same convention as
 //! `daemon/registry.rs`): when set, the file is written to
@@ -60,7 +61,7 @@ pub struct DaemonRecord {
 // ---------------------------------------------------------------------------
 
 /// Filename used for the launch record, sharing `~/.ff-rdp/` with the
-/// proxy-daemon registry's `daemon.json`.
+/// per-port proxy-daemon registry files (`daemon.<port>.json`).
 const RECORD_FILENAME: &str = "launch-record.json";
 
 /// Return the directory that contains the launch-record file.

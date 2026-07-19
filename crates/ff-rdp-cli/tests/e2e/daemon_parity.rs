@@ -31,13 +31,17 @@ fn ff_rdp_bin() -> std::path::PathBuf {
 struct DaemonGuard {
     child: Option<Child>,
     home_dir: Option<std::path::PathBuf>,
+    /// Firefox port this daemon targets — iter-123 Theme B keys the registry
+    /// file by port (`daemon.<port>.json`), so cleanup must target that path.
+    mock_port: u16,
 }
 
 impl DaemonGuard {
-    fn new(child: Child, home_dir: std::path::PathBuf) -> Self {
+    fn new(child: Child, home_dir: std::path::PathBuf, mock_port: u16) -> Self {
         Self {
             child: Some(child),
             home_dir: Some(home_dir),
+            mock_port,
         }
     }
 
@@ -47,7 +51,8 @@ impl DaemonGuard {
             let _ = c.wait();
         }
         if let Some(ref home) = self.home_dir {
-            let _ = std::fs::remove_file(home.join(".ff-rdp/daemon.json"));
+            let _ =
+                std::fs::remove_file(home.join(format!(".ff-rdp/daemon.{}.json", self.mock_port)));
         }
     }
 }
@@ -86,7 +91,7 @@ fn start_daemon(mock_port: u16, home_dir: &std::path::Path) -> DaemonGuard {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("failed to spawn daemon process");
-    DaemonGuard::new(child, home_dir.to_owned())
+    DaemonGuard::new(child, home_dir.to_owned(), mock_port)
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +107,7 @@ fn wait_for_daemon_ready(mock_port: u16, timeout: Duration, home_dir: &std::path
             "daemon did not become ready within {timeout:?}"
         );
 
-        let registry_path = home_dir.join(".ff-rdp/daemon.json");
+        let registry_path = home_dir.join(format!(".ff-rdp/daemon.{mock_port}.json"));
 
         if let Ok(contents) = std::fs::read_to_string(&registry_path)
             && let Ok(info) = serde_json::from_str::<serde_json::Value>(&contents)

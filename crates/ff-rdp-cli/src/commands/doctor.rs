@@ -215,7 +215,7 @@ fn probe_daemon(host: &str, port: u16) -> Probe {
         },
         Ok(None) => {
             // Look for a stale registry to surface that explicitly.
-            match registry::read_registry() {
+            match registry::read_registry(port) {
                 Ok(Some(_)) => Probe {
                     name: "daemon",
                     status: Status::Warn,

@@ -2084,7 +2084,8 @@ Output: {\"results\": {\"running\": bool, \"pid\": N, \"port\": N, \"uptime_seco
     #[command(long_about = "Gracefully stop the running daemon.
 
 Sends a shutdown RPC to the daemon. Falls back to SIGTERM if the RPC does
-not succeed within 2 seconds. Cleans up daemon.json on success.
+not succeed within 2 seconds. Cleans up the daemon's per-port registry file
+(daemon.<port>.json) on success.
 
 When Firefox was started via `launch`, stopping it also removes its
 temporary profile directory (never a directory passed via --profile).

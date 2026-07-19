@@ -16,9 +16,11 @@ use std::time::Duration;
 use crate::common::live_tests_enabled;
 use crate::common::{LiveFirefox, ff_rdp_bin};
 
-/// Path to the daemon registry file inside an isolated `FF_RDP_HOME`.
-fn registry_path(home: &std::path::Path) -> PathBuf {
-    home.join(".ff-rdp").join("daemon.json")
+/// Path to the daemon registry file for `port` inside an isolated
+/// `FF_RDP_HOME`.  iter-123 Theme B keys the registry by Firefox port, so the
+/// file is `daemon.<port>.json` (not the old single-slot `daemon.json`).
+fn registry_path(home: &std::path::Path, port: u16) -> PathBuf {
+    home.join(".ff-rdp").join(format!("daemon.{port}.json"))
 }
 
 /// Auto-start a daemon for `port` inside an isolated `FF_RDP_HOME` and return
@@ -109,7 +111,7 @@ fn e2e_sigterm_removes_registry() {
     };
     eprintln!("e2e_sigterm_removes_registry: daemon pid={daemon_pid}");
 
-    let reg = registry_path(home.path());
+    let reg = registry_path(home.path(), ff.port());
     assert!(
         reg.exists(),
         "precondition: registry file must exist while the daemon runs ({})",

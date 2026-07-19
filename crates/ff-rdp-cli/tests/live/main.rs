@@ -39,6 +39,7 @@ mod live_109_throttle_block;
 mod live_110_kill_scoping;
 mod live_111_daemon_follow_cross_process;
 mod live_113_launch_timeout;
+mod live_123_daemon_autostart_and_registry;
 mod live_61l;
 mod live_61q_resource_bus;
 mod live_61r_eval;

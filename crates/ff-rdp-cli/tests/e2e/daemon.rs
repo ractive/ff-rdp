@@ -151,19 +151,22 @@ fn daemon_subcommand_is_recognised_and_fails_gracefully_without_firefox() {
 // also fails — so the happy path is silent.  Below tests both branches.
 // ---------------------------------------------------------------------------
 
-/// Plant a corrupt `daemon.json` in `<home>/.ff-rdp/` so `find_running_daemon`
-/// returns Err on every invocation, which exercises the deferred-warning
-/// branch in `resolve_connection_target`.
-fn plant_corrupt_registry(home_dir: &std::path::Path) {
+/// Plant a corrupt per-port `daemon.<port>.json` in `<home>/.ff-rdp/` so
+/// `find_running_daemon(port)` returns Err on every invocation, which exercises
+/// the deferred-warning branch in `resolve_connection_target`.
+///
+/// iter-123 Theme B: the registry is keyed by Firefox port, so the corrupt file
+/// must live at the port-specific path the resolver actually reads for `port`.
+fn plant_corrupt_registry(home_dir: &std::path::Path, port: u16) {
     let dir = home_dir.join(".ff-rdp");
     std::fs::create_dir_all(&dir).expect("create .ff-rdp");
-    std::fs::write(dir.join("daemon.json"), b"not valid json").expect("write corrupt registry");
+    std::fs::write(dir.join(format!("daemon.{port}.json")), b"not valid json")
+        .expect("write corrupt registry");
 }
 
 #[test]
 fn registry_not_found_warning_silent_when_direct_fallback_succeeds() {
     let home = tempfile::tempdir().expect("tempdir");
-    plant_corrupt_registry(home.path());
 
     // Use the `eval` command (rather than `tabs`) because it goes through
     // `connect_and_get_target`, which is the path that decides whether to
@@ -178,6 +181,8 @@ fn registry_not_found_warning_silent_when_direct_fallback_succeeds() {
             load_fixture("eval_result_ready_state_complete.json"),
         );
     let port = server.port();
+    // Plant the corrupt registry at the port the resolver will read.
+    plant_corrupt_registry(home.path(), port);
     let handle = std::thread::spawn(move || server.serve_one());
 
     let output = std::process::Command::new(ff_rdp_bin())
@@ -211,12 +216,14 @@ fn registry_not_found_warning_silent_when_direct_fallback_succeeds() {
 #[test]
 fn registry_not_found_warning_visible_when_direct_fallback_also_fails() {
     let home = tempfile::tempdir().expect("tempdir");
-    plant_corrupt_registry(home.path());
 
     // Bind and immediately drop so nothing is listening on this port.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
     drop(listener);
+
+    // Plant the corrupt registry at the port the resolver will read.
+    plant_corrupt_registry(home.path(), port);
 
     let output = std::process::Command::new(ff_rdp_bin())
         .env("FF_RDP_HOME", home.path())

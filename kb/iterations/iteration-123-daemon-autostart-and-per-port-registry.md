@@ -2,7 +2,7 @@
 title: "Iteration 123: daemon autostart dies on a tabless Firefox + single-slot registry clobbers across ports"
 type: iteration
 date: 2026-07-18
-status: planned
+status: done
 branch: iter-123/daemon-autostart-and-per-port-registry
 depends_on: []
 firefox_refs: []
@@ -16,7 +16,7 @@ dogfood_path: |
   ff-rdp --port <p> navigate https://example.com     # first autostart-triggering command
   ff-rdp --port <p> daemon status --jq '.results.running'
   # expected: true (daemon came up) and NO daemon_autostart_failed warning on the navigate
-
+  
   # Theme B — two concurrent instances on different ports must not clobber each other:
   ff-rdp launch --headless --port <p1>; ff-rdp launch --headless --port <p2>
   ff-rdp --port <p1> navigate https://example.com
@@ -84,47 +84,80 @@ confound.
 
 ### A. Autostart survives a tabless Firefox
 
-- [ ] Make `run_daemon` (`server.rs:307-451`) non-fatal on zero tabs: don't bail at
-      `tabs.first().context("no tabs available")` — resolve the tab lazily on first command, or
-      open a `about:blank` tab, then write the registry so the daemon reaches `running:true`.
-- [ ] Confirm `launch --headless` leaves a usable tab (or that the daemon tolerates its absence);
-      note in `kb/rdp/*` whether FF152 headless starts tabless.
-- [ ] Render the `daemon_autostart_failed` warning consistently: it currently only appears via
-      `--jq '.warnings'`, not in `--format text` (`daemon_status.rs:44-63`). Surface it (or suppress
-      it) in text output too, and keep the existing dedup.
+- [x] Make `run_daemon` non-fatal on zero tabs: the `tabs.first().context("no tabs available")?`
+      bail is gone. Tab resolution now lives in `establish_watcher` (returns `Ok(None)` on zero
+      tabs) + `establish_watcher_with_retry` (short bounded retry for the momentary-tab case). On a
+      persistently tabless start the registry is still written, the daemon reaches `running:true`,
+      and a supervised `watcher-establisher` thread (`background_establish_watcher_loop`) resolves
+      the watcher lazily once a tab appears and hands the subscription to the dispatcher.
+- [x] Confirmed the daemon tolerates a tabless start (does not require a placeholder tab); noted in
+      [[dogfooding-session-61]] and the design notes below that FF152 headless can report `total: 0`
+      on the first `listTabs` after `launch` until the first navigation lazily creates the tab.
+- [x] Render the `daemon_autostart_failed` warning in `--format text`: `render_warnings` in
+      `output_pipeline.rs` now prints each recorded warning to stderr in text output (both plain and
+      `--jq` text paths), not only via `--jq '.warnings'`. JSON behaviour and dedup are unchanged.
 
 ### B. Per-port registry
 
-- [ ] Key the registry storage by `firefox_port` (path or map) in `registry.rs` (`DaemonInfo`,
-      `read_registry_in`/`write_registry_in`) so a write for port A never overwrites port B.
-- [ ] Make the spawn lock per-port (`acquire_spawn_lock`, `registry.rs:237-259`) so concurrent
-      autostarts on different ports don't serialize/collide.
-- [ ] Update `daemon stop` / `daemon status` and orphan-pruning to operate on the correct
-      per-port record.
+- [x] Keyed the registry storage by `firefox_port` in `registry.rs`: files are now
+      `daemon.<port>.json` (see `registry_filename`); `read_registry`/`write_registry`/
+      `remove_registry` and the `_in` helpers take a `port`, and `write_registry` keys on
+      `info.firefox_port`. A write for port A never overwrites port B (`per_port_writes_do_not_clobber`).
+- [x] Made the spawn lock per-port: `acquire_spawn_lock(port)` locks `daemon.<port>.spawn.lock`, so
+      concurrent autostarts on different ports don't serialize/collide
+      (`spawn_lock_is_per_port_and_does_not_cross_block`).
+- [x] Updated `daemon stop` / `daemon status` / `daemon_rpc` / doctor / `wait_for_registry` /
+      stale-PID pruning to read+remove the correct per-port record (all `registry::*` call sites now
+      pass `cli.port` / `firefox_port` / `expected_port`). Stale legacy single-slot `daemon.json` is
+      retired on the next `write_registry` (`remove_legacy_registry_in`).
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
-- [ ] live_daemon_autostart_tabless: after `launch --headless` on a fresh profile, the first
+- [x] live_daemon_autostart_tabless: after `launch --headless` on a fresh profile, the first
       autostart-triggering command brings the daemon up — `daemon status.running == true` and the
       command carries no `daemon_autostart_failed` warning — even when Firefox had no page tab at
-      daemon start.
-- [ ] live_daemon_two_ports_no_clobber: with daemons autostarted against two Firefox instances on
+      daemon start. (live test `live_daemon_autostart_tabless`; unit cores
+      `establish_watcher_returns_none_on_zero_tabs`,
+      `establish_watcher_with_retry_gives_up_when_no_tab_appears`.)
+- [x] live_daemon_two_ports_no_clobber: with daemons autostarted against two Firefox instances on
       distinct ports, `daemon status` for each port reports its own `running:true` daemon (neither
-      record is overwritten by the other).
-- [ ] live_daemon_warning_text_parity: when autostart genuinely fails, the `daemon_autostart_failed`
-      signal is visible in `--format text` output, not only via `--jq '.warnings'`.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+      record is overwritten by the other). (live test `live_daemon_two_ports_no_clobber`; unit cores
+      `per_port_writes_do_not_clobber`, `remove_only_affects_the_named_port`,
+      `spawn_lock_is_per_port_and_does_not_cross_block`.)
+- [x] live_daemon_warning_text_parity: when autostart genuinely fails, the `daemon_autostart_failed`
+      signal is visible in `--format text` output, not only via `--jq '.warnings'`. The rendering
+      contract (a present `warnings` array is never text-invisible) is pinned deterministically by
+      the unit cores `render_warnings_handles_array_and_none` and
+      `render_warnings_emits_line_for_each_entry`; the live test `live_daemon_warning_text_parity`
+      asserts JSON↔text warning parity end-to-end. (A forced-failure subprocess trigger was avoided
+      as slow/flaky — see the test's rationale doc-comment.)
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 
 - Prefer lazy per-request tab resolution over opening a placeholder tab — the daemon already
   resolves tabs per request, so the startup `tabs.first()` is an over-strict early validation.
+- **FF152 headless tabless observation (as implemented):** a freshly-launched headless Firefox
+  (temp profile, `browser.startup.page = 0`) can report `total: 0` on the first `listTabs` after
+  `launch`, and only grows a page tab once the first navigation commits. The daemon therefore
+  must NOT require a tab at startup. Tab presence is needed only for the daemon's own *resource
+  watcher* (network/console buffering), never for proxying client↔Firefox traffic, so a tabless
+  start is non-fatal: the registry is written and `running:true` is reached regardless.
+- **Watcher establishment (single vs. second connection):** the main connection is split into
+  reader/writer threads at startup, so it cannot serve the synchronous request→reply handshake
+  (`listTabs`/`getWatcher`/`watchResources`) that `ResourceCommand::subscribe` needs after the
+  split. The lazy `watcher-establisher` therefore opens a **dedicated second RDP connection** to
+  run the handshake, then pumps that connection's messages into the shared `event_tx` so the single
+  dispatcher buffers watcher events exactly as on the startup path. `watcher_actor` became a
+  `Mutex<String>` (empty until established); the subscription is handed to the dispatcher over a
+  one-shot rendezvous channel.
 - Per-port registry files (`daemon.<port>.json`) are simpler and more concurrency-safe than a
   single map file under one lock; `find_running_daemon`/`wait_for_registry` stay keyed on
   `firefox_port` and need no logic change once the path is port-scoped.
-- Out of caution, keep backward-compat cleanup for a stale legacy `daemon.json` (migrate/remove).
+- Kept backward-compat cleanup for a stale legacy `daemon.json` (`remove_legacy_registry_in`, fired
+  from `write_registry`) so the old single-slot file is retired rather than left to confuse.
 
 ## Out of scope
 

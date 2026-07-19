@@ -96,16 +96,34 @@ pub(crate) fn take_warnings_json() -> Option<serde_json::Value> {
     Some(serde_json::Value::Array(arr))
 }
 
+/// Serialization lock for tests that exercise the process-global [`WARNINGS`]
+/// slot (iter-123).
+///
+/// The recorder is a single process-wide slot, so any two tests that run a
+/// `record → take`/`assert-exact-count` sequence concurrently can observe each
+/// other's writes and flake.  Every such test — here *and* in
+/// `daemon/client.rs` — must hold this lock for the duration of its
+/// record/assert sequence, which serializes them across the whole test binary.
+/// Poison-tolerant: a panicking test still releases a usable guard to the next.
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // These tests share a process-global slot, so each drains at the end to
-    // avoid cross-test contamination. They do not run concurrently with the
-    // real resolve path in unit-test context.
+    // These tests share a process-global slot; each holds `test_lock()` for its
+    // whole record/assert sequence so they never observe each other's writes,
+    // then drains at the end to leave the slot clean for the next holder.
 
     #[test]
     fn record_then_take_roundtrips() {
+        let _guard = test_lock();
         let _ = take_warnings(); // clear any residue
         record_autostart_failed("registry not found within 5s");
         let warnings = take_warnings();
@@ -118,6 +136,7 @@ mod tests {
 
     #[test]
     fn duplicate_warnings_are_deduped() {
+        let _guard = test_lock();
         let _ = take_warnings();
         record_autostart_failed("same reason");
         record_autostart_failed("same reason");
@@ -127,6 +146,7 @@ mod tests {
 
     #[test]
     fn take_json_is_none_when_empty() {
+        let _guard = test_lock();
         let _ = take_warnings();
         assert!(
             take_warnings_json().is_none(),
@@ -136,6 +156,7 @@ mod tests {
 
     #[test]
     fn take_json_shapes_type_and_reason() {
+        let _guard = test_lock();
         let _ = take_warnings();
         record_autostart_failed("spawn died before registry write");
         let json = take_warnings_json().expect("some warnings");

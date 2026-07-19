@@ -415,9 +415,10 @@ pub fn spawn_daemon(
 // Registry polling
 // ---------------------------------------------------------------------------
 
-/// Poll `~/.ff-rdp/daemon.json` every 50 ms until it appears, contains a
-/// valid `DaemonInfo` targeting `expected_host`:`expected_port`, or until
-/// `timeout` elapses.
+/// Poll `~/.ff-rdp/daemon.<expected_port>.json` every 50 ms until it appears,
+/// contains a valid `DaemonInfo` targeting `expected_host`:`expected_port`, or
+/// until `timeout` elapses.  The registry is keyed per Firefox port (iter-123
+/// Theme B), so only the file for `expected_port` is polled.
 ///
 /// Validating the host and port ensures we connect to the daemon we just
 /// spawned, not a leftover entry targeting a different Firefox instance.
@@ -431,7 +432,7 @@ pub fn wait_for_registry(
 ) -> Result<DaemonInfo> {
     let deadline = Instant::now() + timeout;
     loop {
-        match registry::read_registry() {
+        match registry::read_registry(expected_port) {
             Ok(Some(info)) => {
                 anyhow::ensure!(
                     info.firefox_host == expected_host && info.firefox_port == expected_port,

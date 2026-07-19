@@ -107,7 +107,7 @@ pub(crate) fn resolve_ref_via_daemon(cli: &Cli, ref_id: &str) -> Result<String, 
         ));
     }
 
-    let info = registry::read_registry()
+    let info = registry::read_registry(cli.port)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
         .ok_or_else(|| AppError::User(
             format!("--ref {ref_id}: no daemon is running — start the daemon first or use a CSS selector instead")
