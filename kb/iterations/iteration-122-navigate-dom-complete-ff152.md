@@ -2,7 +2,7 @@
 title: "Iteration 122: default navigate burns ~7s on FF152 — dom-complete never fires, elapsed_ms + committed_url wrong"
 type: iteration
 date: 2026-07-18
-status: in-progress
+status: completed
 branch: iter-122/navigate-dom-complete-ff152
 depends_on: []
 firefox_refs: []
