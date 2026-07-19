@@ -26,6 +26,9 @@ jobs:
       # Publishes the .deb/.rpm to the hosted apt/yum repos at Cloudsmith
       # (non-blocking; needs the CLOUDSMITH_API_KEY repo secret):
       cloudsmith-repo: ractive/ff-rdp
+      # Publishes a -bin PKGBUILD to the AUR (non-blocking; needs the
+      # AUR_SSH_PRIVATE_KEY repo secret):
+      aur-package: ff-rdp-bin
       extra-archive-paths: completions
       # Runs on every matrix target and again in the linux-packages job.
       # Non-runnable targets (CROSS=true, or aarch64-pc-windows-msvc which
