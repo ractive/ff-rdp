@@ -3,13 +3,14 @@
 //! These tests invoke the prebuilt `xtask` binary directly via
 //! `CARGO_BIN_EXE_xtask` (an env var Cargo sets only for integration tests
 //! and benches, not unit tests). That is why these live here rather than in
-//! `check_dogfood_script`'s `#[cfg(test)]` module: a unit test has no
-//! `current_exe` pointing at `xtask` (it points at the test runner itself),
-//! so the only way to observe the binary's real exit code from a unit test
-//! is to spawn `cargo run -p xtask -- ...` as a child process — and that
-//! nested `cargo run` contends with the outer `cargo test --workspace` for
-//! Cargo's build-directory lock, which stalled a full workspace test run for
-//! 20+ minutes on a cold build (see iter-124 follow-up).
+//! `check_dogfood_script`'s or `check_iteration_ready`'s `#[cfg(test)]`
+//! modules: a unit test has no `current_exe` pointing at `xtask` (it points
+//! at the test runner itself), so the only way to observe the binary's real
+//! exit code/stdout from a unit test is to spawn `cargo run -p xtask -- ...`
+//! as a child process — and that nested `cargo run` contends with the outer
+//! `cargo test --workspace` for Cargo's build-directory lock, which stalled
+//! a full workspace test run for 20+ minutes on a cold build (see iter-124
+//! follow-up).
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -146,5 +147,58 @@ fn live_check_dogfood_script_skips_on_main_without_ff_rdp_live_tests() {
     assert!(
         stdout.contains("SKIP"),
         "expected SKIP message in stdout:\n{stdout}"
+    );
+}
+
+/// Verify that the check-dogfood-script sub-check is included in the results
+/// produced by `check-iteration-ready`. We use `--skip` for all other gates
+/// and a synthetic plan so this test doesn't require a full repo checkout or
+/// Firefox binary.
+#[test]
+fn xtask_check_iteration_ready_calls_dogfood_script() {
+    let dir = TempDir::new().unwrap();
+    // Write a minimal plan with dogfood_path (no dogfood_script) so the
+    // check-dogfood-script sub-check skips cleanly (SKIP = pass).
+    let plan_path = write_plan(
+        &dir,
+        "iteration-96-test.md",
+        "dogfood_path: \"ff-rdp --help\"\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .args([
+            "check-iteration-ready",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--base",
+            "HEAD",
+            "--skip",
+            "check-dead-primitives",
+            "--skip",
+            "check-todo-annotations",
+            "--skip",
+            "check-actor-kb-sync",
+            "--skip",
+            "check-firefox-refs",
+            "--skip",
+            "check-discipline-regression",
+            "--skip",
+            "ac-fidelity-check",
+            "--skip",
+            "check-live-test-layout",
+        ])
+        .output()
+        .unwrap();
+
+    let combined = {
+        let mut s = String::from_utf8_lossy(&output.stdout).into_owned();
+        s.push_str(&String::from_utf8_lossy(&output.stderr));
+        s
+    };
+
+    // The sub-check name must appear in output.
+    assert!(
+        combined.contains("check-dogfood-script"),
+        "check-dogfood-script sub-check name missing from output:\n{combined}"
     );
 }
