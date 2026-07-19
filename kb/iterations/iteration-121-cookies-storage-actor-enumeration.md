@@ -2,7 +2,7 @@
 title: "Iteration 121: cookies StorageActor enumeration is dead on FF152 — httpOnly cookies + flags lost"
 type: iteration
 date: 2026-07-18
-status: planned
+status: complete
 branch: iter-121/cookies-storage-actor-enumeration
 depends_on: []
 firefox_refs: []
@@ -66,36 +66,36 @@ shifted the `cookies` resource / `getStoreObjects` contract again.
 
 ### A. StorageActor enumeration on FF152
 
-- [ ] Reproduce live: capture the raw RDP traffic of `list_cookies` against FF152 (a fixture
+- [x] Reproduce live: capture the raw RDP traffic of `list_cookies` against FF152 (a fixture
       page that sets one normal + one httpOnly cookie). Determine which step returns empty —
       the `resources-available-array` host list, or `getStoreObjects` items.
-- [ ] Diff the FF152 `cookies` resource / `getStoreObjects` reply shape against the FF149-era
+- [x] Diff the FF152 `cookies` resource / `getStoreObjects` reply shape against the FF149-era
       shape the current parser (`parse_cookie`, `storage.rs:235-287`) expects. Record findings
       in `kb/rdp/actors/storage.md`.
-- [ ] Fix the request params (`storage.rs:110-115`, `host`/`resourceId`/`options`) and/or
+- [x] Fix the request params (`storage.rs:110-115`, `host`/`resourceId`/`options`) and/or
       `parse_cookie` field extraction so FF152 cookies with real `isHttpOnly`/`isSecure`/
       `sameSite` are returned. If FF152 requires a field ff-rdp does not declare in the spec,
       annotate with `// allow-spec-drift: bug TBD (<rationale>)`.
-- [ ] Record a real fixture via `live_record_fixtures.rs` (never hand-crafted) for the FF152
+- [x] Record a real fixture via `live_record_fixtures.rs` (never hand-crafted) for the FF152
       cookies reply.
 
 ### B. No silent degradation
 
-- [ ] In `commands::cookies::run`, when the StorageActor returns empty AND the `document.cookie`
+- [x] In `commands::cookies::run`, when the StorageActor returns empty AND the `document.cookie`
       fallback returns entries, attach a `warnings[]` entry (`type: "storage_actor_empty"`) and
       set each fallback entry's `source: "document.cookie"` (already present) — so consumers can
       tell flags are unavailable rather than false.
 
-## Acceptance Criteria [0/3]
+## Acceptance Criteria [3/3]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
-- [ ] live_cookies_httponly_enumerated: after a page sets an httpOnly cookie, `ff-rdp cookies`
+- [x] live_cookies_httponly_enumerated: after a page sets an httpOnly cookie, `ff-rdp cookies`
       returns it with `isHttpOnly == true` and non-null `isSecure`/`sameSite`, sourced from the
       StorageActor (not `document.cookie`).
-- [ ] live_cookies_storage_only_nonempty: `ff-rdp cookies --storage-only` returns `>= 1` entry
+- [x] live_cookies_storage_only_nonempty: `ff-rdp cookies --storage-only` returns `>= 1` entry
       on a page that set a normal cookie (StorageActor enumeration non-empty on FF152).
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 

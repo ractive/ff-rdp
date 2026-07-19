@@ -940,6 +940,142 @@ fn live_cookies() {
     }
 }
 
+/// iter-121: record a real FF152 `getStoreObjects` reply that contains an
+/// **httpOnly** cookie (set via a `Set-Cookie` response header on a local HTTP
+/// origin, which `document.cookie` can never see).  This is the fixture that
+/// proves the StorageActor enumeration surfaces the flag fields
+/// (`isHttpOnly`/`isSecure`/`sameSite`) that the `document.cookie` fallback
+/// lacks.  Uses the same `getWatcher → watchResources → getStoreObjects`
+/// protocol sequence as `live_cookies`, but exercises the FF152 message
+/// ordering where the `resources-available-array` event precedes the
+/// `watchResources` ACK.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_cookies_httponly() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    if !should_run_live() {
+        return;
+    }
+
+    // Spin up a single-shot local HTTP server that sets one normal and one
+    // httpOnly cookie via `Set-Cookie`.  A real http:// origin is required —
+    // data:/about: origins are cookie-averse.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local http server");
+    let http_port = listener.local_addr().expect("local_addr").port();
+    let server = std::thread::spawn(move || {
+        for stream in listener.incoming().take(10) {
+            let Ok(mut stream) = stream else { continue };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let body = b"<!DOCTYPE html><html><body>cookie fixture</body></html>";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
+                 Set-Cookie: normal=vis123; Path=/; SameSite=Lax\r\n\
+                 Set-Cookie: secret=hidden456; Path=/; HttpOnly; Secure; SameSite=Strict\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(body);
+        }
+    });
+
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    // Navigate to the local server so the Set-Cookie headers are applied.
+    let (target_actor, _console) = setup_target(transport);
+    transport
+        .send(&json!({
+            "to": &target_actor,
+            "type": "navigateTo",
+            "url": format!("http://127.0.0.1:{http_port}/"),
+        }))
+        .expect("send navigateTo");
+    std::thread::sleep(Duration::from_secs(2));
+    drain_messages(transport, Duration::from_millis(500));
+
+    // getWatcher → watchResources("cookies") → getStoreObjects.
+    transport
+        .send(&json!({"to": "root", "type": "listTabs"}))
+        .expect("send listTabs");
+    let list_tabs = recv_from_actor(transport, "root");
+    let tab_actor = list_tabs["tabs"][0]["actor"]
+        .as_str()
+        .expect("tab actor")
+        .to_owned();
+
+    transport
+        .send(&json!({"to": &tab_actor, "type": "getWatcher"}))
+        .expect("send getWatcher");
+    let watcher_resp = recv_from_actor(transport, &tab_actor);
+    let watcher = watcher_resp["actor"].as_str().expect("watcher actor");
+
+    transport
+        .send(&json!({
+            "to": watcher,
+            "type": "watchResources",
+            "resourceTypes": ["cookies"]
+        }))
+        .expect("send watchResources");
+    let watch_resp = recv_resources_available(transport, watcher);
+
+    let cookie_actor = watch_resp["array"][0][1][0]["actor"]
+        .as_str()
+        .expect("cookie actor");
+    let hosts = watch_resp["array"][0][1][0]["hosts"]
+        .as_object()
+        .expect("hosts map");
+    let host = hosts.keys().next().expect("at least one host");
+
+    transport
+        .send(&json!({
+            "to": cookie_actor,
+            "type": "getStoreObjects",
+            "host": host,
+            "options": {"sessionString": "Session", "sortOn": "name"}
+        }))
+        .expect("send getStoreObjects");
+    let store_resp = recv_from_actor(transport, cookie_actor);
+
+    if should_record() {
+        save_cli_fixture(
+            "get_store_objects_cookies_httponly_response.json",
+            &store_resp,
+        );
+        save_core_fixture(
+            "get_store_objects_cookies_httponly_response.json",
+            &store_resp,
+        );
+    }
+
+    let data = store_resp["data"].as_array().expect("data array");
+    let secret = data
+        .iter()
+        .find(|c| c["name"] == "secret")
+        .expect("httpOnly 'secret' cookie must be enumerated by StorageActor");
+    assert_eq!(
+        secret["isHttpOnly"], true,
+        "secret cookie must report isHttpOnly=true"
+    );
+
+    // `unwatchResources` is oneway (no reply); send without awaiting a recv so
+    // the cleanup doesn't block until the socket read timeout.
+    transport
+        .send(&json!({
+            "to": watcher,
+            "type": "unwatchResources",
+            "resourceTypes": ["cookies"]
+        }))
+        .expect("send unwatchResources");
+
+    drop(conn);
+    let _ = server.join();
+}
+
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_cookies_empty() {

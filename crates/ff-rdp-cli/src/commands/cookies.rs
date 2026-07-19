@@ -39,6 +39,14 @@ pub fn run(cli: &Cli, name: Option<&str>, include_document_cookie: bool) -> Resu
             StorageActor::list_cookies(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
     }
 
+    // Theme B (iter-121): record whether the authoritative StorageActor path
+    // returned anything.  When it comes back empty but the `document.cookie`
+    // fallback surfaces entries, we must NOT pretend the result is complete —
+    // `document.cookie` can never see httpOnly cookies and never knows
+    // secure/sameSite/domain flags.  We attach a `warnings[]` marker below so
+    // consumers can tell the flags are unavailable rather than falsely absent.
+    let storage_actor_empty = cookies.is_empty();
+
     let mut results: Vec<Value> = cookies
         .iter()
         .map(|c| {
@@ -59,6 +67,7 @@ pub fn run(cli: &Cli, name: Option<&str>, include_document_cookie: bool) -> Resu
     // --include-document-cookie: evaluate document.cookie and merge any entries
     // not already present in the StorageActor reply (e.g. cookies that lack a
     // Domain= attribute and are not surfaced by getStoreObjects).
+    let mut document_cookie_merged = 0usize;
     if include_document_cookie {
         let doc_cookies = fetch_document_cookies(&mut ctx);
         let storage_names: std::collections::HashSet<String> = results
@@ -73,6 +82,7 @@ pub fn run(cli: &Cli, name: Option<&str>, include_document_cookie: bool) -> Resu
                 .to_owned();
             if !storage_names.contains(&entry_name) {
                 results.push(entry);
+                document_cookie_merged += 1;
             }
         }
     }
@@ -114,10 +124,48 @@ pub fn run(cli: &Cli, name: Option<&str>, include_document_cookie: bool) -> Resu
         );
     }
 
+    // Theme B (iter-121): never silently degrade.  If the authoritative
+    // StorageActor enumeration was empty but the `document.cookie` fallback
+    // still contributed entries, surface a `warnings[]` marker so consumers
+    // know these entries lack httpOnly/secure/sameSite flags and that any
+    // httpOnly cookies are missing entirely (document.cookie can't see them).
+    attach_storage_degraded_warning(&mut envelope, storage_actor_empty, document_cookie_merged);
+
     let hint_ctx = HintContext::new(HintSource::Cookies);
     OutputPipeline::from_cli(cli)?
         .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
+}
+
+/// Attach a `warnings[]` degradation marker to the output `envelope` when the
+/// authoritative StorageActor enumeration came back empty but the
+/// `document.cookie` fallback still contributed entries (Theme B, iter-121).
+///
+/// This makes the "silent degradation" case explicit: `document.cookie` can
+/// never see httpOnly cookies and never carries secure/sameSite/domain flags,
+/// so a consumer must be told the result is weaker than a full StorageActor
+/// enumeration rather than trusting flag-less entries as complete.
+///
+/// A no-op when the StorageActor returned entries OR the fallback added none.
+fn attach_storage_degraded_warning(
+    envelope: &mut Value,
+    storage_actor_empty: bool,
+    document_cookie_merged: usize,
+) {
+    if storage_actor_empty
+        && document_cookie_merged > 0
+        && let Some(obj) = envelope.as_object_mut()
+    {
+        obj.insert(
+            "warnings".to_string(),
+            json!([{
+                "type": "storage_actor_empty",
+                "message": "StorageActor cookie enumeration returned no entries; \
+                            results come from document.cookie only. httpOnly cookies are \
+                            not included and secure/sameSite/domain flags are unavailable.",
+            }]),
+        );
+    }
 }
 
 /// Evaluate `document.cookie` and return each `name=value` pair as a JSON
@@ -259,6 +307,49 @@ mod tests {
         assert_eq!(cookies[1]["value"], "abc");
         assert_eq!(cookies[2]["name"], "flag");
         assert_eq!(cookies[2]["value"], "");
+    }
+
+    // --- attach_storage_degraded_warning (Theme B / iter-121) ---
+
+    /// AC seam: `unit_cookies_storage_degraded_warning` — when the StorageActor
+    /// path is empty and document.cookie contributed entries, a
+    /// `warnings[storage_actor_empty]` marker is attached.
+    #[test]
+    fn unit_cookies_storage_degraded_warning_attached() {
+        let mut env = json!({"results": [{"name": "probe"}], "total": 1});
+        attach_storage_degraded_warning(&mut env, true, 1);
+        let warnings = env["warnings"].as_array().expect("warnings array present");
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0]["type"], "storage_actor_empty");
+        assert!(
+            warnings[0]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("httpOnly"),
+            "warning message should mention httpOnly limitation"
+        );
+    }
+
+    /// No warning when the StorageActor returned entries (not degraded).
+    #[test]
+    fn unit_cookies_no_warning_when_storage_nonempty() {
+        let mut env = json!({"results": [{"name": "s"}], "total": 1});
+        attach_storage_degraded_warning(&mut env, false, 3);
+        assert!(
+            env.get("warnings").is_none(),
+            "no warning when StorageActor was non-empty"
+        );
+    }
+
+    /// No warning when the fallback contributed nothing (empty page, not degraded).
+    #[test]
+    fn unit_cookies_no_warning_when_no_document_cookies() {
+        let mut env = json!({"results": [], "total": 0});
+        attach_storage_degraded_warning(&mut env, true, 0);
+        assert!(
+            env.get("warnings").is_none(),
+            "no warning when document.cookie added nothing"
+        );
     }
 
     #[test]

@@ -345,6 +345,17 @@ impl RdpTransport {
         self.event_sink = sink;
     }
 
+    /// Install a new event sink and return the previous one.
+    ///
+    /// Unlike [`set_event_sink`](Self::set_event_sink) this preserves whatever
+    /// sink was already installed so a caller can temporarily capture push
+    /// events (e.g. a `resources-available-array` that `recv_reply_from` routes
+    /// to the sink while awaiting a `watchResources` ACK) and then restore the
+    /// original sink — without silently clobbering a daemon-installed one.
+    pub fn swap_event_sink(&mut self, sink: Option<Sender<Value>>) -> Option<Sender<Value>> {
+        std::mem::replace(&mut self.event_sink, sink)
+    }
+
     /// Internal accessor used by [`recv_reply_from`] / [`recv_event_from`].
     fn forward_event(&self, event: Value) {
         if let Some(tx) = &self.event_sink {
@@ -1761,6 +1772,41 @@ mod tests {
         assert_eq!(event["type"], "consoleAPICall");
 
         server_thread.join().unwrap();
+    }
+
+    /// iter-121: `swap_event_sink` installs a new sink and returns the previous
+    /// one, so a caller can temporarily capture push events (e.g. the
+    /// `resources-available-array` that precedes a `watchResources` ACK on
+    /// FF152) and then restore whatever sink was there before — without
+    /// clobbering a daemon-installed one.
+    #[test]
+    fn swap_event_sink_returns_previous_and_installs_new() {
+        let (mut transport, _server) = make_transport_pair();
+
+        // No sink initially → swap returns None and installs sink A.
+        let (tx_a, rx_a) = std::sync::mpsc::channel::<Value>();
+        let prev = transport.swap_event_sink(Some(tx_a));
+        assert!(prev.is_none(), "no sink was installed initially");
+
+        // Swap in sink B, recover sink A.
+        let (tx_b, _rx_b) = std::sync::mpsc::channel::<Value>();
+        let restored_a = transport
+            .swap_event_sink(Some(tx_b))
+            .expect("swap must return the previously-installed sink A");
+
+        // The returned sender must be the original A: routing an event to it
+        // arrives on rx_a.
+        transport.forward_event(serde_json::json!({"type": "probe", "from": "x"}));
+        // Sink B is now active, so rx_a should NOT receive the probe.
+        assert!(
+            rx_a.try_recv().is_err(),
+            "sink A is no longer active after swapping in B"
+        );
+        // But the returned handle is A: sending through it reaches rx_a.
+        restored_a
+            .send(serde_json::json!({"marker": true}))
+            .unwrap();
+        assert_eq!(rx_a.try_recv().unwrap()["marker"], true);
     }
 
     /// AC: `actor_request_rejects_typed_packet_as_reply` — a typed packet
