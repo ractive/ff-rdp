@@ -98,9 +98,9 @@ audit has no such coverage — which is how the drift went unnoticed.
 - [x] live_perf_audit_vitals_lcp_parity: on the same page in the same session, `perf audit`'s
       `.results.vitals.{lcp_ms, lcp_rating, lcp_approximate?}` equals `perf vitals`'
       `.results.{lcp_ms, lcp_rating, lcp_approximate?}` field-for-field.
-- [x] unit_perf_audit_lcp_unavailable_matches_vitals: audit vitals block built from
+- [x] `unit_perf_audit_lcp_unavailable_matches_vitals`: audit vitals block built from
       missing-LCP and approximate-zero inputs yields `"unavailable"`/null via the shared
-      helper (twin of `perf.rs:1772` / `perf.rs:1814`).
+      helper `apply_lcp_fields` (twin of `perf.rs:1772` / `perf.rs:1814`).
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
