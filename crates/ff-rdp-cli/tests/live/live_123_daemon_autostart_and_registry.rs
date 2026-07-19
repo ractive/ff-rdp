@@ -22,7 +22,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::common::live_tests_enabled;
-use crate::common::{LiveFirefox, RawFirefox, ff_rdp_bin};
+use crate::common::{LiveFirefox, RawFirefox, ff_rdp_bin, kill_pid, pid_alive};
 
 /// Run `ff-rdp --port <port> <args...>` inside an isolated `FF_RDP_HOME` and
 /// return the parsed JSON envelope (or `None` on non-JSON output).
@@ -277,5 +277,198 @@ fn live_daemon_warning_text_parity() {
         "live_daemon_warning_text_parity: PASS — text/JSON warning parity holds \
          ({} warning(s))",
         json_warnings.len()
+    );
+}
+
+/// AC `live_daemon_stop_prior_instance_targets_debug_port_not_cli_port`
+/// (iter-123 Theme B follow-up, found in review): `stop_prior_instance` (used
+/// by `launch --replace --debug-port N`) must stop the *proxy daemon* actually
+/// registered for `N`, even when the global `--port` flag (`cli.port`)
+/// addresses a *different*, unrelated Firefox+daemon pair.
+///
+/// Regression: once the registry became per-port, `run_daemon_stop`'s RPC/
+/// registry reads inside `stop_prior_instance` used to hardcode `cli.port`
+/// instead of the `port` parameter `stop_prior_instance` had already resolved
+/// — so `launch --port A --replace --debug-port B` (A != B) would silently act
+/// on whatever daemon happened to be registered under A (or no-op if none
+/// was), leaving the real target daemon on B alive.
+///
+/// Deliberately uses `LiveFirefox` (raw `ff-rdp launch` against the *real*
+/// `$HOME`, never our isolated test `home`) for both instances, so **no**
+/// `DaemonRecord` exists under `home` for either port — `stop_prior_instance`'s
+/// step 1 (DaemonRecord) is a guaranteed miss on both, forcing it into step 2
+/// (the proxy-daemon registry path) where the bug lived. `eval` then
+/// auto-starts a registry-tracked proxy daemon on each port inside `home`.
+/// Only the proxy-daemon PID is asserted on — the daemon-registry stop path
+/// does not (and never did) kill the underlying Firefox process itself, only
+/// the daemon it addresses; that scoping is exactly what this test pins.
+#[test]
+#[ignore = "requires live Firefox — run with FF_RDP_LIVE_TESTS=1"]
+fn live_daemon_stop_prior_instance_targets_debug_port_not_cli_port() {
+    if !live_tests_enabled() {
+        eprintln!(
+            "live_daemon_stop_prior_instance_targets_debug_port_not_cli_port: \
+             set FF_RDP_LIVE_TESTS=1 to run"
+        );
+        return;
+    }
+
+    let Some(ff_decoy) = LiveFirefox::headless_on_random_port() else {
+        eprintln!(
+            "live_daemon_stop_prior_instance_targets_debug_port_not_cli_port: \
+             decoy Firefox unavailable — skipping"
+        );
+        return;
+    };
+    let Some(ff_target) = LiveFirefox::headless_on_random_port() else {
+        eprintln!(
+            "live_daemon_stop_prior_instance_targets_debug_port_not_cli_port: \
+             target Firefox unavailable — skipping"
+        );
+        return;
+    };
+    let home = tempfile::tempdir().expect("tempdir for FF_RDP_HOME");
+
+    // Auto-start a proxy daemon for each port inside the isolated `home`
+    // (LiveFirefox itself ran against the real $HOME, so `home` has no
+    // DaemonRecord for either port — only what `eval` writes here).
+    let Some((ok_decoy, _)) = run_json(home.path(), ff_decoy.port(), &["eval", "1"]) else {
+        panic!("stop_prior_instance targeting: eval on decoy port produced no JSON");
+    };
+    assert!(ok_decoy, "eval on decoy port should succeed");
+    let Some((ok_target, _)) = run_json(home.path(), ff_target.port(), &["eval", "1"]) else {
+        panic!("stop_prior_instance targeting: eval on target port produced no JSON");
+    };
+    assert!(ok_target, "eval on target port should succeed");
+
+    assert!(
+        wait_daemon_running(home.path(), ff_decoy.port(), Duration::from_secs(10)),
+        "decoy daemon must be running before the replace"
+    );
+    assert!(
+        wait_daemon_running(home.path(), ff_target.port(), Duration::from_secs(10)),
+        "target daemon must be running before the replace"
+    );
+
+    let decoy_daemon_pid: u32 = {
+        let (_ok, s) = run_json(home.path(), ff_decoy.port(), &["daemon", "status"])
+            .expect("decoy status before replace");
+        let raw = s["results"]["pid"]
+            .as_u64()
+            .expect("decoy daemon pid present");
+        u32::try_from(raw).expect("decoy daemon pid fits u32")
+    };
+    let target_daemon_pid: u32 = {
+        let (_ok, s) = run_json(home.path(), ff_target.port(), &["daemon", "status"])
+            .expect("target status before replace");
+        let raw = s["results"]["pid"]
+            .as_u64()
+            .expect("target daemon pid present");
+        u32::try_from(raw).expect("target daemon pid fits u32")
+    };
+    assert_ne!(
+        decoy_daemon_pid, target_daemon_pid,
+        "precondition: the two proxy daemons must be distinct processes"
+    );
+
+    // `--port` (cli.port) addresses the DECOY; `--debug-port` addresses the
+    // TARGET. Firefox is genuinely listening on ff_target.port() (LiveFirefox),
+    // so `is_port_in_use` is true and --replace reaches `stop_prior_instance`.
+    //
+    // NOTE: `LiveFirefox` launches raw Firefox independently of the daemon
+    // (`spawn_daemon` only ever spawns the `_daemon` proxy, never Firefox
+    // itself — see `daemon/process.rs`), so in this synthetic topology
+    // stopping the proxy daemon's process group does not reap the underlying
+    // Firefox process, and the command's final "wait for the Firefox port to
+    // free" step can time out with a `User` error — a property of this test's
+    // topology, not of the port-scoping fix under test. What matters here is
+    // *which* port that error names: pre-fix it wrongly names the DECOY's
+    // port (cli.port); post-fix it correctly names the TARGET's port (the one
+    // --debug-port actually resolved), proving stop_prior_instance reached the
+    // right daemon regardless of whether the trailing port-free wait succeeds.
+    let replace_out = Command::new(ff_rdp_bin())
+        .env("FF_RDP_HOME", home.path())
+        .args([
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &ff_decoy.port().to_string(),
+            "--timeout",
+            "10000",
+            "launch",
+            "--replace",
+            "--headless",
+            "--debug-port",
+            &ff_target.port().to_string(),
+        ])
+        .output()
+        .expect("failed to spawn ff-rdp launch --replace");
+    if !replace_out.status.success() {
+        let stdout = String::from_utf8_lossy(&replace_out.stdout);
+        assert!(
+            stdout.contains(&ff_target.port().to_string()),
+            "if --replace reports a port-still-listening error, it must name the TARGET port \
+             ({}), never the decoy's ({}) — got: {stdout}",
+            ff_target.port(),
+            ff_decoy.port()
+        );
+        eprintln!(
+            "live_daemon_stop_prior_instance_targets_debug_port_not_cli_port: \
+             --replace reported (expected, topology-only) port-free timeout for the \
+             correct target port {}: {stdout}",
+            ff_target.port()
+        );
+    }
+
+    // The TARGET proxy daemon must be gone — proves --replace stopped the
+    // daemon actually registered under --debug-port.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while pid_alive(target_daemon_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        !pid_alive(target_daemon_pid),
+        "target proxy daemon (pid {target_daemon_pid}) must be stopped by \
+         --replace --debug-port {}",
+        ff_target.port()
+    );
+
+    // The DECOY proxy daemon — registered under --port, not --debug-port —
+    // must be completely untouched: same PID, still reporting running.
+    assert!(
+        pid_alive(decoy_daemon_pid),
+        "decoy proxy daemon (pid {decoy_daemon_pid}, registered under --port {}) must survive \
+         --replace --debug-port {}; a pre-fix build would have acted on cli.port (the decoy) \
+         instead of the resolved target port",
+        ff_decoy.port(),
+        ff_target.port()
+    );
+    let (decoy_ok_after, decoy_status_after) =
+        run_json(home.path(), ff_decoy.port(), &["daemon", "status"])
+            .expect("decoy status after replace");
+    assert!(
+        decoy_ok_after,
+        "decoy daemon status query must still succeed"
+    );
+    assert_eq!(
+        decoy_status_after["results"]["running"].as_bool(),
+        Some(true),
+        "decoy daemon must still report running after --replace targeted a different port: \
+         {decoy_status_after}"
+    );
+    assert_eq!(
+        decoy_status_after["results"]["pid"].as_u64(),
+        Some(u64::from(decoy_daemon_pid)),
+        "decoy daemon PID must be unchanged"
+    );
+
+    // Clean up both instances (best-effort).
+    let _ = run_json(home.path(), ff_decoy.port(), &["daemon", "stop"]);
+    kill_pid(ff_decoy.pid());
+    kill_pid(ff_target.pid());
+
+    eprintln!(
+        "live_daemon_stop_prior_instance_targets_debug_port_not_cli_port: PASS — \
+         --replace stopped only the --debug-port target's daemon, decoy under --port untouched"
     );
 }

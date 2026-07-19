@@ -966,7 +966,7 @@ fn dispatch_inner(
         }
         Command::Daemon { daemon_command } => match daemon_command {
             DaemonCommand::Status => crate::daemon::client::run_daemon_status(cli),
-            DaemonCommand::Stop => crate::daemon::client::run_daemon_stop(cli),
+            DaemonCommand::Stop => crate::daemon::client::run_daemon_stop(cli, cli.port),
         },
         Command::Doctor => commands::doctor::run(cli),
         Command::Profiles { profiles_command } => match profiles_command {
