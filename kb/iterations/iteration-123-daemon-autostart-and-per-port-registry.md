@@ -110,8 +110,14 @@ confound.
       stale-PID pruning to read+remove the correct per-port record (all `registry::*` call sites now
       pass `cli.port` / `firefox_port` / `expected_port`). Stale legacy single-slot `daemon.json` is
       retired on the next `write_registry` (`remove_legacy_registry_in`).
+- [x] **Review fix (post-merge-review):** `run_daemon_stop`/`daemon_rpc` initially hardcoded
+      `cli.port` even when called from `stop_prior_instance(cli, port)` with a `port` resolved from
+      `--debug-port` (which can differ from `--port`) — so `launch --replace --debug-port N` with
+      `--port != N` could silently act on the wrong daemon's registry entry. Fixed by threading an
+      explicit `port: u16` parameter through both functions instead of implicitly reading `cli.port`.
+      See `live_daemon_stop_prior_instance_targets_debug_port_not_cli_port`.
 
-## Acceptance Criteria [4/4]
+## Acceptance Criteria [5/5]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
@@ -134,6 +140,13 @@ confound.
       asserts JSON↔text warning parity end-to-end. (A forced-failure subprocess trigger was avoided
       as slow/flaky — see the test's rationale doc-comment.)
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] live_daemon_stop_prior_instance_targets_debug_port_not_cli_port: `launch --replace
+      --debug-port N` with `--port != N` stops the daemon registered under `N`, not whichever daemon
+      happens to be registered under `--port`; the decoy daemon under `--port` survives untouched
+      (same PID, still `running:true`) — pins the review-found `stop_prior_instance` port-threading
+      fix above. (live test `live_daemon_stop_prior_instance_targets_debug_port_not_cli_port`;
+      confirmed to fail pre-fix — the port-still-listening error named the wrong/decoy port — and
+      pass post-fix.)
 
 ## Design notes
 
