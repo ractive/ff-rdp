@@ -10,8 +10,24 @@
 //! as cookie-averse origins.  A real `http://127.0.0.1` origin is required.
 //!
 //! This validates Theme D: cookies set via JS without a `Domain=` attribute
-//! (which StorageActor sometimes misses) are surfaced via the
-//! `--include-document-cookie` fallback path.
+//! are surfaced in `ff-rdp cookies` output — via `--include-document-cookie`
+//! if the StorageActor enumeration misses them, or authoritatively by the
+//! StorageActor itself when it doesn't.
+//!
+//! # iter-124 update
+//!
+//! Before iter-121, StorageActor cookie enumeration was dead on FF152, so
+//! `--include-document-cookie` was the *only* path that ever surfaced this
+//! probe cookie, always tagged `source: "document.cookie"`. iter-121 fixed
+//! StorageActor enumeration, and it turns out FF152's StorageActor *does*
+//! enumerate a JS-set cookie without a `Domain=` attribute — so this cookie
+//! is now returned authoritatively by the StorageActor (no `source` field,
+//! `isHttpOnly`/`isSecure`/`sameSite` flags populated), and the cookies
+//! command's merge logic (`--include-document-cookie` only adds entries not
+//! already present by name — see `crates/ff-rdp-cli/src/commands/cookies.rs`)
+//! correctly drops the redundant `document.cookie` duplicate. This is
+//! strictly better data, not a regression, so the assertion below now pins
+//! the StorageActor-sourced shape instead of the old fallback tag.
 //!
 //! # Running
 //!
@@ -75,7 +91,15 @@ fn spawn_fixture_server() -> Option<(u16, thread::JoinHandle<()>)> {
 /// Serve a fixture page that sets `document.cookie = "probe=1"` from JS
 /// on a real `http://127.0.0.1` origin, navigate Firefox to it, then
 /// assert that `ff-rdp cookies --include-document-cookie` surfaces a
-/// cookie named `"probe"` in its results.
+/// cookie named `"probe"` in its results — either as an authoritative
+/// StorageActor entry (has `isHttpOnly`/`isSecure`/`sameSite` flags, no
+/// `source` field) or, if the StorageActor happens to miss it, via the
+/// `document.cookie` fallback (`source: "document.cookie"`). Since
+/// iter-121 fixed StorageActor cookie enumeration on FF152, this probe
+/// cookie is enumerated authoritatively — asserting a specific source
+/// would pin an implementation detail rather than the actual contract
+/// (`--include-document-cookie` must never lose the cookie or serve an
+/// entry with neither shape).
 ///
 /// Gated on `FF_RDP_LIVE_TESTS=1`.
 #[test]
@@ -147,20 +171,30 @@ fn live_cookies_surfaces_js_readable_cookie() {
          results={results:?}"
     );
 
-    // Also assert the entry was surfaced via the document.cookie path.
+    // The probe cookie must be surfaced in one of two valid shapes:
+    //   - StorageActor-authoritative: `source` absent, `isHttpOnly` present
+    //     (iter-121 fixed FF152 StorageActor enumeration — this is now the
+    //     common case for a JS-set cookie without a Domain= attribute).
+    //   - document.cookie fallback: `source: "document.cookie"` (only if the
+    //     StorageActor ever legitimately misses this cookie).
+    // Either is acceptable; what matters is the cookie isn't lost and isn't
+    // some malformed half-shape (e.g. `source: null` with no flags either).
     let probe = results
         .iter()
         .find(|c| c["name"].as_str().unwrap_or("") == "probe")
         .expect("probe cookie must exist");
-    assert_eq!(
-        probe["source"].as_str().unwrap_or(""),
-        "document.cookie",
-        "probe cookie must have source 'document.cookie'; got {:?}",
-        probe["source"]
+    let source = probe["source"].as_str();
+    let is_document_cookie_sourced = source == Some("document.cookie");
+    let is_storage_actor_sourced = source.is_none() && probe["isHttpOnly"].is_boolean();
+    assert!(
+        is_document_cookie_sourced || is_storage_actor_sourced,
+        "probe cookie must be either document.cookie-sourced (source: \"document.cookie\") \
+         or StorageActor-sourced (no source field, isHttpOnly present); got {probe:?}"
     );
 
     eprintln!(
-        "live_cookies_surfaces_js_readable_cookie: PASS — found 'probe' among {} cookies",
+        "live_cookies_surfaces_js_readable_cookie: PASS — found 'probe' among {} cookies \
+         (storage_actor_sourced={is_storage_actor_sourced})",
         results.len()
     );
 }
