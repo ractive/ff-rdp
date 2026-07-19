@@ -125,7 +125,17 @@ struct CommitInfo {
 /// `complete` — without waiting out the events budget.
 struct ReadyStateProbe<'a> {
     /// Console actor bound to the navigating docshell, used to evaluate JS.
-    console_actor: &'a ff_rdp_core::ActorId,
+    ///
+    /// Captured *before* `navigateTo` is dispatched, so it is bound to the
+    /// **pre-navigation** docshell. Firefox tears down the docshell (and, for
+    /// cross-process navigations, the child process) once the new document
+    /// commits, which invalidates this ID (`noSuchActor` on every eval). The
+    /// wait loop refreshes it via `tab_actor` as soon as `dom-loading` is
+    /// observed (see the `noSuchActor` fix, iter-124).
+    console_actor: ff_rdp_core::ActorId,
+    /// Tab descriptor actor used to re-resolve `console_actor` once the new
+    /// docshell has committed (`getTarget` returns fresh actor IDs).
+    tab_actor: &'a ff_rdp_core::ActorId,
     /// `performance.timing.navigationStart` captured before `navigateTo`; a
     /// `complete` reading whose `navigationStart` is not fresher than this is
     /// stale (belongs to the prior page) and is ignored.
@@ -157,6 +167,36 @@ fn probe_readystate_complete(
     match ff_rdp_core::WebConsoleActor::evaluate_js_async(transport, console_actor, &condition) {
         Ok(result) if result.exception.is_none() => super::js_helpers::is_truthy(&result.result),
         _ => false,
+    }
+}
+
+/// Re-resolve [`ReadyStateProbe::console_actor`] against the current docshell.
+///
+/// The probe's console actor is captured *before* `navigateTo` is dispatched
+/// (see [`ReadyStateProbe`]), so it is bound to the pre-navigation docshell.
+/// Firefox tears down that docshell — and, for cross-process navigations, the
+/// child process — once the new document commits, which invalidates the old
+/// actor ID (every subsequent eval fails with `noSuchActor`). This refresh
+/// must run once the new docshell has committed server-side (signalled by
+/// `dom-loading`, or lazily on first probe attempt if the events stream is
+/// quiet) so the interleaved fast-path can actually observe `complete`
+/// instead of failing silently for the rest of the wait (iter-124 fix for
+/// the iter-122 Theme A regression).
+///
+/// Best-effort: a failed refresh leaves the stale actor in place, so the
+/// probe keeps failing (same behavior as before this fix) and the caller
+/// falls back to the dedicated readystate-poll pass once the events budget
+/// is exhausted.
+fn refresh_probe_console_actor(transport: &mut RdpTransport, probe: &mut ReadyStateProbe<'_>) {
+    match ff_rdp_core::TabActor::get_target(transport, probe.tab_actor) {
+        Ok(fresh) => probe.console_actor = fresh.console_actor,
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                "navigate: readystate probe console actor refresh failed; \
+                 probe will keep using the stale actor"
+            );
+        }
     }
 }
 
@@ -216,7 +256,7 @@ fn wait_for_doc_complete(
     timeout_ms: u64,
     wait_level: WaitLevel,
     nav_start: Instant,
-    probe: Option<&ReadyStateProbe<'_>>,
+    mut probe: Option<&mut ReadyStateProbe<'_>>,
 ) -> Result<CommitInfo, AppError> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
@@ -231,7 +271,10 @@ fn wait_for_doc_complete(
     // Track whether we've seen dom-interactive so Loading/Interactive can return early.
     let mut interactive_url: Option<String> = None;
     // Next instant at which the interleaved readystate probe (Theme A) may run.
-    let mut next_probe_at = probe.map(|p| p.first_probe_at);
+    let mut next_probe_at = probe.as_ref().map(|p| p.first_probe_at);
+    // Tracks whether the probe's console actor has been refreshed against the
+    // post-navigation docshell yet (see the noSuchActor fix, iter-124).
+    let mut probe_refreshed = false;
 
     loop {
         // Check deadline first so we do not drain another batch of events
@@ -275,6 +318,20 @@ fn wait_for_doc_complete(
                             });
                         }
                         commit_url = Some(url.clone());
+                        // The new docshell has committed server-side, so its
+                        // consoleActor can now be re-resolved (see the
+                        // noSuchActor fix, iter-124): the probe was built
+                        // from the *pre-navigation* target, and that ID goes
+                        // stale the moment Firefox tears down the old
+                        // docshell/process — which can happen before this
+                        // point. Refresh once so the interleaved readystate
+                        // probe (and the location.href fallbacks below) hit
+                        // a live actor instead of failing with noSuchActor
+                        // on every attempt for the rest of the wait.
+                        if !probe_refreshed && let Some(p) = probe.as_deref_mut() {
+                            refresh_probe_console_actor(transport, p);
+                            probe_refreshed = true;
+                        }
                         // --wait loading: resolve immediately on dom-loading.
                         if wait_level == WaitLevel::Loading {
                             let elapsed_ms =
@@ -285,8 +342,8 @@ fn wait_for_doc_complete(
                             // fallback applied to the Interactive/Complete paths
                             // below.
                             let committed_url = if url.is_empty() {
-                                probe.map_or_else(String::new, |p| {
-                                    eval_location_href(transport, p.console_actor)
+                                probe.as_ref().map_or_else(String::new, |p| {
+                                    eval_location_href(transport, &p.console_actor)
                                 })
                             } else {
                                 url
@@ -318,8 +375,8 @@ fn wait_for_doc_complete(
                             // real URL via location.href rather than emitting an
                             // empty string (rendered as about:blank).
                             let committed_url = if eff_url.is_empty() {
-                                probe.map_or_else(String::new, |p| {
-                                    eval_location_href(transport, p.console_actor)
+                                probe.as_ref().map_or_else(String::new, |p| {
+                                    eval_location_href(transport, &p.console_actor)
                                 })
                             } else {
                                 eff_url
@@ -349,8 +406,8 @@ fn wait_for_doc_complete(
                         // dom-loading with a URL) must be resolved from the live
                         // document rather than surfaced as about:blank.
                         let committed = if committed.is_empty() {
-                            probe.map_or(committed, |p| {
-                                eval_location_href(transport, p.console_actor)
+                            probe.as_ref().map_or(committed, |p| {
+                                eval_location_href(transport, &p.console_actor)
                             })
                         } else {
                             committed
@@ -378,12 +435,19 @@ fn wait_for_doc_complete(
         // per `probe_interval`, after `first_probe_at`, so the richer event
         // stream keeps priority on pages that do fire dom-complete.
         if wait_level == WaitLevel::Complete
-            && let (Some(p), Some(when)) = (probe, next_probe_at)
+            && let (Some(p), Some(when)) = (probe.as_deref_mut(), next_probe_at)
             && Instant::now() >= when
         {
-            if probe_readystate_complete(transport, p.console_actor, p.pre_epoch) {
+            // Fallback refresh: normally `dom-loading` already refreshed the
+            // console actor above, but if the events stream is quiet (no
+            // document-event delivered yet) this is the first opportunity.
+            if !probe_refreshed {
+                refresh_probe_console_actor(transport, p);
+                probe_refreshed = true;
+            }
+            if probe_readystate_complete(transport, &p.console_actor, p.pre_epoch) {
                 let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let committed = eval_location_href(transport, p.console_actor);
+                let committed = eval_location_href(transport, &p.console_actor);
                 return Ok(CommitInfo {
                     committed_url: committed,
                     ready_state: "complete".to_owned(),
@@ -846,10 +910,18 @@ pub fn run_core(
         // Theme A: build the interleaved readystate probe for the `Both`
         // strategy only. `Events` keeps its pure event-only semantics (probe
         // stays None) so users who opted into event-only waiting are unaffected.
-        let probe_console_actor = ctx.target.console_actor.clone();
-        let readystate_probe = if wait_opts.wait_strategy == WaitStrategy::Both {
+        //
+        // `console_actor` is captured from the PRE-navigation target — it is
+        // refreshed against the new docshell inside `wait_for_doc_complete`
+        // once `dom-loading` commits (or lazily before the first probe
+        // attempt). Without that refresh every probe eval fails with
+        // `noSuchActor` for the lifetime of the wait, silently defeating this
+        // fast path and falling through to the full events-budget timeout
+        // (the iter-124 fix for the iter-122 Theme A regression).
+        let mut readystate_probe = if wait_opts.wait_strategy == WaitStrategy::Both {
             Some(ReadyStateProbe {
-                console_actor: &probe_console_actor,
+                console_actor: ctx.target.console_actor.clone(),
+                tab_actor: &tab_actor,
                 pre_epoch: pre_nav_epoch,
                 // Give dom-complete a 300 ms head start on pages that fire it
                 // promptly (comparis fired it in ~0.69 s), then probe every
@@ -871,7 +943,7 @@ pub fn run_core(
             events_budget,
             wait_opts.wait_level,
             nav_start,
-            readystate_probe.as_ref(),
+            readystate_probe.as_mut(),
         );
 
         // Flush any pending `unwatchResources` from dead-channel pruning that
@@ -1984,6 +2056,33 @@ mod tests {
         );
     }
 
+    /// Answer one `getTarget` round-trip on `writer`/`reader` with a `frame`
+    /// response carrying `console_actor`.
+    ///
+    /// The `wait_for_doc_complete` probe refresh (iter-124) issues this call
+    /// as soon as `dom-loading` commits (or lazily before its first probe
+    /// attempt), so any mock server driving a `probe: Some(..)` case must
+    /// answer it before the eval round-trips it gates.
+    fn answer_get_target(
+        reader: &mut std::io::BufReader<std::net::TcpStream>,
+        writer: &mut std::net::TcpStream,
+        tab_actor: &str,
+        console_actor: &str,
+    ) {
+        use std::io::Write as _;
+
+        use ff_rdp_core::transport::{encode_frame, recv_from};
+
+        let _req = recv_from(reader).unwrap();
+        let response = serde_json::json!({
+            "from": tab_actor,
+            "frame": { "actor": "conn0/target1", "consoleActor": console_actor },
+        });
+        writer
+            .write_all(encode_frame(&serde_json::to_string(&response).unwrap()).as_bytes())
+            .unwrap();
+    }
+
     /// Answer one `evaluateJSAsync` round-trip on `writer`/`reader`, replying
     /// with the immediate `resultID` ack followed by an `evaluationResult`
     /// carrying `result_value`.  Returns the `text` the client asked to evaluate
@@ -2038,7 +2137,11 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let console_actor = "conn0/console1";
 
-        // Mock Firefox: greeting, then answer two eval round-trips — the
+        let tab_actor = "conn0/tabDescriptor1";
+
+        // Mock Firefox: greeting, then answer the probe's lazy console-actor
+        // refresh (getTarget — no dom-loading event arrives to trigger the
+        // earlier refresh, iter-124) followed by two eval round-trips — the
         // readyState probe (truthy) and the follow-up location.href fetch.
         // It never sends any document-event, so only the probe can resolve.
         let server_handle = std::thread::spawn(move || {
@@ -2052,6 +2155,8 @@ mod tests {
             writer
                 .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
                 .unwrap();
+
+            answer_get_target(&mut reader, &mut writer, tab_actor, console_actor);
 
             let ready_text = answer_one_eval(
                 &mut reader,
@@ -2078,11 +2183,14 @@ mod tests {
 
         let watcher_actor = ff_rdp_core::ActorId::from("conn0/watcher1");
         let bus_arc = Arc::new(Mutex::new(ResourceCommand::new(watcher_actor)));
-        let console = ff_rdp_core::ActorId::from(console_actor);
+        let tab = ff_rdp_core::ActorId::from(tab_actor);
 
         let nav_start = Instant::now();
-        let probe = ReadyStateProbe {
-            console_actor: &console,
+        let mut probe = ReadyStateProbe {
+            // Deliberately stale — the pre-navigation actor — to prove the
+            // refresh (via `tab_actor`) is what makes the probe usable.
+            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            tab_actor: &tab,
             pre_epoch: 0.0,
             // Probe almost immediately so the test does not wait 300 ms.
             first_probe_at: nav_start,
@@ -2097,7 +2205,7 @@ mod tests {
             5_000,
             WaitLevel::Complete,
             nav_start,
-            Some(&probe),
+            Some(&mut probe),
         );
 
         let (ready_text, href_text) = server_handle.join().unwrap();
@@ -2138,8 +2246,10 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let console_actor = "conn0/console1";
+        let tab_actor = "conn0/tabDescriptor1";
 
-        // Server: greeting, then a single location.href eval answer (the empty
+        // Server: greeting, then the dom-loading-triggered getTarget refresh
+        // (iter-124), then a single location.href eval answer (the empty
         // dom-complete triggers exactly one href fetch).
         let server_handle = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
@@ -2152,6 +2262,8 @@ mod tests {
             writer
                 .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
                 .unwrap();
+
+            answer_get_target(&mut reader, &mut writer, tab_actor, console_actor);
 
             answer_one_eval(
                 &mut reader,
@@ -2180,13 +2292,15 @@ mod tests {
 
         let watcher_actor = ff_rdp_core::ActorId::from("conn0/watcher1");
         let bus_arc = Arc::new(Mutex::new(ResourceCommand::new(watcher_actor)));
-        let console = ff_rdp_core::ActorId::from(console_actor);
+        let tab = ff_rdp_core::ActorId::from(tab_actor);
 
         // No probe timer needed — the empty dom-complete triggers the fallback
-        // — but a probe must be present so the console_actor is available.
+        // — but a probe must be present so the console_actor is available (and
+        // gets refreshed to `console_actor` on the dom-loading event above).
         let nav_start = Instant::now();
-        let probe = ReadyStateProbe {
-            console_actor: &console,
+        let mut probe = ReadyStateProbe {
+            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            tab_actor: &tab,
             pre_epoch: 0.0,
             // Push the probe far into the future so only the dom-complete
             // fallback path (not the interleaved probe) fires.
@@ -2201,7 +2315,7 @@ mod tests {
             5_000,
             WaitLevel::Complete,
             nav_start,
-            Some(&probe),
+            Some(&mut probe),
         );
 
         server_handle.join().unwrap();
@@ -2232,8 +2346,10 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let console_actor = "conn0/console1";
+        let tab_actor = "conn0/tabDescriptor1";
 
-        // Server: greeting, then a single location.href eval answer used by the
+        // Server: greeting, then the dom-loading-triggered getTarget refresh
+        // (iter-124), then a single location.href eval answer used by the
         // dom-loading fallback. If the probe were (incorrectly) honored first it
         // would ask for `readyState` instead — asserted on below.
         let server_handle = std::thread::spawn(move || {
@@ -2247,6 +2363,8 @@ mod tests {
             writer
                 .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
                 .unwrap();
+
+            answer_get_target(&mut reader, &mut writer, tab_actor, console_actor);
 
             answer_one_eval(
                 &mut reader,
@@ -2272,14 +2390,15 @@ mod tests {
 
         let watcher_actor = ff_rdp_core::ActorId::from("conn0/watcher1");
         let bus_arc = Arc::new(Mutex::new(ResourceCommand::new(watcher_actor)));
-        let console = ff_rdp_core::ActorId::from(console_actor);
+        let tab = ff_rdp_core::ActorId::from(tab_actor);
 
         let nav_start = Instant::now();
         // Probe is armed to fire almost immediately and would report `true`
         // for `document.readyState` if it were ever evaluated — but it must
         // stay silent because wait_level is `Loading`, not `Complete`.
-        let probe = ReadyStateProbe {
-            console_actor: &console,
+        let mut probe = ReadyStateProbe {
+            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            tab_actor: &tab,
             pre_epoch: 0.0,
             first_probe_at: nav_start,
             probe_interval: Duration::from_millis(10),
@@ -2292,7 +2411,7 @@ mod tests {
             5_000,
             WaitLevel::Loading,
             nav_start,
-            Some(&probe),
+            Some(&mut probe),
         );
 
         let href_text = server_handle.join().unwrap();
