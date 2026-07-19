@@ -70,6 +70,16 @@ serially on a clean single Firefox instance:
       `answer_get_target` helper.
 - [x] Rewrite the `live_cookies_surfaces_js_readable_cookie` assertion to pin the
       StorageActor-or-fallback contract; document the iter-124 context in doc-comments.
+- [x] Review fix: `refresh_probe_console_actor` now returns `bool`; both call sites in
+      `wait_for_doc_complete` only latch `probe_refreshed = true` on `Ok` so a transient
+      `getTarget` failure retries on the next probe tick instead of permanently
+      stranding the probe on the stale actor. Gate the `dom-loading` refresh to
+      `wait_level == WaitLevel::Complete || url.is_empty()` so it isn't paid for
+      Loading/Interactive waits that resolve straight from the event's own URL.
+      New unit tests: `unit_navigate_probe_refresh_retries_after_transient_error`
+      (recovers on the second `getTarget` attempt) and
+      `unit_navigate_probe_refresh_persistent_error_falls_back_to_timeout` (falls
+      through cleanly to `AppError::Timeout`, no panic, no hang).
 
 ## Acceptance Criteria [3/3]
 
