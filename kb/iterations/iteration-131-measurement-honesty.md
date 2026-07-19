@@ -97,3 +97,5 @@ Bundles four honesty findings from [[dogfooding-session-61]]/[[dogfooding-sessio
 Sibling plans from the same findings batch: [[iteration-128-network-hint-always-present]],
 [[iteration-129-consent-and-cross-origin-frames]], [[iteration-130-navigation-truthfulness]],
 [[iteration-132-cli-polish]].
+[[iteration-133-viewport-emulation]] builds on this iteration's responsive
+`simulation`/`media_queries_applied` fields — land this one first.
