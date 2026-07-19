@@ -214,3 +214,35 @@ watcher follow path):
 - A follow stream holds the daemon's single RPC-writer slot (iter-101 Theme B),
   so the page must be driven with `--no-daemon` while a daemon-proxied follow is
   open — a second daemon-routed command is refused with `daemon_busy`.
+
+## Iter-122 update — `document-event` / `dom-complete` may never fire on FF152
+
+[[iteration-122-navigate-dom-complete-ff152]] found that on Firefox 152 the
+`document-event` resource stream can go quiet for a page that has, in fact,
+finished loading: `dom-complete` (and sometimes `dom-loading` with a real URL)
+simply never arrives for some static pages and SPAs, even though
+`document.readyState` is already `"complete"` and `location.href` holds the real
+URL. Confirmed on a clean single instance: default `navigate` to
+`example.com`-class pages burned ~7 s (the full events budget) before the
+readystate fallback rescued it — while `--no-wait` returned in 0.06 s with the
+page already loaded.
+
+Mitigation in ff-rdp (does **not** change the watcher protocol usage, which
+already subscribes correctly per the `watchTargets("frame")` +
+`watchResources` contract above):
+
+- The default `--wait-strategy both` now **interleaves a lightweight
+  `document.readyState` probe** into the `document-event` drain loop
+  (`wait_for_doc_complete` in `crates/ff-rdp-cli/src/commands/navigate.rs`). It
+  returns as soon as the page reports `complete` (guarded by the iter-92
+  `navigationStart > pre_epoch` freshness check), instead of blocking the whole
+  events budget waiting for a `dom-complete` that may never come. Pages that
+  *do* fire `dom-complete` promptly (comparis: ~0.69 s) still take the richer
+  event path — the probe is given a 300 ms head start and only runs every
+  ~250 ms so events keep priority.
+- When a committing `document-event` carries **no URL** (the SPA case), the
+  committed URL is resolved via `window.location.href` rather than surfaced as
+  `about:blank`.
+- `elapsed_ms` is now measured from the single navigate-start `Instant` across
+  both the events and readystate phases, so it reflects true wall-clock instead
+  of only the ~1 ms readystate-poll duration.

@@ -56,8 +56,11 @@ pub enum WaitStrategy {
     Events,
     /// Poll `document.readyState == "complete"` until timeout.
     Readystate,
-    /// Try events first; if they time out, fall back to readystate polling
-    /// within the remaining budget. Default.
+    /// Wait on document-event resources while interleaving a lightweight
+    /// `document.readyState` probe; return as soon as either reports the page
+    /// is complete, then fall back to a dedicated readystate poll only if the
+    /// events phase times out. Default. Avoids the FF152 case where a page has
+    /// loaded but `dom-complete` never fires, burning the whole events budget.
     #[default]
     Both,
 }
@@ -88,7 +91,7 @@ pub struct WaitAfterNav<'a> {
     pub wait_for: &'a [String],
     /// Readiness level to wait for (default: `Complete`).
     pub wait_level: WaitLevel,
-    /// Strategy for waiting for navigation readiness (default: `Events`).
+    /// Strategy for waiting for navigation readiness (default: `Both`).
     pub wait_strategy: WaitStrategy,
 }
 
@@ -107,6 +110,76 @@ struct CommitInfo {
     ready_state: String,
     /// Wall-clock milliseconds elapsed from navigate dispatch to commit.
     elapsed_ms: u64,
+}
+
+/// Configuration for the interleaved `document.readyState` fast-path used by the
+/// `Both` wait strategy (iter-122 Theme A).
+///
+/// On FF152 the `dom-complete` `document-event` resource may never fire for a
+/// page that has, in fact, finished loading — so a naive event-only wait burns
+/// the whole events budget (~7 s) before the readystate fallback ever runs.
+/// When this config is present, [`wait_for_doc_complete`] interleaves a
+/// lightweight `document.readyState === 'complete'` probe (guarded by the same
+/// `navigationStart > pre_epoch` freshness check as the pure readystate path,
+/// iter-92) into its drain loop, and returns as soon as the page reports
+/// `complete` — without waiting out the events budget.
+struct ReadyStateProbe<'a> {
+    /// Console actor bound to the navigating docshell, used to evaluate JS.
+    console_actor: &'a ff_rdp_core::ActorId,
+    /// `performance.timing.navigationStart` captured before `navigateTo`; a
+    /// `complete` reading whose `navigationStart` is not fresher than this is
+    /// stale (belongs to the prior page) and is ignored.
+    pre_epoch: f64,
+    /// Do not probe until this instant, giving the (faster, richer)
+    /// `dom-complete` event a head start on pages that do fire it promptly.
+    first_probe_at: Instant,
+    /// Minimum spacing between readystate probes so events keep priority.
+    probe_interval: Duration,
+}
+
+/// Evaluate `document.readyState === 'complete'` (with the `navigationStart`
+/// freshness guard) on `console_actor`, returning `true` only when the *current*
+/// document has finished loading.
+///
+/// A transport-level `recv` timeout or any eval error is treated as "not ready
+/// yet" (`false`) rather than a hard error — the caller keeps waiting on the
+/// events stream. The probe deliberately swallows these so a flaky mid-load
+/// eval never aborts the navigation.
+fn probe_readystate_complete(
+    transport: &mut RdpTransport,
+    console_actor: &ff_rdp_core::ActorId,
+    pre_epoch: f64,
+) -> bool {
+    let condition = format!(
+        "document.readyState === 'complete' && \
+         performance.timing.navigationStart > {pre_epoch}"
+    );
+    match ff_rdp_core::WebConsoleActor::evaluate_js_async(transport, console_actor, &condition) {
+        Ok(result) if result.exception.is_none() => super::js_helpers::is_truthy(&result.result),
+        _ => false,
+    }
+}
+
+/// Resolve `window.location.href` via `console_actor`, returning an empty string
+/// on any error. Used as the URL source for both the readystate fast-path and as
+/// a fallback when a committing `document-event` carries no `url` (iter-122
+/// Theme B — avoids emitting `about:blank` for SPAs that never fire
+/// `dom-loading` with a URL).
+fn eval_location_href(
+    transport: &mut RdpTransport,
+    console_actor: &ff_rdp_core::ActorId,
+) -> String {
+    match ff_rdp_core::WebConsoleActor::evaluate_js_async(
+        transport,
+        console_actor,
+        "window.location.href",
+    ) {
+        Ok(result) => match result.result {
+            Grip::Value(serde_json::Value::String(s)) => s,
+            _ => String::new(),
+        },
+        Err(_) => String::new(),
+    }
 }
 
 /// Wait for a document-event on the bus (level determined by `wait_level`),
@@ -142,6 +215,8 @@ fn wait_for_doc_complete(
     rx: &std::sync::mpsc::Receiver<std::sync::Arc<Resource>>,
     timeout_ms: u64,
     wait_level: WaitLevel,
+    nav_start: Instant,
+    probe: Option<&ReadyStateProbe<'_>>,
 ) -> Result<CommitInfo, AppError> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
@@ -152,10 +227,11 @@ fn wait_for_doc_complete(
         .set_read_timeout(Some(poll_interval))
         .map_err(|e| AppError::from(anyhow::anyhow!("set_read_timeout: {e:#}")))?;
 
-    let started = Instant::now();
     let mut commit_url: Option<String> = None;
     // Track whether we've seen dom-interactive so Loading/Interactive can return early.
     let mut interactive_url: Option<String> = None;
+    // Next instant at which the interleaved readystate probe (Theme A) may run.
+    let mut next_probe_at = probe.map(|p| p.first_probe_at);
 
     loop {
         // Check deadline first so we do not drain another batch of events
@@ -202,9 +278,21 @@ fn wait_for_doc_complete(
                         // --wait loading: resolve immediately on dom-loading.
                         if wait_level == WaitLevel::Loading {
                             let elapsed_ms =
-                                u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                                u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                            // Theme B: if the event carried no URL, resolve the
+                            // real URL via location.href rather than emitting an
+                            // empty string (rendered as about:blank) — same
+                            // fallback applied to the Interactive/Complete paths
+                            // below.
+                            let committed_url = if url.is_empty() {
+                                probe.map_or_else(String::new, |p| {
+                                    eval_location_href(transport, p.console_actor)
+                                })
+                            } else {
+                                url
+                            };
                             return Ok(CommitInfo {
-                                committed_url: url,
+                                committed_url,
                                 ready_state: "loading".to_owned(),
                                 elapsed_ms,
                             });
@@ -225,9 +313,19 @@ fn wait_for_doc_complete(
                         // --wait interactive: resolve on dom-interactive.
                         if wait_level == WaitLevel::Interactive && commit_url.is_some() {
                             let elapsed_ms =
-                                u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                                u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                            // Theme B: if the event carried no URL, resolve the
+                            // real URL via location.href rather than emitting an
+                            // empty string (rendered as about:blank).
+                            let committed_url = if eff_url.is_empty() {
+                                probe.map_or_else(String::new, |p| {
+                                    eval_location_href(transport, p.console_actor)
+                                })
+                            } else {
+                                eff_url
+                            };
                             return Ok(CommitInfo {
-                                committed_url: eff_url,
+                                committed_url,
                                 ready_state: "interactive".to_owned(),
                                 elapsed_ms,
                             });
@@ -242,11 +340,21 @@ fn wait_for_doc_complete(
                             continue;
                         }
                         let elapsed_ms =
-                            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                            u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                         let committed = interactive_url
                             .take()
                             .or_else(|| commit_url.take())
                             .unwrap_or_default();
+                        // Theme B: an empty/blank URL (SPA that never fired a
+                        // dom-loading with a URL) must be resolved from the live
+                        // document rather than surfaced as about:blank.
+                        let committed = if committed.is_empty() {
+                            probe.map_or(committed, |p| {
+                                eval_location_href(transport, p.console_actor)
+                            })
+                        } else {
+                            committed
+                        };
                         return Ok(CommitInfo {
                             committed_url: committed,
                             ready_state: "complete".to_owned(),
@@ -256,6 +364,34 @@ fn wait_for_doc_complete(
                     _ => {}
                 }
             }
+        }
+
+        // Theme A fast-path: interleave a lightweight readystate probe so a page
+        // that is already `complete` returns without waiting out the events
+        // budget for a `dom-complete` event that may never fire on FF152. Only
+        // active for the `Both` strategy (probe is None for `Events`) AND only
+        // when the caller actually wants `Complete` — the probe can only ever
+        // observe `document.readyState === 'complete'`, so honoring it for
+        // `--wait loading`/`--wait interactive` would return the wrong
+        // `ready_state` (and skip waiting for the dom-loading/dom-interactive
+        // event those levels are documented to resolve on). Runs at most once
+        // per `probe_interval`, after `first_probe_at`, so the richer event
+        // stream keeps priority on pages that do fire dom-complete.
+        if wait_level == WaitLevel::Complete
+            && let (Some(p), Some(when)) = (probe, next_probe_at)
+            && Instant::now() >= when
+        {
+            if probe_readystate_complete(transport, p.console_actor, p.pre_epoch) {
+                let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let committed = eval_location_href(transport, p.console_actor);
+                return Ok(CommitInfo {
+                    committed_url: committed,
+                    ready_state: "complete".to_owned(),
+                    elapsed_ms,
+                });
+            }
+            // Re-arm the probe timer regardless of the outcome above.
+            next_probe_at = Some(Instant::now() + p.probe_interval);
         }
 
         // Pump the transport — will block up to `poll_interval` then return
@@ -332,11 +468,11 @@ fn wait_for_readystate_complete(
     ctx: &mut super::connect_tab::ConnectedTab,
     timeout_ms: u64,
     pre_epoch: f64,
+    nav_start: Instant,
 ) -> Result<CommitInfo, AppError> {
     use crate::commands::js_helpers::poll_js_condition;
 
     let console_actor = ctx.target.console_actor.clone();
-    let started = std::time::Instant::now();
 
     // Combine readyState check with navigationStart freshness guard so that a
     // pre-existing "complete" state from the prior page load is rejected.
@@ -347,7 +483,10 @@ fn wait_for_readystate_complete(
          performance.timing.navigationStart > {pre_epoch}"
     );
 
-    let elapsed_ms = poll_js_condition(
+    // The poll's own elapsed only covers the readystate phase; discard it in
+    // favour of `nav_start` so `CommitInfo.elapsed_ms` reflects total
+    // wall-clock across the events→readystate fallback (iter-122 Theme B).
+    poll_js_condition(
         ctx,
         &console_actor,
         &condition,
@@ -375,7 +514,7 @@ fn wait_for_readystate_complete(
         }
     };
 
-    let _ = started; // `elapsed_ms` already reported by poll_js_condition
+    let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
     Ok(CommitInfo {
         committed_url: url,
         ready_state: "complete".to_owned(),
@@ -623,11 +762,13 @@ pub fn run_core(
         // --wait-strategy readystate: skip the document-event bus entirely.
         // Sending navigateTo + immediately polling document.readyState avoids
         // the full event-wait timeout cost that the default Events path pays.
+        let nav_start = Instant::now();
         WindowGlobalTarget::navigate_to(ctx.transport_mut(), &target_actor, url)
             .map_err(AppError::from)?;
         // Theme K: refresh console actor so eval hits the new document.
         refresh_console_actor(&mut ctx);
-        let rs_result = wait_for_readystate_complete(&mut ctx, cli.timeout, pre_nav_epoch);
+        let rs_result =
+            wait_for_readystate_complete(&mut ctx, cli.timeout, pre_nav_epoch, nav_start);
         let ci = reclassify_timeout_as_neterror(&mut ctx, url, rs_result)?;
         Some(ci)
     } else {
@@ -688,10 +829,37 @@ pub fn run_core(
         // tests, still leave the events wait a real window instead of
         // collapsing it to 1 ms — see the regression tests next to that
         // function.
+        //
+        // iter-122 Theme A re-tuning: the `Both` events phase now *also* probes
+        // `document.readyState` in-loop (see `ReadyStateProbe`), so a page that
+        // is `complete` returns from `wait_for_doc_complete` itself without the
+        // dedicated fallback ever running. The 30% reserve is kept only as a
+        // safety net for the case where the interleaved console eval is entirely
+        // unavailable (e.g. every probe times out) — the fast path, not the
+        // reserve, is what now saves the ~7 s on FF152.
         let events_budget = if wait_opts.wait_strategy == WaitStrategy::Both {
             split_wait_budget(cli.timeout).1
         } else {
             cli.timeout
+        };
+
+        // Theme A: build the interleaved readystate probe for the `Both`
+        // strategy only. `Events` keeps its pure event-only semantics (probe
+        // stays None) so users who opted into event-only waiting are unaffected.
+        let probe_console_actor = ctx.target.console_actor.clone();
+        let readystate_probe = if wait_opts.wait_strategy == WaitStrategy::Both {
+            Some(ReadyStateProbe {
+                console_actor: &probe_console_actor,
+                pre_epoch: pre_nav_epoch,
+                // Give dom-complete a 300 ms head start on pages that fire it
+                // promptly (comparis fired it in ~0.69 s), then probe every
+                // 250 ms so events keep priority but a stuck page is caught
+                // quickly rather than after the full events budget.
+                first_probe_at: nav_start + Duration::from_millis(300),
+                probe_interval: Duration::from_millis(250),
+            })
+        } else {
+            None
         };
 
         // wait_for_doc_complete acquires the lock only during dispatch_event,
@@ -702,6 +870,8 @@ pub fn run_core(
             &rx,
             events_budget,
             wait_opts.wait_level,
+            nav_start,
+            readystate_probe.as_ref(),
         );
 
         // Flush any pending `unwatchResources` from dead-channel pruning that
@@ -749,7 +919,7 @@ pub fn run_core(
                         "navigate: no remaining budget for readystate fallback".to_string(),
                     ))
                 } else {
-                    wait_for_readystate_complete(&mut ctx, remaining, pre_nav_epoch)
+                    wait_for_readystate_complete(&mut ctx, remaining, pre_nav_epoch, nav_start)
                 }
             }
             Err(e) => Err(e),
@@ -1593,6 +1763,8 @@ mod tests {
             &rx,
             TIMEOUT_MS,
             WaitLevel::Complete,
+            started,
+            None,
         );
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
@@ -1792,7 +1964,15 @@ mod tests {
         });
 
         // Run wait_for_doc_complete with a 200ms timeout so the test finishes quickly.
-        let _ = wait_for_doc_complete(&mut transport, &bus_arc, &rx, 200, WaitLevel::Complete);
+        let _ = wait_for_doc_complete(
+            &mut transport,
+            &bus_arc,
+            &rx,
+            200,
+            WaitLevel::Complete,
+            Instant::now(),
+            None,
+        );
 
         probe_handle.join().unwrap();
         server_handle.join().unwrap();
@@ -1801,6 +1981,334 @@ mod tests {
             lock_acquired.load(Ordering::Relaxed),
             "navigate_bus_lock_released_during_wait: second thread could not acquire \
              the bus lock while wait_for_doc_complete was running — lock held too long"
+        );
+    }
+
+    /// Answer one `evaluateJSAsync` round-trip on `writer`/`reader`, replying
+    /// with the immediate `resultID` ack followed by an `evaluationResult`
+    /// carrying `result_value`.  Returns the `text` the client asked to evaluate
+    /// so the caller can assert on it.
+    ///
+    /// Shared by the iter-122 Theme A/B unit tests below.
+    fn answer_one_eval(
+        reader: &mut std::io::BufReader<std::net::TcpStream>,
+        writer: &mut std::net::TcpStream,
+        console_actor: &str,
+        result_value: &serde_json::Value,
+    ) -> String {
+        use std::io::Write as _;
+
+        use ff_rdp_core::transport::{encode_frame, recv_from};
+
+        let req = recv_from(reader).unwrap();
+        let text = req["text"].as_str().unwrap_or_default().to_owned();
+        // Immediate ack (a reply — no `type` field) carrying the resultID.
+        let ack = serde_json::json!({ "from": console_actor, "resultID": "r1" });
+        writer
+            .write_all(encode_frame(&serde_json::to_string(&ack).unwrap()).as_bytes())
+            .unwrap();
+        // The evaluationResult push event.
+        let eval_result = serde_json::json!({
+            "from": console_actor,
+            "type": "evaluationResult",
+            "resultID": "r1",
+            "result": result_value,
+        });
+        writer
+            .write_all(encode_frame(&serde_json::to_string(&eval_result).unwrap()).as_bytes())
+            .unwrap();
+        text
+    }
+
+    /// iter-122 Theme A: `unit_navigate_readystate_probe_short_circuits`
+    ///
+    /// When the events stream never fires `dom-complete` (the FF152 symptom) but
+    /// the interleaved probe observes `document.readyState === 'complete'`,
+    /// `wait_for_doc_complete` must return promptly — well inside the events
+    /// budget — with `ready_state: "complete"` and `committed_url` resolved from
+    /// `location.href` (Theme B), never an empty string.
+    #[test]
+    fn unit_navigate_readystate_probe_short_circuits() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+
+        use ff_rdp_core::transport::{RdpTransport, encode_frame};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let console_actor = "conn0/console1";
+
+        // Mock Firefox: greeting, then answer two eval round-trips — the
+        // readyState probe (truthy) and the follow-up location.href fetch.
+        // It never sends any document-event, so only the probe can resolve.
+        let server_handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+
+            let greeting = serde_json::json!({
+                "from": "root", "applicationType": "browser", "traits": {}
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+
+            let ready_text = answer_one_eval(
+                &mut reader,
+                &mut writer,
+                console_actor,
+                &serde_json::json!(true),
+            );
+            let href_text = answer_one_eval(
+                &mut reader,
+                &mut writer,
+                console_actor,
+                &serde_json::json!("https://example.com/"),
+            );
+            (ready_text, href_text)
+        });
+
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+
+        // Empty channel — no document-event ever arrives, so the probe is the
+        // only way out other than the timeout.
+        let (tx, rx) = std::sync::mpsc::channel::<std::sync::Arc<Resource>>();
+        drop(tx);
+
+        let watcher_actor = ff_rdp_core::ActorId::from("conn0/watcher1");
+        let bus_arc = Arc::new(Mutex::new(ResourceCommand::new(watcher_actor)));
+        let console = ff_rdp_core::ActorId::from(console_actor);
+
+        let nav_start = Instant::now();
+        let probe = ReadyStateProbe {
+            console_actor: &console,
+            pre_epoch: 0.0,
+            // Probe almost immediately so the test does not wait 300 ms.
+            first_probe_at: nav_start,
+            probe_interval: Duration::from_millis(50),
+        };
+
+        // Generous events budget: the probe must return long before this.
+        let result = wait_for_doc_complete(
+            &mut transport,
+            &bus_arc,
+            &rx,
+            5_000,
+            WaitLevel::Complete,
+            nav_start,
+            Some(&probe),
+        );
+
+        let (ready_text, href_text) = server_handle.join().unwrap();
+
+        let ci = result.expect("probe should short-circuit to a CommitInfo");
+        assert_eq!(ci.ready_state, "complete");
+        assert_eq!(
+            ci.committed_url, "https://example.com/",
+            "committed_url must come from location.href, not be empty/about:blank"
+        );
+        assert!(
+            ready_text.contains("readyState"),
+            "first eval should be the readyState probe, got: {ready_text}"
+        );
+        assert!(
+            href_text.contains("location.href"),
+            "second eval should be the location.href fetch, got: {href_text}"
+        );
+        assert!(
+            nav_start.elapsed() < Duration::from_secs(4),
+            "probe must return well inside the events budget; took {:?}",
+            nav_start.elapsed()
+        );
+    }
+
+    /// iter-122 Theme B: `unit_navigate_dom_complete_empty_url_falls_back_to_href`
+    ///
+    /// When a `dom-complete` event commits with no URL (an SPA that never fired
+    /// `dom-loading` with a real URL), `committed_url` must be resolved from
+    /// `location.href` instead of surfacing as an empty string (about:blank).
+    #[test]
+    fn unit_navigate_dom_complete_empty_url_falls_back_to_href() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+
+        use ff_rdp_core::transport::{RdpTransport, encode_frame};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let console_actor = "conn0/console1";
+
+        // Server: greeting, then a single location.href eval answer (the empty
+        // dom-complete triggers exactly one href fetch).
+        let server_handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+
+            let greeting = serde_json::json!({
+                "from": "root", "applicationType": "browser", "traits": {}
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+
+            answer_one_eval(
+                &mut reader,
+                &mut writer,
+                console_actor,
+                &serde_json::json!("https://spa.example/app"),
+            )
+        });
+
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+
+        // Pre-load a dom-loading (empty url) + dom-complete (empty url) sequence:
+        // commit_url becomes Some("") so dom-complete resolves, but the URL is
+        // empty and must be back-filled via location.href.
+        let (tx, rx) = std::sync::mpsc::channel::<std::sync::Arc<Resource>>();
+        tx.send(std::sync::Arc::new(Resource::DocumentEvent(
+            serde_json::json!({ "name": "dom-loading", "url": "" }),
+        )))
+        .unwrap();
+        tx.send(std::sync::Arc::new(Resource::DocumentEvent(
+            serde_json::json!({ "name": "dom-complete", "url": "" }),
+        )))
+        .unwrap();
+        drop(tx);
+
+        let watcher_actor = ff_rdp_core::ActorId::from("conn0/watcher1");
+        let bus_arc = Arc::new(Mutex::new(ResourceCommand::new(watcher_actor)));
+        let console = ff_rdp_core::ActorId::from(console_actor);
+
+        // No probe timer needed — the empty dom-complete triggers the fallback
+        // — but a probe must be present so the console_actor is available.
+        let nav_start = Instant::now();
+        let probe = ReadyStateProbe {
+            console_actor: &console,
+            pre_epoch: 0.0,
+            // Push the probe far into the future so only the dom-complete
+            // fallback path (not the interleaved probe) fires.
+            first_probe_at: nav_start + Duration::from_secs(30),
+            probe_interval: Duration::from_secs(30),
+        };
+
+        let result = wait_for_doc_complete(
+            &mut transport,
+            &bus_arc,
+            &rx,
+            5_000,
+            WaitLevel::Complete,
+            nav_start,
+            Some(&probe),
+        );
+
+        server_handle.join().unwrap();
+
+        let ci = result.expect("dom-complete should resolve to a CommitInfo");
+        assert_eq!(ci.ready_state, "complete");
+        assert_eq!(
+            ci.committed_url, "https://spa.example/app",
+            "empty dom-complete URL must fall back to location.href, not about:blank"
+        );
+    }
+
+    /// iter-122 review fix: `unit_navigate_probe_ignored_for_non_complete_wait_level`
+    ///
+    /// The interleaved readystate probe (Theme A) can only ever observe
+    /// `document.readyState === 'complete'`. When the caller asked for
+    /// `--wait loading` (or `--wait interactive`), the probe must NOT be
+    /// honored even if it fires and reports truthy — only the matching
+    /// `dom-loading` event may resolve the wait, with the correct
+    /// `ready_state: "loading"` and its own Theme B URL fallback.
+    #[test]
+    fn unit_navigate_probe_ignored_for_non_complete_wait_level() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+
+        use ff_rdp_core::transport::{RdpTransport, encode_frame};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let console_actor = "conn0/console1";
+
+        // Server: greeting, then a single location.href eval answer used by the
+        // dom-loading fallback. If the probe were (incorrectly) honored first it
+        // would ask for `readyState` instead — asserted on below.
+        let server_handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+
+            let greeting = serde_json::json!({
+                "from": "root", "applicationType": "browser", "traits": {}
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+
+            answer_one_eval(
+                &mut reader,
+                &mut writer,
+                console_actor,
+                &serde_json::json!("https://spa.example/loading"),
+            )
+        });
+
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+
+        // A dom-loading event with an empty URL arrives after a short delay —
+        // long enough for an (incorrectly) armed probe to have fired first.
+        let (tx, rx) = std::sync::mpsc::channel::<std::sync::Arc<Resource>>();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(120));
+            tx.send(std::sync::Arc::new(Resource::DocumentEvent(
+                serde_json::json!({ "name": "dom-loading", "url": "" }),
+            )))
+            .unwrap();
+        });
+
+        let watcher_actor = ff_rdp_core::ActorId::from("conn0/watcher1");
+        let bus_arc = Arc::new(Mutex::new(ResourceCommand::new(watcher_actor)));
+        let console = ff_rdp_core::ActorId::from(console_actor);
+
+        let nav_start = Instant::now();
+        // Probe is armed to fire almost immediately and would report `true`
+        // for `document.readyState` if it were ever evaluated — but it must
+        // stay silent because wait_level is `Loading`, not `Complete`.
+        let probe = ReadyStateProbe {
+            console_actor: &console,
+            pre_epoch: 0.0,
+            first_probe_at: nav_start,
+            probe_interval: Duration::from_millis(10),
+        };
+
+        let result = wait_for_doc_complete(
+            &mut transport,
+            &bus_arc,
+            &rx,
+            5_000,
+            WaitLevel::Loading,
+            nav_start,
+            Some(&probe),
+        );
+
+        let href_text = server_handle.join().unwrap();
+
+        let ci = result.expect("dom-loading should resolve to a CommitInfo");
+        assert_eq!(
+            ci.ready_state, "loading",
+            "probe must not override the requested wait_level with 'complete'"
+        );
+        assert_eq!(
+            ci.committed_url, "https://spa.example/loading",
+            "Loading path must apply the same location.href fallback as Interactive/Complete"
+        );
+        assert!(
+            href_text.contains("location.href"),
+            "the only eval the mock server should see is the dom-loading URL fallback, got: {href_text}"
         );
     }
 }

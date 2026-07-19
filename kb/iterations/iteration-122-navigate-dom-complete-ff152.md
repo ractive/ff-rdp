@@ -2,7 +2,7 @@
 title: "Iteration 122: default navigate burns ~7s on FF152 — dom-complete never fires, elapsed_ms + committed_url wrong"
 type: iteration
 date: 2026-07-18
-status: planned
+status: in-progress
 branch: iter-122/navigate-dom-complete-ff152
 depends_on: []
 firefox_refs: []
@@ -66,33 +66,39 @@ so the fix must speed up the pages that don't fire it without regressing the one
 
 ### A. Fast-path readystate
 
-- [ ] In the `Both` strategy, interleave a lightweight `document.readyState` poll into the events
-      wait loop (`wait_for_doc_complete` drain loop, `navigate.rs:160-282`) so a page that is
-      already `complete` returns without waiting out the events budget. Preserve the freshness
-      guard (`navigationStart > pre_epoch`, iter-92) to avoid returning on a stale document.
-- [ ] Re-tune / justify `split_wait_budget` given the interleaved poll (the 70/30 split loses its
-      rationale if readystate is checked continuously).
+- [x] In the `Both` strategy, interleave a lightweight `document.readyState` poll into the events
+      wait loop (`wait_for_doc_complete` drain loop) via `ReadyStateProbe` +
+      `probe_readystate_complete`, so a page that is already `complete` returns without waiting out
+      the events budget. Preserves the freshness guard (`navigationStart > pre_epoch`, iter-92).
+      Covered by `unit_navigate_readystate_probe_short_circuits`.
+- [x] Re-tuned / justified `split_wait_budget` given the interleaved poll: the 30% reserve is now
+      only a safety net for when the console eval is entirely unavailable — the interleaved
+      `ReadyStateProbe` (300 ms head start, 250 ms cadence) is what saves the ~7 s. Documented at
+      the `events_budget` computation in `run_core`.
 
 ### B. Honest timing + URL
 
-- [ ] Thread the navigate-start `Instant` through both phases so `CommitInfo.elapsed_ms`
-      (`navigate.rs:101-110`) reflects total wall-clock, not just the readystate poll.
-- [ ] When the committing event carries no `url`, resolve `committed_url` via `eval
-      window.location.href` before falling back to empty (`navigate.rs:244-254`).
+- [x] Thread the navigate-start `Instant` (`nav_start`) through both phases (`wait_for_doc_complete`
+      + `wait_for_readystate_complete` now take `nav_start: Instant`) so `CommitInfo.elapsed_ms`
+      reflects total wall-clock, not just the readystate poll. Covered by
+      `live_navigate_elapsed_matches_wall`.
+- [x] When the committing event carries no `url`, resolve `committed_url` via `eval_location_href`
+      (`window.location.href`) before falling back to empty. Covered by
+      `unit_navigate_dom_complete_empty_url_falls_back_to_href` + `live_navigate_spa_committed_url`.
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
-- [ ] live_navigate_default_fast: default `ff-rdp navigate` to a static page (example.com class)
+- [x] live_navigate_default_fast: default `ff-rdp navigate` to a static page (example.com class)
       returns in wall-clock `< timeout/2` on FF152 — no full events-budget burn when the page is
       already `complete`.
-- [ ] live_navigate_elapsed_matches_wall: `result.elapsed_ms` is within a tolerance (±750ms) of
+- [x] live_navigate_elapsed_matches_wall: `result.elapsed_ms` is within a tolerance (±750ms) of
       externally-measured wall-clock for a default navigate, across the events→readystate fallback.
-- [ ] live_navigate_spa_committed_url: navigating an SPA that starts at `about:blank` yields
+- [x] live_navigate_spa_committed_url: navigating an SPA that starts at `about:blank` yields
       `committed_url == location.href` (a real URL), never `"about:blank"`, when the real URL has
       committed.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 
@@ -113,6 +119,19 @@ so the fix must speed up the pages that don't fire it without regressing the one
   It is plausible `dom-complete` isn't actually "never firing" but is arriving in a window this
   code doesn't capture — worth a raw RDP trace (`FF_RDP_TRACE_RAW=1`) before assuming Theme A's
   interleaved-poll fix is the only lever.
+
+## Review notes
+
+- PR #161 local code review (medium effort) found two correctness bugs in the shipped Theme A/B
+  code, both fixed before merge:
+  1. The interleaved `ReadyStateProbe` (Theme A) ignored `wait_level`, so
+     `--wait loading`/`--wait interactive` combined with `--wait-strategy both` could short-circuit
+     with `ready_state: "complete"` instead of resolving on the requested dom event. Fixed by
+     gating the probe to `wait_level == WaitLevel::Complete`.
+  2. `WaitLevel::Loading`'s early-return skipped the Theme B `eval_location_href` fallback applied
+     to the Interactive/Complete paths, so `--wait loading` could still surface an empty/about:blank
+     `committed_url` for SPAs. Fixed by applying the same fallback.
+  - Regression test added: `unit_navigate_probe_ignored_for_non_complete_wait_level`.
 
 ## Out of scope
 
