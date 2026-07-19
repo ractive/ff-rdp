@@ -82,18 +82,43 @@ impl StorageActor {
     ) -> Result<Vec<CookieInfo>, ProtocolError> {
         let watcher = TabActor::get_watcher(transport, tab_actor)?;
 
-        // watchResources may return the resources-available-array directly
-        // (observed for "cookies") or return a plain ACK followed by the
-        // resources-available-array as a separate event (as with "network-event").
-        // We try parsing the immediate response first; if that yields nothing,
-        // we read one more message from the watcher to catch the async case.
-        let response = WatcherActor::watch_resources(transport, &watcher, &["cookies"])?;
+        // Capture the `resources-available-array` event that `watchResources`
+        // triggers.  On Firefox 152 the cookies resource event arrives *before*
+        // the `watchResources` ACK, so `actor_request`'s reply loop
+        // (`recv_reply_from`) routes it to the transport's event sink and
+        // returns only the plain ACK — the event is gone by the time we parse
+        // the response.  Without a sink installed (the direct command path) the
+        // event would be dropped entirely, `getStoreObjects` would never be
+        // sent, and every cookie would silently fall back to `document.cookie`
+        // (missing httpOnly cookies and all flags).  See iter-121.
+        //
+        // We install a temporary collector sink around the `watchResources`
+        // call, restoring whatever sink was there before (e.g. a
+        // daemon-installed one) afterwards.
+        let (event_tx, event_rx) = std::sync::mpsc::channel::<Value>();
+        let prev_sink = transport.swap_event_sink(Some(event_tx));
 
-        let cookie_resource = parse_cookie_store_resource(&response).or_else(|| {
-            // The immediate response was a plain ACK — try the next message.
-            let followup = transport.recv().ok()?;
-            parse_cookie_store_resource(&followup)
-        });
+        let response = WatcherActor::watch_resources(transport, &watcher, &["cookies"]);
+
+        // Restore the previous sink before doing anything that might early-return.
+        transport.swap_event_sink(prev_sink);
+
+        let response = response?;
+
+        // The cookie store resource may arrive three ways depending on the
+        // Firefox version and message ordering:
+        //   1. Captured by our sink while awaiting the ACK (FF152: event first).
+        //   2. Inline in the ACK response itself (older Firefox).
+        //   3. As a separate event delivered *after* the ACK (older Firefox);
+        //      read one more message to catch it.
+        let cookie_resource = event_rx
+            .try_iter()
+            .find_map(|ev| parse_cookie_store_resource(&ev))
+            .or_else(|| parse_cookie_store_resource(&response))
+            .or_else(|| {
+                let followup = transport.recv().ok()?;
+                parse_cookie_store_resource(&followup)
+            });
 
         let mut cookies = Vec::new();
 
@@ -668,6 +693,40 @@ mod tests {
         assert_eq!(resource2.actor.as_ref(), "server1.conn7.storage10");
         assert_eq!(resource2.resource_id, "cookies-208305913857");
         assert_eq!(resource2.hosts, vec!["https://httpbin.org"]);
+    }
+
+    /// iter-121: the FF152 cookie resource event carries `browsingContextID`
+    /// and `resourceKey` alongside `resourceId`/`hosts`.  The parser must
+    /// extract the actor, resource ID, and hosts from this exact shape (the one
+    /// captured live on Firefox 152.0.6 in the raw RDP trace).
+    #[test]
+    fn parse_cookie_store_resource_ff152_shape() {
+        let event = json!({
+            "type": "resources-available-array",
+            "from": "server1.conn3.watcher11",
+            "array": [[
+                "cookies",
+                [{
+                    "actor": "server1.conn3.cookies12",
+                    "hosts": {"https://httpbin.org": []},
+                    "traits": {
+                        "supportsAddItem": true,
+                        "supportsRemoveItem": true,
+                        "supportsRemoveAll": true,
+                        "supportsRemoveAllSessionCookies": true
+                    },
+                    "resourceId": "cookies-15032385537",
+                    "resourceKey": "cookies",
+                    "browsingContextID": 11
+                }]
+            ]]
+        });
+
+        let resource =
+            parse_cookie_store_resource(&event).expect("should parse FF152 cookie resource");
+        assert_eq!(resource.actor.as_ref(), "server1.conn3.cookies12");
+        assert_eq!(resource.resource_id, "cookies-15032385537");
+        assert_eq!(resource.hosts, vec!["https://httpbin.org"]);
     }
 
     #[test]

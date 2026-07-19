@@ -9,6 +9,8 @@ date: 2026-05-24
 firefox_files:
 - devtools/shared/specs/storage.js
 - devtools/server/actors/resources/storage/index.js
+- devtools/server/actors/resources/storage/cookies.js
+- devtools/server/actors/resources/utils/parent-process-storage.js
 title: StorageActor
 ---
 
@@ -88,3 +90,59 @@ full rather than dropped to empty. Unit test:
 localStorage/sessionStorage value slots are also `longstring` but ff-rdp does
 not yet consume them — wire them through the same helper when it does. See
 [[lessons-learned#longstring-grips-everywhere]].
+
+## FF152: cookie enumeration went silent (iter-121)
+
+Discovered in [[dogfooding-session-61]] and CONFIRMED on a clean single Firefox
+152.0.6 instance: `StorageActor::list_cookies` returned an **empty** vector, so
+the `cookies` command silently fell back to `document.cookie` — missing every
+httpOnly cookie and nulling all `secure`/`sameSite`/`domain` flags.
+`cookies --storage-only` returned 0.
+
+**Root cause — message-ordering, not a wire-contract change.** Raw RDP tracing
+(`FF_RDP_TRACE_RAW=1 … --log-level trace cookies --storage-only`) showed
+`getStoreObjects` was **never sent**. The sequence:
+
+1. `watchResources(["cookies"])` is sent.
+2. On FF152 the `resources-available-array` cookie event arrives **before** the
+   `watchResources` ACK. `actor_request`/`recv_reply_from` (iter-74+) classifies
+   any `from`+`type` packet as an event and routes it to the transport's event
+   sink, returning only the plain ACK `{"from":"watcher…"}`.
+3. On the direct command path **no event sink is installed**, so
+   `forward_event` **dropped the event entirely**.
+4. `list_cookies` then tried `transport.recv()` to recover the event — but it
+   was already consumed and dropped, so `recv()` blocked to the 10 s socket
+   timeout, `cookie_resource` stayed `None`, `getStoreObjects` was never sent,
+   and the result was empty (exit 0).
+
+In FF149 the ACK came first, then the event, so the old `recv()` fallback caught
+it — which is why the bug was version-dependent.
+
+The FF152 cookie resource event shape is unchanged and already parsed:
+`array:[["cookies",[{actor, hosts:{"https://host":[]}, resourceId:"cookies-…",
+resourceKey:"cookies", browsingContextID, traits}]]]`. The `getStoreObjects`
+spec is also unchanged (`host: Arg(0)`, `names: Arg(1,"nullable:array:string")`,
+`options: Arg(2,"nullable:json")`). The FF152 architectural note: cookies now run
+in the **parent process** (`resources/storage-cookie.js` → `ParentProcessStorage`
+→ `resources/storage/cookies.js`), and hosts derive from
+`watcherActor.getAllBrowsingContexts()` (`getHostName` returns `uri.prePath`,
+e.g. `https://example.com`).
+
+**Fix (Theme A)**: `list_cookies` now installs a temporary event-sink collector
+around the `watchResources` call via `RdpTransport::swap_event_sink` (restoring
+any prior sink afterwards), then finds the cookie resource from the captured
+events first, falling back to the inline ACK and one extra `recv()` for older
+Firefox orderings. `getStoreObjects` fires correctly and cookies return with real
+`isHttpOnly`/`isSecure`/`sameSite`.
+
+**Fix (Theme B)**: `commands::cookies::run` attaches a
+`warnings[{type:"storage_actor_empty", …}]` marker when the StorageActor
+enumeration is empty but `document.cookie` still contributed entries, so a
+degraded result is never presented as complete
+(`attach_storage_degraded_warning`).
+
+Recorded fixture: `get_store_objects_cookies_httponly_response.json` (a real
+FF152 reply with an httpOnly `secret` cookie). Live ACs:
+`live_cookies_httponly_enumerated` + `live_cookies_storage_only_nonempty`
+(`live/live_cookies.rs`); recorder `live_cookies_httponly`
+(`live_record_fixtures.rs`).

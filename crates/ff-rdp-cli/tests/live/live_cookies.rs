@@ -253,3 +253,227 @@ fn live_cookies_default_surfaces_js_readable_cookie() {
         results.len()
     );
 }
+
+/// HTML/headers body served by the httpOnly fixture server.
+///
+/// Sets two cookies via `Set-Cookie` response headers:
+///   - `normal=vis123` (visible to `document.cookie`)
+///   - `secret=hidden456; HttpOnly; Secure; SameSite=Strict` (invisible to
+///     `document.cookie` — only the StorageActor can enumerate it)
+const HTTPONLY_FIXTURE_BODY: &[u8] =
+    b"<!DOCTYPE html><html><head></head><body>httpOnly cookie fixture</body></html>";
+
+/// Spawn a single-shot HTTP server that sets a normal + an httpOnly cookie via
+/// `Set-Cookie` response headers.  Returns `(port, join-handle)`.
+fn spawn_httponly_fixture_server() -> Option<(u16, thread::JoinHandle<()>)> {
+    let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+    let port = listener.local_addr().ok()?.port();
+
+    let handle = thread::spawn(move || {
+        listener.set_nonblocking(false).ok();
+        for stream in listener.incoming().take(10) {
+            let Ok(mut stream) = stream else { continue };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: text/html; charset=utf-8\r\n\
+                 Set-Cookie: normal=vis123; Path=/; SameSite=Lax\r\n\
+                 Set-Cookie: secret=hidden456; Path=/; HttpOnly; Secure; SameSite=Strict\r\n\
+                 Content-Length: {}\r\n\
+                 Cache-Control: no-store\r\n\
+                 Connection: close\r\n\r\n",
+                HTTPONLY_FIXTURE_BODY.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(HTTPONLY_FIXTURE_BODY);
+        }
+    });
+
+    Some((port, handle))
+}
+
+/// `live_cookies_httponly_enumerated` (iter-121 AC):
+///
+/// After navigating to a page that sets an httpOnly cookie via a `Set-Cookie`
+/// header, `ff-rdp cookies` must return that cookie with `isHttpOnly == true`
+/// and non-null `isSecure`/`sameSite`, sourced from the StorageActor (NOT
+/// `document.cookie`, which can never see httpOnly cookies).  This is the core
+/// regression fix — on FF152 the StorageActor enumeration silently returned
+/// empty and every cookie fell back to `document.cookie`, missing httpOnly
+/// cookies entirely.
+///
+/// Gated on `FF_RDP_LIVE_TESTS=1`.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_cookies_httponly_enumerated() {
+    if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
+        eprintln!("live_cookies_httponly_enumerated: set FF_RDP_LIVE_TESTS=1 to run");
+        return;
+    }
+
+    let Some(ff) = LiveFirefox::headless_on_random_port() else {
+        eprintln!("live_cookies_httponly_enumerated: Firefox not available — skipping");
+        return;
+    };
+
+    let Some((http_port, _server)) = spawn_httponly_fixture_server() else {
+        eprintln!("live_cookies_httponly_enumerated: could not bind HTTP server — skipping");
+        return;
+    };
+
+    let fixture_url = format!("http://127.0.0.1:{http_port}/");
+
+    let nav = Command::new(ff_rdp_bin())
+        .args(base_args(ff.port()))
+        .args(["navigate", &fixture_url])
+        .output()
+        .expect("ff-rdp navigate");
+    assert!(
+        nav.status.success(),
+        "live_cookies_httponly_enumerated: navigate failed — {}",
+        String::from_utf8_lossy(&nav.stderr)
+    );
+
+    let out = Command::new(ff_rdp_bin())
+        .args(base_args(ff.port()))
+        .args(["cookies"])
+        .output()
+        .expect("ff-rdp cookies");
+    assert!(
+        out.status.success(),
+        "live_cookies_httponly_enumerated: cookies failed — stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("live_cookies_httponly_enumerated: output is not valid JSON: {e}\nstdout={stdout}")
+    });
+
+    let results = json["results"]
+        .as_array()
+        .expect("results must be an array");
+
+    let secret = results
+        .iter()
+        .find(|c| c["name"].as_str() == Some("secret"))
+        .unwrap_or_else(|| {
+            panic!(
+                "live_cookies_httponly_enumerated: httpOnly cookie 'secret' not found; \
+                 results={results:?}"
+            )
+        });
+
+    assert_eq!(
+        secret["isHttpOnly"].as_bool(),
+        Some(true),
+        "secret cookie must have isHttpOnly=true; got {:?}",
+        secret["isHttpOnly"]
+    );
+    // Flags must be present (non-null) — the document.cookie fallback would omit
+    // these entirely, so their presence proves the StorageActor path fired.
+    assert!(
+        secret["isSecure"].is_boolean(),
+        "secret cookie must have a non-null isSecure flag; got {:?}",
+        secret["isSecure"]
+    );
+    assert!(
+        secret["sameSite"].is_string(),
+        "secret cookie must have a non-null sameSite flag; got {:?}",
+        secret["sameSite"]
+    );
+    // Must NOT be sourced from document.cookie.
+    assert_ne!(
+        secret["source"].as_str(),
+        Some("document.cookie"),
+        "secret cookie must come from the StorageActor, not document.cookie"
+    );
+
+    eprintln!(
+        "live_cookies_httponly_enumerated: PASS — 'secret' httpOnly cookie enumerated \
+         (isSecure={:?}, sameSite={:?})",
+        secret["isSecure"], secret["sameSite"]
+    );
+}
+
+/// `live_cookies_storage_only_nonempty` (iter-121 AC):
+///
+/// `ff-rdp cookies --storage-only` must return `>= 1` entry on a page that set
+/// a normal cookie — proving the StorageActor enumeration path (not just the
+/// document.cookie merge) is non-empty on FF152.
+///
+/// Gated on `FF_RDP_LIVE_TESTS=1`.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_cookies_storage_only_nonempty() {
+    if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
+        eprintln!("live_cookies_storage_only_nonempty: set FF_RDP_LIVE_TESTS=1 to run");
+        return;
+    }
+
+    let Some(ff) = LiveFirefox::headless_on_random_port() else {
+        eprintln!("live_cookies_storage_only_nonempty: Firefox not available — skipping");
+        return;
+    };
+
+    let Some((http_port, _server)) = spawn_httponly_fixture_server() else {
+        eprintln!("live_cookies_storage_only_nonempty: could not bind HTTP server — skipping");
+        return;
+    };
+
+    let fixture_url = format!("http://127.0.0.1:{http_port}/");
+
+    let nav = Command::new(ff_rdp_bin())
+        .args(base_args(ff.port()))
+        .args(["navigate", &fixture_url])
+        .output()
+        .expect("ff-rdp navigate");
+    assert!(
+        nav.status.success(),
+        "live_cookies_storage_only_nonempty: navigate failed — {}",
+        String::from_utf8_lossy(&nav.stderr)
+    );
+
+    let out = Command::new(ff_rdp_bin())
+        .args(base_args(ff.port()))
+        .args(["cookies", "--storage-only"])
+        .output()
+        .expect("ff-rdp cookies --storage-only");
+    assert!(
+        out.status.success(),
+        "live_cookies_storage_only_nonempty: cookies failed — stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("live_cookies_storage_only_nonempty: output is not valid JSON: {e}\nstdout={stdout}")
+    });
+
+    let results = json["results"]
+        .as_array()
+        .expect("results must be an array");
+
+    assert!(
+        !results.is_empty(),
+        "live_cookies_storage_only_nonempty: --storage-only returned 0 entries; \
+         StorageActor enumeration must be non-empty on FF152. results={results:?}"
+    );
+
+    // Every entry must come from the StorageActor (no document.cookie merge).
+    for c in results {
+        assert_ne!(
+            c["source"].as_str(),
+            Some("document.cookie"),
+            "--storage-only entries must not be sourced from document.cookie: {c:?}"
+        );
+    }
+
+    eprintln!(
+        "live_cookies_storage_only_nonempty: PASS — StorageActor returned {} cookie(s)",
+        results.len()
+    );
+}

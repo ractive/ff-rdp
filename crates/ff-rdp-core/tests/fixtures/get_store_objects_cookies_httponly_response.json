@@ -1,0 +1,39 @@
+{
+  "offset": 0,
+  "total": 2,
+  "data": [
+    {
+      "uniqueKey": "normal{9d414cc5-8319-0a04-0586-c0a6ae01670a}127.0.0.1{9d414cc5-8319-0a04-0586-c0a6ae01670a}/{9d414cc5-8319-0a04-0586-c0a6ae01670a}",
+      "name": "normal",
+      "host": "127.0.0.1",
+      "path": "/",
+      "expires": 0,
+      "creationTime": 1784457936380.177,
+      "updateTime": 1784457936380.177,
+      "size": 12,
+      "lastAccessed": 1784458391623.248,
+      "value": "vis123",
+      "hostOnly": true,
+      "isSecure": false,
+      "isHttpOnly": false,
+      "sameSite": "Lax"
+    },
+    {
+      "uniqueKey": "secret{9d414cc5-8319-0a04-0586-c0a6ae01670a}127.0.0.1{9d414cc5-8319-0a04-0586-c0a6ae01670a}/{9d414cc5-8319-0a04-0586-c0a6ae01670a}",
+      "name": "secret",
+      "host": "127.0.0.1",
+      "path": "/",
+      "expires": 0,
+      "creationTime": 1784457936380.179,
+      "updateTime": 1784457936380.179,
+      "size": 15,
+      "lastAccessed": 1784458391623.248,
+      "value": "hidden456",
+      "hostOnly": true,
+      "isSecure": true,
+      "isHttpOnly": true,
+      "sameSite": "Strict"
+    }
+  ],
+  "from": "server1.conn0.cookies5"
+}
