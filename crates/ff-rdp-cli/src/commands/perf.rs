@@ -524,25 +524,12 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
     let tbt = compute_tbt(longtask_entries, fcp);
     let lcp_approximate = is_lcp_approximate(lcp_entries);
 
-    // N7 / Theme F (iter-83): when LCP is not measurable or is an approximate 0ms
-    // estimate, emit "unavailable" and null rather than "good" + 0.0.
-    // `lcp_approximate=true` means the DOM fallback ran and found startTime=0 (no
-    // real load timing), so the value is meaningless.
-    let lcp_unavailable = lcp.is_none() || (lcp_approximate && lcp.unwrap_or(1.0) == 0.0);
-    let lcp_rating: serde_json::Value = if lcp_unavailable {
-        json!("unavailable")
-    } else {
-        json!(rate(lcp.unwrap_or(0.0), 2500.0, 4000.0))
-    };
-    let lcp_ms_output: serde_json::Value = if lcp_unavailable {
-        serde_json::Value::Null
-    } else {
-        json!(lcp)
-    };
-
+    // N7 / Theme F (iter-83), shared helper since iter-125: the LCP triple +
+    // note/approximate annotation live in `apply_lcp_fields` so `perf vitals`
+    // and `perf audit` cannot drift on the unavailable-guard.
     let mut results = json!({
-        "lcp_ms": lcp_ms_output,
-        "lcp_rating": lcp_rating,
+        "lcp_ms": Value::Null,
+        "lcp_rating": Value::Null,
         "cls": cls,
         "cls_rating": rate(cls, 0.1, 0.25),
         "tbt_ms": tbt,
@@ -552,20 +539,7 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
         "ttfb_ms": ttfb,
         "ttfb_rating": ttfb.map(|v| rate(v, 800.0, 1800.0)),
     });
-    if lcp_approximate {
-        results["lcp_approximate"] = json!(true);
-        results["lcp_note"] = json!(
-            "LCP estimated via DOM approximation — Firefox does not implement the Chromium LCP observer. \
-             This is a Firefox platform limitation, not specific to any launch mode. \
-             For canonical LCP, use Lighthouse against Chromium."
-        );
-    } else if lcp.is_none() {
-        results["lcp_note"] = json!(
-            "LCP not available — Firefox does not implement the Chromium LCP PerformanceObserver entry. \
-             This is a Firefox platform limitation, not specific to any launch mode. \
-             For canonical LCP, use Lighthouse against Chromium."
-        );
-    }
+    apply_lcp_fields(&mut results, lcp, lcp_approximate);
 
     // Apply --fields filtering to the single-object result before wrapping it.
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
@@ -954,32 +928,24 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
     let tbt = compute_tbt(longtask_entries, fcp);
     let lcp_approximate = is_lcp_approximate(lcp_entries);
 
+    // iter-125: the LCP triple + note/approximate annotation come from the
+    // shared `apply_lcp_fields` helper — identical semantics to `perf vitals`.
+    // Before this, run_audit rebuilt the block with a bare
+    // `lcp.map(|v| rate(v, …))` that lacked the N7 unavailable-guard, so pages
+    // with no measurable LCP were rated "good" / 0.0 (a false all-clear).
     let mut vitals = json!({
         "ttfb_ms": ttfb,
         "ttfb_rating": ttfb.map(|v| rate(v, 800.0, 1800.0)),
         "fcp_ms": fcp,
         "fcp_rating": fcp.map(|v| rate(v, 1800.0, 3000.0)),
-        "lcp_ms": lcp,
-        "lcp_rating": lcp.map(|v| rate(v, 2500.0, 4000.0)),
+        "lcp_ms": Value::Null,
+        "lcp_rating": Value::Null,
         "cls": cls,
         "cls_rating": rate(cls, 0.1, 0.25),
         "tbt_ms": tbt,
         "tbt_rating": rate(tbt, 200.0, 600.0),
     });
-    if lcp_approximate {
-        vitals["lcp_approximate"] = json!(true);
-        vitals["lcp_note"] = json!(
-            "LCP estimated via DOM approximation — Firefox does not implement the Chromium LCP observer. \
-             This is a Firefox platform limitation, not specific to any launch mode. \
-             For canonical LCP, use Lighthouse against Chromium."
-        );
-    } else if lcp.is_none() {
-        vitals["lcp_note"] = json!(
-            "LCP not available — Firefox does not implement the Chromium LCP PerformanceObserver entry. \
-             This is a Firefox platform limitation, not specific to any launch mode. \
-             For canonical LCP, use Lighthouse against Chromium."
-        );
-    }
+    apply_lcp_fields(&mut vitals, lcp, lcp_approximate);
 
     // ── navigation entry ──────────────────────────────────────────────────────
     let navigation = nav.cloned().map(|e| map_entry("navigation", e, None));
@@ -1500,6 +1466,58 @@ pub(crate) fn rate(value: f64, good: f64, poor: f64) -> &'static str {
         "poor"
     }
 }
+
+/// Single source of truth for the LCP triple (`lcp_ms` / `lcp_rating`) plus the
+/// `lcp_approximate` / `lcp_note` annotations.
+///
+/// This is the iter-83 Theme F (N7) unavailable-guard, extracted in iter-125 so
+/// that `perf vitals` and `perf audit` cannot drift. Before extraction,
+/// `run_audit` rebuilt the vitals block with a bare `lcp.map(|v| rate(v, …))`
+/// that lacked the guard, so a page with no measurable LCP (the DOM fallback
+/// fabricates a `startTime: 0` entry, making `lcp == Some(0.0)` and
+/// `lcp_approximate == true`) was rated `"good"` / `0.0` — a false all-clear.
+///
+/// Writes `lcp_ms`, `lcp_rating` (and, when applicable, `lcp_approximate` /
+/// `lcp_note`) into `target`. `target` must be a JSON object.
+///
+/// Semantics (identical to the original `run_vitals` inline code):
+/// - `lcp == None` → `lcp_ms: null`, `lcp_rating: "unavailable"`, plus a
+///   platform-limitation note.
+/// - `lcp == Some(0.0)` && `lcp_approximate` → treated as unmeasurable:
+///   `lcp_ms: null`, `lcp_rating: "unavailable"`, plus the approximation note.
+/// - otherwise → `lcp_ms: <value>`, `lcp_rating: rate(value, 2500, 4000)`; a
+///   non-zero approximate value still carries the `lcp_approximate`/note context.
+pub(crate) fn apply_lcp_fields(target: &mut Value, lcp: Option<f64>, lcp_approximate: bool) {
+    // N7 / Theme F (iter-83): when LCP is not measurable or is an approximate 0ms
+    // estimate, emit "unavailable" and null rather than "good" + 0.0.
+    let lcp_unavailable = lcp.is_none() || (lcp_approximate && lcp.unwrap_or(1.0) == 0.0);
+
+    target["lcp_ms"] = if lcp_unavailable {
+        Value::Null
+    } else {
+        json!(lcp)
+    };
+    target["lcp_rating"] = if lcp_unavailable {
+        json!("unavailable")
+    } else {
+        json!(rate(lcp.unwrap_or(0.0), 2500.0, 4000.0))
+    };
+
+    if lcp_approximate {
+        target["lcp_approximate"] = json!(true);
+        target["lcp_note"] = json!(
+            "LCP estimated via DOM approximation — Firefox does not implement the Chromium LCP observer. \
+             This is a Firefox platform limitation, not specific to any launch mode. \
+             For canonical LCP, use Lighthouse against Chromium."
+        );
+    } else if lcp.is_none() {
+        target["lcp_note"] = json!(
+            "LCP not available — Firefox does not implement the Chromium LCP PerformanceObserver entry. \
+             This is a Firefox platform limitation, not specific to any launch mode. \
+             For canonical LCP, use Lighthouse against Chromium."
+        );
+    }
+}
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1852,6 +1870,194 @@ mod tests {
             lcp_ms_output,
             serde_json::Value::Null,
             "lcp_ms must be null when lcp_approximate=true and lcp_ms=0.0"
+        );
+    }
+
+    // ── iter-125: audit vitals block must match `perf vitals` on LCP ─────────
+    //
+    // `perf audit` used to rebuild its `.results.vitals` LCP triple with a bare
+    // `lcp.map(|v| rate(v, …))` that lacked the N7 unavailable-guard, so a page
+    // with no measurable LCP (DOM fallback fabricates startTime=0) was rated
+    // "good" / 0.0 — a false all-clear. These twins of the two vitals tests
+    // above pin the audit path through the shared `apply_lcp_fields` helper.
+
+    /// Twin of `test_perf_vitals_emits_unavailable_when_lcp_missing`, but exercising
+    /// the audit vitals block (`apply_lcp_fields` fed with `lcp = None`).
+    #[test]
+    fn unit_perf_audit_lcp_unavailable_when_missing() {
+        // The audit block seeds placeholder null keys, then applies the helper.
+        let mut vitals = json!({
+            "ttfb_ms": null,
+            "fcp_ms": null,
+            "lcp_ms": Value::Null,
+            "lcp_rating": Value::Null,
+            "cls": 0.0,
+        });
+        let lcp: Option<f64> = None;
+        apply_lcp_fields(&mut vitals, lcp, false);
+
+        assert_eq!(
+            vitals["lcp_rating"],
+            json!("unavailable"),
+            "audit lcp_rating must be 'unavailable' when lcp is None (not 'good')"
+        );
+        assert_eq!(
+            vitals["lcp_ms"],
+            Value::Null,
+            "audit lcp_ms must be JSON null when lcp is None (not 0.0)"
+        );
+        // No approximation ran, so no lcp_approximate flag; but a platform note is set.
+        assert!(
+            vitals.get("lcp_approximate").is_none(),
+            "lcp_approximate must be absent when the DOM fallback did not run"
+        );
+        assert!(
+            vitals["lcp_note"]
+                .as_str()
+                .is_some_and(|s| s.contains("LCP not available")),
+            "audit must carry the 'LCP not available' platform note"
+        );
+    }
+
+    /// Twin of `perf_vitals_emits_unavailable_when_lcp_approximate`, but exercising
+    /// the audit vitals block. This is the exact comparis.ch-class regression: the
+    /// DOM fallback fabricates a `startTime: 0` entry, so `compute_lcp == Some(0.0)`
+    /// and `is_lcp_approximate == true`, which the old audit path rated "good".
+    #[test]
+    fn unit_perf_audit_lcp_unavailable_when_approximate_zero() {
+        let lcp_entries = vec![json!({
+            "entryType": "largest-contentful-paint",
+            "startTime": 0.0,
+            "renderTime": 0.0,
+            "loadTime": 0.0,
+            "size": 12000.0,
+            "url": "",
+            "element": null,
+            "approximate": true,
+        })];
+        let lcp = compute_lcp(&lcp_entries); // Some(0.0)
+        let lcp_approximate = is_lcp_approximate(&lcp_entries); // true
+        assert_eq!(lcp, Some(0.0));
+        assert!(lcp_approximate);
+
+        let mut vitals = json!({
+            "lcp_ms": Value::Null,
+            "lcp_rating": Value::Null,
+        });
+        apply_lcp_fields(&mut vitals, lcp, lcp_approximate);
+
+        assert_eq!(
+            vitals["lcp_rating"],
+            json!("unavailable"),
+            "audit lcp_rating must be 'unavailable' for an approximate 0ms LCP (not 'good')"
+        );
+        assert_eq!(
+            vitals["lcp_ms"],
+            Value::Null,
+            "audit lcp_ms must be null for an approximate 0ms LCP (not 0.0)"
+        );
+        assert_eq!(
+            vitals["lcp_approximate"],
+            json!(true),
+            "audit must flag lcp_approximate for the DOM-fallback estimate"
+        );
+        assert!(
+            vitals["lcp_note"]
+                .as_str()
+                .is_some_and(|s| s.contains("DOM approximation")),
+            "audit must carry the DOM-approximation note"
+        );
+    }
+
+    /// A non-zero approximate LCP must still be rated (the guard only nulls the
+    /// meaningless zero) — the regression agent's ~587ms case is the negative
+    /// control: measurable-LCP pages must be unaffected.
+    #[test]
+    fn unit_perf_audit_lcp_rated_when_approximate_nonzero() {
+        let mut vitals = json!({
+            "lcp_ms": Value::Null,
+            "lcp_rating": Value::Null,
+        });
+        apply_lcp_fields(&mut vitals, Some(587.0), true);
+
+        assert_eq!(
+            vitals["lcp_ms"],
+            json!(587.0),
+            "a real (non-zero) approximate LCP must be reported, not nulled"
+        );
+        assert_eq!(
+            vitals["lcp_rating"],
+            json!("good"),
+            "587ms LCP must rate 'good' (<= 2500ms)"
+        );
+        assert_eq!(
+            vitals["lcp_approximate"],
+            json!(true),
+            "the approximation flag stays set for a non-zero DOM estimate"
+        );
+    }
+
+    /// iter-125 AC `unit_perf_audit_lcp_unavailable_matches_vitals`:
+    /// The audit vitals block, built from the same missing-LCP and
+    /// approximate-zero inputs as the two `perf vitals` tests above, must yield
+    /// `lcp_rating: "unavailable"` / `lcp_ms: null` — proving the two commands
+    /// share one code path (`apply_lcp_fields`) and cannot drift.
+    #[test]
+    fn unit_perf_audit_lcp_unavailable_matches_vitals() {
+        for (label, lcp, approx) in [
+            ("missing-LCP", None, false),
+            ("approximate-zero", Some(0.0), true),
+        ] {
+            let mut audit = json!({});
+            apply_lcp_fields(&mut audit, lcp, approx);
+
+            // The vitals command feeds the identical inputs to the identical
+            // helper, so build the reference the same way and compare.
+            let mut vitals = json!({});
+            apply_lcp_fields(&mut vitals, lcp, approx);
+
+            assert_eq!(
+                audit["lcp_rating"],
+                json!("unavailable"),
+                "{label}: audit lcp_rating must be 'unavailable'"
+            );
+            assert_eq!(
+                audit["lcp_ms"],
+                Value::Null,
+                "{label}: audit lcp_ms must be null"
+            );
+            assert_eq!(
+                audit["lcp_ms"], vitals["lcp_ms"],
+                "{label}: audit lcp_ms must match vitals lcp_ms"
+            );
+            assert_eq!(
+                audit["lcp_rating"], vitals["lcp_rating"],
+                "{label}: audit lcp_rating must match vitals lcp_rating"
+            );
+        }
+    }
+
+    /// A measurable (non-approximate) LCP must be rated exactly as before the
+    /// iter-125 extraction — proving the helper is behaviour-preserving for the
+    /// common measurable-LCP path.
+    #[test]
+    fn unit_perf_audit_lcp_rated_when_measurable() {
+        let mut vitals = json!({});
+        apply_lcp_fields(&mut vitals, Some(3200.0), false);
+
+        assert_eq!(vitals["lcp_ms"], json!(3200.0));
+        assert_eq!(
+            vitals["lcp_rating"],
+            json!("needs-improvement"),
+            "3200ms LCP is between good (2500) and poor (4000)"
+        );
+        assert!(
+            vitals.get("lcp_approximate").is_none(),
+            "no approximation flag for a measured LCP"
+        );
+        assert!(
+            vitals.get("lcp_note").is_none(),
+            "no platform note for a measured LCP"
         );
     }
 
