@@ -47,7 +47,7 @@ Root cause in `crates/ff-rdp-cli/src/commands/a11y_contrast.rs`:
    `total` is the post-filter/pre-limit count from `apply_limit`,
    `a11y_contrast.rs:76`) — so the top-level `total` reports the sampled count whenever it
    exceeds the failure count, i.e. always under `--fail-only` on a mostly-passing page.
-   The help text (`crates/ff-rdp-cli/src/cli/args.rs:654`) documents `"total": N` with no
+   The help text (`crates/ff-rdp-cli/src/cli/args.rs:660`) documents `"total": N` with no
    hint that it can exceed `results`.
 
 The `.max()` was presumably meant to keep `total` honest when the output limit truncates
@@ -79,7 +79,7 @@ The `.max()` was presumably meant to keep `total` honest when the output limit t
 - [ ] Emit `sampled` (from JS `summary.total`, `a11y_contrast.rs:53-58`) at the top level of
       the envelope next to `total`, and keep the existing `meta.summary`
       (`a11y_contrast.rs:60-64`) untouched for aa_pass/aa_fail/capped detail.
-- [ ] Update the help text (`args.rs:654`, plus the `--fail-only` usage lines at `args.rs:62`,
+- [ ] Update the help text (`args.rs:660`, plus the `--fail-only` usage lines at `args.rs:62`,
       `args.rs:128`, `args.rs:153`) to document `total` = returned results (failures when
       `--fail-only`) and `sampled` = elements checked, with a one-line backward-compat note
       that `total` previously reported the sample size.
@@ -108,6 +108,12 @@ The `.max()` was presumably meant to keep `total` honest when the output limit t
   (`crates/ff-rdp-cli/src/output.rs:28`) everywhere else receives the post-filter population
   count, with `shown` covering the limited slice — a11y contrast becomes consistent instead
   of special.
+- iter-126 precedent (output-contract fixes): keep the parity discipline from
+  `network_and_navigate_summary_fields_agree_field_for_field` — write one unit test that pins
+  the exact field values (not just presence/type) for both the zero-failure and
+  known-failure-count cases, and record the live dogfood transcript in the same
+  `{t, n}`-style compact `--jq` projection used by `dogfood_path` above so a shape regression
+  is caught by the pre-PR gate, not just by hand-inspection.
 - Without `--fail-only`, `total == sampled` by construction; emitting both keeps the shape
   stable across flag combinations (no key that appears only with the flag).
 
