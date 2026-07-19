@@ -285,6 +285,14 @@ pub fn run(
 
     if use_detail {
         let controls = OutputControls::from_cli(cli, SortDir::Desc);
+        // Iteration 126: keep the FULL entry list so the detail envelope can
+        // carry the same summary fields (total_requests, total_transfer_bytes,
+        // slowest, …) as summary mode — otherwise `--jq` users, who are forced
+        // into detail mode by the trigger list above, can never reach them.
+        // build_network_summary only reads url/status/duration_ms/transfer_size/
+        // cause_type, so the internal `_resource_id` marker on these entries is
+        // harmless here.
+        let summary_source = results.clone();
         let mut detail = results;
         // Default sort by duration_ms desc when no explicit sort is provided.
         if cli.sort.is_none() {
@@ -384,6 +392,12 @@ pub fn run(
         let limited = controls.apply_fields(limited);
         let mut envelope =
             output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
+        // Iteration 126: carry the summary fields alongside `results` in the
+        // detail envelope so `--jq` consumers get total_requests etc. Summary
+        // counts are computed from the full capture, never the truncated view.
+        // `timeout_reached` is always false here: the non-timed drain used by
+        // the standalone `network` command stops on idle (see summary mode).
+        merge_summary_fields(&mut envelope, &summary_source, false);
         if let Some(hint) = empty_hint
             && let Some(obj) = envelope.as_object_mut()
         {
@@ -699,6 +713,87 @@ pub fn build_network_summary(
         );
     }
     summary
+}
+
+/// Merge the summary fields from [`build_network_summary`] into a target object.
+///
+/// Copies `total_requests`, `total_transfer_bytes`, `by_cause_type`, `slowest`
+/// and `timeout_reached` (plus the `hint` field when `timeout_reached` is true)
+/// onto `target` without disturbing keys `target` already holds. Existing keys
+/// on `target` win, so entry-level fields such as `entries`/`shown`/`total` are
+/// never clobbered by the summary.
+///
+/// `entries` is the FULL, unlimited entry list — summary counts (e.g.
+/// `total_requests`) always reflect the whole capture, not the truncated view.
+pub(crate) fn merge_summary_fields(
+    target: &mut serde_json::Value,
+    entries: &[serde_json::Value],
+    timeout_reached: bool,
+) {
+    let summary = build_network_summary(entries, timeout_reached);
+    if let (Some(dst), Some(src)) = (target.as_object_mut(), summary.as_object()) {
+        for (k, v) in src {
+            // Do not overwrite entry-level keys the caller already set.
+            dst.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+}
+
+/// Build the ONE canonical network object shape returned on every path.
+///
+/// Iteration 126: `navigate --with-network` (and the standalone `network`
+/// detail view) previously flipped between a bare array (quiet/`--all` pages),
+/// a `{entries, shown, total, truncated, hint}` object (busy pages), and a
+/// summary object (non-detail) — so `.results.network.entries` threw
+/// `cannot index array` half the time and the documented summary fields were
+/// unreachable via `--jq`. This builder returns a single object on every path:
+///
+/// ```json
+/// {
+///   "entries": [ ... ],          // limited + field-projected view
+///   "shown": N,                  // entries.len()
+///   "total": N,                  // total BEFORE the default 20-entry limit
+///   "truncated": bool,           // total > shown
+///   "total_requests": N,         // summary fields (from the FULL capture)
+///   "total_transfer_bytes": N,
+///   "by_cause_type": { ... },
+///   "slowest": [ ... ],
+///   "timeout_reached": bool,
+///   "hint": "..."                // only when truncated or timeout_reached
+/// }
+/// ```
+///
+/// The summary counts are computed from `all_entries` (the full capture) while
+/// `entries` carries the possibly-truncated, field-projected view, so
+/// `--fields url` can never strip `total_requests` and `--limit`/the default cap
+/// never distorts the totals.
+pub(crate) fn build_canonical_network(
+    entries: Vec<serde_json::Value>,
+    shown: usize,
+    total: usize,
+    truncated: bool,
+    all_entries: &[serde_json::Value],
+    timeout_reached: bool,
+) -> serde_json::Value {
+    // Move `entries` into the object explicitly via Value::Array so the Vec is
+    // consumed rather than borrowed (avoids a needless clone).
+    let mut obj = json!({
+        "entries": Value::Array(entries),
+        "shown": shown,
+        "total": total,
+        "truncated": truncated,
+    });
+    merge_summary_fields(&mut obj, all_entries, timeout_reached);
+    // The summary's own `hint` (timeout) is preserved by merge_summary_fields;
+    // add the truncation hint only when it is not already present.
+    if truncated && let Some(map) = obj.as_object_mut() {
+        map.entry("hint".to_string()).or_insert_with(|| {
+            json!(format!(
+                "showing {shown} of {total}, use --all for complete list"
+            ))
+        });
+    }
+    obj
 }
 
 /// Return buffered network events as a JSON array.
@@ -1182,5 +1277,141 @@ mod tests {
             !by_cause.contains_key("other"),
             "null cause_type must NOT produce \"other\" key; got: {by_cause:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-126: canonical network object shape
+    // -----------------------------------------------------------------------
+
+    fn sample_entries(n: usize) -> Vec<Value> {
+        (0..n)
+            .map(|i| {
+                // Test indices are tiny; cast losslessly via u16 for a stable
+                // increasing duration without triggering cast_precision_loss.
+                let duration_ms = f64::from(u16::try_from(i).unwrap_or(u16::MAX)) * 10.0;
+                json!({
+                    "url": format!("https://example.com/{i}"),
+                    "duration_ms": duration_ms,
+                    "status": 200,
+                    "transfer_size": 100.0,
+                    "cause_type": "script",
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn build_canonical_network_carries_entries_and_summary() {
+        let entries = sample_entries(3);
+        let obj = build_canonical_network(entries.clone(), 3, 3, false, &entries, false);
+        assert!(obj.is_object(), "canonical shape must be an object");
+        // Entry-level keys.
+        assert!(obj["entries"].is_array());
+        assert_eq!(obj["entries"].as_array().unwrap().len(), 3);
+        assert_eq!(obj["shown"], 3);
+        assert_eq!(obj["total"], 3);
+        assert_eq!(obj["truncated"], false);
+        // Summary keys ride alongside.
+        assert_eq!(obj["total_requests"], 3);
+        assert_eq!(obj["total_transfer_bytes"], 300.0);
+        assert!(obj["by_cause_type"].is_object());
+        assert!(obj["slowest"].is_array());
+        assert_eq!(obj["timeout_reached"], false);
+    }
+
+    #[test]
+    fn build_canonical_network_empty_keeps_all_keys() {
+        // A zero-request page still carries entries:[] and total_requests:0 —
+        // keys present, not omitted (plan Task A, third bullet).
+        let obj = build_canonical_network(vec![], 0, 0, false, &[], false);
+        assert!(obj.is_object());
+        assert!(obj["entries"].is_array());
+        assert_eq!(obj["entries"].as_array().unwrap().len(), 0);
+        assert_eq!(obj["shown"], 0);
+        assert_eq!(obj["total"], 0);
+        assert_eq!(obj["truncated"], false);
+        assert_eq!(obj["total_requests"], 0);
+        assert_eq!(obj["total_transfer_bytes"], 0.0);
+    }
+
+    #[test]
+    fn build_canonical_network_truncated_summary_reflects_full_capture() {
+        // The `entries` view is truncated to 2, but summary counts must reflect
+        // the FULL 5-entry capture, and a truncation hint is added.
+        let all = sample_entries(5);
+        let limited: Vec<Value> = all.iter().take(2).cloned().collect();
+        let obj = build_canonical_network(limited, 2, 5, true, &all, false);
+        assert_eq!(obj["shown"], 2);
+        assert_eq!(obj["total"], 5);
+        assert_eq!(obj["truncated"], true);
+        // total_requests reflects the full capture, never the truncated view.
+        assert_eq!(obj["total_requests"], 5);
+        assert_eq!(obj["total_transfer_bytes"], 500.0);
+        let hint = obj["hint"].as_str().expect("truncation hint present");
+        assert!(hint.contains("--all"), "hint should mention --all: {hint}");
+    }
+
+    #[test]
+    fn build_canonical_network_timeout_hint_wins_over_truncation() {
+        // When both timeout and truncation could add a hint, the timeout hint
+        // (from build_network_summary) is set first and must not be overwritten.
+        let all = sample_entries(5);
+        let limited: Vec<Value> = all.iter().take(2).cloned().collect();
+        let obj = build_canonical_network(limited, 2, 5, true, &all, true);
+        assert_eq!(obj["timeout_reached"], true);
+        let hint = obj["hint"].as_str().expect("hint present");
+        assert!(
+            hint.contains("--network-timeout"),
+            "timeout hint must win over truncation hint: {hint}"
+        );
+    }
+
+    #[test]
+    fn merge_summary_fields_does_not_clobber_entry_keys() {
+        let all = sample_entries(2);
+        let mut target = json!({
+            "entries": [{"url": "kept"}],
+            "shown": 1,
+            "total": 2,
+            "truncated": true,
+        });
+        merge_summary_fields(&mut target, &all, false);
+        // Entry keys survive; summary keys are added.
+        assert_eq!(target["entries"][0]["url"], "kept");
+        assert_eq!(target["shown"], 1);
+        assert_eq!(target["total"], 2);
+        assert_eq!(target["truncated"], true);
+        assert_eq!(target["total_requests"], 2);
+        assert!(target["slowest"].is_array());
+    }
+
+    #[test]
+    fn network_and_navigate_summary_fields_agree_field_for_field() {
+        // Parity assertion (iter-125 precedent): the summary fields carried by
+        // the standalone `network` detail envelope and by the `navigate
+        // --with-network` canonical object must be byte-identical for the same
+        // capture. Both go through merge_summary_fields / build_network_summary,
+        // so extract each side's summary key set and compare.
+        let entries = sample_entries(4);
+
+        // navigate side: the canonical object embeds summary fields directly.
+        let nav = build_canonical_network(entries.clone(), 4, 4, false, &entries, false);
+
+        // network side: summary fields are merged onto the envelope.
+        let mut net_env = json!({ "results": [], "total": 4 });
+        merge_summary_fields(&mut net_env, &entries, false);
+
+        for key in [
+            "total_requests",
+            "total_transfer_bytes",
+            "by_cause_type",
+            "slowest",
+            "timeout_reached",
+        ] {
+            assert_eq!(
+                nav[key], net_env[key],
+                "summary field `{key}` must agree between navigate and network shapes"
+            );
+        }
     }
 }

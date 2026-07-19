@@ -438,7 +438,12 @@ Examples:
   ff-rdp navigate https://example.com --wait-for selector:.athing
   ff-rdp navigate https://example.com --no-wait
 
-Output: {\"results\": {\"navigated\": \"...\", \"committed_url\": \"...\", \"ready_state\": \"...\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}")]
+Output: {\"results\": {\"navigated\": \"...\", \"committed_url\": \"...\", \"ready_state\": \"...\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}
+
+--with-network output: results.network is ONE canonical object on every path (quiet or busy page, --detail/--jq or default, --all or capped):
+  {\"navigated\": \"...\", \"network\": {\"entries\": [...], \"shown\": N, \"total\": N, \"truncated\": bool, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false}}
+  entries is capped at 20 by default (use --all to expand); summary fields always reflect the FULL capture.
+  Note (iter-126): previously results.network was a BARE ARRAY in non-truncated detail mode (and --all), so .results.network.entries / .total_requests threw \"cannot index array\" on quiet pages. It is now always the object above; consumers of the old bare-array form should read .results.network.entries.")]
     Navigate(NavigateArgs),
     /// Evaluate JavaScript in the target tab
     #[command(long_about = "Evaluate JavaScript in the target tab.
@@ -553,7 +558,8 @@ Field fidelity by source:
 
 Default: 20 results, sorted by duration (slowest first).
 Output (summary mode): {\"results\": {\"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false}, \"total\": N, \"meta\": {...}}
-Output (--detail): {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"status\": 200, \"duration_ms\": N, ...}], \"total\": N, \"meta\": {...}}
+Output (--detail): {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"status\": 200, \"duration_ms\": N, ...}], \"total\": N, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"meta\": {...}}
+  Note (iter-126): detail mode now carries the summary fields (total_requests, total_transfer_bytes, by_cause_type, slowest) alongside the results array, so --jq users (who are always in detail mode) can reach them.
 Output (--detail --headers): adds {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}} per entry.")]
     Network(NetworkArgs),
     /// Query browser Performance API entries and Core Web Vitals
