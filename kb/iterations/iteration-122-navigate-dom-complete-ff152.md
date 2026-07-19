@@ -100,6 +100,19 @@ so the fix must speed up the pages that don't fire it without regressing the one
   loses the richer document-event signal (e.g. `about:neterror` early-exit at `navigate.rs:188-200`)
   that events provides on pages that do fire it.
 - `--no-wait` (0.06s) stays the escape hatch but skips commit verification; it is not the fix.
+- **iter-121 learning (FF152 event/ACK ordering):** iter-121 found that on FF152 a
+  `resources-available-array` event can arrive **before** the `watchResources` ACK for the
+  `cookies` resource type — `recv_reply_from` routes it to the event sink (or drops it if none is
+  installed), so a naive "read the ACK, then optionally read one more message" pattern silently
+  misses the event. `navigate.rs` already subscribes to `document-event` via `watch_resources`
+  (`navigate.rs:634-660`) and drains via an `rx.try_recv()` channel/sink (`navigate.rs:177`), which
+  is the correct shape — but if root-causing *why* `dom-complete` "never fires" on FF152 (Theme A
+  here), first rule out the same event-before-ACK race: confirm the event-sink is installed
+  *before* `watch_resources` is called (not after), and consider whether `RdpTransport::swap_event_sink`
+  (new in iter-121, `transport.rs`) is a cleaner primitive than the ad hoc channel already in use.
+  It is plausible `dom-complete` isn't actually "never firing" but is arriving in a window this
+  code doesn't capture — worth a raw RDP trace (`FF_RDP_TRACE_RAW=1`) before assuming Theme A's
+  interleaved-poll fix is the only lever.
 
 ## Out of scope
 
