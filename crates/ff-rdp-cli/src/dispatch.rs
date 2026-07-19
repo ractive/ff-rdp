@@ -107,7 +107,7 @@ pub(crate) fn resolve_ref_via_daemon(cli: &Cli, ref_id: &str) -> Result<String, 
         ));
     }
 
-    let info = registry::read_registry()
+    let info = registry::read_registry(cli.port)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
         .ok_or_else(|| AppError::User(
             format!("--ref {ref_id}: no daemon is running — start the daemon first or use a CSS selector instead")
@@ -966,7 +966,7 @@ fn dispatch_inner(
         }
         Command::Daemon { daemon_command } => match daemon_command {
             DaemonCommand::Status => crate::daemon::client::run_daemon_status(cli),
-            DaemonCommand::Stop => crate::daemon::client::run_daemon_stop(cli),
+            DaemonCommand::Stop => crate::daemon::client::run_daemon_stop(cli, cli.port),
         },
         Command::Doctor => commands::doctor::run(cli),
         Command::Profiles { profiles_command } => match profiles_command {

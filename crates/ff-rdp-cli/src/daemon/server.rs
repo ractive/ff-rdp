@@ -216,7 +216,14 @@ struct SharedState {
     /// dispatched/buffered.  Events from other watchers (e.g. created by CLI
     /// clients for the cookies or storage command) are forwarded to the RPC
     /// client instead, so that the protocol handshake completes correctly.
-    watcher_actor: String,
+    ///
+    /// iter-123 Theme A: this is a `Mutex<String>` (was a plain `String`)
+    /// because the watcher may be established **lazily** — when the daemon
+    /// starts against a tabless Firefox, the field is empty until the background
+    /// establisher resolves a tab and fills it in.  An empty string never
+    /// matches any real actor, so no event is misrouted while the watcher is
+    /// pending.
+    watcher_actor: Mutex<String>,
     /// 32-byte random auth token (hex-encoded, 64 chars).
     ///
     /// Every incoming client connection must present this token as its very
@@ -300,6 +307,220 @@ impl SharedState {
 /// after the underlying socket is closed and its fd recycled.
 type ClientId = u64;
 
+/// The typed receiver end produced by [`ResourceCommand::subscribe`] — the
+/// stream of parsed [`ff_rdp_core::Resource`]s the dispatcher fans into the
+/// buffer.
+type ResourceReceiver = std::sync::mpsc::Receiver<std::sync::Arc<ff_rdp_core::Resource>>;
+
+/// How long the daemon retries `listTabs` at startup before giving up and
+/// starting *without* a resource watcher (iter-123 Theme A).
+///
+/// Sized to stay comfortably inside the client's 5 s `wait_for_registry`
+/// budget for the common case where a freshly-launched Firefox creates its tab
+/// a moment after `launch` returns; when the tab appears within this window the
+/// registry is written with a live watcher and no fallback is needed.  If the
+/// tab never appears the daemon still starts (tabless) and a background
+/// establisher keeps trying.
+const WATCHER_STARTUP_RETRY: Duration = Duration::from_millis(2500);
+
+/// How long the background establisher polls for a tab before giving up
+/// (iter-123 Theme A).  Generous: a user may `launch` and only navigate much
+/// later, so we keep trying for the practical lifetime of an idle daemon.
+const WATCHER_BACKGROUND_RETRY: Duration = Duration::from_mins(10);
+
+/// A successfully-established resource watcher: the watcher actor ID plus the
+/// `ResourceCommand` bus and typed receiver the dispatcher fans events through
+/// (iter-123 Theme A).
+struct WatcherSetup {
+    watcher_actor: ff_rdp_core::ActorId,
+    resource_bus: ResourceCommand,
+    resource_rx: std::sync::mpsc::Receiver<std::sync::Arc<ff_rdp_core::Resource>>,
+}
+
+/// Establish the daemon's resource watcher on `transport`: list tabs, get the
+/// tab's watcher actor, watch frame targets, and subscribe to the daemon
+/// resource types.  Returns `Ok(None)` when Firefox currently has **zero page
+/// tabs** (a non-fatal condition — see [`run_daemon`]); returns `Err` only on a
+/// genuine protocol/transport failure.
+fn establish_watcher(transport: &mut RdpTransport) -> Result<Option<WatcherSetup>> {
+    let tabs = RootActor::list_tabs(transport).context("listing tabs")?;
+    let Some(tab) = tabs.first() else {
+        return Ok(None);
+    };
+    let tab_actor = tab.actor.clone();
+
+    let watcher_actor =
+        TabActor::get_watcher(transport, &tab_actor).context("getting watcher actor")?;
+    // Subscribe to frame target events *before* resources so that
+    // `target-available-form` / `target-destroyed-form` arrive from the start of
+    // the session.  Per the Firefox RDP protocol, `watchTargets` must be called
+    // before `watchResources`.
+    WatcherActor::watch_targets(transport, &watcher_actor, "frame")
+        .context("subscribing to frame targets")?;
+
+    let mut resource_bus = ResourceCommand::new(watcher_actor.clone());
+    let (_sub_id, resource_rx) = resource_bus
+        .subscribe(transport, DAEMON_RESOURCE_TYPES)
+        .context("subscribing to resources via ResourceCommand")?;
+
+    Ok(Some(WatcherSetup {
+        watcher_actor,
+        resource_bus,
+        resource_rx,
+    }))
+}
+
+/// [`establish_watcher`] with a bounded retry loop for the common
+/// "tab appears a moment after launch" case (iter-123 Theme A).
+///
+/// Polls `listTabs` every 150 ms until a tab appears, the `budget` elapses, or
+/// a hard protocol error occurs.  A zero-tab result is retried (not fatal); a
+/// transport error aborts (there is no point retrying a dead connection).
+fn establish_watcher_with_retry(
+    transport: &mut RdpTransport,
+    budget: Duration,
+) -> Option<WatcherSetup> {
+    let deadline = Instant::now() + budget;
+    loop {
+        match establish_watcher(transport) {
+            Ok(Some(setup)) => return Some(setup),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    return None;
+                }
+                thread::sleep(Duration::from_millis(150));
+            }
+            Err(e) => {
+                // A genuine protocol/transport error — do not spin on a dead
+                // connection.  Log once and give up on the watcher; the daemon
+                // still starts and can proxy traffic.
+                eprintln!("daemon: could not establish resource watcher: {e:#}");
+                return None;
+            }
+        }
+    }
+}
+
+/// Background thread that establishes the resource watcher once a tab appears
+/// (iter-123 Theme A).
+///
+/// Runs only when the daemon started against a tabless Firefox.  It opens its
+/// own dedicated RDP connection, polls [`establish_watcher`] until a page tab
+/// exists (or the daemon shuts down / the retry budget elapses), and on success:
+///
+/// 1. publishes the resolved watcher actor into `state.watcher_actor` so the
+///    dispatcher recognises the watcher's events;
+/// 2. hands the `(ResourceCommand, rx)` subscription to the dispatcher via
+///    `resource_setup_tx`;
+/// 3. pumps every subsequent message from this connection into the shared
+///    `state.event_tx`, so the single dispatcher buffers watcher events exactly
+///    as on the startup path.
+///
+/// A dedicated connection is used because the main connection's read half is
+/// owned by the reader thread and cannot serve the synchronous replies that
+/// `listTabs` / `getWatcher` / `watchResources` require.
+fn background_establish_watcher_loop(
+    state: &Arc<SharedState>,
+    firefox_host: &str,
+    firefox_port: u16,
+    connect_timeout: Duration,
+    resource_setup_tx: &SyncSender<(ResourceCommand, ResourceReceiver)>,
+) {
+    let mut transport = match RdpTransport::connect_raw(firefox_host, firefox_port, connect_timeout)
+    {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("daemon: watcher-establisher could not connect to Firefox: {e}");
+            return;
+        }
+    };
+    // Consume and validate the greeting on this second connection.
+    match transport.recv() {
+        Ok(g) if validate_greeting(&g).is_ok() => {}
+        Ok(_) => {
+            eprintln!("daemon: watcher-establisher got an unexpected Firefox greeting");
+            return;
+        }
+        Err(e) => {
+            eprintln!("daemon: watcher-establisher failed to read greeting: {e}");
+            return;
+        }
+    }
+
+    // Poll for a tab until one appears, the daemon shuts down, or we exhaust the
+    // generous background budget.
+    let deadline = Instant::now() + WATCHER_BACKGROUND_RETRY;
+    let setup = loop {
+        if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
+            return;
+        }
+        match establish_watcher(&mut transport) {
+            Ok(Some(setup)) => break setup,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    eprintln!(
+                        "daemon: watcher-establisher gave up — no tab appeared within {WATCHER_BACKGROUND_RETRY:?}"
+                    );
+                    return;
+                }
+                thread::sleep(Duration::from_millis(250));
+            }
+            Err(e) => {
+                eprintln!("daemon: watcher-establisher handshake failed: {e:#}");
+                return;
+            }
+        }
+    };
+
+    // Publish the watcher actor so the dispatcher recognises its events.
+    {
+        let mut guard = lock_or_recover!(state.watcher_actor);
+        setup.watcher_actor.as_ref().clone_into(&mut guard);
+    }
+
+    // Hand the subscription to the dispatcher.  If the dispatcher is gone the
+    // daemon is shutting down — nothing more to do.
+    if resource_setup_tx
+        .send((setup.resource_bus, setup.resource_rx))
+        .is_err()
+    {
+        return;
+    }
+    eprintln!(
+        "daemon: resource watcher established lazily on {}",
+        setup.watcher_actor
+    );
+
+    // Pump this connection's messages into the shared event channel so the
+    // dispatcher buffers them.  A short read timeout lets us poll shutdown.
+    let (mut reader, _writer) = {
+        let (r, w) = transport.split();
+        (r, w)
+    };
+    if let Err(e) = reader.set_read_timeout(Some(Duration::from_secs(1))) {
+        eprintln!("daemon: watcher-establisher could not set read timeout: {e}");
+    }
+    loop {
+        if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
+            return;
+        }
+        match reader.recv() {
+            Ok(msg) => {
+                if state.event_tx.send(msg).is_err() {
+                    // Dispatcher gone — daemon shutting down.
+                    return;
+                }
+            }
+            Err(ProtocolError::Timeout) => {}
+            Err(_) => {
+                // This connection died — the daemon keeps running on the main
+                // connection; just stop pumping.
+                return;
+            }
+        }
+    }
+}
+
 /// Main entry point for the daemon process.
 ///
 /// Runs as `ff-rdp _daemon` and blocks until the idle timeout fires, a fatal
@@ -318,24 +539,33 @@ pub(crate) fn run_daemon(
     let greeting = transport.recv().context("reading Firefox greeting")?;
     validate_greeting(&greeting)?;
 
-    let tabs = RootActor::list_tabs(&mut transport).context("listing tabs")?;
-    let tab_actor = tabs.first().context("no tabs available")?.actor.clone();
-
-    let watcher_actor =
-        TabActor::get_watcher(&mut transport, &tab_actor).context("getting watcher actor")?;
-    // Subscribe to frame target events *before* resources so that
-    // `target-available-form` / `target-destroyed-form` arrive from the
-    // start of the session.  Per the Firefox RDP protocol, `watchTargets`
-    // must be called before `watchResources`.
-    WatcherActor::watch_targets(&mut transport, &watcher_actor, "frame")
-        .context("subscribing to frame targets")?;
-
-    // Create the ResourceCommand bus and subscribe to all daemon resource types.
-    // This sends `watchResources` on the wire and returns a typed receiver.
-    let mut resource_bus = ResourceCommand::new(watcher_actor.clone());
-    let (_sub_id, resource_rx) = resource_bus
-        .subscribe(&mut transport, DAEMON_RESOURCE_TYPES)
-        .context("subscribing to resources via ResourceCommand")?;
+    // iter-123 Theme A: a freshly-launched headless Firefox (temp profile) can
+    // come up with **zero page tabs** — `listTabs` returns `total: 0` until the
+    // first navigation lazily creates a tab.  The old code bailed here with
+    // `tabs.first().context("no tabs available")?`, so the daemon died *before*
+    // the registry write and every command silently fell back to a per-command
+    // direct connection with a `daemon_autostart_failed` warning — the daemon
+    // never ran in this environment.
+    //
+    // Tab presence is required only for the daemon's own *resource watcher*
+    // (network/console buffering), NOT for proxying client↔Firefox traffic, so
+    // a tabless start is no longer fatal.  We try to establish the watcher with
+    // a short bounded retry (catching the common case where the tab appears a
+    // moment after launch), and if that does not yield a tab we start the daemon
+    // *without* a watcher and hand off to a background establisher thread that
+    // keeps trying — the registry is written and the daemon reaches
+    // `running:true` either way.
+    let established = establish_watcher_with_retry(&mut transport, WATCHER_STARTUP_RETRY);
+    let initial_watcher_actor = established
+        .as_ref()
+        .map(|w| w.watcher_actor.as_ref().to_owned())
+        .unwrap_or_default();
+    if established.is_none() {
+        eprintln!(
+            "daemon: Firefox has no page tab yet — starting without a resource watcher; \
+             it will be established lazily once a tab appears"
+        );
+    }
 
     // Listen on a random loopback port; the OS assigns the port number.
     let listener = TcpListener::bind("127.0.0.1:0").context("binding TCP listener")?;
@@ -381,6 +611,13 @@ pub(crate) fn run_daemon(
     // channel drained by the dispatcher thread below — per-actor demux was never
     // adopted, so keeping a constructed-but-unused reader was dishonest.
 
+    // iter-123 Theme A: rendezvous channel used to hand a lazily-established
+    // resource subscription to the already-running dispatcher.  On a tabless
+    // start the dispatcher begins with no subscription; the background
+    // establisher sends the `(bus, rx)` pair here once a tab appears.
+    let (resource_setup_tx, resource_setup_rx) =
+        mpsc::sync_channel::<(ResourceCommand, ResourceReceiver)>(1);
+
     let state = Arc::new(SharedState {
         buffer: Mutex::new(ResourceBuffer::new()),
         rpc_writer: Mutex::new(None),
@@ -389,7 +626,7 @@ pub(crate) fn run_daemon(
         start_time: Instant::now(),
         last_activity: Mutex::new(Instant::now()),
         shutdown: AtomicBool::new(false),
-        watcher_actor: watcher_actor.as_ref().to_owned(),
+        watcher_actor: Mutex::new(initial_watcher_actor),
         auth_token,
         ref_store: Mutex::new(RefStore::new()),
         nav_generation: AtomicU64::new(0),
@@ -407,6 +644,33 @@ pub(crate) fn run_daemon(
     // The Firefox writer is shared: the main thread may forward CLI messages to
     // Firefox while the reader thread owns the read half exclusively.
     let firefox_writer = Arc::new(Mutex::new(firefox_writer));
+
+    // iter-123 Theme A: if the watcher could not be established at startup
+    // (Firefox is still tabless), spawn a supervised background thread that
+    // keeps polling for a tab and, once one appears, establishes the watcher and
+    // hands the resulting subscription to the dispatcher via `resource_setup_tx`.
+    //
+    // The establisher opens its **own** short-lived RDP connection to Firefox
+    // for the request/response handshake (the main connection's read half is
+    // owned by the reader thread and cannot serve synchronous replies), then
+    // pushes its watcher's events into the shared `event_tx` so the single
+    // dispatcher buffers them exactly as it does the startup path.
+    let (initial_bus, initial_rx) = if let Some(setup) = established {
+        (Some(setup.resource_bus), Some(setup.resource_rx))
+    } else {
+        let est_host = firefox_host.to_owned();
+        spawn_supervised(&state, "watcher-establisher", move |state| {
+            background_establish_watcher_loop(
+                state,
+                &est_host,
+                firefox_port,
+                connect_timeout,
+                &resource_setup_tx,
+            );
+        })
+        .context("spawning watcher establisher thread")?;
+        (None, None)
+    };
 
     // Spawn the grip-release-drainer thread (iter-76b Theme B), supervised.
     //
@@ -429,13 +693,19 @@ pub(crate) fn run_daemon(
     // Spawn the dispatcher thread that drains the mpsc channel and routes
     // events to stream subscribers / rpc_writer, supervised.  Decoupled from
     // the reader so that heavy event bursts do not delay auth-greeting writes.
+    //
+    // iter-123 Theme A: the resource bus/receiver may be `None` at startup (the
+    // daemon began tabless); in that case the dispatcher receives the
+    // subscription later over `resource_setup_rx` once the background
+    // establisher succeeds.
     let writer_for_dispatcher = Arc::clone(&firefox_writer);
     spawn_supervised(&state, "event-dispatcher", move |state| {
         event_dispatcher_loop(
             state,
             event_rx,
-            resource_bus,
-            resource_rx,
+            initial_bus,
+            initial_rx,
+            resource_setup_rx,
             writer_for_dispatcher,
         );
     })
@@ -444,7 +714,7 @@ pub(crate) fn run_daemon(
     let result = accept_loop(&state, &listener, &firefox_writer, idle_timeout);
 
     state.shutdown.store(true, Ordering::Relaxed);
-    let _ = registry::remove_registry();
+    let _ = registry::remove_registry(firefox_port);
     eprintln!("daemon: shut down");
 
     result
@@ -734,6 +1004,13 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
 /// Owns the `ResourceCommand` bus and the typed `Resource` receiver so that
 /// watcher events can be parsed once and fanned out to the `ResourceBuffer`.
 ///
+/// iter-123 Theme A: the `(bus, rx)` pair may start as `None` when the daemon
+/// began against a tabless Firefox.  In that state the dispatcher still routes
+/// target/console/nav/RPC traffic (so proxying works) and forwards otherwise
+/// unrouted replies into the setup-reply channel for the background
+/// establisher; once the establisher hands over a subscription via
+/// `resource_setup_rx` the dispatcher adopts it and begins buffering resources.
+///
 /// `firefox_writer` is the write half of the split transport, used to flush
 /// pending `unwatchResources` packets via [`ResourceCommand::gc_fire_forget`]
 /// once per event-batch cycle.
@@ -743,19 +1020,44 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
 fn event_dispatcher_loop(
     state: &Arc<SharedState>,
     rx: mpsc::Receiver<Value>,
-    mut resource_bus: ResourceCommand,
-    resource_rx: std::sync::mpsc::Receiver<std::sync::Arc<ff_rdp_core::Resource>>,
+    initial_bus: Option<ResourceCommand>,
+    initial_rx: Option<ResourceReceiver>,
+    resource_setup_rx: mpsc::Receiver<(ResourceCommand, ResourceReceiver)>,
     firefox_writer: Arc<Mutex<ff_rdp_core::FramedWriter>>,
 ) {
+    // `Some` once a resource subscription exists (either at startup or handed
+    // over later by the background establisher).
+    let mut subscription: Option<(ResourceCommand, ResourceReceiver)> =
+        match (initial_bus, initial_rx) {
+            (Some(bus), Some(rx)) => Some((bus, rx)),
+            _ => None,
+        };
+
     loop {
+        // Adopt a lazily-established subscription if one has arrived.
+        if subscription.is_none()
+            && let Ok((bus, res_rx)) = resource_setup_rx.try_recv()
+        {
+            subscription = Some((bus, res_rx));
+        }
+
         // Use recv_timeout so we can check the shutdown flag periodically.
         match rx.recv_timeout(Duration::from_secs(1)) {
             Ok(msg) => {
-                dispatch_firefox_message(state, &msg, &mut resource_bus, &resource_rx);
-                // Flush any pending `unwatchResources` accumulated during
-                // dispatch (e.g. from dead-channel pruning in dispatch_event).
-                // Runs once per event — cheap when pending_unwatch is empty.
-                resource_bus.gc_fire_forget(&mut *lock_or_recover!(firefox_writer));
+                match subscription.as_mut() {
+                    Some((resource_bus, resource_rx)) => {
+                        dispatch_firefox_message(state, &msg, Some((resource_bus, resource_rx)));
+                        // Flush any pending `unwatchResources` accumulated during
+                        // dispatch (e.g. from dead-channel pruning). Runs once
+                        // per event — cheap when pending_unwatch is empty.
+                        resource_bus.gc_fire_forget(&mut *lock_or_recover!(firefox_writer));
+                    }
+                    None => {
+                        // No resource subscription yet (tabless start): route
+                        // everything except resource buffering.
+                        dispatch_firefox_message(state, &msg, None);
+                    }
+                }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
@@ -771,13 +1073,20 @@ fn event_dispatcher_loop(
 }
 
 /// Route a single Firefox message to the appropriate destination(s).
+///
+/// `resources` is `Some((bus, rx))` when a resource subscription is active; it
+/// is `None` while the daemon is still tabless (iter-123 Theme A), in which case
+/// watcher-event buffering is skipped but every other route (targets, console
+/// pushes, navigation, RPC forwarding, and setup-reply forwarding) still runs.
 fn dispatch_firefox_message(
     state: &SharedState,
     msg: &Value,
-    resource_bus: &mut ResourceCommand,
-    resource_rx: &std::sync::mpsc::Receiver<std::sync::Arc<ff_rdp_core::Resource>>,
+    resources: Option<(&mut ResourceCommand, &ResourceReceiver)>,
 ) {
-    if is_watcher_event(msg, &state.watcher_actor) {
+    let watcher_actor = lock_or_recover!(state.watcher_actor).clone();
+    if let Some((resource_bus, resource_rx)) = resources
+        && is_watcher_event(msg, &watcher_actor)
+    {
         // Forward raw events to stream subscribers first, noting which resource
         // types were claimed by at least one subscriber.
         let streamed_types = dispatch_watcher_event_to_stream_subs(state, msg);
@@ -1970,6 +2279,67 @@ mod tests {
 
     use super::*;
 
+    /// AC `unit_establish_watcher_tabless_is_non_fatal` (iter-123 Theme A):
+    /// when `listTabs` returns zero tabs, `establish_watcher` returns `Ok(None)`
+    /// — a non-fatal signal — instead of erroring, so `run_daemon` can still
+    /// write the registry and start the daemon.
+    /// Spawn a loopback "Firefox" that answers **every** `listTabs` request with
+    /// an empty `tabs` array, then return a `connect_raw` transport wired to it.
+    ///
+    /// `connect_raw` does not read a greeting, so the server does not send one —
+    /// `establish_watcher` begins with `listTabs`, which is exactly what we
+    /// exercise here.
+    fn empty_tabs_transport() -> RdpTransport {
+        use std::io::{BufReader, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (accept, _) = listener.accept().unwrap();
+            let mut srv_reader = BufReader::new(accept.try_clone().unwrap());
+            while ff_rdp_core::transport::recv_from(&mut srv_reader).is_ok() {
+                let reply = json!({"from": "root", "tabs": [], "selected": 0});
+                let frame =
+                    ff_rdp_core::transport::encode_frame(&serde_json::to_string(&reply).unwrap());
+                if (&accept).write_all(frame.as_bytes()).is_err() {
+                    break;
+                }
+            }
+        });
+        RdpTransport::connect_raw(&addr.ip().to_string(), addr.port(), Duration::from_secs(5))
+            .expect("connect_raw to loopback")
+    }
+
+    /// AC `unit_establish_watcher_tabless_is_non_fatal` (iter-123 Theme A):
+    /// when `listTabs` returns zero tabs, `establish_watcher` returns `Ok(None)`
+    /// — a non-fatal signal — instead of erroring, so `run_daemon` can still
+    /// write the registry and start the daemon.
+    #[test]
+    fn establish_watcher_returns_none_on_zero_tabs() {
+        let mut transport = empty_tabs_transport();
+        let result = establish_watcher(&mut transport).expect("must not error on zero tabs");
+        assert!(
+            result.is_none(),
+            "zero tabs must yield Ok(None) so the daemon starts tabless, not a hard error"
+        );
+    }
+
+    /// AC `unit_establish_watcher_retry_gives_up` (iter-123 Theme A):
+    /// `establish_watcher_with_retry` returns `None` (does not hang) when tabs
+    /// never appear within the budget, so a persistently-tabless Firefox still
+    /// lets the daemon proceed.
+    #[test]
+    fn establish_watcher_with_retry_gives_up_when_no_tab_appears() {
+        let mut transport = empty_tabs_transport();
+        // Tight budget so the test is fast; must return None (not hang, not panic).
+        let result = establish_watcher_with_retry(&mut transport, Duration::from_millis(300));
+        assert!(
+            result.is_none(),
+            "a Firefox that never grows a tab must make the retry give up with None"
+        );
+    }
+
     // A minimal test-only SharedState with no real sockets.
     fn test_state() -> SharedState {
         SharedState {
@@ -1980,7 +2350,7 @@ mod tests {
             start_time: Instant::now(),
             last_activity: Mutex::new(Instant::now()),
             shutdown: AtomicBool::new(false),
-            watcher_actor: String::new(),
+            watcher_actor: Mutex::new(String::new()),
             auth_token: "test-token".to_owned(),
             ref_store: Mutex::new(RefStore::new()),
             nav_generation: AtomicU64::new(0),
@@ -3595,7 +3965,7 @@ mod tests {
         // Use a state whose watcher_actor matches the bus's watcher so that
         // is_watcher_event() returns true and dispatch_event() is called.
         let state = SharedState {
-            watcher_actor: "conn0/watcher1".to_owned(),
+            watcher_actor: Mutex::new("conn0/watcher1".to_owned()),
             ..test_state()
         };
 
@@ -3674,7 +4044,7 @@ mod tests {
         // the resource_rx — we just need the dead-channel prune to fire).
         let (_dummy_tx, resource_rx) =
             std::sync::mpsc::channel::<std::sync::Arc<ff_rdp_core::Resource>>();
-        dispatch_firefox_message(&state, &packet, &mut resource_bus, &resource_rx);
+        dispatch_firefox_message(&state, &packet, Some((&mut resource_bus, &resource_rx)));
 
         assert_eq!(
             resource_bus.pending_unwatch_count(),

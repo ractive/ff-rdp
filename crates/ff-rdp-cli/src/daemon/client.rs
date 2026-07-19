@@ -219,7 +219,7 @@ pub(crate) fn find_running_daemon(
     firefox_host: &str,
     firefox_port: u16,
 ) -> Result<Option<DaemonInfo>> {
-    let Some(info) = registry::read_registry()? else {
+    let Some(info) = registry::read_registry(firefox_port)? else {
         return Ok(None);
     };
 
@@ -234,7 +234,7 @@ pub(crate) fn find_running_daemon(
             "daemon: cleaning up stale registry (PID {} is dead)",
             info.pid
         );
-        registry::remove_registry().ok();
+        registry::remove_registry(firefox_port).ok();
         return Ok(None);
     }
 
@@ -297,7 +297,10 @@ pub(crate) fn resolve_connection_target(
     //    lock, the second invocation blocks here until the first has finished
     //    registering, then re-checks the registry (step 3) and reuses the
     //    winner instead of spawning a duplicate.
-    let _spawn_lock = match registry::acquire_spawn_lock() {
+    // iter-123 Theme B: the spawn lock is per Firefox port, so an autostart for
+    // one port never serializes behind or collides with an autostart for
+    // another.
+    let _spawn_lock = match registry::acquire_spawn_lock(firefox_port) {
         Ok(lock) => lock,
         Err(e) => {
             // Locking failed (e.g. exotic filesystem) — fall back to a direct
@@ -407,7 +410,7 @@ fn direct_with_autostart_warning(reason: String) -> ConnectionTarget {
 ///     during) the write;
 ///   * otherwise → the registry write raced or was slow.
 fn classify_registry_wait_failure(firefox_host: &str, firefox_port: u16) -> &'static str {
-    match registry::read_registry() {
+    match registry::read_registry(firefox_port) {
         // A registry entry for OUR target exists AND its PID is still alive —
         // the process registered, we just polled before/around the write.
         Ok(Some(info))
@@ -736,14 +739,19 @@ fn is_firefox_port_open(host: &str, port: u16) -> bool {
 /// Connect to the daemon (after auth), send a raw daemon message, and return
 /// the daemon's response.
 ///
+/// `port` selects which per-port registry entry to use — callers that operate
+/// on an explicit target port (e.g. [`stop_prior_instance`]) must pass that
+/// port rather than always defaulting to `cli.port`, so the RPC is sent to the
+/// daemon actually addressed (iter-123 Theme B).
+///
 /// On failure (daemon not found, auth error, etc.) returns an `AppError`.
-fn daemon_rpc(cli: &Cli, msg: &serde_json::Value) -> Result<Value, AppError> {
-    let info = registry::read_registry()
+fn daemon_rpc(cli: &Cli, port: u16, msg: &serde_json::Value) -> Result<Value, AppError> {
+    let info = registry::read_registry(port)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
         .ok_or_else(|| AppError::User("no daemon is running".to_owned()))?;
 
     if !process::is_process_alive(info.pid) {
-        registry::remove_registry().ok();
+        registry::remove_registry(port).ok();
         return Err(AppError::User(
             "daemon process is no longer alive".to_owned(),
         ));
@@ -809,7 +817,7 @@ fn daemon_rpc(cli: &Cli, msg: &serde_json::Value) -> Result<Value, AppError> {
 
 /// `ff-rdp daemon status` — print daemon status as JSON.
 pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
-    let result = match registry::read_registry()
+    let result = match registry::read_registry(cli.port)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
     {
         None => json!({
@@ -821,7 +829,7 @@ pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
             "buffer_sizes": null,
         }),
         Some(ref info) if !process::is_process_alive(info.pid) => {
-            registry::remove_registry().ok();
+            registry::remove_registry(cli.port).ok();
             json!({
                 "running": false,
                 "pid": null,
@@ -836,7 +844,7 @@ pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
             // whatever registry data we have with null stats so callers can
             // still see the PID/port.
             let (uptime_seconds, connections, buffer_sizes, target_count) =
-                match daemon_rpc(cli, &json!({"to": "daemon", "type": "status"})) {
+                match daemon_rpc(cli, cli.port, &json!({"to": "daemon", "type": "status"})) {
                     Ok(resp) => (
                         resp.get("uptime_secs").and_then(Value::as_u64),
                         resp.get("stream_subscriber_count").and_then(Value::as_u64),
@@ -897,24 +905,32 @@ fn kill_pid_and_wait_port(pid: u32, port: u16) -> (bool, bool, String) {
 
 /// `ff-rdp daemon stop` — gracefully stop the running daemon and free the Firefox port.
 ///
+/// `port` is the Firefox debug port to act on. Top-level callers (the `daemon
+/// stop` CLI handler) pass `cli.port`; [`stop_prior_instance`] passes its own
+/// explicit `port` parameter, which may differ from `cli.port` (e.g.
+/// `launch --debug-port N --replace` where `N != cli.port`) — threading `port`
+/// through here (instead of implicitly using `cli.port` everywhere) ensures we
+/// always act on the daemon actually addressed, not whichever one happens to be
+/// registered under `cli.port` (iter-123 Theme B).
+///
 /// Stop sequence (iter-90):
 /// 1. Check the [`DaemonRecord`] (written by both `launch` and `daemon start`).
 ///    If present: SIGTERM, wait, SIGKILL, poll port, remove record.
 /// 2. If no DaemonRecord: fall through to the existing proxy-daemon registry path
 ///    (for instances started via `daemon start`).
 /// 3. Registry path: send graceful shutdown RPC → SIGTERM → SIGKILL → poll port.
-pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
+pub(crate) fn run_daemon_stop(cli: &Cli, port: u16) -> Result<(), AppError> {
     // ----------------------------------------------------------------
     // 1. Check the shared DaemonRecord (written by `launch`).
-    //    Only act on records whose `port` matches `cli.port` so a stray
-    //    `daemon stop` cannot kill an unrelated instance the user did
+    //    Only act on records whose `port` matches the target `port` so a
+    //    stray `daemon stop` cannot kill an unrelated instance the user did
     //    not address. `read()` already filters out stale (dead-PID)
     //    records, so we don't need to recheck liveness here.
     // ----------------------------------------------------------------
     match crate::daemon_record::read()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon record: {e}")))?
     {
-        Some(rec) if rec.port == cli.port => {
+        Some(rec) if rec.port == port => {
             // Live instance found via DaemonRecord and matches --port — kill it.
             let (stopped, port_free, escalation_msg) = kill_pid_and_wait_port(rec.pid, rec.port);
             crate::daemon_record::remove().ok();
@@ -968,7 +984,10 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
     // ----------------------------------------------------------------
 
     // Read registry to get PID and port for process-group killing + port poll.
-    let Some(info) = registry::read_registry()
+    // Keyed by the target `port` so `daemon stop` only ever acts on the daemon
+    // the caller addressed, even when that differs from `cli.port` (iter-123
+    // Theme B).
+    let Some(info) = registry::read_registry(port)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
     else {
         // No daemon running — report success (idempotent).
@@ -984,7 +1003,7 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
     let firefox_port = info.firefox_port;
 
     if !process::is_process_alive(info.pid) {
-        registry::remove_registry().ok();
+        registry::remove_registry(firefox_port).ok();
         let meta = json!({});
         let envelope = output::envelope(
             &json!({"stopped": true, "reason": "already dead"}),
@@ -995,7 +1014,12 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
     }
 
     // 1. Try graceful shutdown via RPC first.
-    let rpc_ok = daemon_rpc(cli, &json!({"to": "daemon", "type": "shutdown"})).is_ok();
+    let rpc_ok = daemon_rpc(
+        cli,
+        firefox_port,
+        &json!({"to": "daemon", "type": "shutdown"}),
+    )
+    .is_ok();
 
     if rpc_ok {
         // Give the daemon up to 2 seconds to exit cleanly after the RPC.
@@ -1030,7 +1054,7 @@ pub(crate) fn run_daemon_stop(cli: &Cli) -> Result<(), AppError> {
     }
 
     // 4. Clean up the daemon registry regardless of process state.
-    registry::remove_registry().ok();
+    registry::remove_registry(firefox_port).ok();
 
     // 5. Poll the Firefox debug port until it stops accepting connections
     //    (max PORT_FREE_WAIT_BOUND with SIGTERM+SIGKILL escalation on timeout).
@@ -1082,9 +1106,11 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> 
     }
 
     // 2. Proxy-daemon registry — use the graceful stop path.
-    match registry::read_registry() {
+    //    Keyed by the target `port` (iter-123 Theme B) so we only take the
+    //    graceful path when a daemon record actually exists for this port.
+    match registry::read_registry(port) {
         Ok(Some(ref info)) if info.firefox_port == port => {
-            run_daemon_stop(cli)?;
+            run_daemon_stop(cli, port)?;
             return Ok(());
         }
         _ => {}
@@ -1180,7 +1206,10 @@ mod tests {
     /// warning — never a hard error, since direct mode still works.
     #[test]
     fn unit_autostart_failure_surfaces_warning() {
-        // Clear any residue so the assertion is deterministic.
+        // Serialize against every other test that touches the process-global
+        // warning slot (iter-123) so concurrent record→take sequences never
+        // observe each other's writes; then clear residue for determinism.
+        let _guard = crate::daemon_status::test_lock();
         let _ = crate::daemon_status::take_warnings();
 
         let target = direct_with_autostart_warning(
@@ -1220,6 +1249,7 @@ mod tests {
     /// output pipeline recorder (`daemon_status::take_warnings_json`).
     #[test]
     fn autostart_warning_serializes_into_envelope_shape() {
+        let _guard = crate::daemon_status::test_lock();
         let _ = crate::daemon_status::take_warnings();
         let _ = direct_with_autostart_warning("registry write raced or was slow".to_owned());
         let json = crate::daemon_status::take_warnings_json().expect("warnings present");
