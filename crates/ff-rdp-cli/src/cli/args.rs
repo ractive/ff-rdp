@@ -1117,9 +1117,12 @@ pub struct NavigateArgs {
     #[arg(long, value_name = "PREDICATE")]
     pub wait_for: Vec<String>,
     /// Strategy for waiting for navigation readiness.
-    /// `both` (default): try events first; if they time out, fall back to
-    ///         readystate poll within the remaining budget.
-    /// `events`: wait for document-event resources (dom-complete).
+    /// `both` (default): wait on document-event resources while also probing
+    ///         `document.readyState` in-loop, returning as soon as either
+    ///         signals complete — so a page that finished loading is not held
+    ///         up by a `dom-complete` event that never fires (e.g. FF152); a
+    ///         readystate poll runs as a final fallback if events time out.
+    /// `events`: wait for document-event resources (dom-complete) only.
     /// `readystate`: poll `document.readyState == "complete"` until timeout.
     #[arg(long, value_name = "STRATEGY", default_value = "both", value_enum)]
     pub wait_strategy: crate::commands::navigate::WaitStrategy,
