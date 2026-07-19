@@ -296,11 +296,61 @@ fn a11y_contrast_fail_only_filters_passing_checks() {
         "all fixture checks pass AA — fail-only should return empty array"
     );
 
-    // total reflects the full summary count from the JS result (not the filtered count),
-    // so the caller knows how many elements were checked in total.
+    // iter-127: `total` counts what the command returns (the failures), so with
+    // zero failing checks it must be 0 — NOT the sampled element count.
     assert_eq!(
-        json["total"], 2,
-        "total reflects all checked elements even when filtered"
+        json["total"], 0,
+        "total must count returned failures (0), not the sampled element count"
+    );
+
+    // The sampled element count moves to its own `sampled` field so the
+    // "how many elements were checked" signal is preserved.
+    assert_eq!(
+        json["sampled"], 2,
+        "sampled reports the number of examined elements (2 in this fixture)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// a11y contrast: total == sampled without --fail-only (iter-127 shape parity)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a11y_contrast_without_fail_only_total_equals_sampled() {
+    let server = a11y_contrast_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["a11y".to_owned(), "contrast".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    // Without --fail-only every check is returned, so `total` (returned count)
+    // equals `sampled` (examined count) — the fixture has 2 checks. Both keys
+    // are always present so the envelope shape is stable across flag combos.
+    assert_eq!(json["total"], 2, "total counts all 2 fixture checks");
+    assert_eq!(
+        json["sampled"], 2,
+        "sampled reports all 2 examined elements"
+    );
+    assert_eq!(
+        json["total"], json["sampled"],
+        "total must equal sampled when not filtering"
     );
 }
 

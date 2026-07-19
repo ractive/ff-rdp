@@ -2,7 +2,7 @@
 title: "Iteration 127: a11y contrast --fail-only reports the sampled count as total, not the failure count"
 type: iteration
 date: 2026-07-19
-status: planned
+status: in-progress
 branch: iter-127/a11y-contrast-fail-only-total
 depends_on: []
 firefox_refs: []
@@ -67,37 +67,39 @@ The `.max()` was presumably meant to keep `total` honest when the output limit t
 
 ### A. Honest total
 
-- [ ] In `run` (`a11y_contrast.rs:14-92`), pass the post-filter count to the envelope: replace
-      `total_count.max(total)` (`a11y_contrast.rs:83`) with the `total` returned by
-      `apply_limit` (`a11y_contrast.rs:76`), so truncation via `--limit` still reports the
-      full failure count while `--fail-only` no longer inflates it.
-- [ ] Add a unit test around the filter + envelope assembly: sampled=4, failures=0 must yield
-      `total == 0` with `results == []`; sampled=500, failures=447 must yield `total == 447`.
+- [x] In `run`, pass the post-filter count to the envelope: replaced `total_count.max(total)`
+      with the `total` returned by `apply_limit` (now `total_count` is renamed `sampled` and no
+      longer feeds the envelope `total`), so truncation via `--limit` still reports the full
+      failure count while `--fail-only` no longer inflates it. `apply_fail_only_filter` extracted
+      as a pure, testable helper.
+- [x] Added unit tests around the filter + envelope assembly: `fail_only_all_passing_reports_zero_total_and_sample_size`
+      (sampled=4, failures=0 → `total == 0`, `results == []`, `sampled == 4`) and
+      `fail_only_reports_failure_count_not_sample_size` (sampled=500, failures=447 → `total == 447`).
 
 ### B. Distinct sampled field
 
-- [ ] Emit `sampled` (from JS `summary.total`, `a11y_contrast.rs:53-58`) at the top level of
-      the envelope next to `total`, and keep the existing `meta.summary`
-      (`a11y_contrast.rs:60-64`) untouched for aa_pass/aa_fail/capped detail.
-- [ ] Update the help text (`args.rs:660`, plus the `--fail-only` usage lines at `args.rs:62`,
-      `args.rs:128`, `args.rs:153`) to document `total` = returned results (failures when
-      `--fail-only`) and `sampled` = elements checked, with a one-line backward-compat note
-      that `total` previously reported the sample size.
+- [x] Emit `sampled` (from JS `summary.total`) at the top level of the envelope next to `total`,
+      keeping the existing `meta.summary` untouched for aa_pass/aa_fail/capped detail
+      (`a11y_contrast::run` inserts `sampled` after `envelope_with_truncation`).
+- [x] Updated the help text (`args.rs` A11y `long_about`, the new `Contrast` `long_about`, and the
+      `--fail-only` usage/cookbook lines) to document `total` = returned results (failures when
+      `--fail-only`) and `sampled` = elements checked, with a backward-compat note that `total`
+      previously reported the sample size.
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
-- [ ] live_a11y_contrast_fail_only_total_zero: on a page whose sampled text all passes AA
-      (news.ycombinator.com class / local all-passing fixture page), `a11y contrast
-      --fail-only` yields `total == 0`, `results == []`, and `sampled >= 1`.
-- [ ] live_a11y_contrast_fail_only_total_counts_failures: on a page with known AA failures
-      (extend `live_a11y_contrast_wai_bad`), `--fail-only --all` yields
-      `total == (.results | length)` and `sampled >= total`.
-- [ ] live_a11y_contrast_limit_keeps_total: `--fail-only --limit 1` on the failing page still
+- [x] live_a11y_contrast_fail_only_total_zero: on a page whose sampled text all passes AA
+      (local all-passing `data:` fixture `FIXTURE_HTML_ALL_PASS`), `a11y contrast --fail-only`
+      yields `total == 0`, `results == []`, and `sampled >= 1`. PASSED against live Firefox.
+- [x] live_a11y_contrast_fail_only_total_counts_failures: on the known-AA-failure fixture
+      (`live_a11y_contrast_wai_bad::FIXTURE_HTML`), `--fail-only --all` yields
+      `total == (.results | length)` and `sampled >= total`. PASSED against live Firefox.
+- [x] live_a11y_contrast_limit_keeps_total: `--fail-only --limit 1` on the failing page still
       reports the full failure count in `total` (with `truncated == true`), not 1 — limit
-      truncates `results`, never `total`.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+      truncates `results`, never `total`. PASSED against live Firefox.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 

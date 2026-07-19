@@ -34,23 +34,13 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
     };
 
     // Apply fail_only filter: use aa_large for large text, aa_normal otherwise.
-    let mut filtered: Vec<Value> = if fail_only {
-        checks
-            .into_iter()
-            .filter(|c| {
-                let is_large = c
-                    .get("is_large_text")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                let key = if is_large { "aa_large" } else { "aa_normal" };
-                c.get(key).and_then(Value::as_bool) == Some(false)
-            })
-            .collect()
-    } else {
-        checks
-    };
+    let mut filtered = apply_fail_only_filter(checks, fail_only);
 
-    let total_count = result
+    // `summary.total` is the number of elements the in-page JS sampled and
+    // checked — NOT the number of results this command returns. Under
+    // `--fail-only` those differ: `sampled` counts every examined element while
+    // the top-level `total` counts only returned failures (iter-127).
+    let sampled = result
         .get("summary")
         .and_then(|s| s.get("total"))
         .and_then(Value::as_u64)
@@ -77,18 +67,45 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
     let shown = limited.len();
     let limited = controls.apply_fields(limited);
 
-    let envelope = output::envelope_with_truncation(
-        &Value::Array(limited),
-        shown,
-        total_count.max(total),
-        truncated,
-        &meta,
-    );
+    // `total` counts what this command returns: the post-filter, pre-limit
+    // population (failures under `--fail-only`, all checks otherwise). A
+    // `--limit` truncates `results` but `total` still reports the full count.
+    // The separate `sampled` field (below) carries the "elements examined"
+    // signal that `summary.total` used to smuggle into `total` (iter-127).
+    let mut envelope =
+        output::envelope_with_truncation(&Value::Array(limited), shown, total, truncated, &meta);
+    if let Some(obj) = envelope.as_object_mut() {
+        obj.insert("sampled".to_string(), json!(sampled));
+    }
 
     let hint_ctx = HintContext::new(HintSource::A11yContrast).with_fail_only(fail_only);
     OutputPipeline::from_cli(cli)?
         .finalize_with_hints(&envelope, Some(&hint_ctx))
         .map_err(AppError::from)
+}
+
+/// Keep only checks that fail WCAG AA when `fail_only` is set, otherwise return
+/// the checks unchanged.
+///
+/// A check fails AA when its level-appropriate flag (`aa_large` for large text,
+/// `aa_normal` otherwise) is `false`. The count of returned entries is what the
+/// envelope's top-level `total` reports — distinct from the JS `summary.total`
+/// sample size surfaced as `sampled` (iter-127).
+fn apply_fail_only_filter(checks: Vec<Value>, fail_only: bool) -> Vec<Value> {
+    if !fail_only {
+        return checks;
+    }
+    checks
+        .into_iter()
+        .filter(|c| {
+            let is_large = c
+                .get("is_large_text")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let key = if is_large { "aa_large" } else { "aa_normal" };
+            c.get(key).and_then(Value::as_bool) == Some(false)
+        })
+        .collect()
 }
 
 /// JS template for WCAG contrast ratio checking.
@@ -276,5 +293,122 @@ mod tests {
     fn contrast_js_caps_element_count() {
         // Guard against hanging on massive pages.
         assert!(CONTRAST_JS_TEMPLATE.contains("i < 1000"));
+    }
+
+    // -- iter-127: honest `total` vs `sampled` ------------------------------
+
+    /// Build a single contrast check with the given AA-normal result.
+    fn passing_check(aa_normal: bool) -> Value {
+        json!({
+            "selector": "p",
+            "is_large_text": false,
+            "aa_normal": aa_normal,
+            "aa_large": aa_normal,
+        })
+    }
+
+    /// Assemble the envelope exactly as `run` does after evaluation: apply the
+    /// fail-only filter, run the output controls, then build the truncation
+    /// envelope and inject the `sampled` field. Returns the top-level envelope.
+    ///
+    /// This mirrors `a11y_contrast::run`'s post-eval body so the count contract
+    /// can be pinned without a live Firefox instance.
+    fn assemble_envelope(checks: Vec<Value>, sampled: usize, fail_only: bool) -> Value {
+        let filtered = apply_fail_only_filter(checks, fail_only);
+        // No sort/limit/fields controls in this harness — mirror the default
+        // (no --limit) path where `total == filtered.len()`.
+        let total = filtered.len();
+        let shown = filtered.len();
+        let meta = json!({});
+        let mut envelope =
+            output::envelope_with_truncation(&Value::Array(filtered), shown, total, false, &meta);
+        if let Some(obj) = envelope.as_object_mut() {
+            obj.insert("sampled".to_string(), json!(sampled));
+        }
+        envelope
+    }
+
+    #[test]
+    fn fail_only_all_passing_reports_zero_total_and_sample_size() {
+        // sampled = 4, all pass AA -> 0 failures.
+        let checks = vec![
+            passing_check(true),
+            passing_check(true),
+            passing_check(true),
+            passing_check(true),
+        ];
+        let env = assemble_envelope(checks, 4, true);
+        assert_eq!(
+            env["total"], 0,
+            "--fail-only with zero failures must report total == 0, not the sample size"
+        );
+        assert_eq!(
+            env["results"].as_array().map(Vec::len),
+            Some(0),
+            "results must be empty when nothing fails AA"
+        );
+        assert_eq!(
+            env["sampled"], 4,
+            "sampled must carry the number of examined elements"
+        );
+    }
+
+    #[test]
+    fn fail_only_reports_failure_count_not_sample_size() {
+        // sampled = 500, of which 447 fail AA.
+        let mut checks: Vec<Value> = Vec::with_capacity(500);
+        for _ in 0..447 {
+            checks.push(passing_check(false)); // aa_normal == false -> fails
+        }
+        for _ in 0..53 {
+            checks.push(passing_check(true)); // passes AA
+        }
+        let env = assemble_envelope(checks, 500, true);
+        assert_eq!(
+            env["total"], 447,
+            "--fail-only must report the failure count (447), not the sample size (500)"
+        );
+        assert_eq!(
+            env["results"].as_array().map(Vec::len),
+            Some(447),
+            "results length must equal the failure count"
+        );
+        assert_eq!(env["sampled"], 500, "sampled must equal the examined count");
+    }
+
+    #[test]
+    fn without_fail_only_total_equals_sampled() {
+        // Without --fail-only, `total` counts every check and equals `sampled`.
+        let checks = vec![
+            passing_check(true),
+            passing_check(false),
+            passing_check(true),
+        ];
+        let env = assemble_envelope(checks, 3, false);
+        assert_eq!(
+            env["total"], 3,
+            "total counts all checks without --fail-only"
+        );
+        assert_eq!(
+            env["total"], env["sampled"],
+            "total must equal sampled when not filtering"
+        );
+    }
+
+    #[test]
+    fn fail_only_filter_uses_large_threshold_for_large_text() {
+        // Large text uses aa_large; a large-text check that passes aa_large but
+        // fails aa_normal must NOT be counted as a failure.
+        let large_pass = json!({
+            "selector": "h1",
+            "is_large_text": true,
+            "aa_normal": false,
+            "aa_large": true,
+        });
+        let filtered = apply_fail_only_filter(vec![large_pass], true);
+        assert!(
+            filtered.is_empty(),
+            "large text passing aa_large is not an AA failure"
+        );
     }
 }

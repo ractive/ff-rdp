@@ -59,7 +59,7 @@ COMMAND REFERENCE:
 
   Accessibility:
     ff-rdp a11y [--depth N] [--selector SEL] [--interactive] [--critical]
-    ff-rdp a11y contrast [--selector SEL] [--fail-only]
+    ff-rdp a11y contrast [--selector SEL] [--fail-only]  # total=results, sampled=elements checked
     ff-rdp a11y summary
 
   Performance:
@@ -150,7 +150,8 @@ COOKBOOK:
 
   # Accessibility
   ff-rdp a11y summary --format text
-  ff-rdp a11y contrast --fail-only
+  ff-rdp a11y contrast --fail-only    # total = AA failures; sampled = elements checked
+  ff-rdp a11y contrast --fail-only --jq '{total, shown: (.results|length), sampled}'
   ff-rdp a11y --interactive --jq '[.. | select(.role? == \"link\") | .name]'
 
   # DOM and CSS inspection
@@ -657,7 +658,8 @@ With --key: {\"results\": {\"key\": \"...\", \"value\": \"...\"}, \"total\": 1, 
 
 Output: {\"results\": {\"role\": \"...\", \"name\": \"...\", \"children\": [...]}, \"total\": 1, \"meta\": {...}}
 With a11y summary: {\"results\": [{\"role\": \"...\", \"name\": \"...\", \"level\": N}], \"total\": N, \"meta\": {...}}
-With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"passes_aa\": bool, ...}], \"total\": N, \"meta\": {...}}")]
+With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool, ...}], \"total\": N, \"sampled\": M, \"meta\": {...}}
+  a11y contrast `total` = returned results (AA failures under --fail-only, else all checks); `sampled` = elements examined. Pre-iter-127 `total` reported the sample size.")]
     A11y(A11yArgs),
     /// Reload the page
     #[command(long_about = "Reload the page.
@@ -1920,11 +1922,25 @@ pub enum PerfCommand {
 #[derive(Subcommand)]
 pub enum A11yCommand {
     /// Check WCAG color contrast ratios for text elements
+    #[command(long_about = "Check WCAG color contrast ratios for text elements.
+
+`total` counts the results returned: every checked element by default, or just
+the AA failures under --fail-only (pre-limit — a --limit truncates `results` but
+`total` still reports the full count, alongside `truncated: true`). The separate
+`sampled` field reports how many elements were examined, so total == sampled
+without --fail-only. `meta.summary` carries aa_pass/aa_fail/capped detail.
+
+Backward-compat note: before iter-127, `total` under --fail-only reported the
+sampled element count rather than the failure count; that count now lives in
+`sampled`.
+
+Output: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool, ...}], \"total\": N, \"sampled\": M, \"meta\": {\"summary\": {...}}}")]
     Contrast {
         /// CSS selector to limit checking (default: all text elements)
         #[arg(long)]
         selector: Option<String>,
         /// Only show elements that fail AA contrast requirements
+        /// (then `total` counts failures; `sampled` counts elements checked)
         #[arg(long)]
         fail_only: bool,
     },
