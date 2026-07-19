@@ -2,7 +2,7 @@
 title: "Iteration 124: post-merge live-sweep follow-ups — navigate probe actor goes stale, cookies test pinned an implementation detail"
 type: iteration
 date: 2026-07-19
-status: in-progress
+status: completed
 branch: iter-124/live-sweep-followups
 depends_on:
 - "[[iteration-121-cookies-storage-actor-enumeration]]"
