@@ -136,6 +136,18 @@ standalone `network` command has the same object/array divergence on `.results`:
 - Daemon-drain and `--follow` streaming paths are unaffected: the shape flip lives entirely
   in the final serialization, not in event collection
   (`build_network_entries`, `drain_network_events`).
+- Precedent from [[iteration-125-perf-audit-lcp-unavailable]]: that iteration fixed an
+  analogous drift (`perf vitals` vs `perf audit` disagreeing on LCP) by extracting the
+  divergent logic into one shared `pub(crate)` helper (`apply_lcp_fields`) that both call
+  sites feed identically, plus unit tests asserting the two outputs are equal for the same
+  inputs — not just tests of each path in isolation. Apply the same shape here: prefer a
+  shared `pub(crate)` builder that `apply_network_controls` (navigate) and the standalone
+  `network` command both call, and add an explicit parity assertion (unit and/or live) that
+  the two commands' shapes agree field-for-field on the same page, mirroring
+  `unit_perf_audit_lcp_unavailable_matches_vitals` / `live_perf_audit_vitals_lcp_parity`. This
+  also confirms the `firefox_refs:`/line-number citations in this plan should be re-verified
+  against current `main` before starting Task A, since line numbers drift between iterations
+  even when the referenced code is untouched by unrelated PRs.
 
 ## Out of scope
 
