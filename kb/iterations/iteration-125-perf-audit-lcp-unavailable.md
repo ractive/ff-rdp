@@ -2,7 +2,7 @@
 title: "Iteration 125: perf audit fabricates a false \"good\" 0 ms LCP where vitals says \"unavailable\""
 type: iteration
 date: 2026-07-19
-status: in-progress
+status: completed
 branch: iter-125/perf-audit-lcp-unavailable
 depends_on: []
 firefox_refs: []
