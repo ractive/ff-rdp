@@ -2,7 +2,7 @@
 title: "Iteration 127: a11y contrast --fail-only reports the sampled count as total, not the failure count"
 type: iteration
 date: 2026-07-19
-status: in-progress
+status: completed
 branch: iter-127/a11y-contrast-fail-only-total
 depends_on: []
 firefox_refs: []
