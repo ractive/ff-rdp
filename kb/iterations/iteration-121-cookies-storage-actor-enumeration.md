@@ -2,7 +2,7 @@
 title: "Iteration 121: cookies StorageActor enumeration is dead on FF152 — httpOnly cookies + flags lost"
 type: iteration
 date: 2026-07-18
-status: complete
+status: completed
 branch: iter-121/cookies-storage-actor-enumeration
 depends_on: []
 firefox_refs: []

@@ -2,7 +2,7 @@
 title: "Iteration 123: daemon autostart dies on a tabless Firefox + single-slot registry clobbers across ports"
 type: iteration
 date: 2026-07-18
-status: done
+status: completed
 branch: iter-123/daemon-autostart-and-per-port-registry
 depends_on: []
 firefox_refs: []
