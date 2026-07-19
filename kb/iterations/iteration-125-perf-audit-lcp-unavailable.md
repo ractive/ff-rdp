@@ -2,7 +2,7 @@
 title: "Iteration 125: perf audit fabricates a false \"good\" 0 ms LCP where vitals says \"unavailable\""
 type: iteration
 date: 2026-07-19
-status: planned
+status: in-progress
 branch: iter-125/perf-audit-lcp-unavailable
 depends_on: []
 firefox_refs: []
@@ -68,40 +68,40 @@ audit has no such coverage — which is how the drift went unnoticed.
 
 ### A. Shared LCP handling
 
-- [ ] Extract the `lcp_unavailable` computation + `lcp_ms`/`lcp_rating` selection
+- [x] Extract the `lcp_unavailable` computation + `lcp_ms`/`lcp_rating` selection
       (`perf.rs:527-541`) and the `lcp_approximate`/`lcp_note` annotation (`perf.rs:555-568`)
       into one `pub(crate)` helper (no new `pub` API) that both callers feed with
       `(lcp, lcp_approximate)`.
-- [ ] Replace the bare `lcp.map(|v| rate(…))` audit block (`perf.rs:957-982`) with the shared
+- [x] Replace the bare `lcp.map(|v| rate(…))` audit block (`perf.rs:957-982`) with the shared
       helper so `.results.vitals` in audit carries the identical
       `lcp_ms`/`lcp_rating`/`lcp_approximate`/`lcp_note` semantics as `perf vitals`.
-- [ ] Update `render_audit_text` (`perf.rs:1143`) so the LCP row renders `"unavailable"`
+- [x] Update `render_audit_text` (`perf.rs:1143`) so the LCP row renders `"unavailable"`
       (no `0 ms good`) when the rating is unavailable.
 
 ### B. Parity coverage
 
-- [ ] Add audit-side twins of the vitals unit tests (`perf.rs:1772`, `perf.rs:1814`):
+- [x] Add audit-side twins of the vitals unit tests (`perf.rs:1772`, `perf.rs:1814`):
       missing-LCP input and approximate-zero input must both yield
       `lcp_rating: "unavailable"`, `lcp_ms: null` in the audit vitals block.
-- [ ] Add a live parity test comparing `perf audit`'s `.results.vitals` LCP fields against
+- [x] Add a live parity test comparing `perf audit`'s `.results.vitals` LCP fields against
       `perf vitals` on the same page (extend the existing
       `live_dom_stats_perf_audit_parity` harness or add a sibling live test).
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
-- [ ] live_perf_audit_lcp_unavailable: on a page with no measurable LCP (text-only local
+- [x] live_perf_audit_lcp_unavailable: on a page with no measurable LCP (text-only local
       fixture page, no resource-timed image), `perf audit` reports
       `.results.vitals.lcp_rating == "unavailable"` and `.results.vitals.lcp_ms == null` —
       never `"good"` / `0.0`.
-- [ ] live_perf_audit_vitals_lcp_parity: on the same page in the same session, `perf audit`'s
+- [x] live_perf_audit_vitals_lcp_parity: on the same page in the same session, `perf audit`'s
       `.results.vitals.{lcp_ms, lcp_rating, lcp_approximate?}` equals `perf vitals`'
       `.results.{lcp_ms, lcp_rating, lcp_approximate?}` field-for-field.
-- [ ] unit_perf_audit_lcp_unavailable_matches_vitals: audit vitals block built from
+- [x] `unit_perf_audit_lcp_unavailable_matches_vitals`: audit vitals block built from
       missing-LCP and approximate-zero inputs yields `"unavailable"`/null via the shared
-      helper (twin of `perf.rs:1772` / `perf.rs:1814`).
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+      helper `apply_lcp_fields` (twin of `perf.rs:1772` / `perf.rs:1814`).
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 

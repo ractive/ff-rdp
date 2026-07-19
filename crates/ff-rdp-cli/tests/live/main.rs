@@ -78,6 +78,7 @@ mod live_navigate_real_site;
 mod live_network_default_watcher;
 mod live_network_headers;
 mod live_oneway;
+mod live_perf_audit_lcp_unavailable;
 mod live_perf_vitals_headless;
 mod live_reload_hard;
 mod live_screenshot_bulk_fallback;
