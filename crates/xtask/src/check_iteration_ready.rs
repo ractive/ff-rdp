@@ -345,63 +345,10 @@ pub fn run(args: Args) -> Result<()> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    /// Verify that the check-dogfood-script sub-check is included in the results
-    /// produced by run(). We use `--skip` for all other gates and a synthetic
-    /// plan so this test doesn't require a full repo checkout or Firefox binary.
-    #[test]
-    fn xtask_check_iteration_ready_calls_dogfood_script() {
-        use std::io::Write as _;
-        use tempfile::TempDir;
-
-        let dir = TempDir::new().unwrap();
-        // Write a minimal plan with dogfood_path (no dogfood_script) so the
-        // check-dogfood-script sub-check skips cleanly (SKIP = pass).
-        let plan_path = dir.path().join("iteration-96-test.md");
-        let content = "---\ntitle: \"Test\"\nstatus: planned\ntype: iteration\ndogfood_path: \"ff-rdp --help\"\n---\n\n# Body\n";
-        {
-            let mut f = std::fs::File::create(&plan_path).unwrap();
-            write!(f, "{content}").unwrap();
-        }
-
-        // Run check-iteration-ready via cargo run (current_exe is the test runner, not xtask).
-        let output = std::process::Command::new("cargo")
-            .args(["run", "-q", "-p", "xtask", "--"])
-            .args([
-                "check-iteration-ready",
-                "--plan",
-                plan_path.to_str().unwrap(),
-                "--base",
-                "HEAD",
-                "--skip",
-                "check-dead-primitives",
-                "--skip",
-                "check-todo-annotations",
-                "--skip",
-                "check-actor-kb-sync",
-                "--skip",
-                "check-firefox-refs",
-                "--skip",
-                "check-discipline-regression",
-                "--skip",
-                "ac-fidelity-check",
-                "--skip",
-                "check-live-test-layout",
-            ])
-            .output()
-            .unwrap();
-
-        let combined = {
-            let mut s = String::from_utf8_lossy(&output.stdout).into_owned();
-            s.push_str(&String::from_utf8_lossy(&output.stderr));
-            s
-        };
-
-        // The sub-check name must appear in output.
-        assert!(
-            combined.contains("check-dogfood-script"),
-            "check-dogfood-script sub-check name missing from output:\n{combined}"
-        );
-    }
-}
+// The `xtask_check_iteration_ready_calls_dogfood_script` test that used to
+// live here moved to `tests/bin_exit_codes.rs`: it invoked the binary via a
+// nested `cargo run -p xtask -- ...` (current_exe inside a unit test is the
+// test runner, not xtask), which deadlocks against the outer `cargo test
+// --workspace`'s build-directory lock. Integration tests get
+// `CARGO_BIN_EXE_xtask` for free, avoiding the nested cargo process
+// entirely. See iter-124 follow-up.
