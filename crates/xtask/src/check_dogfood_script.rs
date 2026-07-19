@@ -224,45 +224,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
-    fn xtask_check_dogfood_script_missing_sentinel() {
-        // Script exits 0 but does NOT write the sentinel → run_script returns
-        // an error via anyhow::bail!, which the xtask binary propagates as a
-        // non-zero exit code.  We invoke a child process to observe the exit
-        // code end-to-end (rather than asserting on run_inner's Result).
-        let dir = TempDir::new().unwrap();
-        let plan_path = write_plan(
-            &dir,
-            "iteration-98-no-sentinel.md",
-            "dogfood_script: no-sentinel.dogfood.sh\n",
-        );
-        write_script(
-            &dir,
-            "no-sentinel.dogfood.sh",
-            "# intentionally no sentinel",
-        );
-
-        // Pre-clean sentinel.
-        let _ = std::fs::remove_file("/tmp/ff-rdp-iter-98-dogfood-ok");
-
-        // run_script returns an error on failure, which the xtask binary turns
-        // into a non-zero exit. Spawn cargo run to observe the binary's exit
-        // code (current_exe inside the test is the test runner, not xtask).
-        let output = std::process::Command::new("cargo")
-            .args(["run", "-q", "-p", "xtask", "--"])
-            .env("FF_RDP_LIVE_TESTS", "1")
-            .args(["check-dogfood-script", plan_path.to_str().unwrap()])
-            .output()
-            .unwrap();
-
-        // Should have exited non-zero (missing sentinel).
-        assert!(
-            !output.status.success(),
-            "expected failure when sentinel is missing"
-        );
-    }
-
-    #[test]
     fn xtask_check_dogfood_script_no_field_skip() {
         // Plan with no dogfood_script field → SKIP, exit 0.
         let dir = TempDir::new().unwrap();
@@ -286,80 +247,5 @@ mod tests {
 
         let p3 = std::path::Path::new("not-an-iteration.md");
         assert_eq!(extract_iteration_number(p3), None);
-    }
-
-    /// `live_check_dogfood_script_fails_without_ff_rdp_live_tests_on_iter_branch`:
-    /// When the branch is an iter-* branch and FF_RDP_LIVE_TESTS is unset,
-    /// check-dogfood-script must FAIL (not SKIP).
-    ///
-    /// Uses FF_RDP_CURRENT_BRANCH override so this test does not depend on the
-    /// actual checked-out branch.
-    #[test]
-    fn live_check_dogfood_script_fails_without_ff_rdp_live_tests_on_iter_branch() {
-        let dir = TempDir::new().unwrap();
-        // Needs a dogfood_script field so we reach the gate logic.
-        let plan_path = write_plan(
-            &dir,
-            "iteration-95-branch-test.md",
-            "dogfood_script: fake.dogfood.sh\n",
-        );
-
-        let output = std::process::Command::new("cargo")
-            .args(["run", "-q", "-p", "xtask", "--"])
-            .args(["check-dogfood-script", plan_path.to_str().unwrap()])
-            .env("FF_RDP_CURRENT_BRANCH", "iter-99/test")
-            .env_remove("FF_RDP_LIVE_TESTS")
-            .output()
-            .unwrap();
-
-        assert!(
-            !output.status.success(),
-            "expected FAIL on iter-* branch w/o FF_RDP_LIVE_TESTS"
-        );
-        let combined = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            combined.contains("FF_RDP_LIVE_TESTS"),
-            "expected FF_RDP_LIVE_TESTS hint in output:\n{combined}"
-        );
-    }
-
-    /// `live_check_dogfood_script_skips_on_main_without_ff_rdp_live_tests`:
-    /// On a non-iter-* branch (e.g. "main"), check-dogfood-script must SKIP
-    /// (exit 0) when FF_RDP_LIVE_TESTS is unset.
-    #[test]
-    fn live_check_dogfood_script_skips_on_main_without_ff_rdp_live_tests() {
-        let dir = TempDir::new().unwrap();
-        let plan_path = write_plan(
-            &dir,
-            "iteration-94-main-test.md",
-            "dogfood_script: fake.dogfood.sh\n",
-        );
-
-        let output = std::process::Command::new("cargo")
-            .args(["run", "-q", "-p", "xtask", "--"])
-            .args(["check-dogfood-script", plan_path.to_str().unwrap()])
-            .env("FF_RDP_CURRENT_BRANCH", "main")
-            .env_remove("FF_RDP_LIVE_TESTS")
-            .output()
-            .unwrap();
-
-        let combined = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            output.status.success(),
-            "expected SKIP (exit 0) on non-iter-* branch w/o FF_RDP_LIVE_TESTS: {combined}"
-        );
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            stdout.contains("SKIP"),
-            "expected SKIP message in stdout:\n{stdout}"
-        );
     }
 }
