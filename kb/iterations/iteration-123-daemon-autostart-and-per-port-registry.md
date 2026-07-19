@@ -133,6 +133,17 @@ confound.
   file separately if still wanted.
 - The `daemon stop` port-still-held escalation (session 60 issue §1) — separate lifecycle bug.
 
+## Notes carried from iter-122
+
+- iter-122's review caught a fast-path that ignored a caller-selected level (a readystate probe
+  added for the default `Complete`-ish case fired even when the caller asked for an earlier
+  `--wait loading`/`--wait interactive`). No direct analog exists in this plan's scope (autostart
+  and registry keying are not level-gated), but if Theme A's lazy tab resolution introduces any
+  "resolve early if condition X already holds" fast path, gate it explicitly on the actual request
+  parameters (e.g. `--tab`) rather than assuming the fast path is always safe to take.
+- No scope change otherwise — iteration 123 is daemon/registry lifecycle work, independent of
+  iter-122's navigate/watcher fixes.
+
 ## References
 
 - [[dogfooding-session-61]]

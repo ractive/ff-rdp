@@ -120,6 +120,19 @@ so the fix must speed up the pages that don't fire it without regressing the one
   code doesn't capture — worth a raw RDP trace (`FF_RDP_TRACE_RAW=1`) before assuming Theme A's
   interleaved-poll fix is the only lever.
 
+## Review notes
+
+- PR #161 local code review (medium effort) found two correctness bugs in the shipped Theme A/B
+  code, both fixed before merge:
+  1. The interleaved `ReadyStateProbe` (Theme A) ignored `wait_level`, so
+     `--wait loading`/`--wait interactive` combined with `--wait-strategy both` could short-circuit
+     with `ready_state: "complete"` instead of resolving on the requested dom event. Fixed by
+     gating the probe to `wait_level == WaitLevel::Complete`.
+  2. `WaitLevel::Loading`'s early-return skipped the Theme B `eval_location_href` fallback applied
+     to the Interactive/Complete paths, so `--wait loading` could still surface an empty/about:blank
+     `committed_url` for SPAs. Fixed by applying the same fallback.
+  - Regression test added: `unit_navigate_probe_ignored_for_non_complete_wait_level`.
+
 ## Out of scope
 
 - `navigate --with-network` JSON shape inconsistency (object vs array) — filed separately from
