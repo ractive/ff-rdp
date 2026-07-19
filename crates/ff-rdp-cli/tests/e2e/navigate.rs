@@ -194,9 +194,10 @@ fn navigate_with_network_captures_requests() {
     // The navigated field is present.
     assert_eq!(json["results"]["navigated"], "https://example.com");
 
-    // Default mode returns a summary object, not a raw array.
+    // iter-126: the canonical shape is ONE object on every path, never a bare
+    // array. Default mode carries both the summary fields and an `entries` array.
     let network = &json["results"]["network"];
-    assert!(network.is_object(), "network should be a summary object");
+    assert!(network.is_object(), "network should be a canonical object");
     assert_eq!(network["total_requests"], 2, "expected 2 network entries");
 
     // total reflects the outer envelope (single navigate result).
@@ -206,6 +207,110 @@ fn navigate_with_network_captures_requests() {
     assert!(network["total_transfer_bytes"].is_number());
     assert!(network["by_cause_type"].is_object());
     assert!(network["slowest"].is_array());
+
+    // iter-126: `.entries` is reachable (array) even in default/summary mode —
+    // no more "cannot index array" when a consumer probes .entries.
+    assert!(
+        network["entries"].is_array(),
+        "network.entries must be an array in default mode, got: {}",
+        network["entries"]
+    );
+    assert_eq!(network["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(network["shown"], 2);
+    assert_eq!(network["total"], 2);
+    assert_eq!(network["truncated"], false);
+}
+
+#[test]
+fn navigate_with_network_detail_mode_is_object_not_array() {
+    // iter-126 regression: --detail (a detail-mode trigger) previously returned
+    // a bare array on quiet pages (≤20 entries), so `.results.network.entries`
+    // and `.results.network.total_requests` threw "cannot index array". Assert
+    // the canonical object shape with both entries and summary fields present.
+    let server = navigate_with_network_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "navigate".to_owned(),
+        "https://example.com".to_owned(),
+        "--with-network".to_owned(),
+        "--detail".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    let network = &json["results"]["network"];
+    assert!(
+        network.is_object(),
+        "detail-mode network must be a canonical object, not a bare array, got: {network}"
+    );
+    // Both entry-level and summary keys are present in detail mode.
+    assert!(network["entries"].is_array(), "entries must be an array");
+    assert_eq!(network["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(network["total_requests"], 2);
+    assert!(network["total_transfer_bytes"].is_number());
+    assert!(network["slowest"].is_array());
+    assert_eq!(network["truncated"], false);
+}
+
+#[test]
+fn navigate_with_network_all_keeps_object_shape() {
+    // iter-126 AC (live_navigate_with_network_all_keeps_summary equivalent under
+    // the mock server): --all is a detail-mode trigger that previously produced
+    // a bare array dump. Assert it now keeps the object shape with summary fields.
+    let server = navigate_with_network_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "navigate".to_owned(),
+        "https://example.com".to_owned(),
+        "--with-network".to_owned(),
+        "--all".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    let network = &json["results"]["network"];
+    assert!(
+        network.is_object(),
+        "--all network must stay an object, not a bare array, got: {network}"
+    );
+    assert!(network["entries"].is_array());
+    assert_eq!(network["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(network["total_requests"], 2);
+    assert_eq!(network["truncated"], false);
 }
 
 #[test]
@@ -296,10 +401,20 @@ fn navigate_with_network_empty_when_no_events() {
 
     assert_eq!(json["results"]["navigated"], "https://example.com");
 
-    // Default mode returns a summary object even when there are no entries.
+    // iter-126: even a zero-request page carries the canonical object with
+    // `entries: []` and `total_requests: 0` — keys are present, not omitted.
     let network = &json["results"]["network"];
-    assert!(network.is_object(), "network should be a summary object");
+    assert!(network.is_object(), "network should be a canonical object");
     assert_eq!(network["total_requests"], 0, "expected no network entries");
+    assert!(
+        network["entries"].is_array(),
+        "entries must be [] not absent on a zero-request page, got: {}",
+        network["entries"]
+    );
+    assert_eq!(network["entries"].as_array().unwrap().len(), 0);
+    assert_eq!(network["shown"], 0);
+    assert_eq!(network["total"], 0);
+    assert_eq!(network["truncated"], false);
 
     assert_eq!(json["total"], 1);
 }

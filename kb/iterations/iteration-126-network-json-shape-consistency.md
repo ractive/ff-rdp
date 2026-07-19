@@ -2,7 +2,7 @@
 title: "Iteration 126: network / navigate --with-network JSON shape flips between object and bare array"
 type: iteration
 date: 2026-07-19
-status: planned
+status: done
 branch: iter-126/network-json-shape-consistency
 depends_on: []
 firefox_refs: []
@@ -80,46 +80,59 @@ standalone `network` command has the same object/array divergence on `.results`:
 
 ### A. Canonical shape in navigate --with-network
 
-- [ ] Rework `apply_network_controls` (`navigate.rs:1291-1337`) to always return one object:
-      merge `build_network_summary` output with `entries`/`shown`/`total`/`truncated` so the
-      truncated (`navigate.rs:1322-1330`), non-truncated (`navigate.rs:1331-1333`), and
-      summary (`navigate.rs:1334-1336`) branches converge on the same key set.
-- [ ] Keep the default entry limit (20) on the detail path so the canonical shape does not
+- [x] Rework `apply_network_controls` to always return one object: it now delegates to the
+      shared `build_canonical_network` builder on BOTH the detail and summary branches, so
+      the truncated, non-truncated (was bare array), and summary paths converge on the same
+      key set `{entries, shown, total, truncated, total_requests, total_transfer_bytes,
+      by_cause_type, slowest, timeout_reached, …}`.
+- [x] Keep the default entry limit (20) on the detail path so the canonical shape does not
       reintroduce the ~13 KB dump; `--all` still expands `entries` but keeps the summary
-      fields and `total_requests` alongside.
-- [ ] `build_network_summary` (`network.rs:638-706`) already yields sane zero values for an
-      empty slice (`network.rs:642-658`); assert that the canonical object on a zero-request
-      page carries `entries: []` and `total_requests: 0` rather than omitting keys.
-- [ ] Re-record e2e fixtures for both the quiet and busy shapes via
-      `live_record_fixtures.rs` (never hand-crafted) and update the shape assertions in
-      `crates/ff-rdp-cli/tests/e2e/navigate.rs` and `tests/e2e/network.rs`.
+      fields and `total_requests` alongside (summary counts come from the full capture, not
+      the truncated view).
+- [x] `build_network_summary` already yields sane zero values for an empty slice; the
+      canonical object on a zero-request page carries `entries: []` and `total_requests: 0`
+      rather than omitting keys — asserted by e2e `navigate_with_network_empty_when_no_events`
+      and unit `build_canonical_network_empty_keeps_all_keys`.
+- [x] Reused the existing real-Firefox-recorded fixtures (the canonical shape is derived from
+      the same recorded entries, so no re-record was needed) and updated the shape assertions
+      in `crates/ff-rdp-cli/tests/e2e/navigate.rs` (added `..._detail_mode_is_object_not_array`,
+      `..._all_keeps_object_shape`) and `tests/e2e/network.rs` (summary fields in
+      `network_detail_shows_requests`). Busy/truncated + quiet-page shapes exercised live in
+      `live_126_network_shape.rs`.
 
 ### B. Standalone network command + contract docs
 
-- [ ] Extend the `network` detail envelope (`network.rs:384-402`) with the same summary
-      fields (`total_requests`, `total_transfer_bytes`, `slowest`, …) so `--jq` users are not
-      cut off from them by the detail-mode trigger (`network.rs:262-269`).
-- [ ] Update the help text: the summary-shape line (`args.rs:555`) plus the
-      `navigate --with-network` usage sections (`args.rs:18`, `args.rs:126`, `args.rs:436`)
-      describe the canonical object and carry a one-line backward-compat note ("previously a
-      bare array in non-truncated detail mode").
+- [x] Extended the `network` detail envelope with the same summary fields via
+      `merge_summary_fields` (computed from the full capture `summary_source`) so `--jq` users
+      are not cut off from `total_requests`/`total_transfer_bytes`/`slowest` by the detail-mode
+      trigger.
+- [x] Updated the help text: the summary-shape line (`args.rs`) plus the
+      `navigate --with-network` `long_about` section now describe the canonical object and
+      carry a one-line backward-compat note ("previously a bare array in non-truncated detail
+      mode").
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
-- [ ] live_navigate_with_network_shape_quiet: `navigate --with-network --jq` on a quiet page
-      (example.com class, ≤20 requests) yields `.results.network.entries` of type array and a
-      numeric `.results.network.total_requests` — no bare array, no `cannot index array`.
-- [ ] live_navigate_with_network_shape_busy: the same invocation on a busy page (>20
-      requests) yields the identical key set, with `truncated == true`, `shown == 20`, and
-      `total_requests >= total` — shape equality with the quiet case asserted key-by-key.
-- [ ] live_navigate_with_network_all_keeps_summary: adding `--all` still returns the object
-      shape (full `entries`, summary fields intact) — never a bare array.
-- [ ] live_network_detail_carries_summary: standalone `network --jq` returns summary fields
+- [x] live_navigate_with_network_shape_quiet_and_busy (quiet half): `navigate --with-network
+      --jq` on a quiet page (example.com, ≤20 requests) yields `.results.network.entries` of
+      type array and a numeric `.results.network.total_requests` — no bare array, no `cannot
+      index array`. Also covered by mock e2e `navigate_with_network_captures_requests` and
+      unit `build_canonical_network_carries_entries_and_summary`.
+- [x] live_navigate_with_network_shape_quiet_and_busy (busy half): the same invocation on a
+      busy page (wikipedia, >20 requests) yields the identical key set, with `truncated ==
+      true`, `shown == 20`, and `total_requests >= total` — quiet/busy key sets asserted equal
+      via `network_keys()`. Truncation math covered by unit
+      `build_canonical_network_truncated_summary_reflects_full_capture`.
+- [x] live_navigate_with_network_all_keeps_summary: adding `--all` still returns the object
+      shape (full `entries`, summary fields intact) — never a bare array. Mock e2e:
+      `navigate_with_network_all_keeps_object_shape`.
+- [x] live_network_detail_carries_summary: standalone `network --jq` returns summary fields
       (`total_requests`, `total_transfer_bytes`) alongside the entry list on a page with
-      captured traffic.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+      captured traffic. Mock e2e: `network_detail_shows_requests`; parity unit
+      `network_and_navigate_summary_fields_agree_field_for_field`.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 

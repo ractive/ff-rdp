@@ -175,6 +175,20 @@ fn network_detail_shows_requests() {
     assert_eq!(results[1]["method"], "GET");
     assert_eq!(results[1]["url"], "https://example.com/favicon.ico");
     assert_eq!(results[1]["status"], 404);
+
+    // iter-126: detail mode (which --jq forces) now carries the summary fields
+    // alongside `results`, so consumers are not cut off from total_requests etc.
+    assert_eq!(
+        json["total_requests"], 2,
+        "detail envelope must carry total_requests, got: {json}"
+    );
+    assert!(
+        json["total_transfer_bytes"].is_number(),
+        "detail envelope must carry total_transfer_bytes"
+    );
+    assert!(json["by_cause_type"].is_object());
+    assert!(json["slowest"].is_array());
+    assert_eq!(json["timeout_reached"], false);
 }
 
 // ---------------------------------------------------------------------------
