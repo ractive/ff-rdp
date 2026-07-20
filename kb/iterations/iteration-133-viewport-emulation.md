@@ -1,102 +1,106 @@
 ---
-branch: iter-133/viewport-emulation
+branch: iter-133/mobile-viewports
 date: 2026-07-19
 depends_on:
   - kb/iterations/iteration-131-measurement-honesty.md
 dogfood_path: |
-  ff-rdp launch --headless --window-size 1200x900
-  ff-rdp eval 'innerWidth + "x" + innerHeight'   # → "1200x900"
-  ff-rdp emulate --viewport 390x844 --dppx 3 --touch on
-  ff-rdp eval 'matchMedia("(max-width: 400px)").matches'   # → true (real media-query flip)
-  ff-rdp screenshot -o /tmp/mobile.png   # → PNG width 390 × DPR
+  ff-rdp launch --headless --window-size 600x800
+  ff-rdp eval 'innerWidth + "x" + innerHeight'   # → "600x800" (true value, above the floor)
+  ff-rdp navigate https://example.com >/dev/null
+  ff-rdp screenshot --window-size 390x844 -o /tmp/mobile.png
+  # → PNG exactly 390 wide (batch capture path, no floor)
 first_call_sites: []
 status: planned
 ---
 
-# Iteration 133: viewport emulation — mobile screenshots, launch window-size, emulate --viewport
+# Iteration 133: mobile viewports — launch window-size, batch mobile screenshots, dppx composition
 
-Driven by agent-seat feedback (2026-07-19): an agent trying to take mobile-mode
-screenshots searched four natural homes for viewport control and found none. Each stop
-in the trail is a finding in itself:
+Driven by agent-seat feedback (2026-07-19): an agent taking mobile-mode screenshots
+found no viewport control at any of the four natural homes (`launch`, `screenshot`,
+`emulate`, `responsive`). Design was settled up-front by the research spike
+[[viewport-emulation]] (2026-07-20, Firefox 152.0.6, empirical + RDM-internals-traced):
 
-1. `launch --window-size WxH` — Firefox honors `-width`/`-height` CLI args headless, so
-   launch only needs to forward them. Cheap 90% solution; the ~500 px window floor
-   belongs in that flag's help text.
-2. `screenshot --viewport-width` — `--viewport-height` exists, so the missing width
-   reads as an oversight, not a design choice. Discoverability trap: it's the first
-   thing an agent tries.
-3. `emulate --viewport 390x844` — the actually-wanted feature. `emulate` already
-   patches the target-configuration actor (touch, dppx, UA); the feedback claims
-   Firefox RDM does true viewport emulation through the same family — below the window
-   floor, with real media-query evaluation. **Unverified** — the kb/decision-log
-   position to date has been "no RDP viewport-sizing actor" (hence `responsive`'s CSS
-   width-constraint technique). Theme A settles this against the Firefox source.
-4. `responsive` is honest about the limitation but, on utility-CSS apps (Tailwind
-   `tablet:`/`desktop:` classes), the media-query flip IS the layout — geometry at a
-   CSS-constrained width answers the wrong half of the question. With an emulated
-   viewport, `matches:true` becomes the normal case.
-
-Also recorded: headless `window.resizeTo()` is silently ignored — cost the agent a
-probe; worth a doc note where agents will look (eval/screenshot help).
+- **True viewport emulation over RDP is impossible.** RDM sizes the viewport by
+  resizing a chrome-owned frame element via CSS custom properties in the parent
+  process; no RDP actor/method carries a size. `customViewport` sent to the
+  target-configuration actor is silently stripped (echo `{}`; `innerWidth`
+  unchanged). This confirms the standing kb position and refutes the feedback's
+  target-configuration claim.
+- **Headless `--screenshot` batch mode honors `--window-size` exactly** — PNG 390×844
+  or even 320×568, no floor. This is the only true sub-500px mobile raster path.
+- **A debugger-server headless instance clamps `-width` to a ~500px floor** (390 →
+  innerWidth 500) and **ignores `--window-size` entirely** (stays 1366).
+- **`overrideDPPX` works and is orthogonal to width** (DPR 3 with width unchanged) —
+  density composes with any width mechanism.
+- **ff-rdp-core ships a dead primitive**: `TargetConfigurationFront::
+  set_custom_viewport_size` (`fronts/target_configuration.rs:193`) sends the
+  server-ignored `customViewport` field; its only consumer is its own unit test.
 
 ## Themes
 
-- **A — research: how RDM sizes the viewport, and whether ff-rdp can reach it.**
-  Read the Firefox source (RDM + target-configuration actor + browsing-context
-  actor family) and determine the mechanism for true viewport emulation over RDP:
-  which actor/fields, window-floor behavior, dppx interaction, media-query
-  re-evaluation. Outcome → `kb/research/viewport-emulation.md` with `firefox_refs`;
-  update the decision log (supersede the "no viewport actor" position if disproven).
-  Any drift from the published spec dict gets `// allow-spec-drift` per convention.
-- **B — `launch --window-size WxH`.** Forward `-width`/`-height`; help text documents
-  the ~500 px floor and that this is a window size, not device emulation.
-- **C — `emulate --viewport WxH`** (mechanism per Theme A). Composes with the existing
-  `--dppx`/`--touch`/UA fields into honest device profiles; `emulate` envelope reports
-  the applied viewport and whether it is true emulation or a window resize.
-  `--device <preset>` sugar (e.g. `iphone-15` bundling viewport+dppx+touch+UA) only if
-  it falls out cheaply; otherwise note it as follow-up.
-- **D — screenshot + responsive ride on the viewport.** `screenshot --viewport-width`
-  for symmetry with the existing height flag; `responsive` uses the emulated viewport
-  when available so `media_queries_applied:true` is the normal case (its
-  iter-131 `simulation` field then reports the technique actually used), and its
-  warning points at `emulate --viewport` when emulation is unavailable.
-- **E — dead-end doc notes.** eval/screenshot help mention that headless
-  `window.resizeTo()` is silently ignored and point at the viewport features.
+- **A — `launch --window-size WxH`** forwards `-width`/`-height` (NOT the
+  headless-shell `--window-size` arg, which debugger-server instances ignore).
+  True viewport for widths ≥ the ~500px floor: real `innerWidth`, real media
+  queries, real layout. The launch envelope reports requested vs effective size and
+  warns when the request is below the floor. Help documents the floor and that this
+  is a window size.
+- **B — true sub-500px mobile screenshots via batch capture.** `screenshot
+  --window-size WxH` runs a one-shot `firefox --headless --screenshot
+  --window-size=W,H <current-tab-url>` with a scratch profile (separate from the
+  RDP session; proven exact PNG dimensions). Envelope reports
+  `capture: "batch-window-size"` so the mode is self-evident. Density: the batch
+  profile sets `layout.css.devPixelsPerPx` when `--dppx` is given, scaling the
+  raster (390 @ dppx 2 → 780px wide). Document the limitation that batch capture
+  re-navigates (fresh session: no cookies/state from the live tab).
+- **C — honest docs + pointers.** eval/screenshot help note headless
+  `window.resizeTo()` is a silent no-op; `responsive`'s warning and help point at
+  `launch --window-size` (≥500) and `screenshot --window-size` (below), and clearly
+  distinguish its CSS-constraint technique (layout-only) from a real window size.
+- **D — remove the dead primitive.** Delete `set_custom_viewport_size` (+ its
+  mirror in the actor kb doc if listed) so nobody wires a UX flag to a field the
+  server strips; cite the research doc in the removal commit.
 
 ## Tasks
 
-- [ ] A: research spike + `kb/research/viewport-emulation.md` + decision-log update.
-- [ ] B: `launch --window-size` forwarding + floor documentation + validation
-      (reject e.g. `0x0`, non-`WxH` input).
-- [ ] C: `emulate --viewport` via the Theme A mechanism; envelope reports
-      `viewport: {width, height, emulated: bool}`.
-- [ ] D: `screenshot --viewport-width`; `responsive` integration + warning update.
-- [ ] E: help-text notes (resizeTo, window floor, emulate pointer).
+- [ ] A: `--window-size WxH` parsing + validation (reject `0x0`, non-`WxH`) in
+      launch; forward `-width`/`-height` in the Firefox command builder; requested
+      vs effective in the envelope + below-floor warning; help text.
+- [ ] B: batch capture path in screenshot (scratch profile, `--screenshot`,
+      `--window-size=W,H`, optional `layout.css.devPixelsPerPx` from `--dppx`);
+      current-tab URL resolution; `capture` field in the envelope; help text incl.
+      fresh-session caveat.
+- [ ] C: resizeTo note in eval/screenshot help; responsive warning + help pointers.
+- [ ] D: remove `set_custom_viewport_size` and its unit test; update
+      `kb/rdp/actors/` target-configuration doc (check-actor-kb-sync will require
+      the kb edit anyway).
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [0/6]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
-- [ ] live_133_launch_window_size: `launch --headless --window-size 1200x900` →
-      `eval innerWidth/innerHeight` reports 1200×900 (above the window floor).
-- [ ] live_133_emulate_viewport_media_query: after `emulate --viewport 390x844`,
-      `matchMedia("(max-width: 400px)").matches` is true and `innerWidth` is 390 —
-      i.e. below the window floor, proving true emulation (Theme A mechanism).
-- [ ] live_133_screenshot_mobile_width: with the 390-wide viewport active,
-      `screenshot` produces a PNG of width 390 × DPR.
-- [ ] live_133_responsive_matches_true: `responsive body --widths 390` with viewport
-      emulation available reports `media_queries_applied:true` and
-      `simulation:"viewport-emulation"`.
-- [ ] e2e_help_resizeto_note: eval/screenshot `--help` mention the headless
-      `resizeTo()` no-op and point at `--window-size` / `emulate --viewport`.
+- [ ] live_133_launch_window_size_above_floor: `launch --headless --window-size
+      600x800` → `eval innerWidth` == 600 and a `(max-width: 700px)` media query
+      matches (true emulation at ≥500px widths).
+- [ ] live_133_launch_window_size_floor_warning: `launch --headless --window-size
+      390x844` → `eval innerWidth` ∈ [390, 500] (platform floor clamp) AND the
+      launch envelope reports the requested 390×844 alongside a below-floor
+      warning.
+- [ ] live_133_screenshot_batch_mobile: with the live tab on example.com,
+      `screenshot --window-size 390x844` → PNG exactly 390 px wide; envelope
+      `capture == "batch-window-size"`.
+- [ ] live_133_screenshot_batch_dppx: `screenshot --window-size 390x844 --dppx 2`
+      → PNG exactly 780 px wide.
+- [ ] unit_launch_window_size_validation: `0x0`, `x`, `390`, `390x` all rejected
+      with a user error naming the expected `WxH` form.
+- [ ] e2e_help_viewport_pointers: eval + screenshot `--help` mention the headless
+      `resizeTo()` no-op; responsive `--help`/warning point at `--window-size`.
 
 ## Notes
 
-**Scope hinge:** if Theme A concludes true sub-floor viewport emulation is NOT
-reachable over current RDP, this iteration lands B + the screenshot width flag + E
-with honest `emulated:false` reporting, and the C/D emulation ACs are annotated
-`[deferred — new plan: …]` with the follow-up filed before merge, per discipline.
-Design-heavy (new protocol surface) — opus implement model, like
-[[iteration-129-consent-and-cross-origin-frames]].
-Depends on [[iteration-131-measurement-honesty]] because both touch `responsive`'s
-simulation/honesty fields — serialize to avoid conflicts.
+Scope was settled by [[viewport-emulation]] — no research theme remains, no scope
+hinge. **Sonnet-implementable** (mechanical: arg pass-through, a subprocess capture
+path, docs, a deletion); use `model-implement sonnet` when running via new-ralph-loop.
+A future `--device iphone-15` preset (window-size + dppx + touch + UA bundle) is
+deliberately out of scope — file separately if wanted.
+Depends on [[iteration-131-measurement-honesty]] (both touch responsive's
+warning/simulation surfaces — serialize to avoid conflicts).
