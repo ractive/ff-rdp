@@ -9,7 +9,13 @@ dogfood_path: |
   # → false (CMP dismissed), page scrollable:
   ff-rdp scroll bottom --jq '.results.scrollHeight'
   # → substantially larger than the viewport height
-first_call_sites: []
+first_call_sites:
+  - primitive: enumerate_frame_targets
+    site: crates/ff-rdp-cli/src/commands/click.rs (frame-scan fallback)
+  - primitive: TabActor::get_watcher isServerTargetSwitchingEnabled arg
+    site: crates/ff-rdp-core enumerate_frame_targets (opt-in frame-aware path)
+  - primitive: TargetEvent console_actor/browsing_context_id fields
+    site: crates/ff-rdp-cli consent flow (auto-consent CMP accept via frame consoleActor)
 status: planned
 ---
 
@@ -24,60 +30,97 @@ finding 6 — `click` cannot reach targets inside the cross-origin CMP iframe an
 out after 10 s with a generic "not ready" — there is **no CLI-native way to accept
 consent**, and an agent is fully blocked on Sourcepoint-gated sites.
 
+## Design (settled by the [[frame-targets]] research spike, 2026-07-20)
+
+All mechanisms empirically verified against live headless Firefox 152; no open
+questions remain. Verdicts:
+
+1. **Frame enumeration works, gated by one flag.** `watchTargets("frame")` delivers
+   `target-available-form` for every window-global target (top + all iframes,
+   same-origin AND cross-origin/OOP, uniformly) **only when `getWatcher` is called
+   with `isServerTargetSwitchingEnabled: true`**. ff-rdp today calls `getWatcher`
+   with no config and therefore receives zero target events. Each form carries
+   `actor`, `url`, `title`, `isTopLevelTarget`, `browsingContextID`, `processID`,
+   `innerWindowId`, `consoleActor`, `inspectorActor`. The stream stays dark until
+   BOTH `watchTargets` and `watchResources` are sent; drain for a settle window,
+   dedupe by actor, honour destroyed events.
+2. **Click-in-frame = eval on the frame target's own `consoleActor`.** The existing
+   eval-based `do_click`/`build_click_js` path works verbatim — only the console
+   actor id changes. Console eval is the CSP-bypassing Debugger sandbox, so it works
+   on strict-CSP CMP frames (verified: clicked a link inside the OOP example.com
+   frame end-to-end). The walker/node path is strictly more work for no payoff —
+   not used.
+3. **No spec drift.** `isServerTargetSwitchingEnabled` is a published
+   `Option(0,"boolean")` on getWatcher (tab.js:24-28); target forms are
+   `Arg(0,"json")` opaque blobs (watcher.js:96-105), so reading extra fields is
+   spec-compliant. No `// allow-spec-drift` annotations needed.
+4. **Sourcepoint confirmed reachable**: on theguardian.com, `sp_message_iframe_*`
+   appears as a distinct frame target whose document contains the "Accept all" /
+   "Reject all" buttons.
+5. **Subtlety to respect:** the flag changes where the TOP-LEVEL target is delivered
+   (via the watcher instead of `getTarget`). Implement frame-awareness as an
+   **opt-in path** used by the frame-scan/consent flows — do NOT flip the default
+   target-acquisition path globally.
+
 ## Themes
 
-- **A — research: frame targets over RDP.** Under Fission, cross-origin iframes get
-  their own window-global targets via `watchTargets`. Establish how to enumerate the
-  frame targets of the active tab and obtain a walker/console for a specific frame
-  (Sourcepoint's `sp_message_iframe_*` as the concrete case). Write the outcome to
-  `kb/research/frame-targets.md`; annotate any spec drift per the allow-spec-drift
-  convention.
-- **B — cross-origin frame reach for `click` (and `dom`).** When a selector matches
-  nothing in the top document, search the tab's frame targets; act there when found.
-  When a match exists only in a frame the command cannot act in, the error must say so
-  (frame URL + suggestion) instead of a generic 10 s timeout.
-- **C — native consent acceptance.** After navigation (when `--auto-consent` is
-  active, or via an explicit `consent accept` subcommand), detect known CMPs —
-  Sourcepoint first — and click the accept control inside the CMP frame using Theme B's
-  mechanism. Keep a small per-CMP selector table; report which CMP was handled in the
-  envelope. Document the Consent-O-Matic headless limitation.
+- **A — core plumbing** (`ff-rdp-core`): optional `isServerTargetSwitchingEnabled`
+  arg on `TabActor::get_watcher`; extend `TargetEvent` with
+  `consoleActor`/`inspectorActor`/`browsingContextID`/`processID` (pure parse from
+  the existing blob); new `enumerate_frame_targets` helper (watchTargets +
+  watchResources, settle-drain, dedupe, destroyed handling). Pair with the
+  `kb/rdp/actors/` doc updates (check-actor-kb-sync requires it).
+- **B — frame-aware `click`.** Fast path: top-document console eval as today. On
+  not-found: scan non-top frame targets, evaling querySelector in each until a
+  match, then click via that frame's `consoleActor`. Result meta gains `frame_url`
+  when the action happened in a frame. Zero matches → error "selector matched in 0
+  of N frames (<urls>)" instead of the bare 10 s timeout. Optional
+  `--frame <url-substring>` to target a frame directly and skip the scan.
+- **C — native consent acceptance.** CMP detection + accept flow (Sourcepoint
+  selector set first), wired into `--auto-consent` post-navigate and an explicit
+  `consent accept`; envelope reports `{cmp: "sourcepoint", action: "accepted"}` or
+  `{cmp: null}`. Document the Consent-O-Matic headless limitation.
 - **D — scroll honesty on locked pages.** When `html`/`body` carries
   `overflow:hidden` and a scroll command moves nothing, emit a warning naming the
   locking element/class (e.g. `sp-message-open`) instead of a silent `atEnd:true`.
 
 ## Tasks
 
-- [ ] A: frame-target enumeration spike against a local fixture page embedding a
-      cross-origin iframe (e.g. https://example.com) + theguardian.com; record findings
-      in `kb/research/frame-targets.md` with actor/method names.
-- [ ] B: frame-aware selector resolution for `click`; on cross-frame-only matches,
-      actionable error naming the frame; `dom` gets at minimum the improved error.
-- [ ] C: CMP detection + accept flow (Sourcepoint selector set); wire into
-      `--auto-consent` post-navigate and/or `consent accept`; envelope reports
-      `{cmp: "sourcepoint", action: "accepted"}` or `{cmp: null}`.
-- [ ] D: scroll-lock detection + warning in the scroll envelope.
-- [ ] Update help/cookbook: consent workflow on CMP-gated sites.
+- [ ] A: get_watcher flag + TargetEvent fields + enumerate_frame_targets + actor kb
+      sync (opt-in path; default target acquisition untouched).
+- [ ] B: click frame-scan fallback + `--frame` + `meta.frame_url` + N-frames error.
+- [ ] C: CMP table + accept flow + `consent accept` + `--auto-consent` wiring +
+      envelope reporting; help/cookbook for the consent workflow.
+- [ ] D: scroll-lock detection + warning.
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [0/6]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
-- [ ] live_129_sourcepoint_consent (network-gated): navigate theguardian.com with the
-      consent flow active → `document.documentElement.className` does NOT contain
-      `sp-message-open`, and `scroll bottom` reaches a `scrollHeight` > 2× viewport
-      height.
-- [ ] live_129_click_cross_origin_frame: on a local fixture embedding a cross-origin
-      iframe with a button, `click` either actuates the button (Theme B full reach) or
-      fails with an error naming the frame URL — never a bare 10 s "not ready" timeout.
+- [ ] live_129_frame_targets_enumerated: on a fixture embedding a cross-origin
+      iframe (data: top + https://example.com child), `enumerate_frame_targets`
+      yields ≥2 targets including a non-top target with the example.com url and a
+      distinct `processID` from the top target.
+- [ ] live_129_click_cross_origin_frame: `click` actuates an element that exists
+      only inside the cross-origin example.com frame (click JS observable effect
+      asserted), with `meta.frame_url` reporting the frame.
+- [ ] live_129_click_zero_match_error: a selector matching nothing anywhere fails
+      fast with the "matched in 0 of N frames (<urls>)" error — no 10 s timeout.
+- [ ] live_129_sourcepoint_consent (network-gated): navigate theguardian.com with
+      the consent flow active → `document.documentElement.className` does NOT
+      contain `sp-message-open`, and `scroll bottom` reaches a `scrollHeight` > 2×
+      viewport height.
+- [ ] live_129_consent_envelope: the consent flow reports `cmp:"sourcepoint"` on
+      Guardian and `cmp:null` on a CMP-free page (example.com).
 - [ ] live_129_scroll_lock_warning: on a fixture with `html{overflow:hidden}`,
       `scroll bottom` emits a warning identifying the scroll lock.
-- [ ] live_129_consent_envelope: the consent flow's envelope reports the handled CMP
-      (`sourcepoint`) on Guardian and `null` on a CMP-free page (example.com).
 
 ## Notes
 
-Design-heavy iteration (frame targets are new protocol surface) — run with the opus
-implement model. Research outcome may narrow Theme B (e.g. click-in-frame lands but
-`dom` full traversal is deferred) — if so, file the carry-over plan before merge, per
-discipline. Related platform constraint memory: no viewport actor
-([[iteration-131-measurement-honesty]] covers the responsive side).
+Design fully settled by [[frame-targets]] — **sonnet-implementable** (additive,
+all APIs verified live); use `model-implement sonnet` via new-ralph-loop. The new
+core pub items (get_watcher flag, TargetEvent fields, enumerate_frame_targets) get
+their first consumers in this same PR per `first_call_sites`.
+Sibling plans from the same findings batch: [[iteration-128-network-hint-always-present]],
+[[iteration-130-navigation-truthfulness]], [[iteration-131-measurement-honesty]],
+[[iteration-132-cli-polish]], [[iteration-133-viewport-emulation]].
