@@ -13,7 +13,7 @@ dogfood_path: |
   ff-rdp network --format text | awk '{ if (length($0) > 120) exit 1 }'
   # → table lines stay terminal-readable even with 900-char CMP URLs
 first_call_sites: []
-status: in-progress
+status: completed
 ---
 
 # Iteration 128: network output fidelity — hint key, watcher parity, text readability
