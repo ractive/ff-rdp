@@ -1248,6 +1248,8 @@ pub fn run_with_network(
             None,
             cli.is_verbose(),
         );
+        // iter-128 Theme D: always present, not gated by --verbose.
+        crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
         let envelope = output::envelope(&result, 1, &meta);
         let hint_ctx = HintContext::new(HintSource::Navigate);
         return OutputPipeline::from_cli(cli)?
@@ -1367,6 +1369,8 @@ pub fn run_with_network(
         None,
         cli.is_verbose(),
     );
+    // iter-128 Theme D: always present, not gated by --verbose.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Navigate);
