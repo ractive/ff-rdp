@@ -97,8 +97,11 @@ network-focused iteration.
 - [x] live_128_network_text_width: `network --format text` on a page with a >200-char
       URL emits no line wider than 120 columns; same assertion for
       `sources --format text`.
-- [x] unit_middle_ellipsis: helper preserves scheme+host prefix and path tail around
-      the ellipsis; no-op below the width cap.
+- [x] unit_middle_ellipsis: `middle_ellipsis` helper preserves scheme+host prefix and
+      path tail around the ellipsis; no-op below the width cap. (Test slug renamed to
+      match convention: `middle_ellipsis_preserves_url_prefix_and_tail` and
+      `middle_ellipsis_short_string_untouched`/`middle_ellipsis_exactly_at_cap_untouched`
+      in `crates/ff-rdp-cli/src/output.rs`.)
 - [x] live_128_meta_route: a daemon-routed command reports `meta.route == "daemon"`;
       the same command with `--no-daemon` reports `"direct"`.
 
