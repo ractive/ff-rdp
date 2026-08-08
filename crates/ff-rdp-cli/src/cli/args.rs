@@ -554,14 +554,26 @@ Source precedence (daemon mode):
      watcher buffer is empty (no events captured for the current navigation).
 
 Field fidelity by source:
-  watcher:         method, status, content_type, duration_ms, size_bytes, transfer_size all available
+  watcher:         method, status, content_type, duration_ms, size_bytes, transfer_size all available.
+                   (iter-128: content_type is backfilled from the response's Content-Type
+                   header in --detail mode when the watcher's own mimeType update hasn't
+                   landed yet — a single extra request only when the field is still null.)
   performance-api: method=null, status=null; duration_ms, transfer_size available via Resource Timing API
 
+`hint` is always present (iter-128) — null when there's nothing to report, a
+string when results are truncated, a timeout fired, or the capture was empty.
+
+`meta.route` (iter-128) is always present — \"daemon\" or \"direct\" — regardless
+of --verbose, so you can tell how this command executed without a separate
+`daemon status` call.
+
 Default: 20 results, sorted by duration (slowest first).
-Output (summary mode): {\"results\": {\"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false}, \"total\": N, \"meta\": {...}}
-Output (--detail): {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"status\": 200, \"duration_ms\": N, ...}], \"total\": N, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"meta\": {...}}
+Output (summary mode): {\"results\": {\"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"hint\": null}, \"total\": N, \"meta\": {\"route\": \"daemon\", ...}}
+Output (--detail): {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"status\": 200, \"duration_ms\": N, ...}], \"total\": N, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"hint\": null, \"meta\": {\"route\": \"daemon\", ...}}
   Note (iter-126): detail mode now carries the summary fields (total_requests, total_transfer_bytes, by_cause_type, slowest) alongside the results array, so --jq users (who are always in detail mode) can reach them.
-Output (--detail --headers): adds {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}} per entry.")]
+Output (--detail --headers): adds {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}} per entry.
+--format text truncates long `url` cells with a middle ellipsis (iter-128) so a
+single ~900-char tracking URL can't blow the table out to thousands of columns.")]
     Network(NetworkArgs),
     /// Query browser Performance API entries and Core Web Vitals
     #[command(
@@ -702,7 +714,9 @@ Output: {\"results\": {\"actor\": \"...\", \"prototype\": {...}, \"ownProperties
     /// List JavaScript/WASM sources loaded on the page
     #[command(long_about = "List JavaScript/WASM sources loaded on the page.
 
-Output: {\"results\": [{\"url\": \"...\", \"actor\": \"...\", \"isBlackBoxed\": bool}], \"total\": N, \"meta\": {...}}")]
+Output: {\"results\": [{\"url\": \"...\", \"actor\": \"...\", \"isBlackBoxed\": bool}], \"total\": N, \"meta\": {...}}
+--format text truncates long `url` cells with a middle ellipsis (iter-128) so a
+single very long source URL can't blow the table out to thousands of columns.")]
     Sources(SourcesArgs),
     /// Dump structured page snapshot for LLM consumption: DOM tree with semantic roles,
     /// key attributes, interactive elements, and text content

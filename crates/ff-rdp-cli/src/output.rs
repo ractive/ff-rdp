@@ -57,6 +57,57 @@ pub fn envelope_with_truncation(
     env
 }
 
+/// Middle-ellipsize `s` to fit within `max_width` *characters* (not bytes —
+/// multibyte-safe; splits on `char` boundaries so it never panics on UTF-8
+/// input) for `--format text` table cells (iter-128 Theme C).
+///
+/// Strings already at or under `max_width` characters are returned
+/// unchanged — a no-op below the cap, so short URLs and other short values
+/// are never touched.
+///
+/// When `s` looks like a URL (`scheme://host…`), the `scheme://host` prefix
+/// is preserved intact whenever it fits the budget, and the remaining budget
+/// is spent on the tail of the path/query — so a truncated cell still shows
+/// *where* the request went and how it ended, e.g.
+/// `https://ads.example.com/…&clickid=9f8e7d6c5b4a`. Non-URL strings (no
+/// `://`) fall back to an even head/tail split around the ellipsis.
+pub fn middle_ellipsis(s: &str, max_width: usize) -> String {
+    let char_count = s.chars().count();
+    if char_count <= max_width {
+        return s.to_owned();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    // Reserve 1 character for the '…' marker itself.
+    let budget = max_width - 1;
+
+    // Try to find a `scheme://host` prefix (up to the first '/' after the
+    // "://") that fits within the budget, leaving at least 1 char for the
+    // tail.
+    let url_prefix_end = s.find("://").and_then(|scheme_end| {
+        let after_scheme = scheme_end + 3;
+        let host_end = s[after_scheme..]
+            .find('/')
+            .map_or(s.len(), |i| after_scheme + i);
+        let prefix_chars = s[..host_end].chars().count();
+        (prefix_chars > 0 && prefix_chars < budget).then_some(prefix_chars)
+    });
+
+    let (head_chars, tail_chars) = match url_prefix_end {
+        Some(prefix_chars) => (prefix_chars, budget - prefix_chars),
+        None => (budget / 2, budget - budget / 2),
+    };
+
+    let head: String = s.chars().take(head_chars).collect();
+    let tail: String = {
+        let mut rev: Vec<char> = s.chars().rev().take(tail_chars).collect();
+        rev.reverse();
+        rev.into_iter().collect()
+    };
+    format!("{head}…{tail}")
+}
+
 /// Inject contextual hints into a pre-built envelope.
 ///
 /// Adds `"hints": [...]` as a top-level key. Returns an error if any hint
@@ -210,6 +261,80 @@ mod tests {
         let hint = env["hint"].as_str().expect("hint should be a string");
         assert!(hint.contains("1 of 5"));
         assert!(hint.contains("--all"));
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-128 Theme C: middle_ellipsis
+    // -----------------------------------------------------------------------
+
+    /// AC: `unit_middle_ellipsis` — no-op below the width cap.
+    #[test]
+    fn middle_ellipsis_short_string_untouched() {
+        let s = "https://example.com/";
+        assert_eq!(middle_ellipsis(s, 80), s);
+    }
+
+    #[test]
+    fn middle_ellipsis_exactly_at_cap_untouched() {
+        let s = "a".repeat(80);
+        assert_eq!(middle_ellipsis(&s, 80), s);
+    }
+
+    /// AC: `unit_middle_ellipsis` — preserves the `scheme://host` prefix and
+    /// a tail of the path around the ellipsis for long URLs.
+    #[test]
+    fn middle_ellipsis_preserves_url_prefix_and_tail() {
+        let long_url = format!(
+            "https://ads.sourcepoint.example.com/{}?clickid=deadbeef1234",
+            "x".repeat(200)
+        );
+        let out = middle_ellipsis(&long_url, 80);
+        assert!(out.chars().count() <= 80, "result exceeds cap: {out:?}");
+        assert!(
+            out.starts_with("https://ads.sourcepoint.example.com"),
+            "scheme+host prefix must be preserved: {out:?}"
+        );
+        assert!(
+            out.ends_with("clickid=deadbeef1234"),
+            "path tail must be preserved: {out:?}"
+        );
+        assert!(
+            out.contains('…'),
+            "must contain the ellipsis marker: {out:?}"
+        );
+    }
+
+    /// Non-URL strings (no `://`) fall back to an even head/tail split.
+    #[test]
+    fn middle_ellipsis_non_url_even_split() {
+        let long = "a".repeat(50) + &"b".repeat(50);
+        let out = middle_ellipsis(&long, 21);
+        assert!(out.chars().count() <= 21, "result exceeds cap: {out:?}");
+        assert!(out.starts_with('a'), "head must be preserved: {out:?}");
+        assert!(out.ends_with('b'), "tail must be preserved: {out:?}");
+        assert!(out.contains('…'));
+    }
+
+    /// AC: `unit_middle_ellipsis` — multibyte safety: truncating on `char`
+    /// boundaries must never panic or produce invalid UTF-8, even when the
+    /// cut point would otherwise land mid-codepoint under a byte-oriented
+    /// truncation.
+    #[test]
+    fn middle_ellipsis_multibyte_safe() {
+        // Multi-byte (3-byte UTF-8) characters throughout — a byte-index
+        // slice at an arbitrary offset would panic; a char-based one must not.
+        let s = "€".repeat(100);
+        let out = middle_ellipsis(&s, 21);
+        // No panic reaching here is the primary assertion; also sanity-check
+        // the char-count budget and that it's still valid UTF-8 (guaranteed
+        // by `String`, but the char() collection round-trip is the real proof).
+        assert!(out.chars().count() <= 21, "result exceeds cap: {out:?}");
+        assert!(out.contains('…'));
+    }
+
+    #[test]
+    fn middle_ellipsis_zero_width() {
+        assert_eq!(middle_ellipsis("hello", 0), "");
     }
 
     #[test]

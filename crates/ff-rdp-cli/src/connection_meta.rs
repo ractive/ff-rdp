@@ -45,6 +45,25 @@ pub fn remembered_version() -> Option<u32> {
     *guard
 }
 
+/// Merge `meta.route` — `"daemon"` or `"direct"` — into `meta` (iter-128
+/// Theme D).
+///
+/// Unlike [`merge_into_if_verbose`]'s connection block, this is **not**
+/// gated by `--verbose`: dogfooding found that an agent has no way to tell
+/// how a command executed (daemon-buffered vs. one-shot direct connection)
+/// without shelling out to `daemon status` and cross-referencing the
+/// registry file. `via_daemon` is [`ConnectedTab::via_daemon`]
+/// (`crate::commands::connect_tab::ConnectedTab`) — the RESOLVED route,
+/// after any daemon-vs-direct fallback has already happened.
+pub fn merge_route(meta: &mut Value, via_daemon: bool) {
+    if let Some(obj) = meta.as_object_mut() {
+        obj.insert(
+            "route".to_string(),
+            Value::String(if via_daemon { "daemon" } else { "direct" }.to_owned()),
+        );
+    }
+}
+
 fn cached_owner(host: &str, port: u16) -> Option<PortOwner> {
     // Only cache for loopback hosts. A remote port would require a different
     // lookup strategy entirely; we just skip the cache for those.
@@ -202,5 +221,32 @@ mod tests {
     #[test]
     fn is_meta_empty_returns_false_for_non_empty_object() {
         assert!(!is_meta_empty(&json!({"selector": "h1"})));
+    }
+
+    /// iter-128 Theme D: `merge_route` maps `via_daemon` to the
+    /// "daemon"/"direct" route strings and inserts them unconditionally
+    /// (no `--verbose` gate, unlike `merge_into_if_verbose`).
+    #[test]
+    fn merge_route_daemon_true_maps_to_daemon_string() {
+        let mut meta = json!({});
+        merge_route(&mut meta, true);
+        assert_eq!(meta["route"], "daemon");
+    }
+
+    #[test]
+    fn merge_route_daemon_false_maps_to_direct_string() {
+        let mut meta = json!({});
+        merge_route(&mut meta, false);
+        assert_eq!(meta["route"], "direct");
+    }
+
+    #[test]
+    fn merge_route_makes_meta_non_empty() {
+        // Route must be visible in DEFAULT (non-verbose) output — merging it
+        // into an otherwise-empty meta object must flip `is_meta_empty` to
+        // false so the `meta` key survives envelope construction.
+        let mut meta = json!({});
+        merge_route(&mut meta, true);
+        assert!(!is_meta_empty(&meta), "meta with route must not be empty");
     }
 }

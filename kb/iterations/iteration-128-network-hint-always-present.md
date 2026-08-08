@@ -13,7 +13,7 @@ dogfood_path: |
   ff-rdp network --format text | awk '{ if (length($0) > 120) exit 1 }'
   # → table lines stay terminal-readable even with 900-char CMP URLs
 first_call_sites: []
-status: planned
+status: in-progress
 ---
 
 # Iteration 128: network output fidelity — hint key, watcher parity, text readability
@@ -62,40 +62,47 @@ network-focused iteration.
 
 ## Tasks
 
-- [ ] A: seed `hint: null` unconditionally in `build_canonical_network`; keep the
+- [x] A: seed `hint: null` unconditionally in `build_canonical_network`; keep the
       truncation/timeout overwrites; fix the doc comment; same treatment for the
       standalone `network` detail envelope + `merge_summary_fields`.
-- [ ] A: flip the absence-asserting unit tests (`network.rs:1114`, `1174`, `1199`) to
+- [x] A: flip the absence-asserting unit tests (`network.rs:1114`, `1174`, `1199`) to
       assert `hint == null`; add `unit_canonical_network_hint_null_when_quiet` for both
       builders.
-- [ ] B: route the `--detail`/`--jq` path through the watcher buffer (daemon drain or
+- [x] B: route the `--detail`/`--jq` path through the watcher buffer (daemon drain or
       direct watcher capture) before considering the performance-api fallback; keep the
       fallback for genuinely-empty buffers and label it via `source`.
-- [ ] B: populate `content_type` on watcher rows (response headers are already
+- [x] B: populate `content_type` on watcher rows (response headers are already
       captured for `network --security`); align `--help` with reality.
-- [ ] C: middle-ellipsis helper for table cells; apply to url columns in `network` and
+- [x] C: middle-ellipsis helper for table cells; apply to url columns in `network` and
       `sources` text renderers; unit-test the ellipsis edge cases (short URLs untouched,
       multibyte safety).
 - [ ] D: emit `meta.route` from the CLI dispatch layer on all commands.
+      [partial — `connection_meta::merge_route` landed and is wired into `network`
+      and `navigate --with-network` (the commands this iteration's dogfood_path and
+      AC exercise); the sweep across the remaining ~30 commands' meta call sites is
+      deferred — new plan: [[iteration-134-meta-route-all-commands]]]
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [6/6]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
-- [ ] live_navigate_with_network_shape_quiet_and_busy: passes UNMODIFIED — quiet and
+- [x] live_navigate_with_network_shape_quiet_and_busy: passes UNMODIFIED — quiet and
       busy key sets identical (the iter-126 AC test that flagged the escape).
-- [ ] unit_canonical_network_hint_null_when_quiet: `hint` is JSON `null` when
+- [x] unit_canonical_network_hint_null_when_quiet: `hint` is JSON `null` when
       `!truncated && !timeout_reached` and the capture is non-empty, on both the
       navigate and standalone builders.
-- [ ] live_128_network_detail_uses_watcher: after a real navigate with the daemon
+- [x] live_128_network_detail_uses_watcher: after a real navigate with the daemon
       buffering events, `network --detail --jq '[.results.entries[].source] | unique'`
       == `["watcher"]`, and ≥1 entry has non-null `method` and `content_type`.
-- [ ] live_128_network_text_width: `network --format text` on a page with a >200-char
+- [x] live_128_network_text_width: `network --format text` on a page with a >200-char
       URL emits no line wider than 120 columns; same assertion for
       `sources --format text`.
-- [ ] unit_middle_ellipsis: helper preserves scheme+host prefix and path tail around
-      the ellipsis; no-op below the width cap.
-- [ ] live_128_meta_route: a daemon-routed command reports `meta.route == "daemon"`;
+- [x] unit_middle_ellipsis: `middle_ellipsis` helper preserves scheme+host prefix and
+      path tail around the ellipsis; no-op below the width cap. (Test slug renamed to
+      match convention: `middle_ellipsis_preserves_url_prefix_and_tail` and
+      `middle_ellipsis_short_string_untouched`/`middle_ellipsis_exactly_at_cap_untouched`
+      in `crates/ff-rdp-cli/src/output.rs`.)
+- [x] live_128_meta_route: a daemon-routed command reports `meta.route == "daemon"`;
       the same command with `--no-daemon` reports `"direct"`.
 
 ## Notes
@@ -103,3 +110,8 @@ network-focused iteration.
 Sibling plans from the same findings batch: [[iteration-129-consent-and-cross-origin-frames]],
 [[iteration-130-navigation-truthfulness]], [[iteration-131-measurement-honesty]],
 [[iteration-132-cli-polish]].
+
+Carry-over: Task D's "all commands" rollout is deferred to
+[[iteration-134-meta-route-all-commands]] — see that plan's Notes and the Task D line
+above for the scoping rationale (this iteration wires `network` and `navigate
+--with-network` only).

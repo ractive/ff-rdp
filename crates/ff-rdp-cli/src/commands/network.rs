@@ -253,6 +253,10 @@ pub fn run(
         None,
         cli.is_verbose(),
     );
+    // iter-128 Theme D: unlike the connection block above, `route` is always
+    // present — not gated by --verbose — so an agent can tell how this
+    // command executed without a separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, via_daemon);
 
     // Decide whether to show summary or detail mode.
     // Detail mode is used when:
@@ -336,11 +340,26 @@ pub fn run(
                         .or_insert_with(|| json!(HEADERS_NOTE));
                 }
             }
-        } else if headers && !used_perf_fallback {
+        } else if !used_perf_fallback {
+            // iter-128 Theme B: `content_type` is documented (`--help`) as
+            // always available on watcher rows, but the `mimeType` field only
+            // lands via the `network-event-update:response-content` push —
+            // which can arrive after our idle-based drain cutoff on busy
+            // pages, leaving `content_type: null` despite a live watcher
+            // actor being available. Backfill it from the `Content-Type`
+            // response header for any entry where it's still null. When
+            // `--headers` is also set, reuse that single response-headers
+            // fetch instead of issuing a second RPC per entry.
             for entry in &mut limited {
-                if let Some(rid) = entry.get("_resource_id").and_then(Value::as_u64)
-                    && let Some(actor) = actor_by_resource_id.get(&rid)
-                {
+                let Some(rid) = entry.get("_resource_id").and_then(Value::as_u64) else {
+                    continue;
+                };
+                let Some(actor) = actor_by_resource_id.get(&rid) else {
+                    continue;
+                };
+                let needs_content_type = entry.get("content_type").is_none_or(Value::is_null);
+
+                if headers {
                     let req_hdrs =
                         NetworkEventActor::get_request_headers(ctx.transport_mut(), actor)
                             .ok()
@@ -361,7 +380,21 @@ pub fn run(
                             })
                             .unwrap_or_default();
 
+                    if needs_content_type && let Some(ct) = content_type_from_headers(&resp_hdrs) {
+                        entry["content_type"] = json!(ct);
+                    }
                     entry["headers"] = json!({"request": req_hdrs, "response": resp_hdrs});
+                } else if needs_content_type
+                    && let Ok(hs) =
+                        NetworkEventActor::get_response_headers(ctx.transport_mut(), actor)
+                {
+                    let resp_hdrs: Vec<Value> = hs
+                        .into_iter()
+                        .map(|h| json!({"name": h.name, "value": h.value}))
+                        .collect();
+                    if let Some(ct) = content_type_from_headers(&resp_hdrs) {
+                        entry["content_type"] = json!(ct);
+                    }
                 }
             }
         }
@@ -460,6 +493,28 @@ fn count_insecure_requests(entries: &[Value]) -> usize {
         .iter()
         .filter(|e| e["url"].as_str().is_some_and(|u| u.starts_with("http://")))
         .count()
+}
+
+/// Extract the `Content-Type` header value (parameters like `charset`
+/// stripped) from a fetched `{name, value}` response-header list.
+///
+/// Matches the header name case-insensitively (HTTP header names are
+/// case-insensitive per RFC 7230). Returns `None` when no `Content-Type`
+/// header is present in the list.
+fn content_type_from_headers(headers: &[Value]) -> Option<String> {
+    headers.iter().find_map(|h| {
+        let name = h.get("name")?.as_str()?;
+        if !name.eq_ignore_ascii_case("content-type") {
+            return None;
+        }
+        let value = h.get("value")?.as_str()?;
+        let bare = value.split(';').next().unwrap_or(value).trim();
+        if bare.is_empty() {
+            None
+        } else {
+            Some(bare.to_owned())
+        }
+    })
 }
 
 /// Render a [`SecurityInfo`] as the JSON `security` object attached to a
@@ -603,8 +658,14 @@ fn render_network_summary_text_to(summary: &Value, out: &mut dyn std::io::Write)
     {
         let _ = writeln!(out);
         let _ = writeln!(out, "=== Slowest Requests ===");
+        // iter-128 Theme C: middle-ellipsize the url so a single ~900-char
+        // tracking/CMP URL can't blow this line out to thousands of columns
+        // wide (dogfood-62 #2). The 80-char cap plus the fixed "  N. " /
+        // "  (…ms, …, …b)" prefix+suffix keeps the whole line comfortably
+        // under 120 columns.
         for (i, entry) in slowest.iter().enumerate() {
-            let url = entry.get("url").and_then(Value::as_str).unwrap_or("?");
+            let raw_url = entry.get("url").and_then(Value::as_str).unwrap_or("?");
+            let url = crate::output::middle_ellipsis(raw_url, 80);
             let dur = entry
                 .get("duration_ms")
                 .and_then(Value::as_f64)
@@ -648,7 +709,11 @@ fn render_network_summary_text(summary: &Value) {
 /// - `by_cause_type`: count per `cause_type` field
 /// - `slowest`: top-20 slowest requests (url, duration_ms, status, transfer_size)
 /// - `timeout_reached`: whether the collection deadline fired while events were still arriving
-/// - `hint` (only when `timeout_reached` is true): advice to increase `--network-timeout`
+/// - `hint`: an always-present, nullable member (iter-128 Theme A) — advice to
+///   increase `--network-timeout` when `timeout_reached` is true, `null`
+///   otherwise. Previously this key was omitted entirely unless
+///   `timeout_reached`, so a quiet capture and a timed-out one had different
+///   key sets and `.hint` threw on the quiet path under `--jq`.
 pub fn build_network_summary(
     entries: &[serde_json::Value],
     timeout_reached: bool,
@@ -699,20 +764,25 @@ pub fn build_network_summary(
         })
         .collect();
 
-    let mut summary = json!({
+    // iter-128 Theme A: `hint` is always present — `null` when there is
+    // nothing to hint — so the key set never varies with capture content.
+    let hint = if timeout_reached {
+        json!(
+            "Network collection was still receiving events when the timeout was reached. \
+             Consider increasing --network-timeout for more complete results."
+        )
+    } else {
+        Value::Null
+    };
+
+    json!({
         "total_requests": total_requests,
         "total_transfer_bytes": total_transfer_bytes,
         "by_cause_type": by_cause_type,
         "slowest": slowest,
         "timeout_reached": timeout_reached,
-    });
-    if timeout_reached {
-        summary["hint"] = json!(
-            "Network collection was still receiving events when the timeout was reached. \
-             Consider increasing --network-timeout for more complete results."
-        );
-    }
-    summary
+        "hint": hint,
+    })
 }
 
 /// Merge the summary fields from [`build_network_summary`] into a target object.
@@ -759,7 +829,8 @@ pub(crate) fn merge_summary_fields(
 ///   "by_cause_type": { ... },
 ///   "slowest": [ ... ],
 ///   "timeout_reached": bool,
-///   "hint": "..."                // only when truncated or timeout_reached
+///   "hint": null | "..."         // iter-128 Theme A: always present; null
+///                                 // unless truncated or timeout_reached
 /// }
 /// ```
 ///
@@ -783,15 +854,26 @@ pub(crate) fn build_canonical_network(
         "total": total,
         "truncated": truncated,
     });
+    // merge_summary_fields always inserts `hint` (null unless timeout_reached
+    // — see build_network_summary, iter-128 Theme A) since `obj` doesn't
+    // already carry the key.
     merge_summary_fields(&mut obj, all_entries, timeout_reached);
-    // The summary's own `hint` (timeout) is preserved by merge_summary_fields;
-    // add the truncation hint only when it is not already present.
+    // The summary's own timeout hint wins if it already claimed the key
+    // (non-null); otherwise overwrite the null placeholder with the
+    // truncation hint. `hint` is always present after this point, so use
+    // `insert` (unconditional) gated on the hint currently being null,
+    // rather than `entry().or_insert()` which would never fire now that the
+    // key always exists.
     if truncated && let Some(map) = obj.as_object_mut() {
-        map.entry("hint".to_string()).or_insert_with(|| {
-            json!(format!(
-                "showing {shown} of {total}, use --all for complete list"
-            ))
-        });
+        let hint_is_null = map.get("hint").is_none_or(Value::is_null);
+        if hint_is_null {
+            map.insert(
+                "hint".to_string(),
+                json!(format!(
+                    "showing {shown} of {total}, use --all for complete list"
+                )),
+            );
+        }
     }
     obj
 }
@@ -1080,6 +1162,33 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn content_type_from_headers_finds_case_insensitively_and_strips_params() {
+        let headers = vec![
+            json!({"name": "Content-Length", "value": "1234"}),
+            json!({"name": "content-type", "value": "text/html; charset=utf-8"}),
+        ];
+        assert_eq!(
+            content_type_from_headers(&headers).as_deref(),
+            Some("text/html")
+        );
+    }
+
+    #[test]
+    fn content_type_from_headers_no_match_returns_none() {
+        let headers = vec![json!({"name": "Content-Length", "value": "1234"})];
+        assert_eq!(content_type_from_headers(&headers), None);
+    }
+
+    #[test]
+    fn content_type_from_headers_bare_value_untouched() {
+        let headers = vec![json!({"name": "Content-Type", "value": "application/json"})];
+        assert_eq!(
+            content_type_from_headers(&headers).as_deref(),
+            Some("application/json")
+        );
+    }
+
+    #[test]
     fn render_network_summary_text_does_not_panic_empty() {
         render_network_summary_text(&json!({
             "total_requests": 0,
@@ -1111,7 +1220,9 @@ mod tests {
         assert_eq!(s["total_transfer_bytes"], 0.0);
         assert!(s["slowest"].as_array().unwrap().is_empty());
         assert_eq!(s["timeout_reached"], false);
-        assert!(s.get("hint").is_none());
+        // iter-128 Theme A: `hint` is always present (null when nothing to
+        // hint), never omitted — the key set must not vary with content.
+        assert_eq!(s["hint"], Value::Null, "hint must be null, not absent");
     }
 
     #[test]
@@ -1171,7 +1282,8 @@ mod tests {
         assert_eq!(slowest[1]["url"], "a");
         assert_eq!(slowest[2]["url"], "b");
         assert_eq!(s["timeout_reached"], false);
-        assert!(s.get("hint").is_none());
+        // iter-128 Theme A: hint is always present, null when not timed out.
+        assert_eq!(s["hint"], Value::Null, "hint must be null, not absent");
     }
 
     #[test]
@@ -1195,9 +1307,13 @@ mod tests {
             vec![json!({"url": "a", "duration_ms": 10.0, "status": 200, "cause_type": "doc"})];
         let s = build_network_summary(&entries, false);
         assert_eq!(s["timeout_reached"], false);
-        assert!(
-            s.get("hint").is_none(),
-            "hint should not be present when timeout_reached is false"
+        // iter-128 Theme A: hint is present-but-null, not absent, when
+        // timeout_reached is false — flipped from the pre-128 absence
+        // assertion this test name still describes ("no hint").
+        assert_eq!(
+            s["hint"],
+            Value::Null,
+            "hint should be null (present, not absent) when timeout_reached is false"
         );
     }
 
@@ -1298,6 +1414,35 @@ mod tests {
                 })
             })
             .collect()
+    }
+
+    /// AC: `unit_canonical_network_hint_null_when_quiet` — `hint` is JSON
+    /// `null` (present, never omitted) when `!truncated && !timeout_reached`
+    /// and the capture is non-empty, on BOTH the navigate builder
+    /// (`build_canonical_network`) and the standalone `network` detail
+    /// envelope's builder (`merge_summary_fields`, which
+    /// `build_canonical_network` itself wraps).
+    #[test]
+    fn unit_canonical_network_hint_null_when_quiet() {
+        // navigate builder: quiet page, nothing truncated, no timeout.
+        let entries = sample_entries(3);
+        let obj = build_canonical_network(entries.clone(), 3, 3, false, &entries, false);
+        assert_eq!(
+            obj["hint"],
+            Value::Null,
+            "navigate builder: hint must be null (present, not absent) when quiet"
+        );
+
+        // standalone `network` detail envelope builder: same merge path,
+        // applied directly to a hand-built envelope the way run()'s detail
+        // branch does.
+        let mut env = json!({"results": entries.clone(), "total": entries.len()});
+        merge_summary_fields(&mut env, &entries, false);
+        assert_eq!(
+            env["hint"],
+            Value::Null,
+            "network detail envelope builder: hint must be null (present, not absent) when quiet"
+        );
     }
 
     #[test]

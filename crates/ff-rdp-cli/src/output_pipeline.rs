@@ -326,10 +326,32 @@ fn collect_table_columns(rows: &[Value]) -> Vec<String> {
     columns
 }
 
+/// Column-width cap applied to `url` cells (iter-128 Theme C) so that pages
+/// with very long tracking/CMP URLs (~900 chars observed in dogfooding)
+/// don't blow the table out to thousands of columns wide. Chosen to keep a
+/// typical `network --detail`/`sources` row (url + a handful of narrow
+/// columns) within ~120 terminal columns.
+const URL_CELL_MAX_WIDTH: usize = 80;
+
+/// Render a single table cell: sanitize for terminal safety, then
+/// middle-ellipsize `url` columns to [`URL_CELL_MAX_WIDTH`] (iter-128 Theme
+/// C — other columns are left at their natural width).
+fn render_cell(row: &Value, col: &str) -> String {
+    let cell = value_to_cell(row.get(col).unwrap_or(&Value::Null));
+    if col.eq_ignore_ascii_case("url") {
+        crate::output::middle_ellipsis(&cell, URL_CELL_MAX_WIDTH)
+    } else {
+        cell
+    }
+}
+
 /// Render an array of JSON objects as an ASCII table.
 ///
 /// See [`collect_table_columns`] for the column-ordering contract. Each
-/// cell is coerced to a string and padded to the column width.
+/// cell is coerced to a string and padded to the column width; `url`
+/// columns are additionally middle-ellipsized (see [`render_cell`]) so a
+/// handful of very long URLs can't blow a column — and the whole line —
+/// out to thousands of characters wide.
 fn render_table(rows: &[Value]) {
     let columns = collect_table_columns(rows);
 
@@ -337,11 +359,12 @@ fn render_table(rows: &[Value]) {
         return;
     }
 
-    // Compute column widths: max of header width and all cell widths.
+    // Compute column widths: max of header width and all (post-ellipsis)
+    // cell widths.
     let mut widths: Vec<usize> = columns.iter().map(String::len).collect();
     for row in rows {
         for (i, col) in columns.iter().enumerate() {
-            let cell = value_to_cell(row.get(col).unwrap_or(&Value::Null));
+            let cell = render_cell(row, col);
             widths[i] = widths[i].max(cell.len());
         }
     }
@@ -368,7 +391,7 @@ fn render_table(rows: &[Value]) {
             .iter()
             .enumerate()
             .map(|(i, col)| {
-                let cell = value_to_cell(row.get(col).unwrap_or(&Value::Null));
+                let cell = render_cell(row, col);
                 format!("{cell:<width$}", width = widths[i])
             })
             .collect();

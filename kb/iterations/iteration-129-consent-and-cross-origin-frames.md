@@ -76,10 +76,19 @@ questions remain. Verdicts:
   when the action happened in a frame. Zero matches → error "selector matched in 0
   of N frames (<urls>)" instead of the bare 10 s timeout. Optional
   `--frame <url-substring>` to target a frame directly and skip the scan.
+  **iter-128 lesson applied:** `meta.frame_url` must be an always-present key —
+  `null` on a top-frame click, the frame's URL string otherwise — not omitted on
+  the top-frame path. iter-128 Theme A hit exactly this bug (`hint` silently
+  missing instead of `null`, breaking `.frame_url` under `--jq` on the common
+  case); do not repeat it here.
 - **C — native consent acceptance.** CMP detection + accept flow (Sourcepoint
   selector set first), wired into `--auto-consent` post-navigate and an explicit
-  `consent accept`; envelope reports `{cmp: "sourcepoint", action: "accepted"}` or
-  `{cmp: null}`. Document the Consent-O-Matic headless limitation.
+  `consent accept`; envelope reports `{cmp: "sourcepoint", action: "accepted"}` when
+  a CMP was found and handled, `{cmp: null, action: null}` otherwise — both keys
+  always present (same always-present/null-not-omitted discipline as B and as
+  iter-128's `hint`/`meta.route`, so the key set never varies with page content and
+  `--jq '.results.action'` never throws). Document the Consent-O-Matic headless
+  limitation.
 - **D — scroll honesty on locked pages.** When `html`/`body` carries
   `overflow:hidden` and a scroll command moves nothing, emit a warning naming the
   locking element/class (e.g. `sp-message-open`) instead of a silent `atEnd:true`.
@@ -124,3 +133,26 @@ their first consumers in this same PR per `first_call_sites`.
 Sibling plans from the same findings batch: [[iteration-128-network-hint-always-present]],
 [[iteration-130-navigation-truthfulness]], [[iteration-131-measurement-honesty]],
 [[iteration-132-cli-polish]], [[iteration-133-viewport-emulation]].
+
+**Adapted post-iter-128 (2026-08-09):**
+- Always-present/null-not-omitted key discipline (see B and C above) — iter-128
+  landed exactly this bug for `hint` (the iter-126 AC test caught a *key-set*
+  regression, not a value regression) and had to fix it as a dedicated theme.
+  Apply the discipline to `meta.frame_url` and the consent envelope from the
+  start instead of re-discovering it here.
+- iter-128 Theme D ("all commands") turned out bigger than the rest of that
+  iteration combined and was cut to a 2-command slice + a deferred follow-up
+  ([[iteration-134-meta-route-all-commands]]). If Theme A's frame-enumeration
+  plumbing or Theme C's CMP-selector-table work balloons similarly during
+  implementation, cut it the same way — a deferred sibling plan with a named
+  scope, not a bloated single PR — rather than force-fitting all four themes
+  into one branch.
+- Live-test environment note: this dev machine runs many concurrent agent
+  sessions launching headless Firefox in parallel; under that load a fresh
+  `ff-rdp launch` can occasionally miss the default 30 s debugger-port wait
+  even though the same command succeeds in under a second when run alone.
+  Given iter-129 is live-test-heavy (5 of 6 ACs need a real Firefox, including
+  a cross-origin fixture and the network-gated Guardian test), if `live_129_*`
+  tests report "Firefox not available" during CI/ralph-loop runs, retry once
+  with `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS=90` before treating it as a real
+  failure — it is very likely contention, not a regression.
