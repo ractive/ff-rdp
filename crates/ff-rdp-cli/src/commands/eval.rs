@@ -172,7 +172,35 @@ fn looks_like_single_expression(script: &str) -> bool {
     !body.contains(';')
         && !STATEMENT_LEADING_KEYWORDS
             .iter()
-            .any(|kw| body.starts_with(kw))
+            .any(|kw| body_starts_with_keyword(body, kw))
+}
+
+/// Whether `body` starts with the statement-leading keyword `kw`, at a real
+/// word boundary rather than as a bare substring prefix.
+///
+/// Most [`STATEMENT_LEADING_KEYWORDS`] entries already end in a delimiter
+/// (`"if("`, `"let "`, `"do{"`, …), so a plain `starts_with` is inherently
+/// boundary-safe for them: the delimiter itself cannot be part of a longer
+/// identifier. But a few entries (`"try"`, `"return"`, `"function"`) have no
+/// trailing delimiter — both `try{` and `tryFoo()` share that prefix — so
+/// for those a plain `starts_with` would misclassify identifiers like
+/// `returnValue()` or `tryCatchWrapper()` as statements, silently losing
+/// the auto-return optimization for otherwise-ordinary single-expression
+/// scripts. Requiring the character right after the keyword (if any) to be
+/// a non-identifier character closes that gap without needing a per-keyword
+/// trailing-space variant for every bare-word entry.
+fn body_starts_with_keyword(body: &str, kw: &str) -> bool {
+    let Some(rest) = body.strip_prefix(kw) else {
+        return false;
+    };
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    // A keyword already ending in a non-identifier delimiter (space, `(`,
+    // `{`) needs no further boundary check — the delimiter itself proves
+    // the match isn't a longer identifier's prefix.
+    if !kw.ends_with(is_ident) {
+        return true;
+    }
+    rest.chars().next().is_none_or(|c| !is_ident(c))
 }
 
 /// Whether `script` contains the `await` keyword as a whole identifier
@@ -711,6 +739,25 @@ mod tests {
         assert!(!looks_like_single_expression("return 1"));
         assert!(!looks_like_single_expression(""));
         assert!(!looks_like_single_expression("   "));
+    }
+
+    /// Regression: bare-word keyword entries in `STATEMENT_LEADING_KEYWORDS`
+    /// (`"try"`, `"return"`, `"function"`) must match at a word boundary,
+    /// not as a plain substring prefix — otherwise identifiers that merely
+    /// start with those letters (`returnValue()`, `tryCatchWrapper()`,
+    /// `functionCall()`) are misclassified as statements and silently lose
+    /// the auto-return optimization even though they are ordinary single
+    /// expressions.
+    #[test]
+    fn looks_like_single_expression_does_not_false_positive_on_keyword_prefixed_identifiers() {
+        assert!(looks_like_single_expression("returnValue()"));
+        assert!(looks_like_single_expression("tryCatchWrapper()"));
+        assert!(looks_like_single_expression("functionCall()"));
+        assert!(looks_like_single_expression("try_something()"));
+        // The real keyword forms (word-boundary match) must still be
+        // rejected as statements.
+        assert!(!looks_like_single_expression("try { 1 } catch (e) { 2 }"));
+        assert!(!looks_like_single_expression("function foo() { return 1 }"));
     }
 
     /// AC `live_132_eval_top_level_await` (unit half): a bare top-level
