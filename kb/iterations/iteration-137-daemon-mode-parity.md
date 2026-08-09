@@ -16,8 +16,10 @@ dogfood_path: |
   # → all 4 must succeed
 first_call_sites:
   - primitive: ff_rdp_core::target_events_from_packets
-    site: crates/ff-rdp-cli/src/commands/frame_targets.rs (request_frame_targets replay of the daemon snapshot)
-status: in-progress
+    site: >-
+      crates/ff-rdp-cli/src/commands/frame_targets.rs (request_frame_targets replay
+      of the daemon snapshot)
+status: completed
 ---
 
 # Iteration 137: daemon-mode parity — frame targets, concurrency, network source
