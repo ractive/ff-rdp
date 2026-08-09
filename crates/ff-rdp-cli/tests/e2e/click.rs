@@ -138,7 +138,22 @@ fn click_element_not_found_exits_nonzero() {
     // Use --no-wait to bypass auto-wait and test the immediate "not found" path.
     // Auto-wait would turn this into a timeout (exit 124); --no-wait preserves
     // the pre-iter-59 fire-and-forget behaviour that this test exercises.
-    let server = click_server("eval_result_element_not_found.json");
+    //
+    // iter-129: a top-level "Element not found" now always triggers the
+    // frame-scan fallback (`click`'s Theme B) before giving up — even under
+    // --no-wait — so the mock server must also answer `getWatcher` /
+    // `watchTargets` / `watchResources` (empty acks, no target-available-form
+    // pushed) for the scan to complete instead of hitting an unmocked-method
+    // error. The final error message changes from the bare "Element not
+    // found" to the frame-aware "matched in 0 of N frames" diagnostic — exit
+    // code stays 1 (`AppError::User`) either way.
+    let server = click_server("eval_result_element_not_found.json")
+        .on(
+            "getWatcher",
+            serde_json::json!({"from": "server1.conn0.tabDescriptor1", "actor": "server1.conn0.watcher4"}),
+        )
+        .on("watchTargets", serde_json::json!({"from": "server1.conn0.watcher4"}))
+        .on("watchResources", serde_json::json!({"from": "server1.conn0.watcher4"}));
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
 
@@ -162,9 +177,13 @@ fn click_element_not_found_exits_nonzero() {
     );
     assert_eq!(output.status.code(), Some(1));
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    // `AppError::User` (the frame-scan's zero-match diagnostic) is emitted as
+    // the JSON error envelope on **stdout** (main.rs's single-error-emission
+    // convention, iter-98 Theme D) — not stderr, which `AppError::Exit`'s
+    // callers use instead for a genuine JS failure.
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stderr.contains("Element not found"),
-        "stderr should mention element not found: {stderr}"
+        stdout.contains("matched in 0 of") && stdout.contains("frames"),
+        "stdout should carry the frame-aware not-found diagnostic: {stdout}"
     );
 }

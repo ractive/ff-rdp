@@ -42,6 +42,7 @@ mod live_113_launch_timeout;
 mod live_123_daemon_autostart_and_registry;
 mod live_126_network_shape;
 mod live_128_network_output_fidelity;
+mod live_129_frames_and_consent;
 mod live_61l;
 mod live_61q_resource_bus;
 mod live_61r_eval;

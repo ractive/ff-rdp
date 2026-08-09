@@ -5,7 +5,7 @@ use ff_rdp_core::{
     Grip, NavCause, RdpTransport, Resource, ResourceCommand, ResourceType, RootActor, TabActor,
     WatcherActor, WindowGlobalTarget, parse_network_resource_updates, parse_network_resources,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
@@ -1052,8 +1052,40 @@ pub fn run_core(
     Ok(result)
 }
 
-pub fn run(cli: &Cli, url: &str, wait_opts: &WaitAfterNav<'_>) -> Result<(), AppError> {
-    let result = run_core(cli, url, wait_opts)?;
+/// Run the iter-129 CMP-detection-and-accept flow and merge its result into
+/// `result["consent"]`.
+///
+/// Best-effort by design (see `--auto-consent`'s long_about): a fresh
+/// connection is opened (the one `run_core` used has already been dropped)
+/// and any failure — connection or protocol — is reported as a stderr
+/// warning plus `{"cmp": null, "action": null}` rather than failing the
+/// navigate itself. The keys are always present either way, matching
+/// `consent accept`'s always-present-key discipline.
+fn merge_auto_consent(cli: &Cli, result: &mut Value) {
+    let consent = match connect_and_get_target(cli)
+        .and_then(|mut ctx| super::consent::detect_and_accept(&mut ctx))
+    {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("warning: --auto-consent: consent detection failed: {e}");
+            json!({"cmp": null, "action": null})
+        }
+    };
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("consent".to_owned(), consent);
+    }
+}
+
+pub fn run(
+    cli: &Cli,
+    url: &str,
+    wait_opts: &WaitAfterNav<'_>,
+    auto_consent: bool,
+) -> Result<(), AppError> {
+    let mut result = run_core(cli, url, wait_opts)?;
+    if auto_consent {
+        merge_auto_consent(cli, &mut result);
+    }
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,

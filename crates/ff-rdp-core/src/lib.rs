@@ -58,8 +58,9 @@ pub use actors::tab::{TabActor, TabInfo, TargetInfo, note_tab_navigated_scheme_c
 pub use actors::target::WindowGlobalTarget;
 pub use actors::thread::{SourceInfo, ThreadActor};
 pub use actors::watcher::{
-    ConsoleResource, NetworkResource, NetworkResourceUpdate, ResourceGripGuard, TargetEvent,
-    WatcherActor, WatcherEvent, dispatch_watcher_event, extract_grips, parse_console_resources,
+    ConsoleResource, DEFAULT_FRAME_TARGETS_SETTLE, NetworkResource, NetworkResourceUpdate,
+    ResourceGripGuard, TargetEvent, WatcherActor, WatcherEvent, dispatch_watcher_event,
+    enumerate_frame_targets, extract_grips, parse_console_resources,
     parse_network_resource_updates, parse_network_resources, parse_target_event,
 };
 pub use connection::{COMPATIBLE_FIREFOX_MAX, COMPATIBLE_FIREFOX_MIN, RdpConnection};

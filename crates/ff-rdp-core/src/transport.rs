@@ -398,6 +398,26 @@ impl RdpTransport {
             .map_err(ProtocolError::ConnectionFailed)
     }
 
+    /// Read the socket's current read timeout (`SO_RCVTIMEO`), as set by the
+    /// most recent [`set_read_timeout`](Self::set_read_timeout) call or by
+    /// the initial connect.
+    ///
+    /// iter-129: added so a caller that temporarily narrows the read timeout
+    /// (e.g. [`crate::actors::watcher::enumerate_frame_targets`]'s short poll
+    /// interval while draining target events) can restore the **exact**
+    /// prior value afterwards instead of guessing or clearing it to `None`.
+    /// Clearing to `None` when the caller's connection was actually
+    /// configured with a finite timeout silently makes every subsequent
+    /// `recv()` block forever instead of erroring — confirmed live: an
+    /// `evaluateJSAsync` call issued after `enumerate_frame_targets` returned
+    /// hung indefinitely (no `ProtocolError::Timeout`) until this was fixed.
+    pub fn read_timeout(&self) -> Result<Option<Duration>, ProtocolError> {
+        self.reader
+            .get_ref()
+            .read_timeout()
+            .map_err(ProtocolError::ConnectionFailed)
+    }
+
     /// Send a JSON message using Firefox RDP framing: `{len}:{json}`.
     pub fn send(&mut self, message: &Value) -> Result<(), ProtocolError> {
         let json = serde_json::to_string(message)

@@ -208,18 +208,38 @@ fn run_scroll_absolute(cli: &Cli, y_expr: &str, error_label: &str) -> Result<(),
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
+    // iter-129 Theme D: on a page with a CMP/modal overlay that sets
+    // `overflow:hidden` on <html>/<body>, `window.scrollTo` silently no-ops —
+    // the position doesn't move and `atEnd` reports `true` trivially (0-height
+    // scrollable range), masking the real cause. Detect that specific
+    // "locked AND didn't move" combination and name the locking element
+    // instead of staying silent (dogfooding-session-62 finding 1).
     let js = format!(
-        r"(function() {{
+        r#"(function() {{
   var root = document.scrollingElement || document.documentElement || document.body;
+  var before = root.scrollTop;
   window.scrollTo(0, {y_expr});
-  var atEnd = (root.scrollTop + window.innerHeight) >= (root.scrollHeight - 1);
+  var after = root.scrollTop;
+  var atEnd = (after + window.innerHeight) >= (root.scrollHeight - 1);
+  var htmlOverflow = getComputedStyle(document.documentElement).overflow;
+  var bodyOverflow = document.body ? getComputedStyle(document.body).overflow : '';
+  var locked = htmlOverflow === 'hidden' || bodyOverflow === 'hidden';
+  var warning = null;
+  if (locked && before === after) {{
+    var lockedEl = htmlOverflow === 'hidden' ? document.documentElement : document.body;
+    var cls = (lockedEl.className || '').toString().trim();
+    var clsPart = cls ? ' (class="' + cls + '")' : '';
+    warning = 'scroll blocked: <' + lockedEl.tagName.toLowerCase() + '>' + clsPart +
+      ' has overflow:hidden — likely a modal/consent overlay';
+  }}
   return '{JSON_SENTINEL}' + JSON.stringify({{
     scrolled: true,
-    viewport: {{x: root.scrollLeft, y: root.scrollTop, width: window.innerWidth, height: window.innerHeight}},
+    viewport: {{x: root.scrollLeft, y: after, width: window.innerWidth, height: window.innerHeight}},
     scrollHeight: root.scrollHeight,
-    atEnd: atEnd
+    atEnd: atEnd,
+    warning: warning
   }});
-}})()"
+}})()"#
     );
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, error_label)?;

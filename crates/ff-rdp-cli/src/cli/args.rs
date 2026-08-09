@@ -438,6 +438,16 @@ Examples:
   ff-rdp navigate https://example.com --wait-text \"Welcome\"
   ff-rdp navigate https://example.com --wait-for selector:.athing
   ff-rdp navigate https://example.com --no-wait
+  ff-rdp navigate https://www.theguardian.com --auto-consent
+
+--auto-consent (iter-129): after the document commits, run the same
+CMP-detection-and-accept flow as `ff-rdp consent accept` and add
+`results.consent = {\"cmp\": \"sourcepoint\"|null, \"action\": \"accepted\"|null}`
+(both keys always present, never omitted). Best-effort — a detection failure
+prints a warning but does not fail the navigate. Not combinable with
+--with-network. This is the CLI-native complement to `launch --auto-consent`
+(the Consent-O-Matic extension), which does not reliably work headless
+against Sourcepoint-gated sites.
 
 Output: {\"results\": {\"navigated\": \"...\", \"committed_url\": \"...\", \"ready_state\": \"...\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}
 
@@ -617,7 +627,18 @@ Dispatch modes (--dispatch):
   legacy      Mouse-event sequence only (mouseover, mouseenter, mousedown, mouseup, click)
   click-only  Synthetic .click() only (pre-iter-59 behaviour, fastest)
 
-Output: {\"results\": {\"clicked\": true, \"tag\": \"...\", \"text\": \"...\"}, \"total\": 1, \"meta\": {...}}
+Cross-origin / iframe reach (iter-129): if the selector isn't found in the top
+document, click automatically enumerates the tab's frame targets (including
+cross-origin, out-of-process iframes such as consent-management-platform
+overlays) and retries inside each one until a match clicks successfully. Use
+--frame <url-substring> to target a specific frame directly and skip both the
+top-level attempt and the scan (e.g. --frame sourcepoint). If the selector
+matches nowhere, the error names how many frames were tried and their URLs
+instead of a bare timeout.
+
+Output: {\"results\": {\"clicked\": true, \"tag\": \"...\", \"text\": \"...\", \"frame_url\": null}, \"total\": 1, \"meta\": {\"frame_url\": null, ...}}
+`frame_url` is always present (never omitted) — null when the click landed on
+the top-level document, the frame's URL string when it landed inside a frame.
 With --wait-for-network: adds {\"network\": {\"url\": \"...\", \"method\": \"...\", \"status\": N, ...}} to results.")]
     Click(ClickArgs),
     /// Type text into an input element matching a CSS selector
@@ -1084,6 +1105,30 @@ Output: writes page-map JSON/YAML to --out (default: .ffrdp/page-map.json)
         {\"results\": {\"pages\": N, \"forms\": N, \"api_routes\": N, \"out\": \"...\"}}")]
     Index(IndexArgs),
 
+    /// Detect and accept a known cookie-consent / CMP overlay
+    #[command(
+        long_about = "Detect and accept a known cookie-consent-management-platform (CMP) overlay.
+
+Complements `ff-rdp launch --auto-consent` (which installs the Consent-O-Matic
+extension): Consent-O-Matic does not reliably record consent for the
+Sourcepoint CMP in headless mode (dogfooding-session-62 finding 1). This
+command is the CLI-native fallback — it enumerates the tab's frame targets
+(including cross-origin iframes), recognises a known CMP by matching a
+frame's URL, and clicks that frame's \"accept all\" control directly.
+
+Subcommands:
+  consent accept   Detect a known CMP on the current tab and accept it
+
+Output: {\"results\": {\"cmp\": \"sourcepoint\"|null, \"action\": \"accepted\"|null}, \"total\": 1, \"meta\": {...}}
+Both keys are always present — null/null when no known CMP was found on the page.
+
+See also: `ff-rdp navigate --auto-consent` to run this automatically after navigating."
+    )]
+    Consent {
+        #[command(subcommand)]
+        consent_command: ConsentCommand,
+    },
+
     /// Generate shell completions
     #[command(long_about = "Generate a shell completion script for ff-rdp.
 
@@ -1148,6 +1193,13 @@ pub struct NavigateArgs {
     /// `readystate`: poll `document.readyState == "complete"` until timeout.
     #[arg(long, value_name = "STRATEGY", default_value = "both", value_enum)]
     pub wait_strategy: crate::commands::navigate::WaitStrategy,
+    /// After the document commits, detect and accept a known cookie-consent
+    /// overlay (see `ff-rdp consent accept`). Best-effort: a detection
+    /// failure is reported as a warning, not a navigate failure. Adds
+    /// `results.consent = {"cmp": ..., "action": ...}` (both keys always
+    /// present). Not supported together with --with-network.
+    #[arg(long, conflicts_with = "with_network")]
+    pub auto_consent: bool,
 }
 
 #[derive(clap::Args)]
@@ -1376,6 +1428,10 @@ pub struct ClickArgs {
     /// After clicking, wait for network and DOM to idle (no XHR/fetch for 500ms, no DOM mutations for 200ms)
     #[arg(long)]
     pub settle: bool,
+    /// Click inside the frame whose URL contains this substring, skipping the
+    /// top-level attempt and the frame scan (e.g. --frame sourcepoint)
+    #[arg(long, value_name = "URL_SUBSTRING")]
+    pub frame: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -1893,6 +1949,18 @@ pub struct IndexArgs {
     pub output_root: Option<std::path::PathBuf>,
 }
 
+/// Subcommands for `ff-rdp consent`.
+#[derive(Subcommand)]
+pub enum ConsentCommand {
+    /// Detect a known CMP on the current tab and click its "accept all" control
+    #[command(
+        long_about = "Detect a known cookie-consent-management-platform (CMP) overlay on the current tab and accept it.
+
+Output: {\"results\": {\"cmp\": \"sourcepoint\"|null, \"action\": \"accepted\"|null}, \"total\": 1, \"meta\": {...}}"
+    )]
+    Accept,
+}
+
 /// Subcommands for `ff-rdp record`.
 #[derive(Subcommand)]
 pub enum RecordCommand {
@@ -2052,12 +2120,22 @@ Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\"
     /// Scroll to the very top of the page (equivalent to scroll by --dy -99999999)
     #[command(long_about = "Scroll to the very top of the page.
   Uses window.scrollTo(0, 0) for an instant jump to the top.
-Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\": N, \"atEnd\": bool}, \"total\": 1, \"meta\": {...}}")]
+  `warning` (iter-129) is always present — null normally, or a string naming the
+  locking element (e.g. \"<html> (class=\\\"sp-message-open\\\") has overflow:hidden\")
+  when the scroll position didn't move AND <html>/<body> has overflow:hidden —
+  the CMP/modal-overlay case where a silent atEnd:true would otherwise mask
+  the real cause (dogfooding-session-62).
+Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\": N, \"atEnd\": bool, \"warning\": null}, \"total\": 1, \"meta\": {...}}")]
     Top,
     /// Scroll to the very bottom of the page (equivalent to scroll by --dy 99999999)
     #[command(long_about = "Scroll to the very bottom of the page.
   Uses window.scrollTo(0, document.documentElement.scrollHeight) for an instant jump to the bottom.
-Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\": N, \"atEnd\": bool}, \"total\": 1, \"meta\": {...}}")]
+  `warning` (iter-129) is always present — null normally, or a string naming the
+  locking element (e.g. \"<html> (class=\\\"sp-message-open\\\") has overflow:hidden\")
+  when the scroll position didn't move AND <html>/<body> has overflow:hidden —
+  the CMP/modal-overlay case where a silent atEnd:true would otherwise mask
+  the real cause (dogfooding-session-62).
+Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\": N, \"atEnd\": bool, \"warning\": null}, \"total\": 1, \"meta\": {...}}")]
     Bottom,
     /// Scroll an overflow container element directly
     #[command(
