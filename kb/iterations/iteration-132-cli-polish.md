@@ -67,32 +67,32 @@ justifies its own gate run).
 
 ## Tasks
 
-- [ ] A: intercept the jq crate's parse error, render position + input snippet;
+- [x] A: intercept the jq crate's parse error, render position + input snippet;
       audit for other `{:?}` leaks on user-facing error paths.
-- [ ] B: live `value` property fetch in the dom inspector path for
+- [x] B: live `value` property fetch in the dom inspector path for
       input/textarea/select; document the attrs-vs-value distinction in help.
-- [ ] C: top-level-await detection + async-IIFE wrap in eval script preparation
+- [x] C: top-level-await detection + async-IIFE wrap in eval script preparation
       (all entry points: arg, --file, --stdin).
-- [ ] D: clap error customization for the known flag-vs-subcommand traps; correct
+- [x] D: clap error customization for the known flag-vs-subcommand traps; correct
       the `dom --stats` tip.
-- [ ] E: stale-lock GC on daemon spawn; unit-test with a fabricated dead-pid lock,
+- [x] E: stale-lock GC on daemon spawn; unit-test with a fabricated dead-pid lock,
       and a negative-case assertion that a co-located `daemon.<port>.throttle.json`
       (iter-131) survives the sweep untouched.
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
-- [ ] unit_jq_parse_error_clean: malformed `--jq` yields an error string containing
+- [x] unit_jq_parse_error_clean: malformed `--jq` yields an error string containing
       the failing position and NO `Lex(`/`Delim(` Debug fragments; e2e asserts exit 1
       and the clean message on stdout envelope.
-- [ ] live_132_dom_live_value: fixture input with attribute value "0"; after
+- [x] live_132_dom_live_value: fixture input with attribute value "0"; after
       `eval '...value="42"'`, `dom '#el'` reports `value:"42"` AND `attrs.value:"0"`.
-- [ ] live_132_eval_top_level_await: `eval 'await Promise.resolve(41) + 1'` → results
+- [x] live_132_eval_top_level_await: `eval 'await Promise.resolve(41) + 1'` → results
       42, exit 0, on all three input paths (arg, --file, --stdin).
-- [ ] e2e_flag_subcommand_hints: `scroll --bottom` and `dom --stats` stderr suggests
+- [x] e2e_flag_subcommand_hints: `scroll --bottom` and `dom --stats` stderr suggests
       `scroll bottom` / `dom stats` respectively; no `--attrs` tip for `dom --stats`.
-- [ ] unit_spawn_lock_gc: daemon spawn path removes a stale lock with a dead pid,
+- [x] unit_spawn_lock_gc: daemon spawn path removes a stale lock with a dead pid,
       keeps a live-pid lock, and leaves an unrelated `*.throttle.json` file
       (iter-131) untouched.
 

@@ -22,12 +22,14 @@ mod util;
 use cli::Cli;
 use error::AppError;
 
-/// Heuristic: is `type` the subcommand the user is invoking?
+/// Find the first non-flag argv token — the top-level subcommand the user is
+/// invoking — by walking past global flags.
 ///
-/// Walks past global flags (everything before the first non-flag token) and
-/// checks whether the first non-flag token is `type`. Used purely to attach a
-/// command-specific hint to clap's generic "unexpected argument" error.
-fn is_type_invocation(args: &[String]) -> bool {
+/// Shared by [`is_type_invocation`] (the `type`-specific hint) and
+/// [`flag_subcommand_trap_hint`] (iter-132 Theme D: `scroll --bottom` /
+/// `dom --stats`-style traps). Used purely to attach contextual hints to
+/// clap's generic "unexpected argument" error — never for real parsing.
+fn find_subcommand_token(args: &[String]) -> Option<&str> {
     // Allowlist of value-taking global flags defined on `Cli`. All other
     // globals are booleans (`--no-daemon`, `--all`, etc.) and do not consume
     // the next argv token. Keep in sync with `Cli` in `cli/args.rs`.
@@ -61,9 +63,68 @@ fn is_type_invocation(args: &[String]) -> bool {
             }
             continue;
         }
-        return a == "type";
+        return Some(a.as_str());
     }
-    false
+    None
+}
+
+/// Heuristic: is `type` the subcommand the user is invoking?
+///
+/// Used purely to attach a command-specific hint to clap's generic
+/// "unexpected argument" error.
+fn is_type_invocation(args: &[String]) -> bool {
+    find_subcommand_token(args) == Some("type")
+}
+
+/// Known "wrote a flag, meant a subcommand" traps (iter-132 Theme D,
+/// dogfood-62 friction): a boolean/value flag that does not exist on the
+/// parent's `Args` struct but collides with the name of an actual
+/// sub-subcommand, so the natural-but-wrong guess (`scroll --bottom`,
+/// `dom --stats`) reads as plausible CLI syntax. Each entry is
+/// `(parent subcommand, the exact flag clap rejected, correct invocation)`.
+///
+/// Checked directly against clap's own `ContextKind::InvalidArg` value, so
+/// the hint can never drift out of sync with the flag clap actually
+/// rejected — no guessing needed on our end. Add a new subcommand's
+/// trap here when a dogfooding session hits it; keep the flag spelling
+/// (`--foo`) exactly as `#[arg(long)]` would reject it (kebab-case).
+const FLAG_SUBCOMMAND_TRAPS: &[(&str, &str, &str)] = &[
+    ("scroll", "--top", "scroll top"),
+    ("scroll", "--bottom", "scroll bottom"),
+    ("dom", "--stats", "dom stats"),
+    ("dom", "--tree", "dom tree"),
+];
+
+/// If `err` is an `UnknownArgument` on a known flag/subcommand trap (see
+/// [`FLAG_SUBCOMMAND_TRAPS`]), return `(the rejected flag, the correct
+/// invocation to suggest)`.
+///
+/// Returning `Some` signals the caller to skip clap's own default error
+/// rendering: clap's edit-distance "did you mean" suggestion (e.g. `dom
+/// --stats` → "tip: a similar argument exists: '--attrs'") is actively
+/// misleading for these cases — `--attrs` is a real flag but not what the
+/// user meant, and following it produces a different, silently-wrong
+/// command rather than an error. This hint replaces that tip entirely
+/// rather than appending alongside it, so the caller must build its own
+/// error line rather than reuse `err`'s `Display`/`print()` (both still
+/// carry the misleading tip internally).
+fn flag_subcommand_trap_hint<'a>(
+    args: &[String],
+    err: &'a clap::Error,
+) -> Option<(&'a str, &'static str)> {
+    use clap::error::{ContextKind, ContextValue};
+
+    if err.kind() != clap::error::ErrorKind::UnknownArgument {
+        return None;
+    }
+    let subcommand = find_subcommand_token(args)?;
+    let ContextValue::String(bad_flag) = err.get(ContextKind::InvalidArg)? else {
+        return None;
+    };
+    FLAG_SUBCOMMAND_TRAPS
+        .iter()
+        .find(|(cmd, flag, _)| *cmd == subcommand && flag == bad_flag)
+        .map(|(_, _, hint)| (bad_flag.as_str(), *hint))
 }
 
 fn init_tracing(cli: &Cli) {
@@ -112,6 +173,20 @@ fn main() {
                 kind,
                 ErrorKind::UnknownArgument | ErrorKind::InvalidSubcommand
             ) && is_type_invocation(&argv);
+
+            // iter-132 Theme D: a known flag-vs-subcommand trap (e.g.
+            // `scroll --bottom`, `dom --stats`) replaces clap's default
+            // rendering entirely — see `flag_subcommand_trap_hint`'s doc
+            // comment for why the default "did you mean" tip is actively
+            // wrong for these cases, not just incomplete. Built from scratch
+            // (not `err.print()`/`{err}`) so the misleading tip never
+            // reaches stderr at all.
+            if let Some((bad_flag, hint)) = flag_subcommand_trap_hint(&argv, &err) {
+                eprintln!("error: unexpected argument '{bad_flag}' found");
+                eprintln!();
+                eprintln!("hint: '{bad_flag}' is a subcommand, not a flag — try `ff-rdp {hint}`.");
+                std::process::exit(2);
+            }
 
             err.print().ok();
             if attach_type_hint {
@@ -289,5 +364,94 @@ mod main_tests {
             .exit_code(),
             3
         );
+    }
+
+    // ── iter-132 Theme D: flag-vs-subcommand traps ───────────────────────────
+
+    use super::{Cli, flag_subcommand_trap_hint};
+    use clap::Parser as _;
+
+    fn args(argv: &[&str]) -> Vec<String> {
+        argv.iter().map(ToString::to_string).collect()
+    }
+
+    /// `Cli` intentionally does not derive `Debug` (kept lean for the derive
+    /// macro's compile-time cost), so `.unwrap_err()` — which requires `T:
+    /// Debug` — is not available here. This does the same job by hand.
+    fn expect_parse_err(argv: &[String]) -> clap::Error {
+        match Cli::try_parse_from(argv) {
+            Ok(_) => panic!("expected a parse error for argv={argv:?}"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn scroll_bottom_flag_suggests_scroll_bottom_subcommand() {
+        let argv = args(&["ff-rdp", "scroll", "--bottom"]);
+        let err = expect_parse_err(&argv);
+        let (bad_flag, hint) = flag_subcommand_trap_hint(&argv, &err)
+            .expect("scroll --bottom must be a recognized trap");
+        assert_eq!(bad_flag, "--bottom");
+        assert_eq!(hint, "scroll bottom");
+    }
+
+    #[test]
+    fn scroll_top_flag_suggests_scroll_top_subcommand() {
+        let argv = args(&["ff-rdp", "scroll", "--top"]);
+        let err = expect_parse_err(&argv);
+        let (bad_flag, hint) =
+            flag_subcommand_trap_hint(&argv, &err).expect("scroll --top must be a recognized trap");
+        assert_eq!(bad_flag, "--top");
+        assert_eq!(hint, "scroll top");
+    }
+
+    #[test]
+    fn dom_stats_flag_suggests_dom_stats_subcommand() {
+        let argv = args(&["ff-rdp", "dom", "sel", "--stats"]);
+        let err = expect_parse_err(&argv);
+        let (bad_flag, hint) =
+            flag_subcommand_trap_hint(&argv, &err).expect("dom --stats must be a recognized trap");
+        assert_eq!(bad_flag, "--stats");
+        assert_eq!(hint, "dom stats");
+    }
+
+    #[test]
+    fn dom_stats_flag_without_selector_also_matches() {
+        // `ff-rdp dom --stats` (no selector at all) hits the same clap
+        // UnknownArgument path as `dom sel --stats`.
+        let argv = args(&["ff-rdp", "dom", "--stats"]);
+        let err = expect_parse_err(&argv);
+        assert!(flag_subcommand_trap_hint(&argv, &err).is_some());
+    }
+
+    #[test]
+    fn dom_tree_flag_suggests_dom_tree_subcommand() {
+        let argv = args(&["ff-rdp", "dom", "--tree"]);
+        let err = expect_parse_err(&argv);
+        let (bad_flag, hint) =
+            flag_subcommand_trap_hint(&argv, &err).expect("dom --tree must be a recognized trap");
+        assert_eq!(bad_flag, "--tree");
+        assert_eq!(hint, "dom tree");
+    }
+
+    /// An unrelated unknown flag on a subcommand with no trap table entry
+    /// must not match — the hint stays silent and clap's normal error
+    /// (including its own "did you mean" tip) is used unchanged.
+    #[test]
+    fn unrelated_unknown_flag_does_not_match() {
+        let argv = args(&["ff-rdp", "eval", "--bogus"]);
+        let err = expect_parse_err(&argv);
+        assert!(flag_subcommand_trap_hint(&argv, &err).is_none());
+    }
+
+    /// A flag that happens to share a name with a trap entry but on the
+    /// WRONG parent subcommand must not match (table is keyed on both
+    /// subcommand and flag name).
+    #[test]
+    fn same_flag_name_wrong_subcommand_does_not_match() {
+        // `--stats` is only a trap under `dom`, not under `scroll`.
+        let argv = args(&["ff-rdp", "scroll", "--stats"]);
+        let err = expect_parse_err(&argv);
+        assert!(flag_subcommand_trap_hint(&argv, &err).is_none());
     }
 }
