@@ -632,3 +632,24 @@ fn eval_meta_eval_path_page_await() {
         "meta.eval_path must be 'page-await' on the standard path; envelope: {json}"
     );
 }
+
+/// AC: `e2e_help_viewport_pointers` — `eval --help` documents the headless
+/// `resizeTo()` no-op and points at `launch --window-size` for a real
+/// window size.
+#[test]
+fn eval_help_mentions_resize_to_no_op() {
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(["eval", "--help"])
+        .output()
+        .expect("failed to spawn ff-rdp");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("resizeTo"),
+        "eval --help must document the headless resizeTo() no-op: {stdout}"
+    );
+    assert!(
+        stdout.contains("window-size"),
+        "eval --help must point at launch --window-size: {stdout}"
+    );
+}

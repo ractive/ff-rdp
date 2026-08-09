@@ -61,6 +61,18 @@ daemon that means "until the daemon restarts"; a `--no-daemon` one-shot
 process discards the setting on disconnect — the `emulate` envelope then
 carries a `lifetime_warning`.
 
+## Dead primitive removed (iter-133)
+
+`TargetConfigurationFront::set_custom_viewport_size` sent
+`{"customViewport": {"width", "height"}}` — a field **not** in
+`SUPPORTED_OPTIONS` (see the table above). Empirically the server strips it
+silently (echoes `{}`, `innerWidth` unchanged); a positive-control mixed
+patch confirmed the echo faithfully reports accepted vs. dropped options.
+Removed in iter-133 along with its unit test — see
+[[viewport-emulation]] for the full empirical trace and RDM-internals proof
+that viewport sizing is never an RDP wire feature (RDM does it via
+parent-chrome CSS on a frame element it owns).
+
 ## Spec-fidelity note (iter-103)
 
 The colour-scheme wire field is `colorSchemeSimulation`, **not** `colorScheme`
@@ -74,3 +86,5 @@ actually flips.
 
 - [[watcher]] — supplies this actor via `getTargetConfigurationActor`.
 - [[iteration-103-target-configuration-cli]] — the `emulate` command iteration.
+- [[viewport-emulation]] — iter-133 research spike proving no RDP actor sizes
+  a viewport; grounds the dead-primitive removal above.

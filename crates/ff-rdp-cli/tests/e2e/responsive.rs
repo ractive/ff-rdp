@@ -317,3 +317,25 @@ fn responsive_zero_width_rejected() {
         "unexpected output: stderr={stderr:?} stdout={stdout:?}"
     );
 }
+
+/// AC: `e2e_help_viewport_pointers` — `responsive --help` points at
+/// `launch --window-size` / `screenshot --window-size` for true viewport
+/// emulation, distinguishing them from this command's layout-only
+/// CSS-width constraint.
+#[test]
+fn responsive_help_points_at_window_size_commands() {
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(["responsive", "--help"])
+        .output()
+        .expect("failed to spawn ff-rdp");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("launch --window-size"),
+        "responsive --help must point at `launch --window-size`: {stdout}"
+    );
+    assert!(
+        stdout.contains("screenshot --window-size"),
+        "responsive --help must point at `screenshot --window-size`: {stdout}"
+    );
+}

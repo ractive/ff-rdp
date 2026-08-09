@@ -778,6 +778,7 @@ fn dispatch_inner(
             viewport_height,
             output_root,
             bulk,
+            window_size,
         }) => commands::screenshot::run(
             cli,
             &commands::screenshot::ScreenshotOpts {
@@ -787,6 +788,7 @@ fn dispatch_inner(
                 bulk: *bulk,
                 viewport_height: *viewport_height,
                 output_root: output_root.as_deref(),
+                window_size: window_size.as_deref(),
             },
         ),
         Command::Launch(LaunchArgs {
@@ -795,6 +797,7 @@ fn dispatch_inner(
             temp_profile,
             debug_port,
             auto_consent,
+            window_size,
             replace,
             force,
         }) => commands::launch::run(
@@ -805,6 +808,7 @@ fn dispatch_inner(
             *debug_port,
             *auto_consent,
             *replace || *force,
+            window_size.as_deref(),
         ),
         Command::Computed(ComputedArgs {
             selector_pos,

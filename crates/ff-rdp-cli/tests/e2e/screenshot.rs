@@ -448,3 +448,102 @@ fn screenshot_with_jq_filter_extracts_path() {
 
     let _ = std::fs::remove_dir_all(&out_dir);
 }
+
+// ---------------------------------------------------------------------------
+// iter-133 Theme B — `screenshot --window-size` batch capture
+// ---------------------------------------------------------------------------
+
+/// AC: `e2e_help_viewport_pointers` — `screenshot --help` documents
+/// `--window-size` (the batch capture path) and the headless `resizeTo()`
+/// no-op, without needing Firefox installed.
+#[test]
+fn screenshot_help_mentions_window_size_and_resize_to() {
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(["screenshot", "--help"])
+        .output()
+        .expect("failed to spawn ff-rdp");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("window-size"),
+        "screenshot --help must document --window-size: {stdout}"
+    );
+    assert!(
+        stdout.contains("resizeTo"),
+        "screenshot --help must document the headless resizeTo() no-op: {stdout}"
+    );
+}
+
+/// `--window-size` and `--full-page` are mutually exclusive (batch capture
+/// vs. the live full-scroll capture) — clap rejects the combination before
+/// connecting.
+#[test]
+fn screenshot_window_size_conflicts_with_full_page() {
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(["screenshot", "--window-size", "390x844", "--full-page"])
+        .output()
+        .expect("failed to spawn ff-rdp");
+    assert!(
+        !output.status.success(),
+        "expected failure when both --window-size and --full-page are given"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("window-size")
+            || stderr.contains("full-page")
+            || stderr.contains("cannot be used with"),
+        "expected conflict error, got: {stderr}"
+    );
+}
+
+/// `screenshot` has no `--dppx` flag — it was dropped (see the `window_size`
+/// help text): `layout.css.devPixelsPerPx` was found to have zero effect on
+/// the batch-capture raster (Firefox 153.0.3). An unknown-flag error must
+/// name `--dppx`, not silently accept it.
+#[test]
+fn screenshot_has_no_dppx_flag() {
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(["screenshot", "--window-size", "390x844", "--dppx", "2"])
+        .output()
+        .expect("failed to spawn ff-rdp");
+    assert!(
+        !output.status.success(),
+        "--dppx must be rejected as an unknown flag on screenshot"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("dppx") || stderr.contains("unexpected argument"),
+        "expected an unknown-flag error naming --dppx: {stderr}"
+    );
+}
+
+/// A malformed `--window-size` value is rejected with a user error naming
+/// the expected `WxH` form — before any RDP connection is attempted, so
+/// this needs neither a live daemon nor Firefox (port 1 is unroutable).
+#[test]
+fn screenshot_window_size_invalid_rejected() {
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args([
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "1",
+            "--no-daemon",
+            "screenshot",
+            "--window-size",
+            "not-a-size",
+        ])
+        .output()
+        .expect("failed to spawn ff-rdp");
+    assert!(
+        !output.status.success(),
+        "expected failure for an invalid --window-size"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
+    assert!(
+        combined.contains("WxH"),
+        "error must name the expected WxH form; stderr={stderr:?} stdout={stdout:?}"
+    );
+}

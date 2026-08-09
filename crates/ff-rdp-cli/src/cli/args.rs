@@ -489,7 +489,12 @@ to wrap the expression in JSON.stringify() and get the real data back.
 Pass --unwrap when the expression itself already returns a JSON-encoded string
 (e.g. `localStorage.getItem('user')` or a server endpoint that returns text):
 ff-rdp will parse it client-side and put the structured object/array into
-`results`. Primitive or non-JSON strings are passed through unchanged.")]
+`results`. Primitive or non-JSON strings are passed through unchanged.
+
+NOTE: `window.resizeTo()` is a silent no-op in headless Firefox — evaluating
+it will not resize the viewport or change subsequent `innerWidth` reads. For
+a real window size, launch with `ff-rdp launch --window-size WxH` (see its
+--help for the ~500px live-viewport floor).")]
     Eval(EvalArgs),
     /// Extract visible page text (document.body.innerText)
     #[command(long_about = "Extract visible page text (document.body.innerText).
@@ -611,13 +616,28 @@ Output: {\"results\": [{\"url\": \"...\", \"duration_ms\": N, \"transfer_size\":
     /// Capture a screenshot
     #[command(long_about = "Capture a screenshot.
 
-By default the screenshot is captured at the current viewport size.
-Use --full-page to capture the entire scrollable document (up to
-document.scrollingElement.scrollHeight) or --viewport-height N for an
-explicit override.
+By default the screenshot is captured at the current viewport size over the
+live RDP session. Use --full-page to capture the entire scrollable document
+(up to document.scrollingElement.scrollHeight) or --viewport-height N for an
+explicit override. NOTE: headless `window.resizeTo()` is a silent no-op —
+it does not change what a plain `screenshot` captures.
+
+--window-size WxH (iter-133) switches to a different capture mode entirely:
+a one-shot `firefox --headless --window-size --screenshot` subprocess in a
+fresh scratch profile, giving an EXACT WxH PNG with no floor — the only true
+sub-500px mobile raster path (the live RDP capture above inherits whatever
+window `launch` created, which clamps below ~500px CSS width). This
+re-navigates the current tab's URL from scratch: cookies/localStorage/session
+state from the live tab are NOT carried over. No density knob here —
+`layout.css.devPixelsPerPx` was tested against this exact capture path and
+found to have zero effect on the output raster (Firefox 153.0.3); use
+`emulate --dppx` for the LIVE RDP session's devicePixelRatio instead (a
+different, unrelated mechanism). Mutually exclusive with
+--full-page/--viewport-height.
 
 Output: {\"results\": {\"path\": \"...\", \"width\": N, \"height\": N}, \"total\": 1, \"meta\": {...}}
-With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
+With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...}}
+With --window-size: {\"results\": {\"path\"|\"base64\": ..., \"width\": N, \"height\": N, \"capture\": \"batch-window-size\"}, \"total\": 1, \"meta\": {...}}")]
     Screenshot(ScreenshotArgs),
     /// Click an element matching a CSS selector
     #[command(long_about = "Click an element matching a CSS selector.
@@ -825,6 +845,13 @@ object — {requested, inner_width, matches} — where `matches` is
 matchMedia(\"(width: <requested>px)\").matches. When it is false a warning is
 attached; pass --strict to make a mismatch exit non-zero.
 
+For TRUE viewport emulation (not this command's layout-only CSS-width
+constraint), use `ff-rdp launch --window-size WxH` before navigating — real
+innerWidth and real media queries above the ~500px live-viewport floor. For
+a true sub-500px mobile screenshot, use `ff-rdp screenshot --window-size WxH`
+instead (see either --help for details). `responsive` remains the right tool
+for geometry/breakpoint auditing across many widths in one call.
+
 By default, hidden and zero-sized elements are excluded from results at each breakpoint.
 Pass --include-hidden to receive those elements as well.
 
@@ -1007,14 +1034,30 @@ By default a temporary profile is created with the necessary devtools prefs
 enabled. Use --profile to reuse an existing profile, or --temp-profile to
 make the temporary profile explicit.
 
-Examples:
-  ff-rdp launch                      # launch with temp profile on port 6000
-  ff-rdp launch --headless           # headless mode (no visible window)
-  ff-rdp launch --port 9222          # use a different debug port
-  ff-rdp launch --auto-consent       # auto-dismiss cookie banners
-  ff-rdp launch --profile ~/my-prof  # reuse an existing profile
+--window-size WxH (iter-133) forwards `-width`/`-height` to Firefox, giving
+this launched instance a real window size. Widths >= ~500px CSS pixels get
+TRUE viewport emulation: real `window.innerWidth`, real `@media` query
+evaluation, real layout — this is the only ff-rdp path that does. Below
+~500px, Firefox clamps the LIVE debugger-server instance's viewport up to
+that floor (empirically confirmed on macOS; see
+kb/research/viewport-emulation.md) — the requested size still appears in
+the envelope, alongside a warning, but `eval innerWidth` will read ~500,
+not your smaller request. For a true sub-500px mobile SCREENSHOT (not a
+live session), use `ff-rdp screenshot --window-size WxH` instead, which
+has no floor. There is no RDP actor that sizes a viewport (RDM does it via
+parent-chrome CSS, unreachable over the wire) — `--window-size` is a real
+Firefox window-feature flag, not protocol-level emulation.
 
-Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"profile_path\": \"...\", \"temp_profile\": bool, \"auto_consent\": bool}, \"total\": 1, \"meta\": {...}}"
+Examples:
+  ff-rdp launch                          # launch with temp profile on port 6000
+  ff-rdp launch --headless               # headless mode (no visible window)
+  ff-rdp launch --port 9222              # use a different debug port
+  ff-rdp launch --auto-consent           # auto-dismiss cookie banners
+  ff-rdp launch --profile ~/my-prof      # reuse an existing profile
+  ff-rdp launch --headless --window-size 600x800   # true viewport, >= floor
+  ff-rdp launch --headless --window-size 390x844   # below floor — clamps to ~500, warns
+
+Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"profile_path\": \"...\", \"temp_profile\": bool, \"auto_consent\": bool, \"window_size\": {\"requested\": {\"width\": N, \"height\": N}, \"below_floor\": bool}|null, \"warnings\"?: [...]}, \"total\": 1, \"meta\": {...}}"
     )]
     Launch(LaunchArgs),
     /// Install Claude Code skill files to the user or project filesystem
@@ -1437,6 +1480,17 @@ pub struct ScreenshotArgs {
     /// standard base64 path transparently.
     #[arg(long)]
     pub bulk: bool,
+    /// Batch-capture a screenshot at this exact `WxH` pixel size via a
+    /// one-shot `firefox --headless --window-size --screenshot` subprocess
+    /// — the only path to a TRUE sub-500px mobile raster (bypasses the live
+    /// viewport floor `launch --window-size` hits below ~500px). Runs in a
+    /// fresh scratch profile separate from the live RDP session/daemon: the
+    /// current tab's URL is re-navigated from scratch, so cookies/localStorage/
+    /// session state from the live tab are NOT carried over. No density knob:
+    /// `layout.css.devPixelsPerPx` was tested against this exact capture path
+    /// and found to have zero effect on the output raster (Firefox 153.0.3).
+    #[arg(long, value_name = "WxH", conflicts_with_all = ["full_page", "viewport_height"])]
+    pub window_size: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -1869,6 +1923,13 @@ pub struct LaunchArgs {
     /// Install Consent-O-Matic extension to auto-dismiss cookie consent banners
     #[arg(long)]
     pub auto_consent: bool,
+    /// Set the initial window size as `WxH` pixels (forwarded to Firefox as
+    /// `-width`/`-height`). True live-viewport emulation (real innerWidth,
+    /// real media queries) only above the ~500px floor documented in
+    /// `--help`; for a true sub-500px raster use `screenshot --window-size`
+    /// instead.
+    #[arg(long, value_name = "WxH")]
+    pub window_size: Option<String>,
     /// If the debug port is already occupied, stop the prior Firefox instance
     /// gracefully (SIGTERM → SIGKILL after 2 s) and then launch a fresh one.
     /// Alias: --force.

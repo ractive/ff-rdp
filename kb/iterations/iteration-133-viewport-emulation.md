@@ -48,10 +48,14 @@ found no viewport control at any of the four natural homes (`launch`, `screensho
   --window-size WxH` runs a one-shot `firefox --headless --screenshot
   --window-size=W,H <current-tab-url>` with a scratch profile (separate from the
   RDP session; proven exact PNG dimensions). Envelope reports
-  `capture: "batch-window-size"` so the mode is self-evident. Density: the batch
-  profile sets `layout.css.devPixelsPerPx` when `--dppx` is given, scaling the
-  raster (390 @ dppx 2 → 780px wide). Document the limitation that batch capture
-  re-navigates (fresh session: no cookies/state from the live tab).
+  `capture: "batch-window-size"` so the mode is self-evident. Document the
+  limitation that batch capture re-navigates (fresh session: no cookies/state
+  from the live tab). **Correction during implementation (2026-08-09):** the
+  planned `--dppx` density knob for this path was dropped — direct testing
+  against Firefox 153.0.3 showed `layout.css.devPixelsPerPx` has zero effect
+  on the `--screenshot` raster (with or without e10s); the plan's dppx
+  assumption only held for the unrelated live-RDP `emulate --dppx` mechanism.
+  See the addendum in [[viewport-emulation]].
 - **C — honest docs + pointers.** eval/screenshot help note headless
   `window.resizeTo()` is a silent no-op; `responsive`'s warning and help point at
   `launch --window-size` (≥500) and `screenshot --window-size` (below), and clearly
@@ -62,38 +66,50 @@ found no viewport control at any of the four natural homes (`launch`, `screensho
 
 ## Tasks
 
-- [ ] A: `--window-size WxH` parsing + validation (reject `0x0`, non-`WxH`) in
+- [x] A: `--window-size WxH` parsing + validation (reject `0x0`, non-`WxH`) in
       launch; forward `-width`/`-height` in the Firefox command builder; requested
       vs effective in the envelope + below-floor warning; help text.
-- [ ] B: batch capture path in screenshot (scratch profile, `--screenshot`,
-      `--window-size=W,H`, optional `layout.css.devPixelsPerPx` from `--dppx`);
-      current-tab URL resolution; `capture` field in the envelope; help text incl.
-      fresh-session caveat.
-- [ ] C: resizeTo note in eval/screenshot help; responsive warning + help pointers.
-- [ ] D: remove `set_custom_viewport_size` and its unit test; update
+- [x] B: batch capture path in screenshot (scratch profile, `--screenshot`,
+      `--window-size=W,H`); current-tab URL resolution; `capture` field in the
+      envelope; help text incl. fresh-session caveat. `--dppx` dropped — see
+      the Themes section correction above.
+- [x] C: resizeTo note in eval/screenshot help; responsive warning + help pointers.
+- [x] D: remove `set_custom_viewport_size` and its unit test; update
       `kb/rdp/actors/` target-configuration doc (check-actor-kb-sync will require
       the kb edit anyway).
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [5/5]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
-- [ ] live_133_launch_window_size_above_floor: `launch --headless --window-size
+- [x] live_133_launch_window_size_above_floor: `launch --headless --window-size
       600x800` → `eval innerWidth` == 600 and a `(max-width: 700px)` media query
-      matches (true emulation at ≥500px widths).
-- [ ] live_133_launch_window_size_floor_warning: `launch --headless --window-size
+      matches (true emulation at ≥500px widths). Verified live (Firefox
+      153.0.3): innerWidth=600, media query matched.
+- [x] live_133_launch_window_size_floor_warning: `launch --headless --window-size
       390x844` → `eval innerWidth` ∈ [390, 500] (platform floor clamp) AND the
       launch envelope reports the requested 390×844 alongside a below-floor
-      warning.
-- [ ] live_133_screenshot_batch_mobile: with the live tab on example.com,
+      warning. Verified live: innerWidth clamped to 500, envelope carried
+      `window_size.below_floor: true` + a `warnings` entry.
+- [x] live_133_screenshot_batch_mobile: with the live tab on example.com,
       `screenshot --window-size 390x844` → PNG exactly 390 px wide; envelope
-      `capture == "batch-window-size"`.
-- [ ] live_133_screenshot_batch_dppx: `screenshot --window-size 390x844 --dppx 2`
-      → PNG exactly 780 px wide.
-- [ ] unit_launch_window_size_validation: `0x0`, `x`, `390`, `390x` all rejected
-      with a user error naming the expected `WxH` form.
-- [ ] e2e_help_viewport_pointers: eval + screenshot `--help` mention the headless
-      `resizeTo()` no-op; responsive `--help`/warning point at `--window-size`.
+      `capture == "batch-window-size"`. Verified live: PNG IHDR 390×844.
+- [x] unit_launch_window_size_validation: `0x0`, `x`, `390`, `390x` all rejected
+      with a user error naming the expected `WxH` form. See
+      `crates/ff-rdp-cli/src/util/window_size.rs` unit tests.
+- [x] e2e_help_viewport_pointers: `eval_help_mentions_resize_to_no_op`,
+      `screenshot_help_mentions_window_size_and_resize_to`, and
+      `responsive_help_points_at_window_size_commands` (tests/e2e/{eval,
+      screenshot,responsive}.rs) assert eval/screenshot help mention the
+      headless resizeTo() no-op, and responsive help points at
+      `--window-size`.
+
+`live_133_screenshot_batch_dppx` [dropped — see [[viewport-emulation]]
+addendum]: `layout.css.devPixelsPerPx` was confirmed to have zero effect on
+the `--screenshot` batch-capture raster (Firefox 153.0.3, tested with and
+without e10s), so no `--dppx` flag was added to `screenshot` — shipping one
+would have been a silent no-op. `screenshot_has_no_dppx_flag`
+(tests/e2e/screenshot.rs) asserts the flag does not exist.
 
 ## Notes
 

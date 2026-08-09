@@ -93,3 +93,51 @@ fn help_mentions_doctor() {
         "top-level --help must mention `doctor`; got:\n{stdout}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// iter-133 Theme A — `launch --window-size`
+// ---------------------------------------------------------------------------
+
+/// AC: `e2e_help_viewport_pointers` — `launch --help` documents
+/// `--window-size` and the ~500px live-viewport floor, without needing
+/// Firefox installed.
+#[test]
+fn launch_help_mentions_window_size_and_floor() {
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(["launch", "--help"])
+        .output()
+        .expect("failed to spawn ff-rdp");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("window-size"),
+        "launch --help must document --window-size: {stdout}"
+    );
+    assert!(
+        stdout.contains("500px") || stdout.contains("floor"),
+        "launch --help must document the live-viewport floor: {stdout}"
+    );
+}
+
+/// A malformed `--window-size` value must be rejected with a user error
+/// naming the expected `WxH` form — before any port-collision check or
+/// Firefox spawn, so this test needs neither a free port nor Firefox
+/// installed (see the parse-before-spawn ordering in `commands::launch::run`).
+#[test]
+fn launch_window_size_invalid_rejected() {
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(["launch", "--window-size", "0x0", "--temp-profile"])
+        .output()
+        .expect("failed to spawn ff-rdp");
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for an invalid --window-size"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
+    assert!(
+        combined.contains("WxH") || combined.contains("greater than 0"),
+        "error must name the expected WxH form; stderr={stderr:?} stdout={stdout:?}"
+    );
+}

@@ -249,8 +249,8 @@ impl LiveFirefox {
     /// fails to become ready within 30 s.
     pub fn headless_on_random_port() -> Option<Self> {
         for attempt in 0..3u8 {
-            match Self::try_launch() {
-                Some(ff) => return Some(ff),
+            match Self::try_launch(&[]) {
+                Some((ff, _)) => return Some(ff),
                 None => {
                     if attempt < 2 {
                         std::thread::sleep(Duration::from_millis(200));
@@ -261,11 +261,33 @@ impl LiveFirefox {
         None
     }
 
-    fn try_launch() -> Option<Self> {
+    /// Like [`headless_on_random_port`], but forwards `extra_args` to
+    /// `ff-rdp launch` (e.g. `["--window-size", "390x844"]`) and also returns
+    /// the parsed `launch` JSON envelope so the caller can inspect fields
+    /// `ff-rdp launch` reports (e.g. `results.window_size`, `results.warnings`)
+    /// that a later `eval` call can't recover after the fact.
+    pub fn headless_on_random_port_with_args(
+        extra_args: &[&str],
+    ) -> Option<(Self, serde_json::Value)> {
+        for attempt in 0..3u8 {
+            match Self::try_launch(extra_args) {
+                Some(result) => return Some(result),
+                None => {
+                    if attempt < 2 {
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn try_launch(extra_args: &[&str]) -> Option<(Self, serde_json::Value)> {
         let port = free_port()?;
 
         let output = Command::new(ff_rdp_bin())
             .args(["launch", "--headless", "--debug-port", &port.to_string()])
+            .args(extra_args)
             .stderr(std::process::Stdio::null())
             .output()
             .ok()?;
@@ -305,7 +327,7 @@ impl LiveFirefox {
                     .and_then(|j| j["total"].as_u64())
                     .unwrap_or(0);
                 if tab_count >= 1 {
-                    return Some(ff);
+                    return Some((ff, json));
                 }
             }
             if std::time::Instant::now() >= deadline {
