@@ -10,7 +10,7 @@ dogfood_path: |
   ff-rdp screenshot --window-size 390x844 -o /tmp/mobile.png
   # → PNG exactly 390 wide (batch capture path, no floor)
 first_call_sites: []
-status: planned
+status: completed
 ---
 
 # Iteration 133: mobile viewports — launch window-size, batch mobile screenshots, dppx composition
