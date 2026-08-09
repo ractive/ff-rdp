@@ -145,6 +145,30 @@ struct ReadyStateProbe<'a> {
     first_probe_at: Instant,
     /// Minimum spacing between readystate probes so events keep priority.
     probe_interval: Duration,
+    /// When `true` (the default for `navigate`'s `Both` strategy), the wait
+    /// loop eagerly refreshes `console_actor` on the very first `dom-loading`
+    /// (regardless of whether the event's own URL is usable) and interleaves
+    /// the periodic `document.readyState` poll below. When `false`
+    /// (`wait_for_navigation_commit`'s `back`/`forward`/`reload` — iter-130
+    /// Theme B), both of those are skipped and the probe exists solely to
+    /// supply `console_actor`/`tab_actor` to the need-gated
+    /// `needs_href_fallback` resolution paths on `dom-loading`/
+    /// `dom-interactive`/`dom-complete`.
+    ///
+    /// This distinction matters, not just for the FF152 dom-complete-never-
+    /// fires workaround `back`/`forward`/`reload` don't need: the eager
+    /// refresh calls `refresh_probe_console_actor`, a **blocking** `getTarget`
+    /// round-trip issued synchronously from inside this loop's `dom-loading`
+    /// handling. If a `dom-complete` for the same navigation is already
+    /// in-flight on the wire at that moment (a real, observed race — Firefox
+    /// can fire `dom-loading` and `dom-complete` back-to-back), that blocking
+    /// call's `recv_reply_from` will read it first while scanning for the
+    /// `getTarget` reply and — with no event sink installed on this raw
+    /// `transport` — silently drop it (the exact class of bug documented in
+    /// `kb/rdp/actors/watcher.md`'s iter-129 Note 1). `navigate` accepts this
+    /// narrow risk in exchange for the FF152 fast-path; `back`/`forward`/
+    /// `reload` have no such trade to make, so they opt out entirely.
+    poll_enabled: bool,
 }
 
 /// Evaluate `document.readyState === 'complete'` (with the `navigationStart`
@@ -374,9 +398,9 @@ fn wait_for_doc_complete(
                         // `p.console_actor` (iter-124 review fix — avoids a
                         // wasted blocking eval round-trip on the common case).
                         if !probe_refreshed
-                            && (wait_level == WaitLevel::Complete
-                                || needs_href_fallback(&url, requested_url))
                             && let Some(p) = probe.as_deref_mut()
+                            && ((wait_level == WaitLevel::Complete && p.poll_enabled)
+                                || needs_href_fallback(&url, requested_url))
                             && refresh_probe_console_actor(transport, p)
                         {
                             probe_refreshed = true;
@@ -532,6 +556,7 @@ fn wait_for_doc_complete(
         // stream keeps priority on pages that do fire dom-complete.
         if wait_level == WaitLevel::Complete
             && let (Some(p), Some(when)) = (probe.as_deref_mut(), next_probe_at)
+            && p.poll_enabled
             && Instant::now() >= when
         {
             // Fallback refresh: normally `dom-loading` already refreshed the
@@ -765,15 +790,21 @@ fn split_wait_budget(timeout_ms: u64) -> (u64, u64) {
 /// detection: pass the known target URL when there is one (e.g. reload's
 /// pre-reload `location.href`), or `""` when it isn't knowable ahead of time
 /// (`back`/`forward`) — `""` never equals the literal `"about:blank"` event
-/// value, so the fallback still triggers safely (worst case: one harmless
-/// extra `location.href` round-trip) rather than trusting a stale
+/// value, so the fallback still triggers safely rather than trusting a stale
 /// placeholder.
 ///
 /// Mirrors `run_core`'s `Both`-strategy fallback (events wait, then a bounded
-/// `document.readyState` poll with whatever budget remains) but omits the
-/// interleaved `ReadyStateProbe` fast-path — `back`/`forward`/`reload` don't
-/// hit the FF152 "dom-complete never fires" case `navigate`'s default `Both`
-/// strategy was tuned for, so the extra complexity isn't justified here.
+/// `document.readyState` poll with whatever budget remains), including its
+/// interleaved `ReadyStateProbe`. The probe is not just a "dom-complete never
+/// fires" fast-path here — `wait_for_doc_complete`'s `needs_href_fallback`
+/// branch can *only* resolve an empty/stale-`about:blank` `dom-complete` URL
+/// by calling `eval_location_href` on `probe.console_actor`; without a probe
+/// that branch has no actor to eval against, so `href` stays empty forever,
+/// `needs_href_fallback` never clears, and the loop `continue`s on every such
+/// event until the full `events_budget` elapses — silently defeating the
+/// fast path for exactly the SPA/empty-URL cases Theme A/B exist to handle,
+/// and reintroducing the class of bug iter-124 already fixed for `navigate`
+/// (see the `readystate_probe` comment in `run_core`).
 pub(crate) fn wait_for_navigation_commit(
     ctx: &mut super::connect_tab::ConnectedTab,
     cli_timeout: u64,
@@ -819,6 +850,28 @@ pub(crate) fn wait_for_navigation_commit(
     let (_reserved_ms, events_budget) = split_wait_budget(cli_timeout);
     let nav_start = Instant::now();
 
+    // Without this, the `needs_href_fallback` branches inside
+    // `wait_for_doc_complete` have no console actor to eval `location.href`
+    // against and can never resolve an empty/stale `about:blank`
+    // `dom-complete` URL — see this function's own doc comment.
+    //
+    // `poll_enabled: false` — unlike `run_core`'s identical construction,
+    // this probe opts out of the eager dom-loading pre-warm and the periodic
+    // `document.readyState` poll (see `ReadyStateProbe::poll_enabled`'s doc
+    // comment for why: `back`/`forward`/`reload` don't need the FF152
+    // fast-path those exist for, and the eager pre-warm's blocking
+    // `getTarget` call carries a real risk of swallowing an already in-flight
+    // `dom-complete`). The probe is here purely as an actor source for the
+    // need-gated fallback paths.
+    let mut readystate_probe = Some(ReadyStateProbe {
+        console_actor: ctx.target.console_actor.clone(),
+        tab_actor: &tab_actor,
+        pre_epoch: pre_nav_epoch,
+        first_probe_at: nav_start + Duration::from_millis(300),
+        probe_interval: Duration::from_millis(250),
+        poll_enabled: false,
+    });
+
     let event_result = dispatch(ctx.transport_mut()).and_then(|()| {
         wait_for_doc_complete(
             ctx.transport_mut(),
@@ -827,7 +880,7 @@ pub(crate) fn wait_for_navigation_commit(
             events_budget,
             WaitLevel::Complete,
             nav_start,
-            None,
+            readystate_probe.as_mut(),
             requested_url,
         )
     });
@@ -1182,6 +1235,7 @@ pub fn run_core(
                 // quickly rather than after the full events budget.
                 first_probe_at: nav_start + Duration::from_millis(300),
                 probe_interval: Duration::from_millis(250),
+                poll_enabled: true,
             })
         } else {
             None
@@ -2567,6 +2621,7 @@ mod tests {
             // Probe almost immediately so the test does not wait 300 ms.
             first_probe_at: nav_start,
             probe_interval: Duration::from_millis(50),
+            poll_enabled: true,
         };
 
         // Generous events budget: the probe must return long before this.
@@ -2689,6 +2744,7 @@ mod tests {
             // the second (successful) getTarget attempt happens quickly.
             first_probe_at: nav_start,
             probe_interval: Duration::from_millis(50),
+            poll_enabled: true,
         };
 
         let result = wait_for_doc_complete(
@@ -2813,6 +2869,7 @@ mod tests {
             // failing refresh still exercises several retries without
             // making this test slow.
             probe_interval: Duration::from_millis(50),
+            poll_enabled: true,
         };
 
         let budget_ms = 800;
@@ -2929,6 +2986,7 @@ mod tests {
             // fallback path (not the interleaved probe) fires.
             first_probe_at: nav_start + Duration::from_secs(30),
             probe_interval: Duration::from_secs(30),
+            poll_enabled: true,
         };
 
         let result = wait_for_doc_complete(
@@ -3026,6 +3084,7 @@ mod tests {
             pre_epoch: 0.0,
             first_probe_at: nav_start,
             probe_interval: Duration::from_millis(10),
+            poll_enabled: true,
         };
 
         let result = wait_for_doc_complete(
@@ -3156,6 +3215,7 @@ mod tests {
             // fallback path should fire, not the interleaved probe.
             first_probe_at: nav_start + Duration::from_secs(30),
             probe_interval: Duration::from_secs(30),
+            poll_enabled: true,
         };
 
         let result = wait_for_doc_complete(
