@@ -117,6 +117,14 @@ fn responsive_single_width() {
     assert_eq!(breakpoints.len(), 1);
     assert_eq!(breakpoints[0]["width"], 320);
 
+    // Theme B (iter-131): the simulation technique and whether media queries
+    // actually flipped are promoted to top-level breakpoint fields, next to
+    // `rect`/`elements`, not buried only in the `warnings` array. The fixture
+    // reports matches:false (layout-only emulation — the expected outcome
+    // without a real RDP viewport-sizing actor).
+    assert_eq!(breakpoints[0]["simulation"], "css-width-constraint");
+    assert_eq!(breakpoints[0]["media_queries_applied"], false);
+
     // Elements at the single breakpoint
     let elements = breakpoints[0]["elements"]
         .as_array()

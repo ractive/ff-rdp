@@ -118,6 +118,57 @@ fn snapshot_with_depth_shows_truncation() {
 }
 
 // ---------------------------------------------------------------------------
+// Snapshot with a small --max-chars bounds the WHOLE serialized tree
+// (Theme C, iter-131), not just leaf text.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn snapshot_max_chars_bounds_whole_output() {
+    // The `eval_result_snapshot.json` fixture serializes to 554 bytes — a
+    // small --max-chars budget must shrink the actual output, not just leave
+    // the tag/attribute/structure bytes untouched while trimming leaf text
+    // (the s61 #9 near-no-op bug: 1741/1742/1743 bytes across 100/5000/default).
+    let server = snapshot_server("eval_result_snapshot.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "snapshot".to_owned(),
+        "--max-chars".to_owned(),
+        "100".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    let results_len = serde_json::to_string(&json["results"]).unwrap().len();
+    assert!(
+        results_len < 554,
+        "results ({results_len} bytes) must shrink below the full 554-byte tree \
+         when --max-chars 100 is requested; got: {}",
+        json["results"]
+    );
+    assert_eq!(
+        json["results"]["truncated"], true,
+        "results must carry truncated:true when the char budget cut the tree"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot with --jq filter
 // ---------------------------------------------------------------------------
 

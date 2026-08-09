@@ -342,6 +342,17 @@ pub fn run(
         breakpoints.push(json!({
             "width": width,
             "viewport": viewport,
+            // Theme B (iter-131): lead with what was actually simulated rather
+            // than burying it in the `warnings` array (dogfood-62 #5) — a
+            // `rect.width` matching the requested width can be mistaken for a
+            // real viewport resize. `simulation` names the technique (there is
+            // no RDP viewport-sizing actor — see decision log);
+            // `media_queries_applied` is promoted next to `rect` so a caller
+            // reading only the top-level breakpoint object still sees the
+            // honest signal, not just the geometry. `None` (parse failure) is
+            // passed through as `null`, never fabricated as `false`.
+            "simulation": "css-width-constraint",
+            "media_queries_applied": mq_check.matches,
             "media_query_check": mq_check.to_json(width),
             "elements": elements,
         }));
@@ -488,7 +499,11 @@ fn render_responsive_text(results: &Value) {
             .and_then(Value::as_u64)
             .unwrap_or(0);
 
-        println!("=== Breakpoint {width}px (viewport {vp_w}x{vp_h}) ===");
+        let simulation = bp
+            .get("simulation")
+            .and_then(Value::as_str)
+            .unwrap_or("css-width-constraint");
+        println!("=== Breakpoint {width}px (viewport {vp_w}x{vp_h}, simulation: {simulation}) ===");
 
         // Media-query self-check line (iter-98 Theme A): make the layout-only
         // caveat visible in text mode too. Only printed when the check ran.

@@ -22,11 +22,21 @@ use ff_rdp_core::{NetworkParentFront, Registry, TabActor, ThrottleProfile, Watch
 use serde_json::{Value, json};
 
 use crate::cli::args::{Cli, ThrottleArgs, ThrottleProfileArg};
+use crate::daemon::registry as daemon_registry;
+use crate::daemon::throttle_state::{self, ThrottleState};
 use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
+
+/// Theme D (iter-131): throttling does not disable the HTTP cache, so a
+/// `reload` while throttled can still look far faster than the profile alone
+/// would suggest. Attached to every `throttle status` response so the caveat
+/// travels with the data, not just `--help`.
+const CACHE_CAVEAT: &str = "throttling does not bypass the HTTP cache — a `reload` while throttled \
+     may still be served from cache and look far faster than the profile alone \
+     would suggest; use `reload --hard` to force a network fetch";
 
 /// Warning attached to the envelope when the configuration was applied over a
 /// one-shot (`--no-daemon`) connection that disconnects immediately, dropping
@@ -35,12 +45,26 @@ pub(crate) const ONE_SHOT_LIFETIME_WARNING: &str = "throttle/block lifetime: thi
      configuration is discarded when this process disconnects; start the daemon \
      (drop --no-daemon) to keep throttling/blocking active across commands";
 
-/// Map the CLI profile enum to the core `ThrottleProfile`, or `None` for `off`.
+/// Map the CLI profile enum to the core `ThrottleProfile`, or `None` for
+/// `off`/`status`. `run()` intercepts `Status` before this is ever called for
+/// it (it is a read-only query, not something to send to Firefox); the arm
+/// here exists only so the match stays exhaustive, and returns the same
+/// "no throttling" value `off` would.
 fn to_core_profile(arg: ThrottleProfileArg) -> Option<ThrottleProfile> {
     match arg {
         ThrottleProfileArg::Slow3g => Some(ThrottleProfile::Slow3g),
         ThrottleProfileArg::Fast3g => Some(ThrottleProfile::Fast3g),
-        ThrottleProfileArg::Off => None,
+        ThrottleProfileArg::Off | ThrottleProfileArg::Status => None,
+    }
+}
+
+/// `profile` as the string stored/echoed in JSON (`"slow-3g"` / `"fast-3g"`),
+/// or `None` for `off`.
+fn profile_wire_name(arg: ThrottleProfileArg) -> Option<&'static str> {
+    match arg {
+        ThrottleProfileArg::Slow3g => Some("slow-3g"),
+        ThrottleProfileArg::Fast3g => Some("fast-3g"),
+        ThrottleProfileArg::Off | ThrottleProfileArg::Status => None,
     }
 }
 
@@ -63,11 +87,25 @@ fn resolve_block_urls(args: &ThrottleArgs) -> Vec<String> {
 }
 
 pub fn run(cli: &Cli, args: &ThrottleArgs) -> Result<(), AppError> {
+    // Theme D (iter-131): `status` is a read-only query — it never opens an
+    // RDP connection or touches Firefox, so it is handled entirely
+    // separately before any of the mutating validation/connection logic below.
+    if args.profile == Some(ThrottleProfileArg::Status) {
+        if wants_block_change(args) {
+            return Err(AppError::User(
+                "throttle status: read-only — remove --block/--unblock \
+                 (combine a profile change with a separate `throttle <profile>` call)"
+                    .to_owned(),
+            ));
+        }
+        return run_status(cli);
+    }
+
     // Argument validation before opening any connection: require at least one
     // action so `throttle` with no args is a descriptive error, not a no-op.
     if args.profile.is_none() && !wants_block_change(args) {
         return Err(AppError::User(
-            "throttle: nothing to do — pass a PROFILE (slow-3g|fast-3g|off) \
+            "throttle: nothing to do — pass a PROFILE (slow-3g|fast-3g|off|status) \
              and/or --block <pattern>… (or --unblock to clear the block-list)"
                 .to_owned(),
         ));
@@ -117,6 +155,25 @@ pub fn run(cli: &Cli, args: &ThrottleArgs) -> Result<(), AppError> {
         Value::Null
     };
 
+    // Theme D (iter-131): record what was just applied so a later
+    // `throttle status` (a separate process, possibly minutes later) can
+    // recall it. Only meaningful under the daemon — a one-shot connection
+    // discards the setting on disconnect (see `ONE_SHOT_LIFETIME_WARNING`),
+    // so there is nothing truthful to persist for it. Best-effort: a failure
+    // to record state must not fail a `throttle` call that already succeeded
+    // against Firefox; `throttle status` degrades to "nothing recorded".
+    if via_daemon
+        && let Some(arg) = args.profile
+        && let Ok(Some(daemon_info)) = daemon_registry::read_registry(cli.port)
+    {
+        let state = ThrottleState {
+            profile: profile_wire_name(arg).map(str::to_owned),
+            set_at: chrono::Utc::now().to_rfc3339(),
+            daemon_pid: daemon_info.pid,
+        };
+        let _ = throttle_state::write_throttle_state(cli.port, &state);
+    }
+
     // Apply blocking (if requested). `--unblock` and a single empty
     // `--block ''` both clear the list; `--block <pats>` replaces it.
     let blocked_echo: Value = if wants_block_change(args) {
@@ -163,6 +220,69 @@ pub fn run(cli: &Cli, args: &ThrottleArgs) -> Result<(), AppError> {
         .map_err(AppError::from)
 }
 
+/// `throttle status` (Theme D, iter-131): report the profile last applied via
+/// the daemon on `cli.port`. Never opens an RDP connection — Firefox's
+/// network-parent actor has no getter, so there is nothing to query; this
+/// reads the client-side bookkeeping [`run`] writes on a successful
+/// `throttle <profile>` call.
+fn run_status(cli: &Cli) -> Result<(), AppError> {
+    let daemon_info = daemon_registry::read_registry(cli.port)
+        .map_err(|e| AppError::from(anyhow::anyhow!("reading daemon registry: {e:#}")))?;
+
+    let (profile, note): (Value, Option<&'static str>) = match daemon_info {
+        None => (
+            Value::Null,
+            Some(
+                "no daemon is running on this port — throttle state is not tracked \
+                 without it (a --no-daemon connection discards its throttling on \
+                 disconnect, so there is nothing durable to report)",
+            ),
+        ),
+        Some(info) => {
+            let state = throttle_state::read_throttle_state(cli.port)
+                .map_err(|e| AppError::from(anyhow::anyhow!("reading throttle state: {e:#}")))?;
+            match state {
+                None => (
+                    Value::Null,
+                    Some(
+                        "no `throttle <profile>` call has been recorded since this daemon started",
+                    ),
+                ),
+                Some(s) if s.daemon_pid != info.pid => (
+                    Value::Null,
+                    Some(
+                        "stale — the daemon has restarted since this profile was recorded; \
+                         Firefox restarts with no throttling active",
+                    ),
+                ),
+                Some(s) => (s.profile.map_or(Value::Null, |p| json!(p)), None),
+            }
+        }
+    };
+
+    let mut results = json!({
+        "profile": profile,
+        "cache_caveat": CACHE_CAVEAT,
+    });
+    if let (Some(n), Some(obj)) = (note, results.as_object_mut()) {
+        obj.insert("note".to_owned(), json!(n));
+    }
+
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
+
+    let envelope = output::envelope(&results, 1, &meta);
+    OutputPipeline::from_cli(cli)?
+        .finalize(&envelope)
+        .map_err(AppError::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +306,23 @@ mod tests {
             Some(ThrottleProfile::Fast3g)
         );
         assert_eq!(to_core_profile(ThrottleProfileArg::Off), None);
+        assert_eq!(to_core_profile(ThrottleProfileArg::Status), None);
+    }
+
+    // ── profile_wire_name (Theme D, iter-131) ────────────────────────────────
+
+    #[test]
+    fn profile_wire_name_maps_tiers_and_omits_off_status() {
+        assert_eq!(
+            profile_wire_name(ThrottleProfileArg::Slow3g),
+            Some("slow-3g")
+        );
+        assert_eq!(
+            profile_wire_name(ThrottleProfileArg::Fast3g),
+            Some("fast-3g")
+        );
+        assert_eq!(profile_wire_name(ThrottleProfileArg::Off), None);
+        assert_eq!(profile_wire_name(ThrottleProfileArg::Status), None);
     }
 
     #[test]

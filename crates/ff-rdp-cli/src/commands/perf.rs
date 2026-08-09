@@ -231,6 +231,10 @@ fn map_entry(entry_type: &str, entry: Value, nav_domain: Option<&str>) -> Value 
                 .get("transferSize")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0);
+            let encoded_size = entry
+                .get("encodedBodySize")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
             let decoded_size = entry
                 .get("decodedBodySize")
                 .and_then(Value::as_f64)
@@ -254,11 +258,43 @@ fn map_entry(entry_type: &str, entry: Value, nav_domain: Option<&str>) -> Value 
                 let res_domain = extract_domain(url_str);
                 res_domain != "unknown" && res_domain != nav
             });
+            // Theme A (iter-131): per the Resource Timing spec, a cross-origin
+            // resource without a Timing-Allow-Origin response header has
+            // transferSize/encodedBodySize/decodedBodySize AND nextHopProtocol
+            // all zeroed/blanked out — that "0" is not a measurement, it's the
+            // platform refusing to disclose the size. Summing it into a total
+            // silently presents a fake page weight (dogfood-62 #3).
+            //
+            // Detect via `nextHopProtocol == ""` rather than `third_party`
+            // (above): `third_party` compares hostnames only (no port), so it
+            // misclassifies same-hostname-different-port cases — but those
+            // are cross-origin per the actual same-origin policy (scheme +
+            // host + port), and Firefox redacts their timing accordingly.
+            // `nextHopProtocol` being blanked is the platform's own,
+            // authoritative redaction signal: same-origin (or
+            // Timing-Allow-Origin-approved) resources always report a real
+            // negotiated protocol regardless of body size, so this can't
+            // false-positive on a legitimately-zero-byte same-origin
+            // response (e.g. a 204).
+            let next_hop_protocol = entry
+                .get("nextHopProtocol")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let transfer_size_opaque = transfer_size == 0.0
+                && encoded_size == 0.0
+                && decoded_size == 0.0
+                && next_hop_protocol.is_empty();
+            let transfer_size_value = if transfer_size_opaque {
+                Value::Null
+            } else {
+                g("transferSize")
+            };
             json!({
                 "url": g("name"),
                 "initiator_type": g("initiatorType"),
                 "duration_ms": g("duration"),
-                "transfer_size": g("transferSize"),
+                "transfer_size": transfer_size_value,
+                "transfer_size_opaque": transfer_size_opaque,
                 "encoded_size": g("encodedBodySize"),
                 "decoded_size": g("decodedBodySize"),
                 "start_time_ms": g("startTime"),
@@ -669,6 +705,13 @@ pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
         .iter()
         .filter_map(|e| e.get("transfer_size").and_then(Value::as_f64))
         .sum();
+    // Theme A (iter-131): count of resources whose size was excluded from
+    // `total_transfer_size` because it is opaque (cross-origin, no
+    // Timing-Allow-Origin) rather than genuinely zero bytes.
+    let transfer_size_opaque_count = mapped
+        .iter()
+        .filter(|e| e.get("transfer_size_opaque") == Some(&Value::Bool(true)))
+        .count();
 
     let mut by_type: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for entry in &mapped {
@@ -712,6 +755,11 @@ pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
         // buffer to have caught up) rather than a trustworthy "no resources".
         "resources_pending": resources_pending(mapped.len(), &ready_state, ms_since_nav_start),
         "total_transfer_size": round2(total_transfer_size),
+        // Theme A (iter-131): `true` when one or more resources were excluded
+        // from `total_transfer_size` because their size is opaque (cross-origin,
+        // no Timing-Allow-Origin), not because they are genuinely zero bytes.
+        "transfer_size_opaque": transfer_size_opaque_count > 0,
+        "transfer_size_opaque_count": transfer_size_opaque_count,
         "requests_by_type": by_type,
         "slowest_resources": slowest,
         "domains": domain_list,
@@ -759,6 +807,16 @@ fn render_summary_text(results: &Value) {
         );
     }
     println!("  Total transferred: {total_transfer:.0} bytes");
+    if results.get("transfer_size_opaque") == Some(&Value::Bool(true)) {
+        let opaque_count = results
+            .get("transfer_size_opaque_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        println!(
+            "  (transfer_size_opaque: true — {opaque_count} resource(s) excluded from total: \
+             cross-origin, no Timing-Allow-Origin — size is n/a, not zero)"
+        );
+    }
 
     if let Some(by_type) = results.get("requests_by_type").and_then(Value::as_object) {
         println!();
@@ -814,12 +872,20 @@ fn render_summary_text(results: &Value) {
                 .get("duration_ms")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0);
-            let size = entry
-                .get("transfer_size")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0);
-            println!("  {}. {url}  ({dur:.0}ms, {size:.0}b)", i + 1);
+            let size = format_transfer_size(entry.get("transfer_size"));
+            println!("  {}. {url}  ({dur:.0}ms, {size})", i + 1);
         }
+    }
+}
+
+/// Render a per-resource `transfer_size` for text output: `null` (opaque,
+/// cross-origin without Timing-Allow-Origin — Theme A, iter-131) prints as
+/// `n/a (cross-origin)` rather than `0b`, which would misrepresent an
+/// undisclosed size as a measured zero.
+fn format_transfer_size(size: Option<&Value>) -> String {
+    match size.and_then(Value::as_f64) {
+        Some(v) => format!("{v:.0}b"),
+        None => "n/a (cross-origin)".to_string(),
     }
 }
 
@@ -1029,6 +1095,11 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
         .iter()
         .filter_map(|e| e.get("transfer_size").and_then(Value::as_f64))
         .sum();
+    // Theme A (iter-131): see `perf summary`'s identical marker.
+    let transfer_size_opaque_count = mapped_resources
+        .iter()
+        .filter(|e| e.get("transfer_size_opaque") == Some(&Value::Bool(true)))
+        .count();
     let audit_ready_state = all
         .get("ready_state")
         .and_then(Value::as_str)
@@ -1044,6 +1115,8 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
         // iter-130 Theme C: see `perf summary`'s identical marker.
         "resources_pending": resources_pending(total_count, &audit_ready_state, audit_ms_since_nav_start),
         "transfer_size": round2(total_transfer_size),
+        "transfer_size_opaque": transfer_size_opaque_count > 0,
+        "transfer_size_opaque_count": transfer_size_opaque_count,
     });
 
     // ── resource_by_type ──────────────────────────────────────────────────────
@@ -1241,6 +1314,16 @@ fn render_audit_text(results: &Value) {
              re-run for a stable count)"
         );
     }
+    if res_summary.get("transfer_size_opaque") == Some(&Value::Bool(true)) {
+        let opaque_count = res_summary
+            .get("transfer_size_opaque_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        println!(
+            "  (transfer_size_opaque: true — {opaque_count} resource(s) excluded from total: \
+             cross-origin, no Timing-Allow-Origin — size is n/a, not zero)"
+        );
+    }
 
     if let Some(by_type) = results.get("resource_by_type").and_then(Value::as_array) {
         println!("  By type:");
@@ -1263,11 +1346,8 @@ fn render_audit_text(results: &Value) {
                 .get("duration_ms")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0);
-            let size = entry
-                .get("transfer_size")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0);
-            println!("    {}. {url}  ({dur:.0}ms, {size:.0}b)", i + 1);
+            let size = format_transfer_size(entry.get("transfer_size"));
+            println!("    {}. {url}  ({dur:.0}ms, {size})", i + 1);
         }
     }
 

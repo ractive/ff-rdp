@@ -92,6 +92,12 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "snapshot evaluation failed")?;
 
     let results = resolve_result(&mut ctx, &eval_result.result)?;
+    // Theme C (iter-131): `--max-chars` previously bounded only leaf text
+    // content — the serialized tree (tags, attrs, structure) was unbounded,
+    // making the flag a near-no-op (100 vs 5000 vs default all landed within
+    // a few bytes of each other, s61 #9). Bound the *whole* serialized output
+    // here, on the Rust side, after the JS walk returns.
+    let results = bound_snapshot_output(results, max_chars);
     let mut meta = json!({"depth": depth, "max_chars": max_chars});
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
@@ -122,6 +128,127 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
         .map_err(AppError::from)
 }
 
+/// Bound the whole serialized snapshot tree to (approximately) `max_chars`
+/// bytes of compact JSON: each node is tried whole first (cheapest, and
+/// avoids ever admitting a node that would blow the budget); only when a
+/// node doesn't fit whole does its subtree get pruned child-by-child in
+/// document order, and a child that still doesn't fit even pruned is dropped
+/// entirely rather than included oversized.
+///
+/// Theme C (iter-131): the JS walker's `maxChars` only bounds the sum of leaf
+/// *text* lengths — tags, attributes, and tree structure are unbounded, so a
+/// tag/attribute-heavy page barely shrinks between `--max-chars 100` and
+/// `--max-chars 5000` (s61 #9: 1741/1742/1743 bytes across three settings).
+/// This bounds the actual output a caller receives, and marks `truncated:
+/// true` at the root when anything was cut, so a bounded-but-silently-partial
+/// tree is never mistaken for the complete page.
+///
+/// `Value::Null` (empty snapshot) passes through unchanged — there is nothing
+/// to bound.
+fn bound_snapshot_output(tree: Value, max_chars: u32) -> Value {
+    if tree.is_null() {
+        return tree;
+    }
+    let full_len = serde_json::to_string(&tree).map_or(0, |s| s.len());
+    if full_len <= max_chars as usize {
+        return tree;
+    }
+
+    let mut budget: i64 = i64::from(max_chars);
+    let mut any_pruned = false;
+    // `keep_always = true`: the root's own tag/attrs are kept even if that
+    // alone exceeds the budget — there must be *something* to return, so a
+    // pathologically small `--max-chars` overshoots slightly rather than
+    // yielding an empty tree.
+    let mut bounded =
+        bound_node(tree, &mut budget, &mut any_pruned, true).unwrap_or_else(|| json!({}));
+    if any_pruned && let Value::Object(ref mut map) = bounded {
+        map.insert("truncated".to_string(), json!(true));
+    }
+    bounded
+}
+
+/// Compact-JSON serialized length of `v`, as `i64` (the budget's unit).
+/// Saturates to `i64::MAX` rather than wrapping on the (practically
+/// unreachable) case of a multi-exabyte string.
+fn json_len_i64(v: &Value) -> i64 {
+    let len = serde_json::to_string(v).map_or(0, |s| s.len());
+    i64::try_from(len).unwrap_or(i64::MAX)
+}
+
+/// Recursive worker for [`bound_snapshot_output`].
+///
+/// Tries `node` whole against `budget` first; if it fits, the whole subtree
+/// is kept and `budget` decreases by exactly its serialized length (no
+/// overshoot from this node is possible). Only when it doesn't fit does an
+/// object node get pruned: children are admitted one at a time (also
+/// whole-first) until the budget or the list runs out, and any child that
+/// still doesn't fit even after pruning is dropped and `None` is returned for
+/// it. A bare text leaf that doesn't fit is dropped whole (never partially
+/// quoted) — the JS walker's own `--max-chars` leaf-text bounding is what
+/// shrinks individual strings, not this pass.
+///
+/// `children_omitted` is a distinct field from the JS walker's existing
+/// per-node `truncated: "<n> children not shown"` string (emitted when
+/// `--depth`/`--max-depth` cuts a subtree) so the two truncation mechanisms
+/// never clobber each other's marker on the same node.
+///
+/// Returns `None` when `node` cannot fit at all (not even pruned down to just
+/// its own tag/attrs) and `keep_always` is `false` — the caller drops it.
+/// `keep_always` forces `Some` regardless, for the snapshot root.
+fn bound_node(
+    node: Value,
+    budget: &mut i64,
+    any_pruned: &mut bool,
+    keep_always: bool,
+) -> Option<Value> {
+    let whole_len = json_len_i64(&node);
+    if whole_len <= *budget {
+        *budget -= whole_len;
+        return Some(node);
+    }
+
+    match node {
+        Value::Object(mut map) => {
+            let children = map.remove("children");
+            let own_len = json_len_i64(&Value::Object(map.clone()));
+            if own_len > *budget && !keep_always {
+                return None;
+            }
+            *budget -= own_len;
+
+            if let Some(Value::Array(kids)) = children {
+                let total = kids.len();
+                let mut kept = Vec::with_capacity(total);
+                for kid in kids {
+                    if *budget <= 0 {
+                        break;
+                    }
+                    match bound_node(kid, budget, any_pruned, false) {
+                        Some(bounded_kid) => kept.push(bounded_kid),
+                        // This child (even pruned) doesn't fit — later
+                        // siblings are no smaller in expectation, so stop
+                        // admitting rather than skip-and-continue.
+                        None => break,
+                    }
+                }
+                if kept.len() < total {
+                    *any_pruned = true;
+                    map.insert("children_omitted".to_string(), json!(total - kept.len()));
+                }
+                if !kept.is_empty() {
+                    map.insert("children".to_string(), Value::Array(kept));
+                }
+            }
+            Some(Value::Object(map))
+        }
+        // A text leaf that doesn't fit whole is dropped rather than
+        // partially quoted — see the doc comment.
+        Value::String(_) if !keep_always => None,
+        other => Some(other),
+    }
+}
+
 /// Render a DOM snapshot as an indented tree.
 ///
 /// Each node is printed as:
@@ -135,6 +262,11 @@ fn render_snapshot_text(node: &Value) {
         return;
     }
     render_node(node, 0);
+    // Theme C (iter-131): root-level marker set by `bound_snapshot_output`
+    // when the whole-tree --max-chars budget cut anything from the output.
+    if node.get("truncated") == Some(&Value::Bool(true)) {
+        println!("  [output truncated — increase --max-chars for the full tree]");
+    }
 }
 
 const SNAPSHOT_TEXT_ATTRS: &[&str] = &[
@@ -193,6 +325,11 @@ fn render_node(node: &Value, depth: usize) {
 
             if let Some(truncated) = node.get("truncated").and_then(Value::as_str) {
                 let _ = write!(line, " ({truncated})");
+            }
+            // Theme C (iter-131): whole-output --max-chars bounding notice —
+            // distinct from the depth-limit `truncated` string above.
+            if let Some(omitted) = node.get("children_omitted").and_then(Value::as_u64) {
+                let _ = write!(line, " ({omitted} children not shown — max-chars)");
             }
 
             println!("{line}");
@@ -315,5 +452,99 @@ mod tests {
         assert!(SNAPSHOT_JS_TEMPLATE.contains("INTERACTIVE"));
         assert!(SNAPSHOT_JS_TEMPLATE.contains("BUTTON"));
         assert!(SNAPSHOT_JS_TEMPLATE.contains("INPUT"));
+    }
+
+    // ── bound_snapshot_output (Theme C, iter-131) ────────────────────────────
+
+    /// Build a synthetic tree with `n` top-level `<div>` children, each
+    /// carrying a `data-testid` attribute long enough to add real weight to
+    /// the serialized output — otherwise a huge `n` would still round-trip
+    /// under a small budget and the test would not exercise pruning.
+    fn wide_tree(n: usize) -> Value {
+        let children: Vec<Value> = (0..n)
+            .map(|i| {
+                json!({
+                    "tag": "div",
+                    "attrs": {"data-testid": format!("item-{i}-{}", "x".repeat(20))},
+                    "children": ["some leaf text content here"]
+                })
+            })
+            .collect();
+        json!({"tag": "body", "children": children})
+    }
+
+    #[test]
+    fn bound_snapshot_output_passthrough_under_budget() {
+        let tree = wide_tree(2);
+        let full_len = serde_json::to_string(&tree).unwrap().len();
+        let bounded = bound_snapshot_output(tree.clone(), u32::try_from(full_len + 1000).unwrap());
+        assert_eq!(
+            bounded, tree,
+            "small tree under budget must pass through unchanged"
+        );
+        assert!(bounded.get("truncated").is_none());
+    }
+
+    #[test]
+    fn bound_snapshot_output_null_passthrough() {
+        assert_eq!(bound_snapshot_output(Value::Null, 10), Value::Null);
+    }
+
+    #[test]
+    fn bound_snapshot_output_bounds_large_tree_and_marks_truncated() {
+        let tree = wide_tree(200);
+        let full_len = serde_json::to_string(&tree).unwrap().len();
+        let max_chars = 500u32;
+        assert!(
+            full_len > max_chars as usize,
+            "fixture must exceed the budget to exercise pruning"
+        );
+
+        let bounded = bound_snapshot_output(tree, max_chars);
+        let bounded_len = serde_json::to_string(&bounded).unwrap().len();
+
+        assert_eq!(bounded.get("truncated"), Some(&json!(true)));
+        // Slack covers the "children_omitted"/"truncated" markers, which are
+        // inserted after budgeting and so aren't themselves counted against
+        // it — the AC's own wording allows "± envelope overhead".
+        assert!(
+            bounded_len <= max_chars as usize + 100,
+            "bounded output ({bounded_len} bytes) should stay close to the {max_chars}-byte budget"
+        );
+        // Some children must actually have been dropped.
+        let kept = bounded
+            .get("children")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        assert!(
+            kept < 200,
+            "expected fewer than 200 children to survive pruning, got {kept}"
+        );
+    }
+
+    #[test]
+    fn bound_node_reports_children_omitted_distinct_from_depth_truncated() {
+        // A node that already carries the JS depth-limit `truncated` string
+        // must keep it untouched — the char-budget mechanism uses a
+        // different field (`children_omitted`) so the two never collide.
+        let node = json!({
+            "tag": "div",
+            "truncated": "3 children not shown",
+        });
+        let mut budget = 1_000_i64;
+        let mut any_pruned = false;
+        let out = bound_node(node, &mut budget, &mut any_pruned, false).expect("fits whole");
+        assert_eq!(out.get("truncated"), Some(&json!("3 children not shown")));
+        assert!(!any_pruned);
+    }
+
+    #[test]
+    fn bound_node_drops_child_that_cannot_fit_even_pruned() {
+        // A non-root child whose own tag/attrs alone exceed the remaining
+        // budget must be dropped (`None`), not included oversized.
+        let node = json!({"tag": "div", "attrs": {"data-testid": "x".repeat(500)}});
+        let mut budget = 10_i64;
+        let mut any_pruned = false;
+        assert!(bound_node(node, &mut budget, &mut any_pruned, false).is_none());
     }
 }

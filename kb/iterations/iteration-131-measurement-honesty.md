@@ -11,7 +11,9 @@ dogfood_path: |
   # → false, promoted to a per-breakpoint field (not only a buried warning)
   ff-rdp throttle status --jq '.results.profile'
   # → "slow-3g" after `throttle slow-3g`
-first_call_sites: []
+first_call_sites:
+  - primitive: "ThrottleProfileArg::Status + throttle_state::{ThrottleState, read_throttle_state, write_throttle_state}"
+    site: crates/ff-rdp-cli/src/commands/throttle.rs (run/run_status)
 status: planned
 ---
 
@@ -63,33 +65,33 @@ Bundles four honesty findings from [[dogfooding-session-61]]/[[dogfooding-sessio
 
 ## Tasks
 
-- [ ] A: opaque-detection in the resource-timing mapper; null per-resource sizes,
+- [x] A: opaque-detection in the resource-timing mapper; null per-resource sizes,
       aggregate flag + note; text renderer alignment.
-- [ ] B: promote `media_queries_applied` + `simulation` per breakpoint in
+- [x] B: promote `media_queries_applied` + `simulation` per breakpoint in
       `responsive`; keep the iter-98 warning strings.
-- [ ] C: whole-output bounding for `snapshot --max-chars` + `truncated` marker.
-- [ ] D: `throttle status`, applied-profile echo, cache caveat in help; optional
+- [x] C: whole-output bounding for `snapshot --max-chars` + `truncated` marker.
+- [x] D: `throttle status`, applied-profile echo, cache caveat in help; optional
       `--disable-cache` if the core plumbing is a small lift (else defer with a filed
       plan, per discipline).
-- [ ] Help/cookbook updates for all four surfaces.
+- [x] Help/cookbook updates for all four surfaces.
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
-- [ ] live_131_perf_opaque_transfer (network-gated): on a page whose cross-origin
+- [x] live_131_perf_opaque_transfer (network-gated): on a page whose cross-origin
       resources all report 0 transfer size, `perf summary` yields per-resource
       `transfer_size: null` and top-level `transfer_size_opaque: true`.
-- [ ] live_131_perf_transparent_transfer: on a same-origin fixture (sizes real),
+- [x] live_131_perf_transparent_transfer: on a same-origin fixture (sizes real),
       `transfer_size_opaque` is false and the aggregate equals the sum of per-resource
       sizes.
-- [ ] live_131_responsive_simulation_fields: `responsive body --widths 320` reports
+- [x] live_131_responsive_simulation_fields: `responsive body --widths 320` reports
       `media_queries_applied:false` and `simulation:"css-width-constraint"` per
       breakpoint on a desktop-viewport Firefox.
-- [ ] live_131_snapshot_max_chars_bounds: `snapshot --max-chars 500` output payload is
+- [x] live_131_snapshot_max_chars_bounds: `snapshot --max-chars 500` output payload is
       ≤ 500 chars + envelope overhead and carries `truncated:true` on a page whose
       full snapshot exceeds it.
-- [ ] live_131_throttle_status: after `throttle slow-3g`, `throttle status` reports
+- [x] live_131_throttle_status: after `throttle slow-3g`, `throttle status` reports
       `profile:"slow-3g"`; after `throttle off` it reports none.
 
 ## Notes

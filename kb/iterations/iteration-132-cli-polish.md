@@ -39,6 +39,14 @@ justifies its own gate run).
    which misleads.
 5. **`~/.ff-rdp/` accumulates stale zero-byte `daemon.*.spawn.lock` files** (dogfood-62
    #9, housekeeping): ~50 locks from dead pids, never cleaned, growing unbounded.
+   iter-131 added a second per-port file family in the same registry directory,
+   `daemon.<port>.throttle.json` (`crates/ff-rdp-cli/src/daemon/throttle_state.rs`),
+   with the identical accumulation shape (never deleted; only ever overwritten or
+   detected-stale-by-pid on read) — scope the GC glob narrowly to the
+   `*.spawn.lock` suffix so it doesn't also sweep `*.throttle.json` (or the
+   `daemon.<port>.json` registry file itself); do NOT widen Theme E's own scope to
+   clean up `*.throttle.json` too — that's a separate, smaller finding, not a
+   dependency of this AC.
 
 ## Themes
 
@@ -53,7 +61,9 @@ justifies its own gate run).
   siblings) produce errors suggesting the correct subcommand; fix the misleading
   `--attrs` tip.
 - **E — spawn-lock GC.** Daemon startup removes stale `daemon.*.spawn.lock` files
-  whose pid is dead; bound the directory's growth.
+  whose pid is dead; bound the directory's growth. Match the `*.spawn.lock`
+  suffix exactly — iter-131's `daemon.<port>.throttle.json` lives in the same
+  directory and must not be touched by this GC.
 
 ## Tasks
 
@@ -65,7 +75,9 @@ justifies its own gate run).
       (all entry points: arg, --file, --stdin).
 - [ ] D: clap error customization for the known flag-vs-subcommand traps; correct
       the `dom --stats` tip.
-- [ ] E: stale-lock GC on daemon spawn; unit-test with a fabricated dead-pid lock.
+- [ ] E: stale-lock GC on daemon spawn; unit-test with a fabricated dead-pid lock,
+      and a negative-case assertion that a co-located `daemon.<port>.throttle.json`
+      (iter-131) survives the sweep untouched.
 
 ## Acceptance Criteria [0/5]
 
@@ -80,8 +92,9 @@ justifies its own gate run).
       42, exit 0, on all three input paths (arg, --file, --stdin).
 - [ ] e2e_flag_subcommand_hints: `scroll --bottom` and `dom --stats` stderr suggests
       `scroll bottom` / `dom stats` respectively; no `--attrs` tip for `dom --stats`.
-- [ ] unit_spawn_lock_gc: daemon spawn path removes a stale lock with a dead pid and
-      keeps a live-pid lock.
+- [ ] unit_spawn_lock_gc: daemon spawn path removes a stale lock with a dead pid,
+      keeps a live-pid lock, and leaves an unrelated `*.throttle.json` file
+      (iter-131) untouched.
 
 ## Notes
 
