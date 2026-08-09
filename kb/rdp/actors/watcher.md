@@ -309,3 +309,47 @@ not a change to the default (non-frame-aware) target-acquisition path used by
 every other command. First consumers: `click`'s frame-scan fallback
 (`crates/ff-rdp-cli/src/commands/click.rs`) and `ff-rdp consent accept` /
 `navigate --auto-consent` (`crates/ff-rdp-cli/src/commands/consent.rs`).
+
+### `watchTargets` is NOT repeatable on one connection (iter-137)
+
+`ParentProcessWatcherRegistry.watchTargets(watcher, targetType)`
+(`devtools/server/actors/watcher/ParentProcessWatcherRegistry.sys.mjs`) does
+nothing but `addOrSetSessionDataEntry(watcher, TARGETS, [targetType], "add")`.
+Once `"frame"` is in a watcher's session data, a **second** `watchTargets`
+call on the same connection adds nothing and Firefox re-delivers **no**
+`target-available-form`. The subscription is per connection, not per request.
+
+Consequence for [[enumerate_frame_targets]]: it only works on a connection
+that has not already subscribed. The ff-rdp **daemon** owns the single RDP
+connection and subscribes once at startup, so every proxied command's
+`watchTargets` was a no-op and the drain window came back empty —
+`enumerate_frame_targets` returned **zero** targets, not even the top-level
+one. That silently voided every iteration-129 feature (`click --frame`, the
+cross-origin frame scan, `consent accept`) in the *default* connection mode
+while they kept working under `--no-daemon`.
+
+Fix (iter-137 Theme A), in three parts:
+
+1. The daemon requests its watcher with
+   `get_watcher_with_options(..., Some(true))` — without server-side target
+   switching the watcher emits no `target-available-form` at all, so the
+   daemon saw nothing to record (`daemon status` reported `target_count: 0`
+   for whole sessions).
+2. The daemon records every raw `target-available-form` /
+   `target-destroyed-form` in `SharedState::frame_targets` — deduped by target
+   actor id, removed on destroy, and cleared when a *different* top-level
+   target actor appears (a cross-process target switch; a re-announcement of
+   the same top-level actor is not a switch and keeps its frames).
+3. A new daemon request `{"to":"daemon","type":"frame-targets"}` returns the
+   recorded packets untouched:
+   `{"from":"daemon","type":"frame-targets","targets":[…],"target_count":N}`.
+   The CLI replays them through
+   `ff_rdp_core::target_events_from_packets(packets)` — the *same*
+   add/replace/remove rules `enumerate_frame_targets` applies to a live drain —
+   so the daemon and `--no-daemon` snapshots cannot drift.
+
+`crates/ff-rdp-cli/src/commands/frame_targets.rs` is the single entry point
+that picks the mechanism per connection (`ConnectedTab::via_daemon`); `click`
+and `consent` both go through it. The daemon path polls the snapshot up to
+`DEFAULT_FRAME_TARGETS_SETTLE` while it still shows only the top-level target,
+so a command issued immediately after `navigate` does not race frame creation.

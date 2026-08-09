@@ -10,6 +10,12 @@
 //!   FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live live_129 -- --nocapture
 //!   FF_RDP_LIVE_NETWORK_TESTS=1 cargo test -p ff-rdp-cli --test live live_129_sourcepoint -- --nocapture
 //!
+//! daemon-parity: live_137_click_cross_origin_via_daemon and
+//! live_137_consent_accept_via_daemon (tests/live/live_137_daemon_mode_parity.rs)
+//! cover the same features over the default daemon connection. This suite
+//! keeps `--no-daemon` deliberately: it pins the *direct* leg of that
+//! comparison, and iteration 137 exists because it was the only leg tested.
+//!
 //! Under heavy machine load a fresh Firefox launch can occasionally miss the
 //! default wait even though the same command succeeds in isolation — see the
 //! iteration-129 plan's "Live-test environment note". If these report

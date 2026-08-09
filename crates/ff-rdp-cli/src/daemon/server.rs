@@ -10,7 +10,7 @@ use std::net::{TcpListener, TcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -199,6 +199,14 @@ struct SharedState {
     /// (iter-100 Theme D), so disconnect cleanup can reliably compare it
     /// against the id issued to the current handler without fd-reuse hazards.
     rpc_writer: Mutex<Option<(ClientId, FramedWriter)>>,
+    /// Signalled whenever the [`rpc_writer`](Self::rpc_writer) slot is released
+    /// (iter-137 Theme B).
+    ///
+    /// A client whose Firefox-bound request arrives while the slot is taken now
+    /// **queues** on this condvar instead of being refused outright, so a batch
+    /// of concurrent `ff-rdp` invocations against one daemon serialises and all
+    /// succeed rather than half of them erroring out.
+    rpc_slot_released: Condvar,
     /// All currently-connected streaming subscribers.
     ///
     /// These are clients that have issued one or more `stream` daemon requests
@@ -291,6 +299,29 @@ struct SharedState {
     /// resources buffered for the outgoing document are stale and must be
     /// purged so a post-switch drain window never mixes in dead-target state.
     top_level_target: Mutex<Option<ff_rdp_core::ActorId>>,
+    /// Raw `target-available-form` packets for every window-global target
+    /// currently alive in the debugged tab (iter-137 Theme A).
+    ///
+    /// The daemon owns the one RDP connection and calls `watchTargets("frame")`
+    /// exactly once, at startup.  Firefox's
+    /// `ParentProcessWatcherRegistry.watchTargets` merely adds the type to the
+    /// session data, so a *second* subscription on the same connection
+    /// re-delivers nothing — which is why a proxied `enumerate_frame_targets`
+    /// saw zero targets and every iter-129 frame feature (`click --frame`, the
+    /// cross-origin frame scan, `consent accept`) silently degraded to
+    /// "0 frame(s) available" unless the caller passed `--no-daemon`.
+    ///
+    /// Recording the packets here lets the daemon answer a
+    /// `{"to":"daemon","type":"frame-targets"}` request with the same
+    /// information the direct path drains off the wire; the CLI replays them
+    /// through [`ff_rdp_core::target_events_from_packets`] so both connection
+    /// modes produce byte-identical snapshots.
+    ///
+    /// Maintained by [`handle_target_event`]: deduped/replaced by target actor
+    /// id on `target-available-form`, removed on `target-destroyed-form`, and
+    /// pruned to the surviving top-level target on a cross-process target
+    /// switch (the outgoing document's frames are dead by then).
+    frame_targets: Mutex<Vec<Value>>,
 }
 
 impl SharedState {
@@ -349,8 +380,19 @@ fn establish_watcher(transport: &mut RdpTransport) -> Result<Option<WatcherSetup
     };
     let tab_actor = tab.actor.clone();
 
-    let watcher_actor =
-        TabActor::get_watcher(transport, &tab_actor).context("getting watcher actor")?;
+    // iter-137 Theme A: request the watcher with server-side target switching
+    // ENABLED. Firefox caches one WatcherActor per tab descriptor per RDP
+    // connection and honours these options only at creation time, so whoever
+    // calls `getWatcher` first on a connection fixes its session context
+    // forever. The daemon always calls first (at startup), which is why a
+    // proxied `enumerate_frame_targets` — which needs
+    // `isServerTargetSwitchingEnabled: true` to receive any
+    // `target-available-form` at all (kb/research/frame-targets.md) — got the
+    // daemon's switching-disabled watcher back and saw zero targets.
+    // Confirmed on the wire on Firefox 153: `daemon status` reported
+    // `target_count: 0` for the whole session before this change.
+    let watcher_actor = TabActor::get_watcher_with_options(transport, &tab_actor, Some(true))
+        .context("getting watcher actor")?;
     // Subscribe to frame target events *before* resources so that
     // `target-available-form` / `target-destroyed-form` arrive from the start of
     // the session.  Per the Firefox RDP protocol, `watchTargets` must be called
@@ -621,6 +663,7 @@ pub(crate) fn run_daemon(
     let state = Arc::new(SharedState {
         buffer: Mutex::new(ResourceBuffer::new()),
         rpc_writer: Mutex::new(None),
+        rpc_slot_released: Condvar::new(),
         stream_subs: Mutex::new(Vec::new()),
         greeting,
         start_time: Instant::now(),
@@ -637,6 +680,7 @@ pub(crate) fn run_daemon(
         // Start at 1 so 0 can serve as a "no client" sentinel in tests.
         next_client_id: AtomicU64::new(1),
         top_level_target: Mutex::new(None),
+        frame_targets: Mutex::new(Vec::new()),
     });
 
     setup_signal_handler(&state);
@@ -1122,12 +1166,29 @@ fn dispatch_firefox_message(
     } else if is_target_event(msg) {
         // Log target lifecycle events and track the count.
         handle_target_event(state, msg);
+        // iter-137 Theme A: ALSO forward the raw target event to the RPC
+        // client.  Before this the daemon consumed `target-available-form` /
+        // `target-destroyed-form` entirely, so a proxied
+        // `enumerate_frame_targets` (`ff_rdp_core::actors::watcher`) saw zero
+        // targets — not even the top-level one — and every iter-129 feature
+        // built on it (`click --frame`, the cross-origin frame scan, `consent
+        // accept`) silently degraded to "0 frame(s) available" in the default
+        // daemon mode while working under `--no-daemon`.  Confirmed on the
+        // wire on Firefox 153: same page, `click --frame` reported 2 frames
+        // direct and 0 through the daemon.
+        //
+        // Forwarding is safe for every other command: a client that did not
+        // call `watchTargets` routes the packet to its transport event sink
+        // (`recv_reply_from` / `recv_event_from`), which discards it when no
+        // sink is installed.  Target events are never replies, so they can
+        // never be mistaken for one.
+        forward_to_rpc_client(state, msg);
     } else if is_console_push_event(msg) {
         // Firefox 149+: direct consoleAPICall / pageError push.
         // Forward to console-message/error-message stream subscribers
         // AND to the RPC client (e.g. eval may be awaiting results).
         dispatch_console_push_event(state, msg);
-        forward_to_rpc_client(&state.rpc_writer, msg);
+        forward_to_rpc_client(state, msg);
     } else {
         // Detect navigation events and clear the ref store.
         if is_navigation_event(msg) {
@@ -1170,7 +1231,7 @@ fn dispatch_firefox_message(
                 forward_nav_event_to_stream_subs(state, &nav_event);
             }
         }
-        forward_to_rpc_client(&state.rpc_writer, msg);
+        forward_to_rpc_client(state, msg);
     }
 }
 
@@ -1238,8 +1299,9 @@ fn is_target_event(msg: &Value) -> bool {
     )
 }
 
-/// Log a target lifecycle event, update `state.target_count`, and drive
-/// registry lifecycle via [`dispatch_watcher_event`].
+/// Log a target lifecycle event, update `state.target_count`, record the raw
+/// packet in [`SharedState::frame_targets`], and drive registry lifecycle via
+/// [`dispatch_watcher_event`].
 ///
 /// Only `target-available-form` increments the counter; `target-destroyed-form`
 /// signals a target going away and invalidates it in the registry (including
@@ -1273,9 +1335,13 @@ fn handle_target_event(state: &SharedState, msg: &Value) {
             // target switch — no per-target `watchResources` re-issue is needed
             // (see kb/rdp/actors/watcher.md).  What the daemon DID lack was
             // purging the outgoing top-level target's stale buffered resources.
-            if target.is_top_level {
-                handle_top_level_target_switch(state, &target.actor, &url);
-            }
+            let switched =
+                target.is_top_level && handle_top_level_target_switch(state, &target.actor, &url);
+
+            // iter-137 Theme A: record the raw form so a proxied
+            // `enumerate_frame_targets` can replay it.  Done *after* the
+            // top-level switch handling so `switched` is already known.
+            record_frame_target(state, msg, target.actor.as_ref(), switched);
         }
         Some(WatcherEvent::TargetDestroyed { ref target, .. }) => {
             // Registry invalidation already performed by dispatch_watcher_event.
@@ -1285,6 +1351,7 @@ fn handle_target_event(state: &SharedState, msg: &Value) {
                 is_top_level = target.is_top_level,
                 "daemon: target destroyed"
             );
+            forget_frame_target(state, target.actor.as_ref());
         }
         Some(WatcherEvent::Other { .. }) | None => {
             // Non-target event in the target-event path — log and continue.
@@ -1306,11 +1373,17 @@ fn handle_target_event(state: &SharedState, msg: &Value) {
 /// (`resource-command.js:486-517`); ff-rdp does not need to because it watches
 /// at the tab-scoped Watcher level, where the switch is transparent — the only
 /// remaining obligation is this buffer hygiene.
+///
+/// Returns `true` when this form represents an actual switch (a *different*
+/// top-level actor than the one previously recorded).  iter-137 Theme A uses
+/// that to decide whether the recorded frame-target snapshot belongs to a dead
+/// document and must be dropped — a re-announcement of the same top-level
+/// actor is not a switch and must keep its frames.
 fn handle_top_level_target_switch(
     state: &SharedState,
     new_target: &ff_rdp_core::ActorId,
     url: &str,
-) {
+) -> bool {
     let mut current = lock_or_recover!(state.top_level_target);
     let switched = match current.as_ref() {
         Some(prev) => prev != new_target,
@@ -1330,6 +1403,61 @@ fn handle_top_level_target_switch(
             "daemon: top-level target switch — purged stale buffered resources"
         );
     }
+    switched
+}
+
+/// Read a target lifecycle packet's target actor id (`target.actor`).
+fn packet_target_actor(msg: &Value) -> Option<&str> {
+    msg.get("target")
+        .and_then(|t| t.get("actor"))
+        .and_then(Value::as_str)
+}
+
+/// Record a raw `target-available-form` packet in
+/// [`SharedState::frame_targets`] (iter-137 Theme A).
+///
+/// Deduped by target actor id — Firefox re-announces a target after some
+/// session-data updates, and the direct path's
+/// [`ff_rdp_core::target_events_from_packets`] replays with the same
+/// replace-in-place rule, so the two must agree.
+///
+/// When `prune_others` is set — i.e. the caller detected a **cross-process
+/// top-level target switch** — every previously-recorded target is dropped
+/// first: the outgoing document's frames are gone, and Firefox does not
+/// reliably emit a `target-destroyed-form` for each of them before the new
+/// top-level form arrives.  Keeping them would make a proxied `click --frame`
+/// list frames from the *previous* page — a worse failure than the
+/// "0 frame(s)" bug this replaces, because it looks like real data.  A
+/// *re-announcement* of the same top-level actor must NOT prune (no switch
+/// happened, and its frames are still live).
+fn record_frame_target(state: &SharedState, msg: &Value, actor: &str, prune_others: bool) {
+    let mut targets = lock_or_recover!(state.frame_targets);
+
+    if prune_others {
+        targets.clear();
+    }
+
+    match targets
+        .iter_mut()
+        .find(|t| packet_target_actor(t) == Some(actor))
+    {
+        Some(existing) => *existing = msg.clone(),
+        None => targets.push(msg.clone()),
+    }
+}
+
+/// Drop a target from [`SharedState::frame_targets`] on
+/// `target-destroyed-form` (iter-137 Theme A).
+fn forget_frame_target(state: &SharedState, actor: &str) {
+    lock_or_recover!(state.frame_targets).retain(|t| packet_target_actor(t) != Some(actor));
+}
+
+/// Snapshot the recorded target forms in first-seen order (iter-137 Theme A).
+///
+/// Serves the `{"to":"daemon","type":"frame-targets"}` request; the CLI
+/// replays the snapshot through [`ff_rdp_core::target_events_from_packets`].
+fn frame_targets_snapshot(state: &SharedState) -> Vec<Value> {
+    lock_or_recover!(state.frame_targets).clone()
 }
 
 /// Forward a direct console push event to stream subscribers.
@@ -1456,58 +1584,194 @@ fn forward_nav_event_to_stream_subs(state: &SharedState, event: &Value) {
 }
 
 /// Outcome of a lazy RPC-writer-slot claim (iter-101 Theme B).
+#[derive(Debug)]
 enum RpcClaim {
     /// This client now owns the RPC-writer slot (either it was free or this
     /// client already owned it).
     Claimed,
-    /// Another live client owns the slot — the caller must refuse with
-    /// `daemon_busy` and not forward.
-    Busy,
+    /// Another live client owns the slot and did not release it within the
+    /// caller's budget — the caller must refuse with `daemon_busy` and not
+    /// forward.  `waited_ms` is how long the refused client actually queued
+    /// (iter-137 Theme B); a zero-budget call reports `0`.
+    ///
+    /// Firefox RDP responses lack per-request correlation IDs, so at most one
+    /// client may have Firefox-bound requests in flight at a time; the slot is
+    /// the gate that enforces it, and [`claim_rpc_slot_queued`] is the only
+    /// way through it.
+    Busy { waited_ms: u64 },
 }
 
-/// Attempt to claim the single RPC-writer slot for `client_id` (iter-101
-/// Theme B).
+/// How long a Firefox-bound request waits in the RPC queue before the daemon
+/// gives up (iter-137 Theme B).
 ///
-/// - Slot free → move `pending_writer` in, mark the client the owner, return
-///   [`RpcClaim::Claimed`].
-/// - Slot already owned by `client_id` → [`RpcClaim::Claimed`] (idempotent;
-///   should not normally happen because the caller only claims once).
-/// - Slot owned by a *different* client → [`RpcClaim::Busy`]; the slot is left
-///   untouched and `pending_writer` is preserved so a later retry (after the
-///   owner disconnects) can still succeed.
-///
-/// Firefox RDP responses lack per-request correlation IDs, so at most one
-/// client may have Firefox-bound requests in flight at a time; this is the
-/// gate that enforces it.
-fn try_claim_rpc_slot(
-    rpc_writer: &Mutex<Option<(ClientId, FramedWriter)>>,
-    client_id: ClientId,
-    pending_writer: &mut Option<FramedWriter>,
-) -> RpcClaim {
-    let mut guard = lock_or_recover!(rpc_writer);
-    match guard.as_ref() {
-        Some((owner, _)) if *owner != client_id => RpcClaim::Busy,
-        Some(_) => RpcClaim::Claimed, // already ours
-        None => {
-            if let Some(writer) = pending_writer.take() {
-                *guard = Some((client_id, writer));
-            }
-            RpcClaim::Claimed
-        }
-    }
-}
+/// Sized well above a slow `navigate` so a realistic batch of concurrent
+/// invocations drains instead of erroring.  The queue is FIFO-ish only by
+/// condvar wakeup order — fairness is not guaranteed and not needed, because
+/// every waiter eventually gets the slot or a truthful refusal.
+pub(crate) const RPC_QUEUE_BUDGET: Duration = Duration::from_mins(1);
 
-/// The structured refusal frame sent to a second concurrent RPC client
-/// (iter-101 Theme B).  The stable `error` discriminant `"daemon_busy"` lets
-/// callers detect the condition and retry with `--no-daemon` or after a delay.
-fn daemon_busy_response() -> Value {
+/// How often a queued client is sent a `daemon-queued` keep-alive frame
+/// (iter-137 Theme B).
+///
+/// The waiting client is blocked in `recv()` on its own socket read timeout
+/// (`--timeout`, 10 s by default).  Without a periodic frame it would give up
+/// long before [`RPC_QUEUE_BUDGET`] and report the contentless
+/// "operation timed out" error that made this bug so hard to read.  Each
+/// keep-alive restarts the client's read window and states the wait so far.
+const RPC_QUEUE_HEARTBEAT: Duration = Duration::from_secs(2);
+
+/// The structured refusal frame sent to a client whose queued Firefox-bound
+/// request exhausted [`RPC_QUEUE_BUDGET`] (iter-101 Theme B, reworded in
+/// iter-137 Theme B).
+///
+/// The stable `error` discriminant `"daemon_busy"` lets callers detect the
+/// condition and retry with `--no-daemon` or after a delay.  `waited_ms` and
+/// the named cap make the refusal honest: before iter-137 a contended client
+/// was refused instantly with no indication that the daemon serialises RPC
+/// clients at all, and most contended runs never saw this frame — they died on
+/// a socket read timeout rendered as "timed out after 0ms".
+fn daemon_busy_response(waited_ms: u64) -> Value {
     json!({
         "from": "daemon",
         "error": "daemon_busy",
         "error_type": "daemon_busy",
-        "message": "another CLI client is holding the daemon's RPC channel; \
-                    retry shortly or use --no-daemon for parallel invocations",
+        "waited_ms": waited_ms,
+        "concurrency_cap": 1,
+        "message": format!(
+            "waited {waited_ms}ms for the daemon's RPC channel and it never freed. \
+             The daemon serialises Firefox-bound requests: at most 1 client may \
+             have requests in flight (Firefox RDP replies carry no request id). \
+             Retry, or use --no-daemon for a private connection to Firefox."
+        ),
     })
+}
+
+/// A keep-alive frame sent to a client queued behind the RPC slot
+/// (iter-137 Theme B).
+///
+/// Typed (`type: "daemon-queued"`) and *not* an `error`, so the core reply
+/// loops (`recv_reply_from` / `recv_event_from`) route it to the transport
+/// event sink and keep waiting — exactly the treatment any other unsolicited
+/// push gets.  Its only job is to prove the daemon is alive and to restart the
+/// client's socket read window.
+fn daemon_queued_notice(waited_ms: u64) -> Value {
+    json!({
+        "from": "daemon",
+        "type": "daemon-queued",
+        "waited_ms": waited_ms,
+        "message": "queued behind another client holding the daemon's RPC channel",
+    })
+}
+
+/// Wait for the single RPC-writer slot, claiming it for `client_id` as soon as
+/// it frees (iter-137 Theme B).
+///
+/// Blocks on [`SharedState::rpc_slot_released`] in [`RPC_QUEUE_HEARTBEAT`]
+/// slices, emitting a [`daemon_queued_notice`] through `heartbeat_writer`
+/// between slices so the waiting client's socket read window keeps restarting.
+/// Gives up after `budget` (production passes [`RPC_QUEUE_BUDGET`]; tests pass
+/// a short one), returning the elapsed wait so the caller can report it.
+/// `Duration::ZERO` degenerates to a single non-blocking attempt.
+///
+/// Replaces iter-101's instant refusal.  The one-client-in-flight invariant is
+/// unchanged — this only decides whether a contender *waits* for its turn or is
+/// told to go away.
+fn claim_rpc_slot_queued(
+    state: &SharedState,
+    client_id: ClientId,
+    pending_writer: &mut Option<FramedWriter>,
+    heartbeat_writer: Option<&mut FramedWriter>,
+    budget: Duration,
+) -> RpcClaim {
+    let started = Instant::now();
+    let mut heartbeat_writer = heartbeat_writer;
+
+    loop {
+        // One claim attempt plus (if contended) one heartbeat-sized wait.  The
+        // lock is always released before the heartbeat write so a slow client
+        // can never stall the dispatcher thread, which takes the same lock to
+        // forward Firefox replies.
+        let still_contended = {
+            let guard = lock_or_recover!(state.rpc_writer);
+            match claim_locked(guard, client_id, pending_writer) {
+                Ok(()) => return RpcClaim::Claimed,
+                Err(guard) => {
+                    // Never sleep past the budget: a zero/short budget must
+                    // return promptly, which is what makes this callable as a
+                    // plain non-blocking try.
+                    let remaining = budget.saturating_sub(started.elapsed());
+                    if remaining.is_zero() {
+                        drop(guard);
+                        let waited_ms =
+                            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                        return RpcClaim::Busy { waited_ms };
+                    }
+                    let (guard, _timed_out) = match state
+                        .rpc_slot_released
+                        .wait_timeout(guard, remaining.min(RPC_QUEUE_HEARTBEAT))
+                    {
+                        Ok(pair) => pair,
+                        // A panicking peer poisoned the mutex; the protected
+                        // data is still structurally valid (an `Option`), so
+                        // recover rather than propagate — the same policy as
+                        // `lock_or_recover!`.
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    guard.is_some()
+                }
+            }
+        };
+
+        let waited_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if started.elapsed() >= budget {
+            return RpcClaim::Busy { waited_ms };
+        }
+        if !still_contended {
+            // Freed while we waited — retry the claim immediately rather than
+            // spending a keep-alive frame on it.
+            continue;
+        }
+        if let Some(writer) = heartbeat_writer.as_deref_mut() {
+            let notice = daemon_queued_notice(waited_ms);
+            if let Ok(json) = serde_json::to_string(&notice)
+                && writer.send_raw(&json).is_err()
+            {
+                // The queued client is gone — stop waiting on its behalf.
+                return RpcClaim::Busy { waited_ms };
+            }
+        }
+    }
+}
+
+/// Take the RPC slot for `client_id` if it is free (or already ours).
+///
+/// Returns `Ok(())` on success, or gives the still-locked guard back in `Err`
+/// so the caller can wait on it without re-acquiring.
+fn claim_locked<'a>(
+    mut guard: std::sync::MutexGuard<'a, Option<(ClientId, FramedWriter)>>,
+    client_id: ClientId,
+    pending_writer: &mut Option<FramedWriter>,
+) -> Result<(), std::sync::MutexGuard<'a, Option<(ClientId, FramedWriter)>>> {
+    match guard.as_ref() {
+        // Someone else owns it — the caller must wait.
+        Some((owner, _)) if *owner != client_id => Err(guard),
+        // Already ours (idempotent).
+        Some(_) => Ok(()),
+        None => {
+            if let Some(writer) = pending_writer.take() {
+                *guard = Some((client_id, writer));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Wake every client queued on the RPC slot (iter-137 Theme B).
+///
+/// Called from each path that clears [`SharedState::rpc_writer`]: the
+/// per-client cleanup guard and the forward-time write-error path.
+fn notify_rpc_slot_released(state: &SharedState) {
+    state.rpc_slot_released.notify_all();
 }
 
 /// Forward a message to the current RPC client, if one is connected.
@@ -1515,7 +1779,7 @@ fn daemon_busy_response() -> Value {
 /// The lock is held for the entire write to prevent interleaved frames from
 /// the firefox-reader thread and the client-handler thread.
 /// On write error the writer is cleared (treated as disconnected).
-fn forward_to_rpc_client(rpc_writer: &Mutex<Option<(ClientId, FramedWriter)>>, msg: &Value) {
+fn forward_to_rpc_client(state: &SharedState, msg: &Value) {
     // Serialise first — no lock needed.
     let json = match serde_json::to_string(msg) {
         Ok(s) => s,
@@ -1525,13 +1789,18 @@ fn forward_to_rpc_client(rpc_writer: &Mutex<Option<(ClientId, FramedWriter)>>, m
         }
     };
 
-    let mut guard = lock_or_recover!(rpc_writer);
+    let mut guard = lock_or_recover!(state.rpc_writer);
     let Some((_id, writer)) = guard.as_mut() else {
         return;
     };
     if writer.send_raw(&json).is_err() {
         // Client disconnected while we were trying to write.
         *guard = None;
+        // iter-137 Theme B: releasing the slot here must wake queued clients
+        // too, otherwise a peer that died mid-command would make every waiter
+        // sit out the full heartbeat slice for nothing.
+        drop(guard);
+        notify_rpc_slot_released(state);
     }
 }
 
@@ -1826,23 +2095,47 @@ fn handle_client(
                             anyhow::anyhow!("sending daemon response to CLI client: {e}")
                         })?;
                     }
+                } else if is_client_target_teardown(&msg) {
+                    // iter-137 Theme A: swallow it.  See the fn's doc comment —
+                    // this frame destroys every target on the shared
+                    // connection, and it is oneway so nothing is awaiting a
+                    // reply.
+                    let dropped_type = msg
+                        .get("targetType")
+                        .and_then(Value::as_str)
+                        .unwrap_or("<none>");
+                    tracing::debug!(
+                        dropped_target_type = dropped_type,
+                        "daemon: dropped client unwatchTargets — the target \
+                         subscription is daemon-owned"
+                    );
                 } else {
                     // iter-101 Theme B: lazily claim the RPC-writer slot before
                     // forwarding the first Firefox-bound message.  If another
                     // live client already owns it, refuse with `daemon_busy`
                     // and do NOT forward — never cross-deliver an RDP response.
                     if !owns_rpc_slot {
-                        match try_claim_rpc_slot(
-                            &state.rpc_writer,
+                        // iter-137 Theme B: QUEUE for the slot instead of
+                        // refusing on contention.  `for i in 1 2 3 4; do
+                        // ff-rdp page-text & done` used to leave two of the
+                        // four dead; now each waits its turn.
+                        let mut heartbeat_writer = reader
+                            .try_clone_stream()
+                            .map(FramedWriter::from_stream)
+                            .ok();
+                        match claim_rpc_slot_queued(
+                            state,
                             client_id,
                             &mut pending_rpc_writer,
+                            heartbeat_writer.as_mut(),
+                            RPC_QUEUE_BUDGET,
                         ) {
                             RpcClaim::Claimed => owns_rpc_slot = true,
-                            RpcClaim::Busy => {
+                            RpcClaim::Busy { waited_ms } => {
                                 if let Ok(mut own_writer) =
                                     reader.try_clone_stream().map(FramedWriter::from_stream)
                                 {
-                                    let busy = daemon_busy_response();
+                                    let busy = daemon_busy_response(waited_ms);
                                     let busy_json = serde_json::to_string(&busy)
                                         .context("serialising daemon_busy response")?;
                                     own_writer.send_raw(&busy_json).map_err(|e| {
@@ -1875,6 +2168,35 @@ fn handle_client(
     Ok(())
 }
 
+/// Is this client frame an `unwatchTargets` request (iter-137 Theme A)?
+///
+/// The daemon **must not forward it.** Confirmed on the wire against Firefox
+/// 153: with `isServerTargetSwitchingEnabled: true` (which the daemon needs,
+/// or Firefox emits no `target-available-form` at all), `unwatchTargets`
+/// tears down **every** target spawned under that switching regime — the
+/// top-level one included. `navigate` pairs its `watchTargets("frame")`
+/// prelude with `unwatchTargets` in three places
+/// (`commands/navigate.rs:899,1275,1634`); through the daemon those calls
+/// landed on the *shared* connection, so a single `ff-rdp navigate` left the
+/// daemon with zero live targets:
+///
+/// ```text
+/// target-available-form  is_top_level=true   data:text/html,…
+/// target-available-form  is_top_level=false  https://example.com/
+/// target-destroyed-form  ×4                  ← navigate's unwatchTargets
+/// ```
+///
+/// The subscription belongs to the daemon, which installs it once at startup
+/// and keeps it for the session; one of many proxied clients has no business
+/// tearing it down. Dropping the frame is safe at the protocol level because
+/// `unwatchTargets` is declared `oneway` in
+/// `devtools/shared/specs/watcher.js` — Firefox never replies, so no client
+/// is left waiting. It is also correct semantically: the client's paired
+/// `watchTargets` was itself a no-op (the connection was already watching).
+fn is_client_target_teardown(msg: &Value) -> bool {
+    msg.get("type").and_then(Value::as_str) == Some("unwatchTargets")
+}
+
 /// Scope guard that unregisters a client from all daemon roles when dropped
 /// (iter-100 Theme D).
 ///
@@ -1902,6 +2224,11 @@ impl Drop for ClientCleanupGuard<'_> {
         let mut guard = lock_or_recover!(self.state.rpc_writer);
         if guard.as_ref().is_some_and(|(id, _)| *id == self.client_id) {
             *guard = None;
+            // iter-137 Theme B: wake every client queued behind this one.
+            // Drop the guard first so a woken waiter can take the lock
+            // immediately instead of bouncing off it.
+            drop(guard);
+            notify_rpc_slot_released(self.state);
         }
     }
 }
@@ -1964,6 +2291,34 @@ fn handle_daemon_message(
                 });
             }
             resp
+        }
+        // iter-137 Theme A: hand back the raw target forms the daemon has
+        // observed since the current document's top-level target appeared.
+        // The CLI replays them through
+        // `ff_rdp_core::target_events_from_packets`, which is why the response
+        // ships the untouched packets rather than a parsed shape — the parse
+        // must stay in exactly one place so daemon and `--no-daemon` snapshots
+        // cannot drift.
+        //
+        // Typed (`type: "frame-targets"`) so the CLI can pick it out with
+        // `recv_event_from(transport, "daemon", …)` while ordinary forwarded
+        // Firefox pushes stream past on the same socket.
+        "frame-targets" => {
+            let targets = frame_targets_snapshot(state);
+            json!({
+                "from": "daemon",
+                "type": "frame-targets",
+                "targets": targets,
+                "target_count": state.target_count.load(Ordering::Relaxed),
+                // Whether the daemon's `watchTargets("frame")` subscription is
+                // live yet.  A daemon that started while Firefox was tabless
+                // (or that just restarted after losing its connection)
+                // establishes the watcher on a background thread, and until
+                // that lands it has recorded nothing.  Reporting readiness
+                // lets the CLI say "not ready yet" instead of "0 frames
+                // available", which is the exact lie this iteration removes.
+                "watcher_ready": !lock_or_recover!(state.watcher_actor).is_empty(),
+            })
         }
         "stream" => {
             let Some(resource_type) = msg
@@ -2245,6 +2600,14 @@ fn handle_daemon_message(
                 "buffer_sizes": sizes,
                 "stream_subscriber_count": subscriber_count,
                 "target_count": target_count,
+                // iter-137 Theme A: `target_count` is a cumulative counter of
+                // every `target-available-form` ever seen; this is how many
+                // targets are alive *right now* — the number a proxied
+                // `click --frame` / `consent accept` will actually get.  The
+                // two diverging (cumulative high, live 0) is the signature of
+                // the enumeration bug this iteration fixed, so both are
+                // reported.
+                "live_target_count": frame_targets_snapshot(state).len(),
             })
         }
         "shutdown" => {
@@ -2345,6 +2708,7 @@ mod tests {
         SharedState {
             buffer: Mutex::new(ResourceBuffer::new()),
             rpc_writer: Mutex::new(None),
+            rpc_slot_released: Condvar::new(),
             stream_subs: Mutex::new(Vec::new()),
             greeting: json!({"applicationType": "browser"}),
             start_time: Instant::now(),
@@ -2360,6 +2724,7 @@ mod tests {
             grip_release_tx: ff_rdp_core::release_queue(1).0,
             next_client_id: AtomicU64::new(1),
             top_level_target: Mutex::new(None),
+            frame_targets: Mutex::new(Vec::new()),
         }
     }
 
@@ -2657,7 +3022,7 @@ mod tests {
         let mut a_pending = Some(dummy_framed_writer());
         assert!(
             matches!(
-                try_claim_rpc_slot(&state.rpc_writer, client_a, &mut a_pending),
+                claim_rpc_slot_queued(&state, client_a, &mut a_pending, None, Duration::ZERO),
                 RpcClaim::Claimed
             ),
             "first client must claim the free RPC slot"
@@ -2681,8 +3046,8 @@ mod tests {
         let mut b_pending = Some(dummy_framed_writer());
         assert!(
             matches!(
-                try_claim_rpc_slot(&state.rpc_writer, client_b, &mut b_pending),
-                RpcClaim::Busy
+                claim_rpc_slot_queued(&state, client_b, &mut b_pending, None, Duration::ZERO),
+                RpcClaim::Busy { .. }
             ),
             "second concurrent client must be refused with Busy"
         );
@@ -2702,7 +3067,7 @@ mod tests {
         );
 
         // The refusal frame carries the stable discriminant clients branch on.
-        let busy = daemon_busy_response();
+        let busy = daemon_busy_response(0);
         assert_eq!(busy["from"], "daemon");
         assert_eq!(busy["error"], "daemon_busy");
         assert_eq!(busy["error_type"], "daemon_busy");
@@ -2711,7 +3076,7 @@ mod tests {
         *state.rpc_writer.lock().expect("lock") = None;
         assert!(
             matches!(
-                try_claim_rpc_slot(&state.rpc_writer, client_b, &mut b_pending),
+                claim_rpc_slot_queued(&state, client_b, &mut b_pending, None, Duration::ZERO),
                 RpcClaim::Claimed
             ),
             "client B must claim once the slot is free again"
@@ -2736,14 +3101,14 @@ mod tests {
 
         let mut pending = Some(dummy_framed_writer());
         assert!(matches!(
-            try_claim_rpc_slot(&state.rpc_writer, client, &mut pending),
+            claim_rpc_slot_queued(&state, client, &mut pending, None, Duration::ZERO),
             RpcClaim::Claimed
         ));
 
         // Same client claims again — idempotent, still Claimed, slot unchanged.
         let mut pending2 = Some(dummy_framed_writer());
         assert!(matches!(
-            try_claim_rpc_slot(&state.rpc_writer, client, &mut pending2),
+            claim_rpc_slot_queued(&state, client, &mut pending2, None, Duration::ZERO),
             RpcClaim::Claimed
         ));
         assert!(
@@ -2754,6 +3119,154 @@ mod tests {
                 .as_ref()
                 .is_some_and(|(id, _)| *id == client),
             "owner re-claim must keep the slot owned by the same client"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-137 Theme B — queue for the RPC slot instead of refusing
+    // -----------------------------------------------------------------------
+
+    /// AC: `unit_rpc_slot_queue_waits_for_release` — a contended client waits
+    /// its turn and then claims the slot, instead of being refused outright.
+    ///
+    /// This is what turns `for i in 1 2 3 4; do ff-rdp page-text & done` from
+    /// "2 succeed, 2 fail" into "4 succeed". The wait is bounded so the test
+    /// terminates on its own even if the release never happened.
+    #[test]
+    fn unit_rpc_slot_queue_waits_for_release() {
+        let state = Arc::new(test_state());
+        let holder: ClientId = 1;
+        let waiter: ClientId = 2;
+
+        let mut holder_pending = Some(dummy_framed_writer());
+        assert!(matches!(
+            claim_rpc_slot_queued(&state, holder, &mut holder_pending, None, Duration::ZERO),
+            RpcClaim::Claimed
+        ));
+
+        let state_for_waiter = Arc::clone(&state);
+        let handle = std::thread::spawn(move || {
+            let mut pending = Some(dummy_framed_writer());
+            let started = Instant::now();
+            let claim = claim_rpc_slot_queued(
+                &state_for_waiter,
+                waiter,
+                &mut pending,
+                None,
+                Duration::from_secs(5),
+            );
+            (claim, started.elapsed())
+        });
+
+        // Let the waiter actually block before releasing, so the test proves
+        // the condvar hand-off and not a lucky first-try claim.
+        std::thread::sleep(Duration::from_millis(150));
+        {
+            let mut guard = state.rpc_writer.lock().expect("lock");
+            *guard = None;
+        }
+        notify_rpc_slot_released(&state);
+
+        let (claim, queued_for) = handle.join().expect("waiter thread");
+        assert!(
+            matches!(claim, RpcClaim::Claimed),
+            "the queued client must get the slot once it frees, not a refusal"
+        );
+        assert!(
+            queued_for >= Duration::from_millis(100),
+            "the waiter really queued (waited {queued_for:?})"
+        );
+        assert!(
+            state
+                .rpc_writer
+                .lock()
+                .expect("lock")
+                .as_ref()
+                .is_some_and(|(id, _)| *id == waiter),
+            "the woken waiter owns the slot"
+        );
+    }
+
+    /// AC: `unit_daemon_busy_reports_real_wait` — when the queue budget really
+    /// is exhausted, the refusal states how long the client waited and what
+    /// the cap is. The pre-iter-137 refusal said neither, and most contended
+    /// runs never even saw it — they died on a socket read timeout rendered as
+    /// "timed out after 0ms".
+    #[test]
+    fn unit_daemon_busy_reports_real_wait() {
+        let state = test_state();
+        let holder: ClientId = 1;
+        let waiter: ClientId = 2;
+
+        let mut holder_pending = Some(dummy_framed_writer());
+        assert!(matches!(
+            claim_rpc_slot_queued(&state, holder, &mut holder_pending, None, Duration::ZERO),
+            RpcClaim::Claimed
+        ));
+
+        let mut pending = Some(dummy_framed_writer());
+        let claim = claim_rpc_slot_queued(
+            &state,
+            waiter,
+            &mut pending,
+            None,
+            Duration::from_millis(120),
+        );
+        let RpcClaim::Busy { waited_ms } = claim else {
+            panic!("expected Busy after the budget expired, got {claim:?}");
+        };
+        assert!(
+            waited_ms >= 100,
+            "the refusal must report the wait it actually served: {waited_ms}ms"
+        );
+        assert!(
+            pending.is_some(),
+            "a refused claim must preserve the pending writer for a later retry"
+        );
+
+        let busy = daemon_busy_response(waited_ms);
+        assert_eq!(busy["error"], "daemon_busy", "stable discriminant");
+        assert_eq!(busy["error_type"], "daemon_busy");
+        assert_eq!(busy["waited_ms"], waited_ms);
+        assert_eq!(busy["concurrency_cap"], 1, "the cap is named, not implied");
+        let message = busy["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains(&waited_ms.to_string()) && message.contains("--no-daemon"),
+            "the refusal must be actionable: {message}"
+        );
+    }
+
+    /// AC: `unit_daemon_queued_notice_is_not_an_error` — the keep-alive frame
+    /// sent to a queued client must be a typed push, never an `error`.
+    /// `ff_rdp_core::transport`'s reply loops turn any `from: "daemon"` frame
+    /// carrying `error` into a terminal failure, so a keep-alive shaped like
+    /// an error would kill the very command it is meant to keep alive.
+    #[test]
+    fn unit_daemon_queued_notice_is_not_an_error() {
+        let notice = daemon_queued_notice(2_000);
+        assert_eq!(notice["from"], "daemon");
+        assert_eq!(notice["type"], "daemon-queued");
+        assert_eq!(notice["waited_ms"], 2_000);
+        assert!(
+            notice.get("error").is_none(),
+            "a keep-alive must not look like a control error: {notice}"
+        );
+    }
+
+    /// AC: `unit_rpc_queue_budget_exceeds_heartbeat` — the keep-alive interval
+    /// must be shorter than the default socket read timeout, otherwise a
+    /// queued client's own `recv()` deadline fires before the daemon ever
+    /// proves it is alive, and the budget is unreachable in practice.
+    #[test]
+    fn unit_rpc_queue_budget_exceeds_heartbeat() {
+        assert!(
+            RPC_QUEUE_HEARTBEAT < Duration::from_millis(crate::cli::args::DEFAULT_TIMEOUT_MS),
+            "heartbeat ({RPC_QUEUE_HEARTBEAT:?}) must restart the client's read window \
+             before the default --timeout elapses"
+        );
+        assert!(
+            RPC_QUEUE_BUDGET > RPC_QUEUE_HEARTBEAT,
+            "the budget must span multiple heartbeats or queuing is pointless"
         );
     }
 
@@ -3670,6 +4183,158 @@ mod tests {
             greeting.get("applicationType").and_then(Value::as_str),
             Some("browser"),
             "daemon must forward the cached Firefox greeting after auth"
+        );
+    }
+
+    // ── iter-137 Theme A: recorded frame-target snapshot ─────────────────────
+
+    fn available_form(actor: &str, url: &str, top: bool) -> Value {
+        json!({
+            "type": "target-available-form",
+            "target": {
+                "actor": actor,
+                "url": url,
+                "targetType": "frame",
+                "isTopLevelTarget": top,
+                "consoleActor": format!("{actor}/console"),
+            },
+        })
+    }
+
+    fn destroyed_form(actor: &str, top: bool) -> Value {
+        json!({
+            "type": "target-destroyed-form",
+            "target": {
+                "actor": actor,
+                "targetType": "frame",
+                "isTopLevelTarget": top,
+            },
+        })
+    }
+
+    fn snapshot_actors(state: &SharedState) -> Vec<String> {
+        frame_targets_snapshot(state)
+            .iter()
+            .filter_map(|t| packet_target_actor(t).map(str::to_owned))
+            .collect()
+    }
+
+    /// AC: `unit_frame_targets_snapshot_tracks_lifecycle` — the daemon records
+    /// every target form it sees, dedupes re-announcements, and drops
+    /// destroyed targets. This snapshot is what a proxied
+    /// `enumerate_frame_targets` replays; `watchTargets` cannot be re-issued
+    /// on the daemon's connection, so without it the answer is always zero
+    /// targets (the iter-129 daemon-mode regression).
+    #[test]
+    fn unit_frame_targets_snapshot_tracks_lifecycle() {
+        let state = test_state();
+
+        handle_target_event(
+            &state,
+            &available_form("t/top", "https://example.com/", true),
+        );
+        handle_target_event(&state, &available_form("t/cmp", "https://cmp.test/", false));
+        handle_target_event(&state, &available_form("t/ads", "https://ads.test/", false));
+        assert_eq!(
+            snapshot_actors(&state),
+            vec!["t/top", "t/cmp", "t/ads"],
+            "first-seen order is preserved"
+        );
+
+        // Re-announcement replaces in place rather than duplicating.
+        handle_target_event(
+            &state,
+            &available_form("t/cmp", "https://cmp.test/v2", false),
+        );
+        assert_eq!(snapshot_actors(&state), vec!["t/top", "t/cmp", "t/ads"]);
+        let cmp = frame_targets_snapshot(&state)
+            .into_iter()
+            .find(|t| packet_target_actor(t) == Some("t/cmp"))
+            .expect("cmp target still recorded");
+        assert_eq!(
+            cmp["target"]["url"], "https://cmp.test/v2",
+            "the newer form wins"
+        );
+
+        handle_target_event(&state, &destroyed_form("t/ads", false));
+        assert_eq!(
+            snapshot_actors(&state),
+            vec!["t/top", "t/cmp"],
+            "a destroyed target must leave the snapshot"
+        );
+    }
+
+    /// AC: `unit_frame_targets_snapshot_pruned_on_target_switch` — a
+    /// cross-process top-level switch drops the outgoing document's frames.
+    /// Firefox does not reliably emit a `target-destroyed-form` for each of
+    /// them first, and reporting the previous page's frames would be a worse
+    /// lie than reporting none.
+    #[test]
+    fn unit_frame_targets_snapshot_pruned_on_target_switch() {
+        let state = test_state();
+
+        handle_target_event(&state, &available_form("t/top1", "https://a.test/", true));
+        handle_target_event(
+            &state,
+            &available_form("t/f1", "https://a.test/frame", false),
+        );
+        assert_eq!(snapshot_actors(&state), vec!["t/top1", "t/f1"]);
+
+        // Same top-level actor announced again — NOT a switch, frames survive.
+        handle_target_event(&state, &available_form("t/top1", "https://a.test/#x", true));
+        assert_eq!(
+            snapshot_actors(&state),
+            vec!["t/top1", "t/f1"],
+            "a re-announcement of the same top-level target must not drop its frames"
+        );
+
+        // A different top-level actor — the old document is gone.
+        handle_target_event(&state, &available_form("t/top2", "https://b.test/", true));
+        assert_eq!(
+            snapshot_actors(&state),
+            vec!["t/top2"],
+            "the previous document's frames must not survive a target switch"
+        );
+    }
+
+    /// AC: `unit_frame_targets_request_returns_snapshot` — the
+    /// `{"to":"daemon","type":"frame-targets"}` request answers with the raw
+    /// forms, typed so the CLI can pick the reply out of the proxied stream.
+    #[test]
+    fn unit_frame_targets_request_returns_snapshot() {
+        let state = test_state();
+        handle_target_event(
+            &state,
+            &available_form("t/top", "https://example.com/", true),
+        );
+        handle_target_event(&state, &available_form("t/cmp", "https://cmp.test/", false));
+
+        let resp = handle_daemon_message(
+            &state,
+            &json!({"to": "daemon", "type": "frame-targets"}),
+            TEST_CLIENT_ID,
+            None,
+        );
+
+        assert_eq!(resp["from"], "daemon");
+        assert_eq!(
+            resp["type"], "frame-targets",
+            "typed so `recv_event_from(transport, \"daemon\", …)` can match it"
+        );
+        let targets = resp["targets"]
+            .as_array()
+            .expect("targets must be an array")
+            .clone();
+        assert_eq!(targets.len(), 2, "both recorded forms come back: {resp}");
+
+        // The CLI-side replay must reconstruct the same two targets.
+        let replayed = ff_rdp_core::target_events_from_packets(targets.iter());
+        assert_eq!(replayed.len(), 2);
+        assert!(replayed[0].is_top_level);
+        assert_eq!(replayed[1].url.as_deref(), Some("https://cmp.test/"));
+        assert!(
+            replayed[1].console_actor.is_some(),
+            "the frame's own console actor is what `click`/`consent` evaluate in"
         );
     }
 

@@ -48,6 +48,7 @@ mod live_131_measurement_honesty;
 mod live_132_cli_polish;
 mod live_133_viewport_emulation;
 mod live_135_screenshot_ff153;
+mod live_137_daemon_mode_parity;
 mod live_61l;
 mod live_61q_resource_bus;
 mod live_61r_eval;

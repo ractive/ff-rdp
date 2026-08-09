@@ -166,6 +166,14 @@ ff-rdp network --filter api
 # Filter network by HTTP method
 ff-rdp network --method POST
 
+# Pin the capture source so daemon and --no-daemon return the same rows.
+# The default (--source auto) prefers the daemon's watcher buffer and falls
+# back to the Performance API when it is empty, so the same page can report
+# different row counts in the two connection modes; `meta.source_reason`
+# always states which rule applied.
+ff-rdp network --source performance-api
+ff-rdp network --source watcher
+
 # Navigate and capture all network traffic in one shot
 ff-rdp navigate https://example.com --with-network
 
@@ -324,7 +332,8 @@ By default, the first CLI invocation auto-starts a background daemon that holds 
 - First `ff-rdp` call spawns a daemon process (`ff-rdp _daemon`) in the background
 - The daemon connects to Firefox, subscribes to watcher resources (network, console, errors), and listens on a random TCP loopback port
 - Subsequent CLI calls connect to the daemon instead of Firefox directly
-- The daemon transparently proxies RDP frames and also exposes a `"daemon"` virtual actor for draining buffered events
+- The daemon transparently proxies RDP frames and also exposes a `"daemon"` virtual actor for draining buffered events, for the recorded frame-target snapshot (`click --frame`, `consent accept`), and for status
+- Firefox RDP replies carry no request id, so the daemon lets **one** client have Firefox-bound requests in flight at a time. Concurrent invocations **queue** for that channel and all succeed; a client that waits out the queue budget gets a `daemon_busy` error naming the wait and the cap. Use `--no-daemon` for a private connection when you want true parallelism.
 - Daemon exits automatically after 5 minutes of inactivity (configurable via `--daemon-timeout`)
 
 **Cross-command workflows (enabled by daemon):**

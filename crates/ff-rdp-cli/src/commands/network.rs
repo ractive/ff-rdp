@@ -8,7 +8,7 @@ use ff_rdp_core::{
 };
 use serde_json::{Value, json};
 
-use crate::cli::args::Cli;
+use crate::cli::args::{Cli, NetworkSource};
 use crate::error::AppError;
 use crate::hints::{HintContext, HintSource};
 use crate::output;
@@ -49,6 +49,7 @@ pub fn run(
     headers: bool,
     security: bool,
     since_nav: i64,
+    source: NetworkSource,
     since_explicit: bool,
 ) -> Result<(), AppError> {
     // iter-101 Theme D: `--since` nav-scoping is only implemented against the
@@ -59,6 +60,22 @@ pub fn run(
     // `since_requires_daemon` discriminant instead of the pre-101 silent no-op.
     if since_explicit && cli.no_daemon {
         return Err(since_requires_daemon_error());
+    }
+
+    // iter-137 Theme C: navigation-scoped filtering is a property of the
+    // daemon's watcher buffer.  `performance.getEntriesByType('resource')` has
+    // no navigation boundaries at all — it is reset by the page, not by us —
+    // so combining the two would silently ignore `--since`.
+    if since_explicit && source == NetworkSource::PerformanceApi {
+        return Err(AppError::Unsupported {
+            error_type: "since_requires_watcher_source",
+            message: "network --since cannot be combined with --source performance-api: \
+                      the Performance API exposes no navigation boundaries, so the \
+                      requested window cannot be applied.\n\
+                      hint: use --source watcher (or drop --source) to keep --since, \
+                      or drop --since for a full performance-api capture."
+                .to_owned(),
+        });
     }
 
     let mut ctx = connect_and_get_target(cli)?;
@@ -73,7 +90,13 @@ pub fn run(
 
     let drain_timeout_ms = cli.timeout.max(DAEMON_DRAIN_FLOOR_MS);
 
-    let (all_resources, all_updates, nav_boundary) = if ctx.via_daemon {
+    let (all_resources, all_updates, nav_boundary) = if source == NetworkSource::PerformanceApi {
+        // iter-137 Theme C: `--source performance-api` must not touch the
+        // watcher at all — draining it first and then discarding the rows
+        // would make the command's cost (and its effect on the daemon buffer)
+        // depend on a source the user explicitly opted out of.
+        (Vec::new(), Vec::new(), None)
+    } else if ctx.via_daemon {
         // The daemon has already subscribed to network-event resources and is
         // buffering them.  Drain the buffer without touching watcher state.
         //
@@ -188,19 +211,43 @@ pub fn run(
     // Keep resource IDs in watcher entries so detail+headers mode can fetch them.
     let filtered_watcher = apply_filters(watcher_entries, true);
 
-    // If the watcher returned nothing (page already loaded before subscribing),
-    // try the Performance API as a fallback.  In daemon mode the watcher buffer
-    // may be empty because the page loaded before our drain — the Performance
-    // API fallback applies equally in that case.
-    let (results, used_perf_fallback) = if watcher_was_empty {
-        let fallback = performance_api_fallback(&mut ctx);
-        let filtered_fallback = apply_filters(fallback, false);
-        let used = !filtered_fallback.is_empty();
-        (filtered_fallback, used)
-    } else {
-        // filtered_watcher already has _resource_id present; keep it for the
-        // detail+headers path. It will be stripped before final output.
-        (filtered_watcher, false)
+    // Pick the source (iter-137 Theme C).
+    //
+    // `auto` keeps the historical rule: watcher if it produced anything, else
+    // the Performance API. That rule is *connection-mode dependent* by
+    // construction — the daemon has been buffering network events since it
+    // started, so its watcher buffer is rarely empty, while a fresh direct
+    // connection subscribes after the page has already loaded and almost
+    // always falls through to the Performance API. Same page, same instant,
+    // different dataset. `--source watcher` / `--source performance-api` pin
+    // one mechanism so both connection modes answer from the same place, and
+    // `meta.source_reason` (below) names whichever rule applied.
+    let (results, used_perf_fallback, source_reason) = match source {
+        NetworkSource::PerformanceApi => {
+            let fallback = performance_api_fallback(&mut ctx);
+            (apply_filters(fallback, false), true, "requested")
+        }
+        NetworkSource::Watcher => {
+            // No fallback: an empty watcher buffer is reported as an empty
+            // watcher result rather than silently substituting a different
+            // dataset with different fields.
+            (filtered_watcher, false, "requested")
+        }
+        NetworkSource::Auto if watcher_was_empty => {
+            let fallback = performance_api_fallback(&mut ctx);
+            let filtered_fallback = apply_filters(fallback, false);
+            let used = !filtered_fallback.is_empty();
+            (
+                filtered_fallback,
+                used,
+                "auto: watcher buffer empty, fell back to performance-api",
+            )
+        }
+        NetworkSource::Auto => {
+            // filtered_watcher already has _resource_id present; keep it for the
+            // detail+headers path. It will be stripped before final output.
+            (filtered_watcher, false, "auto: watcher buffer non-empty")
+        }
     };
 
     // Count plain-HTTP (insecure) requests across the *whole* captured set, not
@@ -228,11 +275,22 @@ pub fn run(
     // source was watcher.
     let mut meta = if used_perf_fallback {
         json!({"source": "performance-api"})
-    } else if !watcher_was_empty {
+    } else if !watcher_was_empty || source == NetworkSource::Watcher {
+        // `--source watcher` reports `watcher` even with zero rows — the
+        // source is a statement about where we looked, not about what we
+        // found (iter-137 Theme C).
         json!({"source": "watcher"})
     } else {
         json!({})
     };
+    // iter-137 Theme C: always say *why* this source was used, so the
+    // daemon-vs-direct row-count difference is explainable from the output
+    // instead of requiring the reader to know how `auto` resolves.
+    if let Some(m) = meta.as_object_mut()
+        && m.contains_key("source")
+    {
+        m.insert("source_reason".to_string(), json!(source_reason));
+    }
     // Include the navigation boundary that scoped the result, if any.
     if let Some(ref b) = nav_boundary
         && let Some(m) = meta.as_object_mut()

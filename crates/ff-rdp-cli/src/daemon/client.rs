@@ -850,15 +850,19 @@ pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
             // Pull live stats from the daemon. If the RPC fails, surface
             // whatever registry data we have with null stats so callers can
             // still see the PID/port.
-            let (uptime_seconds, connections, buffer_sizes, target_count) =
+            let (uptime_seconds, connections, buffer_sizes, target_count, live_target_count) =
                 match daemon_rpc(cli, cli.port, &json!({"to": "daemon", "type": "status"})) {
                     Ok(resp) => (
                         resp.get("uptime_secs").and_then(Value::as_u64),
                         resp.get("stream_subscriber_count").and_then(Value::as_u64),
                         resp.get("buffer_sizes").cloned(),
                         resp.get("target_count").and_then(Value::as_u64),
+                        // iter-137 Theme A: targets alive right now, as opposed
+                        // to the cumulative `target_count`.  This is what a
+                        // proxied `click --frame` / `consent accept` enumerates.
+                        resp.get("live_target_count").and_then(Value::as_u64),
                     ),
-                    Err(_) => (None, None, None, None),
+                    Err(_) => (None, None, None, None, None),
                 };
             json!({
                 "running": true,
@@ -868,6 +872,7 @@ pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
                 "connections": connections,
                 "buffer_sizes": buffer_sizes,
                 "target_count": target_count,
+                "live_target_count": live_target_count,
             })
         }
     };

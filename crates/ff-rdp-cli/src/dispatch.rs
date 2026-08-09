@@ -555,6 +555,7 @@ fn dispatch_inner(
             headers,
             security,
             since,
+            source,
         }) => {
             if *follow {
                 commands::network::run_follow(cli, filter.as_deref(), method.as_deref())
@@ -567,6 +568,7 @@ fn dispatch_inner(
                     *headers,
                     *security,
                     since_nav,
+                    *source,
                     // iter-101 Theme D: whether the user *explicitly* passed
                     // `--since`.  One-shot (`--no-daemon`) cannot honor nav-scoping,
                     // so an explicit `--since` must fail loudly rather than
