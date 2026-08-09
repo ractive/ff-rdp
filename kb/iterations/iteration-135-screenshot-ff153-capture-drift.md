@@ -101,7 +101,7 @@ in [[iteration-110-post-batch-live-sweep]]. If they share this root cause, they
 should go green with Theme B — say so explicitly rather than leaving them parked
 as permanent reds.
 
-## Acceptance criteria
+## Acceptance Criteria [6/6]
 
 - [x] live_135_screenshot_ff153_capture: `ff-rdp screenshot -o <path>` against
       headless Firefox 153.x writes a valid PNG (magic bytes + non-zero
@@ -110,13 +110,14 @@ as permanent reds.
       viewport PNG height on the same page
 - [x] live_135_screenshot_error_not_misleading: a forced parse failure while
       headless does NOT emit the "relaunch with --headless" hint
-- [x] unit_screenshot_capture_parses_ff153_shape: recorded-fixture unit test for
-      the Firefox 153 reply shape
-- [x] unit_screenshot_capture_parses_legacy_shape: the pre-153
+- [x] `unit_screenshot_capture_parses_ff153_shape`: recorded-fixture unit test
+      for the Firefox 153 reply shape
+- [x] `unit_screenshot_capture_parses_legacy_shape`: the pre-153
       `{value:{data:...}}` shape still parses (no version regression)
-- [x] preexisting_reds_recheck: `live_screenshot_ff151::*` and
-      `live_screenshot_bulk_fallback::*` re-run and their status recorded —
-      green, or explicitly re-triaged with a reason
+- [x] preexisting_reds_recheck: `live_screenshot_ff151_cli`,
+      `live_screenshot_ff151_produces_valid_png`, and
+      `live_screenshot_bulk_fallback_then_eval` re-run and their status
+      recorded — green, or explicitly re-triaged with a reason
 
 ## Results
 
