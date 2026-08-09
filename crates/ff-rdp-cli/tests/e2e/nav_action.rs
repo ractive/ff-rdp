@@ -15,16 +15,97 @@ fn base_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn nav_action_server(method: &str) -> MockRdpServer {
+/// Build a mock server for the iter-130 Theme B `back`/`forward`/plain-`reload`
+/// flow, which now waits on `document-event` resources for the same
+/// `{committed_url, ready_state, elapsed_ms}` envelope `navigate` produces
+/// (see `wait_for_navigation_commit` in `navigate.rs`) instead of returning
+/// immediately after dispatch.
+///
+/// Request order: listTabs → getTarget → getWatcher → evaluateJSAsync
+/// (pre-nav epoch, best-effort) → watchTargets → watchResources → `method`
+/// (with `dom-loading`/`dom-complete` document-event followups) →
+/// unwatchResources → getTarget (refresh_console_actor after commit).
+///
+/// `back`/`forward` make exactly one `evaluateJSAsync` call (the pre-nav
+/// epoch inside `wait_for_navigation_commit`); use
+/// [`nav_action_commit_server_reload`] for `reload`, which makes a second
+/// (its own pre-dispatch `location.href` capture).
+fn nav_action_commit_server(method: &str) -> MockRdpServer {
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
-        .on(method, load_fixture("reload_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_ready_state_complete.json"),
+        )
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
+        .on(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on_with_followups(
+            method,
+            load_fixture("reload_response.json"),
+            vec![
+                load_fixture("resources_available_document_event_dom_loading.json"),
+                load_fixture("resources_available_document_event_dom_complete.json"),
+            ],
+        )
+        .on(
+            "unwatchResources",
+            load_fixture("unwatch_resources_response.json"),
+        )
 }
 
+/// Like [`nav_action_commit_server`] but for `reload`, which makes an extra
+/// `evaluateJSAsync` call (`location.href`, captured before dispatch as the
+/// `requested_url` fed to `needs_href_fallback`) ahead of the pre-nav-epoch
+/// call `wait_for_navigation_commit` makes for all three verbs.
+fn nav_action_commit_server_reload() -> MockRdpServer {
+    MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on_sequence(
+            "evaluateJSAsync",
+            vec![
+                (
+                    load_fixture("eval_immediate_response.json"),
+                    vec![load_fixture("eval_result_string.json")],
+                ),
+                (
+                    load_fixture("eval_immediate_response.json"),
+                    vec![load_fixture("eval_result_ready_state_complete.json")],
+                ),
+            ],
+        )
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
+        .on(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on_with_followups(
+            "reload",
+            load_fixture("reload_response.json"),
+            vec![
+                load_fixture("resources_available_document_event_dom_loading.json"),
+                load_fixture("resources_available_document_event_dom_complete.json"),
+            ],
+        )
+        .on(
+            "unwatchResources",
+            load_fixture("unwatch_resources_response.json"),
+        )
+}
+
+/// `live_130_reload_envelope`'s mock-server sibling: `reload` now returns the
+/// navigate-style envelope (`committed_url`, `ready_state`, `elapsed_ms`)
+/// instead of a bare `{"action": "reload"}` (iter-130 Theme B).
 #[test]
 fn reload_outputs_json_envelope() {
-    let server = nav_action_server("reload");
+    let server = nav_action_commit_server_reload();
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
 
@@ -48,6 +129,12 @@ fn reload_outputs_json_envelope() {
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
     assert_eq!(json["results"]["action"], "reload");
+    assert_eq!(json["results"]["committed_url"], "https://example.com");
+    assert_eq!(json["results"]["ready_state"], "complete");
+    assert!(
+        json["results"]["elapsed_ms"].is_u64(),
+        "elapsed_ms must be present: {json}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -215,9 +302,10 @@ fn reload_wait_idle_no_traffic_returns_idle_quickly() {
     assert_eq!(json["results"]["requests_observed"], 0);
 }
 
+/// `live_130_back_forward_envelope`'s mock-server sibling (back half).
 #[test]
 fn back_outputs_json_envelope() {
-    let server = nav_action_server("goBack");
+    let server = nav_action_commit_server("goBack");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
 
@@ -239,11 +327,18 @@ fn back_outputs_json_envelope() {
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["results"]["action"], "back");
+    assert_eq!(json["results"]["committed_url"], "https://example.com");
+    assert_eq!(json["results"]["ready_state"], "complete");
+    assert!(
+        json["results"]["elapsed_ms"].is_u64(),
+        "elapsed_ms must be present: {json}"
+    );
 }
 
+/// `live_130_back_forward_envelope`'s mock-server sibling (forward half).
 #[test]
 fn forward_outputs_json_envelope() {
-    let server = nav_action_server("goForward");
+    let server = nav_action_commit_server("goForward");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
 
@@ -265,4 +360,10 @@ fn forward_outputs_json_envelope() {
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["results"]["action"], "forward");
+    assert_eq!(json["results"]["committed_url"], "https://example.com");
+    assert_eq!(json["results"]["ready_state"], "complete");
+    assert!(
+        json["results"]["elapsed_ms"].is_u64(),
+        "elapsed_ms must be present: {json}"
+    );
 }
