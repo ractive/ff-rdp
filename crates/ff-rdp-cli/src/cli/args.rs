@@ -210,6 +210,14 @@ TROUBLESHOOTING:
     \"could not connect\" -> run ff-rdp launch first (safe alongside normal browser)
     Timeout -> increase --timeout or check --port matches the launched instance";
 
+/// Default value of the global `--timeout` flag, in milliseconds.
+///
+/// Named (rather than inlined in the `#[arg]` attribute) because the error
+/// path needs the same number: `ProtocolError::Timeout` carries no duration,
+/// so `AppError::from` reports the socket read deadline instead — see
+/// `crate::error::socket_timeout_ms` (iter-137 Theme B).
+pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
+
 /// Log verbosity level for `--log-level`.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum LogLevel {
@@ -299,7 +307,7 @@ pub struct Cli {
     pub jq_strict: bool,
 
     /// Operation timeout in milliseconds
-    #[arg(long, default_value_t = 10000, global = true)]
+    #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS, global = true)]
     pub timeout: u64,
 
     /// Connect directly to Firefox, bypassing the daemon. Use for one-off commands or fresh connections. The daemon (default) keeps a persistent connection and buffers events for streaming commands (--follow).
@@ -576,12 +584,25 @@ Navigation scoping (daemon mode only):
   reached) an explicit --since fails with error_type \"since_requires_daemon\"
   rather than silently returning the unfiltered buffer.
 
-Source precedence (daemon mode):
+Source precedence (--source auto, the default):
   1. Daemon watcher buffer (source=watcher): used when the daemon has buffered
      network events for the current navigation. This is the default path when
      the daemon is running and `navigate --with-network` was used previously.
   2. Performance API fallback (source=performance-api): used only when the
      watcher buffer is empty (no events captured for the current navigation).
+
+`auto` therefore resolves differently per connection mode: the daemon has been
+buffering since it started, while a fresh --no-daemon connection subscribes
+after the page has already loaded and almost always falls through to the
+Performance API. Same page, same instant, different row counts and different
+available fields. Pin the source to make both modes agree:
+  --source watcher          only the watcher/daemon buffer; 0 rows stays 0 rows
+  --source performance-api  only Resource Timing; identical in both modes,
+                            no headers/security detail, and incompatible with
+                            --since (error_type \"since_requires_watcher_source\")
+`meta.source_reason` always states which rule applied: \"requested\",
+\"auto: watcher buffer non-empty\", or
+\"auto: watcher buffer empty, fell back to performance-api\".
 
 Field fidelity by source:
   watcher:         method, status, content_type, duration_ms, size_bytes, transfer_size all available.
@@ -1433,6 +1454,33 @@ pub struct NetworkArgs {
     /// `--since -1` or `--since=-1` without clap mistaking `-1` for a flag.
     #[arg(long, value_name = "NAV_INDEX_OR_ALL", allow_hyphen_values = true)]
     pub since: Option<String>,
+    /// Pin which capture source produces the rows, instead of letting the
+    /// connection mode decide (iter-137 Theme C).
+    ///
+    /// `auto` (default) prefers the watcher and falls back to the Performance
+    /// API when the watcher buffer is empty — which is why the same page
+    /// reported 77 watcher rows through the daemon and 137 performance-api
+    /// rows with `--no-daemon`: the daemon has been buffering since it
+    /// started, a direct connection has not. `watcher` and `performance-api`
+    /// force one source, so both connection modes return the same rows from
+    /// the same place. `meta.source_reason` always states which rule applied.
+    #[arg(long, value_enum, default_value_t = NetworkSource::Auto)]
+    pub source: NetworkSource,
+}
+
+/// Capture source for `ff-rdp network` (iter-137 Theme C).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum NetworkSource {
+    /// Watcher buffer if non-empty, else the Performance API. Connection-mode
+    /// dependent by construction.
+    Auto,
+    /// Only the watcher/daemon resource buffer. Reports zero rows rather than
+    /// silently substituting a different dataset.
+    Watcher,
+    /// Only `performance.getEntriesByType('resource')`, evaluated in the page.
+    /// Identical in daemon and direct mode; no headers or security detail.
+    #[value(name = "performance-api")]
+    PerformanceApi,
 }
 
 #[derive(clap::Args)]

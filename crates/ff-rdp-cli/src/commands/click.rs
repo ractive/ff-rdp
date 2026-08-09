@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 use ff_rdp_core::{
-    DEFAULT_FRAME_TARGETS_SETTLE, Grip, NetworkResource, NetworkResourceUpdate, ProtocolError,
-    TabActor, TargetEvent, WatcherActor, WebConsoleActor, enumerate_frame_targets,
-    parse_network_resource_updates, parse_network_resources, sanitize_for_terminal,
+    Grip, NetworkResource, NetworkResourceUpdate, ProtocolError, TabActor, TargetEvent,
+    WatcherActor, WebConsoleActor, parse_network_resource_updates, parse_network_resources,
+    sanitize_for_terminal,
 };
 use serde_json::{Value, json};
 
@@ -256,9 +256,16 @@ fn selector_exists(
     Ok(matches!(eval_result.result, Grip::Value(Value::Bool(true))))
 }
 
-/// Enumerate this tab's frame targets via `get_watcher_with_options(Some(true))`
-/// and `enumerate_frame_targets` — the one shared entry point every
+/// Enumerate this tab's frame targets — the one shared entry point every
 /// frame-aware call site in this file goes through.
+///
+/// Delegates to [`crate::commands::frame_targets::fetch_frame_targets`], which
+/// picks the mechanism the current connection supports: the daemon's recorded
+/// target snapshot when proxied, the live `watchTargets` drain when direct.
+/// Before iter-137 this always took the direct path, which is a no-op through
+/// the daemon (the daemon already subscribed at startup) — so `--frame` and
+/// the cross-origin frame scan reported "0 frame(s) available" for every
+/// invocation that did not pass `--no-daemon`.
 ///
 /// **Callers MUST NOT call this more than once per `click` invocation.**
 /// `enumerate_frame_targets` deliberately never sends `unwatchTargets` (see
@@ -266,21 +273,12 @@ fn selector_exists(
 /// destroys every target it just returned), which means a *second*
 /// `watchTargets("frame")` on an already-watched connection is a no-op: it
 /// does **not** re-deliver the already-known targets, so a second call here
-/// silently returns an empty list. Confirmed live against Firefox 153 — this
-/// is why the auto-wait pre-check thread its fetched `Vec<TargetEvent>`
-/// through to `do_click` (`prefetched_targets`) instead of letting
-/// `click_in_scanned_frame` re-enumerate.
+/// silently returns an empty list on a direct connection. Confirmed live
+/// against Firefox 153 — this is why the auto-wait pre-check threads its
+/// fetched `Vec<TargetEvent>` through to `do_click` (`prefetched_targets`)
+/// instead of letting `click_in_scanned_frame` re-enumerate.
 fn fetch_frame_targets(ctx: &mut ConnectedTab) -> Result<Vec<TargetEvent>, AppError> {
-    let tab_actor = ctx.target_tab_actor().clone();
-    let watcher_actor =
-        TabActor::get_watcher_with_options(ctx.transport_mut(), &tab_actor, Some(true))
-            .map_err(AppError::from)?;
-    enumerate_frame_targets(
-        ctx.transport_mut(),
-        &watcher_actor,
-        DEFAULT_FRAME_TARGETS_SETTLE,
-    )
-    .map_err(AppError::from)
+    crate::commands::frame_targets::fetch_frame_targets(ctx)
 }
 
 /// [`selector_exists`] against every non-top frame in `targets`,

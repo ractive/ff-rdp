@@ -14,9 +14,7 @@
 //! - `ff-rdp consent accept` — explicit, on-demand.
 //! - `ff-rdp navigate --auto-consent` — best-effort, post-navigate.
 
-use ff_rdp_core::{
-    DEFAULT_FRAME_TARGETS_SETTLE, TabActor, WebConsoleActor, enumerate_frame_targets,
-};
+use ff_rdp_core::WebConsoleActor;
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -127,16 +125,13 @@ fn accept_all_js() -> String {
 /// actionable — still an always-present pair of keys, never omitted).
 /// Returns `{"cmp": "<name>", "action": "accepted"}` on success.
 pub(crate) fn detect_and_accept(ctx: &mut ConnectedTab) -> Result<Value, AppError> {
-    let tab_actor = ctx.target_tab_actor().clone();
-    let watcher_actor =
-        TabActor::get_watcher_with_options(ctx.transport_mut(), &tab_actor, Some(true))
-            .map_err(AppError::from)?;
-    let targets = enumerate_frame_targets(
-        ctx.transport_mut(),
-        &watcher_actor,
-        DEFAULT_FRAME_TARGETS_SETTLE,
-    )
-    .map_err(AppError::from)?;
+    // iter-137 Theme A: route through the connection-aware entry point.  The
+    // former direct-only enumeration was a no-op through the daemon (the
+    // daemon subscribed to frame targets at startup, so a second
+    // `watchTargets` re-delivers nothing), which is why `consent accept`
+    // reported `{"cmp":null,"action":null}` on a Sourcepoint site unless the
+    // caller passed `--no-daemon`.
+    let targets = crate::commands::frame_targets::fetch_frame_targets(ctx)?;
 
     let Some((cmp_name, target)) = targets.iter().find_map(|t| {
         if t.is_top_level {

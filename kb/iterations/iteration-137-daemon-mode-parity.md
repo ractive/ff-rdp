@@ -14,8 +14,10 @@ dogfood_path: |
   # → must list a non-zero frame count
   for i in 1 2 3 4; do ff-rdp page-text --port 6100 & done; wait
   # → all 4 must succeed
-first_call_sites: []
-status: planned
+first_call_sites:
+  - primitive: ff_rdp_core::target_events_from_packets
+    site: crates/ff-rdp-cli/src/commands/frame_targets.rs (request_frame_targets replay of the daemon snapshot)
+status: in-progress
 ---
 
 # Iteration 137: daemon-mode parity — frame targets, concurrency, network source
@@ -91,20 +93,68 @@ without a daemon-mode counterpart.
 Re-run [[iteration-129-consent-and-cross-origin-frames]]'s `dogfood_path` verbatim as part of
 this iteration and confirm it passes as written.
 
-## Acceptance Criteria
+## Acceptance Criteria [7/7]
 
-- [ ] live_137_frame_targets_via_daemon: `enumerate_frame_targets` returns the same non-zero
-      target count via daemon and `--no-daemon` on a multi-frame page
-- [ ] live_137_consent_accept_via_daemon: `consent accept` on a Sourcepoint site returns
-      `{"cmp":"sourcepoint","action":"accepted"}` **without** `--no-daemon`
-- [ ] live_137_click_cross_origin_via_daemon: cross-origin frame click succeeds in daemon mode
-- [ ] live_137_concurrent_commands: 4 concurrent proxied commands all succeed (or queue and
-      succeed); no `0ms` duration appears in any error
-- [ ] live_137_network_source_parity: `network` reports the same source and row count in both
-      connection modes on a settled page
-- [ ] unit_no_daemon_live_test_guard (Theme D): guard proving new `--no-daemon` live tests
-      have daemon-mode coverage
-- [ ] iteration-129 `dogfood_path` re-run verbatim and passing
+- [x] live_137_frame_targets_via_daemon: `enumerate_frame_targets` returns the same non-zero
+      target count via daemon and `--no-daemon` on a multi-frame page — PASSED, 2 frames in
+      both modes (`fetch_frame_targets` / `target_events_from_packets`)
+- [x] live_137_consent_accept_via_daemon: `consent accept` on a Sourcepoint site returns
+      `{"cmp":"sourcepoint","action":"accepted"}` **without** `--no-daemon` — verified live
+      against theguardian.com immediately after `navigate` (`detect_and_accept`)
+- [x] live_137_click_cross_origin_via_daemon: cross-origin frame click succeeds in daemon mode —
+      PASSED, `tag: "A"`, `meta.frame_url: "https://example.com/"`
+- [x] live_137_concurrent_commands: 4 concurrent proxied commands all succeed (queue via
+      `claim_rpc_slot_queued`); no `0ms` duration appears in any error — PASSED 4/4
+- [x] live_137_network_source_parity: `network` reports the same source and row count in both
+      connection modes on a settled page — PASSED with `--source performance-api`
+      (`NetworkSource`), 3 rows in both modes; `meta.source_reason` names the rule
+- [x] `unit_no_daemon_live_test_guard` (Theme D) proves a direct-only live suite declares
+      daemon-mode coverage; `unit_no_daemon_grandfather_list_only_shrinks` keeps the
+      `GRANDFATHERED` exemption list shrinking and `unit_no_daemon_guard_detects_a_violation`
+      pins the matcher (crates/ff-rdp-cli/tests/no_daemon_live_test_guard.rs). It caught this
+      iteration's own new suite before it was annotated.
+- [x] iteration-129 dogfood_path re-run verbatim and passing — `is_client_target_teardown` +
+      `fetch_frame_targets` make `consent accept` report
+      `{"cmp":"sourcepoint","action":"accepted"}`, `click --frame` list 3 frames (was
+      `0 frame(s) available: `), and 4/4 concurrent `page-text` succeed
+
+Supporting unit coverage: `unit_frame_targets_snapshot_tracks_lifecycle`,
+`unit_frame_targets_snapshot_pruned_on_target_switch`,
+`unit_frame_targets_request_returns_snapshot`,
+`unit_frame_targets_replay_matches_direct_rules`,
+`unit_rpc_slot_queue_waits_for_release`, `unit_daemon_busy_reports_real_wait`,
+`unit_daemon_queued_notice_is_not_an_error`, `unit_rpc_queue_budget_exceeds_heartbeat`,
+`unit_timeout_error_never_reports_zero_ms`,
+`unit_zero_after_ms_renders_without_a_duration_claim`.
+
+## What the wire actually showed (Theme A)
+
+The plan's stated root cause — "target events are consumed by the daemon's reader before the
+temporary sink ... can observe them" — was **wrong**, and the plan's own warning to verify
+first was the right call. Two real causes, both confirmed against Firefox 153:
+
+1. **`watchTargets` is not repeatable on a connection.**
+   `ParentProcessWatcherRegistry.watchTargets` only adds the target type to the watcher's
+   session data, so the daemon (which subscribes once at startup) makes every proxied
+   client's `watchTargets("frame")` a no-op — the drain window is empty by construction and
+   no event sink placement could have fixed it. Also, without
+   `isServerTargetSwitchingEnabled: true` the daemon received **no** `target-available-form`
+   at all (`daemon status` reported `target_count: 0` for whole sessions).
+2. **`navigate` was tearing the daemon's subscription down.**
+   Once switching was enabled, `navigate`'s three `unwatchTargets("frame")` teardown calls
+   (`commands/navigate.rs:899,1275,1634`) landed on the *shared* connection, and under
+   server-side target switching `unwatchTargets` destroys **every** target — top level
+   included. Captured in the daemon log: two `target-available-form` immediately followed by
+   four `target-destroyed-form`, leaving zero live targets after every navigation.
+
+The daemon now drops client `unwatchTargets` frames (`is_client_target_teardown`) — safe
+because the method is `oneway`, and correct because the subscription is daemon-owned.
+
+`daemon status` gained `live_target_count` (targets alive now, vs. the cumulative
+`target_count`) — the two diverging is the exact signature of this bug — and the
+`frame-targets` reply carries `watcher_ready`, so a daemon that has not established its
+subscription yet returns a `daemon_watcher_not_ready` error instead of an empty snapshot
+presented as fact.
 
 ## Notes
 

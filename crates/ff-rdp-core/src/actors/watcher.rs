@@ -423,11 +423,46 @@ pub fn enumerate_frame_targets(
     Ok(targets)
 }
 
+/// Replay a recorded sequence of raw target lifecycle packets into the same
+/// deduped snapshot [`enumerate_frame_targets`] would have produced from a
+/// live drain (iter-137 Theme A).
+///
+/// Exists because `watchTargets` is **not** repeatable on a connection that is
+/// already watching that target type: Firefox's
+/// `ParentProcessWatcherRegistry.watchTargets` only adds the type to the
+/// session data, so a second subscription on the same connection re-delivers
+/// nothing (documented at `commands/click.rs`'s `fetch_frame_targets`). The
+/// ff-rdp daemon owns the single RDP connection and subscribes once at
+/// startup, so a *proxied* `enumerate_frame_targets` can never re-observe the
+/// targets that were announced before it connected — the whole reason
+/// `click --frame` / `consent accept` reported "0 frame(s) available" in
+/// daemon mode while working under `--no-daemon`.
+///
+/// The daemon therefore records every `target-available-form` /
+/// `target-destroyed-form` it sees and hands the raw packets back on request;
+/// this function turns that recording into `Vec<TargetEvent>` using exactly
+/// the same add/replace/remove rules as the live path, so both connection
+/// modes yield identical snapshots. Packets that are not target lifecycle
+/// events are ignored.
+///
+/// Returns the targets in first-seen order.
+pub fn target_events_from_packets<'a, I>(packets: I) -> Vec<TargetEvent>
+where
+    I: IntoIterator<Item = &'a Value>,
+{
+    let mut targets: Vec<TargetEvent> = Vec::new();
+    for packet in packets {
+        apply_target_event_packet(&mut targets, packet);
+    }
+    targets
+}
+
 /// Apply one raw packet to `targets`: adds/replaces on
 /// `target-available-form`, removes on `target-destroyed-form`, ignores
 /// everything else (resource events, unrelated replies). Shared by
-/// [`enumerate_frame_targets`]'s early-sink drain and its post-subscribe
-/// `recv()` loop so both paths dedupe/apply removals identically.
+/// [`enumerate_frame_targets`]'s early-sink drain, its post-subscribe
+/// `recv()` loop, and [`target_events_from_packets`]'s replay so every path
+/// dedupes/applies removals identically.
 fn apply_target_event_packet(targets: &mut Vec<TargetEvent>, packet: &Value) {
     let Some(event) = WatcherEvent::from_packet(packet) else {
         return;

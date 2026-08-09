@@ -65,6 +65,7 @@ pub use actors::watcher::{
     ResourceGripGuard, TargetEvent, WatcherActor, WatcherEvent, dispatch_watcher_event,
     enumerate_frame_targets, extract_grips, parse_console_resources,
     parse_network_resource_updates, parse_network_resources, parse_target_event,
+    target_events_from_packets,
 };
 pub use connection::{COMPATIBLE_FIREFOX_MAX, COMPATIBLE_FIREFOX_MIN, RdpConnection};
 pub use error::{ActorErrorKind, NavCause, ProtocolError, RdpError, RdpResult};

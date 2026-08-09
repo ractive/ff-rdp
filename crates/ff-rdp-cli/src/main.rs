@@ -237,6 +237,15 @@ fn main() {
     ff_rdp_core::transport::set_max_frame_bytes(max_frame_bytes);
     ff_rdp_core::transport::set_redact_threshold(cli.redact_threshold);
 
+    // iter-137 Theme B: publish the socket read deadline this invocation will
+    // use so the error path can name a real duration.  `ProtocolError::Timeout`
+    // is a unit variant — it carries no elapsed time — and the CLI used to
+    // fabricate `after_ms: 0`, producing the useless
+    // "operation timed out after 0ms (phase: recv)" that dogfooding kept
+    // hitting when the daemon's RPC channel was contended.  The socket's read
+    // timeout *is* the duration that elapsed, and it is known right here.
+    error::remember_socket_timeout_ms(cli.timeout);
+
     // Warn operators when raw (unredacted) trace mode is active so that
     // credentials and payloads visible in the trace output are not overlooked.
     if matches!(std::env::var("FF_RDP_TRACE_RAW").as_deref(), Ok(s) if !s.is_empty()) {

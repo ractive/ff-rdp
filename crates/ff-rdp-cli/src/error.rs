@@ -1,4 +1,38 @@
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// The socket read deadline (ms) this invocation configured, published by
+/// `main` from `--timeout` (iter-137 Theme B).
+///
+/// `0` means "not yet recorded" — only reachable from unit tests and library
+/// consumers that never ran `main`.
+static SOCKET_TIMEOUT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Record the socket read deadline for this process (iter-137 Theme B).
+///
+/// Called once from `main` before any RDP connection is opened.  See
+/// [`socket_timeout_ms`] for why a global is the right shape here.
+pub(crate) fn remember_socket_timeout_ms(ms: u64) {
+    SOCKET_TIMEOUT_MS.store(ms, Ordering::Relaxed);
+}
+
+/// The socket read deadline in ms, or `None` if `main` never recorded one.
+///
+/// `ff_rdp_core::ProtocolError::Timeout` is a **unit** variant: the transport
+/// maps `ErrorKind::TimedOut` from the socket without carrying how long the
+/// read waited, and every `recv()` in the codebase would have to be rewritten
+/// to thread a duration through.  The waited duration is not unknown, though —
+/// it is exactly the read timeout the CLI set on the socket, which is a
+/// per-process constant taken from `--timeout`.  Publishing it here lets
+/// `From<ProtocolError>` report the real number instead of the fabricated
+/// `after_ms: 0` that rendered as "operation timed out after 0ms (phase: recv)"
+/// — an error that told a dogfooding user nothing about what to change.
+fn socket_timeout_ms() -> Option<u64> {
+    match SOCKET_TIMEOUT_MS.load(Ordering::Relaxed) {
+        0 => None,
+        ms => Some(ms),
+    }
+}
 
 #[derive(Debug)]
 pub enum AppError {
@@ -37,6 +71,11 @@ pub enum AppError {
         got: String,
     },
     /// RDP-level timeout (phase/after_ms context) — exit 5.
+    ///
+    /// `after_ms` is the deadline that actually elapsed.  It is never 0 on any
+    /// path the CLI constructs (iter-137 Theme B): a zero would claim the
+    /// operation timed out instantly, which is never true and is exactly the
+    /// nonsense the daemon-contention bug surfaced.
     RdpTimeout { phase: String, after_ms: u64 },
     /// Low-level transport I/O failure — exit 6.
     RdpTransport(String),
@@ -223,6 +262,16 @@ impl fmt::Display for AppError {
                     "unexpected packet shape at {path}: expected {expected}, got {got}"
                 )
             }
+            Self::RdpTimeout { phase, after_ms } if *after_ms == 0 => {
+                // Defensive: the CLI no longer builds this shape (iter-137
+                // Theme B), but a `0` must never render as a duration claim.
+                write!(
+                    f,
+                    "operation timed out (phase: {phase}) — no reply arrived before the \
+                     socket read deadline.\n\
+                     hint: raise --timeout, or use --no-daemon for a private connection to Firefox."
+                )
+            }
             Self::RdpTimeout { phase, after_ms } => {
                 write!(f, "operation timed out after {after_ms}ms (phase: {phase})")
             }
@@ -310,9 +359,15 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
             ff_rdp_core::ProtocolError::ConnectionFailed(_) => Self::Connection(format!(
                 "{err}\nhint: run `ff-rdp doctor` for a full diagnostic, or `ff-rdp launch` to start Firefox."
             )),
+            // iter-137 Theme B: report the socket read deadline that actually
+            // elapsed instead of a fabricated `0`.  `--timeout` is what the
+            // transport set on the socket, so it *is* the waited duration; the
+            // fallback only applies to in-process callers that never ran
+            // `main` (unit tests), and uses the same default `--timeout`
+            // carries so the number is still the truth for a default run.
             ff_rdp_core::ProtocolError::Timeout => Self::RdpTimeout {
                 phase: "recv".to_owned(),
-                after_ms: 0,
+                after_ms: socket_timeout_ms().unwrap_or(crate::cli::args::DEFAULT_TIMEOUT_MS),
             },
             ff_rdp_core::ProtocolError::ActorError {
                 kind,
@@ -545,6 +600,76 @@ mod tests {
             other => panic!("expected RdpTimeout, got {other:?}"),
         }
         assert_eq!(app.exit_code(), 5, "RDP timeout exit code");
+    }
+
+    // ── iter-137 Theme B: no fabricated durations in timeout errors ─────────
+
+    /// AC: `unit_timeout_error_never_reports_zero_ms` — bridging
+    /// `ProtocolError::Timeout` must report the socket read deadline that
+    /// actually elapsed. Dogfooding kept hitting
+    /// "operation timed out after 0ms (phase: recv)" from contended daemon
+    /// commands: a duration of zero is never true and tells the user nothing
+    /// about what to change.
+    #[test]
+    fn unit_timeout_error_never_reports_zero_ms() {
+        remember_socket_timeout_ms(7_500);
+
+        let app = AppError::from(ff_rdp_core::ProtocolError::Timeout);
+        match app {
+            AppError::RdpTimeout {
+                ref phase,
+                after_ms,
+            } => {
+                assert_eq!(phase, "recv");
+                assert_eq!(
+                    after_ms, 7_500,
+                    "the reported duration must be the socket read deadline the CLI set"
+                );
+            }
+            ref other => panic!("expected RdpTimeout, got {other:?}"),
+        }
+        let rendered = app.to_string();
+        assert!(
+            !rendered.contains("after 0ms"),
+            "no fabricated zero duration: {rendered}"
+        );
+        assert!(
+            rendered.contains("7500ms"),
+            "the real deadline must appear in the message: {rendered}"
+        );
+
+        // Reset so the fallback branch is observable too: an in-process caller
+        // that never ran `main` still gets the default `--timeout`, never 0.
+        remember_socket_timeout_ms(0);
+        let fallback = AppError::from(ff_rdp_core::ProtocolError::Timeout);
+        match fallback {
+            AppError::RdpTimeout { after_ms, .. } => assert_eq!(
+                after_ms,
+                crate::cli::args::DEFAULT_TIMEOUT_MS,
+                "unrecorded deadline falls back to the documented --timeout default"
+            ),
+            ref other => panic!("expected RdpTimeout, got {other:?}"),
+        }
+    }
+
+    /// AC: `unit_zero_after_ms_renders_without_a_duration_claim` — even if a
+    /// `0` ever reaches `Display` (a future construction site, a decoded
+    /// payload), it must not render as "after 0ms".
+    #[test]
+    fn unit_zero_after_ms_renders_without_a_duration_claim() {
+        let rendered = AppError::RdpTimeout {
+            phase: "recv".to_owned(),
+            after_ms: 0,
+        }
+        .to_string();
+        assert!(
+            !rendered.contains("0ms"),
+            "a zero must never be presented as an elapsed duration: {rendered}"
+        );
+        assert!(
+            rendered.contains("phase: recv"),
+            "the phase is still useful context: {rendered}"
+        );
     }
 
     // ── iter-105 Theme C: one exit-code map + frozen discriminants ──────────

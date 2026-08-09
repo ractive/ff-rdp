@@ -15,6 +15,7 @@ pub(crate) mod dom;
 pub(crate) mod dom_tree;
 pub(crate) mod emulate;
 pub(crate) mod eval;
+pub(crate) mod frame_targets;
 pub(crate) mod geometry;
 pub(crate) mod index;
 pub(crate) mod inspect;
