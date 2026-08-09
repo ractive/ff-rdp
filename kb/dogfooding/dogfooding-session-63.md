@@ -176,15 +176,22 @@ warning); above-floor **PARTIALLY** — `innerWidth` exact but `--window-size` s
 
 ### ff-rdp-core live test failures (triaged separately)
 
-All four are **test-only bugs, no product bug**:
+Triaged as four **test-only bugs, no product bug**. **That was wrong for the fourth** —
+implementing [[iteration-136-core-live-test-repairs]] found `AccessibilityActor` genuinely
+broken, masked by a silent JS-eval fallback. The three cookie tests were test-only as triaged:
 
 - `live_cookies`, `live_cookies_empty` — cleanup sends the **oneway** `unwatchResources`
   via `send_raw()` (send + `.expect("recv")`); recv times out and panics after the real
   assertions passed. `watcher.rs:41` documents it as oneway.
 - `live_cookies_httponly` — **hang**: `listener.incoming().take(10)` waits for a second HTTP
   request that never arrives while the main thread blocks in `server.join()`.
-- `live_accessibility_tree` — test hand-rolls a raw `getRootNode`, which FF153 rejects;
-  product code already falls back correctly (`accessibility.rs:95-119`).
+- `live_accessibility_tree` — **product bug, not a test bug.** FF153's `accessibleWalkerSpec`
+  has neither `getRootNode` nor `getDocument`; the root comes from an argument-less `children`
+  on the walker, a node's children from `children` on the accessible actor, and nothing answers
+  until the platform a11y service is enabled (the request stalls to the socket timeout rather
+  than erroring). The product's fallback chain was dead code and `ff-rdp a11y` had been silently
+  degrading to its JS-eval tree. Fixed in [[iteration-136-core-live-test-repairs]]; whether
+  `a11y` should enable the browser-global service is deferred to [[iteration-143-native-a11y-tree]].
 
 ### Feature Gaps
 
