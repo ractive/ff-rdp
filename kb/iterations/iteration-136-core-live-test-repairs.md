@@ -11,8 +11,10 @@ dogfood_path: |
   # Post-condition: 4 passed, 0 failed, and the run TERMINATES (no hang).
 first_call_sites:
   - primitive: AccessibilityActor::is_service_enabled
-    site: crates/ff-rdp-cli/src/commands/a11y.rs (fast JS fallback when the a11y service is off)
-status: planned
+    site: >-
+      crates/ff-rdp-cli/src/commands/a11y.rs (fast JS fallback when the a11y service
+      is off)
+status: completed
 ---
 
 # Iteration 136: repair four stale ff-rdp-core live tests
