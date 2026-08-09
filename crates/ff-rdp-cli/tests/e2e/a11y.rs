@@ -28,16 +28,55 @@ fn a11y_summary_server() -> MockRdpServer {
 
 /// Build a mock server that handles the full a11y protocol sequence.
 ///
-/// Protocol flow:
-///   listTabs → getTarget → getWalker → getRootNode → children (for nodes with childCount > 0)
+/// Protocol flow (Firefox 153, iter-136):
+///   listTabs → getTarget → bootstrap → getWalker
+///   → children (no args, on the walker: yields the root document)
+///   → children (on each accessible actor with childCount > 0)
+///
+/// The `children` replies are played back in order: the walker's root reply
+/// first, the root document's children second, then an empty reply that
+/// repeats so the traversal terminates.
 fn a11y_server() -> MockRdpServer {
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
+        .on("bootstrap", load_fixture("a11y_bootstrap_response.json"))
         .on("getWalker", load_fixture("a11y_get_walker_response.json"))
+        .on_sequence(
+            "children",
+            vec![
+                (load_fixture("a11y_walker_children_response.json"), vec![]),
+                (load_fixture("a11y_children_response.json"), vec![]),
+                (load_fixture("a11y_children_empty_response.json"), vec![]),
+            ],
+        )
+}
+
+/// Build a mock server for a Firefox build whose walker rejects the
+/// argument-less `children` root accessor, exercising the legacy
+/// `getDocument`/`getRootNode` fallback in `AccessibilityActor::get_root`.
+fn a11y_legacy_root_server() -> MockRdpServer {
+    MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("bootstrap", load_fixture("a11y_bootstrap_response.json"))
+        .on("getWalker", load_fixture("a11y_get_walker_response.json"))
+        .on_sequence(
+            "children",
+            vec![
+                (
+                    serde_json::json!({
+                        "from": "server1.conn0.child2/accessibleWalkerActor13",
+                        "error": "unrecognizedPacketType",
+                        "message": "Actor accessibleWalkerActor13 does not recognize the packet type 'children'"
+                    }),
+                    vec![],
+                ),
+                (load_fixture("a11y_children_response.json"), vec![]),
+                (load_fixture("a11y_children_empty_response.json"), vec![]),
+            ],
+        )
         .on("getDocument", load_fixture("a11y_get_root_response.json"))
-        .on("getRootNode", load_fixture("a11y_get_root_response.json"))
-        .on("children", load_fixture("a11y_children_response.json"))
 }
 
 /// Build a mock server for a11y contrast (uses JS eval path like snapshot).
@@ -74,8 +113,9 @@ fn a11y_outputs_json_with_accessibility_tree() {
 
     assert!(
         output.status.success(),
-        "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "expected success, stderr: {} stdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
 
     let json: serde_json::Value =
@@ -101,6 +141,48 @@ fn a11y_outputs_json_with_accessibility_tree() {
     );
 }
 
+/// iter-136: current Firefox exposes the root document only through the
+/// walker's argument-less `children`. Older builds answered that with
+/// `unrecognizedPacketType`, and `AccessibilityActor::get_root` must still fall
+/// back to `getDocument` for them.
+#[test]
+fn a11y_falls_back_to_get_document_when_walker_children_unrecognized() {
+    let server = a11y_legacy_root_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.push("a11y".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {} stdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    assert_eq!(
+        json["results"]["role"], "document",
+        "legacy getDocument fallback must still yield the document root"
+    );
+    assert!(
+        json["results"]["children"]
+            .as_array()
+            .is_some_and(|c| !c.is_empty()),
+        "legacy fallback must still walk children: {json}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // a11y: interactive filter
 // ---------------------------------------------------------------------------
@@ -123,8 +205,9 @@ fn a11y_interactive_filters_to_interactive_elements() {
 
     assert!(
         output.status.success(),
-        "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "expected success, stderr: {} stdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
 
     let json: serde_json::Value =
@@ -177,8 +260,9 @@ fn a11y_with_jq_extracts_role() {
 
     assert!(
         output.status.success(),
-        "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "expected success, stderr: {} stdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -207,8 +291,9 @@ fn a11y_contrast_outputs_json_with_checks() {
 
     assert!(
         output.status.success(),
-        "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "expected success, stderr: {} stdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
 
     let json: serde_json::Value =
@@ -280,8 +365,9 @@ fn a11y_contrast_fail_only_filters_passing_checks() {
 
     assert!(
         output.status.success(),
-        "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "expected success, stderr: {} stdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
 
     let json: serde_json::Value =
@@ -333,8 +419,9 @@ fn a11y_contrast_without_fail_only_total_equals_sampled() {
 
     assert!(
         output.status.success(),
-        "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "expected success, stderr: {} stdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
 
     let json: serde_json::Value =
@@ -381,8 +468,9 @@ fn a11y_contrast_with_jq_extracts_total() {
 
     assert!(
         output.status.success(),
-        "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "expected success, stderr: {} stdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -411,8 +499,9 @@ fn a11y_summary_outputs_json_with_sections() {
 
     assert!(
         output.status.success(),
-        "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "expected success, stderr: {} stdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
 
     let json: serde_json::Value =
@@ -481,8 +570,9 @@ fn a11y_summary_text_format_renders_sections() {
 
     assert!(
         output.status.success(),
-        "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "expected success, stderr: {} stdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -547,8 +637,9 @@ fn a11y_summary_with_jq_extracts_headings() {
 
     assert!(
         output.status.success(),
-        "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "expected success, stderr: {} stdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);

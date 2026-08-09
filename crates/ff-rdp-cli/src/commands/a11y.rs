@@ -146,8 +146,11 @@ fn render_a11y_text(node: &Value, depth: usize) {
 }
 
 /// Attempt native RDP accessibility protocol, falling back to JS eval on
-/// `unrecognizedPacketType` errors (Firefox 149+ renamed/removed both
-/// `getDocument` and `getRootNode` on the walker actor).
+/// `unrecognizedPacketType` errors. Current Firefox exposes the walker's root
+/// only through the argument-less `children`; `getDocument` was never a
+/// published protocol method and `getRootNode` was removed long ago, so both
+/// answer with `unrecognizedPacketType` (iter-136, see
+/// `AccessibilityActor::get_root`).
 fn run_native_or_js_fallback(
     ctx: &mut ConnectedTab,
     accessibility_actor: &ActorId,
@@ -155,6 +158,27 @@ fn run_native_or_js_fallback(
     max_chars: u32,
     cli: &Cli,
 ) -> Result<(AccessibleNode, bool), AppError> {
+    // Step 0: the native walker only answers while the platform accessibility
+    // service is running; with it off, the root accessor stalls until the
+    // socket read timeout instead of erroring (iter-136). Check first and take
+    // the JS fallback immediately when it is off.
+    match AccessibilityActor::is_service_enabled(ctx.transport_mut(), accessibility_actor) {
+        Ok(true) => {}
+        Ok(false) => {
+            if cli.is_verbose() {
+                eprintln!(
+                    "debug: platform accessibility service is disabled; falling back to JS eval \
+                     (enable it in Firefox to get the native accessibility tree)"
+                );
+            }
+            return run_selector_mode(ctx, "body", depth, max_chars).map(|t| (t, true));
+        }
+        // Older Firefox without `bootstrap` on the accessibility actor: try the
+        // native path anyway.
+        Err(e) if e.is_unrecognized_packet_type() => {}
+        Err(e) => return Err(map_a11y_error(e, cli)),
+    }
+
     // Step 1: try to get the walker.
     let walker = match AccessibilityActor::get_walker(ctx.transport_mut(), accessibility_actor) {
         Ok(w) => w,

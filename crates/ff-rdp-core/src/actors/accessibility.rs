@@ -68,18 +68,55 @@ impl AccessibilityActor {
         Ok(walker_actor.into())
     }
 
-    /// Get the children of an accessible node via the walker.
+    /// Report whether the platform accessibility service is running, via
+    /// `bootstrap` on the content accessibility actor
+    /// (`accessibilitySpec` in `devtools/shared/specs/accessibility.js:241-246`).
+    ///
+    /// This must be checked before walking the tree: the walker's root accessor
+    /// resolves a `document-ready` promise that never settles while the service
+    /// is off (`devtools/server/actors/accessibility/walker.js:446-470`), so the
+    /// request would stall until the socket read timeout rather than fail.
+    /// Enabling the service is a global browser state change (`enable` on the
+    /// root's `parentAccessibilityActor`), which ff-rdp deliberately does not do
+    /// on the user's behalf — callers fall back to the JS-derived tree instead
+    /// (iter-136).
+    pub fn is_service_enabled(
+        transport: &mut RdpTransport,
+        accessibility_actor: &ActorId,
+    ) -> Result<bool, ProtocolError> {
+        let response = actor_request(transport, accessibility_actor.as_ref(), "bootstrap", None)?;
+        Ok(response
+            .get("state")
+            .and_then(|state| state.get("enabled"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false))
+    }
+
+    /// Get the children of an accessible node.
+    ///
+    /// `children` is a **method on the accessible actor itself**
+    /// (`accessibleSpec` in `devtools/shared/specs/accessibility.js:96-101`)
+    /// and takes no arguments. The walker also exposes a `children` method, but
+    /// it ignores arguments and always resolves to the single root document
+    /// accessible (`devtools/server/actors/accessibility/walker.js:431-441`) —
+    /// addressing the walker here would repeat the root at every depth instead
+    /// of descending. The walker form is kept only as a fallback for older
+    /// builds that rejected `children` on the accessible actor (iter-136).
     pub fn children(
         transport: &mut RdpTransport,
         walker_actor: &ActorId,
         accessible_actor: &ActorId,
     ) -> Result<Vec<AccessibleNode>, ProtocolError> {
-        let response = actor_request(
-            transport,
-            walker_actor.as_ref(),
-            "children",
-            Some(&json!({"accessible": accessible_actor.as_ref()})),
-        )?;
+        let response = match actor_request(transport, accessible_actor.as_ref(), "children", None) {
+            Ok(r) => r,
+            Err(e) if e.is_unrecognized_packet_type() => actor_request(
+                transport,
+                walker_actor.as_ref(),
+                "children",
+                Some(&json!({"accessible": accessible_actor.as_ref()})),
+            )?,
+            Err(e) => return Err(e),
+        };
 
         response
             .get("children")
@@ -94,18 +131,50 @@ impl AccessibilityActor {
 
     /// Get the document root accessible via the walker.
     ///
-    /// Firefox 125+ renamed `getRootNode` → `getDocument` on the walker actor.
-    /// This method tries `getDocument` first and falls back to `getRootNode`
-    /// for older Firefox versions (< 125).
+    /// The walker's `children` method takes no arguments and resolves to a
+    /// single-element array holding the root document accessible
+    /// (`accessibleWalkerSpec` in `devtools/shared/specs/accessibility.js:162-167`,
+    /// implemented in `devtools/server/actors/accessibility/walker.js:431-441`).
+    /// That is the only root accessor current Firefox exposes: `getDocument` is
+    /// an internal walker helper that is *not* in the spec, and `getRootNode`
+    /// was removed long ago — Firefox 153 answers both with
+    /// `unrecognizedPacketType` (iter-136). Both legacy names are still tried as
+    /// a fallback for older builds.
     pub fn get_root(
         transport: &mut RdpTransport,
         walker_actor: &ActorId,
     ) -> Result<AccessibleNode, ProtocolError> {
-        // Try the modern method name first (Firefox 125+).
+        match actor_request(transport, walker_actor.as_ref(), "children", None) {
+            Ok(response) => {
+                if let Some(root) = response
+                    .get("children")
+                    .and_then(Value::as_array)
+                    .and_then(|arr| arr.first())
+                    .and_then(parse_accessible_node)
+                {
+                    return Ok(root);
+                }
+                // Recognized but empty — no root document to report.
+                Err(ProtocolError::InvalidPacket(
+                    "walker 'children' response contained no root document accessible".into(),
+                ))
+            }
+            Err(e) if e.is_unrecognized_packet_type() => {
+                Self::get_root_legacy(transport, walker_actor)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Legacy root accessors for Firefox builds whose walker predates the
+    /// argument-less `children` method.
+    fn get_root_legacy(
+        transport: &mut RdpTransport,
+        walker_actor: &ActorId,
+    ) -> Result<AccessibleNode, ProtocolError> {
         let response = match actor_request(transport, walker_actor.as_ref(), "getDocument", None) {
             Ok(r) => r,
             Err(e) if e.is_unrecognized_packet_type() => {
-                // Older Firefox (< 125): fall back to the legacy method name.
                 actor_request(transport, walker_actor.as_ref(), "getRootNode", None)?
             }
             Err(e) => return Err(e),

@@ -206,10 +206,63 @@ pub fn record_eval(
     (immediate, result)
 }
 
+/// RDP packet types that the Firefox specs declare `oneway: true`.
+///
+/// Firefox never sends a reply for these, so any helper that does a
+/// `send` + `recv` pair will block until the socket read timeout and then
+/// fail with `recv: Timeout`. Mirrors the `**Oneway**` doc annotations on
+/// `WatcherActor::unwatch_resources` / `clear_resources` /
+/// `unwatch_targets`, `RootActor` and `DomWalkerActor::clear_picker`.
+///
+/// Only unambiguous packet type names are listed: `ReflowActor`'s oneway
+/// `start`/`stop` are deliberately omitted because those names are reused by
+/// other actors that *do* reply.
+const ONEWAY_PACKET_TYPES: &[&str] = &[
+    "unwatchResources",
+    "clearResources",
+    "unwatchTargets",
+    "clearPicker",
+];
+
+/// Returns `true` when `packet_type` is a known oneway RDP packet type,
+/// i.e. one for which Firefox never sends a reply.
+pub fn is_oneway_packet_type(packet_type: &str) -> bool {
+    ONEWAY_PACKET_TYPES.contains(&packet_type)
+}
+
+/// Panics when `request` carries a known-oneway packet type.
+///
+/// Split out from [`send_raw`] so the guard is unit-testable without a live
+/// transport (see `unit_send_raw_rejects_oneway`).
+pub fn reject_oneway_request(request: &Value) {
+    let packet_type = request
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        !is_oneway_packet_type(packet_type),
+        "send_raw() called with oneway packet type {packet_type:?}: Firefox never replies to it, \
+         so the recv() would block until the socket read timeout and panic. \
+         Use send_raw_oneway() instead."
+    );
+}
+
 /// Send a raw RDP request and read one response.
+///
+/// Panics up-front if `request` is a known oneway packet type — those have no
+/// reply to read, so use [`send_raw_oneway`] for them.
 pub fn send_raw(transport: &mut RdpTransport, request: &Value) -> Value {
+    reject_oneway_request(request);
     transport.send(request).expect("send");
     transport.recv().expect("recv")
+}
+
+/// Send a raw RDP request without awaiting a reply.
+///
+/// Use this for oneway packets (`unwatchResources`, `clearResources`, …) and
+/// for best-effort cleanup where the reply is irrelevant.
+pub fn send_raw_oneway(transport: &mut RdpTransport, request: &Value) {
+    transport.send(request).expect("send oneway");
 }
 
 /// Read messages until we get a `resources-available-array` or
