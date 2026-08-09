@@ -102,7 +102,7 @@ runtime". Add whatever cheap guard fits: e.g. make `send_raw` reject known-onewa
 or give the recording helpers an explicit oneway variant so the choice is visible at the call site.
 Keep this proportionate — a small guard, not a framework.
 
-## Acceptance Criteria
+## Acceptance Criteria [7/7]
 
 - [x] live_cookies: passes, no `recv: Timeout` panic — cleanup now uses `send_raw_oneway`
 - [x] live_cookies_empty: passes, no `recv: Timeout` panic — cleanup now uses `send_raw_oneway`
