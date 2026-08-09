@@ -108,7 +108,7 @@ Fix the ones that mislead (truncation flags, `error_type` misclassification, sil
 fields); the cosmetic ones are optional if the iteration is running long — say which were
 deferred rather than ticking them.
 
-## Acceptance criteria
+## Acceptance Criteria
 
 - [ ] live_141_console_text_bounded: `console --level error --format text` on a page with a
       very long message stays bounded; no row padded to another row's width

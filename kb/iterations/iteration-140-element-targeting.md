@@ -99,7 +99,7 @@ a non-unique selector guarantees the discovery turn happens anyway — and per T
 `click "button"` will hit a hidden one. Generate selectors that are unique, or record the match
 index alongside.
 
-## Acceptance criteria
+## Acceptance Criteria
 
 - [ ] live_140_ref_click_resolves: `click --ref eN` after `dom` clicks the right element
 - [ ] live_140_ref_reusable: resolving the same ref twice in a row succeeds both times

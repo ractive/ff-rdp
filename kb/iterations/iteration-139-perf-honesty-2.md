@@ -81,7 +81,7 @@ Session-62 issue 2, still present: "Top 5 Slowest Resources" lines of 6709 and 7
 iter-128's `middle_ellipsis` was wired into `network` and `sources` but not here. Apply the
 existing helper; do not write a second one.
 
-## Acceptance criteria
+## Acceptance Criteria
 
 - [ ] live_139_cls_unavailable: on a real page, `cls` is null/`"unavailable"` with a note —
       never `0.0` rated `"good"`

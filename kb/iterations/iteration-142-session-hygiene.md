@@ -99,7 +99,7 @@ say why it can't — not return `undefined` silently.
   (`ff-rdp click "#bbccookies-prompt button, #cookiePrompt button, #cookiePrompt a"` — the third
   alternative is a policy link). Hints should prefer buttons over links.
 
-## Acceptance criteria
+## Acceptance Criteria
 
 - [ ] live_142_daemon_stop_no_false_error: `daemon stop` after `launch` exits 0 and reports the
       Firefox pid that `launch` returned

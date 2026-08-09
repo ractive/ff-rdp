@@ -76,7 +76,7 @@ the service is off will block for the full socket read timeout. Consider a short
 purpose-specific deadline on accessibility walker requests so a mistake costs
 milliseconds, not the default timeout.
 
-## Acceptance criteria
+## Acceptance Criteria
 
 - [ ] live_a11y_source_meta: `ff-rdp a11y` output carries a `meta.source` of
       `js-fallback` against a Firefox with the accessibility service off

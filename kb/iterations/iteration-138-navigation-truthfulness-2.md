@@ -102,7 +102,7 @@ both. Note the irony recorded in session-63: the network entries were the only p
 appeared (`303 → /verify_human`), revealing that the plain call's `committed_url` was itself
 untruthful — which Theme A fixes.
 
-## Acceptance criteria
+## Acceptance Criteria
 
 - [ ] live_138_navigate_reports_404: `navigate` to a known 404 reports status 404
 - [ ] live_138_navigate_reports_200: status 200 on a normal page (no false positives)
