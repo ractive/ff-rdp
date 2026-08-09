@@ -7,6 +7,7 @@ pub(crate) mod click;
 pub(crate) mod completions;
 pub(crate) mod computed;
 pub(crate) mod connect_tab;
+pub(crate) mod consent;
 pub(crate) mod console;
 pub(crate) mod cookies;
 pub(crate) mod doctor;

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::actor::actor_request;
 use crate::error::ProtocolError;
@@ -137,11 +137,42 @@ impl TabActor {
     }
 
     /// Call `getWatcher` on a tab descriptor to obtain the watcher actor ID.
+    ///
+    /// Equivalent to `get_watcher_with_options(transport, tab_actor, None)` —
+    /// sends `getWatcher` with no arguments, matching every call site's
+    /// behaviour prior to iter-129.
     pub fn get_watcher(
         transport: &mut RdpTransport,
         tab_actor: &ActorId,
     ) -> Result<ActorId, ProtocolError> {
-        let response = actor_request(transport, tab_actor.as_ref(), "getWatcher", None)?;
+        Self::get_watcher_with_options(transport, tab_actor, None)
+    }
+
+    /// Call `getWatcher` on a tab descriptor, optionally requesting
+    /// server-side target switching.
+    ///
+    /// `is_server_target_switching_enabled: Some(true)` sends
+    /// `{"isServerTargetSwitchingEnabled": true}` — a published `Option(0,
+    /// "boolean")` on `getWatcher`
+    /// (`devtools/shared/specs/descriptors/tab.js:24-28`). This is the flag
+    /// that gates frame-target delivery: without it, `watchTargets("frame")`
+    /// on the returned watcher yields **zero** `target-available-form`
+    /// events, even for the top-level target (see
+    /// `kb/research/frame-targets.md`). `None` omits the argument entirely
+    /// (server applies its default, matching pre-iter-129 behaviour).
+    ///
+    /// CAUTION: enabling this flag also changes *where* the top-level target
+    /// is delivered (via the watcher, not the descriptor's `getTarget`) — do
+    /// not flip this on the default target-acquisition path; use it only for
+    /// frame-aware callers (`enumerate_frame_targets`).
+    pub fn get_watcher_with_options(
+        transport: &mut RdpTransport,
+        tab_actor: &ActorId,
+        is_server_target_switching_enabled: Option<bool>,
+    ) -> Result<ActorId, ProtocolError> {
+        let params = is_server_target_switching_enabled
+            .map(|enabled| json!({ "isServerTargetSwitchingEnabled": enabled }));
+        let response = actor_request(transport, tab_actor.as_ref(), "getWatcher", params.as_ref())?;
 
         let watcher_actor = response
             .get("actor")
@@ -251,9 +282,89 @@ fn parse_target_response_inner(
 
 #[cfg(test)]
 mod tests {
+    use std::io::BufReader;
+    use std::net::{TcpListener, TcpStream};
+
     use serde_json::json;
 
     use super::*;
+
+    fn make_transport_pair() -> (RdpTransport, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        (RdpTransport::from_parts(reader, writer), server)
+    }
+
+    // ── get_watcher_with_options (iter-129 Theme A) ─────────────────────────
+
+    /// AC: `get_watcher_with_options_sends_flag` — `Some(true)` puts
+    /// `isServerTargetSwitchingEnabled: true` on the outbound `getWatcher`
+    /// packet.
+    #[test]
+    fn get_watcher_with_options_sends_flag() {
+        let (mut transport, server) = make_transport_pair();
+        let tab_actor = ActorId::from("server1.conn0.tabDescriptor1");
+
+        let t = std::thread::spawn(move || {
+            use std::io::Write as _;
+
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            let req = crate::transport::recv_from(&mut reader).unwrap();
+            assert_eq!(req["type"], "getWatcher");
+            assert_eq!(req["isServerTargetSwitchingEnabled"], true);
+
+            let reply = json!({
+                "from": "server1.conn0.tabDescriptor1",
+                "actor": "server1.conn0.watcher4"
+            });
+            let frame = crate::transport::encode_frame(&serde_json::to_string(&reply).unwrap());
+            let mut s = &server;
+            s.write_all(frame.as_bytes()).unwrap();
+        });
+
+        let actor =
+            TabActor::get_watcher_with_options(&mut transport, &tab_actor, Some(true)).unwrap();
+        assert_eq!(actor.as_ref(), "server1.conn0.watcher4");
+        t.join().unwrap();
+    }
+
+    /// AC: `get_watcher_omits_arg_when_none` — the plain `get_watcher`
+    /// wrapper (equivalent to `None`) sends no `isServerTargetSwitchingEnabled`
+    /// key at all, preserving pre-iter-129 wire behaviour for the 12+ existing
+    /// call sites.
+    #[test]
+    fn get_watcher_omits_arg_when_none() {
+        let (mut transport, server) = make_transport_pair();
+        let tab_actor = ActorId::from("server1.conn0.tabDescriptor1");
+
+        let t = std::thread::spawn(move || {
+            use std::io::Write as _;
+
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            let req = crate::transport::recv_from(&mut reader).unwrap();
+            assert_eq!(req["type"], "getWatcher");
+            assert!(
+                req.get("isServerTargetSwitchingEnabled").is_none(),
+                "unexpected key in packet: {req}"
+            );
+
+            let reply = json!({
+                "from": "server1.conn0.tabDescriptor1",
+                "actor": "server1.conn0.watcher4"
+            });
+            let frame = crate::transport::encode_frame(&serde_json::to_string(&reply).unwrap());
+            let mut s = &server;
+            s.write_all(frame.as_bytes()).unwrap();
+        });
+
+        let actor = TabActor::get_watcher(&mut transport, &tab_actor).unwrap();
+        assert_eq!(actor.as_ref(), "server1.conn0.watcher4");
+        t.join().unwrap();
+    }
 
     #[test]
     fn tab_info_deserializes_from_firefox_response() {

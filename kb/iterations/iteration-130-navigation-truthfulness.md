@@ -82,3 +82,29 @@ Bundles the remaining navigation-report gaps from [[dogfooding-session-61]] and
 Sibling plans from the same findings batch: [[iteration-128-network-hint-always-present]],
 [[iteration-129-consent-and-cross-origin-frames]], [[iteration-131-measurement-honesty]],
 [[iteration-132-cli-polish]].
+
+**Adapted post-iter-129 (2026-08-09):**
+- **`navigate --auto-consent` (new in iter-129) does NOT help comparis.ch.** It
+  only recognises Sourcepoint-family CMPs (`CMP_TABLE` in
+  `crates/ff-rdp-cli/src/commands/consent.rs`); comparis.ch's own consent
+  overlay is a different mechanism (a `cmp_noscreen` eval-based workaround,
+  not a frame-based CMP). This iteration's `dogfood_path` correctly
+  keeps `launch --headless --auto-consent` (Consent-O-Matic, unchanged per
+  DEC-023) rather than switching to `navigate --auto-consent` — do not
+  "upgrade" it to the new flag while implementing Theme A, it would not fire.
+- **Live-Firefox-only protocol bugs are a real, recurring risk for any change
+  that touches `RdpTransport`/`actor_request` timing** — iter-129 landed 3 such
+  bugs (documented in `kb/rdp/actors/watcher.md`'s iter-129 section and that
+  plan's Notes) that zero mock-based unit tests caught: (1) `actor_request`'s
+  reply loop (`recv_reply_from`) silently drops any "stray" packet delivered
+  before a call's own ACK unless a `swap_event_sink` collector is installed
+  around the call — relevant if Theme B's `back`/`forward`/`reload` envelope
+  work waits on navigation-completion events the same way `navigate` does; (2)
+  clearing a transport's read timeout to `None` instead of restoring its prior
+  value makes every subsequent `recv()` hang forever instead of erroring — if
+  any theme here temporarily narrows the read timeout for a poll loop (e.g.
+  Theme C's empty-buffer detection, if it polls), use the new
+  `RdpTransport::read_timeout()` (added in iter-129, `transport.rs`) to save
+  and restore the exact prior value rather than guessing. Budget live-Firefox
+  testing time accordingly — do not treat "unit tests are green" as a signal
+  this iteration's protocol-facing themes (A, B) are done.

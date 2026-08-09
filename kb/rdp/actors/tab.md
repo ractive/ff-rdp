@@ -29,6 +29,36 @@ tab's target for inspection, console access, and network monitoring.
 
 - `getTarget()` — returns the `WindowGlobalTargetActor` for this tab.
 - `getFavicon()` — returns the tab's favicon data URL.
+- `getWatcher({ isServerTargetSwitchingEnabled?, isPopupDebuggingEnabled? })` —
+  returns the tab's `WatcherActor`. Both options are `Option(0, "boolean")`
+  per `devtools/shared/specs/descriptors/tab.js:24-28`.
+
+## `getWatcher` and `isServerTargetSwitchingEnabled` (iter-129)
+
+`TabActor::get_watcher` (`crates/ff-rdp-core/src/actors/tab.rs`) sends
+`getWatcher` with no arguments — matches every pre-iter-129 call site and
+Firefox's default (server-side target switching **disabled**). In that mode
+`watchTargets("frame")` on the returned watcher yields **zero**
+`target-available-form` events — not even for the top-level target, which is
+instead delivered by the descriptor's own `getTarget`.
+
+`TabActor::get_watcher_with_options(transport, tab_actor,
+is_server_target_switching_enabled: Option<bool>)` is the opt-in variant:
+`Some(true)` sends `{"isServerTargetSwitchingEnabled": true}`, which flips the
+watcher into spawning a `target-available-form` for **every** window-global
+target — top level and every iframe, same-origin or cross-origin/out-of-process
+(Fission), uniformly. This is the mechanism [[enumerate_frame_targets]] (see
+[[watcher#TargetEvent-extra-actor-fields-iter-129|watcher.md]]) is built on,
+and in turn what `click`'s frame-scan fallback and `ff-rdp consent accept`
+use to reach cross-origin CMP iframes. Empirically verified against live
+Firefox 152/153 in [[frame-targets]] (2026-07-20 research spike).
+
+**CAUTION** — enabling the flag also changes *where* the top-level target is
+delivered (via the watcher, not `getTarget`), which the rest of ff-rdp does
+not expect. `get_watcher_with_options(Some(true))` is therefore used only by
+frame-aware call sites (`enumerate_frame_targets` and its consumers); the
+default target-acquisition path (`get_watcher()` / `get_target()`) is
+untouched.
 
 ## `getTarget` frame → `TargetInfo`
 

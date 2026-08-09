@@ -216,6 +216,27 @@ pub struct TargetEvent {
     pub target_type: String,
     /// Whether this is a top-level target.
     pub is_top_level: bool,
+    /// This target's own WebConsole actor ID (iter-129).
+    ///
+    /// Every window-global target form carries its own `consoleActor` —
+    /// present for the top-level target and every frame/iframe target alike
+    /// (same-origin or cross-origin, in-process or out-of-process). Evaluating
+    /// JS against this actor runs it inside that specific frame's global,
+    /// which is how `click`'s frame-scan fallback reaches CMP iframes. See
+    /// `kb/research/frame-targets.md`.
+    pub console_actor: Option<ActorId>,
+    /// This target's own inspector actor ID (iter-129).
+    ///
+    /// Not used by the eval-based click path (kept for parity/future use —
+    /// see the frame-targets research doc's walker-vs-eval tradeoff).
+    pub inspector_actor: Option<ActorId>,
+    /// The target's browsing context ID (iter-129).
+    pub browsing_context_id: Option<u64>,
+    /// The OS process ID hosting this target (iter-129).
+    ///
+    /// Differs from the top-level target's `processID` for out-of-process
+    /// (Fission) cross-origin frames; matches it for in-process frames.
+    pub process_id: Option<u64>,
 }
 
 /// Parse a `target-available-form` or `target-destroyed-form` message into a [`TargetEvent`].
@@ -246,6 +267,16 @@ pub fn parse_target_event(msg: &Value) -> Option<TargetEvent> {
         .get("isTopLevelTarget")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let console_actor = target
+        .get("consoleActor")
+        .and_then(Value::as_str)
+        .and_then(ActorId::try_new);
+    let inspector_actor = target
+        .get("inspectorActor")
+        .and_then(Value::as_str)
+        .and_then(ActorId::try_new);
+    let browsing_context_id = target.get("browsingContextID").and_then(Value::as_u64);
+    let process_id = target.get("processID").and_then(Value::as_u64);
 
     Some(TargetEvent {
         actor: actor_id,
@@ -253,7 +284,167 @@ pub fn parse_target_event(msg: &Value) -> Option<TargetEvent> {
         title,
         target_type,
         is_top_level,
+        console_actor,
+        inspector_actor,
+        browsing_context_id,
+        process_id,
     })
+}
+
+// ---------------------------------------------------------------------------
+// enumerate_frame_targets (iter-129 Theme A)
+// ---------------------------------------------------------------------------
+
+/// Default settle window for [`enumerate_frame_targets`].
+///
+/// Long enough for Firefox to spawn and form() every window-global target on
+/// a normal page (verified against theguardian.com's Sourcepoint CMP frame in
+/// the frame-targets research spike), short enough to keep `click`'s
+/// frame-scan fallback and the consent flow responsive.
+pub const DEFAULT_FRAME_TARGETS_SETTLE: std::time::Duration = std::time::Duration::from_millis(800);
+
+/// Enumerate every window-global target (top + all iframes, same-origin AND
+/// cross-origin/out-of-process, uniformly) for the tab owning `watcher_actor`.
+///
+/// Callers **must** have obtained `watcher_actor` via
+/// [`crate::actors::tab::TabActor::get_watcher_with_options`] with
+/// `is_server_target_switching_enabled: Some(true)` — without that flag the
+/// watcher delivers zero `target-available-form` events (see
+/// `kb/research/frame-targets.md`). This is therefore an **opt-in** helper:
+/// it does not change the default (non-frame-aware) target-acquisition path
+/// used by every other command.
+///
+/// Mechanics: issues `watchTargets("frame")` **and** `watchResources(...)` —
+/// the target-event stream stays dark until both are sent, a Firefox quirk
+/// already documented at `commands/navigate.rs:864-872` — then drains the
+/// transport for `settle` (deduping `target-available-form` by actor id and
+/// applying `target-destroyed-form` removals) and returns the collected
+/// snapshot. Non-target packets (resource events, unrelated replies) are
+/// silently ignored.
+///
+/// **Deliberately does NOT call `unwatchTargets`/`unwatchResources` before
+/// returning.** The whole point of this function is to hand back each
+/// target's `console_actor` so the caller can evaluate JS inside that frame
+/// — but with `isServerTargetSwitchingEnabled: true`, unwatching "frame"
+/// tears down **every** target Firefox spawned under that switching regime
+/// (top level included), destroying their console/inspector actors with
+/// them. Confirmed live against Firefox 153: an `unwatchTargets` call
+/// immediately followed by `evaluateJSAsync` on a just-returned frame's
+/// `console_actor` produced `target-destroyed-form` for both targets and the
+/// eval never got a reply. The subscription is left active for the lifetime
+/// of the connection — harmless (each direct/no-daemon CLI connection is
+/// short-lived; daemon connections tolerate a standing "frame" subscription
+/// the same way `navigate`'s own prelude does), and calling `watchTargets`
+/// again on a type already being watched is safe (existing targets are
+/// simply re-delivered, which the actor-id dedup here already tolerates).
+///
+/// Returns the targets in first-seen order. A single-target result (the top
+/// level only) means no frames were found — not an error.
+pub fn enumerate_frame_targets(
+    transport: &mut RdpTransport,
+    watcher_actor: &ActorId,
+    settle: std::time::Duration,
+) -> RdpResult<Vec<TargetEvent>> {
+    use std::time::Instant;
+
+    let mut targets: Vec<TargetEvent> = Vec::new();
+
+    // iter-129: install a temporary collector sink around BOTH watchTargets
+    // and watchResources. Firefox can deliver target-available-form (and
+    // resource) events before either call's own ACK arrives, and
+    // `actor_request`'s reply loop (`recv_reply_from`) routes any such
+    // "stray" packet to the transport's event sink rather than returning it —
+    // with no sink installed, the event is silently dropped before this
+    // function's post-subscribe drain loop ever runs. This is the same class
+    // of race iter-121 fixed for `StorageActor::list_cookies`
+    // (`crates/ff-rdp-core/src/actors/storage.rs`); empirically confirmed
+    // here too (`enumerate_frame_targets` returned 0 targets — not even the
+    // top-level one — against live Firefox 153 until this sink was added).
+    // Restoring `prev_sink` afterwards means a daemon-installed sink is never
+    // clobbered.
+    let (event_tx, event_rx) = std::sync::mpsc::channel::<Value>();
+    let prev_sink = transport.swap_event_sink(Some(event_tx));
+
+    let subscribe_result = (|| -> Result<(), ProtocolError> {
+        WatcherActor::watch_targets(transport, watcher_actor, "frame")?;
+        // "document-event" is a lightweight resource type already used to kick
+        // the watcher's event stream alive elsewhere (see navigate.rs); its
+        // payload is irrelevant here — only its side effect of unblocking
+        // target-available-form delivery matters.
+        WatcherActor::watch_resources(transport, watcher_actor, &["document-event"])?;
+        Ok(())
+    })();
+
+    transport.swap_event_sink(prev_sink);
+    subscribe_result?;
+
+    // Apply any target events captured by the temporary sink while awaiting
+    // the two ACKs above, in delivery order.
+    for packet in event_rx.try_iter() {
+        apply_target_event_packet(&mut targets, &packet);
+    }
+
+    // Save the connection's actual prior read timeout so it can be restored
+    // exactly — clearing it to `None` instead (the pre-fix behaviour) makes
+    // every subsequent `recv()` on this transport block forever rather than
+    // erroring once the caller's own configured timeout would have fired.
+    // Confirmed live: an `evaluateJSAsync` call issued right after this
+    // function returned hung indefinitely against Firefox 153 until this was
+    // fixed (see `RdpTransport::read_timeout`'s doc comment).
+    let original_timeout = transport.read_timeout().ok().flatten();
+    let poll = std::time::Duration::from_millis(50);
+    let deadline = Instant::now() + settle;
+    let timeout_narrowed = transport.set_read_timeout(Some(poll)).is_ok();
+
+    let drain_result = (|| -> RdpResult<()> {
+        loop {
+            if Instant::now() >= deadline {
+                return Ok(());
+            }
+            match transport.recv() {
+                Ok(packet) => apply_target_event_packet(&mut targets, &packet),
+                Err(ProtocolError::Timeout) => {
+                    // Per-read timeout — keep polling until the settle deadline.
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    })();
+
+    // Restore the connection's original read timeout regardless of drain
+    // outcome — the caller should still get whatever targets were collected
+    // before an error. NOTE: no `unwatchTargets`/`unwatchResources` here by
+    // design; see the doc comment above.
+    if timeout_narrowed {
+        let _ = transport.set_read_timeout(original_timeout);
+    }
+
+    drain_result?;
+    Ok(targets)
+}
+
+/// Apply one raw packet to `targets`: adds/replaces on
+/// `target-available-form`, removes on `target-destroyed-form`, ignores
+/// everything else (resource events, unrelated replies). Shared by
+/// [`enumerate_frame_targets`]'s early-sink drain and its post-subscribe
+/// `recv()` loop so both paths dedupe/apply removals identically.
+fn apply_target_event_packet(targets: &mut Vec<TargetEvent>, packet: &Value) {
+    let Some(event) = WatcherEvent::from_packet(packet) else {
+        return;
+    };
+    match event {
+        WatcherEvent::TargetAvailable { target } => {
+            if let Some(existing) = targets.iter_mut().find(|t| t.actor == target.actor) {
+                *existing = target;
+            } else {
+                targets.push(target);
+            }
+        }
+        WatcherEvent::TargetDestroyed { target, .. } => {
+            targets.retain(|t| t.actor != target.actor);
+        }
+        WatcherEvent::Other { .. } => {}
+    }
 }
 
 /// A network event resource from a `resources-available-array` message.
@@ -963,6 +1154,16 @@ mod tests {
         (RdpTransport::from_parts(reader, writer), server)
     }
 
+    /// Push a raw packet from the mock server side (used for unsolicited
+    /// events like `target-available-form`, not just request replies).
+    #[allow(clippy::needless_pass_by_value)]
+    fn send_packet(server: &TcpStream, msg: Value) {
+        use std::io::Write as _;
+        let frame = crate::transport::encode_frame(&serde_json::to_string(&msg).unwrap());
+        let mut s = server;
+        s.write_all(frame.as_bytes()).unwrap();
+    }
+
     /// AC: `unwatch_targets_options_serialized` — `options` arg appears in
     /// the outbound packet next to `targetType`.
     #[test]
@@ -1108,6 +1309,46 @@ mod tests {
         assert_eq!(event.title.as_deref(), Some("Example Domain"));
         assert_eq!(event.target_type, "frame");
         assert!(event.is_top_level);
+        // iter-129: no extra-actor fields on this fixture — all None.
+        assert!(event.console_actor.is_none());
+        assert!(event.inspector_actor.is_none());
+        assert!(event.browsing_context_id.is_none());
+        assert!(event.process_id.is_none());
+    }
+
+    /// AC: `live_129_frame_targets_enumerated` (parse half) — a
+    /// cross-origin frame target form carries `consoleActor`,
+    /// `browsingContextID`, and `processID` distinct from a synthetic top
+    /// target, matching the real wire shape captured in
+    /// `kb/research/frame-targets.md`.
+    #[test]
+    fn parse_target_event_extracts_extra_actor_fields() {
+        let msg = json!({
+            "type": "target-available-form",
+            "target": {
+                "actor": "server1.conn4.watcher3.process7//windowGlobalTarget2",
+                "targetType": "frame",
+                "browsingContextID": 8589934593_u64,
+                "processID": 71328,
+                "isTopLevelTarget": false,
+                "title": "Example Domain",
+                "url": "https://example.com/",
+                "consoleActor": "server1.conn4.watcher3.process7//consoleActor3",
+                "inspectorActor": "server1.conn4.watcher3.process7//inspectorActor4"
+            }
+        });
+
+        let event = parse_target_event(&msg).expect("should parse");
+        assert_eq!(
+            event.console_actor.as_ref().map(ActorId::as_ref),
+            Some("server1.conn4.watcher3.process7//consoleActor3")
+        );
+        assert_eq!(
+            event.inspector_actor.as_ref().map(ActorId::as_ref),
+            Some("server1.conn4.watcher3.process7//inspectorActor4")
+        );
+        assert_eq!(event.browsing_context_id, Some(8589934593));
+        assert_eq!(event.process_id, Some(71328));
     }
 
     #[test]
@@ -1684,5 +1925,121 @@ mod tests {
         let resources = parse_console_resources(&event);
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].level, "log");
+    }
+
+    // ── enumerate_frame_targets (iter-129 Theme A) ──────────────────────────
+
+    /// AC: `enumerate_frame_targets_dedupes_and_applies_destroyed` — collects
+    /// `target-available-form` events into a deduped-by-actor snapshot and
+    /// removes a target that a later `target-destroyed-form` names, mirroring
+    /// the real watcher lifecycle (see `kb/research/frame-targets.md`).
+    #[test]
+    fn enumerate_frame_targets_dedupes_and_applies_destroyed() {
+        let (mut transport, server) = make_unwatch_pair();
+        let watcher = ActorId::from("server1.conn0.watcher4");
+
+        let t = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+
+            let req = crate::transport::recv_from(&mut reader).unwrap();
+            assert_eq!(req["type"], "watchTargets");
+            assert_eq!(req["targetType"], "frame");
+            send_packet(&server, json!({"from": "server1.conn0.watcher4"}));
+
+            let req = crate::transport::recv_from(&mut reader).unwrap();
+            assert_eq!(req["type"], "watchResources");
+            send_packet(&server, json!({"from": "server1.conn0.watcher4"}));
+
+            // Top-level target + a cross-origin frame target.
+            send_packet(
+                &server,
+                json!({
+                    "type": "target-available-form",
+                    "target": {"actor": "t1", "url": "data:text/html,<h1>top</h1>", "isTopLevelTarget": true}
+                }),
+            );
+            send_packet(
+                &server,
+                json!({
+                    "type": "target-available-form",
+                    "target": {"actor": "t2", "url": "https://example.com/", "isTopLevelTarget": false}
+                }),
+            );
+            // t2 is destroyed before the settle window closes — must not
+            // appear in the final snapshot.
+            send_packet(
+                &server,
+                json!({
+                    "type": "target-destroyed-form",
+                    "target": {"actor": "t2", "url": "https://example.com/"}
+                }),
+            );
+
+            // No unwatchTargets/unwatchResources teardown — enumerate_frame_targets
+            // deliberately leaves the subscription active (see its doc comment:
+            // unwatching under isServerTargetSwitchingEnabled destroys every
+            // returned target's console actor). Keep the socket open past the
+            // settle window instead of letting `server`'s drop close it out
+            // from under the client's still-polling `recv()` loop.
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        });
+
+        let targets = enumerate_frame_targets(
+            &mut transport,
+            &watcher,
+            std::time::Duration::from_millis(300),
+        )
+        .expect("enumerate_frame_targets should succeed");
+
+        assert_eq!(targets.len(), 1, "t2 must be removed by its destroyed-form");
+        assert_eq!(targets[0].actor.as_ref(), "t1");
+        t.join().unwrap();
+    }
+
+    /// AC: `live_129_frame_targets_enumerated` (dedupe half) — a repeated
+    /// `target-available-form` for the same actor replaces, not duplicates,
+    /// the existing entry.
+    #[test]
+    fn enumerate_frame_targets_dedupes_repeated_available_form() {
+        let (mut transport, server) = make_unwatch_pair();
+        let watcher = ActorId::from("server1.conn0.watcher4");
+
+        let t = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            let _ = crate::transport::recv_from(&mut reader).unwrap(); // watchTargets
+            send_packet(&server, json!({"from": "server1.conn0.watcher4"}));
+            let _ = crate::transport::recv_from(&mut reader).unwrap(); // watchResources
+            send_packet(&server, json!({"from": "server1.conn0.watcher4"}));
+
+            send_packet(
+                &server,
+                json!({
+                    "type": "target-available-form",
+                    "target": {"actor": "t1", "url": "https://example.com/", "title": "old", "isTopLevelTarget": true}
+                }),
+            );
+            // Same actor, updated title — must replace, not append.
+            send_packet(
+                &server,
+                json!({
+                    "type": "target-available-form",
+                    "target": {"actor": "t1", "url": "https://example.com/", "title": "new", "isTopLevelTarget": true}
+                }),
+            );
+            // No unwatch teardown — see the sibling test's comment. Keep the
+            // socket open past the settle window (see the same comment).
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        });
+
+        let targets = enumerate_frame_targets(
+            &mut transport,
+            &watcher,
+            std::time::Duration::from_millis(300),
+        )
+        .expect("enumerate_frame_targets should succeed");
+
+        assert_eq!(targets.len(), 1, "repeated actor must not duplicate");
+        assert_eq!(targets[0].title.as_deref(), Some("new"));
+        t.join().unwrap();
     }
 }

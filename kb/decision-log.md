@@ -312,3 +312,21 @@ Diffs `tools/ralph-loop/scripts/` against `~/.claude/skills/ralph-loop/scripts/`
 **Revisit condition**: If sweep wall-clock becomes a real cost, the cure is making the global-operation tests parallel-safe — scope daemon kills and profile prunes to the test's own instances (PID- or profile-tagged) — after which the `--test-threads=1` can come back out. File that as its own iteration; do not simply remove the flag.
 
 **Applies to**: `.cargo/config.toml`, `.github/workflows/live.yml` (unchanged, already conformant), `crates/ff-rdp-cli/tests/live/live_bulk_cap.rs`, iter-114.
+
+## DEC-023: `navigate --auto-consent` is a new, separate flag — `launch --auto-consent`'s Consent-O-Matic install is unchanged
+
+**Decision** (iter-129, Theme C): Native CMP detection/acceptance is wired up as a **new** `--auto-consent` flag on `navigate` (mutually exclusive with `--with-network`) plus the explicit `ff-rdp consent accept` command. `launch --auto-consent` keeps its pre-129 behaviour verbatim — it still only installs the Consent-O-Matic extension into the profile before Firefox starts.
+
+**Why**: The plan text ("wired into `--auto-consent` post-navigate") is compatible with two readings: extend the existing `launch`-only flag so it retroactively changes `navigate`'s behaviour with no new flag on `navigate` itself, or add the same flag name to `navigate` where the actual post-navigate action happens. The first reading requires either persisting state across separate process invocations (no such mechanism exists in ff-rdp's stateless-CLI model outside the daemon) or making the daemon carry a launch-time flag — a materially bigger, cross-process design not scoped by this plan's themes. The second reading is additive, keeps `launch --auto-consent` meaningful on its own (Consent-O-Matic still helps on non-headless / non-Sourcepoint sites), and directly matches how every other post-navigate opt-in in ff-rdp already works (`--with-network`, `--wait-text`, `--wait-for`). Chosen for scope discipline, per the plan's own "cut ballooning work into a deferred plan" guidance rather than force-fitting a cross-process flag design into this PR.
+
+**Consequence**: The plan's `dogfood_path` frontmatter (`ff-rdp launch --headless --auto-consent` then bare `ff-rdp navigate ...`) does not exercise native consent handling as originally sketched — the working dogfood command is `ff-rdp navigate https://www.theguardian.com --auto-consent`. Updated in the iteration-129 plan file directly rather than left silently stale.
+
+**Applies to**: `crates/ff-rdp-cli/src/cli/args.rs` (`NavigateArgs::auto_consent`), `crates/ff-rdp-cli/src/commands/{navigate,consent}.rs`, `kb/iterations/iteration-129-consent-and-cross-origin-frames.md`, iter-129.
+
+## DEC-024: `click --frame` / frame-scan zero-match error names URLs, not node counts
+
+**Decision** (iter-129, Theme B): When a selector matches nowhere — neither the top document nor any scanned frame — `click` fails with `"selector '<sel>' matched in 0 of N frames (top + N-1 subframes: <url1>, <url2>, …)"` rather than the pre-129 bare "element not found" / 10s timeout. The frame-scan only triggers when the top-level eval's thrown error contains the literal marker `"Element not found:"` (`ELEMENT_NOT_FOUND_MARKER` in `click.rs`) — any other JS exception (a genuine runtime error) propagates immediately and does not pay for a scan that cannot help.
+
+**Why**: The frame-targets research (`kb/research/frame-targets.md`) confirmed the failure mode this replaces: on theguardian.com, `click "button:has-text('Accept all')"`-equivalent selectors timed out after 10s with no indication the target lived inside a cross-origin Sourcepoint iframe invisible to the top-level `querySelector`. Naming the frame URLs tried turns an opaque timeout into an actionable diagnostic (`click --frame sourcepoint ...` is the documented next step). Matching on the error-message marker rather than a distinct error type keeps the fast top-level path unchanged (`build_click_js` already throws that exact string) — no new eval-side error protocol was needed.
+
+**Applies to**: `crates/ff-rdp-cli/src/commands/click.rs`, iter-129.

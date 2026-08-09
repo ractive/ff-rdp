@@ -1,10 +1,10 @@
 use crate::cli::args::{
-    A11yArgs, A11yCommand, CascadeArgs, Cli, ClickArgs, Command, ComputedArgs, ConsoleArgs,
-    CookiesArgs, DaemonCommand, DomArgs, DomCommand, EmulateArgs, EvalArgs, GeometryArgs,
-    IndexArgs, InspectArgs, LaunchArgs, NavigateArgs, NetworkArgs, PerfArgs, PerfCommand,
-    ProfilesCommand, RecordCommand, ReloadArgs, ResponsiveArgs, RunArgs, ScreenshotArgs,
-    ScrollCommand, SnapshotArgs, SourcesArgs, StorageArgs, StylesArgs, ThrottleArgs, TypeArgs,
-    WaitArgs,
+    A11yArgs, A11yCommand, CascadeArgs, Cli, ClickArgs, Command, ComputedArgs, ConsentCommand,
+    ConsoleArgs, CookiesArgs, DaemonCommand, DomArgs, DomCommand, EmulateArgs, EvalArgs,
+    GeometryArgs, IndexArgs, InspectArgs, LaunchArgs, NavigateArgs, NetworkArgs, PerfArgs,
+    PerfCommand, ProfilesCommand, RecordCommand, ReloadArgs, ResponsiveArgs, RunArgs,
+    ScreenshotArgs, ScrollCommand, SnapshotArgs, SourcesArgs, StorageArgs, StylesArgs,
+    ThrottleArgs, TypeArgs, WaitArgs,
 };
 use crate::commands;
 use crate::commands::index::IndexOpts;
@@ -347,6 +347,7 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         | Command::InstallSkill(_)
         | Command::Profiles { .. }
         | Command::Index(IndexArgs { .. })
+        | Command::Consent { .. }
         | Command::Completions { .. } => None,
     }
 }
@@ -420,6 +421,7 @@ fn dispatch_inner(
             wait_for,
             wait,
             wait_strategy,
+            auto_consent,
         }) => {
             let wait_opts = commands::navigate::WaitAfterNav {
                 wait_text: wait_text.as_deref(),
@@ -433,7 +435,7 @@ fn dispatch_inner(
             if *with_network {
                 commands::navigate::run_with_network(cli, url, &wait_opts, *network_timeout)
             } else {
-                commands::navigate::run(cli, url, &wait_opts)
+                commands::navigate::run(cli, url, &wait_opts, *auto_consent)
             }
         }
         Command::Eval(EvalArgs {
@@ -608,6 +610,7 @@ fn dispatch_inner(
             wait_for,
             wait_for_timeout,
             settle,
+            frame,
         }) => {
             let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
@@ -630,6 +633,7 @@ fn dispatch_inner(
                     wait_for,
                     wait_for_timeout_ms: *wait_for_timeout,
                     settle: *settle,
+                    frame: frame.as_deref(),
                     ..Default::default()
                 },
             )
@@ -1116,6 +1120,9 @@ fn dispatch_inner(
             };
             commands::index::run(cli, &opts)
         }
+        Command::Consent { consent_command } => match consent_command {
+            ConsentCommand::Accept => commands::consent::run(cli),
+        },
         Command::Completions { shell } => commands::completions::run(*shell),
     }
 }

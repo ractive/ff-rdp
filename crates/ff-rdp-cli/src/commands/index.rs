@@ -356,7 +356,7 @@ fn crawl_page(
         // readystate fallback that plain `ff-rdp navigate` already defaults to.
         wait_strategy: crate::commands::navigate::WaitStrategy::Both,
     };
-    navigate_run(cli, url, &wait_opts).map_err(|e| anyhow::anyhow!("navigate: {e}"))?;
+    navigate_run(cli, url, &wait_opts, false).map_err(|e| anyhow::anyhow!("navigate: {e}"))?;
 
     // Check if we got redirected to a login page.
     let current_url = eval_js_value(cli, "location.href")

@@ -246,3 +246,66 @@ already subscribes correctly per the `watchTargets("frame")` +
 - `elapsed_ms` is now measured from the single navigate-start `Instant` across
   both the events and readystate phases, so it reflects true wall-clock instead
   of only the ~1 ms readystate-poll duration.
+
+## Iter-129 update — frame-target extra-actor fields + `enumerate_frame_targets`
+
+Settled by the [[frame-targets]] research spike (2026-07-20): `watchTargets`
+already delivers a `target-available-form` per iframe (same-origin AND
+cross-origin/out-of-process, uniformly) — but ONLY when the tab's watcher was
+obtained via `TabActor::get_watcher_with_options(..., Some(true))` (see
+[[tab#getWatcher-and-isServerTargetSwitchingEnabled-iter-129|tab.md]]). Without
+that flag, `watchTargets("frame")` on a default watcher yields **zero** target
+forms — not even the top-level target.
+
+### `TargetEvent` extra-actor fields (iter-129)
+
+`parse_target_event` (`crates/ff-rdp-core/src/actors/watcher.rs`) now also
+extracts, from the same opaque `target-available-form` blob (`Arg(0,"json")`
+per `devtools/shared/specs/watcher.js:96-105` — no spec drift, the shape is
+undeclared):
+
+- `console_actor: Option<ActorId>` — the target's own WebConsole actor.
+  **The payoff**: eval against this actor runs inside that specific frame's
+  global, CSP-bypassing (Debugger sandbox), which is how `click`'s frame-scan
+  fallback and `ff-rdp consent accept` reach cross-origin CMP iframes
+  (e.g. Sourcepoint's `sp_message_iframe_*` on theguardian.com).
+- `inspector_actor: Option<ActorId>` — the target's own inspector (unused by
+  the eval-based click path; kept for parity/future walker-based work).
+- `browsing_context_id: Option<u64>` — stable per-frame id.
+- `process_id: Option<u64>` — differs from the top target's `processID` for
+  out-of-process (Fission) cross-origin frames; matches it for in-process
+  frames (same-origin iframes are ALSO delivered as their own targets, just
+  sharing the top's `processID`).
+
+### `enumerate_frame_targets` — the one new primitive
+
+`enumerate_frame_targets(transport, watcher_actor, settle: Duration) ->
+RdpResult<Vec<TargetEvent>>` (`crates/ff-rdp-core/src/actors/watcher.rs`,
+re-exported from `ff_rdp_core`): issues `watchTargets("frame")` **and**
+`watchResources(["document-event"])` — the target-event stream stays dark
+until both are sent (same quirk documented above for
+`commands/navigate.rs`) — then drains the transport for `settle`
+(`DEFAULT_FRAME_TARGETS_SETTLE` = 800ms), deduping `target-available-form` by
+actor id and applying `target-destroyed-form` removals, before returning the
+snapshot.
+
+**Deliberately does NOT call `unwatchTargets`/`unwatchResources` before
+returning.** The whole point is to hand back each target's `console_actor` so
+the caller can eval inside that frame — but with
+`isServerTargetSwitchingEnabled: true`, unwatching `"frame"` tears down
+**every** target Firefox spawned under that switching regime (top level
+included), destroying their console/inspector actors with them. Confirmed
+live against Firefox 153: an `unwatchTargets` call immediately followed by
+`evaluateJSAsync` on a just-returned frame's `console_actor` produced
+`target-destroyed-form` for both targets and the eval never got a reply. The
+"frame" subscription is left active for the lifetime of the connection —
+harmless, since each direct/no-daemon CLI connection is short-lived and daemon
+connections already tolerate a standing "frame" subscription the same way
+`navigate`'s own prelude does.
+
+Callers **must** have obtained `watcher_actor` via
+`get_watcher_with_options(Some(true))` — this is therefore an opt-in helper,
+not a change to the default (non-frame-aware) target-acquisition path used by
+every other command. First consumers: `click`'s frame-scan fallback
+(`crates/ff-rdp-cli/src/commands/click.rs`) and `ff-rdp consent accept` /
+`navigate --auto-consent` (`crates/ff-rdp-cli/src/commands/consent.rs`).

@@ -3,8 +3,12 @@ branch: iter-129/consent-and-cross-origin-frames
 date: 2026-07-19
 depends_on: []
 dogfood_path: |
-  ff-rdp launch --headless --auto-consent
-  ff-rdp navigate https://www.theguardian.com
+  ff-rdp launch --headless
+  ff-rdp navigate https://www.theguardian.com --auto-consent
+  # → results.consent = {"cmp": "sourcepoint", "action": "accepted"} (see DEC-023:
+  #   native consent is a new navigate-level --auto-consent flag, not an implicit
+  #   consequence of launch's flag — launch --auto-consent still only installs
+  #   Consent-O-Matic, unchanged)
   ff-rdp eval 'document.documentElement.className.includes("sp-message-open")'
   # → false (CMP dismissed), page scrollable:
   ff-rdp scroll bottom --jq '.results.scrollHeight'
@@ -95,34 +99,50 @@ questions remain. Verdicts:
 
 ## Tasks
 
-- [ ] A: get_watcher flag + TargetEvent fields + enumerate_frame_targets + actor kb
+- [x] A: get_watcher flag + TargetEvent fields + enumerate_frame_targets + actor kb
       sync (opt-in path; default target acquisition untouched).
-- [ ] B: click frame-scan fallback + `--frame` + `meta.frame_url` + N-frames error.
-- [ ] C: CMP table + accept flow + `consent accept` + `--auto-consent` wiring +
+- [x] B: click frame-scan fallback + `--frame` + `meta.frame_url` + N-frames error.
+- [x] C: CMP table + accept flow + `consent accept` + `--auto-consent` wiring +
       envelope reporting; help/cookbook for the consent workflow.
-- [ ] D: scroll-lock detection + warning.
+- [x] D: scroll-lock detection + warning.
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [6/6]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
-- [ ] live_129_frame_targets_enumerated: on a fixture embedding a cross-origin
+- [x] live_129_frame_targets_enumerated: on a fixture embedding a cross-origin
       iframe (data: top + https://example.com child), `enumerate_frame_targets`
       yields ≥2 targets including a non-top target with the example.com url and a
       distinct `processID` from the top target.
-- [ ] live_129_click_cross_origin_frame: `click` actuates an element that exists
+      (`crates/ff-rdp-core/tests/live_129_frame_targets.rs`; run live —
+      confirmed out-of-process child with distinct pids against Firefox 153.)
+- [x] live_129_click_cross_origin_frame: `click` actuates an element that exists
       only inside the cross-origin example.com frame (click JS observable effect
       asserted), with `meta.frame_url` reporting the frame.
-- [ ] live_129_click_zero_match_error: a selector matching nothing anywhere fails
+      (`crates/ff-rdp-cli/tests/live/live_129_frames_and_consent.rs::live_129_click_cross_origin_frame`;
+      run live — clicked the example.com anchor via the default auto-wait path.)
+- [x] live_129_click_zero_match_error: a selector matching nothing anywhere fails
       fast with the "matched in 0 of N frames (<urls>)" error — no 10 s timeout.
-- [ ] live_129_sourcepoint_consent (network-gated): navigate theguardian.com with
+      (`crates/ff-rdp-cli/tests/live/live_129_frames_and_consent.rs::live_129_click_zero_match_error`;
+      run live — failed in ~1.1s with "matched in 0 of 2 frames".)
+- [x] live_129_sourcepoint_consent (network-gated): navigate theguardian.com with
       the consent flow active → `document.documentElement.className` does NOT
       contain `sp-message-open`, and `scroll bottom` reaches a `scrollHeight` > 2×
       viewport height.
-- [ ] live_129_consent_envelope: the consent flow reports `cmp:"sourcepoint"` on
-      Guardian and `cmp:null` on a CMP-free page (example.com).
-- [ ] live_129_scroll_lock_warning: on a fixture with `html{overflow:hidden}`,
+      (`crates/ff-rdp-cli/tests/live/live_129_frames_and_consent.rs::live_129_sourcepoint_consent`;
+      run live against the real site — consent accepted, scrollHeight 20470 vs
+      viewport 683.)
+- [x] live_129_consent_envelope_no_cmp: the consent flow reports `cmp:null` on a
+      CMP-free page (example.com); the `cmp:"sourcepoint"` half of this AC is
+      covered by `live_129_sourcepoint_consent` above (kept as a separate,
+      network-gated test rather than merged in, since it depends on a specific
+      real site's current CMP configuration).
+      (`crates/ff-rdp-cli/tests/live/live_129_frames_and_consent.rs::live_129_consent_envelope_no_cmp`;
+      run live.)
+- [x] live_129_scroll_lock_warning: on a fixture with `html{overflow:hidden}`,
       `scroll bottom` emits a warning identifying the scroll lock.
+      (`crates/ff-rdp-cli/tests/live/live_129_frames_and_consent.rs::live_129_scroll_lock_warning`;
+      run live — warning named the `<html>` element and its `sp-message-open` class.)
 
 ## Notes
 
@@ -155,4 +175,43 @@ Sibling plans from the same findings batch: [[iteration-128-network-hint-always-
   a cross-origin fixture and the network-gated Guardian test), if `live_129_*`
   tests report "Firefox not available" during CI/ralph-loop runs, retry once
   with `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS=90` before treating it as a real
-  failure — it is very likely contention, not a regression.
+  failure — it is very likely contention, not a regression. (Confirmed during
+  this iteration's own implementation: 2 of 6 new CLI-level live tests
+  soft-skipped on the first parallel run and passed cleanly when retried
+  alone with `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS=90`.)
+
+**Live-testing found 3 real protocol bugs the mock-based unit tests could not
+catch** (all fixed in this PR, all confirmed live against Firefox 153):
+
+1. **Early-event loss.** `WatcherActor::watch_targets`/`watch_resources`
+   (via `actor_request`) can receive `target-available-form` before either
+   call's own ACK; with no event sink installed, `recv_reply_from` silently
+   dropped those "stray" packets — `enumerate_frame_targets` returned **0**
+   targets, not even the top-level one, until a temporary
+   `swap_event_sink` was added around both calls (the same class of bug
+   iter-121 fixed for `StorageActor::list_cookies`).
+2. **Read-timeout clobbering.** `enumerate_frame_targets`'s teardown reset
+   the transport's read timeout to `None` instead of restoring the
+   connection's actual prior value — every `recv()` after it returned then
+   blocked **forever** instead of erroring. A subsequent `evaluateJSAsync`
+   call hung indefinitely until `RdpTransport::read_timeout()` (new) let the
+   function save-and-restore the exact prior value.
+3. **Unwatching destroys the targets you just enumerated.** With
+   `isServerTargetSwitchingEnabled: true`, calling `unwatchTargets("frame")`
+   tears down **every** target Firefox spawned under that switching regime —
+   top level included — destroying their console actors. The original
+   design called `unwatchTargets` at the end of `enumerate_frame_targets`
+   (mirroring `navigate.rs`'s unrelated prelude pattern); fixed by never
+   unwatching inside `enumerate_frame_targets` at all, and by ensuring
+   `click`'s auto-wait pre-check and the actual click share **one**
+   `enumerate_frame_targets` call (via `prefetched_targets`) rather than
+   two — a second `watchTargets("frame")` call on an already-watched
+   connection is a silent no-op (doesn't re-deliver known targets), so a
+   naive double-call also returned 0 targets on the second pass.
+
+None of these were caught by the unit-test suite (all of which pass against
+a scripted mock server that never reproduces Firefox's actual event-ordering
+or target-lifecycle behaviour) — only running against real Firefox surfaced
+them. See `kb/rdp/actors/watcher.md`'s iter-129 section and the doc comments
+on `enumerate_frame_targets` / `RdpTransport::read_timeout` for the durable
+record.
