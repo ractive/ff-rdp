@@ -11,13 +11,18 @@
 
 mod support;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use ff_rdp_core::{RdpConnection, RdpTransport};
+use ff_rdp_core::{AccessibilityActor, ActorId, RdpConnection, RdpTransport};
 use serde_json::{Value, json};
 use support::recording::*;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Wall-clock bound for the single-shot local HTTP server in
+/// `live_cookies_httponly`. The accept loop gives up after this, so the test
+/// always terminates — even if Firefox never issues the request (iter-136).
+const HTTP_SERVER_ACCEPT_DEADLINE: Duration = Duration::from_secs(30);
 
 fn connect() -> RdpConnection {
     RdpConnection::connect("127.0.0.1", firefox_port(), TIMEOUT).expect("connect to Firefox")
@@ -925,8 +930,15 @@ fn live_cookies() {
         "should contain session_id cookie"
     );
 
-    // Best-effort unwatch
-    let unwatch_resp = send_raw(
+    // Best-effort unwatch. `unwatchResources` is oneway (see
+    // `WatcherActor::unwatch_resources`) — Firefox never replies, so this must
+    // not be sent through `send_raw`, which would block on `recv()` until the
+    // socket read timeout and panic with `recv: Timeout` (iter-136).
+    //
+    // For the same reason `unwatch_resources_response.json` cannot be recorded
+    // from a live session: it is a synthetic mock-server reply kept in
+    // `ff-rdp-cli/tests/fixtures/` purely so the mock can ack the packet.
+    send_raw_oneway(
         transport,
         &json!({
             "to": watcher,
@@ -934,10 +946,6 @@ fn live_cookies() {
             "resourceTypes": ["cookies"]
         }),
     );
-
-    if should_record() {
-        save_cli_fixture("unwatch_resources_response.json", &unwatch_resp);
-    }
 }
 
 /// iter-121: record a real FF152 `getStoreObjects` reply that contains an
@@ -949,39 +957,82 @@ fn live_cookies() {
 /// protocol sequence as `live_cookies`, but exercises the FF152 message
 /// ordering where the `resources-available-array` event precedes the
 /// `watchResources` ACK.
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_cookies_httponly() {
+/// Serve exactly one HTTP response from an ephemeral loopback port.
+///
+/// Returns the bound port and a handle whose join value reports whether the
+/// request was actually served. `extra_headers` must already be CRLF-terminated
+/// (or be empty).
+///
+/// The accept loop is bounded: a blocking `incoming()` loop never closes the
+/// listener, so after serving the one expected request the thread would park in
+/// `accept()` forever and `join()` would deadlock with it (iter-136). A
+/// non-blocking listener polled under [`HTTP_SERVER_ACCEPT_DEADLINE`] always
+/// terminates, even if Firefox never connects.
+fn serve_one_http_response(
+    extra_headers: &str,
+    body: &'static str,
+) -> (u16, std::thread::JoinHandle<bool>) {
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
-    if !should_run_live() {
-        return;
-    }
-
-    // Spin up a single-shot local HTTP server that sets one normal and one
-    // httpOnly cookie via `Set-Cookie`.  A real http:// origin is required —
-    // data:/about: origins are cookie-averse.
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind local http server");
-    let http_port = listener.local_addr().expect("local_addr").port();
-    let server = std::thread::spawn(move || {
-        for stream in listener.incoming().take(10) {
-            let Ok(mut stream) = stream else { continue };
+    let port = listener.local_addr().expect("local_addr").port();
+    let headers = extra_headers.to_owned();
+
+    let handle = std::thread::spawn(move || -> bool {
+        listener
+            .set_nonblocking(true)
+            .expect("set listener non-blocking");
+        let deadline = Instant::now() + HTTP_SERVER_ACCEPT_DEADLINE;
+        while Instant::now() < deadline {
+            let mut stream = match listener.accept() {
+                Ok((stream, _peer)) => stream,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+                Err(_) => return false,
+            };
+            // Accepted sockets inherit O_NONBLOCK on some platforms (macOS/BSD)
+            // but not others (Linux) — force blocking reads/writes explicitly.
+            let _ = stream.set_nonblocking(false);
             let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
             let mut buf = [0u8; 2048];
             let _ = stream.read(&mut buf);
-            let body = b"<!DOCTYPE html><html><body>cookie fixture</body></html>";
             let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
-                 Set-Cookie: normal=vis123; Path=/; SameSite=Lax\r\n\
-                 Set-Cookie: secret=hidden456; Path=/; HttpOnly; Secure; SameSite=Strict\r\n\
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n{headers}\
                  Content-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
             let _ = stream.write_all(resp.as_bytes());
-            let _ = stream.write_all(body);
+            let _ = stream.write_all(body.as_bytes());
+            let _ = stream.flush();
+            return true;
         }
+        false
     });
+
+    (port, handle)
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_cookies_httponly() {
+    if !should_run_live() {
+        return;
+    }
+
+    let started = Instant::now();
+
+    // Spin up a single-shot local HTTP server that sets one normal and one
+    // httpOnly cookie via `Set-Cookie`.  A real http:// origin is required —
+    // data:/about: origins are cookie-averse.
+    let (http_port, server) = serve_one_http_response(
+        "Set-Cookie: normal=vis123; Path=/; SameSite=Lax\r\n\
+         Set-Cookie: secret=hidden456; Path=/; HttpOnly; Secure; SameSite=Strict\r\n",
+        "<!DOCTYPE html><html><body>cookie fixture</body></html>",
+    );
 
     let mut conn = connect();
     let transport = conn.transport_mut();
@@ -1073,7 +1124,20 @@ fn live_cookies_httponly() {
         .expect("send unwatchResources");
 
     drop(conn);
-    let _ = server.join();
+    // Wall-clock evidence that the accept loop terminated instead of parking in
+    // `accept()` forever: the join must return well inside the server's own
+    // deadline, and it must report that the request was actually served.
+    let request_was_served = server.join().expect("http server thread panicked");
+    assert!(
+        request_was_served,
+        "local http server never accepted a request within {HTTP_SERVER_ACCEPT_DEADLINE:?}"
+    );
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < HTTP_SERVER_ACCEPT_DEADLINE,
+        "live_cookies_httponly took {elapsed:?}, which exceeds the \
+         {HTTP_SERVER_ACCEPT_DEADLINE:?} accept deadline — the server thread hung"
+    );
 }
 
 #[test]
@@ -1153,8 +1217,8 @@ fn live_cookies_empty() {
         println!("  [skip] no hosts available — cannot record empty cookie fixture");
     }
 
-    // Best-effort unwatch
-    let _ = send_raw(
+    // Best-effort unwatch — oneway, no reply to read (iter-136).
+    send_raw_oneway(
         transport,
         &json!({
             "to": watcher,
@@ -2087,8 +2151,51 @@ fn live_accessibility_tree() {
     if !should_run_live() {
         return;
     }
+    // Serve a deterministic page so the recorded tree is stable: the document
+    // root gets exactly one heading and one link as its direct children.
+    let (http_port, server) = serve_one_http_response(
+        "",
+        "<!DOCTYPE html><html><head><title>Example Domain</title></head><body>\
+         <h1>Example Domain</h1><a href=\"https://www.iana.org/domains/example\">More information...</a>\
+         </body></html>",
+    );
+
     let mut conn = connect();
     let transport = conn.transport_mut();
+
+    let (nav_target, _console) = setup_target(transport);
+    transport
+        .send(&json!({
+            "to": &nav_target,
+            "type": "navigateTo",
+            "url": format!("http://127.0.0.1:{http_port}/"),
+        }))
+        .expect("send navigateTo");
+    std::thread::sleep(Duration::from_secs(2));
+    drain_messages(transport, Duration::from_millis(500));
+    assert!(
+        server.join().expect("http server thread panicked"),
+        "local http server never served the accessibility fixture page"
+    );
+
+    // Turn on the platform accessibility service for the duration of the test.
+    // The walker's root accessor waits on a `document-ready` promise that never
+    // settles while the service is off, so without this the request stalls
+    // until the socket read timeout (iter-136). DevTools' accessibility panel
+    // does the same `enable` on the root's `parentAccessibilityActor`.
+    transport
+        .send(&json!({"to": "root", "type": "getRoot"}))
+        .expect("send getRoot");
+    let root_form = recv_from_actor(transport, "root");
+    let parent_a11y = root_form["parentAccessibilityActor"]
+        .as_str()
+        .expect("parentAccessibilityActor in root form")
+        .to_owned();
+    transport
+        .send(&json!({"to": &parent_a11y, "type": "enable"}))
+        .expect("send parent accessibility enable");
+    // The reply is `{}` but a `canBeDisabledChange` event races it; drain both.
+    drain_messages(transport, Duration::from_millis(500));
 
     // Get tab
     transport
@@ -2110,6 +2217,22 @@ fn live_accessibility_tree() {
         .expect("accessibilityActor in frame")
         .to_owned();
 
+    let a11y_id: ActorId = a11y_actor.as_str().into();
+    assert!(
+        AccessibilityActor::is_service_enabled(transport, &a11y_id)
+            .expect("bootstrap accessibility actor"),
+        "accessibility service must report enabled after parent enable"
+    );
+
+    if should_record() {
+        transport
+            .send(&json!({"to": &a11y_actor, "type": "bootstrap"}))
+            .expect("send bootstrap");
+        let bootstrap = recv_from_actor(transport, &a11y_actor);
+        save_core_fixture("a11y_bootstrap_response.json", &bootstrap);
+        save_cli_fixture("a11y_bootstrap_response.json", &bootstrap);
+    }
+
     // Get walker
     transport
         .send(&json!({"to": &a11y_actor, "type": "getWalker"}))
@@ -2120,43 +2243,90 @@ fn live_accessibility_tree() {
         .expect("walker actor")
         .to_owned();
 
-    // Get root node
-    transport
-        .send(&json!({"to": &walker_actor, "type": "getRootNode"}))
-        .expect("send getRootNode");
-    let root_resp = recv_from_actor(transport, &walker_actor);
+    // Get root node.
+    //
+    // The walker's root accessor is an argument-less `children` call; the old
+    // `getRootNode` (and the internal, unexported `getDocument`) are answered
+    // with `unrecognizedPacketType` on Firefox 153. Go through the product
+    // helper instead of hand-rolling the raw send (iter-136).
+    let walker_id: ActorId = walker_actor.as_str().into();
+    let root = AccessibilityActor::get_root(transport, &walker_id).expect("get_root via walker");
 
     assert!(
-        root_resp.get("role").is_some(),
-        "getRootNode must return an accessible with a role: {root_resp:#}"
+        !root.role.is_empty(),
+        "get_root must return an accessible with a role: {root:#?}"
     );
+    let root_actor = root.actor.expect("root accessible actor");
 
-    save_core_fixture("a11y_get_root_response.json", &root_resp);
+    if should_record() {
+        // Re-issue the request raw so the recorded fixture is the verbatim
+        // Firefox reply rather than our parsed representation.
+        transport
+            .send(&json!({"to": &walker_actor, "type": "children"}))
+            .expect("send walker children");
+        let walker_children = recv_from_actor(transport, &walker_actor);
+        save_core_fixture("a11y_walker_children_response.json", &walker_children);
+        save_cli_fixture("a11y_walker_children_response.json", &walker_children);
+    }
 
-    // Get children of root
-    let root_actor = root_resp["actor"]
-        .as_str()
-        .expect("root accessible actor")
-        .to_owned();
-
-    transport
-        .send(&json!({
-            "to": &walker_actor,
-            "type": "children",
-            "accessible": &root_actor
-        }))
-        .expect("send children");
-    let children_resp = recv_from_actor(transport, &walker_actor);
+    // Get children of the root accessible. `children` is a method on the
+    // accessible actor itself — the walker's same-named method ignores
+    // arguments and always returns the root document.
+    let children =
+        AccessibilityActor::children(transport, &walker_id, &ActorId::from(root_actor.as_str()))
+            .expect("children of root accessible");
 
     assert!(
-        children_resp
-            .get("children")
-            .and_then(Value::as_array)
-            .is_some(),
-        "children must return a children array: {children_resp:#}"
+        !children.is_empty(),
+        "root document must expose at least one child accessible"
+    );
+    assert!(
+        children.iter().any(|c| c.role == "link"),
+        "fixture page's document root must expose the link child: {children:#?}"
     );
 
-    save_core_fixture("a11y_children_response.json", &children_resp);
+    if should_record() {
+        transport
+            .send(&json!({"to": &root_actor, "type": "children"}))
+            .expect("send accessible children");
+        let children_resp = recv_from_actor(transport, &root_actor);
+        save_core_fixture("a11y_children_response.json", &children_resp);
+        save_cli_fixture("a11y_children_response.json", &children_resp);
+    }
+
+    // Descend to a leaf so the mocked e2e traversal has a terminating reply:
+    // the link's text child has no children of its own.
+    let link = children
+        .iter()
+        .find(|c| c.role == "link")
+        .expect("link child");
+    let link_actor = link.actor.clone().expect("link accessible actor");
+    let link_children =
+        AccessibilityActor::children(transport, &walker_id, &ActorId::from(link_actor.as_str()))
+            .expect("children of link accessible");
+    let leaf = link_children.first().expect("link must have a text child");
+    let leaf_actor = leaf.actor.clone().expect("leaf accessible actor");
+    let leaf_children =
+        AccessibilityActor::children(transport, &walker_id, &ActorId::from(leaf_actor.as_str()))
+            .expect("children of leaf accessible");
+    assert!(
+        leaf_children.is_empty(),
+        "a text leaf must report no children: {leaf_children:#?}"
+    );
+
+    if should_record() {
+        transport
+            .send(&json!({"to": &leaf_actor, "type": "children"}))
+            .expect("send leaf children");
+        let leaf_resp = recv_from_actor(transport, &leaf_actor);
+        save_core_fixture("a11y_children_empty_response.json", &leaf_resp);
+        save_cli_fixture("a11y_children_empty_response.json", &leaf_resp);
+    }
+
+    // Restore the browser-global accessibility service to its previous (off)
+    // state so later tests and dogfood runs on this Firefox see the default.
+    send_raw_oneway(transport, &json!({"to": &parent_a11y, "type": "disable"}));
+    drain_messages(transport, Duration::from_millis(300));
 }
 
 // ===========================================================================
@@ -3346,4 +3516,47 @@ fn live_record_capture_screenshot_no_image_data() {
     println!("  [ok] recorded the Firefox 153 null-data capture reply");
     save_cli_fixture("capture_screenshot_no_image_data_response.json", &resp);
     save_core_fixture("capture_screenshot_no_image_data_response.json", &resp);
+}
+
+// ===========================================================================
+// Harness guards (no live Firefox required)
+// ===========================================================================
+
+/// iter-136 Theme D: `send_raw` does a `send` + `recv` pair, which is only
+/// valid for request/reply packets. Sending a oneway packet through it — as
+/// `live_cookies` / `live_cookies_empty` used to do with `unwatchResources` —
+/// blocks until the socket read timeout and panics with `recv: Timeout`
+/// *after* the real assertions already passed. The helper now rejects known
+/// oneway packet types up-front so the misuse is caught at the boundary.
+#[test]
+fn unit_send_raw_rejects_oneway() {
+    // The expected panics would otherwise spam the test output.
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    for oneway in [
+        "unwatchResources",
+        "clearResources",
+        "unwatchTargets",
+        "clearPicker",
+    ] {
+        assert!(
+            is_oneway_packet_type(oneway),
+            "{oneway} must be classified as oneway"
+        );
+        let request = json!({"to": "server1.conn0.watcher4", "type": oneway});
+        let rejected = std::panic::catch_unwind(|| reject_oneway_request(&request)).is_err();
+        assert!(rejected, "send_raw must reject the oneway packet {oneway}");
+    }
+
+    std::panic::set_hook(previous_hook);
+
+    // Request/reply packets keep working.
+    for two_way in ["watchResources", "getStoreObjects", "listTabs"] {
+        assert!(
+            !is_oneway_packet_type(two_way),
+            "{two_way} must not be classified as oneway"
+        );
+        reject_oneway_request(&json!({"to": "root", "type": two_way}));
+    }
 }

@@ -1,0 +1,12 @@
+{
+  "children": [
+    {
+      "actor": "server1.conn0.child0/accessible19",
+      "role": "document",
+      "name": "Example Domain",
+      "useChildTargetToFetchChildren": false,
+      "childCount": 2
+    }
+  ],
+  "from": "server1.conn0.child0/accessiblewalker18"
+}

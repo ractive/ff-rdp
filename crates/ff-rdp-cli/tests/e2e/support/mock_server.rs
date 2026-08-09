@@ -245,6 +245,24 @@ impl MockRdpServer {
                 )
             };
 
+            // Real Firefox always answers from the actor that was addressed, and
+            // `recv_reply_from` drops replies whose `from` doesn't match the
+            // request's `to`. Recorded fixtures carry the actor IDs of the
+            // session they were captured in, which will not line up with the
+            // IDs another fixture handed the client. Rewrite `from` so a fixture
+            // stays usable wherever it is replayed (iter-136). Events (packets
+            // that carry a `type`) are left untouched — they legitimately come
+            // from other actors.
+            let mut reply = reply;
+            if let (Some(to), Some(obj)) = (
+                request.get("to").and_then(Value::as_str),
+                reply.as_object_mut(),
+            ) && obj.contains_key("from")
+                && !obj.contains_key("type")
+            {
+                obj.insert("from".to_owned(), Value::String(to.to_owned()));
+            }
+
             let json = serde_json::to_string(&reply).expect("response encode");
             if writer.write_all(encode_frame(&json).as_bytes()).is_err() {
                 break;

@@ -155,6 +155,27 @@ fn run_native_or_js_fallback(
     max_chars: u32,
     cli: &Cli,
 ) -> Result<(AccessibleNode, bool), AppError> {
+    // Step 0: the native walker only answers while the platform accessibility
+    // service is running; with it off, the root accessor stalls until the
+    // socket read timeout instead of erroring (iter-136). Check first and take
+    // the JS fallback immediately when it is off.
+    match AccessibilityActor::is_service_enabled(ctx.transport_mut(), accessibility_actor) {
+        Ok(true) => {}
+        Ok(false) => {
+            if cli.is_verbose() {
+                eprintln!(
+                    "debug: platform accessibility service is disabled; falling back to JS eval \
+                     (enable it in Firefox to get the native accessibility tree)"
+                );
+            }
+            return run_selector_mode(ctx, "body", depth, max_chars).map(|t| (t, true));
+        }
+        // Older Firefox without `bootstrap` on the accessibility actor: try the
+        // native path anyway.
+        Err(e) if e.is_unrecognized_packet_type() => {}
+        Err(e) => return Err(map_a11y_error(e, cli)),
+    }
+
     // Step 1: try to get the walker.
     let walker = match AccessibilityActor::get_walker(ctx.transport_mut(), accessibility_actor) {
         Ok(w) => w,
