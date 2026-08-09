@@ -152,7 +152,7 @@ fn compile_jq_filter(filter_code: &str) -> anyhow::Result<jaq_core::compile::Fil
     let modules = loader.load(&arena, program).map_err(|errs| {
         let msg = errs
             .iter()
-            .map(|(_file, e)| format!("{e:#?}"))
+            .map(|(_file, e)| format_load_error(filter_code, e))
             .collect::<Vec<_>>()
             .join("; ");
         anyhow::anyhow!("jq parse error: {msg}")
@@ -168,11 +168,128 @@ fn compile_jq_filter(filter_code: &str) -> anyhow::Result<jaq_core::compile::Fil
         .map_err(|errs| {
             let msg = errs
                 .iter()
-                .map(|(_file, e)| format!("{e:#?}"))
+                .map(|(_file, e)| format_compile_errors(e))
                 .collect::<Vec<_>>()
                 .join("; ");
             anyhow::anyhow!("jq compile error: {msg}")
         })
+}
+
+/// Byte offset of a subslice within its parent string.
+///
+/// jaq's lexer and parser errors carry `&str` slices that are always
+/// subslices of the original filter source (a suffix for lexer errors, an
+/// interior token for parser errors) — never a copy. Comparing pointer
+/// addresses (as integers, so no unsafe dereference is involved) recovers
+/// the byte position without re-scanning the string. Falls back to `0` if
+/// `needle` is somehow not a subslice of `haystack` (defensive only — this
+/// should never happen given how jaq constructs these errors, but a wrong
+/// position is far better than a panicking CLI on malformed `--jq` input).
+fn subslice_offset(haystack: &str, needle: &str) -> usize {
+    let h = haystack.as_ptr() as usize;
+    let n = needle.as_ptr() as usize;
+    if n < h || n > h + haystack.len() {
+        return 0;
+    }
+    n - h
+}
+
+/// Short " near \"...\"" context suffix for an error message, anchored at
+/// byte offset `pos` in `code`. Empty string once `pos` reaches the end of
+/// input (nothing left to show).
+fn error_snippet(code: &str, pos: usize) -> String {
+    if pos >= code.len() {
+        return String::new();
+    }
+    let snippet: String = code[pos..].chars().take(20).collect();
+    format!(" near \"{snippet}\"")
+}
+
+/// Human-readable description of a lexer `Expect` value.
+///
+/// Deliberately does not call the upstream `Expect::as_str()` — that method
+/// panics on an unrecognized `Delim` payload, and this is a user-facing
+/// error path for arbitrary (possibly malformed) `--jq` input, where a
+/// slightly-generic description beats a crashed CLI.
+fn describe_lex_expect(expect: &jaq_core::load::lex::Expect<&str>) -> &'static str {
+    use jaq_core::load::lex::Expect;
+    match expect {
+        Expect::Digit => "digit",
+        Expect::Ident => "identifier",
+        Expect::Delim("(") => "closing parenthesis",
+        Expect::Delim("[") => "closing bracket",
+        Expect::Delim("{") => "closing brace",
+        Expect::Delim("\"") => "closing quote",
+        Expect::Delim(_) => "closing delimiter",
+        Expect::Escape => "string escape sequence",
+        Expect::Unicode => "4-digit hexadecimal UTF-8 code point",
+        Expect::Token => "token",
+        _ => "valid token",
+    }
+}
+
+/// Render one lexer error as `at position N[ (end of input)]: expected
+/// <what>[ near "<snippet>"]` — no `Expect`/`Delim` Debug fragments.
+fn format_lex_error(code: &str, err: &jaq_core::load::lex::Error<&str>) -> String {
+    let (expect, rest) = err;
+    let pos = subslice_offset(code, rest);
+    let expected = describe_lex_expect(expect);
+    let snippet = error_snippet(code, pos);
+    if rest.is_empty() {
+        format!("at position {pos} (end of input): expected {expected}")
+    } else {
+        format!("at position {pos}: expected {expected}{snippet}")
+    }
+}
+
+/// Render one parser error as `at position N: expected <what>[, found
+/// "<token>"]` — no `Expect`/`Token` Debug fragments.
+///
+/// The `found` slice has already been resolved from `Option<&Token>` down
+/// to a plain `&str` by jaq's own loader (empty slice at end-of-input when
+/// no token was found) — see `load::mod::conv_err`.
+fn format_parse_error(code: &str, err: &jaq_core::load::parse::Error<&str>) -> String {
+    let (expect, found_str) = err;
+    let pos = subslice_offset(code, found_str);
+    let expected = expect.as_str();
+    let snippet = error_snippet(code, pos);
+    if found_str.is_empty() {
+        format!("at position {pos} (end of input): expected {expected}")
+    } else {
+        format!("at position {pos}: expected {expected}, found \"{found_str}\"{snippet}")
+    }
+}
+
+/// Render a single-module load error (`Io`/`Lex`/`Parse`) without leaking
+/// any Rust `Debug` formatting of jaq's internal `Expect`/`Token` types.
+fn format_load_error(code: &str, err: &jaq_core::load::Error<&str>) -> String {
+    use jaq_core::load::Error;
+    match err {
+        Error::Io(errs) => errs
+            .iter()
+            .map(|(path, msg)| format!("module '{path}': {msg}"))
+            .collect::<Vec<_>>()
+            .join("; "),
+        Error::Lex(errs) => errs
+            .iter()
+            .map(|e| format_lex_error(code, e))
+            .collect::<Vec<_>>()
+            .join("; "),
+        Error::Parse(errs) => errs
+            .iter()
+            .map(|e| format_parse_error(code, e))
+            .collect::<Vec<_>>()
+            .join("; "),
+    }
+}
+
+/// Render compilation errors (undefined variables/filters/modules/labels)
+/// for one module without leaking `Undefined` Debug formatting.
+fn format_compile_errors(errs: &[jaq_core::compile::Error<&str>]) -> String {
+    errs.iter()
+        .map(|(name, kind)| format!("undefined {}: '{name}'", kind.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Execute a pre-compiled jq filter against a JSON value.
@@ -364,5 +481,75 @@ mod tests {
         let val = json!({"x": 1});
         let result = apply_jq_filter(&val, "this is not valid %%%");
         assert!(result.is_err());
+    }
+
+    // ── unit_jq_parse_error_clean (iter-132 Theme A) ─────────────────────────
+
+    /// An unclosed `[` must yield a human-readable error carrying the
+    /// failing position, and must NOT contain any Rust `Debug` fragments
+    /// (`Lex(`, `Delim(`, `Expect::`) from jaq's internal error types.
+    #[test]
+    fn jq_parse_error_unclosed_bracket_is_clean() {
+        let val = json!({"x": 1});
+        let err = apply_jq_filter(&val, "[").unwrap_err();
+        let msg = err.to_string();
+
+        assert!(
+            !msg.contains("Lex("),
+            "must not leak jaq's Debug-formatted Lex(...) variant, got: {msg}"
+        );
+        assert!(
+            !msg.contains("Delim("),
+            "must not leak jaq's Debug-formatted Delim(...) payload, got: {msg}"
+        );
+        assert!(
+            !msg.contains("Expect::") && !msg.contains("Expect {"),
+            "must not leak the Expect enum's Debug repr, got: {msg}"
+        );
+        assert!(
+            msg.contains("position"),
+            "must name the failing position, got: {msg}"
+        );
+    }
+
+    /// A malformed filter with garbage tokens must also render cleanly and
+    /// report a position, not just an empty/opaque message.
+    #[test]
+    fn jq_parse_error_garbage_tokens_reports_position() {
+        let val = json!({"x": 1});
+        let err = apply_jq_filter(&val, "this is not valid %%%").unwrap_err();
+        let msg = err.to_string();
+        assert!(!msg.contains("Lex("), "got: {msg}");
+        assert!(!msg.contains("Delim("), "got: {msg}");
+        assert!(msg.contains("position"), "got: {msg}");
+    }
+
+    /// An undefined filter/function name (a *compile* error, not a lex/parse
+    /// error) must also avoid leaking `Undefined` Debug formatting.
+    #[test]
+    fn jq_compile_error_undefined_filter_is_clean() {
+        let val = json!({"x": 1});
+        let err = apply_jq_filter(&val, "this_filter_does_not_exist").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("Undefined") && !msg.contains("Filter("),
+            "must not leak the Undefined enum's Debug repr, got: {msg}"
+        );
+        assert!(
+            msg.contains("undefined"),
+            "must name what was undefined, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn subslice_offset_finds_position() {
+        let code = "hello world";
+        let sub = &code[6..];
+        assert_eq!(subslice_offset(code, sub), 6);
+        assert_eq!(subslice_offset(code, code), 0);
+        // A completely unrelated string is not a subslice — must not panic,
+        // falls back to 0.
+        let unrelated = String::from("unrelated");
+        assert_eq!(subslice_offset(code, &unrelated), 0);
     }
 }

@@ -88,6 +88,22 @@ pub(crate) fn load_script(
 /// `--stringify` wraps the expression in `JSON.stringify(...)` so the user gets
 /// real values instead of Firefox grip metadata.  The stringify helper does NOT
 /// use `eval()` and is therefore unaffected by page CSP.
+///
+/// # Top-level `await` (iter-132 Theme C)
+///
+/// `Debugger.evalInGlobal` evaluates the submitted script as a plain script,
+/// not an async function body, so a bare top-level `await expr` throws
+/// `SyntaxError: await is only valid in async functions...` — a friction
+/// point agents hit naturally (dogfooding session 62), since `.then()`-based
+/// scripts already work: `evaluateJSAsync` awaits a Promise **completion
+/// value** before returning it to the caller (`eval_path: "page-await"`).
+///
+/// The fix routes any script containing an `await` keyword through
+/// [`wrap_top_level_await`], which turns it into an async-IIFE call
+/// expression — i.e. exactly the kind of Promise-returning completion value
+/// `evaluateJSAsync` already knows how to await. `eval_path` stays
+/// `"page-await"` either way; from the caller's perspective only the
+/// previously-broken await scripts start working, nothing else changes.
 pub(crate) fn build_script(user_script: &str, stringify: bool, _isolate: bool) -> String {
     // The stringify helper: if the value is already a string, return it as-is;
     // otherwise JSON.stringify it. This prevents double-encoding when the JS
@@ -98,10 +114,138 @@ pub(crate) fn build_script(user_script: &str, stringify: bool, _isolate: bool) -
     // Symbol's TypeError) propagate up as eval exceptions.
     const STRINGIFY_HELPER: &str = "(function(v){if(typeof v===\"string\")return v;try{return JSON.stringify(v);}catch(e){if(e instanceof TypeError&&e.message.includes(\"circular\"))return \"{\\\"error\\\":\\\"circular reference detected\\\"}\";throw e;}})";
 
-    if stringify {
-        format!("(function(){{return {STRINGIFY_HELPER}({user_script});}})()")
+    // Stringify wraps `user_script` as the sole argument of a call
+    // expression — that is only valid JS if `user_script` is itself a
+    // single expression (a pre-existing constraint, unrelated to this
+    // iteration), so the wrapped form is always a single expression too.
+    let (base, base_is_single_expression) = if stringify {
+        (
+            format!("(function(){{return {STRINGIFY_HELPER}({user_script});}})()"),
+            true,
+        )
     } else {
-        user_script.to_owned()
+        (
+            user_script.to_owned(),
+            looks_like_single_expression(user_script),
+        )
+    };
+
+    if contains_await_keyword(user_script) {
+        wrap_top_level_await(&base, base_is_single_expression)
+    } else {
+        base
+    }
+}
+
+/// JS identifier keywords that can never begin a bare expression — used by
+/// [`looks_like_single_expression`] to reject obvious statement forms.
+const STATEMENT_LEADING_KEYWORDS: &[&str] = &[
+    "var ", "let ", "const ", "function", "class ", "if ", "if(", "for ", "for(", "while ",
+    "while(", "switch ", "switch(", "try", "throw ", "return", "import ", "export ", "do ", "do{",
+    "{",
+];
+
+/// Best-effort (not a JS parser) check for whether `script` is a single
+/// expression, safe to wrap as `return (<script>)` without a syntax error.
+///
+/// Two simplifications, both fail *safe* (degrade to the no-auto-return
+/// wrap path in [`wrap_top_level_await`], which still evaluates — it just
+/// won't surface a value unless the script has an explicit `return`):
+///
+/// - A `;` inside a string/template literal (e.g. `await foo("a;b")`) is
+///   indistinguishable here from a real statement separator, so such
+///   scripts are treated as multi-statement even though they are not.
+/// - Only a fixed, common prefix list is checked against statement-leading
+///   keywords; more obscure statement forms (labelled statements, etc.)
+///   are not recognized and would be (harmlessly) treated as expressions,
+///   which then fail loudly as a SyntaxError from the `return (…)` wrap
+///   rather than silently returning the wrong value.
+fn looks_like_single_expression(script: &str) -> bool {
+    let trimmed = script.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let body = trimmed.strip_suffix(';').unwrap_or(trimmed).trim();
+    if body.is_empty() {
+        return false;
+    }
+    !body.contains(';')
+        && !STATEMENT_LEADING_KEYWORDS
+            .iter()
+            .any(|kw| body_starts_with_keyword(body, kw))
+}
+
+/// Whether `body` starts with the statement-leading keyword `kw`, at a real
+/// word boundary rather than as a bare substring prefix.
+///
+/// Most [`STATEMENT_LEADING_KEYWORDS`] entries already end in a delimiter
+/// (`"if("`, `"let "`, `"do{"`, …), so a plain `starts_with` is inherently
+/// boundary-safe for them: the delimiter itself cannot be part of a longer
+/// identifier. But a few entries (`"try"`, `"return"`, `"function"`) have no
+/// trailing delimiter — both `try{` and `tryFoo()` share that prefix — so
+/// for those a plain `starts_with` would misclassify identifiers like
+/// `returnValue()` or `tryCatchWrapper()` as statements, silently losing
+/// the auto-return optimization for otherwise-ordinary single-expression
+/// scripts. Requiring the character right after the keyword (if any) to be
+/// a non-identifier character closes that gap without needing a per-keyword
+/// trailing-space variant for every bare-word entry.
+fn body_starts_with_keyword(body: &str, kw: &str) -> bool {
+    let Some(rest) = body.strip_prefix(kw) else {
+        return false;
+    };
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    // A keyword already ending in a non-identifier delimiter (space, `(`,
+    // `{`) needs no further boundary check — the delimiter itself proves
+    // the match isn't a longer identifier's prefix.
+    if !kw.ends_with(is_ident) {
+        return true;
+    }
+    rest.chars().next().is_none_or(|c| !is_ident(c))
+}
+
+/// Whether `script` contains the `await` keyword as a whole identifier
+/// token (so `awaited`/`obj.awaitSomething` don't false-positive).
+///
+/// Does not distinguish a genuinely top-level `await` from one nested
+/// inside a user-authored `async function`/arrow body — wrapping the whole
+/// script in an outer async IIFE is harmless in the nested case too (see
+/// [`build_script`]'s doc comment), so a coarse "does this script use
+/// `await` anywhere" check is sufficient to decide whether the wrap is
+/// worth applying.
+fn contains_await_keyword(script: &str) -> bool {
+    let bytes = script.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+    let mut search_from = 0usize;
+    while let Some(rel) = script[search_from..].find("await") {
+        let start = search_from + rel;
+        let end = start + "await".len();
+        let before_ok = start == 0 || !is_ident(bytes[start - 1]);
+        let after_ok = end == bytes.len() || !is_ident(bytes[end]);
+        if before_ok && after_ok {
+            return true;
+        }
+        search_from = start + 1;
+    }
+    false
+}
+
+/// Wrap `base` (the already stringify-processed script) in an async IIFE so
+/// its completion value is a Promise `evaluateJSAsync` can await server-side
+/// (see [`build_script`]'s "Top-level `await`" doc section).
+///
+/// When `base` is a single expression, the wrap preserves the pre-await
+/// completion-value contract exactly: `return (<base>)`. When it is not
+/// (multiple statements), the raw statements run as the function body with
+/// no implicit return — any explicit `return` inside now works (it would
+/// have been a `SyntaxError: Illegal return statement` in top-level script
+/// context), but a script relying on completion-value auto-return of its
+/// last expression gets `undefined` instead. That is strictly better than
+/// the pre-fix behavior (a `SyntaxError` on the `await` token itself).
+fn wrap_top_level_await(base: &str, base_is_single_expression: bool) -> String {
+    if base_is_single_expression {
+        format!("(async function(){{return (\n{base}\n);}})()")
+    } else {
+        format!("(async function(){{\n{base}\n}})()")
     }
 }
 
@@ -558,5 +702,116 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── iter-132 Theme C: top-level await ────────────────────────────────────
+
+    #[test]
+    fn contains_await_keyword_matches_whole_word_only() {
+        assert!(contains_await_keyword("await Promise.resolve(1)"));
+        assert!(contains_await_keyword("1 + await foo()"));
+        assert!(contains_await_keyword("(await foo())"));
+        // False positives that must NOT match (substring, not the keyword).
+        assert!(!contains_await_keyword("awaited"));
+        assert!(!contains_await_keyword("obj.awaitSomething()"));
+        assert!(!contains_await_keyword("document.title"));
+        assert!(!contains_await_keyword(""));
+    }
+
+    #[test]
+    fn looks_like_single_expression_accepts_bare_expressions() {
+        assert!(looks_like_single_expression(
+            "await Promise.resolve(41) + 1"
+        ));
+        assert!(looks_like_single_expression("document.title"));
+        assert!(looks_like_single_expression(
+            "await fetch('/x').then(r => r.json())"
+        ));
+        // A single trailing semicolon is tolerated.
+        assert!(looks_like_single_expression("await foo();"));
+    }
+
+    #[test]
+    fn looks_like_single_expression_rejects_statement_lists() {
+        assert!(!looks_like_single_expression("let x = await foo(); x + 1"));
+        assert!(!looks_like_single_expression("const x = 1; x"));
+        assert!(!looks_like_single_expression("if (true) { 1 } else { 2 }"));
+        assert!(!looks_like_single_expression("return 1"));
+        assert!(!looks_like_single_expression(""));
+        assert!(!looks_like_single_expression("   "));
+    }
+
+    /// Regression: bare-word keyword entries in `STATEMENT_LEADING_KEYWORDS`
+    /// (`"try"`, `"return"`, `"function"`) must match at a word boundary,
+    /// not as a plain substring prefix — otherwise identifiers that merely
+    /// start with those letters (`returnValue()`, `tryCatchWrapper()`,
+    /// `functionCall()`) are misclassified as statements and silently lose
+    /// the auto-return optimization even though they are ordinary single
+    /// expressions.
+    #[test]
+    fn looks_like_single_expression_does_not_false_positive_on_keyword_prefixed_identifiers() {
+        assert!(looks_like_single_expression("returnValue()"));
+        assert!(looks_like_single_expression("tryCatchWrapper()"));
+        assert!(looks_like_single_expression("functionCall()"));
+        assert!(looks_like_single_expression("try_something()"));
+        // The real keyword forms (word-boundary match) must still be
+        // rejected as statements.
+        assert!(!looks_like_single_expression("try { 1 } catch (e) { 2 }"));
+        assert!(!looks_like_single_expression("function foo() { return 1 }"));
+    }
+
+    /// AC `live_132_eval_top_level_await` (unit half): a bare top-level
+    /// `await` expression must be wrapped in an async IIFE with an explicit
+    /// `return`, and must still never contain a bare `eval(` call (CSP
+    /// invariant from iter-93 holds for the new wrap path too).
+    #[test]
+    fn build_script_wraps_top_level_await_single_expression() {
+        let s = build_script("await Promise.resolve(41) + 1", false, false);
+        assert!(
+            s.starts_with("(async function(){return ("),
+            "expected async-IIFE return wrap, got: {s}"
+        );
+        assert!(s.contains("await Promise.resolve(41) + 1"));
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
+    }
+
+    /// A multi-statement script with top-level await must still evaluate
+    /// (no SyntaxError) even though it forgoes the auto-return optimization.
+    #[test]
+    fn build_script_wraps_top_level_await_multi_statement_no_auto_return() {
+        let s = build_script("let x = await foo(); x + 1", false, false);
+        assert!(
+            s.starts_with("(async function(){"),
+            "expected async-IIFE wrap, got: {s}"
+        );
+        assert!(!s.contains("return ("), "must not force a return: {s}");
+        assert!(s.contains("let x = await foo(); x + 1"));
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
+    }
+
+    /// Scripts without `await` must be completely unaffected by the new
+    /// wrap logic (no behavior change for the common case).
+    #[test]
+    fn build_script_without_await_is_unaffected() {
+        let s = build_script("document.title", false, false);
+        assert_eq!(s, "document.title");
+        assert!(!s.contains("async function"));
+    }
+
+    /// `--stringify` combined with a top-level-await expression: the async
+    /// wrap must be the OUTERMOST layer (so evaluateJSAsync awaits the
+    /// Promise before the stringify helper ever sees the value) — not
+    /// nested inside the stringify IIFE, which would stringify the
+    /// unresolved Promise object instead of its resolved value.
+    #[test]
+    fn build_script_stringify_with_await_wraps_outermost() {
+        let s = build_script("await Promise.resolve(41)", true, false);
+        assert!(
+            s.starts_with("(async function(){return ("),
+            "async wrap must be outermost, got: {s}"
+        );
+        assert!(s.contains("JSON.stringify("));
+        assert!(s.contains("await Promise.resolve(41)"));
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
     }
 }

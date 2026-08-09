@@ -311,6 +311,13 @@ pub(crate) fn resolve_connection_target(
         }
     };
 
+    // 2a. iter-132 Theme E: opportunistically sweep other ports' stale
+    // `daemon.*.spawn.lock` files now that we're already on the (rare) spawn
+    // path — a normal "daemon already running" invocation never reaches here,
+    // so this never costs the steady-state fast path anything. Best-effort;
+    // never allowed to affect our own spawn attempt (see the function doc).
+    registry::gc_stale_spawn_locks();
+
     // 3. Re-check under the lock.  A daemon may have been spawned and
     //    registered by a racing invocation between step 1 and acquiring the
     //    lock; if so, reuse it and skip the spawn entirely.

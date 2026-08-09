@@ -13,7 +13,12 @@ use super::js_helpers::{JSON_SENTINEL, escape_selector, eval_or_bail, resolve_re
 
 #[derive(Debug, Clone, Copy)]
 pub enum OutputMode {
-    /// ARIA-tree JSON (default, iter-60+). Each node is `{ref,role,name,level,state,tag,attrs}`.
+    /// ARIA-tree JSON (default, iter-60+). Each node is
+    /// `{ref,role,name,level,state,tag,attrs,value}`. `attrs.value` (when
+    /// present) is the static HTML `value` attribute; the sibling `value`
+    /// field (input/textarea/select only) is the live `.value` DOM
+    /// property, which reflects script/user edits `attrs.value` does not
+    /// (iter-132 Theme B).
     AriaTree,
     /// Raw outer HTML strings (--format html escape hatch).
     OuterHtml,
@@ -81,6 +86,16 @@ const ARIA_TREE_JS_TEMPLATE: &str = r"(function() {
     if (level !== null) node.level = level;
     if (Object.keys(state).length) node.state = state;
     if (Object.keys(attrs).length) node.attrs = attrs;
+    // Live `value` property (iter-132 Theme B): `attrs.value` above comes
+    // from getAttribute('value'), the static HTML attribute — it does not
+    // change when script or user input sets `.value` on the live DOM
+    // property. For form elements, surface that live property as a
+    // separate sibling field so it's visible without a follow-up `eval`
+    // round-trip. Only for elements where `.value` means something
+    // (input/textarea/select) — other tags' `.value` is `undefined`.
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+      node.value = el.value;
+    }
     // Shadow-DOM hints: flag host elements so callers know a shadow tree is
     // attached. shadowRoot is null for closed roots from content-scope JS,
     // so we check el.openOrClosedShadowRoot (chrome-privileged) when available,

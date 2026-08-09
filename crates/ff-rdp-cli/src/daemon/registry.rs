@@ -311,6 +311,94 @@ pub(crate) fn acquire_spawn_lock_in(dir: &Path, port: u16) -> Result<SpawnLock> 
 }
 
 // ---------------------------------------------------------------------------
+// Stale spawn-lock GC (iter-132 Theme E)
+// ---------------------------------------------------------------------------
+
+/// Parse the Firefox port out of a `daemon.<PORT>.spawn.lock` filename.
+///
+/// Returns `None` for anything else that lives in the registry directory —
+/// `daemon.<port>.json`, `daemon.<port>.throttle.json` (iter-131),
+/// `daemon.log`, `.tmp` write-ahead files, etc. The exact-suffix match
+/// (`.spawn.lock`, not a general "starts with daemon." glob) is what keeps
+/// this GC scoped to spawn locks only — matching [`spawn_lock_filename`].
+fn parse_spawn_lock_port(filename: &str) -> Option<u16> {
+    filename
+        .strip_prefix("daemon.")?
+        .strip_suffix(".spawn.lock")?
+        .parse()
+        .ok()
+}
+
+/// Whether the spawn lock for `port` is stale: no live process currently
+/// claims it via `daemon.<port>.json`.
+///
+/// Conservative in the "unknown" direction — an absent or unparsable
+/// registry is treated as stale (nothing proves the lock is still needed).
+/// This is safe even though pid liveness alone can be wrong (e.g. a PID was
+/// reused after the daemon exited): [`gc_stale_spawn_locks_in`] only ever
+/// deletes a lock file it can *also* acquire itself, so a lock any other
+/// process still actually holds is never removed regardless of what this
+/// function returns.
+fn spawn_lock_is_stale(dir: &Path, port: u16) -> bool {
+    match read_registry_in(dir, port) {
+        Ok(Some(info)) => !super::process::is_process_alive(info.pid),
+        Ok(None) | Err(_) => true,
+    }
+}
+
+/// Sweep `<dir>/daemon.*.spawn.lock` files whose owning daemon is provably
+/// gone, so `~/.ff-rdp/` doesn't accumulate zero-byte lock files forever
+/// (dogfood-62 #9: ~50 stale locks observed, never cleaned up before this).
+///
+/// Deliberately narrow and defensive:
+/// - Only filenames matching the exact `daemon.<PORT>.spawn.lock` pattern
+///   are touched (see [`parse_spawn_lock_port`]) — `daemon.<port>.json` and
+///   `daemon.<port>.throttle.json` (iter-131) are never candidates.
+/// - "Stale" (per [`spawn_lock_is_stale`]) is only a pre-filter. Before
+///   actually deleting, this takes a non-blocking `try_lock_exclusive()` on
+///   the candidate file. If that fails, some other process currently holds
+///   the flock on it (e.g. it is mid-acquire *right now*, which registry
+///   pid-liveness alone cannot see) and the file is left alone — avoids an
+///   unlink-while-locked race with a legitimate concurrent acquirer.
+/// - Every I/O error (unreadable directory entry, permission failure, race
+///   where the file vanished between listing and opening) is swallowed.
+///   This is opportunistic housekeeping riding along on the daemon spawn
+///   path; it must never turn into a reason the actual spawn attempt fails.
+pub(crate) fn gc_stale_spawn_locks_in(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Some(port) = parse_spawn_lock_port(&name) else {
+            continue;
+        };
+        if !spawn_lock_is_stale(dir, port) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(file) = fs::OpenOptions::new().write(true).open(&path) else {
+            continue;
+        };
+        // Only delete if we can also acquire the lock ourselves — i.e.
+        // nobody else currently holds it.
+        if file.try_lock_exclusive().is_ok() {
+            let _ = fs::remove_file(&path);
+            let _ = fs2::FileExt::unlock(&file);
+        }
+    }
+}
+
+/// [`gc_stale_spawn_locks_in`] against the real `~/.ff-rdp/` directory.
+pub(crate) fn gc_stale_spawn_locks() {
+    if let Ok(dir) = registry_dir() {
+        gc_stale_spawn_locks_in(&dir);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -645,5 +733,118 @@ mod tests {
             result.is_err(),
             "legacy registry without auth_token must fail to parse"
         );
+    }
+
+    // ── iter-132 Theme E: stale spawn-lock GC ────────────────────────────────
+
+    /// A pid known to never correspond to a live process — same convention
+    /// `daemon::process`'s own tests use for "definitely dead".
+    const DEAD_PID: u32 = 999_999_999;
+
+    fn info_with_pid(port: u16, pid: u32) -> DaemonInfo {
+        DaemonInfo {
+            pid,
+            proxy_port: 7000,
+            firefox_host: "127.0.0.1".to_owned(),
+            firefox_port: port,
+            started_at: "2026-04-06T12:00:00Z".to_owned(),
+            auth_token: "a".repeat(64),
+        }
+    }
+
+    #[test]
+    fn parse_spawn_lock_port_matches_exact_suffix_only() {
+        assert_eq!(parse_spawn_lock_port("daemon.6000.spawn.lock"), Some(6000));
+        // Must NOT match the registry file itself, the iter-131 throttle
+        // state file, or the daemon log — same directory, different suffix.
+        assert_eq!(parse_spawn_lock_port("daemon.6000.json"), None);
+        assert_eq!(parse_spawn_lock_port("daemon.6000.throttle.json"), None);
+        assert_eq!(parse_spawn_lock_port("daemon.log"), None);
+        assert_eq!(parse_spawn_lock_port("daemon.6000.spawn.lock.tmp"), None);
+        assert_eq!(parse_spawn_lock_port("not-a-daemon-file"), None);
+    }
+
+    /// AC `unit_spawn_lock_gc`: a spawn lock whose registry entry's pid is
+    /// dead is removed; a spawn lock whose registry entry's pid is alive is
+    /// kept; an unrelated `daemon.<port>.throttle.json` (iter-131, same
+    /// directory) is left completely untouched — negative-case assertion
+    /// that the GC's filename match is scoped exactly to `*.spawn.lock`.
+    #[test]
+    fn gc_stale_spawn_locks_removes_dead_keeps_live_and_ignores_throttle_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Port 6000: registry pid is dead — lock must be removed.
+        write_registry_in(dir.path(), &info_with_pid(6000, DEAD_PID)).expect("write dead");
+        fs::write(dir.path().join("daemon.6000.spawn.lock"), []).expect("write dead lock");
+
+        // Port 6001: registry pid is this test process itself — alive — lock
+        // must survive.
+        let my_pid = std::process::id();
+        write_registry_in(dir.path(), &info_with_pid(6001, my_pid)).expect("write live");
+        fs::write(dir.path().join("daemon.6001.spawn.lock"), []).expect("write live lock");
+
+        // Port 6002: no registry at all — orphaned lock, must be removed.
+        fs::write(dir.path().join("daemon.6002.spawn.lock"), []).expect("write orphan lock");
+
+        // iter-131 throttle-state file living in the same directory — GC
+        // must never touch it regardless of any pid logic.
+        fs::write(dir.path().join("daemon.6003.throttle.json"), b"{}").expect("write throttle");
+
+        gc_stale_spawn_locks_in(dir.path());
+
+        assert!(
+            !dir.path().join("daemon.6000.spawn.lock").exists(),
+            "dead-pid lock must be removed"
+        );
+        assert!(
+            dir.path().join("daemon.6001.spawn.lock").exists(),
+            "live-pid lock must survive"
+        );
+        assert!(
+            !dir.path().join("daemon.6002.spawn.lock").exists(),
+            "orphaned (no-registry) lock must be removed"
+        );
+        assert!(
+            dir.path().join("daemon.6003.throttle.json").exists(),
+            "unrelated *.throttle.json file must survive the GC untouched"
+        );
+    }
+
+    /// A spawn lock currently held by another process (simulated here by
+    /// holding it ourselves via a second file handle) must survive the GC
+    /// even though its registry says the pid is dead — the non-blocking
+    /// try-lock guard takes precedence over the pid heuristic.
+    #[test]
+    fn gc_stale_spawn_locks_never_removes_a_currently_held_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_registry_in(dir.path(), &info_with_pid(6000, DEAD_PID)).expect("write dead");
+        // Acquire (and hold) the lock ourselves — simulates a concurrent
+        // acquirer whose flock the GC must not steal out from under it.
+        let _held = acquire_spawn_lock_in(dir.path(), 6000).expect("acquire");
+
+        gc_stale_spawn_locks_in(dir.path());
+
+        assert!(
+            dir.path().join("daemon.6000.spawn.lock").exists(),
+            "a lock currently held by someone else must never be deleted"
+        );
+    }
+
+    /// GC on a directory with no spawn-lock files at all must be a silent
+    /// no-op (not an error, not a panic).
+    #[test]
+    fn gc_stale_spawn_locks_noop_on_empty_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        gc_stale_spawn_locks_in(dir.path());
+    }
+
+    /// GC against a nonexistent directory must not panic — the daemon spawn
+    /// path calls this best-effort and must never fail the real spawn
+    /// attempt over a housekeeping sweep.
+    #[test]
+    fn gc_stale_spawn_locks_tolerates_missing_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("does-not-exist");
+        gc_stale_spawn_locks_in(&missing);
     }
 }

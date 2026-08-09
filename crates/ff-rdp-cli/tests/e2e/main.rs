@@ -14,6 +14,7 @@ mod dom_tree;
 mod emulate;
 mod eval;
 mod exit_codes;
+mod flag_subcommand_hints;
 mod geometry;
 mod hints;
 mod inspect;

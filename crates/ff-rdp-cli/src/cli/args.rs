@@ -473,6 +473,13 @@ sandbox scope (which bypasses page CSP), so each call already has its own
 scope and `const`/`let` declarations never leak across calls. The
 `--no-isolate` flag is kept for backwards compatibility but is now a no-op.
 
+Top-level `await` works (iter-132): `ff-rdp eval 'await Promise.resolve(41) + 1'`
+resolves to 42. Scripts containing `await` are transparently wrapped in an
+async IIFE before evaluation — no `--async` flag or extra syntax needed. A
+single-expression script (no top-level `;`) auto-returns its value; a
+multi-statement script needs an explicit `return` to surface a value (it
+still runs either way — no SyntaxError).
+
 Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}
 
 When the result is a non-primitive (object, array), Firefox returns actor grip
@@ -497,6 +504,14 @@ Default output (ARIA-tree JSON): {\"results\": [{\"ref\":\"e1\",\"role\":\"headi
 Since iter-61i, `results` is **always an array** regardless of match count (0 → [], 1 → [item], N → [item, ...]). Agent recipes like `--jq '.results[0]'` work uniformly.
 
 Each element has: ref (stable ID), role (ARIA semantic role), name (accessible name), tag, attrs (actionable only), state, level (headings).
+
+For input/textarea/select elements, a top-level `value` field carries the
+live `.value` DOM property — distinct from `attrs.value`, which is the
+static HTML `value` attribute (getAttribute) and does not change when
+script or user input edits the field. Use `value` to see the current
+form-field content without an extra `eval` round-trip; `attrs.value`
+reflects only what the HTML markup originally declared.
+
 Use --format html for raw HTML strings in each array slot.
 Use --first to revert to the legacy single-value shape (object/string/null, total: 0 or 1).
 With --count: {\"results\": {\"count\": N}, \"total\": N, \"meta\": {...}}
