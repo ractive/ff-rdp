@@ -79,7 +79,7 @@ fn script_resource_entries_with_pending_signal() -> String {
   ready_state: document.readyState,
   ms_since_nav_start: Date.now() - performance.timing.navigationStart
 })"#
-        .to_string()
+    .to_string()
 }
 
 /// Milliseconds after `navigationStart` within which an empty resource buffer

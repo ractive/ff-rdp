@@ -278,6 +278,11 @@ fn needs_href_fallback(candidate: &str, requested_url: &str) -> bool {
 /// never held across the `transport.recv()` call (which may block up to
 /// `poll_interval`).  This prevents a deadlock where another thread tries to
 /// acquire the same mutex while this call is waiting for Firefox.
+///
+/// `requested_url` (iter-130 Theme A) pushed the parameter count to 8; the
+/// function is already heavily documented per-parameter above and splitting
+/// it would obscure the single event-drain loop it implements.
+#[allow(clippy::too_many_arguments)]
 fn wait_for_doc_complete(
     transport: &mut RdpTransport,
     bus_arc: &Arc<Mutex<ResourceCommand>>,
@@ -457,17 +462,52 @@ fn wait_for_doc_complete(
                         // is still the initial `about:blank` placeholder) must
                         // be resolved from the live document rather than
                         // surfaced verbatim.
-                        let committed = if needs_href_fallback(&committed, requested_url) {
-                            probe.as_ref().map_or_else(
-                                || committed.clone(),
-                                |p| {
-                                    let href = eval_location_href(transport, &p.console_actor);
-                                    if href.is_empty() { committed.clone() } else { href }
-                                },
-                            )
-                        } else {
-                            committed
-                        };
+                        if needs_href_fallback(&committed, requested_url) {
+                            let mut href = probe.as_ref().map_or_else(String::new, |p| {
+                                eval_location_href(transport, &p.console_actor)
+                            });
+                            // iter-130 Theme A hardening (comparis.ch live-Firefox
+                            // repro, not caught by any mock-based unit test): this
+                            // `dom-complete` may be Firefox's transient
+                            // about:blank intermediate docshell for a
+                            // cross-process navigation (it fires a full
+                            // loading→interactive→complete cycle of its own,
+                            // typically before the real cross-process swap even
+                            // starts) rather than the requested page — and by
+                            // the time we eval it, that transitional docshell may
+                            // already be torn down (`href` empty/noSuchActor) as
+                            // well as reporting a literal about:blank while
+                            // alive. `needs_href_fallback` treats both the same
+                            // way, so re-run it on `href` itself (not a bespoke
+                            // `== "about:blank"` check) before and after the
+                            // forced refresh, or a torn-down-actor empty read
+                            // would silently fall through to the stale `committed`
+                            // value below instead of being caught as ambiguous.
+                            if needs_href_fallback(&href, requested_url)
+                                && let Some(p) = probe.as_deref_mut()
+                                && refresh_probe_console_actor(transport, p)
+                            {
+                                probe_refreshed = true;
+                                href = eval_location_href(transport, &p.console_actor);
+                            }
+                            if needs_href_fallback(&href, requested_url) {
+                                // Still ambiguous after a fresh lookup — most
+                                // likely still the intermediate docshell's own
+                                // dom-complete. Don't return a lie: drop this
+                                // reading and keep waiting for the real
+                                // navigation's dom-loading/dom-complete (or a
+                                // later probe tick, which retries the same fresh
+                                // lookup). `commit_url`/`interactive_url` were
+                                // already reset by the `.take()` calls above, so
+                                // the next real dom-loading is tracked cleanly.
+                                continue;
+                            }
+                            return Ok(CommitInfo {
+                                committed_url: href,
+                                ready_state: "complete".to_owned(),
+                                elapsed_ms,
+                            });
+                        }
                         return Ok(CommitInfo {
                             committed_url: committed,
                             ready_state: "complete".to_owned(),
@@ -501,13 +541,42 @@ fn wait_for_doc_complete(
                 probe_refreshed = true;
             }
             if probe_readystate_complete(transport, &p.console_actor, p.pre_epoch) {
-                let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let committed = eval_location_href(transport, &p.console_actor);
-                return Ok(CommitInfo {
-                    committed_url: committed,
-                    ready_state: "complete".to_owned(),
-                    elapsed_ms,
-                });
+                let mut committed = eval_location_href(transport, &p.console_actor);
+                // iter-130 Theme A hardening (comparis.ch live-Firefox repro,
+                // not caught by any mock-based unit test): a
+                // `readyState === 'complete'` reading whose resolved URL is a
+                // literal `about:blank` mismatch is Firefox's transient
+                // about:blank intermediate docshell for a cross-process
+                // navigation, not the real requested page — that docshell
+                // also gets a fresh `navigationStart`, so it passes the
+                // `pre_epoch` freshness guard, and `about:blank` loads and
+                // reports `complete` almost instantly, letting this probe
+                // "win" the race against the real navigation. Force one more
+                // fresh actor lookup + re-eval before trusting the reading —
+                // `refresh_probe_console_actor` re-resolves via `getTarget`,
+                // which returns the *current* docshell's actors.
+                if needs_href_fallback(&committed, requested_url)
+                    && refresh_probe_console_actor(transport, p)
+                {
+                    probe_refreshed = true;
+                    committed = eval_location_href(transport, &p.console_actor);
+                }
+                // Still ambiguous (empty — e.g. a torn-down transitional actor
+                // reporting noSuchActor — or a literal about:blank mismatch)
+                // after the fresh lookup: most likely still on the
+                // intermediate docshell. Don't falsely declare the navigation
+                // complete — fall through and keep polling (a later probe
+                // tick or the events path will observe the real commit)
+                // rather than returning a lie.
+                if !needs_href_fallback(&committed, requested_url) {
+                    let elapsed_ms =
+                        u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    return Ok(CommitInfo {
+                        committed_url: committed,
+                        ready_state: "complete".to_owned(),
+                        elapsed_ms,
+                    });
+                }
             }
             // Re-arm the probe timer regardless of the outcome above.
             next_probe_at = Some(Instant::now() + p.probe_interval);
@@ -774,8 +843,7 @@ pub(crate) fn wait_for_navigation_commit(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .unsubscribe(ctx.transport_mut(), sub_id);
-    let _ =
-        WatcherActor::unwatch_targets(ctx.transport_mut(), &watcher_actor, Some("frame"), None);
+    let _ = WatcherActor::unwatch_targets(ctx.transport_mut(), &watcher_actor, Some("frame"), None);
     restore_timeout(ctx.transport_mut(), cli_timeout);
 
     let commit_info = match event_result {

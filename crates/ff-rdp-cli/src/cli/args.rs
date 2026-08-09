@@ -697,8 +697,15 @@ With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_no
     /// Reload the page
     #[command(long_about = "Reload the page.
 
-With --wait-idle, the command blocks after reload until network activity has been
-idle for --idle-ms (default 500) or the --reload-timeout expires (default 10000).
+Without --wait-idle, the command blocks until the reload commits — same
+{committed_url, ready_state, elapsed_ms} envelope as `navigate`/`back`/
+`forward` (iter-130), so all four navigation verbs are interchangeable for a
+caller that just wants to know where the page landed.
+
+With --wait-idle, the command instead blocks until network activity has been
+idle for --idle-ms (default 500) or the --reload-timeout expires (default
+10000) — a different envelope (`reloaded`/`idle_at_ms`/`requests_observed`)
+geared at network-quiescence rather than commit timing.
 
 Pass --hard for a cache-bypassing reload (Firefox `options.force`, the
 protocol equivalent of Cmd-Shift-R / `LoadFlags::BYPASS_CACHE`).  Default
@@ -710,18 +717,25 @@ Examples:
   ff-rdp reload --wait-idle
   ff-rdp reload --hard --wait-idle --idle-ms 1000 --reload-timeout 30000
 
-Output (plain):    {\"results\": {\"action\": \"reload\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
+Output (plain):    {\"results\": {\"action\": \"reload\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
 Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requests_observed\": M[, \"force\": true]}, \"total\": 1, \"meta\": {...}}")]
     Reload(ReloadArgs),
     /// Go back in history
     #[command(long_about = "Navigate back in browser history.
 
-Output: {\"results\": {\"action\": \"back\"}, \"total\": 1, \"meta\": {...}}")]
+Blocks until the navigation commits, returning the same navigate-style
+envelope as `navigate`/`forward`/`reload` (iter-130) — a caller doesn't need
+a follow-up `eval location.href` to know where `back` landed.
+
+Output: {\"results\": {\"action\": \"back\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}")]
     Back,
     /// Go forward in history
     #[command(long_about = "Navigate forward in browser history.
 
-Output: {\"results\": {\"action\": \"forward\"}, \"total\": 1, \"meta\": {...}}")]
+Blocks until the navigation commits, returning the same navigate-style
+envelope as `navigate`/`back`/`reload` (iter-130).
+
+Output: {\"results\": {\"action\": \"forward\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}")]
     Forward,
     /// Inspect a remote JavaScript object by its grip actor ID
     #[command(long_about = "Inspect a remote JavaScript object by its grip actor ID.
