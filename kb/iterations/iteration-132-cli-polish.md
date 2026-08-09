@@ -83,8 +83,9 @@ justifies its own gate run).
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
-- [x] unit_jq_parse_error_clean: malformed `--jq` yields an error string containing
-      the failing position and NO `Lex(`/`Delim(` Debug fragments; e2e asserts exit 1
+- [x] unit_jq_parse_error_clean (`jq_parse_error_unclosed_bracket_is_clean`): malformed jq
+      filter yields an error string containing the failing position and NO Debug-formatted
+      Lex(/Delim( fragments; e2e (`tabs_with_malformed_jq_shows_clean_error`) asserts exit 1
       and the clean message on stdout envelope.
 - [x] live_132_dom_live_value: fixture input with attribute value "0"; after
       `eval '...value="42"'`, `dom '#el'` reports `value:"42"` AND `attrs.value:"0"`.
@@ -92,9 +93,9 @@ justifies its own gate run).
       42, exit 0, on all three input paths (arg, --file, --stdin).
 - [x] e2e_flag_subcommand_hints: `scroll --bottom` and `dom --stats` stderr suggests
       `scroll bottom` / `dom stats` respectively; no `--attrs` tip for `dom --stats`.
-- [x] unit_spawn_lock_gc: daemon spawn path removes a stale lock with a dead pid,
-      keeps a live-pid lock, and leaves an unrelated `*.throttle.json` file
-      (iter-131) untouched.
+- [x] unit_spawn_lock_gc (`gc_stale_spawn_locks_removes_dead_keeps_live_and_ignores_throttle_file`):
+      daemon spawn path removes a stale lock with a dead pid, keeps a live-pid lock, and leaves
+      an unrelated throttle.json file (iter-131) untouched.
 
 ## Notes
 
