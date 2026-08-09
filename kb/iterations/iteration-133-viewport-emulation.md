@@ -104,3 +104,13 @@ A future `--device iphone-15` preset (window-size + dppx + touch + UA bundle) is
 deliberately out of scope — file separately if wanted.
 Depends on [[iteration-131-measurement-honesty]] (both touch responsive's
 warning/simulation surfaces — serialize to avoid conflicts).
+
+**iter-132 post-merge note (2026-08-09):** no scope changes — iter-132 was a
+CLI-polish grab-bag (jq error rendering, `dom` live `value` field, top-level
+`await` in `eval`, flag-vs-subcommand hints, spawn-lock GC) with no overlap
+with this iteration's `launch`/`screenshot`/`responsive` surfaces. The one
+shared file is `crates/ff-rdp-cli/src/cli/args.rs` (the long `--help` text
+constants) — iter-132 appended two new doc paragraphs there (top-level
+await, dom live-value). Both are append-only, non-overlapping insertions
+relative to where Theme A/B/C's help text lands in this plan, so a rebase
+onto the merged iter-132 base should be conflict-free.
