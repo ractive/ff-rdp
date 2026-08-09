@@ -332,7 +332,9 @@ pub fn run(
                 "at requested width {width}px the page's media queries did not flip \
                  (matchMedia(\"(width: {width}px)\").matches == false, innerWidth == {}); \
                  geometry is accurate for the requested width but @media-dependent \
-                 styles reflect the physical viewport, not {width}px",
+                 styles reflect the physical viewport, not {width}px. For a real viewport, \
+                 use `ff-rdp launch --window-size {width}xH` (true above ~500px) or \
+                 `ff-rdp screenshot --window-size {width}xH` for a true sub-500px raster.",
                 mq_check
                     .inner_width
                     .map_or_else(|| "unknown".to_owned(), |w| w.to_string()),

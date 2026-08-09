@@ -1,4 +1,6 @@
+use std::io::Read as _;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use base64::Engine as _;
@@ -39,6 +41,21 @@ pub(crate) struct ScreenshotOpts<'a> {
     pub(crate) viewport_height: Option<u32>,
     /// When set, the resolved output path must be a descendant of this root.
     pub(crate) output_root: Option<&'a std::path::Path>,
+    /// `--window-size WxH` (iter-133 Theme B): switch to the batch-capture
+    /// path — a one-shot `firefox --headless --window-size --screenshot`
+    /// subprocess in a fresh scratch profile, giving an exact WxH PNG with
+    /// no viewport floor. See [`run_batch_window_size`].
+    ///
+    /// No `--dppx` companion flag: empirically (Firefox 153.0.3, direct CLI
+    /// testing during iter-133 implementation) `layout.css.devPixelsPerPx`
+    /// has NO effect on the `--screenshot` batch-capture raster — the PNG
+    /// stays exactly the requested `--window-size` regardless of the pref,
+    /// with or without e10s. The plan's dppx-composition assumption (based
+    /// only on the unrelated RDP `emulate --dppx` mechanism) does not hold
+    /// for this capture path; see `kb/research/viewport-emulation.md`
+    /// addendum. `emulate --dppx` still works for the LIVE RDP session's
+    /// `devicePixelRatio` — it is simply orthogonal to this batch path.
+    pub(crate) window_size: Option<&'a str>,
 }
 
 /// Data URL prefix returned by the screenshot actor.
@@ -80,6 +97,13 @@ fn version_mismatch_message() -> String {
 ///
 /// Called by the script runner, which handles its own NDJSON output.
 pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Value, AppError> {
+    // iter-133 Theme B: `--window-size` switches to an entirely separate
+    // capture path (a one-shot headless-shell subprocess) — see
+    // `run_batch_window_size` for why this can't reuse the live RDP path.
+    if let Some(window_size) = opts.window_size {
+        return run_batch_window_size(cli, opts, window_size);
+    }
+
     if opts.full_page && opts.viewport_height.is_some() {
         return Err(AppError::User(
             "screenshot: --full-page and --viewport-height are mutually exclusive".to_owned(),
@@ -120,15 +144,32 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
         ))
     })?;
 
-    // Decode bytes only for dimension extraction and file output.
-    // For base64 mode the raw `b64` string is used directly.
+    // Decode once; `build_capture_result` re-encodes for base64 mode or
+    // writes raw bytes to disk, and extracts width/height from the PNG.
     let png_bytes = base64::engine::general_purpose::STANDARD
         .decode(b64)
         .map_err(|e| AppError::from(anyhow::anyhow!("screenshot: base64 decode failed: {e}")))?;
 
-    let (width, height) = png_dimensions(&png_bytes).unwrap_or((0, 0));
+    build_capture_result(opts, &png_bytes, &[])
+}
 
-    let results = if opts.base64_mode {
+/// Build the final `results` JSON for a captured PNG: `{base64, width,
+/// height, bytes}` or `{path, width, height, bytes}` depending on
+/// `opts.base64_mode`, with `extra_fields` merged in on top (e.g. the batch
+/// path's `capture: "batch-window-size"` marker).
+///
+/// Shared by the live two-step RDP path ([`run_core`]) and the
+/// `--window-size` batch-capture path ([`run_batch_window_size`]) so both
+/// honor `--output`/`--base64`/`--output-root` identically.
+fn build_capture_result(
+    opts: &ScreenshotOpts<'_>,
+    png_bytes: &[u8],
+    extra_fields: &[(&str, serde_json::Value)],
+) -> Result<serde_json::Value, AppError> {
+    let (width, height) = png_dimensions(png_bytes).unwrap_or((0, 0));
+
+    let mut results = if opts.base64_mode {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes);
         json!({
             "base64": b64,
             "width": width,
@@ -147,7 +188,7 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
             })?;
         }
 
-        crate::util::safe_io::safe_write(&dest, &png_bytes)
+        crate::util::safe_io::safe_write(&dest, png_bytes)
             .with_context(|| format!("screenshot: could not write to '{}'", dest.display()))
             .map_err(AppError::from)?;
 
@@ -164,7 +205,159 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
             "bytes": png_bytes.len(),
         })
     };
+
+    if let Some(obj) = results.as_object_mut() {
+        for (key, value) in extra_fields {
+            obj.insert((*key).to_owned(), value.clone());
+        }
+    }
+
     Ok(results)
+}
+
+/// Batch-capture path for `--window-size WxH` (iter-133 Theme B).
+///
+/// Shells out to a one-shot `firefox --headless --window-size=W,H
+/// --screenshot=<path> <url>` subprocess in a fresh scratch profile —
+/// proven (`kb/research/viewport-emulation.md`) to honor the requested pixel
+/// size EXACTLY, with no floor, unlike a live `--start-debugger-server`
+/// instance's viewport (`launch --window-size` clamps below ~500px). This is
+/// a wholly separate Firefox process from the live RDP session/daemon: it
+/// re-navigates the current tab's URL from scratch, so cookies/localStorage/
+/// session state from the live tab are NOT carried over.
+///
+/// No density knob: `layout.css.devPixelsPerPx` was tested (iter-133
+/// implementation) against this exact capture path and found to have no
+/// effect on the output raster — see the doc comment on
+/// [`ScreenshotOpts::window_size`].
+fn run_batch_window_size(
+    cli: &Cli,
+    opts: &ScreenshotOpts<'_>,
+    window_size: &str,
+) -> Result<serde_json::Value, AppError> {
+    let (width, height) = crate::util::window_size::parse_window_size(window_size)?;
+
+    // Resolve the URL of the currently-connected tab so the batch subprocess
+    // navigates to the same page — the point of `--window-size` is a mobile
+    // shot of what the caller is already looking at.
+    let url = resolve_current_tab_url(cli)?;
+
+    let firefox = super::launch::find_firefox()?;
+
+    let scratch = tempfile::Builder::new()
+        .prefix("ff-rdp-batch-screenshot-")
+        .tempdir()
+        .map_err(|e| {
+            AppError::User(format!(
+                "screenshot: failed to create scratch profile directory: {e}"
+            ))
+        })?;
+
+    let user_js = "user_pref(\"browser.aboutwelcome.enabled\", false);\n\
+         user_pref(\"browser.shell.checkDefaultBrowser\", false);\n\
+         user_pref(\"datareporting.policy.dataSubmissionEnabled\", false);\n\
+         user_pref(\"toolkit.telemetry.reportingpolicy.firstRun\", false);\n";
+    std::fs::write(scratch.path().join("user.js"), user_js).map_err(|e| {
+        AppError::User(format!(
+            "screenshot: failed to write scratch profile user.js: {e}"
+        ))
+    })?;
+
+    let capture_path = scratch.path().join("capture.png");
+
+    let mut cmd = std::process::Command::new(&firefox);
+    cmd.arg("-no-remote");
+    cmd.arg("-profile").arg(scratch.path());
+    cmd.arg("--headless");
+    cmd.arg("--screenshot").arg(&capture_path);
+    cmd.arg(format!("--window-size={width},{height}"));
+    cmd.arg(&url);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        cmd.process_group(0);
+    }
+
+    let mut child = cmd.spawn().map_err(|e| {
+        AppError::User(format!(
+            "screenshot: failed to start batch-capture Firefox at {}: {e}",
+            firefox.display()
+        ))
+    })?;
+
+    // Bounded wait: a batch `--screenshot` invocation exits on its own once
+    // the capture completes; if the page never settles (e.g. an infinite
+    // spinner), don't hang the whole command indefinitely.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(AppError::User(
+                        "screenshot: batch --window-size capture timed out after 30s".to_owned(),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                return Err(AppError::User(format!(
+                    "screenshot: failed to check batch-capture Firefox status: {e}"
+                )));
+            }
+        }
+    };
+
+    if !status.success() {
+        let mut stderr_text = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            let _ = stderr.read_to_string(&mut stderr_text);
+        }
+        let stderr_text = stderr_text.trim();
+        let detail = if stderr_text.is_empty() {
+            String::new()
+        } else {
+            format!(": {stderr_text}")
+        };
+        return Err(AppError::User(format!(
+            "screenshot: batch --window-size capture exited with {status}{detail}"
+        )));
+    }
+
+    let png_bytes = std::fs::read(&capture_path).map_err(|e| {
+        AppError::User(format!(
+            "screenshot: batch capture exited successfully but no PNG was produced at {}: {e}",
+            capture_path.display()
+        ))
+    })?;
+
+    build_capture_result(opts, &png_bytes, &[("capture", json!("batch-window-size"))])
+}
+
+/// Resolve the current tab's URL over the live RDP connection so the batch
+/// capture subprocess (a separate Firefox process, see
+/// [`run_batch_window_size`]) can navigate to the same page.
+fn resolve_current_tab_url(cli: &Cli) -> Result<String, AppError> {
+    let mut ctx = connect_direct(cli)?;
+    let console_actor = ctx.target.console_actor.clone();
+    let result = eval_or_bail(
+        &mut ctx,
+        &console_actor,
+        "location.href",
+        "screenshot: could not resolve the current tab's URL for batch capture",
+    )?;
+    match result.result {
+        Grip::Value(serde_json::Value::String(s)) if !s.is_empty() => Ok(s),
+        other => Err(AppError::User(format!(
+            "screenshot: unexpected location.href result while resolving the current tab's URL: {}",
+            other.to_json()
+        ))),
+    }
 }
 
 pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {

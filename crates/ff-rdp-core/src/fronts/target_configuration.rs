@@ -186,22 +186,6 @@ impl TargetConfigurationFront {
         )
     }
 
-    /// Override the viewport size for this target (in CSS pixels).
-    ///
-    /// Set `width` and `height` to the desired viewport dimensions.
-    /// Pass `0` for both to reset to the natural viewport size.
-    pub fn set_custom_viewport_size(
-        &self,
-        transport: &mut RdpTransport,
-        width: u32,
-        height: u32,
-    ) -> Result<(), ProtocolError> {
-        self.update_configuration(
-            transport,
-            &json!({"customViewport": {"width": width, "height": height}}),
-        )
-    }
-
     /// Send an `updateConfiguration` request with the given configuration patch.
     ///
     /// The patch is merged into the target's live configuration on the Firefox
@@ -455,25 +439,6 @@ mod tests {
         });
 
         front.reset(&mut transport).unwrap();
-        t.join().unwrap();
-    }
-
-    #[test]
-    fn set_custom_viewport_size_sends_dimensions() {
-        let (mut transport, server) = make_transport_pair();
-        let (front, actor_id) = make_front("server1.conn0.targetConf4");
-
-        let t = std::thread::spawn(move || {
-            let req = server_read(&server);
-            assert_eq!(req["type"], "updateConfiguration");
-            assert_eq!(req["configuration"]["customViewport"]["width"], 1280);
-            assert_eq!(req["configuration"]["customViewport"]["height"], 800);
-            server_reply(&server, json!({"from": actor_id.as_ref()}));
-        });
-
-        front
-            .set_custom_viewport_size(&mut transport, 1280, 800)
-            .unwrap();
         t.join().unwrap();
     }
 }

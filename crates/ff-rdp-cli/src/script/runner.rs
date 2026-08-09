@@ -1128,6 +1128,7 @@ fn execute_screenshot(step: &ScreenshotStep, cli: &Cli) -> Result<Value, AppErro
         bulk: false,
         viewport_height: None,
         output_root: None,
+        window_size: None,
     };
     screenshot_run_core(cli, &opts)
 }

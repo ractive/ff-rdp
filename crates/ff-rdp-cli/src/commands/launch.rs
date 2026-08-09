@@ -209,6 +209,7 @@ pub(crate) fn build_command(
     headless: bool,
     profile: Option<&str>,
     auto_consent: bool,
+    window_size: Option<(u32, u32)>,
 ) -> Result<(std::process::Command, Option<PathBuf>), AppError> {
     let mut cmd = std::process::Command::new(firefox);
 
@@ -219,6 +220,17 @@ pub(crate) fn build_command(
 
     if headless {
         cmd.arg("--headless");
+    }
+
+    // iter-133 Theme A: `-width`/`-height` are real Firefox window-feature
+    // flags (not the headless-shell `--window-size` arg, which a
+    // `--start-debugger-server` instance ignores — see
+    // kb/research/viewport-emulation.md). Honored but clamped to a ~500px
+    // live floor below that width; the caller (`run`) reports the requested
+    // size and a below-floor warning in the envelope.
+    if let Some((width, height)) = window_size {
+        cmd.arg("-width").arg(width.to_string());
+        cmd.arg("-height").arg(height.to_string());
     }
 
     // Resolve the effective profile path. `profile` and `temp_profile` are
@@ -415,7 +427,7 @@ fn should_write_owner_marker(profile: Option<&str>) -> bool {
 ///
 /// `replace` — if `true` and the port is already in use, stop the prior instance
 /// before launching (implements `--replace` / `--force`).
-#[allow(clippy::fn_params_excessive_bools)]
+#[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)]
 pub fn run(
     cli: &Cli,
     headless: bool,
@@ -424,9 +436,16 @@ pub fn run(
     debug_port: Option<u16>,
     auto_consent: bool,
     replace: bool,
+    window_size: Option<&str>,
 ) -> Result<(), AppError> {
     let port = debug_port.unwrap_or(cli.port);
     let host = &cli.host;
+
+    // iter-133 Theme A: parse --window-size up front so a malformed value
+    // fails fast, before any port-collision check or Firefox spawn.
+    let window_size: Option<(u32, u32)> = window_size
+        .map(crate::util::window_size::parse_window_size)
+        .transpose()?;
 
     // Detect port collision before spawning Firefox. A new --start-debugger-server
     // <port> Firefox silently no-ops when the port is already held by another
@@ -460,7 +479,8 @@ pub fn run(
 
     let firefox = find_firefox()?;
 
-    let (mut cmd, profile_path) = build_command(&firefox, port, headless, profile, auto_consent)?;
+    let (mut cmd, profile_path) =
+        build_command(&firefox, port, headless, profile, auto_consent, window_size)?;
 
     let mut child = cmd.spawn().map_err(|e| {
         AppError::User(format!(
@@ -537,7 +557,22 @@ pub fn run(
             let profile_path_str = profile_path
                 .as_ref()
                 .map(|p| p.to_string_lossy().as_ref().to_owned());
-            let result = json!({
+
+            // iter-133 Theme A: report the requested window size (if any) and
+            // whether it is below the documented ~500px live-viewport floor.
+            // `below_floor` looks only at width — the floor is a width clamp,
+            // not a height clamp (see kb/research/viewport-emulation.md).
+            let window_size_json = window_size.map(|(w, h)| {
+                let below_floor = w < crate::util::window_size::LIVE_VIEWPORT_FLOOR_PX;
+                json!({
+                    "requested": {"width": w, "height": h},
+                    "below_floor": below_floor,
+                })
+            });
+            let below_floor = window_size
+                .is_some_and(|(w, _)| w < crate::util::window_size::LIVE_VIEWPORT_FLOOR_PX);
+
+            let mut result = json!({
                 "pid": pid,
                 "host": host,
                 "port": port,
@@ -549,7 +584,23 @@ pub fn run(
                 "profile_path": profile_path_str,
                 "temp_profile": effective_temp_profile,
                 "auto_consent": auto_consent,
+                "window_size": window_size_json,
             });
+            if below_floor && let (Some((w, h)), Some(obj)) = (window_size, result.as_object_mut())
+            {
+                let floor = crate::util::window_size::LIVE_VIEWPORT_FLOOR_PX;
+                obj.insert(
+                    "warnings".to_owned(),
+                    json!([format!(
+                        "requested width {w}px (window-size {w}x{h}) is below the ~{floor}px \
+                         live-viewport floor observed for a headless debugger-server Firefox \
+                         instance; effective innerWidth typically clamps up to ~{floor}px \
+                         (confirm with `ff-rdp eval innerWidth`). For a true sub-{floor}px \
+                         raster, use `ff-rdp screenshot --window-size {w}x{h}` after navigating \
+                         instead of relying on this live session's viewport."
+                    )]),
+                );
+            }
             let mut meta = json!({
                 "firefox": firefox.to_string_lossy().as_ref().to_owned(),
             });
@@ -639,7 +690,7 @@ mod tests {
         std::fs::create_dir_all(&user_profile).unwrap();
         let user_profile_str = user_profile.to_str().unwrap();
         let (_, returned) =
-            build_command(&tmp, 6000, false, Some(user_profile_str), false).unwrap();
+            build_command(&tmp, 6000, false, Some(user_profile_str), false, None).unwrap();
         cleanup_fake_firefox(&tmp);
 
         assert_eq!(returned.as_deref(), Some(user_profile.as_path()));
@@ -655,7 +706,7 @@ mod tests {
     #[test]
     fn build_command_always_includes_no_remote() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 6000, false, None, false).unwrap();
+        let (cmd, _) = build_command(&tmp, 6000, false, None, false, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -667,7 +718,7 @@ mod tests {
     #[test]
     fn build_command_includes_debugger_server_port() {
         let tmp = fake_firefox();
-        let (cmd, profile) = build_command(&tmp, 6000, false, None, false).unwrap();
+        let (cmd, profile) = build_command(&tmp, 6000, false, None, false, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -690,7 +741,7 @@ mod tests {
     #[test]
     fn build_command_no_profile_auto_creates_temp_profile() {
         let tmp = fake_firefox();
-        let (cmd, profile_path) = build_command(&tmp, 6000, false, None, false).unwrap();
+        let (cmd, profile_path) = build_command(&tmp, 6000, false, None, false, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         let profile = profile_path.expect("auto-created temp profile should be returned");
@@ -719,7 +770,7 @@ mod tests {
     #[test]
     fn build_command_headless_flag() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 6000, true, None, false).unwrap();
+        let (cmd, _) = build_command(&tmp, 6000, true, None, false, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -731,7 +782,7 @@ mod tests {
     #[test]
     fn build_command_no_headless_by_default() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 6000, false, None, false).unwrap();
+        let (cmd, _) = build_command(&tmp, 6000, false, None, false, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -747,7 +798,7 @@ mod tests {
         std::fs::create_dir_all(&profile_dir).unwrap();
         let profile_str = profile_dir.to_str().unwrap();
         let (cmd, profile_path) =
-            build_command(&tmp, 6000, false, Some(profile_str), false).unwrap();
+            build_command(&tmp, 6000, false, Some(profile_str), false, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         let _ = std::fs::remove_dir_all(&profile_dir);
@@ -764,7 +815,7 @@ mod tests {
     #[test]
     fn build_command_temp_profile_creates_dir_and_sets_profile_arg() {
         let tmp = fake_firefox();
-        let (cmd, profile_path) = build_command(&tmp, 6000, false, None, false).unwrap();
+        let (cmd, profile_path) = build_command(&tmp, 6000, false, None, false, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -783,7 +834,7 @@ mod tests {
     #[test]
     fn build_command_temp_profile_writes_user_js() {
         let tmp = fake_firefox();
-        let (_, profile_path) = build_command(&tmp, 6000, false, None, false).unwrap();
+        let (_, profile_path) = build_command(&tmp, 6000, false, None, false, None).unwrap();
         cleanup_fake_firefox(&tmp);
         let profile = profile_path.expect("temp_profile should set a profile path");
         let user_js = profile.join("user.js");
@@ -811,12 +862,55 @@ mod tests {
     #[test]
     fn build_command_non_standard_port() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 9222, false, None, false).unwrap();
+        let (cmd, _) = build_command(&tmp, 9222, false, None, false, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
             args.iter().any(|a| a == "9222"),
             "expected port 9222 in args: {args:?}"
+        );
+    }
+
+    #[test]
+    fn build_command_window_size_forwards_width_and_height() {
+        let tmp = fake_firefox();
+        let (cmd, profile) =
+            build_command(&tmp, 6000, true, None, false, Some((390, 844))).unwrap();
+        let args = command_args(&cmd);
+        cleanup_fake_firefox(&tmp);
+        if let Some(p) = profile {
+            let _ = std::fs::remove_dir_all(&p);
+        }
+        let width_idx = args.iter().position(|a| a == "-width");
+        let height_idx = args.iter().position(|a| a == "-height");
+        assert!(
+            width_idx.is_some() && height_idx.is_some(),
+            "expected -width and -height in args: {args:?}"
+        );
+        assert_eq!(
+            args.get(width_idx.unwrap() + 1).map(String::as_str),
+            Some("390"),
+            "expected -width 390 in args: {args:?}"
+        );
+        assert_eq!(
+            args.get(height_idx.unwrap() + 1).map(String::as_str),
+            Some("844"),
+            "expected -height 844 in args: {args:?}"
+        );
+    }
+
+    #[test]
+    fn build_command_no_window_size_omits_width_height_flags() {
+        let tmp = fake_firefox();
+        let (cmd, profile) = build_command(&tmp, 6000, false, None, false, None).unwrap();
+        let args = command_args(&cmd);
+        cleanup_fake_firefox(&tmp);
+        if let Some(p) = profile {
+            let _ = std::fs::remove_dir_all(&p);
+        }
+        assert!(
+            !args.iter().any(|a| a == "-width" || a == "-height"),
+            "unexpected -width/-height in args when --window-size was not given: {args:?}"
         );
     }
 
@@ -828,7 +922,7 @@ mod tests {
         // The extension download may fail in CI (no network), so we accept both
         // Ok and a User-level error; we just verify it is not an Internal error.
         let tmp = fake_firefox();
-        let result = build_command(&tmp, 6000, false, None, true);
+        let result = build_command(&tmp, 6000, false, None, true, None);
         cleanup_fake_firefox(&tmp);
         match result {
             Ok((_, profile_path)) => {
@@ -848,7 +942,7 @@ mod tests {
         // doesn't panic when given a temp profile. The download will fail in
         // offline test environments, so we just verify the error is reasonable
         // or it succeeds if network is available.
-        let result = build_command(&tmp, 6000, false, None, true);
+        let result = build_command(&tmp, 6000, false, None, true, None);
         cleanup_fake_firefox(&tmp);
         // Either succeeds (network available) or gives a user error (no network)
         match result {

@@ -250,6 +250,43 @@ RDP" (impossible) to "launch/screenshot window-size + dppx composition, with a
 documented 500px live floor and a batch-screenshot escape hatch for sub-500px
 mobile rasters." That reframed scope **is sonnet-implementable**.
 
+## Addendum (iter-133 implementation, 2026-08-09): dppx does NOT compose with
+## the batch `--screenshot` capture path
+
+The "dppx interaction" section above establishes that `emulate --dppx`
+(`overrideDPPX` over RDP) is orthogonal to width for a **live RDP session**
+(`launch`'s debugger-server instance) — confirmed and still true. The
+plan's Theme B extrapolated this to the **unrelated** batch
+`firefox --headless --window-size=W,H --screenshot` subprocess, assuming
+`layout.css.devPixelsPerPx` in the scratch profile's `user.js` would scale
+the output raster the same way. That assumption was never empirically
+tested before the plan was written; iter-133 implementation tested it
+directly against Firefox 153.0.3:
+
+```
+firefox -no-remote -profile <scratch-with-devPixelsPerPx=2> \
+  --headless --screenshot out.png --window-size=390,844 https://example.com
+→ out.png is 390×844 (unchanged) — the pref has NO effect on this path
+```
+
+Confirmed with `--setpref layout.css.devPixelsPerPx=2` on the command line
+and with `browser.tabs.remote.autostart=false` (non-e10s) — same result in
+both cases. By contrast, the SAME pref set in a normal (non-`--screenshot`)
+headless `--start-debugger-server` launch DOES flip live
+`window.devicePixelRatio` (verified via `eval devicePixelRatio` → `2`) —
+so the pref itself works; the `--screenshot` batch codepath specifically
+does not read it for raster sizing. `--window-size=W,H` in that mode sets
+the raster in device pixels directly and unconditionally (confirmed:
+`--window-size=780,1688` → a 780×1688 PNG, DPR pref irrelevant).
+
+**Conclusion: `screenshot --window-size` ships with no `--dppx` companion
+flag.** Requesting a caller pre-multiply `--window-size` by their desired
+density would not be equivalent to real device dppx (it renders a wider
+CSS viewport, not a denser one) and would be misleading to offer under a
+`--dppx` name. `emulate --dppx` remains the correct tool for the live RDP
+session's `devicePixelRatio` — it is simply orthogonal to (and does not
+apply to) this batch capture path.
+
 ## Related
 
 - [[project_viewport_protocol]] — prior conclusion (confirmed): no RDP viewport
