@@ -286,9 +286,22 @@ re-exported from `ff_rdp_core`): issues `watchTargets("frame")` **and**
 until both are sent (same quirk documented above for
 `commands/navigate.rs`) — then drains the transport for `settle`
 (`DEFAULT_FRAME_TARGETS_SETTLE` = 800ms), deduping `target-available-form` by
-actor id and applying `target-destroyed-form` removals, before unsubscribing
-(`unwatchResources` + `unwatchTargets`, both best-effort/oneway) and returning
-the snapshot.
+actor id and applying `target-destroyed-form` removals, before returning the
+snapshot.
+
+**Deliberately does NOT call `unwatchTargets`/`unwatchResources` before
+returning.** The whole point is to hand back each target's `console_actor` so
+the caller can eval inside that frame — but with
+`isServerTargetSwitchingEnabled: true`, unwatching `"frame"` tears down
+**every** target Firefox spawned under that switching regime (top level
+included), destroying their console/inspector actors with them. Confirmed
+live against Firefox 153: an `unwatchTargets` call immediately followed by
+`evaluateJSAsync` on a just-returned frame's `console_actor` produced
+`target-destroyed-form` for both targets and the eval never got a reply. The
+"frame" subscription is left active for the lifetime of the connection —
+harmless, since each direct/no-daemon CLI connection is short-lived and daemon
+connections already tolerate a standing "frame" subscription the same way
+`navigate`'s own prelude does.
 
 Callers **must** have obtained `watcher_actor` via
 `get_watcher_with_options(Some(true))` — this is therefore an opt-in helper,
