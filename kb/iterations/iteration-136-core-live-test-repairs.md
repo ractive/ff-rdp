@@ -102,7 +102,7 @@ runtime". Add whatever cheap guard fits: e.g. make `send_raw` reject known-onewa
 or give the recording helpers an explicit oneway variant so the choice is visible at the call site.
 Keep this proportionate — a small guard, not a framework.
 
-## Acceptance criteria
+## Acceptance Criteria
 
 - [x] live_cookies: passes, no `recv: Timeout` panic — cleanup now uses `send_raw_oneway`
 - [x] live_cookies_empty: passes, no `recv: Timeout` panic — cleanup now uses `send_raw_oneway`
@@ -114,8 +114,7 @@ Keep this proportionate — a small guard, not a framework.
       `AccessibilityActor::is_service_enabled` asserted true first
 - [x] unit_send_raw_rejects_oneway: `reject_oneway_request` panics for `unwatchResources`,
       `clearResources`, `unwatchTargets`, `clearPicker` and passes request/reply types
-- [x] a11y_falls_back_to_get_document_when_walker_children_unrecognized: e2e proof the
-      legacy `getDocument` path still works when the walker rejects `children`
+- [x] a11y_falls_back_to_get_document_when_walker_children_unrecognized: e2e proof the legacy `getDocument` path still works when the walker rejects `children`
 - [x] full core suite: `cargo test -p ff-rdp-core -- --include-ignored --test-threads=1`
       completes with 0 failures and terminates
 

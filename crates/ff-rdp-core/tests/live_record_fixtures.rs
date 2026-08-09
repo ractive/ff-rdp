@@ -2197,136 +2197,158 @@ fn live_accessibility_tree() {
     // The reply is `{}` but a `canBeDisabledChange` event races it; drain both.
     drain_messages(transport, Duration::from_millis(500));
 
-    // Get tab
-    transport
-        .send(&json!({"to": "root", "type": "listTabs"}))
-        .expect("send listTabs");
-    let list_tabs = recv_from_actor(transport, "root");
-    let tab_actor = list_tabs["tabs"][0]["actor"]
-        .as_str()
-        .expect("tab actor")
-        .to_owned();
-
-    // Get target
-    transport
-        .send(&json!({"to": &tab_actor, "type": "getTarget"}))
-        .expect("send getTarget");
-    let target = recv_from_actor(transport, &tab_actor);
-    let a11y_actor = target["frame"]["accessibilityActor"]
-        .as_str()
-        .expect("accessibilityActor in frame")
-        .to_owned();
-
-    let a11y_id: ActorId = a11y_actor.as_str().into();
-    assert!(
-        AccessibilityActor::is_service_enabled(transport, &a11y_id)
-            .expect("bootstrap accessibility actor"),
-        "accessibility service must report enabled after parent enable"
-    );
-
-    if should_record() {
+    // From here on the platform accessibility service is globally enabled on a
+    // Firefox instance later tests and dogfood runs share. Any assertion below
+    // can panic, so the traversal runs inside `catch_unwind` and the `disable`
+    // below always runs — otherwise a single failed assertion would leave the
+    // service on for the rest of the run (iter-136).
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Get tab
         transport
-            .send(&json!({"to": &a11y_actor, "type": "bootstrap"}))
-            .expect("send bootstrap");
-        let bootstrap = recv_from_actor(transport, &a11y_actor);
-        save_core_fixture("a11y_bootstrap_response.json", &bootstrap);
-        save_cli_fixture("a11y_bootstrap_response.json", &bootstrap);
-    }
+            .send(&json!({"to": "root", "type": "listTabs"}))
+            .expect("send listTabs");
+        let list_tabs = recv_from_actor(transport, "root");
+        let tab_actor = list_tabs["tabs"][0]["actor"]
+            .as_str()
+            .expect("tab actor")
+            .to_owned();
 
-    // Get walker
-    transport
-        .send(&json!({"to": &a11y_actor, "type": "getWalker"}))
-        .expect("send getWalker");
-    let walker_resp = recv_from_actor(transport, &a11y_actor);
-    let walker_actor = walker_resp["walker"]["actor"]
-        .as_str()
-        .expect("walker actor")
-        .to_owned();
-
-    // Get root node.
-    //
-    // The walker's root accessor is an argument-less `children` call; the old
-    // `getRootNode` (and the internal, unexported `getDocument`) are answered
-    // with `unrecognizedPacketType` on Firefox 153. Go through the product
-    // helper instead of hand-rolling the raw send (iter-136).
-    let walker_id: ActorId = walker_actor.as_str().into();
-    let root = AccessibilityActor::get_root(transport, &walker_id).expect("get_root via walker");
-
-    assert!(
-        !root.role.is_empty(),
-        "get_root must return an accessible with a role: {root:#?}"
-    );
-    let root_actor = root.actor.expect("root accessible actor");
-
-    if should_record() {
-        // Re-issue the request raw so the recorded fixture is the verbatim
-        // Firefox reply rather than our parsed representation.
+        // Get target
         transport
-            .send(&json!({"to": &walker_actor, "type": "children"}))
-            .expect("send walker children");
-        let walker_children = recv_from_actor(transport, &walker_actor);
-        save_core_fixture("a11y_walker_children_response.json", &walker_children);
-        save_cli_fixture("a11y_walker_children_response.json", &walker_children);
-    }
+            .send(&json!({"to": &tab_actor, "type": "getTarget"}))
+            .expect("send getTarget");
+        let target = recv_from_actor(transport, &tab_actor);
+        let a11y_actor = target["frame"]["accessibilityActor"]
+            .as_str()
+            .expect("accessibilityActor in frame")
+            .to_owned();
 
-    // Get children of the root accessible. `children` is a method on the
-    // accessible actor itself — the walker's same-named method ignores
-    // arguments and always returns the root document.
-    let children =
-        AccessibilityActor::children(transport, &walker_id, &ActorId::from(root_actor.as_str()))
-            .expect("children of root accessible");
+        let a11y_id: ActorId = a11y_actor.as_str().into();
+        assert!(
+            AccessibilityActor::is_service_enabled(transport, &a11y_id)
+                .expect("bootstrap accessibility actor"),
+            "accessibility service must report enabled after parent enable"
+        );
 
-    assert!(
-        !children.is_empty(),
-        "root document must expose at least one child accessible"
-    );
-    assert!(
-        children.iter().any(|c| c.role == "link"),
-        "fixture page's document root must expose the link child: {children:#?}"
-    );
+        if should_record() {
+            transport
+                .send(&json!({"to": &a11y_actor, "type": "bootstrap"}))
+                .expect("send bootstrap");
+            let bootstrap = recv_from_actor(transport, &a11y_actor);
+            save_core_fixture("a11y_bootstrap_response.json", &bootstrap);
+            save_cli_fixture("a11y_bootstrap_response.json", &bootstrap);
+        }
 
-    if should_record() {
+        // Get walker
         transport
-            .send(&json!({"to": &root_actor, "type": "children"}))
-            .expect("send accessible children");
-        let children_resp = recv_from_actor(transport, &root_actor);
-        save_core_fixture("a11y_children_response.json", &children_resp);
-        save_cli_fixture("a11y_children_response.json", &children_resp);
-    }
+            .send(&json!({"to": &a11y_actor, "type": "getWalker"}))
+            .expect("send getWalker");
+        let walker_resp = recv_from_actor(transport, &a11y_actor);
+        let walker_actor = walker_resp["walker"]["actor"]
+            .as_str()
+            .expect("walker actor")
+            .to_owned();
 
-    // Descend to a leaf so the mocked e2e traversal has a terminating reply:
-    // the link's text child has no children of its own.
-    let link = children
-        .iter()
-        .find(|c| c.role == "link")
-        .expect("link child");
-    let link_actor = link.actor.clone().expect("link accessible actor");
-    let link_children =
-        AccessibilityActor::children(transport, &walker_id, &ActorId::from(link_actor.as_str()))
-            .expect("children of link accessible");
-    let leaf = link_children.first().expect("link must have a text child");
-    let leaf_actor = leaf.actor.clone().expect("leaf accessible actor");
-    let leaf_children =
-        AccessibilityActor::children(transport, &walker_id, &ActorId::from(leaf_actor.as_str()))
-            .expect("children of leaf accessible");
-    assert!(
-        leaf_children.is_empty(),
-        "a text leaf must report no children: {leaf_children:#?}"
-    );
+        // Get root node.
+        //
+        // The walker's root accessor is an argument-less `children` call; the old
+        // `getRootNode` (and the internal, unexported `getDocument`) are answered
+        // with `unrecognizedPacketType` on Firefox 153. Go through the product
+        // helper instead of hand-rolling the raw send (iter-136).
+        let walker_id: ActorId = walker_actor.as_str().into();
+        let root =
+            AccessibilityActor::get_root(transport, &walker_id).expect("get_root via walker");
 
-    if should_record() {
-        transport
-            .send(&json!({"to": &leaf_actor, "type": "children"}))
-            .expect("send leaf children");
-        let leaf_resp = recv_from_actor(transport, &leaf_actor);
-        save_core_fixture("a11y_children_empty_response.json", &leaf_resp);
-        save_cli_fixture("a11y_children_empty_response.json", &leaf_resp);
-    }
+        assert!(
+            !root.role.is_empty(),
+            "get_root must return an accessible with a role: {root:#?}"
+        );
+        let root_actor = root.actor.expect("root accessible actor");
+
+        if should_record() {
+            // Re-issue the request raw so the recorded fixture is the verbatim
+            // Firefox reply rather than our parsed representation.
+            transport
+                .send(&json!({"to": &walker_actor, "type": "children"}))
+                .expect("send walker children");
+            let walker_children = recv_from_actor(transport, &walker_actor);
+            save_core_fixture("a11y_walker_children_response.json", &walker_children);
+            save_cli_fixture("a11y_walker_children_response.json", &walker_children);
+        }
+
+        // Get children of the root accessible. `children` is a method on the
+        // accessible actor itself — the walker's same-named method ignores
+        // arguments and always returns the root document.
+        let children = AccessibilityActor::children(
+            transport,
+            &walker_id,
+            &ActorId::from(root_actor.as_str()),
+        )
+        .expect("children of root accessible");
+
+        assert!(
+            !children.is_empty(),
+            "root document must expose at least one child accessible"
+        );
+        assert!(
+            children.iter().any(|c| c.role == "link"),
+            "fixture page's document root must expose the link child: {children:#?}"
+        );
+
+        if should_record() {
+            transport
+                .send(&json!({"to": &root_actor, "type": "children"}))
+                .expect("send accessible children");
+            let children_resp = recv_from_actor(transport, &root_actor);
+            save_core_fixture("a11y_children_response.json", &children_resp);
+            save_cli_fixture("a11y_children_response.json", &children_resp);
+        }
+
+        // Descend to a leaf so the mocked e2e traversal has a terminating reply:
+        // the link's text child has no children of its own.
+        let link = children
+            .iter()
+            .find(|c| c.role == "link")
+            .expect("link child");
+        let link_actor = link.actor.clone().expect("link accessible actor");
+        let link_children = AccessibilityActor::children(
+            transport,
+            &walker_id,
+            &ActorId::from(link_actor.as_str()),
+        )
+        .expect("children of link accessible");
+        let leaf = link_children.first().expect("link must have a text child");
+        let leaf_actor = leaf.actor.clone().expect("leaf accessible actor");
+        let leaf_children = AccessibilityActor::children(
+            transport,
+            &walker_id,
+            &ActorId::from(leaf_actor.as_str()),
+        )
+        .expect("children of leaf accessible");
+        assert!(
+            leaf_children.is_empty(),
+            "a text leaf must report no children: {leaf_children:#?}"
+        );
+
+        if should_record() {
+            transport
+                .send(&json!({"to": &leaf_actor, "type": "children"}))
+                .expect("send leaf children");
+            let leaf_resp = recv_from_actor(transport, &leaf_actor);
+            save_core_fixture("a11y_children_empty_response.json", &leaf_resp);
+            save_cli_fixture("a11y_children_empty_response.json", &leaf_resp);
+        }
+    }));
 
     // Restore the browser-global accessibility service to its previous (off)
-    // state so later tests and dogfood runs on this Firefox see the default.
+    // state so later tests and dogfood runs on this Firefox see the default —
+    // even when the traversal above panicked.
     send_raw_oneway(transport, &json!({"to": &parent_a11y, "type": "disable"}));
     drain_messages(transport, Duration::from_millis(300));
+
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 // ===========================================================================

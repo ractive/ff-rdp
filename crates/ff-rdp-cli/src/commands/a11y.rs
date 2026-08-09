@@ -146,8 +146,11 @@ fn render_a11y_text(node: &Value, depth: usize) {
 }
 
 /// Attempt native RDP accessibility protocol, falling back to JS eval on
-/// `unrecognizedPacketType` errors (Firefox 149+ renamed/removed both
-/// `getDocument` and `getRootNode` on the walker actor).
+/// `unrecognizedPacketType` errors. Current Firefox exposes the walker's root
+/// only through the argument-less `children`; `getDocument` was never a
+/// published protocol method and `getRootNode` was removed long ago, so both
+/// answer with `unrecognizedPacketType` (iter-136, see
+/// `AccessibilityActor::get_root`).
 fn run_native_or_js_fallback(
     ctx: &mut ConnectedTab,
     accessibility_actor: &ActorId,
