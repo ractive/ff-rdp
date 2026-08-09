@@ -36,5 +36,6 @@ mod sources;
 mod storage;
 mod styles;
 mod tabs;
+mod throttle;
 mod type_text;
 mod wait;

@@ -3,3 +3,4 @@ pub(crate) mod client;
 pub(crate) mod process;
 pub(crate) mod registry;
 pub(crate) mod server;
+pub(crate) mod throttle_state;

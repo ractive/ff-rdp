@@ -861,6 +861,7 @@ actor obtained from the watcher.  A positional PROFILE sets a throttling tier;
   throttle slow-3g          ~400 kbit/s, 400 ms latency
   throttle fast-3g          ~1.6 Mbit/s, 150 ms latency
   throttle off              clear throttling (full speed)
+  throttle status           report the profile last applied via the daemon
   throttle --block <PAT>    block requests whose URL matches PAT (repeatable)
   throttle --unblock        clear the URL block-list
 
@@ -876,14 +877,29 @@ them.  Under the daemon that means until the daemon restarts; with --no-daemon
 the one-shot process disconnects immediately and the setting is discarded — the
 envelope then carries a `lifetime_warning`.
 
+STATUS (iter-131): `throttle status` reports the profile the daemon last
+applied. Firefox's network-parent actor has no getter for the active
+throttling state, so this is client-side bookkeeping (a small file next to the
+daemon registry), not a live read from the browser — it reports `null` when no
+daemon is running, no `throttle <profile>` has been applied since it started,
+or the daemon has since restarted (which itself clears Firefox's throttling).
+Read-only: combining `status` with --block/--unblock is rejected.
+
+CACHE CAVEAT: throttling does not bypass the HTTP cache — a `reload` while
+throttled may still be served from cache and look far faster than the profile
+alone would suggest. Use `reload --hard` to force a network fetch.
+
 Examples:
   ff-rdp throttle slow-3g
   ff-rdp throttle fast-3g --block 'ads.example.com' --block '*.gif'
   ff-rdp throttle off
+  ff-rdp throttle status
   ff-rdp throttle --unblock
 
-Output: {\"results\": {\"profile\": \"slow-3g\"|\"fast-3g\"|\"off\"|null, \
-\"blocked_urls\": [\"...\"]|null, \"lifetime_warning\"?: \"...\"}, \"total\": 1, \"meta\": {...}}"
+Output (set): {\"results\": {\"profile\": \"slow-3g\"|\"fast-3g\"|\"off\"|null, \
+\"blocked_urls\": [\"...\"]|null, \"lifetime_warning\"?: \"...\"}, \"total\": 1, \"meta\": {...}}
+Output (status): {\"results\": {\"profile\": \"slow-3g\"|\"fast-3g\"|null, \
+\"note\"?: \"...\", \"cache_caveat\": \"...\"}, \"total\": 1, \"meta\": {...}}"
     )]
     Throttle(ThrottleArgs),
     /// Fetch and validate the page's Web App Manifest (PWA-readiness audit)
@@ -1723,6 +1739,11 @@ pub enum ThrottleProfileArg {
     Fast3g,
     /// Clear throttling and restore full-speed network behaviour.
     Off,
+    /// Report the profile last applied via the daemon (iter-131 Theme D).
+    /// Read-only: does not touch throttling/blocking. Firefox's
+    /// network-parent actor has no getter, so this recalls client-side
+    /// bookkeeping rather than querying the browser — see `throttle --help`.
+    Status,
 }
 
 /// Arguments for `throttle` — network throttling and URL blocking.
@@ -1732,7 +1753,8 @@ pub enum ThrottleProfileArg {
 /// active profile and block-list so scripts can confirm what was applied.
 #[derive(clap::Args)]
 pub struct ThrottleArgs {
-    /// Throttling profile: slow-3g, fast-3g, or off (clears throttling)
+    /// Throttling profile: slow-3g, fast-3g, off (clears throttling), or
+    /// status (read-only: reports the profile last applied via the daemon)
     #[arg(value_enum, value_name = "PROFILE")]
     pub profile: Option<ThrottleProfileArg>,
     /// Block requests whose URL matches PATTERN (repeatable; substring/glob
