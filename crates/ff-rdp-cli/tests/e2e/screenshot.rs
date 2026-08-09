@@ -290,9 +290,23 @@ fn screenshot_module_load_failure_surfaces_clean_version_mismatch_message() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let combined = format!("{stderr}{stdout}");
+    // iter-135: this path is reached *after* an actor was found and called, so
+    // the pre-135 "screenshot actor not found in Firefox N root form" text was
+    // false here.  What must hold is that the error is clean, actionable, and
+    // free of the misleading headless hint.
     assert!(
-        combined.contains("screenshot actor not found in Firefox"),
-        "output should include 'screenshot actor not found in Firefox': stderr={stderr:?} stdout={stdout:?}"
+        combined.contains("rendered no image for this capture"),
+        "output should state the real failure: stderr={stderr:?} stdout={stdout:?}"
+    );
+    assert!(
+        !combined.contains("screenshot actor not found in Firefox"),
+        "output must not claim the actor is missing on a path that found one: \
+         stderr={stderr:?} stdout={stdout:?}"
+    );
+    assert!(
+        !combined.contains("relaunch with: ff-rdp launch --headless"),
+        "output must not tell an already-headless user to relaunch headless: \
+         stderr={stderr:?} stdout={stdout:?}"
     );
     assert!(
         combined.contains("ff-rdp doctor"),
@@ -341,9 +355,23 @@ fn screenshot_module_load_failure_in_two_step_protocol_surfaces_clean_message() 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let combined = format!("{stderr}{stdout}");
+    // iter-135: this path is reached *after* an actor was found and called, so
+    // the pre-135 "screenshot actor not found in Firefox N root form" text was
+    // false here.  What must hold is that the error is clean, actionable, and
+    // free of the misleading headless hint.
     assert!(
-        combined.contains("screenshot actor not found in Firefox"),
-        "output should include 'screenshot actor not found in Firefox': stderr={stderr:?} stdout={stdout:?}"
+        combined.contains("rendered no image for this capture"),
+        "output should state the real failure: stderr={stderr:?} stdout={stdout:?}"
+    );
+    assert!(
+        !combined.contains("screenshot actor not found in Firefox"),
+        "output must not claim the actor is missing on a path that found one: \
+         stderr={stderr:?} stdout={stdout:?}"
+    );
+    assert!(
+        !combined.contains("relaunch with: ff-rdp launch --headless"),
+        "output must not tell an already-headless user to relaunch headless: \
+         stderr={stderr:?} stdout={stdout:?}"
     );
     assert!(
         combined.contains("ff-rdp doctor"),

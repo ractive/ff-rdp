@@ -157,3 +157,108 @@ Unit tests added:
 
 Live test: `live_screenshot_ff151_cli` (`live_screenshot_ff151.rs`) —
 `#[ignore]` gated; asserts `-o /tmp/x.png` produces a valid PNG file.
+
+## iter-135: `snapshotScale` has NO server default — the Firefox 153 break
+
+**Symptom (Firefox 153.0.3):** every live RDP capture failed with
+
+```
+screenshot: screenshotActor.capture failed (invalid packet: screenshotActor
+capture response missing 'data' field) — screenshots require headless mode;
+relaunch with: ff-rdp launch --headless
+```
+
+**The reply shape never drifted.** Recorded from the wire
+(`FF_RDP_TRACE_RAW=1 RUST_LOG=trace ff-rdp screenshot`):
+
+```json
+{"value":{"data":null,
+          "filename":"Bildschirmfoto am 2026-08-09 um 12.17.19.png",
+          "messages":[{"level":"error",
+                       "text":"Fehler beim Erstellen der Grafik. Sie war wahrscheinlich zu groß."}]},
+ "from":"server1.conn6.screenshotActor7"}
+```
+
+`data` is present and `null`; the reason sits in `messages` (localised — the
+text above is `screenshotRenderingError` in de-DE). ff-rdp discarded `messages`
+and reported the field as missing, which read as protocol drift.
+
+### Root cause
+
+`capture-screenshot.js` does **not** default `snapshotScale`:
+
+```js
+const ratio = args.snapshotScale;               // no `?? 1`
+let data = await drawToCanvas(ratio);           // → drawSnapshot(rect, undefined, …)
+if (!data && ratio > 1.0) { … }                 // undefined > 1.0 === false → no retry
+if (!data) { messages.push({level:"error", text: L10N.getStr("screenshotRenderingError")}); }
+```
+
+Inside `drawToCanvas`, `snapshot.width / actualRatio` is `NaN`, so
+`canvas.width = NaN` and `canvas.toDataURL` throws; the `catch` returns `null`.
+
+Since iter-77 ff-rdp omitted `snapshotScale` whenever `windowDpr * windowZoom
+=== 1.0`, on the (wrong) belief that the server defaulted it. **It does not.**
+
+### Why it only surfaced on 153
+
+On Firefox 149–152, `screenshotActor.capture` failed earlier, at actor-module
+load (`capture-screenshot.js` imported `ScreenshotsUtils.sys.mjs` without
+`{ global: "shared" }`), and ff-rdp fell back to the parent-process
+`drawSnapshot` path. **Firefox 153 fixed the module load** —
+[Bug 2043900](https://bugzilla.mozilla.org/show_bug.cgi?id=2043900),
+`414cbad5bf8b`, "[devtools] Fix screenshot features in the Browser Toolbox" —
+so the request finally reached the renderer and the latent omission became
+fatal. This also means the iter-89/iter-117 SD-2 module-load workaround is no
+longer *needed* on 153, though it stays for older builds.
+
+### Fix
+
+- `ScreenshotArgsExt::snapshot_scale` is now a plain `f64`, **always
+  serialised**; `ScreenshotFront::capture` likewise always sends `Some(scale)`.
+- `parse_capture_response()` (new, `actors/screenshot.rs`) folds the reply's
+  `messages` into the error via `capture_no_image_data_error()` instead of
+  discarding them. Both the root-actor and `screenshot_via_target` paths use it.
+- `specs::screenshot::response::CaptureValue.data` is `Option<String>` and the
+  struct gained `messages: Vec<CaptureMessage>` — the old `data: String` failed
+  to deserialise a `data: null` reply outright.
+- The CLI retries through the `drawSnapshot` fallback when a capture comes back
+  with no image data (`CAPTURE_NO_IMAGE_DATA` marker).
+
+### Reply fields observed on 153 (success)
+
+```json
+{"value":{"data":"data:image/png;base64,…","height":683,"width":1366,
+          "filename":"…png","messages":[]}}
+```
+
+`height`/`width` are **not** in the spec's `RetVal("json")` description but are
+always present; ff-rdp reads dimensions from the PNG IHDR instead, so it does
+not depend on them.
+
+### Fixtures (recorded from Firefox 153.0.3, never hand-written)
+
+- `tests/fixtures/capture_screenshot_response.json` — success shape (base64
+  payload truncated to 160 chars for reviewability).
+- `tests/fixtures/capture_screenshot_no_image_data_response.json` — the
+  `data: null` shape, recorded by deliberately re-sending the pre-iter-135
+  request without `snapshotScale`.
+
+Recorders: `live_record_capture_screenshot` and
+`live_record_capture_screenshot_no_image_data` in
+`crates/ff-rdp-core/tests/live_record_fixtures.rs`.
+
+Tests: `crates/ff-rdp-core/tests/screenshot_capture_shapes.rs`
+(`unit_screenshot_capture_parses_ff153_shape`,
+`unit_screenshot_capture_parses_legacy_shape`) and
+`crates/ff-rdp-cli/tests/live/live_135_screenshot_ff153.rs`.
+
+### Error-message correction (Theme C)
+
+The old failure text told users to relaunch headless *even when they already
+were*, and appended "screenshot actor not found in Firefox N root form" on a
+path only reached **after** an actor was found and called. Both claims are gone;
+`capture_failure_message()` now states that Firefox rendered no image and
+suggests dropping `--full-page` or running `ff-rdp doctor`.
+`screenshot_errors_carry_no_headless_relaunch_hint` greps the module source so
+the hint cannot be reintroduced.

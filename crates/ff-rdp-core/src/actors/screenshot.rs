@@ -24,9 +24,30 @@ use crate::types::{ActorId, Grip};
 ///
 /// - `browsingContextID` — selects the browsing context whose snapshot
 ///   `browsingContext.drawSnapshot` should render.
-/// - `snapshotScale` — `windowDPR * windowZoom`; omitted when equal to 1.0
-///   (server default).
+/// - `snapshotScale` — `windowDPR * windowZoom`.  **Always sent**, even when
+///   equal to `1.0` (see below).
 /// - `rect` — capture rectangle for fullpage / element captures.
+///
+/// ## iter-135: `snapshotScale` has no server-side default
+///
+/// Up to iter-134 ff-rdp omitted `snapshotScale` when it equalled `1.0`, on the
+/// belief that the server would default it.  It does not.
+/// `devtools/server/actors/utils/capture-screenshot.js` does
+/// `const ratio = args.snapshotScale;` and hands `ratio` straight to
+/// `browsingContext.currentWindowGlobal.drawSnapshot(rect, ratio, …)`, then
+/// computes `snapshot.width / actualRatio`.  With the field absent `ratio` is
+/// `undefined`, the division yields `NaN`, `canvas.toDataURL` throws, and the
+/// catch-all returns `null`.  The retry guard (`!data && ratio > 1.0`) is also
+/// `false` for `undefined`, so no second attempt happens and the reply is
+/// `{"value":{"data":null,"filename":…,"messages":[{"level":"error",
+/// "text":"<screenshotRenderingError>"}]}}`.
+///
+/// This was latent for the whole 149–152 range because
+/// `screenshotActor.capture` failed earlier with an actor-module load error
+/// (the SD-2 workaround below), so ff-rdp never reached the null-data reply.
+/// Firefox 153 fixed the module load (Bug 2043900, `414cbad5bf8b`), which
+/// exposed the omission as "screenshotActor capture response missing 'data'
+/// field" on every capture.  Always sending the field is the fix.
 ///
 /// This typed shim makes the spec drift explicit (rather than scattered
 /// `json!({…})` blocks) so the `rdp-spec-reviewer` agent can flag it.
@@ -53,9 +74,13 @@ pub struct ScreenshotArgsExt {
     /// Browsing context the snapshot should be taken against.
     #[serde(rename = "browsingContextID")]
     pub browsing_context_id: u64,
-    /// `windowDPR * windowZoom`.  Omitted when equal to 1.0 (server default).
-    #[serde(rename = "snapshotScale", skip_serializing_if = "Option::is_none")]
-    pub snapshot_scale: Option<f64>,
+    /// `windowDPR * windowZoom`.
+    ///
+    /// **Always serialised** — there is no server-side default.  See
+    /// [`ScreenshotArgsExt`]'s type-level docs for why omitting it breaks
+    /// capture on Firefox 153+.
+    #[serde(rename = "snapshotScale")]
+    pub snapshot_scale: f64,
     /// Optional capture rectangle, serialised as `{left,top,width,height}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rect: Option<ScreenshotArgsRect>,
@@ -73,12 +98,10 @@ pub struct ScreenshotArgsRect {
 impl ScreenshotArgsExt {
     /// Build a `ScreenshotArgsExt` from the two-step protocol inputs.
     pub fn from_prep(browsing_context_id: u64, full_page: bool, prep: &PrepareCapture) -> Self {
-        let snapshot_scale_raw = prep.window_dpr * prep.window_zoom;
-        let snapshot_scale = if (snapshot_scale_raw - 1.0).abs() < 1e-6 {
-            None
-        } else {
-            Some(snapshot_scale_raw)
-        };
+        // iter-135: never omit `snapshotScale`.  A missing field is NOT
+        // defaulted to 1.0 server-side; it makes `drawSnapshot` produce a
+        // `NaN`-scaled canvas and the reply carries `data: null`.
+        let snapshot_scale = prep.window_dpr * prep.window_zoom;
         let rect = prep.rect.as_ref().map(|r| ScreenshotArgsRect {
             left: r.left,
             top: r.top,
@@ -107,6 +130,83 @@ impl ScreenshotArgsExt {
             ProtocolError::InvalidPacket(format!("failed to serialize screenshot args: {e}"))
         })
     }
+}
+
+/// Marker substring shared by every "capture produced no PNG" error.
+///
+/// Callers (the CLI screenshot command) match on it to decide whether to retry
+/// through the `drawSnapshot` fallback, so it must stay stable.
+pub const CAPTURE_NO_IMAGE_DATA: &str = "capture returned no image data";
+
+/// Build the error for a `capture` reply that carried no image data.
+///
+/// Firefox does not fail the request when rendering fails: it replies
+/// `{"value":{"data":null,…,"messages":[{"level":"error","text":…}]}}` and
+/// expects the client to surface `messages` to the user.  Prior to iter-135
+/// ff-rdp threw away `messages` and reported a generic "missing 'data' field",
+/// which read as a protocol mismatch when it was really a server-side
+/// rendering failure.
+///
+/// `messages` is an iterator of `(level, text)` pairs as they appear on the
+/// wire.  All levels are included — a `warn` is often the only clue.
+pub fn capture_no_image_data_error<'a, I>(messages: I) -> ProtocolError
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    let rendered: Vec<String> = messages
+        .into_iter()
+        .filter(|(_, text)| !text.trim().is_empty())
+        .map(|(level, text)| format!("[{level}] {text}"))
+        .collect();
+
+    if rendered.is_empty() {
+        ProtocolError::InvalidPacket(format!(
+            "screenshotActor {CAPTURE_NO_IMAGE_DATA} and reported no diagnostic messages"
+        ))
+    } else {
+        ProtocolError::InvalidPacket(format!(
+            "screenshotActor {CAPTURE_NO_IMAGE_DATA}; Firefox reported: {}",
+            rendered.join("; ")
+        ))
+    }
+}
+
+/// Extract the PNG data URL from a raw `screenshotActor.capture` reply.
+///
+/// Accepts both observed shapes:
+///
+/// - `{"value":{"data":"data:image/png;base64,…"}}` — the success shape, the
+///   same on every Firefox from 149 through 153.
+/// - a bare `{"data":…}` at the reply root, kept for defensive compatibility.
+///
+/// When `data` is absent, `null`, or empty the reply's `messages` array is
+/// folded into the error via [`capture_no_image_data_error`] instead of being
+/// discarded.
+pub fn parse_capture_response(response: &Value) -> Result<String, ProtocolError> {
+    let value = response.get("value").unwrap_or(response);
+
+    if let Some(data) = value.get("data").and_then(Value::as_str)
+        && !data.is_empty()
+    {
+        return Ok(data.to_owned());
+    }
+
+    let messages: Vec<(&str, &str)> = value
+        .get("messages")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|m| {
+                    (
+                        m.get("level").and_then(Value::as_str).unwrap_or("info"),
+                        m.get("text").and_then(Value::as_str).unwrap_or_default(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Err(capture_no_image_data_error(messages))
 }
 
 /// Operations on the root-level `screenshotActor` (parent-process side).
@@ -186,20 +286,7 @@ impl ScreenshotActor {
             Some(&json!({ "args": args_value })),
         )?;
 
-        // The response shape is: `{ "value": { "data": "data:...", ... } }`
-        let value = response.get("value").unwrap_or(&response);
-
-        let data = value
-            .get("data")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                ProtocolError::InvalidPacket(
-                    "screenshotActor capture response missing 'data' field".into(),
-                )
-            })?
-            .to_owned();
-
-        Ok(data)
+        parse_capture_response(&response)
     }
 
     /// Send a `capture` request to the screenshot actor without reading the reply.
@@ -453,17 +540,12 @@ impl ScreenshotActor {
                 Some(&json!({ "args": args_value })),
             ) {
                 Ok(response) => {
-                    let value = response.get("value").unwrap_or(&response);
-                    let data = value
-                        .get("data")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            ProtocolError::InvalidPacket(format!(
-                                "WindowGlobalTarget.{method} response missing 'data' field"
-                            ))
-                        })?
-                        .to_owned();
-                    return Ok(data);
+                    // Same reply shape (and same null-data failure mode) as the
+                    // root-form actor — reuse the shared parser so the server's
+                    // own `messages` reach the user here too.
+                    return parse_capture_response(&response).map_err(|e| {
+                        ProtocolError::InvalidPacket(format!("WindowGlobalTarget.{method}: {e}"))
+                    });
                 }
                 Err(e) if e.is_unrecognized_packet_type() => {
                     last_err = Some(e);
@@ -693,8 +775,8 @@ mod tests {
         let err =
             ScreenshotActor::capture(&mut transport, &actor_id, 42, false, &prep).unwrap_err();
         assert!(
-            err.to_string().contains("'data'"),
-            "error should mention missing field: {err}"
+            err.to_string().contains(CAPTURE_NO_IMAGE_DATA),
+            "error should report the absent image: {err}"
         );
         t.join().unwrap();
     }
@@ -763,7 +845,9 @@ mod tests {
         assert_eq!(v["rect"]["left"], 1.0);
         assert_eq!(v["rect"]["width"], 800.0);
 
-        // Drop snapshotScale when DPR*zoom == 1.0.
+        // iter-135 regression guard: snapshotScale is sent even at 1.0.  It used
+        // to be dropped as "the server default"; there is no server default, and
+        // the omission made Firefox 153 return `data: null` for every capture.
         let unit = PrepareCapture {
             window_dpr: 1.0,
             window_zoom: 1.0,
@@ -773,8 +857,9 @@ mod tests {
             .to_args_value()
             .unwrap();
         assert!(
-            unit_v.get("snapshotScale").is_none(),
-            "snapshotScale must be omitted when equal to server default 1.0"
+            (unit_v["snapshotScale"].as_f64().unwrap() - 1.0).abs() < f64::EPSILON,
+            "snapshotScale must always be sent — omitting it yields a NaN-scaled \
+             canvas and a null-data reply on Firefox 153: {unit_v}"
         );
         assert!(unit_v.get("rect").is_none());
 
