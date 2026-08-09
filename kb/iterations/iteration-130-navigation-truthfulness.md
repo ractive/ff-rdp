@@ -10,7 +10,7 @@ dogfood_path: |
   ff-rdp navigate https://example.com >/dev/null && ff-rdp back --jq '.results'
   # → navigate-style envelope: {action, committed_url, ready_state, elapsed_ms}
 first_call_sites: []
-status: planned
+status: completed
 ---
 
 # Iteration 130: navigation truthfulness — SPA committed_url, back/forward envelope, reload coupling
