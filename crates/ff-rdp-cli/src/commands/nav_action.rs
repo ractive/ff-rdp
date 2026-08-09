@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use ff_rdp_core::{ProtocolError, TabActor, WatcherActor, WindowGlobalTarget};
+use ff_rdp_core::{ProtocolError, TabActor, WatcherActor};
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -10,6 +10,7 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
+use super::navigate::{eval_location_href, wait_for_navigation_commit};
 
 /// Which navigation action to perform.
 #[derive(Clone, Copy)]
@@ -22,33 +23,64 @@ pub enum NavAction {
     Forward,
 }
 
+/// Run `back`, `forward`, or a plain (non-`--wait-idle`) `reload`.
+///
+/// iter-130 Theme B: all three verbs now share `navigate`'s
+/// `{committed_url, ready_state, elapsed_ms}` envelope via
+/// [`wait_for_navigation_commit`], instead of the bare `{"action": "..."}`
+/// this command used to return immediately after dispatch. The action's own
+/// request (`reload`/`goBack`/`goForward`) is sent as a **raw** write from
+/// inside the `dispatch` closure — see `wait_for_navigation_commit`'s doc
+/// comment for why routing it through the old blocking
+/// `WindowGlobalTarget::reload`/`go_back`/`go_forward` (which read the ack via
+/// `recv_reply_from`) risks silently losing a `document-event` that races
+/// ahead of that ack.
 pub fn run(cli: &Cli, action: NavAction) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
 
     let (action_name, force_reload) = match action {
-        NavAction::Reload { force } => {
-            WindowGlobalTarget::reload(ctx.transport_mut(), &target_actor, force)
-                .map_err(AppError::from)?;
-            ("reload", force)
-        }
-        NavAction::Back => {
-            WindowGlobalTarget::go_back(ctx.transport_mut(), &target_actor)
-                .map_err(AppError::from)?;
-            ("back", false)
-        }
-        NavAction::Forward => {
-            WindowGlobalTarget::go_forward(ctx.transport_mut(), &target_actor)
-                .map_err(AppError::from)?;
-            ("forward", false)
-        }
+        NavAction::Reload { force } => ("reload", force),
+        NavAction::Back => ("back", false),
+        NavAction::Forward => ("forward", false),
     };
 
-    let result = if force_reload {
+    // `reload`'s target URL is knowable ahead of time (the current page,
+    // reloaded) — capture it so `needs_href_fallback` can tell a genuine
+    // reload-of-about:blank apart from a stale event placeholder.
+    // `back`/`forward` don't know their landing URL ahead of time, so they
+    // pass "" (safe — see `wait_for_navigation_commit`'s doc comment).
+    let requested_url = match action {
+        NavAction::Reload { .. } => {
+            let console_actor = ctx.target.console_actor.clone();
+            eval_location_href(ctx.transport_mut(), &console_actor)
+        }
+        NavAction::Back | NavAction::Forward => String::new(),
+    };
+
+    let commit_json = wait_for_navigation_commit(&mut ctx, cli.timeout, &requested_url, {
+        let target_actor = target_actor.clone();
+        move |transport| {
+            let packet = match action {
+                NavAction::Reload { force } => build_reload_packet(&target_actor, force),
+                NavAction::Back => json!({"to": target_actor.as_ref(), "type": "goBack"}),
+                NavAction::Forward => json!({"to": target_actor.as_ref(), "type": "goForward"}),
+            };
+            transport.send(&packet).map_err(AppError::from)
+        }
+    })?;
+
+    let mut result = if force_reload {
         json!({"action": action_name, "force": true})
     } else {
         json!({"action": action_name})
     };
+    if let (Some(obj), Some(commit_obj)) = (result.as_object_mut(), commit_json.as_object()) {
+        for (k, v) in commit_obj {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,

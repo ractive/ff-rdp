@@ -63,6 +63,42 @@ fn script_get_entries_with_hostname(entry_type: &str) -> String {
     )
 }
 
+/// Like [`script_get_entries_with_hostname`] but also reports `document.readyState`
+/// and milliseconds elapsed since `navigationStart` — the signal
+/// [`resources_pending`] uses to distinguish a genuinely resource-free page from
+/// a fresh navigation whose Resource Timing buffer hasn't caught up yet
+/// (iter-130 Theme C).
+///
+/// Kept separate from `script_get_entries_with_hostname` (used by the generic
+/// `perf <type>` and `perf group-by-domain` commands) so the pending-marker
+/// behavior stays scoped to `perf summary`, matching the iteration plan.
+fn script_resource_entries_with_pending_signal() -> String {
+    r#"JSON.stringify({
+  entries: performance.getEntriesByType("resource").map(function(e) { return e.toJSON(); }),
+  hostname: document.location.hostname,
+  ready_state: document.readyState,
+  ms_since_nav_start: Date.now() - performance.timing.navigationStart
+})"#
+        .to_string()
+}
+
+/// Milliseconds after `navigationStart` within which an empty resource buffer
+/// is considered ambiguous (still populating) rather than a trustworthy "this
+/// page truly has zero resources" reading (iter-130 Theme C).
+const RESOURCE_PENDING_THRESHOLD_MS: f64 = 1500.0;
+
+/// `true` when an empty resource list is more likely "buffer hasn't caught up
+/// yet" than "page genuinely has zero resources" — i.e. the document hasn't
+/// reached `readyState: complete`, or completed very recently (iter-130 Theme
+/// C — the `reload` immediately followed by `perf summary`/`perf audit` race:
+/// the Resource Timing buffer resets on navigation and repopulates
+/// asynchronously as resources complete, so a `0` read moments after reload
+/// is not distinguishable from "no resources" without this signal).
+fn resources_pending(resource_count: usize, ready_state: &str, ms_since_nav_start: f64) -> bool {
+    resource_count == 0
+        && (ready_state != "complete" || ms_since_nav_start < RESOURCE_PENDING_THRESHOLD_MS)
+}
+
 /// Build a JS snippet that uses `PerformanceObserver` with `buffered: true`.
 ///
 /// The callback fires synchronously for already-recorded entries when
@@ -598,7 +634,7 @@ fn aggregate_by_domain(mapped: &[Value]) -> Vec<Value> {
 
 /// Aggregate resource summary: sizes, request counts by type, slowest resources, domain breakdown.
 pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
-    let script = script_get_entries_with_hostname("resource");
+    let script = script_resource_entries_with_pending_signal();
     let mut ctx = connect_and_get_target(cli)?;
     let json_str = eval_to_json_string(&mut ctx, &script, "perf summary")?;
 
@@ -614,6 +650,15 @@ pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
         .get("hostname")
         .and_then(Value::as_str)
         .map(str::to_string);
+    let ready_state = combined
+        .get("ready_state")
+        .and_then(Value::as_str)
+        .unwrap_or("complete")
+        .to_owned();
+    let ms_since_nav_start = combined
+        .get("ms_since_nav_start")
+        .and_then(Value::as_f64)
+        .unwrap_or(f64::MAX);
 
     let mapped: Vec<Value> = entries
         .into_iter()
@@ -661,6 +706,11 @@ pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
 
     let results = json!({
         "total_resources": mapped.len(),
+        // iter-130 Theme C: always-present marker (see iteration-128's `hint`
+        // precedent) — `true` when `total_resources: 0` is ambiguous (page
+        // still loading, or completed too recently for the Resource Timing
+        // buffer to have caught up) rather than a trustworthy "no resources".
+        "resources_pending": resources_pending(mapped.len(), &ready_state, ms_since_nav_start),
         "total_transfer_size": round2(total_transfer_size),
         "requests_by_type": by_type,
         "slowest_resources": slowest,
@@ -702,6 +752,12 @@ fn render_summary_text(results: &Value) {
 
     println!("=== Resource Summary ===");
     println!("  Total requests:    {total_resources}");
+    if results.get("resources_pending") == Some(&Value::Bool(true)) {
+        println!(
+            "  (resources_pending: true — page still loading or navigation too recent; \
+             re-run for a stable count)"
+        );
+    }
     println!("  Total transferred: {total_transfer:.0} bytes");
 
     if let Some(by_type) = results.get("requests_by_type").and_then(Value::as_object) {
@@ -876,6 +932,12 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
   };
 
   result.hostname = document.location.hostname;
+  // iter-130 Theme C: same pending-buffer signal `perf summary` reports —
+  // lets the resource_summary block distinguish a genuinely resource-free
+  // page from a fresh navigation whose Resource Timing buffer hasn't caught
+  // up yet.
+  result.ready_state = document.readyState;
+  result.ms_since_nav_start = Date.now() - performance.timing.navigationStart;
 
   return JSON.stringify(result);
 })()"#;
@@ -967,9 +1029,20 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
         .iter()
         .filter_map(|e| e.get("transfer_size").and_then(Value::as_f64))
         .sum();
+    let audit_ready_state = all
+        .get("ready_state")
+        .and_then(Value::as_str)
+        .unwrap_or("complete")
+        .to_owned();
+    let audit_ms_since_nav_start = all
+        .get("ms_since_nav_start")
+        .and_then(Value::as_f64)
+        .unwrap_or(f64::MAX);
 
     let resource_summary = json!({
         "count": total_count,
+        // iter-130 Theme C: see `perf summary`'s identical marker.
+        "resources_pending": resources_pending(total_count, &audit_ready_state, audit_ms_since_nav_start),
         "transfer_size": round2(total_transfer_size),
     });
 
@@ -1162,6 +1235,12 @@ fn render_audit_text(results: &Value) {
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
     println!("  Total: {total_count} requests, {total_size:.0} bytes transferred");
+    if res_summary.get("resources_pending") == Some(&Value::Bool(true)) {
+        println!(
+            "  (resources_pending: true — page still loading or navigation too recent; \
+             re-run for a stable count)"
+        );
+    }
 
     if let Some(by_type) = results.get("resource_by_type").and_then(Value::as_array) {
         println!("  By type:");

@@ -215,7 +215,7 @@ fn refresh_probe_console_actor(
 /// a fallback when a committing `document-event` carries no `url` (iter-122
 /// Theme B — avoids emitting `about:blank` for SPAs that never fire
 /// `dom-loading` with a URL).
-fn eval_location_href(
+pub(crate) fn eval_location_href(
     transport: &mut RdpTransport,
     console_actor: &ff_rdp_core::ActorId,
 ) -> String {
