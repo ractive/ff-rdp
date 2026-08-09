@@ -562,15 +562,17 @@ pub fn run(
             // whether it is below the documented ~500px live-viewport floor.
             // `below_floor` looks only at width — the floor is a width clamp,
             // not a height clamp (see kb/research/viewport-emulation.md).
+            // Computed once here and reused below so the envelope's
+            // `window_size.below_floor` and the presence of `warnings` can
+            // never disagree.
+            let below_floor = window_size
+                .is_some_and(|(w, _)| w < crate::util::window_size::LIVE_VIEWPORT_FLOOR_PX);
             let window_size_json = window_size.map(|(w, h)| {
-                let below_floor = w < crate::util::window_size::LIVE_VIEWPORT_FLOOR_PX;
                 json!({
                     "requested": {"width": w, "height": h},
                     "below_floor": below_floor,
                 })
             });
-            let below_floor = window_size
-                .is_some_and(|(w, _)| w < crate::util::window_size::LIVE_VIEWPORT_FLOOR_PX);
 
             let mut result = json!({
                 "pid": pid,

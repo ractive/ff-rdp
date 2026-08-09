@@ -11,7 +11,10 @@
 //!     alongside a below-floor warning.
 //!   - live_133_screenshot_batch_mobile: with the live tab on example.com,
 //!     `screenshot --window-size 390x844` -> PNG exactly 390px wide;
-//!     envelope `capture == "batch-window-size"`.
+//!     envelope `capture == "batch-window-size"`. Gated on
+//!     FF_RDP_LIVE_NETWORK_TESTS=1 in addition to FF_RDP_LIVE_TESTS=1 (it
+//!     navigates to a real external host), matching the convention every
+//!     other network-touching live suite follows (see `live_109`, `live_130`).
 //!
 //! `--dppx` for the batch path was planned but dropped during
 //! implementation: direct testing against Firefox 153.0.3 showed
@@ -24,13 +27,18 @@
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
 //!       --test live live_133_viewport_emulation -- --nocapture
+//!
+//! `live_133_screenshot_batch_mobile` additionally requires
+//! `FF_RDP_LIVE_NETWORK_TESTS=1` (it navigates to a real external host).
 
 use std::process::Command;
 
 use base64::Engine as _;
 use serde_json::Value;
 
-use crate::common::{LiveFirefox, base_args, ff_rdp_bin, live_tests_enabled};
+use crate::common::{
+    LiveFirefox, base_args, ff_rdp_bin, live_network_tests_enabled, live_tests_enabled,
+};
 
 fn navigate(port: u16, url: &str) {
     let nav = Command::new(ff_rdp_bin())
@@ -192,11 +200,19 @@ fn live_133_launch_window_size_floor_warning() {
 /// `screenshot --window-size 390x844` produces a PNG EXACTLY 390px wide
 /// (verified against the PNG's own IHDR chunk, not the command's
 /// self-report), and the envelope names the capture mode.
+///
+/// Navigates to a real external host (`example.com`) both over the live RDP
+/// tab and via the batch-capture subprocess, so — matching every other
+/// network-touching live suite (`live_109`, `live_111`, `live_130`) — this
+/// is additionally gated on `FF_RDP_LIVE_NETWORK_TESTS=1`. Without it,
+/// `FF_RDP_LIVE_TESTS=1 cargo test-live` alone must not reach the network.
 #[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+#[ignore = "requires a live Firefox instance and network — set FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1"]
 fn live_133_screenshot_batch_mobile() {
-    if !live_tests_enabled() {
-        eprintln!("live_133_screenshot_batch_mobile: set FF_RDP_LIVE_TESTS=1");
+    if !live_tests_enabled() || !live_network_tests_enabled() {
+        eprintln!(
+            "live_133_screenshot_batch_mobile: set FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1"
+        );
         return;
     }
     let Some(ff) = LiveFirefox::headless_on_random_port() else {
