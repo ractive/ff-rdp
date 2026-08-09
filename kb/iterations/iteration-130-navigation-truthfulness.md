@@ -53,27 +53,27 @@ Bundles the remaining navigation-report gaps from [[dogfooding-session-61]] and
 
 ## Tasks
 
-- [ ] A: trace the comparis flow (server doc commit → SPA router) and fix the
+- [x] A: trace the comparis flow (server doc commit → SPA router) and fix the
       committed-URL source; add the location.href completion fallback.
-- [ ] B: extract the navigate envelope builder and reuse it in `back`, `forward`,
+- [x] B: extract the navigate envelope builder and reuse it in `back`, `forward`,
       `reload`; wire reload's completion wait.
-- [ ] C: empty-buffer detection + explicit marker in perf summary/audit envelopes;
+- [x] C: empty-buffer detection + explicit marker in perf summary/audit envelopes;
       help text documents the marker.
-- [ ] Update help/cookbook for the four navigation verbs' shared envelope.
+- [x] Update help/cookbook for the four navigation verbs' shared envelope.
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
-- [ ] live_130_spa_committed_url (network-gated): navigate
+- [x] live_130_spa_committed_url (network-gated): navigate
       https://www.comparis.ch/hypotheken → `committed_url` starts with
       `https://www.comparis.ch` and is not `about:blank`.
-- [ ] live_130_back_forward_envelope: on local fixture pages, `back` and `forward`
+- [x] live_130_back_forward_envelope: on local fixture pages, `back` and `forward`
       each return `committed_url` matching the landing page, a `ready_state`, and
       `elapsed_ms` > 0.
-- [ ] live_130_reload_envelope: `reload` returns the navigate-style envelope with
+- [x] live_130_reload_envelope: `reload` returns the navigate-style envelope with
       `ready_state:"complete"` on a static fixture.
-- [ ] live_130_perf_no_silent_zero: `reload` followed immediately by `perf summary`
+- [x] live_130_perf_no_silent_zero: `reload` followed immediately by `perf summary`
       either reports `total_resources` > 0 or carries the explicit pending/no-data
       marker — never a bare unmarked 0.
 
