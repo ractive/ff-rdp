@@ -12,9 +12,11 @@ dogfood_path: |
   ff-rdp throttle status --jq '.results.profile'
   # → "slow-3g" after `throttle slow-3g`
 first_call_sites:
-  - primitive: "ThrottleProfileArg::Status + throttle_state::{ThrottleState, read_throttle_state, write_throttle_state}"
+  - primitive: >-
+      ThrottleProfileArg::Status + throttle_state::{ThrottleState,
+      read_throttle_state, write_throttle_state}
     site: crates/ff-rdp-cli/src/commands/throttle.rs (run/run_status)
-status: planned
+status: completed
 ---
 
 # Iteration 131: measurement honesty — perf transfer sizes, responsive simulation, snapshot bounds, throttle state
