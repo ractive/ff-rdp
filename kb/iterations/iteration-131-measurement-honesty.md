@@ -75,7 +75,7 @@ Bundles four honesty findings from [[dogfooding-session-61]]/[[dogfooding-sessio
       plan, per discipline).
 - [x] Help/cookbook updates for all four surfaces.
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
 <!-- Each AC names a live test + asserted post-condition, per CLAUDE.md convention. -->
 
