@@ -93,7 +93,7 @@ without a daemon-mode counterpart.
 Re-run [[iteration-129-consent-and-cross-origin-frames]]'s `dogfood_path` verbatim as part of
 this iteration and confirm it passes as written.
 
-## Acceptance Criteria
+## Acceptance Criteria [7/7]
 
 - [x] live_137_frame_targets_via_daemon: `enumerate_frame_targets` returns the same non-zero
       target count via daemon and `--no-daemon` on a multi-frame page — PASSED, 2 frames in
