@@ -97,9 +97,12 @@ found no viewport control at any of the four natural homes (`launch`, `screensho
 - [x] unit_launch_window_size_validation: `0x0`, `x`, `390`, `390x` all rejected
       with a user error naming the expected `WxH` form. See
       `crates/ff-rdp-cli/src/util/window_size.rs` unit tests.
-- [x] e2e_help_viewport_pointers: eval + screenshot `--help` mention the headless
-      `resizeTo()` no-op; responsive `--help`/warning point at `--window-size`.
-      See `tests/e2e/{eval,screenshot,responsive}.rs`.
+- [x] e2e_help_viewport_pointers: `eval_help_mentions_resize_to_no_op`,
+      `screenshot_help_mentions_window_size_and_resize_to`, and
+      `responsive_help_points_at_window_size_commands` (tests/e2e/{eval,
+      screenshot,responsive}.rs) assert eval/screenshot help mention the
+      headless resizeTo() no-op, and responsive help points at
+      `--window-size`.
 
 `live_133_screenshot_batch_dppx` [dropped — see [[viewport-emulation]]
 addendum]: `layout.css.devPixelsPerPx` was confirmed to have zero effect on
