@@ -12,7 +12,7 @@ dogfood_path: |
   ff-rdp screenshot --full-page -o /tmp/full.png
   # → taller than the viewport capture
 first_call_sites: []
-status: planned
+status: completed
 ---
 
 # Iteration 135: screenshot capture drift on Firefox 153
