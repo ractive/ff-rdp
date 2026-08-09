@@ -232,6 +232,25 @@ fn eval_location_href(
     }
 }
 
+/// Returns `true` when `candidate` (the URL reported by a `document-event`)
+/// cannot be trusted as the real committed URL and must be re-resolved via
+/// `location.href` (iter-130 Theme A).
+///
+/// Two cases:
+/// - `candidate` is empty — the event carried no URL at all (the original
+///   iter-122 Theme B case).
+/// - `candidate` is the literal string `"about:blank"` while the navigation
+///   actually requested a different (non-`about:blank`) URL. Firefox's SPA
+///   route-commit flow (observed on comparis.ch) can report a committing
+///   `document-event` whose `url` field is `about:blank` even though the
+///   real document has already landed on the requested URL — `ready_state`
+///   and a manual `eval location.href` both confirm the real page loaded.
+///   A caller trusting a literal `"about:blank"` here would wrongly
+///   conclude the navigation failed.
+fn needs_href_fallback(candidate: &str, requested_url: &str) -> bool {
+    candidate.is_empty() || (candidate == "about:blank" && requested_url != "about:blank")
+}
+
 /// Wait for a document-event on the bus (level determined by `wait_level`),
 /// pumping the transport until the condition is met or the timeout elapses.
 ///
@@ -267,6 +286,7 @@ fn wait_for_doc_complete(
     wait_level: WaitLevel,
     nav_start: Instant,
     mut probe: Option<&mut ReadyStateProbe<'_>>,
+    requested_url: &str,
 ) -> Result<CommitInfo, AppError> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
@@ -349,7 +369,8 @@ fn wait_for_doc_complete(
                         // `p.console_actor` (iter-124 review fix — avoids a
                         // wasted blocking eval round-trip on the common case).
                         if !probe_refreshed
-                            && (wait_level == WaitLevel::Complete || url.is_empty())
+                            && (wait_level == WaitLevel::Complete
+                                || needs_href_fallback(&url, requested_url))
                             && let Some(p) = probe.as_deref_mut()
                             && refresh_probe_console_actor(transport, p)
                         {
@@ -359,12 +380,13 @@ fn wait_for_doc_complete(
                         if wait_level == WaitLevel::Loading {
                             let elapsed_ms =
                                 u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                            // Theme B: if the event carried no URL, resolve the
-                            // real URL via location.href rather than emitting an
-                            // empty string (rendered as about:blank) — same
-                            // fallback applied to the Interactive/Complete paths
-                            // below.
-                            let committed_url = if url.is_empty() {
+                            // Theme B/iter-130 Theme A: if the event carried no
+                            // URL (or a literal "about:blank" that doesn't match
+                            // what was requested), resolve the real URL via
+                            // location.href rather than trusting the event's
+                            // placeholder value — same fallback applied to the
+                            // Interactive/Complete paths below.
+                            let committed_url = if needs_href_fallback(&url, requested_url) {
                                 probe.as_ref().map_or_else(String::new, |p| {
                                     eval_location_href(transport, &p.console_actor)
                                 })
@@ -394,10 +416,11 @@ fn wait_for_doc_complete(
                         if wait_level == WaitLevel::Interactive && commit_url.is_some() {
                             let elapsed_ms =
                                 u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                            // Theme B: if the event carried no URL, resolve the
-                            // real URL via location.href rather than emitting an
-                            // empty string (rendered as about:blank).
-                            let committed_url = if eff_url.is_empty() {
+                            // Theme B/iter-130 Theme A: if the event carried no
+                            // URL (or a literal "about:blank" mismatch), resolve
+                            // the real URL via location.href rather than trusting
+                            // the placeholder value.
+                            let committed_url = if needs_href_fallback(&eff_url, requested_url) {
                                 probe.as_ref().map_or_else(String::new, |p| {
                                     eval_location_href(transport, &p.console_actor)
                                 })
@@ -425,13 +448,23 @@ fn wait_for_doc_complete(
                             .take()
                             .or_else(|| commit_url.take())
                             .unwrap_or_default();
-                        // Theme B: an empty/blank URL (SPA that never fired a
-                        // dom-loading with a URL) must be resolved from the live
-                        // document rather than surfaced as about:blank.
-                        let committed = if committed.is_empty() {
-                            probe.as_ref().map_or(committed, |p| {
-                                eval_location_href(transport, &p.console_actor)
-                            })
+                        // Theme B/iter-130 Theme A: an empty URL (SPA that never
+                        // fired a dom-loading with a URL) or a literal
+                        // "about:blank" that doesn't match the requested URL
+                        // (the comparis.ch SPA route-commit case — dom-complete
+                        // fires with `ready_state: complete` and the real page
+                        // has genuinely landed, but the event's own `url` field
+                        // is still the initial `about:blank` placeholder) must
+                        // be resolved from the live document rather than
+                        // surfaced verbatim.
+                        let committed = if needs_href_fallback(&committed, requested_url) {
+                            probe.as_ref().map_or_else(
+                                || committed.clone(),
+                                |p| {
+                                    let href = eval_location_href(transport, &p.console_actor);
+                                    if href.is_empty() { committed.clone() } else { href }
+                                },
+                            )
                         } else {
                             committed
                         };
@@ -1096,6 +1129,7 @@ pub fn run_core(
             wait_opts.wait_level,
             nav_start,
             readystate_probe.as_mut(),
+            url,
         );
 
         // Flush any pending `unwatchResources` from dead-channel pruning that
@@ -2046,6 +2080,7 @@ mod tests {
             WaitLevel::Complete,
             started,
             None,
+            "https://example.com/",
         );
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
@@ -2253,6 +2288,7 @@ mod tests {
             WaitLevel::Complete,
             Instant::now(),
             None,
+            "https://example.com/",
         );
 
         probe_handle.join().unwrap();
@@ -2474,6 +2510,7 @@ mod tests {
             WaitLevel::Complete,
             nav_start,
             Some(&mut probe),
+            "https://example.com/",
         );
 
         let (ready_text, href_text) = server_handle.join().unwrap();
@@ -2594,6 +2631,7 @@ mod tests {
             WaitLevel::Complete,
             nav_start,
             Some(&mut probe),
+            "https://retry.example/",
         );
 
         let (stale_eval_text, ready_text, href_text) = server_handle.join().unwrap();
@@ -2718,6 +2756,7 @@ mod tests {
             WaitLevel::Complete,
             nav_start,
             Some(&mut probe),
+            "https://example.com/",
         );
 
         // The server thread's loop is bounded (50 iterations) purely so it
@@ -2832,6 +2871,7 @@ mod tests {
             WaitLevel::Complete,
             nav_start,
             Some(&mut probe),
+            "https://spa.example/app",
         );
 
         server_handle.join().unwrap();
@@ -2928,6 +2968,7 @@ mod tests {
             WaitLevel::Loading,
             nav_start,
             Some(&mut probe),
+            "https://spa.example/loading",
         );
 
         let href_text = server_handle.join().unwrap();
@@ -2944,6 +2985,130 @@ mod tests {
         assert!(
             href_text.contains("location.href"),
             "the only eval the mock server should see is the dom-loading URL fallback, got: {href_text}"
+        );
+    }
+
+    // ── iter-130 Theme A: literal "about:blank" fallback ───────────────────
+
+    #[test]
+    fn unit_needs_href_fallback_covers_empty_and_stale_about_blank() {
+        // Empty candidate: always needs the fallback (iter-122 Theme B, unchanged).
+        assert!(needs_href_fallback("", "https://example.com/"));
+        // Literal "about:blank" while a different URL was requested: the
+        // comparis.ch SPA route-commit case — needs the fallback.
+        assert!(needs_href_fallback(
+            "about:blank",
+            "https://www.comparis.ch/hypotheken"
+        ));
+        // A real URL that matches or differs from the request: never needs
+        // the fallback — the event's own URL is trustworthy.
+        assert!(!needs_href_fallback(
+            "https://example.com/",
+            "https://example.com/"
+        ));
+        assert!(!needs_href_fallback(
+            "https://example.com/other",
+            "https://example.com/"
+        ));
+        // A genuine navigation TO about:blank must not trigger a spurious
+        // fallback round-trip — the requested and committed URLs agree.
+        assert!(!needs_href_fallback("about:blank", "about:blank"));
+    }
+
+    /// iter-130 Theme A: `unit_navigate_dom_complete_literal_about_blank_falls_back_to_href`
+    ///
+    /// Reproduces the comparis.ch SPA route-commit finding (dogfooding-session-61
+    /// #5): the `dom-complete` document-event's `url` field is the literal string
+    /// `"about:blank"` even though the real requested URL has genuinely landed
+    /// (`ready_state: complete`, and a manual `eval location.href` confirms it).
+    /// `committed_url` must be resolved from `location.href`, not surfaced as a
+    /// literal `about:blank` that would make a caller think navigation failed.
+    #[test]
+    fn unit_navigate_dom_complete_literal_about_blank_falls_back_to_href() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+
+        use ff_rdp_core::transport::{RdpTransport, encode_frame};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let console_actor = "conn0/console1";
+        let tab_actor = "conn0/tabDescriptor1";
+
+        let server_handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+
+            let greeting = serde_json::json!({
+                "from": "root", "applicationType": "browser", "traits": {}
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+
+            answer_get_target(&mut reader, &mut writer, tab_actor, console_actor);
+
+            answer_one_eval(
+                &mut reader,
+                &mut writer,
+                console_actor,
+                &serde_json::json!("https://www.comparis.ch/hypotheken"),
+            )
+        });
+
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+
+        // dom-loading commits with the initial "about:blank" placeholder, then
+        // dom-complete fires — still reporting the literal "about:blank" — even
+        // though the real page has landed (this is the exact shape observed on
+        // comparis.ch route commits).
+        let (tx, rx) = std::sync::mpsc::channel::<std::sync::Arc<Resource>>();
+        tx.send(std::sync::Arc::new(Resource::DocumentEvent(
+            serde_json::json!({ "name": "dom-loading", "url": "about:blank" }),
+        )))
+        .unwrap();
+        tx.send(std::sync::Arc::new(Resource::DocumentEvent(
+            serde_json::json!({ "name": "dom-complete", "url": "about:blank" }),
+        )))
+        .unwrap();
+        drop(tx);
+
+        let watcher_actor = ff_rdp_core::ActorId::from("conn0/watcher1");
+        let bus_arc = Arc::new(Mutex::new(ResourceCommand::new(watcher_actor)));
+        let tab = ff_rdp_core::ActorId::from(tab_actor);
+
+        let nav_start = Instant::now();
+        let mut probe = ReadyStateProbe {
+            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            tab_actor: &tab,
+            pre_epoch: 0.0,
+            // Push the probe far into the future — only the dom-complete
+            // fallback path should fire, not the interleaved probe.
+            first_probe_at: nav_start + Duration::from_secs(30),
+            probe_interval: Duration::from_secs(30),
+        };
+
+        let result = wait_for_doc_complete(
+            &mut transport,
+            &bus_arc,
+            &rx,
+            5_000,
+            WaitLevel::Complete,
+            nav_start,
+            Some(&mut probe),
+            "https://www.comparis.ch/hypotheken",
+        );
+
+        server_handle.join().unwrap();
+
+        let ci = result.expect("dom-complete should resolve to a CommitInfo");
+        assert_eq!(ci.ready_state, "complete");
+        assert_eq!(
+            ci.committed_url, "https://www.comparis.ch/hypotheken",
+            "a literal about:blank dom-complete URL must fall back to location.href \
+             when it does not match the requested URL"
         );
     }
 }
