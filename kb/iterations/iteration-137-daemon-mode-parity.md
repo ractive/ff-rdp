@@ -91,7 +91,7 @@ without a daemon-mode counterpart.
 Re-run [[iteration-129-consent-and-cross-origin-frames]]'s `dogfood_path` verbatim as part of
 this iteration and confirm it passes as written.
 
-## Acceptance criteria
+## Acceptance Criteria
 
 - [ ] live_137_frame_targets_via_daemon: `enumerate_frame_targets` returns the same non-zero
       target count via daemon and `--no-daemon` on a multi-frame page
@@ -112,3 +112,24 @@ this iteration and confirm it passes as written.
   MAJOR findings and silently voids a whole shipped iteration.
 - Do not trust the stated root cause without confirming on the wire — iter-135 is the cautionary
   precedent, where three plausible hypotheses were all wrong and the real cause was ours.
+- iter-136 learnings that apply to Theme A/B work in `watcher.rs`:
+  - `unwatchResources`, `clearResources`, `unwatchTargets`, `clearPicker` are **oneway** —
+    Firefox never replies. Any new/moved sink-installation or cleanup code around
+    `enumerate_frame_targets` (`watcher.rs:365-385`) that sends these must use a fire-and-forget
+    send, not a `send`+`recv` pair — the latter blocks until the socket read timeout. If you add
+    a raw send in a live test, prefer `send_raw_oneway` (`crates/ff-rdp-core/tests/support/recording.rs`)
+    over `send_raw` for these types; `send_raw` now panics up-front on them
+    (`unit_send_raw_rejects_oneway`).
+  - A blocking accept/read loop with no deadline can deadlock a test's `join()` even after the
+    real work under test has already succeeded (iter-136 Theme B, `live_cookies_httponly`). If
+    Theme B's concurrency-cap fix touches the daemon's connection-accept loop, give it an
+    explicit bound/timeout so a live test can assert it always terminates, not just that it
+    eventually accepts.
+  - Any live test that flips global Firefox/daemon state for the duration of the test (here:
+    concurrency cap, network source mode) should restore it even if a mid-test assertion panics
+    — wrap the state-dependent body in `catch_unwind` and always run the restore, as
+    `live_accessibility_tree` now does for the platform accessibility service.
+  - `ac-fidelity-check.sh` matches `## Acceptance Criteria` case-sensitively; this plan's
+    heading was `## Acceptance criteria` (lowercase c) and the hard gate silently reported
+    "nothing to check" instead of validating the 7 ticked boxes — already fixed here. Double
+    check any other iteration plan you copy this file's headings from.
