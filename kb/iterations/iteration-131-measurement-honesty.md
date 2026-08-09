@@ -99,3 +99,26 @@ Sibling plans from the same findings batch: [[iteration-128-network-hint-always-
 [[iteration-132-cli-polish]].
 [[iteration-133-viewport-emulation]] builds on this iteration's responsive
 `simulation`/`media_queries_applied` fields — land this one first.
+
+**Adapted post-iter-130 (2026-08-09):**
+- **Theme A touches the same file/functions Theme C landed in `perf.rs`.**
+  iter-130 Theme C added `resources_pending`, and threaded `ready_state`/
+  `ms_since_nav_start` into both `run_summary`'s and `run_audit`'s resource
+  JS payload and result envelope (`script_resource_entries_with_pending_signal`,
+  `resources_pending()` in `crates/ff-rdp-cli/src/commands/perf.rs`). Theme A's
+  per-resource opaque-detection and `transfer_size: null`/`transfer_size_opaque`
+  work lands in the same `mapped`/`resource_summary` construction — extend the
+  existing JS payload and `Value` object literally (add fields, don't replace
+  them) rather than reintroducing a separate script string, or the two markers
+  will silently diverge on which JS snippet actually ran.
+- **`resources_pending: true` and `transfer_size_opaque: true` can both be true
+  at once** (a fresh cross-origin-heavy reload): treat them as independent
+  booleans in both the JSON envelope and `render_summary_text`/`render_audit_text`,
+  not mutually exclusive states — don't let one marker's presence suppress the
+  other's text-mode line.
+- **Live-Firefox-only protocol/timing bugs remain the dominant risk** for any
+  themes here that poll or race a live signal (Theme A's opaque-timing read is
+  synchronous JS so lower risk; Theme D's `throttle status` if it round-trips
+  through the same target-configuration actor iter-129/130 touched is higher
+  risk) — budget live-Firefox testing time per CLAUDE.md's iteration discipline,
+  don't rely on mock-based unit tests alone to call a theme done.
