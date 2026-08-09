@@ -330,3 +330,27 @@ Diffs `tools/ralph-loop/scripts/` against `~/.claude/skills/ralph-loop/scripts/`
 **Why**: The frame-targets research (`kb/research/frame-targets.md`) confirmed the failure mode this replaces: on theguardian.com, `click "button:has-text('Accept all')"`-equivalent selectors timed out after 10s with no indication the target lived inside a cross-origin Sourcepoint iframe invisible to the top-level `querySelector`. Naming the frame URLs tried turns an opaque timeout into an actionable diagnostic (`click --frame sourcepoint ...` is the documented next step). Matching on the error-message marker rather than a distinct error type keeps the fast top-level path unchanged (`build_click_js` already throws that exact string) — no new eval-side error protocol was needed.
 
 **Applies to**: `crates/ff-rdp-cli/src/commands/click.rs`, iter-129.
+
+## DEC-025: `snapshotScale` is always sent — "omit at the server default" was never true
+
+**Decision** (iter-135): ff-rdp always serialises `snapshotScale` in the `screenshotActor.capture` args, even when `windowDpr * windowZoom == 1.0`. The `Option<f64>` on `ScreenshotArgsExt` became a plain `f64`; `ScreenshotFront::capture` always passes `Some(scale)`.
+
+**Why**: iter-77 dropped the field at 1.0 to keep outbound bytes at the pre-shim baseline, on the assumption that Firefox defaults it. It does not. `devtools/server/actors/utils/capture-screenshot.js` reads `const ratio = args.snapshotScale;` with no fallback and passes it straight into `browsingContext.currentWindowGlobal.drawSnapshot(rect, ratio, …)`; `snapshot.width / undefined` is `NaN`, `canvas.toDataURL` throws, the catch-all returns `null`, and the retry guard `!data && ratio > 1.0` is `false` for `undefined`. Firefox then replies `{"value":{"data":null,…,"messages":[{"level":"error","text":"<screenshotRenderingError>"}]}}`.
+
+**Why it took until Firefox 153 to bite**: on 149–152 `screenshotActor.capture` failed earlier, at actor-module load, and ff-rdp fell back to the parent-process `drawSnapshot` path. Firefox 153 fixed that load (Bug 2043900, `414cbad5bf8b`), the request reached the renderer for the first time, and every capture started failing — misdiagnosed in the iter-135 plan as reply-shape drift and in iteration-110 as environmental "known reds".
+
+**Consequence**: the win is not just correctness — the "minimise outbound bytes" instinct is what created a two-release latent break that was invisible because a *different* bug masked it. Fields the server reads without a default are not optional; treat "the server defaults this" as a claim requiring a source citation, not an inference from the value being the common case.
+
+**Related**: `parse_capture_response()` now folds the reply's `messages` into the error instead of reporting "missing 'data' field" — the server was explaining the failure all along and ff-rdp was discarding the explanation. See DEC-026.
+
+**Applies to**: `crates/ff-rdp-core/src/actors/screenshot.rs`, `crates/ff-rdp-core/src/fronts/screenshot.rs`, `crates/ff-rdp-core/src/specs/screenshot.rs`, `kb/rdp/actors/screenshot.md`, iter-135.
+
+## DEC-026: screenshot failures report what Firefox said, not a guess about headless mode
+
+**Decision** (iter-135, Theme C): the `screenshot` command no longer appends "screenshots require headless mode; relaunch with: `ff-rdp launch --headless`" to capture failures, and no longer reuses `version_mismatch_message()` ("screenshot actor not found in Firefox N root form") on the `drawSnapshot`-fallback path. Failures quote the server's own `messages` entries; the fallback path uses a new `capture_failure_message()` that says Firefox rendered no image and suggests dropping `--full-page` or running `ff-rdp doctor`.
+
+**Why**: both claims were unconditional guesses attached to *any* capture failure. The headless hint fired at users who were already headless — the normal ff-rdp setup — and was the top-line advice in the iter-135 bug report, sending the first diagnosis in exactly the wrong direction. The "actor not found" text is reached only *after* an actor was found and called, so it is false by construction on that path.
+
+**Enforcement**: `screenshot_errors_carry_no_headless_relaunch_hint` greps the pre-`#[cfg(test)]` portion of `commands/screenshot.rs` for both literals, so a new error site cannot reintroduce them; `live_135_screenshot_error_not_misleading` forces a real capture failure against headless Firefox (a 200 000 px page defeats the renderer) and asserts neither string appears in stdout or stderr.
+
+**Applies to**: `crates/ff-rdp-cli/src/commands/screenshot.rs`, `crates/ff-rdp-cli/tests/live/live_135_screenshot_ff153.rs`, iter-135.

@@ -103,20 +103,109 @@ as permanent reds.
 
 ## Acceptance criteria
 
-- [ ] live_135_screenshot_ff153_capture: `ff-rdp screenshot -o <path>` against
+- [x] live_135_screenshot_ff153_capture: `ff-rdp screenshot -o <path>` against
       headless Firefox 153.x writes a valid PNG (magic bytes + non-zero
       dimensions), no `missing 'data' field` error
-- [ ] live_135_screenshot_full_page_taller: `--full-page` PNG height > plain
+- [x] live_135_screenshot_full_page_taller: `--full-page` PNG height > plain
       viewport PNG height on the same page
-- [ ] live_135_screenshot_error_not_misleading: a forced parse failure while
+- [x] live_135_screenshot_error_not_misleading: a forced parse failure while
       headless does NOT emit the "relaunch with --headless" hint
-- [ ] unit_screenshot_capture_parses_ff153_shape: recorded-fixture unit test for
+- [x] unit_screenshot_capture_parses_ff153_shape: recorded-fixture unit test for
       the Firefox 153 reply shape
-- [ ] unit_screenshot_capture_parses_legacy_shape: the pre-153
+- [x] unit_screenshot_capture_parses_legacy_shape: the pre-153
       `{value:{data:...}}` shape still parses (no version regression)
-- [ ] preexisting_reds_recheck: `live_screenshot_ff151::*` and
+- [x] preexisting_reds_recheck: `live_screenshot_ff151::*` and
       `live_screenshot_bulk_fallback::*` re-run and their status recorded —
       green, or explicitly re-triaged with a reason
+
+## Results
+
+### Theme A — the reply shape never drifted
+
+Raw wire capture (`FF_RDP_TRACE_RAW=1 RUST_LOG=trace ff-rdp screenshot`) against
+Firefox 153.0.3:
+
+```json
+{"value":{"data":null,
+          "filename":"Bildschirmfoto am 2026-08-09 um 12.17.19.png",
+          "messages":[{"level":"error",
+                       "text":"Fehler beim Erstellen der Grafik. Sie war wahrscheinlich zu groß."}]},
+ "from":"server1.conn6.screenshotActor7"}
+```
+
+The `data` key is present and `null`; no longString, no rename, no extra
+nesting, no async ack. The plan's three candidate hypotheses were all wrong.
+
+**Actual root cause**: ff-rdp omitted `snapshotScale` whenever
+`windowDpr * windowZoom == 1.0` (an iter-77 "keep the packet minimal"
+optimisation). `capture-screenshot.js` has **no default** for it —
+`const ratio = args.snapshotScale;` goes straight into
+`drawSnapshot(rect, ratio, …)`, `snapshot.width / undefined` is `NaN`,
+`canvas.toDataURL` throws, and the catch returns `null`. The retry guard
+`!data && ratio > 1.0` is also `false` for `undefined`, so there is no second
+attempt.
+
+**Why 153 and not earlier**: on 149–152 `screenshotActor.capture` failed first
+at actor-module load, and ff-rdp fell back to the parent-process `drawSnapshot`
+path. Firefox 153 fixed that load —
+[Bug 2043900](https://bugzilla.mozilla.org/show_bug.cgi?id=2043900),
+`414cbad5bf8b` — so the request reached the renderer for the first time and the
+latent omission became fatal on every capture. This also confirms the plan's
+"not a regression from 128–133": the omission has been on the wire since
+iter-77.
+
+Recorded in `kb/rdp/actors/screenshot.md` (§ iter-135) and
+[[decision-log]] DEC-025.
+
+### Theme B — parse both shapes
+
+- `ScreenshotArgsExt::snapshot_scale` is now `f64`, always serialised;
+  `ScreenshotFront::capture` always sends `Some(scale)`.
+- New `ff_rdp_core::parse_capture_response()` accepts the success shape from
+  every Firefox 149→153 and folds `messages` into the error when `data` is
+  absent/null/empty. Used by both `ScreenshotActor::capture` and
+  `screenshot_via_target`.
+- `specs::screenshot::response::CaptureValue.data` became `Option<String>` and
+  gained `messages: Vec<CaptureMessage>` — the old `data: String` failed to
+  deserialise a `null` outright.
+- No longString branch was added: the wire proved the payload is a plain inline
+  string, and speculative untested code is worse than none.
+- **No new `allow-spec-drift` annotation was needed** — `snapshotScale` is
+  already covered by the existing SD-1 annotation on `ScreenshotArgsExt`.
+
+### Theme C — the misleading error is gone
+
+`relaunch with: ff-rdp launch --headless` and `screenshots require headless mode`
+are removed from every screenshot error path, plus the false
+`version_mismatch_message()` ("screenshot actor not found …") on the
+drawSnapshot-fallback path — that path is only reached *after* an actor was
+found and called. Replaced by `capture_failure_message()`. See DEC-026.
+
+### Theme D — the iteration-110 "known reds" were this bug
+
+All 16 screenshot live tests are green on Firefox 153.0.3
+(`--test-threads=1`, no other Firefox running), including every test in the
+plan's blast radius:
+
+| test | status |
+| --- | --- |
+| `live_61r_screenshot::live_screenshot_dpr_string_accepted` | green |
+| `live_92_screenshot_full_page::live_screenshot_full_page_md5_differs_from_viewport` | green |
+| `live_screenshot_shim::live_screenshot_no_args_on_firefox_151` | green |
+| `live_screenshot_ff151::live_screenshot_ff151_cli` | green |
+| `live_screenshot_ff151::live_screenshot_ff151_produces_valid_png` | green |
+| `live_screenshot_bulk_fallback::live_screenshot_bulk_fallback_then_eval` | green |
+
+The three catalogued in [[iteration-110-post-batch-live-sweep]] as
+pre-existing/environmental were **the same root cause, mis-filed**. They are no
+longer known reds; a future red in them is a real regression.
+
+### Follow-up not taken here
+
+The SD-2 workaround (parent-process `drawSnapshot` for the Firefox 151
+module-load regression) is no longer *needed* on 153, but it still guards
+151/152 and is now also the fallback for a null-data capture, so it stays.
+Version-gating it is a separate decision with its own live-matrix cost.
 
 ## Notes
 

@@ -55,9 +55,15 @@ pub mod request {
         /// Snapshot scale factor — typically equal to the DPR value as a float.
         ///
         /// Non-spec field: not in `devtools/shared/specs/screenshot.js`.
-        /// When `None`, the field is omitted from the wire packet and the
-        /// server defaults to `1.0`
-        /// (`devtools/server/actors/utils/capture-screenshot.js`).
+        ///
+        /// **There is no server-side default.**
+        /// `devtools/server/actors/utils/capture-screenshot.js` reads
+        /// `const ratio = args.snapshotScale;` and passes it verbatim to
+        /// `drawSnapshot`; omitting it makes the resulting canvas `NaN`-sized
+        /// and the reply comes back with `data: null` (iter-135).  Callers
+        /// should always populate this with `windowDpr * windowZoom`; `None`
+        /// is retained only so the struct can mirror an omitted-field packet
+        /// in tests.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub snapshot_scale: Option<f64>,
         /// Optional delay in milliseconds before capturing — per Firefox spec.
@@ -84,13 +90,38 @@ pub mod request {
 pub mod response {
     use super::Deserialize;
 
+    /// A single user-facing diagnostic emitted by the server-side capture.
+    ///
+    /// `capture-screenshot.js` pushes entries here for a decreased DPR, a
+    /// truncated oversized page, and — crucially — for a rendering failure,
+    /// in which case `data` comes back `null`.
+    #[derive(Debug, Clone, Default, Deserialize)]
+    pub struct CaptureMessage {
+        /// `"error"`, `"warn"`, or `"info"`.
+        #[serde(default)]
+        pub level: String,
+        /// Localised message text (the server localises to the browser's UI
+        /// locale, so never match on its contents).
+        #[serde(default)]
+        pub text: String,
+    }
+
     /// Inner value returned by `capture`.
     #[derive(Debug, Clone, Default, Deserialize)]
     pub struct CaptureValue {
         /// The data URL (e.g. `data:image/png;base64,...`).
-        pub data: String,
+        ///
+        /// `null` when the server-side render failed — see
+        /// [`CaptureValue::messages`] for why.  It is **not** optional in the
+        /// spec's `RetVal("json")` sense; Firefox simply always includes the
+        /// key and sets it to `null` on failure.
+        #[serde(default)]
+        pub data: Option<String>,
         #[serde(default)]
         pub filename: String,
+        /// Server-side diagnostics.  Empty on a clean capture.
+        #[serde(default)]
+        pub messages: Vec<CaptureMessage>,
     }
 
     /// Reply for `capture`.
@@ -226,8 +257,29 @@ mod tests {
         });
         let reply: response::Capture = serde_json::from_value(v).unwrap();
         let val = reply.value.expect("value should be present");
-        assert_eq!(val.data, "data:image/png;base64,abc123");
+        assert_eq!(val.data.as_deref(), Some("data:image/png;base64,abc123"));
         assert_eq!(val.filename, "screenshot.png");
+    }
+
+    /// iter-135: the Firefox 153 failure reply must deserialise.  With the
+    /// pre-135 `data: String` this returned a serde error ("invalid type: null")
+    /// and the server's explanation never reached the user.
+    #[test]
+    fn capture_response_deserializes_null_data_with_messages() {
+        let v = json!({
+            "from": "server1.conn0.screenshotActor7",
+            "value": {
+                "data": null,
+                "filename": "Bildschirmfoto.png",
+                "messages": [{"level": "error", "text": "Fehler beim Erstellen der Grafik."}]
+            }
+        });
+        let reply: response::Capture = serde_json::from_value(v).unwrap();
+        let val = reply.value.expect("value should be present");
+        assert!(val.data.is_none(), "null data must deserialise to None");
+        assert_eq!(val.messages.len(), 1);
+        assert_eq!(val.messages[0].level, "error");
+        assert!(val.messages[0].text.starts_with("Fehler"));
     }
 
     #[test]

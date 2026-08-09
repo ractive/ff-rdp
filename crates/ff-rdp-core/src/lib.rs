@@ -45,7 +45,10 @@ pub use actors::page_style::{
 pub use actors::reflow::ReflowActor;
 pub use actors::responsive::ResponsiveActor;
 pub use actors::root::{ProcessInfo, RootActor};
-pub use actors::screenshot::{ScreenshotActor, ScreenshotArgsExt, ScreenshotArgsRect};
+pub use actors::screenshot::{
+    CAPTURE_NO_IMAGE_DATA, ScreenshotActor, ScreenshotArgsExt, ScreenshotArgsRect,
+    capture_no_image_data_error, parse_capture_response,
+};
 pub use actors::screenshot_content::{
     CaptureRect, PrepareCapture, ScreenshotCapture, ScreenshotContentActor,
 };

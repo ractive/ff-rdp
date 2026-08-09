@@ -1,3 +1,4 @@
+use crate::actors::screenshot::capture_no_image_data_error;
 use crate::actors::screenshot_content::PrepareCapture;
 use crate::error::ProtocolError;
 use crate::registry::{Front, FrontKind, Registry};
@@ -53,32 +54,30 @@ impl ScreenshotFront {
         } else {
             Some(format!("{}", prep.window_dpr))
         };
-        // Only send snapshotScale when it differs from the server default (1.0).
-        let snapshot_scale_opt = if (snapshot_scale - 1.0).abs() < 1e-6 {
-            None
-        } else {
-            Some(snapshot_scale)
-        };
+        // iter-135: always send snapshotScale.  Firefox does NOT default it —
+        // an absent field renders a NaN-sized canvas and the reply carries
+        // `data: null`.  See `actors::screenshot::ScreenshotArgsExt`.
         let args = spec::request::Capture {
             args: spec::request::CaptureArgs {
                 browsing_context_id,
                 fullpage: full_page,
                 dpr: dpr_str,
-                snapshot_scale: snapshot_scale_opt,
+                snapshot_scale: Some(snapshot_scale),
                 delay: None,
                 rect,
             },
         };
         let reply = call::<spec::Capture>(transport, &self.id, &args)?;
-        reply
-            .value
-            .map(|v| v.data)
-            .filter(|d| !d.is_empty())
-            .ok_or_else(|| {
-                ProtocolError::InvalidPacket(
-                    "screenshotActor capture response missing 'data' field".into(),
-                )
-            })
+        let value = reply.value.unwrap_or_default();
+        match value.data.as_deref() {
+            Some(data) if !data.is_empty() => Ok(data.to_owned()),
+            _ => Err(capture_no_image_data_error(
+                value
+                    .messages
+                    .iter()
+                    .map(|m| (m.level.as_str(), m.text.as_str())),
+            )),
+        }
     }
 }
 

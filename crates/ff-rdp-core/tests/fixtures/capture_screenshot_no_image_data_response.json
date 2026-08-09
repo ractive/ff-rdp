@@ -1,0 +1,13 @@
+{
+  "value": {
+    "data": null,
+    "filename": "Bildschirmfoto am 2026-08-09 um 12.24.10.png",
+    "messages": [
+      {
+        "level": "error",
+        "text": "Fehler beim Erstellen der Grafik. Sie war wahrscheinlich zu groß."
+      }
+    ]
+  },
+  "from": "server1.conn0.screenshotActor9"
+}

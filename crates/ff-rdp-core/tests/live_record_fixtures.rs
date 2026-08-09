@@ -3205,3 +3205,145 @@ fn live_record_getroot_ff151() {
     println!("  [ok] screenshotActor absent from getRoot — recording fixture");
     save_core_fixture("getroot_ff151.json", &resp);
 }
+
+// ===========================================================================
+// iter-135: `screenshotActor.capture` reply shapes on Firefox 153
+// ===========================================================================
+
+/// Drive the two-step capture protocol and return the raw `capture` reply.
+///
+/// `send_snapshot_scale` selects which of the two iter-135 reply shapes gets
+/// recorded:
+///
+/// - `true`  — the fixed request; Firefox renders and replies with a data URL.
+/// - `false` — reproduces the pre-iter-135 request that omitted `snapshotScale`.
+///   Firefox 153 then renders a `NaN`-scaled canvas, `toDataURL` throws, and
+///   the reply comes back with `data: null` plus a localised `messages` entry.
+///   This is the exact packet that produced the "capture response missing
+///   'data' field" bug report, recorded rather than hand-written.
+fn record_capture_reply(transport: &mut RdpTransport, send_snapshot_scale: bool) -> Value {
+    transport
+        .send(&json!({"to": "root", "type": "listTabs"}))
+        .expect("send listTabs");
+    let list_tabs = recv_from_actor(transport, "root");
+    let tab_actor = list_tabs["tabs"][0]["actor"]
+        .as_str()
+        .expect("tab actor")
+        .to_owned();
+
+    transport
+        .send(&json!({"to": &tab_actor, "type": "getTarget"}))
+        .expect("send getTarget");
+    let target = recv_from_actor(transport, &tab_actor);
+    let browsing_context_id = target["frame"]["browsingContextID"]
+        .as_u64()
+        .expect("browsingContextID");
+    let content_actor = target["frame"]["screenshotContentActor"]
+        .as_str()
+        .expect("screenshotContentActor")
+        .to_owned();
+
+    transport
+        .send(&json!({
+            "to": &content_actor,
+            "type": "prepareCapture",
+            "args": {"fullpage": false},
+        }))
+        .expect("send prepareCapture");
+    let prep = recv_from_actor(transport, &content_actor);
+    let window_dpr = prep["value"]["windowDpr"].as_f64().unwrap_or(1.0);
+    let window_zoom = prep["value"]["windowZoom"].as_f64().unwrap_or(1.0);
+
+    transport
+        .send(&json!({"to": "root", "type": "getRoot"}))
+        .expect("send getRoot");
+    let root = recv_from_actor(transport, "root");
+    let screenshot_actor = root["screenshotActor"]
+        .as_str()
+        .expect("screenshotActor (Firefox 153 re-advertises it)")
+        .to_owned();
+
+    let mut args = json!({
+        "fullpage": false,
+        "dpr": format!("{window_dpr}"),
+        "browsingContextID": browsing_context_id,
+    });
+    if send_snapshot_scale {
+        args["snapshotScale"] = json!(window_dpr * window_zoom);
+    }
+
+    transport
+        .send(&json!({"to": &screenshot_actor, "type": "capture", "args": args}))
+        .expect("send capture");
+    recv_from_actor(transport, &screenshot_actor)
+}
+
+/// Record the successful `capture` reply (data URL present).
+///
+/// Run to record:
+///   FF_RDP_LIVE_TESTS_RECORD=1 cargo test -p ff-rdp-core --test live_record_fixtures \
+///     -- --ignored live_record_capture_screenshot --nocapture
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_record_capture_screenshot() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let resp = record_capture_reply(conn.transport_mut(), true);
+
+    let data = resp["value"]["data"]
+        .as_str()
+        .expect("capture with snapshotScale must return a data URL");
+    assert!(
+        data.starts_with("data:image/png;base64,"),
+        "capture data must be a PNG data URL, got: {}",
+        &data[..data.len().min(40)]
+    );
+
+    // The base64 payload is a full-page PNG (hundreds of KB); truncate it so the
+    // checked-in fixture stays reviewable while keeping the real reply shape.
+    let mut trimmed = resp.clone();
+    trimmed["value"]["data"] = json!(data.chars().take(160).collect::<String>());
+
+    save_cli_fixture("capture_screenshot_response.json", &trimmed);
+    save_core_fixture("capture_screenshot_response.json", &trimmed);
+}
+
+/// Record the Firefox 153 `data: null` reply that iter-135 diagnosed.
+///
+/// Run to record:
+///   FF_RDP_LIVE_TESTS_RECORD=1 cargo test -p ff-rdp-core --test live_record_fixtures \
+///     -- --ignored live_record_capture_screenshot_no_image_data --nocapture
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_record_capture_screenshot_no_image_data() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let resp = record_capture_reply(conn.transport_mut(), false);
+
+    // Firefox ≤ 152 never reached this code path (the actor module failed to
+    // load first), so on those builds the omission is harmless and `data` is a
+    // real data URL.  Only overwrite the fixture when the null-data shape is
+    // actually observed.
+    if !resp["value"]["data"].is_null() {
+        println!(
+            "  [skip] this Firefox renders fine without snapshotScale — \
+             leaving the checked-in Firefox 153 null-data fixture intact"
+        );
+        return;
+    }
+
+    assert!(
+        resp["value"]["messages"]
+            .as_array()
+            .is_some_and(|m| !m.is_empty()),
+        "a null-data capture reply must carry diagnostic messages: {resp:?}"
+    );
+
+    println!("  [ok] recorded the Firefox 153 null-data capture reply");
+    save_cli_fixture("capture_screenshot_no_image_data_response.json", &resp);
+    save_core_fixture("capture_screenshot_no_image_data_response.json", &resp);
+}

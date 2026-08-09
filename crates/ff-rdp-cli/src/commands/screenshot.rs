@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use anyhow::Context as _;
 use base64::Engine as _;
 use ff_rdp_core::{
-    COMPATIBLE_FIREFOX_MIN, CaptureRect, Grip, ProtocolError, ScreenshotActor,
-    ScreenshotContentActor,
+    CAPTURE_NO_IMAGE_DATA, COMPATIBLE_FIREFOX_MIN, CaptureRect, Grip, ProtocolError,
+    ScreenshotActor, ScreenshotContentActor,
 };
 use serde_json::json;
 
@@ -77,6 +77,16 @@ fn is_actor_module_load_failure(err: &ProtocolError) -> bool {
     err.to_string().contains("Unable to load actor module")
 }
 
+/// Detect a `capture` reply that succeeded at the protocol level but carried no
+/// PNG (`data: null`), which Firefox signals via its `messages` array.
+///
+/// iter-135: on Firefox 153 this is the *normal* outcome when the parent-process
+/// render fails; the `drawSnapshot` fallback still works, so the CLI retries
+/// through it rather than aborting.
+fn is_capture_no_image_data(err: &ProtocolError) -> bool {
+    err.to_string().contains(CAPTURE_NO_IMAGE_DATA)
+}
+
 /// Build the canonical user-facing message for a missing screenshot actor.
 ///
 /// Centralised so the message names `doctor` per the iter-53 contract and
@@ -90,6 +100,28 @@ fn version_mismatch_message() -> String {
         "screenshot actor not found in Firefox {observed} root form. \
          Run `ff-rdp doctor` for the full compatibility report \
          (minimum supported: {COMPATIBLE_FIREFOX_MIN})."
+    )
+}
+
+/// Build the trailing hint for a capture that *reached* a screenshot actor and
+/// then failed to render.
+///
+/// iter-135 Theme C: this path used to borrow [`version_mismatch_message`],
+/// which asserts "screenshot actor not found" — false here, since the actor was
+/// found and called — and then appended a hint telling the user to relaunch in
+/// headless mode, which is false whenever the session already is headless (the
+/// normal case).  Both claims sent users chasing the wrong problem, so this
+/// message states only what is known.
+fn capture_failure_message() -> String {
+    let observed = match crate::connection_meta::remembered_version() {
+        Some(v) => format!("{v}"),
+        None => "unknown".to_owned(),
+    };
+    format!(
+        "Firefox {observed} rendered no image for this capture. \
+         Very tall pages can exceed the renderer's limits — retry without \
+         `--full-page`, or run `ff-rdp doctor` for the full compatibility \
+         report (minimum supported: {COMPATIBLE_FIREFOX_MIN})."
     )
 }
 
@@ -606,9 +638,25 @@ fn try_two_step_screenshot(
             );
             screenshot_via_process_drawsnapshot_fallback(ctx, browsing_ctx_id, full_page)
         }
+        Err(ref e) if is_capture_no_image_data(e) => {
+            // iter-135: the request succeeded but Firefox rendered nothing.
+            // `BrowsingContext.drawSnapshot` from the parent process does not
+            // go through the same canvas path and still works, so retry there
+            // instead of failing the command.
+            tracing::debug!(
+                target: "ff_rdp_cli::screenshot",
+                error = %e,
+                "screenshotActor.capture returned no image data; retrying via screenshot_via_process_drawsnapshot"
+            );
+            screenshot_via_process_drawsnapshot_fallback(ctx, browsing_ctx_id, full_page)
+        }
+        // iter-135 Theme C: no "relaunch with --headless" hint here.  It fired
+        // on every capture failure — including for sessions that were already
+        // headless — and blamed the wrong cause.  Report what actually failed;
+        // Firefox's own diagnostic messages are folded into `{e}` by
+        // `ff_rdp_core::parse_capture_response`.
         Err(e) => Err(AppError::User(format!(
-            "screenshot: screenshotActor.capture failed ({e}) — \
-             screenshots require headless mode; relaunch with: ff-rdp launch --headless"
+            "screenshot: screenshotActor.capture failed ({e})"
         ))),
     }
 }
@@ -694,10 +742,15 @@ fn screenshot_via_process_drawsnapshot_fallback(
         full_page_rect,
     )
     .map_err(|e| {
+        // iter-135 Theme C: the old text ended with a "relaunch in headless
+        // mode" instruction, which was wrong for the (common) case of an
+        // already-headless session.  It also appended
+        // `version_mismatch_message()`, claiming the screenshot actor was
+        // missing — untrue on this path, which is only reached *after* an actor
+        // was found and used.
         AppError::User(format!(
-            "screenshot: process-drawsnapshot fallback failed ({e}) — \
-                 {} — screenshots require headless mode; relaunch with: ff-rdp launch --headless",
-            version_mismatch_message()
+            "screenshot: process-drawsnapshot fallback failed ({e}) — {}",
+            capture_failure_message()
         ))
     })?;
 
@@ -741,6 +794,66 @@ mod tests {
     use super::*;
     use crate::cli::args::{Cli, Command};
     use clap::Parser as _;
+
+    /// iter-135 Theme C: no screenshot failure path may tell an already-headless
+    /// user to relaunch headless.  Asserted against the module source so a new
+    /// error site cannot quietly reintroduce the hint.
+    #[test]
+    fn screenshot_errors_carry_no_headless_relaunch_hint() {
+        let src = include_str!("screenshot.rs");
+        // The literal appears once more in this very assertion; count the
+        // occurrences outside the test module.
+        let before_tests = src.split_once("#[cfg(test)]").map_or(src, |(head, _)| head);
+        assert!(
+            !before_tests.contains("relaunch with: ff-rdp launch --headless"),
+            "iter-135 removed this hint — it fired on every capture failure, \
+             including for sessions that were already headless"
+        );
+        assert!(
+            !before_tests.contains("screenshots require headless mode"),
+            "iter-135 removed this claim — capture failures are not evidence \
+             that the session is headful"
+        );
+    }
+
+    /// The replacement hint must describe the real failure and must not repeat
+    /// `version_mismatch_message`'s "actor not found" claim, which is false on
+    /// a path only reached after an actor was found and called.
+    #[test]
+    fn capture_failure_message_states_the_real_problem() {
+        let msg = capture_failure_message();
+        assert!(
+            msg.contains("rendered no image for this capture"),
+            "must name the actual failure: {msg}"
+        );
+        assert!(
+            !msg.contains("screenshot actor not found"),
+            "must not claim the actor is missing: {msg}"
+        );
+        assert!(
+            !msg.contains("--headless"),
+            "must not mention headless mode: {msg}"
+        );
+        assert!(
+            msg.contains("ff-rdp doctor"),
+            "must keep pointing at the diagnostic command: {msg}"
+        );
+    }
+
+    /// The CLI's fallback trigger must fire on the error
+    /// `ff_rdp_core::parse_capture_response` produces for a `data: null` reply.
+    #[test]
+    fn capture_no_image_data_is_detected_for_fallback() {
+        let err = ff_rdp_core::capture_no_image_data_error([("error", "rendering failed")]);
+        assert!(
+            is_capture_no_image_data(&err),
+            "the CLI must route this error to the drawSnapshot fallback: {err}"
+        );
+        assert!(
+            !is_actor_module_load_failure(&err),
+            "must not be confused with the Firefox 151 module-load failure: {err}"
+        );
+    }
 
     #[test]
     fn clap_screenshot_full_page_flag_parsed() {
