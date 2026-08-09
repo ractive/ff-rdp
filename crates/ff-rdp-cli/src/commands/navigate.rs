@@ -641,6 +641,136 @@ fn split_wait_budget(timeout_ms: u64) -> (u64, u64) {
     (reserved_ms, events_budget)
 }
 
+/// Wait for a navigation triggered by `dispatch` to commit, returning the same
+/// `{committed_url, ready_state, elapsed_ms}` envelope `navigate` produces
+/// (iter-130 Theme B — shared by `back`, `forward`, `reload` so all four
+/// navigation verbs report the same shape).
+///
+/// `dispatch` MUST send its request as a **raw, un-acked write**
+/// (`transport.send(...)`, not `WindowGlobalTarget::reload`/`go_back`/
+/// `go_forward`, which route through `actor_request`'s blocking
+/// `recv_reply_from`). This function's own `wait_for_doc_complete` pump reads
+/// every packet on the wire directly, so a raw dispatch lets it observe both
+/// the action's ack AND any `document-event` that races ahead of that ack.
+/// Routing the dispatch through `recv_reply_from` instead would risk losing a
+/// document-event that arrives before the ack: `recv_reply_from` forwards
+/// non-reply packets to the transport's event sink, and no sink is installed
+/// on this path, so `forward_event` would silently drop it (see
+/// `kb/rdp/actors/watcher.md`'s iter-129 Note 1 — the exact bug this
+/// docstring warns against reintroducing).
+///
+/// `requested_url` feeds `needs_href_fallback`'s literal-`"about:blank"`
+/// detection: pass the known target URL when there is one (e.g. reload's
+/// pre-reload `location.href`), or `""` when it isn't knowable ahead of time
+/// (`back`/`forward`) — `""` never equals the literal `"about:blank"` event
+/// value, so the fallback still triggers safely (worst case: one harmless
+/// extra `location.href` round-trip) rather than trusting a stale
+/// placeholder.
+///
+/// Mirrors `run_core`'s `Both`-strategy fallback (events wait, then a bounded
+/// `document.readyState` poll with whatever budget remains) but omits the
+/// interleaved `ReadyStateProbe` fast-path — `back`/`forward`/`reload` don't
+/// hit the FF152 "dom-complete never fires" case `navigate`'s default `Both`
+/// strategy was tuned for, so the extra complexity isn't justified here.
+pub(crate) fn wait_for_navigation_commit(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    cli_timeout: u64,
+    requested_url: &str,
+    dispatch: impl FnOnce(&mut RdpTransport) -> Result<(), AppError>,
+) -> Result<serde_json::Value, AppError> {
+    let tab_actor = ctx.target_tab_actor().clone();
+    let watcher_actor =
+        TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+
+    // Best-effort freshness epoch, same pattern as run_core's pre_nav_epoch:
+    // a failed/exceptional eval disables the freshness guard (0.0) rather
+    // than blocking the navigation action.
+    let pre_nav_epoch: f64 = {
+        let console_actor = ctx.target.console_actor.clone();
+        match eval_or_bail(
+            ctx,
+            &console_actor,
+            "performance.timing.navigationStart",
+            "nav_action: pre-nav epoch eval",
+        ) {
+            Ok(result) => match result.result {
+                Grip::Value(serde_json::Value::Number(ref n)) => n.as_f64().unwrap_or(0.0),
+                _ => 0.0,
+            },
+            Err(_) => 0.0,
+        }
+    };
+
+    // See run_core's identical prelude for why watchTargets("frame") must
+    // precede watchResources — the watcher delivers nothing until both have
+    // been issued (iter-79 Theme A).
+    WatcherActor::watch_targets(ctx.transport_mut(), &watcher_actor, "frame")
+        .map_err(AppError::from)?;
+
+    let bus_arc = ctx.get_or_init_resource_command(watcher_actor.clone());
+    let (sub_id, rx) = bus_arc
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .subscribe(ctx.transport_mut(), &[ResourceType::DocumentEvent])
+        .map_err(|e| AppError::from(anyhow::anyhow!("document-event subscribe: {e:#}")))?;
+
+    let (_reserved_ms, events_budget) = split_wait_budget(cli_timeout);
+    let nav_start = Instant::now();
+
+    let event_result = dispatch(ctx.transport_mut()).and_then(|()| {
+        wait_for_doc_complete(
+            ctx.transport_mut(),
+            &bus_arc,
+            &rx,
+            events_budget,
+            WaitLevel::Complete,
+            nav_start,
+            None,
+            requested_url,
+        )
+    });
+
+    // Flush any pending `unwatchResources` from dead-channel pruning, then
+    // unsubscribe/unwatch regardless of outcome so Firefox cleans up
+    // server-side state (mirrors run_core's teardown).
+    let _ = bus_arc
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .gc(ctx.transport_mut());
+    let _ = bus_arc
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unsubscribe(ctx.transport_mut(), sub_id);
+    let _ =
+        WatcherActor::unwatch_targets(ctx.transport_mut(), &watcher_actor, Some("frame"), None);
+    restore_timeout(ctx.transport_mut(), cli_timeout);
+
+    let commit_info = match event_result {
+        r @ Ok(_) => r,
+        Err(AppError::Timeout(_)) => {
+            refresh_console_actor(ctx);
+            let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(cli_timeout);
+            let remaining = cli_timeout.saturating_sub(elapsed_ms);
+            if remaining == 0 {
+                Err(AppError::Timeout(
+                    "nav_action: no remaining budget for readystate fallback".to_string(),
+                ))
+            } else {
+                wait_for_readystate_complete(ctx, remaining, pre_nav_epoch, nav_start)
+            }
+        }
+        Err(e) => Err(e),
+    }?;
+
+    refresh_console_actor(ctx);
+
+    Ok(json!({
+        "committed_url": commit_info.committed_url,
+        "ready_state": commit_info.ready_state,
+        "elapsed_ms": commit_info.elapsed_ms,
+    }))
+}
+
 /// Run the `--wait-for` predicates from `wait_opts`, re-resolving actors first.
 ///
 /// Returns `Some(json)` when predicates were specified, `None` when none were given.
