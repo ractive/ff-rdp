@@ -102,21 +102,21 @@ both. Note the irony recorded in session-63: the network entries were the only p
 appeared (`303 → /verify_human`), revealing that the plain call's `committed_url` was itself
 untruthful — which Theme A fixes.
 
-## Acceptance Criteria
+## Acceptance Criteria [8/8]
 
-- [ ] live_138_navigate_reports_404: `navigate` to a known 404 reports status 404
-- [ ] live_138_navigate_reports_200: status 200 on a normal page (no false positives)
-- [ ] live_138_pushstate_back_succeeds: `back` across a pushState entry returns the real URL
+- [x] live_138_navigate_reports_404: `navigate` to a known 404 reports status 404
+- [x] live_138_navigate_reports_200: status 200 on a normal page (no false positives)
+- [x] live_138_pushstate_back_succeeds: `back` across a pushState entry returns the real URL
       promptly with exit 0 — assert wall-clock well under the timeout
-- [ ] live_138_fragment_navigate_succeeds: `navigate` to `#frag` succeeds
-- [ ] live_138_timeout_message_matches_wall_clock: reported budget within tolerance of observed
+- [x] live_138_fragment_navigate_succeeds: `navigate` to `#frag` succeeds
+- [x] live_138_timeout_message_matches_wall_clock: reported budget within tolerance of observed
       elapsed time
-- [ ] live_138_back_forward_committed_url_is_top_frame: `committed_url` matches
+- [x] live_138_back_forward_committed_url_is_top_frame: `committed_url` matches
       `eval location.href` after traversal on a page with cross-origin subframes
-- [ ] live_138_with_network_keeps_envelope: `navigate --with-network` returns non-null
+- [x] live_138_with_network_keeps_envelope: `navigate --with-network` returns non-null
       `committed_url` and `ready_state` alongside network data
-- [ ] e2e_no_wait_flag_consistency (Theme E): the flag exists wherever it is recommended, or is
-      not recommended where it does not exist
+- [x] `e2e_no_wait_flag_consistency` (Theme E): the no-wait flag exists wherever it is
+      recommended, or is not recommended where it does not exist
 
 ## Notes
 
@@ -124,6 +124,33 @@ untruthful — which Theme A fixes.
   PR description.
 - Themes B, C, F are one family (same-document / frame-context awareness); a shared fix is
   likely better than three special cases.
+
+**Implementation findings (2026-08-10), following Run guidance rule 1 — mock tests did not catch
+either of these; only live Firefox through the default daemon path did:**
+
+- **The Theme A/G `status` field required daemon-stream plumbing, not just a subscribe.** The
+  daemon manages `network-event` watching centrally and does not forward it to a client that
+  only issues the generic `watchResources` RPC `navigate`'s `document-event` wait already used —
+  `status` stayed `null` through the daemon no matter how long the wait was extended, while the
+  identical navigation reported it correctly under `--no-daemon`. Fixed by wrapping the
+  `document-event` wait with `start_daemon_stream`/`stop_daemon_stream("network-event")` (the
+  same daemon API `navigate --with-network` already used) whenever `ctx.via_daemon`. Also found
+  live: Firefox's netmonitor pipeline can lag a few ms behind the docshell's own `dom-complete`,
+  so the wait needed a short (300 ms) bounded grace window after commit before finalizing
+  `status`, and `resources-updated-array` entries are incremental — a later update without
+  `status` must not overwrite an earlier one that had it (`extract_document_status` originally
+  took "the most recent update record" instead of "the most recent value seen per field" and
+  silently regressed a real 200 back to `null`).
+- **Theme F's fix (`trust_event_url: false`) cannot eagerly refresh the console actor at
+  `dom-loading`.** Doing so reintroduces the exact blocking-`getTarget`-swallows-an-in-flight-
+  `dom-complete` race `poll_enabled: false` already existed to avoid for `back`/`forward`/
+  `reload` — confirmed via a mock e2e regression, not live Firefox. The fix resolves lazily
+  instead: eval against whatever actor is already cached at `dom-complete`, and only pay for a
+  fresh `getTarget` if that first eval comes back empty (stale actor). The new unconditional
+  same-document check (Themes B/C) has the identical hazard for a different reason — its own
+  blocking eval can swallow an already-buffered `dom-complete` — and is guarded with a temporary
+  `swap_event_sink`/replay around the call (`probe_same_document_commit_safe`), the same pattern
+  `enumerate_frame_targets` (iter-129) uses.
 
 ## Run guidance (batch 138–142, from dogfooding session 63)
 

@@ -110,6 +110,16 @@ struct CommitInfo {
     ready_state: String,
     /// Wall-clock milliseconds elapsed from navigate dispatch to commit.
     elapsed_ms: u64,
+    /// The main document's HTTP status code (iter-138 Theme A), when observed
+    /// via a `network-event` resource whose `cause_type == "document"` and
+    /// whose `url` matches the requested URL. `None` when the caller didn't
+    /// subscribe to network events (`back`/`forward`/`reload` don't — Theme A
+    /// only covers `navigate`) or when the status update hadn't arrived by
+    /// the time the wait resolved (e.g. events-phase timeout fell back to the
+    /// readystate poll, which has no network subscription at all). Callers
+    /// must surface this as an explicit `null`, never omit it — consistent
+    /// with iter-128's always-present-nullable-key convention.
+    http_status: Option<u16>,
 }
 
 /// Configuration for the interleaved `document.readyState` fast-path used by the
@@ -169,6 +179,39 @@ struct ReadyStateProbe<'a> {
     /// narrow risk in exchange for the FF152 fast-path; `back`/`forward`/
     /// `reload` have no such trade to make, so they opt out entirely.
     poll_enabled: bool,
+    /// `window.location.href` captured immediately before the navigation
+    /// action was dispatched (iter-138 Themes B/C).
+    ///
+    /// Feeds [`probe_same_document_commit`], which detects same-document
+    /// navigations (SPA `history.pushState`/`popstate` traversal, same-page
+    /// fragment navigation) that never produce a `document-event` at all —
+    /// Firefox does not tear down/reload the document for these, so the
+    /// `dom-loading`/`dom-complete` event stream this function otherwise
+    /// relies on stays silent forever, and the freshness-guarded
+    /// `probe_readystate_complete` fast path can't help either (its guard
+    /// requires `navigationStart` to advance, which same-document
+    /// navigations never do). An empty string disables the check (no
+    /// baseline to compare against — see `probe_same_document_commit`).
+    pre_href: String,
+    /// Whether a `document-event`'s own `url` field may be trusted as the
+    /// committed URL (iter-138 Theme F).
+    ///
+    /// `true` for `navigate` (the default, preserving pre-iter-138
+    /// behaviour). `false` for `wait_for_navigation_commit`'s
+    /// `back`/`forward`/`reload`: `watchTargets("frame")` (required to make
+    /// the watcher deliver anything at all — iter-79 Theme A) makes Firefox
+    /// also emit `document-event`s for subframe targets, and a same-tab
+    /// history traversal can restore the top-level document from BFCache
+    /// (firing no document-event of its own) while an unrelated subframe
+    /// (e.g. an ad/analytics iframe) reloads and fires a perfectly normal
+    /// `dom-loading`/`dom-complete` cycle — which this wait loop would
+    /// otherwise mistake for the real navigation's completion, reporting the
+    /// subframe's URL as `committed_url`. When `false`, every commit
+    /// resolution path re-resolves via `eval_location_href` against
+    /// `console_actor` refreshed through `tab_actor` (always the TAB's
+    /// top-level target, never a subframe's) instead of trusting the event's
+    /// own `url`, regardless of whether that URL looks well-formed.
+    trust_event_url: bool,
 }
 
 /// Evaluate `document.readyState === 'complete'` (with the `navigationStart`
@@ -192,6 +235,128 @@ fn probe_readystate_complete(
         Ok(result) if result.exception.is_none() => super::js_helpers::is_truthy(&result.result),
         _ => false,
     }
+}
+
+/// Detect a completed same-document navigation (iter-138 Themes B/C).
+///
+/// Same-document navigations — `history.pushState`/`history.replaceState`,
+/// `popstate` traversal (`back`/`forward` across SPA route entries), and
+/// same-page fragment navigation (`#frag`) — never tear down or reload the
+/// document, so they never fire a `document-event` and never advance
+/// `performance.timing.navigationStart`. [`probe_readystate_complete`]'s
+/// freshness guard can therefore never be satisfied for them, and the plain
+/// event wait in [`wait_for_doc_complete`] has nothing to observe at all —
+/// the exact cause of the iter-130 regression this iteration fixes: a
+/// correct same-document traversal burned the full wait budget and returned
+/// `AppError::Timeout` (exit 124) even though `location.href` confirmed it
+/// had already succeeded.
+///
+/// Because the document is never torn down, `console_actor` never goes
+/// stale for this check — unlike the cross-document paths elsewhere in this
+/// module, no `refresh_probe_console_actor` call is needed before evaluating
+/// this condition.
+///
+/// Returns the new `location.href` once it differs from `pre_href` AND
+/// `document.readyState === 'complete'` (the document was already fully
+/// loaded before the same-document navigation began, and same-document
+/// navigations never change that). Returns `None` while the condition
+/// doesn't hold, on any transport/eval error (treated as "not yet" so a
+/// transient hiccup never aborts the wait), and when `pre_href` is empty
+/// (no baseline to compare against — e.g. the pre-navigation `location.href`
+/// eval itself failed).
+fn probe_same_document_commit(
+    transport: &mut RdpTransport,
+    console_actor: &ff_rdp_core::ActorId,
+    pre_href: &str,
+) -> Option<String> {
+    if pre_href.is_empty() {
+        return None;
+    }
+    let pre_href_json = serde_json::to_string(pre_href).unwrap_or_else(|_| "\"\"".to_owned());
+    let condition = format!(
+        "(function() {{ \
+           if (document.readyState !== 'complete') return null; \
+           var h = window.location.href; \
+           return h !== {pre_href_json} ? h : null; \
+         }})()"
+    );
+    match ff_rdp_core::WebConsoleActor::evaluate_js_async(transport, console_actor, &condition) {
+        Ok(result) if result.exception.is_none() => match result.result {
+            Grip::Value(Value::String(s)) if !s.is_empty() => Some(s),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// [`probe_same_document_commit`], guarded against swallowing an in-flight
+/// `document-event` (iter-138 hardening — the exact bug class documented in
+/// `kb/rdp/actors/watcher.md`'s iter-129 Note 1, and the reason this same
+/// pattern is already used by `enumerate_frame_targets`, iter-129 Theme A).
+///
+/// `evaluate_js_async`'s blocking `recv_reply_from` reads raw packets off
+/// `transport` looking for its own reply; any *other* packet it reads first —
+/// including a genuine `dom-loading`/`dom-complete` document-event that
+/// arrived on the wire before this probe fired — is forwarded to whatever
+/// event sink is installed, or silently dropped if none is. Because this
+/// check runs unconditionally on every `probe_interval` tick (unlike the
+/// FF152 `poll_enabled` fast path, which only runs for `navigate` and
+/// therefore never contends with `back`/`forward`/`reload`'s in-flight
+/// events), it MUST install a temporary sink around the eval and replay
+/// anything captured back through `bus_arc.dispatch_event` — otherwise a
+/// same-document check that happens to fire while the real commit event is
+/// already buffered on the socket would eat that event and the main loop
+/// would then wait forever for an event that already arrived and was
+/// discarded.
+fn probe_same_document_commit_safe(
+    transport: &mut RdpTransport,
+    bus_arc: &Arc<Mutex<ResourceCommand>>,
+    console_actor: &ff_rdp_core::ActorId,
+    pre_href: &str,
+) -> Option<String> {
+    if pre_href.is_empty() {
+        // Skip the sink dance entirely when the check itself is a no-op —
+        // `probe_same_document_commit` would return `None` immediately
+        // without touching `transport`.
+        return None;
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<Value>();
+    let prev_sink = transport.swap_event_sink(Some(tx));
+    let result = probe_same_document_commit(transport, console_actor, pre_href);
+    transport.swap_event_sink(prev_sink);
+
+    // Replay anything the eval swallowed, in delivery order, so the main
+    // loop's next top-of-loop drain observes it exactly as if it had read it
+    // directly off the wire itself.
+    let captured: Vec<Value> = rx.try_iter().collect();
+    if !captured.is_empty() {
+        let mut bus = bus_arc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for packet in captured {
+            bus.dispatch_event(&packet);
+        }
+    }
+
+    result
+}
+
+/// Decide whether a candidate committed URL from a `document-event` must be
+/// re-resolved via `eval_location_href` rather than trusted verbatim.
+///
+/// Combines the pre-existing `needs_href_fallback` (empty/placeholder
+/// `about:blank`, iter-122/130) with the Theme F guard: when the probe opts
+/// out of trusting event URLs at all (`trust_event_url: false` —
+/// `back`/`forward`/`reload`, see [`ReadyStateProbe::trust_event_url`]),
+/// re-resolution is unconditional regardless of how well-formed `candidate`
+/// looks, because a well-formed-but-wrong subframe URL passes
+/// `needs_href_fallback` unmodified.
+fn must_reresolve_href(
+    probe: Option<&ReadyStateProbe<'_>>,
+    candidate: &str,
+    requested_url: &str,
+) -> bool {
+    probe.is_some_and(|p| !p.trust_event_url) || needs_href_fallback(candidate, requested_url)
 }
 
 /// Re-resolve [`ReadyStateProbe::console_actor`] against the current docshell.
@@ -256,6 +421,32 @@ pub(crate) fn eval_location_href(
     }
 }
 
+/// Evaluate `document.readyState` via `console_actor`, returning an empty
+/// string on any error.
+///
+/// Used by `navigate --with-network` (iter-138 Theme G) to populate the same
+/// `ready_state` field the plain `navigate` envelope reports — the network
+/// drain already waits for the page to settle, so by the time this is called
+/// the document should genuinely be `complete`, but the eval is best-effort
+/// like `eval_location_href`: a failure just leaves the field empty rather
+/// than failing the whole command.
+pub(crate) fn eval_document_ready_state(
+    transport: &mut RdpTransport,
+    console_actor: &ff_rdp_core::ActorId,
+) -> String {
+    match ff_rdp_core::WebConsoleActor::evaluate_js_async(
+        transport,
+        console_actor,
+        "document.readyState",
+    ) {
+        Ok(result) => match result.result {
+            Grip::Value(serde_json::Value::String(s)) => s,
+            _ => String::new(),
+        },
+        Err(_) => String::new(),
+    }
+}
+
 /// Returns `true` when `candidate` (the URL reported by a `document-event`)
 /// cannot be trusted as the real committed URL and must be re-resolved via
 /// `location.href` (iter-130 Theme A).
@@ -303,6 +494,46 @@ fn needs_href_fallback(candidate: &str, requested_url: &str) -> bool {
 /// `poll_interval`).  This prevents a deadlock where another thread tries to
 /// acquire the same mutex while this call is waiting for Firefox.
 ///
+/// Update `doc_resource_id`/`doc_status` from a network resource (iter-138
+/// Theme A tracking, shared by `wait_for_doc_complete`'s main drain and its
+/// post-loop grace-wait), and return the inner `Value` when `resource` is a
+/// `DocumentEvent` (the caller should continue processing it), or `None`
+/// when `resource` was a `NetworkEvent`/`NetworkUpdate` (already handled
+/// here) or an unrelated resource type (nothing to do).
+///
+/// Matched by `cause_type == "document"` (Firefox's netmonitor cause for a
+/// top-level or subframe HTML document load) AND `url == requested_url`
+/// (the exact URL passed to `navigateTo`) so a subframe's own document
+/// request (same cause type, different URL) is not mistaken for the page's
+/// own navigation — the same subframe-contamination risk Theme F hits for
+/// `document-event`.
+fn extract_document_event<'a>(
+    resource: &'a Resource,
+    requested_url: &str,
+    doc_resource_id: &mut Option<u64>,
+    doc_status: &mut Option<u16>,
+) -> Option<&'a Value> {
+    match resource {
+        Resource::NetworkEvent(res) => {
+            if res.cause_type == "document" && res.url == requested_url {
+                *doc_resource_id = Some(res.resource_id);
+            }
+            None
+        }
+        Resource::NetworkUpdate(upd) => {
+            if *doc_resource_id == Some(upd.resource_id)
+                && let Some(ref s) = upd.status
+                && let Ok(code) = s.parse::<u16>()
+            {
+                *doc_status = Some(code);
+            }
+            None
+        }
+        Resource::DocumentEvent(v) => Some(v),
+        _ => None,
+    }
+}
+
 /// `requested_url` (iter-130 Theme A) pushed the parameter count to 8; the
 /// function is already heavily documented per-parameter above and splitting
 /// it would obscure the single event-drain loop it implements.
@@ -331,11 +562,26 @@ fn wait_for_doc_complete(
     let mut interactive_url: Option<String> = None;
     // Next instant at which the interleaved readystate probe (Theme A) may run.
     let mut next_probe_at = probe.as_ref().map(|p| p.first_probe_at);
+    // Next instant at which the same-document commit check (iter-138 Themes
+    // B/C) may run. Shares `probe`'s cadence (`first_probe_at`/
+    // `probe_interval`) but its own timer, because it runs unconditionally
+    // (not gated by `poll_enabled` — see `probe_same_document_commit`'s doc
+    // comment for why `back`/`forward`/`reload` need this just as much as
+    // `navigate` does).
+    let mut same_doc_next_check_at = probe.as_ref().map(|p| p.first_probe_at);
     // Tracks whether the probe's console actor has been refreshed against the
     // post-navigation docshell yet (see the noSuchActor fix, iter-124).
     let mut probe_refreshed = false;
+    // The main document's network resource_id and observed HTTP status
+    // (iter-138 Theme A). Populated only when the caller subscribed to
+    // `ResourceType::NetworkEvent` alongside `DocumentEvent` (currently only
+    // `navigate`'s `run_core` does — `back`/`forward`/`reload` don't, so
+    // these stay `None`/`None` and `CommitInfo.http_status` reports `null`
+    // for them, which is correct: Theme A only covers `navigate`).
+    let mut doc_resource_id: Option<u64> = None;
+    let mut doc_status: Option<u16> = None;
 
-    loop {
+    let mut commit_info: CommitInfo = 'wait: loop {
         // Check deadline first so we do not drain another batch of events
         // when the timeout has already expired.  This bounds the overrun to
         // at most one `poll_interval` (100 ms).
@@ -353,7 +599,15 @@ fn wait_for_doc_complete(
 
         // Drain the channel — may have been filled by a previous recv batch.
         while let Ok(arc) = rx.try_recv() {
-            if let Resource::DocumentEvent(v) = arc.as_ref() {
+            let Some(v) = extract_document_event(
+                arc.as_ref(),
+                requested_url,
+                &mut doc_resource_id,
+                &mut doc_status,
+            ) else {
+                continue;
+            };
+            {
                 let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
                 let url = v
                     .get("url")
@@ -397,6 +651,21 @@ fn wait_for_doc_complete(
                         // `url` a few lines down without ever touching
                         // `p.console_actor` (iter-124 review fix — avoids a
                         // wasted blocking eval round-trip on the common case).
+                        //
+                        // iter-138 Theme F note: `trust_event_url: false`
+                        // (`back`/`forward`/`reload`) deliberately does NOT
+                        // gate this eager refresh — doing so would reintroduce
+                        // the exact blocking-`getTarget`-swallows-an-in-flight-
+                        // `dom-complete` race `poll_enabled: false` exists to
+                        // avoid for these three verbs (see
+                        // `ReadyStateProbe::poll_enabled`'s doc comment).
+                        // Instead, the dom-complete branch below re-resolves
+                        // lazily: it first evals against whatever actor is
+                        // already cached (cheap, and correct whenever the
+                        // docshell survived, e.g. a same-document`
+                        // BFCache-restored back), and only pays for a fresh
+                        // `getTarget` if that first eval comes back empty
+                        // (stale actor).
                         if !probe_refreshed
                             && let Some(p) = probe.as_deref_mut()
                             && ((wait_level == WaitLevel::Complete && p.poll_enabled)
@@ -414,19 +683,25 @@ fn wait_for_doc_complete(
                             // what was requested), resolve the real URL via
                             // location.href rather than trusting the event's
                             // placeholder value — same fallback applied to the
-                            // Interactive/Complete paths below.
-                            let committed_url = if needs_href_fallback(&url, requested_url) {
-                                probe.as_ref().map_or_else(String::new, |p| {
-                                    eval_location_href(transport, &p.console_actor)
-                                })
-                            } else {
-                                url
-                            };
-                            return Ok(CommitInfo {
+                            // Interactive/Complete paths below. iter-138 Theme F:
+                            // `must_reresolve_href` additionally forces this for
+                            // any probe with `trust_event_url: false`
+                            // (`back`/`forward`/`reload`), regardless of how
+                            // well-formed `url` looks — it may be a subframe's.
+                            let committed_url =
+                                if must_reresolve_href(probe.as_deref(), &url, requested_url) {
+                                    probe.as_ref().map_or_else(String::new, |p| {
+                                        eval_location_href(transport, &p.console_actor)
+                                    })
+                                } else {
+                                    url
+                                };
+                            break 'wait CommitInfo {
                                 committed_url,
                                 ready_state: "loading".to_owned(),
                                 elapsed_ms,
-                            });
+                                http_status: doc_status,
+                            };
                         }
                     }
                     "dom-interactive" => {
@@ -448,19 +723,23 @@ fn wait_for_doc_complete(
                             // Theme B/iter-130 Theme A: if the event carried no
                             // URL (or a literal "about:blank" mismatch), resolve
                             // the real URL via location.href rather than trusting
-                            // the placeholder value.
-                            let committed_url = if needs_href_fallback(&eff_url, requested_url) {
-                                probe.as_ref().map_or_else(String::new, |p| {
-                                    eval_location_href(transport, &p.console_actor)
-                                })
-                            } else {
-                                eff_url
-                            };
-                            return Ok(CommitInfo {
+                            // the placeholder value. iter-138 Theme F:
+                            // `must_reresolve_href` forces this unconditionally
+                            // for `trust_event_url: false` probes.
+                            let committed_url =
+                                if must_reresolve_href(probe.as_deref(), &eff_url, requested_url) {
+                                    probe.as_ref().map_or_else(String::new, |p| {
+                                        eval_location_href(transport, &p.console_actor)
+                                    })
+                                } else {
+                                    eff_url
+                                };
+                            break 'wait CommitInfo {
                                 committed_url,
                                 ready_state: "interactive".to_owned(),
                                 elapsed_ms,
-                            });
+                                http_status: doc_status,
+                            };
                         }
                     }
                     "dom-complete" => {
@@ -485,8 +764,14 @@ fn wait_for_doc_complete(
                         // has genuinely landed, but the event's own `url` field
                         // is still the initial `about:blank` placeholder) must
                         // be resolved from the live document rather than
-                        // surfaced verbatim.
-                        if needs_href_fallback(&committed, requested_url) {
+                        // surfaced verbatim. iter-138 Theme F:
+                        // `must_reresolve_href` also forces this path
+                        // unconditionally for `trust_event_url: false` probes
+                        // (`back`/`forward`/`reload`) — `committed` may be a
+                        // subframe's URL, which passes `needs_href_fallback`
+                        // unmodified because it looks like a perfectly valid
+                        // (non-empty, non-"about:blank") URL.
+                        if must_reresolve_href(probe.as_deref(), &committed, requested_url) {
                             let mut href = probe.as_ref().map_or_else(String::new, |p| {
                                 eval_location_href(transport, &p.console_actor)
                             });
@@ -526,21 +811,53 @@ fn wait_for_doc_complete(
                                 // the next real dom-loading is tracked cleanly.
                                 continue;
                             }
-                            return Ok(CommitInfo {
+                            break 'wait CommitInfo {
                                 committed_url: href,
                                 ready_state: "complete".to_owned(),
                                 elapsed_ms,
-                            });
+                                http_status: doc_status,
+                            };
                         }
-                        return Ok(CommitInfo {
+                        break 'wait CommitInfo {
                             committed_url: committed,
                             ready_state: "complete".to_owned(),
                             elapsed_ms,
-                        });
+                            http_status: doc_status,
+                        };
                     }
                     _ => {}
                 }
             }
+        }
+
+        // iter-138 Themes B/C: check for a completed same-document navigation
+        // (SPA `pushState`/`popstate` traversal, same-page fragment nav).
+        // Unconditional — not gated by `p.poll_enabled` like the FF152
+        // fast-path below — because `back`/`forward`/`reload` need this
+        // check just as much as `navigate` does (their probes are built with
+        // `poll_enabled: false`). It does NOT skip the blocking-round-trip
+        // race the FF152 fast-path avoids by staying off for those three
+        // verbs — an in-flight `dom-complete` can equally be sitting on the
+        // wire when THIS check's eval fires, so it goes through
+        // `probe_same_document_commit_safe`, which installs a temporary event
+        // sink and replays anything the eval's `recv_reply_from` would
+        // otherwise have swallowed.
+        if wait_level == WaitLevel::Complete
+            && let (Some(p), Some(when)) = (probe.as_deref(), same_doc_next_check_at)
+            && Instant::now() >= when
+        {
+            if let Some(href) =
+                probe_same_document_commit_safe(transport, bus_arc, &p.console_actor, &p.pre_href)
+            {
+                let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                break 'wait CommitInfo {
+                    committed_url: href,
+                    ready_state: "complete".to_owned(),
+                    elapsed_ms,
+                    http_status: doc_status,
+                };
+            }
+            same_doc_next_check_at = Some(Instant::now() + p.probe_interval);
         }
 
         // Theme A fast-path: interleave a lightweight readystate probe so a page
@@ -596,11 +913,12 @@ fn wait_for_doc_complete(
                 if !needs_href_fallback(&committed, requested_url) {
                     let elapsed_ms =
                         u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    return Ok(CommitInfo {
+                    break 'wait CommitInfo {
                         committed_url: committed,
                         ready_state: "complete".to_owned(),
                         elapsed_ms,
-                    });
+                        http_status: doc_status,
+                    };
                 }
             }
             // Re-arm the probe timer regardless of the outcome above.
@@ -628,7 +946,53 @@ fn wait_for_doc_complete(
                 )));
             }
         }
+    };
+
+    // iter-138 Theme A hardening (live-Firefox finding, not reproducible
+    // against the mock): a real localhost round-trip showed the
+    // `network-event` resource-available/updated pair for the main document
+    // arriving a few ms *after* the docshell's own `dom-complete` — Firefox's
+    // netmonitor pipeline and its document-lifecycle pipeline are not
+    // synchronized. Trusting `doc_status` the instant the events loop above
+    // resolves made `navigate` report a false `status: null` on pages that
+    // plainly did have one. Give it a short, bounded grace window to catch up
+    // before finalizing — well under the caller's overall timeout, and a
+    // no-op for callers that never subscribed to `NetworkEvent`
+    // (`back`/`forward`/`reload`, where `doc_status` can never become `Some`
+    // no matter how long we wait, so the loop below exits on its first check).
+    if commit_info.http_status.is_none() {
+        let grace_deadline = Instant::now() + Duration::from_millis(300);
+        while doc_status.is_none() && Instant::now() < grace_deadline {
+            while let Ok(arc) = rx.try_recv() {
+                let _ = extract_document_event(
+                    arc.as_ref(),
+                    requested_url,
+                    &mut doc_resource_id,
+                    &mut doc_status,
+                );
+            }
+            if doc_status.is_some() {
+                break;
+            }
+            match transport.recv() {
+                Ok(msg) => {
+                    bus_arc
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .dispatch_event(&msg);
+                }
+                Err(ff_rdp_core::ProtocolError::Timeout) => {}
+                // A transport error here is not the wait's problem to solve —
+                // the commit itself already succeeded — so just stop trying
+                // for the status and report whatever was captured (possibly
+                // still `None`).
+                Err(_) => break,
+            }
+        }
+        commit_info.http_status = doc_status;
     }
+
+    Ok(commit_info)
 }
 
 /// Extract the `e=` parameter value from an `about:neterror` URL.
@@ -699,17 +1063,35 @@ fn wait_for_readystate_complete(
     // The poll's own elapsed only covers the readystate phase; discard it in
     // favour of `nav_start` so `CommitInfo.elapsed_ms` reflects total
     // wall-clock across the events→readystate fallback (iter-122 Theme B).
-    poll_js_condition(
+    //
+    // iter-138 Theme D: on timeout, report the REAL wall-clock elapsed since
+    // `nav_start` rather than echoing back `timeout_ms`. For the `Both`
+    // strategy's fallback call (the common case that actually times out in
+    // practice), `timeout_ms` here is only the leftover sub-budget *after*
+    // the events phase already consumed part of the user's `--timeout` —
+    // echoing it under-reported the true wait by ~3x in dogfooding
+    // (`--timeout 8000` produced "within 2384ms" against an 8.1s measured
+    // wall-clock), leading an agent to under-size a retry.
+    match poll_js_condition(
         ctx,
         &console_actor,
         &condition,
         timeout_ms,
         "navigate readystate: JS evaluation error",
-        &format!(
-            "navigate: document.readyState did not reach 'complete' (with fresh navigation) \
-             within {timeout_ms}ms — use --no-wait to skip or increase --timeout"
-        ),
-    )?;
+        "navigate: document.readyState did not reach 'complete' (with fresh navigation) \
+         within its sub-budget — use --no-wait to skip or increase --timeout",
+    ) {
+        Ok(_) => {}
+        Err(AppError::Timeout(_)) => {
+            let total_elapsed_ms =
+                u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            return Err(AppError::Timeout(format!(
+                "navigate: document.readyState did not reach 'complete' (with fresh navigation) \
+                 within {total_elapsed_ms}ms — use --no-wait to skip or increase --timeout"
+            )));
+        }
+        Err(e) => return Err(e),
+    }
 
     let url = {
         let console_actor = ctx.target.console_actor.clone();
@@ -732,6 +1114,10 @@ fn wait_for_readystate_complete(
         committed_url: url,
         ready_state: "complete".to_owned(),
         elapsed_ms,
+        // The readystate poll doesn't subscribe to network events — no
+        // status is ever observable from this path (iter-138 Theme A covers
+        // only the primary events-based `wait_for_doc_complete` path).
+        http_status: None,
     })
 }
 
@@ -834,6 +1220,17 @@ pub(crate) fn wait_for_navigation_commit(
         }
     };
 
+    // `window.location.href` captured before dispatch (iter-138 Themes B/C)
+    // — the baseline `probe_same_document_commit` compares against to detect
+    // a completed same-document traversal (SPA `popstate`, fragment nav)
+    // that never fires a `document-event` at all. Best-effort like
+    // `pre_nav_epoch`: an empty string just disables that check rather than
+    // blocking the navigation action.
+    let pre_nav_href: String = {
+        let console_actor = ctx.target.console_actor.clone();
+        eval_location_href(ctx.transport_mut(), &console_actor)
+    };
+
     // See run_core's identical prelude for why watchTargets("frame") must
     // precede watchResources — the watcher delivers nothing until both have
     // been issued (iter-79 Theme A).
@@ -863,6 +1260,15 @@ pub(crate) fn wait_for_navigation_commit(
     // `getTarget` call carries a real risk of swallowing an already in-flight
     // `dom-complete`). The probe is here purely as an actor source for the
     // need-gated fallback paths.
+    //
+    // `trust_event_url: false` (iter-138 Theme F) — `back`/`forward`/`reload`
+    // never trust a `document-event`'s own `url`, always re-resolving via
+    // `eval_location_href` against the top-level tab target instead, because
+    // `watchTargets("frame")` above makes Firefox also deliver document
+    // events for subframes and a same-tab traversal can restore the
+    // top-level document from BFCache (no event of its own) while an
+    // unrelated subframe reloads and fires a normal-looking cycle — see
+    // `ReadyStateProbe::trust_event_url`'s doc comment for the full story.
     let mut readystate_probe = Some(ReadyStateProbe {
         console_actor: ctx.target.console_actor.clone(),
         tab_actor: &tab_actor,
@@ -870,6 +1276,8 @@ pub(crate) fn wait_for_navigation_commit(
         first_probe_at: nav_start + Duration::from_millis(300),
         probe_interval: Duration::from_millis(250),
         poll_enabled: false,
+        pre_href: pre_nav_href,
+        trust_event_url: false,
     });
 
     let event_result = dispatch(ctx.transport_mut()).and_then(|()| {
@@ -1122,6 +1530,18 @@ pub fn run_core(
         }
     };
 
+    // `window.location.href` captured before dispatch (iter-138 Themes B/C)
+    // — see `wait_for_navigation_commit`'s identical capture for why: it's
+    // the baseline `probe_same_document_commit` needs to detect a same-page
+    // fragment navigation, which (like SPA `pushState`/`popstate`) never
+    // fires a `document-event` and never advances `navigationStart`.
+    let pre_nav_href: String = if wait_opts.no_wait {
+        String::new()
+    } else {
+        let console_actor = ctx.target.console_actor.clone();
+        eval_location_href(ctx.transport_mut(), &console_actor)
+    };
+
     let commit_info = if wait_opts.no_wait {
         // --no-wait: send navigateTo via the standard actor_request (response
         // is the navigateTo ack) and return immediately, no bus needed.
@@ -1164,11 +1584,35 @@ pub fn run_core(
         // Lock per-operation: subscribe, wait, gc, unsubscribe.
         // The lock is released between each operation so other threads can
         // acquire it without blocking on the full navigation wait time.
+        //
+        // iter-138 Theme A: also subscribe to `NetworkEvent` so
+        // `wait_for_doc_complete` can observe the main document's HTTP
+        // status. Both types share one subscription/channel — dispatch_event
+        // fans out by type to whichever subscribers registered for it.
         let (sub_id, rx) = bus_arc
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .subscribe(ctx.transport_mut(), &[ResourceType::DocumentEvent])
+            .subscribe(
+                ctx.transport_mut(),
+                &[ResourceType::DocumentEvent, ResourceType::NetworkEvent],
+            )
             .map_err(|e| AppError::from(anyhow::anyhow!("document-event subscribe: {e:#}")))?;
+
+        // iter-138 Theme A, daemon-mode correction: the daemon manages
+        // `network-event` watching centrally and does NOT forward it to a
+        // client that only issued the generic `watchResources` call above
+        // (confirmed live — through the daemon, `status` stayed `null`
+        // forever with no amount of extra wait; `document-event` isn't
+        // affected because the daemon doesn't intercept it). Real-time
+        // delivery requires explicitly asking the daemon to stream, exactly
+        // like `navigate --with-network`'s daemon path already does. The
+        // `subscribe` call above still matters — it's what makes
+        // `dispatch_event` route incoming `network-event` frames (however
+        // they arrive) to `rx` at all.
+        if ctx.via_daemon {
+            crate::daemon::client::start_daemon_stream(ctx.transport_mut(), "network-event")
+                .map_err(AppError::from)?;
+        }
 
         // Record the wall-clock instant before sending navigateTo so we can
         // compute the remaining budget for the Both readystate fallback.
@@ -1236,6 +1680,8 @@ pub fn run_core(
                 first_probe_at: nav_start + Duration::from_millis(300),
                 probe_interval: Duration::from_millis(250),
                 poll_enabled: true,
+                pre_href: pre_nav_href.clone(),
+                trust_event_url: true,
             })
         } else {
             None
@@ -1253,6 +1699,14 @@ pub fn run_core(
             readystate_probe.as_mut(),
             url,
         );
+
+        // iter-138 Theme A: stop the daemon stream so it reverts to buffering
+        // (best-effort — a failure here doesn't invalidate the navigation
+        // result, it just means the daemon stays in streaming mode for
+        // `network-event` a little longer than ideal).
+        if ctx.via_daemon {
+            let _ = crate::daemon::client::stop_daemon_stream(ctx.transport_mut(), "network-event");
+        }
 
         // Flush any pending `unwatchResources` from dead-channel pruning that
         // occurred inside `wait_for_doc_complete` before we unsubscribe.
@@ -1317,13 +1771,19 @@ pub fn run_core(
     // Parse and run --wait-for predicates after commit.
     let wait_for_result = run_wait_for_predicates(&mut ctx, wait_opts)?;
 
-    let mut result = json!({"navigated": url});
+    // iter-138 Theme A: `status` is always present, defaulting to `null` —
+    // consistent with iter-128's always-present-nullable-key convention.
+    // Stays `null` under `--no-wait` (no network subscription is ever
+    // started) or when the main document's status update simply hadn't
+    // arrived by the time the commit wait resolved.
+    let mut result = json!({"navigated": url, "status": Value::Null});
     if let Some(ref ci) = commit_info
         && let Some(obj) = result.as_object_mut()
     {
         obj.insert("committed_url".to_string(), json!(ci.committed_url));
         obj.insert("ready_state".to_string(), json!(ci.ready_state));
         obj.insert("elapsed_ms".to_string(), json!(ci.elapsed_ms));
+        obj.insert("status".to_string(), json!(ci.http_status));
     }
     if let Some(w) = wait_result
         && let Some(obj) = result.as_object_mut()
@@ -1388,6 +1848,40 @@ pub fn run(
         .map_err(AppError::from)
 }
 
+/// Find the main document's HTTP status among captured network resources
+/// (iter-138 Theme G — `navigate --with-network` gets this "for free" since
+/// it already captures every request; see Theme A's `wait_for_doc_complete`
+/// tracker for the identical `cause_type`/`url` matching rationale).
+///
+/// Iterates in reverse so a redirect chain's *last* matching resource wins
+/// (the one that actually committed), rather than the first (the original,
+/// possibly-redirected request).
+fn extract_document_status(
+    resources: &[ff_rdp_core::NetworkResource],
+    updates: &[ff_rdp_core::NetworkResourceUpdate],
+    requested_url: &str,
+) -> Option<u16> {
+    let resource_id = resources
+        .iter()
+        .rev()
+        .find(|r| r.cause_type == "document" && r.url == requested_url)?
+        .resource_id;
+    // `resources-updated-array` entries are incremental partial updates —
+    // Firefox typically carries `status` only on the FIRST update for a
+    // resource, with later updates (contentSize, totalTime, ...) leaving it
+    // `None`. Taking the single most-recent update record (as `merge_updates`
+    // does for *all* fields) would silently lose the status the instant a
+    // second update arrives. Instead, take the last update that actually
+    // carried a status — mirroring `merge_updates`'s own "last non-None value
+    // wins per field" semantics rather than "last record wins overall".
+    updates
+        .iter()
+        .filter(|u| u.resource_id == resource_id)
+        .filter_map(|u| u.status.as_deref())
+        .next_back()
+        .and_then(|s| s.parse::<u16>().ok())
+}
+
 /// Navigate to `url` and capture all network requests made during navigation.
 ///
 /// The flow on a single TCP connection is:
@@ -1417,6 +1911,10 @@ pub fn run_with_network(
         // events from *this* navigation.
         crate::daemon::client::start_daemon_stream(ctx.transport_mut(), "network-event")
             .map_err(AppError::from)?;
+
+        // iter-138 Theme G: wall-clock start, so the envelope's `elapsed_ms`
+        // matches what plain `navigate` reports rather than being absent.
+        let nav_start = Instant::now();
 
         // Send the navigateTo request without reading its response — same as
         // the non-daemon path.  The daemon will forward the ack and also
@@ -1518,11 +2016,37 @@ pub fn run_with_network(
         }
 
         // The network drain already waited for events to settle; no separate
-        // commit-wait is needed.  Neterror detection runs via listTabs below.
-        let commit_info: Option<CommitInfo> = None;
+        // commit-wait is needed. Neterror detection runs via listTabs below.
+        //
+        // iter-138 Theme G: `committed_url`/`ready_state` are no longer
+        // dropped here. Previously `commit_info` was hardcoded `None`
+        // because "no separate commit-wait is needed" — true for the wait
+        // itself, but it also meant the envelope silently omitted the two
+        // fields plain `navigate` always reports, forcing a caller to choose
+        // between truthful navigation info and network data. The drain has
+        // already settled by this point, so a direct eval is exactly as
+        // truthful as the plain path's post-commit reads.
+        let doc_status = extract_document_status(&all_resources, &all_updates, url);
 
-        // Theme K: refresh consoleActor after navigate.
+        // Theme K: refresh consoleActor after navigate — MUST happen before
+        // the eval below: `ctx.target.console_actor` is still bound to the
+        // pre-navigation docshell at this point, and evaluating against it
+        // would fail with `noSuchActor` on any real cross-document
+        // navigation.
         refresh_console_actor(&mut ctx);
+
+        let commit_info: Option<CommitInfo> = {
+            let console_actor = ctx.target.console_actor.clone();
+            let committed_url = eval_location_href(ctx.transport_mut(), &console_actor);
+            let ready_state = eval_document_ready_state(ctx.transport_mut(), &console_actor);
+            let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            Some(CommitInfo {
+                committed_url,
+                ready_state,
+                elapsed_ms,
+                http_status: doc_status,
+            })
+        };
 
         // Detect about:neterror in the daemon --with-network path.
         if let Some(err) = check_real_tab_url_for_neterror(&mut ctx, url) {
@@ -1547,6 +2071,7 @@ pub fn run_with_network(
             obj.insert("committed_url".to_string(), json!(ci.committed_url));
             obj.insert("ready_state".to_string(), json!(ci.ready_state));
             obj.insert("elapsed_ms".to_string(), json!(ci.elapsed_ms));
+            obj.insert("status".to_string(), json!(ci.http_status));
         }
         if let Some(w) = wait_result
             && let Some(obj) = result.as_object_mut()
@@ -1593,6 +2118,10 @@ pub fn run_with_network(
     WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
         .map_err(AppError::from)?;
 
+    // iter-138 Theme G: wall-clock start, so the envelope's `elapsed_ms`
+    // matches what plain `navigate` reports rather than being absent.
+    let nav_start = Instant::now();
+
     // Send the navigateTo request without reading its response.  The normal
     // `WindowGlobalTarget::navigate_to` uses `actor_request` which loops
     // reading messages until it finds one from the target actor — silently
@@ -1621,6 +2150,10 @@ pub fn run_with_network(
 
     let (all_resources, all_updates, timeout_reached) = drain_result.map_err(AppError::from)?;
 
+    // iter-138 Theme G/A: extract the main document's status before
+    // `merge_updates` consumes `all_updates` by value below.
+    let doc_status = extract_document_status(&all_resources, &all_updates, url);
+
     // Merge updates into resources by resource_id.
     let update_map = merge_updates(all_updates);
 
@@ -1641,12 +2174,31 @@ pub fn run_with_network(
     // (above) starts the wait before building entries because there is no
     // subscription lifecycle to tear down.
 
-    // The network drain already waited for events to settle; no separate
-    // commit-wait is needed.  Neterror detection runs via listTabs below.
-    let commit_info: Option<CommitInfo> = None;
-
-    // Theme K: refresh consoleActor after navigate.
+    // iter-138 Theme G: the network drain already waited for events to
+    // settle, so a direct eval here is exactly as truthful as plain
+    // `navigate`'s post-commit reads — no separate commit-wait is needed,
+    // but `committed_url`/`ready_state`/`status` are no longer dropped (see
+    // the daemon branch above for the full rationale). Neterror detection
+    // still runs via listTabs below.
+    //
+    // Theme K: refresh consoleActor before evaluating — `ctx.target
+    // .console_actor` is still bound to the pre-navigation docshell here,
+    // and evaluating against it would fail with `noSuchActor` on any real
+    // cross-document navigation.
     refresh_console_actor(&mut ctx);
+
+    let commit_info: Option<CommitInfo> = {
+        let console_actor = ctx.target.console_actor.clone();
+        let committed_url = eval_location_href(ctx.transport_mut(), &console_actor);
+        let ready_state = eval_document_ready_state(ctx.transport_mut(), &console_actor);
+        let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        Some(CommitInfo {
+            committed_url,
+            ready_state,
+            elapsed_ms,
+            http_status: doc_status,
+        })
+    };
 
     // Detect about:neterror in the non-daemon --with-network path.
     if let Some(err) = check_real_tab_url_for_neterror(&mut ctx, url) {
@@ -1668,6 +2220,7 @@ pub fn run_with_network(
         obj.insert("committed_url".to_string(), json!(ci.committed_url));
         obj.insert("ready_state".to_string(), json!(ci.ready_state));
         obj.insert("elapsed_ms".to_string(), json!(ci.elapsed_ms));
+        obj.insert("status".to_string(), json!(ci.http_status));
     }
     if let Some(w) = wait_result
         && let Some(obj) = result.as_object_mut()
@@ -2622,6 +3175,8 @@ mod tests {
             first_probe_at: nav_start,
             probe_interval: Duration::from_millis(50),
             poll_enabled: true,
+            pre_href: String::new(),
+            trust_event_url: true,
         };
 
         // Generous events budget: the probe must return long before this.
@@ -2745,6 +3300,8 @@ mod tests {
             first_probe_at: nav_start,
             probe_interval: Duration::from_millis(50),
             poll_enabled: true,
+            pre_href: String::new(),
+            trust_event_url: true,
         };
 
         let result = wait_for_doc_complete(
@@ -2870,6 +3427,8 @@ mod tests {
             // making this test slow.
             probe_interval: Duration::from_millis(50),
             poll_enabled: true,
+            pre_href: String::new(),
+            trust_event_url: true,
         };
 
         let budget_ms = 800;
@@ -2987,6 +3546,8 @@ mod tests {
             first_probe_at: nav_start + Duration::from_secs(30),
             probe_interval: Duration::from_secs(30),
             poll_enabled: true,
+            pre_href: String::new(),
+            trust_event_url: true,
         };
 
         let result = wait_for_doc_complete(
@@ -3085,6 +3646,8 @@ mod tests {
             first_probe_at: nav_start,
             probe_interval: Duration::from_millis(10),
             poll_enabled: true,
+            pre_href: String::new(),
+            trust_event_url: true,
         };
 
         let result = wait_for_doc_complete(
@@ -3140,6 +3703,341 @@ mod tests {
         // A genuine navigation TO about:blank must not trigger a spurious
         // fallback round-trip — the requested and committed URLs agree.
         assert!(!needs_href_fallback("about:blank", "about:blank"));
+    }
+
+    // ── iter-138 Theme F: must_reresolve_href ──────────────────────────────
+
+    fn probe_with_trust(trust_event_url: bool) -> (ff_rdp_core::ActorId, ReadyStateProbe<'static>) {
+        // `tab_actor` needs a stable address for the probe's lifetime; leak a
+        // tiny `ActorId` for the test (fine — unit tests are short-lived).
+        let tab: &'static ff_rdp_core::ActorId =
+            Box::leak(Box::new(ff_rdp_core::ActorId::from("conn0/tabDescriptor1")));
+        let probe = ReadyStateProbe {
+            console_actor: ff_rdp_core::ActorId::from("conn0/console1"),
+            tab_actor: tab,
+            pre_epoch: 0.0,
+            first_probe_at: Instant::now(),
+            probe_interval: Duration::from_millis(50),
+            poll_enabled: false,
+            pre_href: String::new(),
+            trust_event_url,
+        };
+        (tab.clone(), probe)
+    }
+
+    /// `unit_must_reresolve_href_no_probe_defers_to_needs_href_fallback` — with
+    /// no probe at all (the `Events`-strategy `navigate` case), the decision
+    /// collapses to the pre-existing `needs_href_fallback` check.
+    #[test]
+    fn unit_must_reresolve_href_no_probe_defers_to_needs_href_fallback() {
+        assert!(!must_reresolve_href(
+            None,
+            "https://example.com/",
+            "https://example.com/"
+        ));
+        assert!(must_reresolve_href(None, "", "https://example.com/"));
+    }
+
+    /// `unit_must_reresolve_href_trusted_probe_defers_to_needs_href_fallback`
+    /// — `trust_event_url: true` (plain `navigate`) behaves exactly like the
+    /// no-probe case: a well-formed candidate is trusted verbatim.
+    #[test]
+    fn unit_must_reresolve_href_trusted_probe_defers_to_needs_href_fallback() {
+        let (_tab, probe) = probe_with_trust(true);
+        assert!(!must_reresolve_href(
+            Some(&probe),
+            "https://example.com/",
+            "https://example.com/"
+        ));
+        assert!(must_reresolve_href(
+            Some(&probe),
+            "about:blank",
+            "https://example.com/"
+        ));
+    }
+
+    /// `unit_must_reresolve_href_untrusted_probe_always_reresolves` — iter-138
+    /// Theme F: `trust_event_url: false` (`back`/`forward`/`reload`) forces
+    /// re-resolution even for a perfectly well-formed candidate URL, because
+    /// it might be a subframe's.
+    #[test]
+    fn unit_must_reresolve_href_untrusted_probe_always_reresolves() {
+        let (_tab, probe) = probe_with_trust(false);
+        assert!(
+            must_reresolve_href(
+                Some(&probe),
+                "https://cdn.optimizely.com/client_storage/x.html",
+                "https://example.com/"
+            ),
+            "a well-formed but wrong (subframe) URL must not be trusted when \
+             trust_event_url is false"
+        );
+        assert!(must_reresolve_href(
+            Some(&probe),
+            "https://example.com/",
+            "https://example.com/"
+        ));
+    }
+
+    // ── iter-138 Theme A/G: extract_document_status ────────────────────────
+
+    fn doc_resource(url: &str, resource_id: u64) -> ff_rdp_core::NetworkResource {
+        ff_rdp_core::NetworkResource {
+            actor: ff_rdp_core::ActorId::from(format!("conn0/netEvent{resource_id}")),
+            method: "GET".to_owned(),
+            url: url.to_owned(),
+            is_xhr: false,
+            cause_type: "document".to_owned(),
+            started_date_time: "2026-01-01T00:00:00Z".to_owned(),
+            timestamp: 0.0,
+            resource_id,
+        }
+    }
+
+    fn status_update(resource_id: u64, status: &str) -> ff_rdp_core::NetworkResourceUpdate {
+        ff_rdp_core::NetworkResourceUpdate {
+            resource_id,
+            status: Some(status.to_owned()),
+            ..Default::default()
+        }
+    }
+
+    /// `unit_extract_document_status_matches_cause_and_url` — the AC-facing
+    /// happy path: one `document`-cause resource matching the requested URL,
+    /// with a status update.
+    #[test]
+    fn unit_extract_document_status_matches_cause_and_url() {
+        let resources = vec![doc_resource("https://example.com/404", 1)];
+        let updates = vec![status_update(1, "404")];
+        assert_eq!(
+            extract_document_status(&resources, &updates, "https://example.com/404"),
+            Some(404)
+        );
+    }
+
+    /// `unit_extract_document_status_ignores_subframe_document_resource` —
+    /// iter-138 Theme A hardening: a subframe's own `document`-cause request
+    /// (same cause type, different URL) must not be mistaken for the page's
+    /// own navigation — the same contamination risk Theme F guards against
+    /// for `document-event`.
+    #[test]
+    fn unit_extract_document_status_ignores_subframe_document_resource() {
+        let resources = vec![
+            doc_resource("https://cdn.example.com/iframe.html", 1),
+            doc_resource("https://example.com/page", 2),
+        ];
+        let updates = vec![status_update(1, "200"), status_update(2, "503")];
+        assert_eq!(
+            extract_document_status(&resources, &updates, "https://example.com/page"),
+            Some(503),
+            "must report the requested URL's own status, not the subframe's"
+        );
+    }
+
+    /// `unit_extract_document_status_none_when_no_document_resource_matches`
+    /// — no matching resource (e.g. `--no-wait`, or the status update hadn't
+    /// arrived yet) reports `None`, which the caller surfaces as JSON `null`.
+    #[test]
+    fn unit_extract_document_status_none_when_no_document_resource_matches() {
+        let resources = vec![doc_resource("https://example.com/other", 1)];
+        let updates = vec![status_update(1, "200")];
+        assert_eq!(
+            extract_document_status(&resources, &updates, "https://example.com/page"),
+            None
+        );
+        assert_eq!(
+            extract_document_status(&[], &[], "https://example.com/page"),
+            None
+        );
+    }
+
+    /// `unit_extract_document_status_prefers_last_match_on_redirect` — a
+    /// redirect chain can produce more than one `document`-cause resource for
+    /// the same requested URL; the LAST one (the hop that actually
+    /// committed) wins over the first (the original, redirected request).
+    #[test]
+    fn unit_extract_document_status_prefers_last_match_on_redirect() {
+        let resources = vec![
+            doc_resource("https://example.com/page", 1),
+            doc_resource("https://example.com/page", 2),
+        ];
+        let updates = vec![status_update(1, "302"), status_update(2, "200")];
+        assert_eq!(
+            extract_document_status(&resources, &updates, "https://example.com/page"),
+            Some(200)
+        );
+    }
+
+    /// `unit_extract_document_status_survives_later_update_without_status` —
+    /// regression guard for a live-Firefox-only bug (not reproducible against
+    /// any mock): `resources-updated-array` entries are incremental partial
+    /// updates, and Firefox carries `status` only on the FIRST update for a
+    /// resource — a SECOND update (e.g. carrying `totalTime`/`contentSize`)
+    /// leaves `status: None`. Naively taking "the single most-recent update
+    /// record" instead of "the most recent value seen per field" silently
+    /// turned a real 200/404 into `null` the instant a second update arrived
+    /// — which real Firefox traffic always produces. Caught by
+    /// `live_138_with_network_keeps_envelope`, not by any prior unit test.
+    #[test]
+    fn unit_extract_document_status_survives_later_update_without_status() {
+        let resources = vec![doc_resource("https://example.com/page", 1)];
+        let updates = vec![
+            status_update(1, "200"),
+            ff_rdp_core::NetworkResourceUpdate {
+                resource_id: 1,
+                total_time: Some(45),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            extract_document_status(&resources, &updates, "https://example.com/page"),
+            Some(200),
+            "a later update that doesn't carry `status` must not erase an \
+             earlier one that did"
+        );
+    }
+
+    // ── iter-138 Theme B/C: probe_same_document_commit ──────────────────────
+
+    /// `unit_probe_same_document_commit_returns_new_href_when_changed_and_complete`
+    /// — the core same-document detection: `document.readyState === 'complete'
+    /// && location.href !== pre_href` resolving truthy returns the new href.
+    #[test]
+    fn unit_probe_same_document_commit_returns_new_href_when_changed_and_complete() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+
+        use ff_rdp_core::transport::{RdpTransport, encode_frame};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let console_actor = "conn0/console1";
+
+        let server_handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+
+            let greeting = serde_json::json!({
+                "from": "root", "applicationType": "browser", "traits": {}
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+
+            answer_one_eval(
+                &mut reader,
+                &mut writer,
+                console_actor,
+                &serde_json::json!("https://example.com/route1"),
+            )
+        });
+
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+        let console_actor = ff_rdp_core::ActorId::from(console_actor);
+
+        let result =
+            probe_same_document_commit(&mut transport, &console_actor, "https://example.com/page");
+
+        let eval_text = server_handle.join().unwrap();
+        assert!(
+            eval_text.contains("readyState") && eval_text.contains("location.href"),
+            "condition must check both readyState and location.href: {eval_text}"
+        );
+        assert_eq!(result, Some("https://example.com/route1".to_owned()));
+    }
+
+    /// `unit_probe_same_document_commit_returns_none_when_href_unchanged` — a
+    /// `null` result (the IIFE's own signal for "not yet") is treated as "not
+    /// a same-document commit", not an error.
+    #[test]
+    fn unit_probe_same_document_commit_returns_none_when_href_unchanged() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+
+        use ff_rdp_core::transport::{RdpTransport, encode_frame};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let console_actor = "conn0/console1";
+
+        let server_handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+
+            let greeting = serde_json::json!({
+                "from": "root", "applicationType": "browser", "traits": {}
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+
+            answer_one_eval(
+                &mut reader,
+                &mut writer,
+                console_actor,
+                &serde_json::Value::Null,
+            )
+        });
+
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+        let console_actor = ff_rdp_core::ActorId::from(console_actor);
+
+        let result =
+            probe_same_document_commit(&mut transport, &console_actor, "https://example.com/page");
+        server_handle.join().unwrap();
+        assert_eq!(result, None);
+    }
+
+    /// `unit_probe_same_document_commit_empty_pre_href_returns_none` — an
+    /// empty baseline (the pre-navigation `location.href` eval itself failed)
+    /// disables the check entirely without attempting an eval round-trip.
+    #[test]
+    fn unit_probe_same_document_commit_empty_pre_href_returns_none() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+
+        use ff_rdp_core::transport::{RdpTransport, encode_frame};
+
+        // The server sends only the greeting `connect()` requires, then never
+        // answers anything else — if the function attempted an eval
+        // round-trip despite the empty `pre_href`, this would block until
+        // the transport's read timeout fires (proving the assertion below
+        // wrong: the fast path must return well inside it).
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server_handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream;
+            let greeting = serde_json::json!({
+                "from": "root", "applicationType": "browser", "traits": {}
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+        });
+
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+        transport
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let console_actor = ff_rdp_core::ActorId::from("conn0/console1");
+
+        let started = Instant::now();
+        let result = probe_same_document_commit(&mut transport, &console_actor, "");
+        let elapsed = started.elapsed();
+
+        assert_eq!(result, None);
+        assert!(
+            elapsed < Duration::from_millis(40),
+            "empty pre_href must return immediately without an eval round-trip, took {elapsed:?}"
+        );
+        drop(transport);
+        let _ = server_handle.join();
     }
 
     /// iter-130 Theme A: `unit_navigate_dom_complete_literal_about_blank_falls_back_to_href`
@@ -3216,6 +4114,8 @@ mod tests {
             first_probe_at: nav_start + Duration::from_secs(30),
             probe_interval: Duration::from_secs(30),
             poll_enabled: true,
+            pre_href: String::new(),
+            trust_event_url: true,
         };
 
         let result = wait_for_doc_complete(

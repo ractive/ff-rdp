@@ -432,8 +432,17 @@ Output: {\"results\": [{\"url\": \"...\", \"title\": \"...\", \"actor\": \"...\"
 
 By default, navigate blocks until the new document is committed (URL changes and
 readyState reaches 'interactive' or 'complete'), or the --timeout budget expires.
-The result includes 'committed_url', 'ready_state', and 'elapsed_ms' so agents can
-confirm what page actually loaded.
+The result includes 'committed_url', 'ready_state', 'elapsed_ms', and 'status' so
+agents can confirm what page actually loaded — including the main document's real
+HTTP status (iter-138): a 404 or 503 page still commits successfully (readyState
+reaches 'complete'), so 'status' is the only reliable way to detect it without a
+follow-up 'network' call. 'status' is always present, `null` when genuinely
+unavailable (e.g. --no-wait, or the status update simply hadn't arrived yet).
+
+Same-document navigations — SPA `history.pushState`/`popstate` traversal (via
+`back`/`forward`), and same-page fragment navigation (`#frag`) — never fire the
+usual document-commit signal Firefox uses for a full page load; this is detected
+and resolved directly rather than waiting out the full --timeout (iter-138).
 
 Use --no-wait to restore the old fire-and-forget behaviour (returns immediately after
 the navigate request is acknowledged, without waiting for the document to commit).
@@ -457,10 +466,10 @@ prints a warning but does not fail the navigate. Not combinable with
 (the Consent-O-Matic extension), which does not reliably work headless
 against Sourcepoint-gated sites.
 
-Output: {\"results\": {\"navigated\": \"...\", \"committed_url\": \"...\", \"ready_state\": \"...\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}
+Output: {\"results\": {\"navigated\": \"...\", \"status\": 200|null, \"committed_url\": \"...\", \"ready_state\": \"...\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}
 
---with-network output: results.network is ONE canonical object on every path (quiet or busy page, --detail/--jq or default, --all or capped):
-  {\"navigated\": \"...\", \"network\": {\"entries\": [...], \"shown\": N, \"total\": N, \"truncated\": bool, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false}}
+--with-network output: results.network is ONE canonical object on every path (quiet or busy page, --detail/--jq or default, --all or capped); 'committed_url'/'ready_state'/'status' are also present alongside it (iter-138 — previously dropped, forcing a choice between truthful navigation info and network data):
+  {\"navigated\": \"...\", \"network\": {\"entries\": [...], \"shown\": N, \"total\": N, \"truncated\": bool, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false}, \"committed_url\": \"...\", \"ready_state\": \"...\", \"status\": 200|null}
   entries is capped at 20 by default (use --all to expand); summary fields always reflect the FULL capture.
   Note (iter-126): previously results.network was a BARE ARRAY in non-truncated detail mode (and --all), so .results.network.entries / .total_requests threw \"cannot index array\" on quiet pages. It is now always the object above; consumers of the old bare-array form should read .results.network.entries.")]
     Navigate(NavigateArgs),
@@ -767,13 +776,20 @@ Pass --hard for a cache-bypassing reload (Firefox `options.force`, the
 protocol equivalent of Cmd-Shift-R / `LoadFlags::BYPASS_CACHE`).  Default
 remains a soft reload.
 
+Pass --no-wait to dispatch the reload and return immediately without waiting
+for it to commit (iter-138 Theme E) — the same escape hatch `navigate`
+already has. Conflicts with --wait-idle (which is itself a different kind of
+wait).
+
 Examples:
   ff-rdp reload
   ff-rdp reload --hard
+  ff-rdp reload --no-wait
   ff-rdp reload --wait-idle
   ff-rdp reload --hard --wait-idle --idle-ms 1000 --reload-timeout 30000
 
 Output (plain):    {\"results\": {\"action\": \"reload\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
+Output (--no-wait): {\"results\": {\"action\": \"reload\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
 Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requests_observed\": M[, \"force\": true]}, \"total\": 1, \"meta\": {...}}")]
     Reload(ReloadArgs),
     /// Go back in history
@@ -783,16 +799,26 @@ Blocks until the navigation commits, returning the same navigate-style
 envelope as `navigate`/`forward`/`reload` (iter-130) — a caller doesn't need
 a follow-up `eval location.href` to know where `back` landed.
 
-Output: {\"results\": {\"action\": \"back\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}")]
-    Back,
+Pass --no-wait to dispatch and return immediately without waiting for the
+navigation to commit (iter-138 Theme E) — the same escape hatch `navigate`
+already has.
+
+Output:              {\"results\": {\"action\": \"back\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}
+Output (--no-wait): {\"results\": {\"action\": \"back\"}, \"total\": 1, \"meta\": {...}}")]
+    Back(BackForwardArgs),
     /// Go forward in history
     #[command(long_about = "Navigate forward in browser history.
 
 Blocks until the navigation commits, returning the same navigate-style
 envelope as `navigate`/`back`/`reload` (iter-130).
 
-Output: {\"results\": {\"action\": \"forward\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}")]
-    Forward,
+Pass --no-wait to dispatch and return immediately without waiting for the
+navigation to commit (iter-138 Theme E) — the same escape hatch `navigate`
+already has.
+
+Output:              {\"results\": {\"action\": \"forward\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}
+Output (--no-wait): {\"results\": {\"action\": \"forward\"}, \"total\": 1, \"meta\": {...}}")]
+    Forward(BackForwardArgs),
     /// Inspect a remote JavaScript object by its grip actor ID
     #[command(long_about = "Inspect a remote JavaScript object by its grip actor ID.
 
@@ -1701,7 +1727,7 @@ pub struct A11yArgs {
 #[derive(clap::Args)]
 pub struct ReloadArgs {
     /// Block until network is idle after reload
-    #[arg(long)]
+    #[arg(long, conflicts_with = "no_wait")]
     pub wait_idle: bool,
     /// Milliseconds of network inactivity that counts as idle (--wait-idle only)
     #[arg(long, default_value_t = 500, requires = "wait_idle")]
@@ -1713,6 +1739,20 @@ pub struct ReloadArgs {
     /// equivalent to Cmd-Shift-R in the browser UI). Default is a soft reload.
     #[arg(long)]
     pub hard: bool,
+    /// Dispatch the reload and return immediately without waiting for it to
+    /// commit (iter-138 Theme E) — the same escape hatch `navigate` already
+    /// has. Conflicts with --wait-idle (a different kind of wait).
+    #[arg(long, conflicts_with = "wait_idle")]
+    pub no_wait: bool,
+}
+
+/// Shared args for `back`/`forward` (iter-138 Theme E).
+#[derive(clap::Args)]
+pub struct BackForwardArgs {
+    /// Dispatch the navigation and return immediately without waiting for it
+    /// to commit — the same escape hatch `navigate` already has.
+    #[arg(long)]
+    pub no_wait: bool,
 }
 
 #[derive(clap::Args)]

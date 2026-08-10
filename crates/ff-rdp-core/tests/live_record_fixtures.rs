@@ -363,6 +363,37 @@ fn live_eval_string() {
     );
 }
 
+/// iter-138: records a plain-string `window.location.href` eval result for
+/// the `nav_action` e2e mock fixtures — `back`/`forward`/`reload` now
+/// unconditionally re-resolve `committed_url` via `eval_location_href`
+/// (Theme F: never trust a `document-event`'s own URL, which may belong to a
+/// subframe) instead of trusting the document-event's `url` field.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_eval_location_href() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+    navigate_to_example_com(transport);
+    let console = get_console_actor(transport);
+
+    let (_imm, result) = record_eval(
+        transport,
+        &console,
+        "window.location.href",
+        Some("eval_immediate_response_location_href.json"),
+        Some("eval_result_location_href_example_com.json"),
+    );
+
+    assert_eq!(
+        result.get("result").and_then(Value::as_str),
+        Some("https://example.com/"),
+        "window.location.href on example.com must be the real URL"
+    );
+}
+
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_eval_number() {

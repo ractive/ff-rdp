@@ -1,8 +1,8 @@
 use crate::cli::args::{
-    A11yArgs, A11yCommand, CascadeArgs, Cli, ClickArgs, Command, ComputedArgs, ConsentCommand,
-    ConsoleArgs, CookiesArgs, DaemonCommand, DomArgs, DomCommand, EmulateArgs, EvalArgs,
-    GeometryArgs, IndexArgs, InspectArgs, LaunchArgs, NavigateArgs, NetworkArgs, PerfArgs,
-    PerfCommand, ProfilesCommand, RecordCommand, ReloadArgs, ResponsiveArgs, RunArgs,
+    A11yArgs, A11yCommand, BackForwardArgs, CascadeArgs, Cli, ClickArgs, Command, ComputedArgs,
+    ConsentCommand, ConsoleArgs, CookiesArgs, DaemonCommand, DomArgs, DomCommand, EmulateArgs,
+    EvalArgs, GeometryArgs, IndexArgs, InspectArgs, LaunchArgs, NavigateArgs, NetworkArgs,
+    PerfArgs, PerfCommand, ProfilesCommand, RecordCommand, ReloadArgs, ResponsiveArgs, RunArgs,
     ScreenshotArgs, ScrollCommand, SnapshotArgs, SourcesArgs, StorageArgs, StylesArgs,
     ThrottleArgs, TypeArgs, WaitArgs,
 };
@@ -315,8 +315,8 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         }
         // Reload/Back/Forward, Scroll, inspection-only, and meta commands — never recorded.
         Command::Reload(ReloadArgs { .. })
-        | Command::Back
-        | Command::Forward
+        | Command::Back(BackForwardArgs { .. })
+        | Command::Forward(BackForwardArgs { .. })
         | Command::Scroll { .. }
         | Command::Tabs
         | Command::Dom(DomArgs { .. })
@@ -467,15 +467,26 @@ fn dispatch_inner(
             idle_ms,
             reload_timeout,
             hard,
+            no_wait,
         }) => {
             if *wait_idle {
                 commands::nav_action::run_reload_wait_idle(cli, *idle_ms, *reload_timeout, *hard)
             } else {
-                commands::nav_action::run(cli, NavAction::Reload { force: *hard })
+                commands::nav_action::run(
+                    cli,
+                    NavAction::Reload {
+                        force: *hard,
+                        no_wait: *no_wait,
+                    },
+                )
             }
         }
-        Command::Back => commands::nav_action::run(cli, NavAction::Back),
-        Command::Forward => commands::nav_action::run(cli, NavAction::Forward),
+        Command::Back(BackForwardArgs { no_wait }) => {
+            commands::nav_action::run(cli, NavAction::Back { no_wait: *no_wait })
+        }
+        Command::Forward(BackForwardArgs { no_wait }) => {
+            commands::nav_action::run(cli, NavAction::Forward { no_wait: *no_wait })
+        }
         Command::PageText => commands::page_text::run(cli),
         Command::Dom(DomArgs {
             dom_command,
