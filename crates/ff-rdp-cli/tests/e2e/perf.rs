@@ -392,14 +392,35 @@ fn perf_vitals_computes_cwv() {
     assert_eq!(r["ttfb_ms"], 340.0);
     assert_eq!(r["ttfb_rating"], "good");
 
-    // CLS: two shifts 0.02 + 0.03 = 0.05 (same window, gap 100ms < 1s)
-    assert_eq!(r["cls"], 0.05);
-    assert_eq!(r["cls_rating"], "good");
+    // iter-139 Theme A: the fixture's `supported_entry_types` (recorded from
+    // real Firefox behavior) lists neither `layout-shift` nor `longtask` —
+    // Firefox cannot measure either, so both must report `null`/"unavailable"
+    // regardless of the (unreachable) shift/longtask entries also present in
+    // the fixture, never the old fabricated "good" 0.05 / 120.0.
+    assert!(r["cls"].is_null(), "cls must be null when unsupported: {r}");
+    assert_eq!(r["cls_rating"], "unavailable");
+    assert!(
+        r["cls_note"]
+            .as_str()
+            .is_some_and(|n| n.contains("layout-shift")),
+        "cls_note must name the missing entry type: {r}"
+    );
 
-    // TBT: one longtask duration=170ms > 50ms, after FCP (980ms).
-    // Task starts at 1000ms, ends at 1170ms > 980ms → blocking = 170 - 50 = 120ms
-    assert_eq!(r["tbt_ms"], 120.0);
-    assert_eq!(r["tbt_rating"], "good");
+    assert!(
+        r["tbt_ms"].is_null(),
+        "tbt_ms must be null when unsupported: {r}"
+    );
+    assert_eq!(r["tbt_rating"], "unavailable");
+    assert!(
+        r["tbt_note"]
+            .as_str()
+            .is_some_and(|n| n.contains("longtask")),
+        "tbt_note must name the missing entry type: {r}"
+    );
+
+    // iter-139 Theme C: page identity travels with the measurement.
+    assert_eq!(r["page_url"], "https://example.com/");
+    assert!(r["measured_at_ms"].is_number());
 }
 
 // ---------------------------------------------------------------------------
@@ -438,13 +459,38 @@ fn perf_audit_returns_structured_report() {
     assert_eq!(r["vitals"]["fcp_ms"], 980.0);
     assert_eq!(r["vitals"]["ttfb_ms"], 340.0);
 
-    // resource summary
-    assert_eq!(r["resource_summary"]["count"], 2);
+    // iter-139 Theme A: same unavailable-guard as `perf vitals` — the
+    // fixture's `supported_entry_types` lists neither `layout-shift` nor
+    // `longtask`.
+    assert!(r["vitals"]["cls"].is_null());
+    assert_eq!(r["vitals"]["cls_rating"], "unavailable");
+    assert!(r["vitals"]["tbt_ms"].is_null());
+    assert_eq!(r["vitals"]["tbt_rating"], "unavailable");
 
-    // resource_by_type has entries
-    assert!(!r["resource_by_type"].as_array().unwrap().is_empty());
+    // iter-139 Theme C: page identity.
+    assert_eq!(r["vitals"]["page_url"], "https://example.com/");
 
-    // third_party_summary: one third-party resource (cdn.thirdparty.com)
+    // resource summary: iter-139 Theme B folds the navigation document itself
+    // (a `navigation` entry, never a `resource` entry) into the breakdown
+    // pool as a synthetic first-party "document" resource — 2 resource
+    // entries + 1 navigation = 3. This is what makes
+    // `resource_by_type.document` and `navigation.transfer_size` agree
+    // instead of contradicting each other (dogfood-63 #11).
+    assert_eq!(r["resource_summary"]["count"], 3);
+
+    // resource_by_type has entries, including the folded-in navigation
+    // document.
+    let by_type = r["resource_by_type"].as_array().unwrap();
+    assert!(!by_type.is_empty());
+    assert!(
+        by_type.iter().any(|t| t["type"] == "document"),
+        "resource_by_type must include a 'document' bucket for the \
+         navigation entry: {by_type:?}"
+    );
+
+    // third_party_summary: one third-party resource (cdn.thirdparty.com) —
+    // the folded-in navigation document is first-party and must not inflate
+    // this count.
     assert_eq!(r["third_party_summary"]["count"], 1);
 
     // dom_stats present
