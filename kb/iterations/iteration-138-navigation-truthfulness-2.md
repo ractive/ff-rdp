@@ -14,7 +14,7 @@ dogfood_path: |
   ff-rdp navigate 'https://www.gov.uk/#frag' --timeout 8000 --port 6100
   # → must succeed; fragment navigation is not a failure
 first_call_sites: []
-status: planned
+status: completed
 ---
 
 # Iteration 138: navigation truthfulness II — HTTP status, SPA history, honest timeouts
