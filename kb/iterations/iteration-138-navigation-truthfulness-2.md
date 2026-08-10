@@ -124,3 +124,20 @@ untruthful — which Theme A fixes.
   PR description.
 - Themes B, C, F are one family (same-document / frame-context awareness); a shared fix is
   likely better than three special cases.
+
+## Run guidance (batch 138–142, from dogfooding session 63)
+
+Non-negotiable working rules for whoever implements this plan:
+
+1. **Do not trust the root cause stated above.** In iterations 135, 136 and 137 the real
+   cause differed from the plan's hypothesis three times running, and twice it was our bug,
+   not Firefox's. Reproduce the symptom and verify the mechanism **on the wire** (actual RDP
+   packets / actual command output) before writing the fix. If the diagnosis here turns out
+   to be wrong, fix the real cause and correct this section.
+2. **A live test that passes `--no-daemon` proves nothing about the default path.** That is
+   exactly how iter-129 shipped a feature that did not work at all. Every live test added
+   here must exercise the default (daemon) path. iter-137 added the guard at
+   `crates/ff-rdp-cli/tests/no_daemon_live_test_guard.rs` with a shrink-only grandfather
+   list — **do not add entries to that list.**
+3. Evidence for every finding in this plan — exact command and exact output — is in
+   [[dogfooding-session-63]]. Read it before diagnosing.
