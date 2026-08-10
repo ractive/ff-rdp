@@ -117,8 +117,21 @@ index alongside.
 
 ## Notes
 
-- Theme D depends on [[iteration-137-daemon-mode-parity]]: frame scanning returns zero targets
-  through the daemon, so these paths cannot be exercised in the default mode until 137 lands.
+- Theme D depended on [[iteration-137-daemon-mode-parity]] for frame scanning to return
+  non-zero targets through the daemon. **137 has since merged** (iter-138 and iter-139 both
+  landed on top of it using the default daemon path throughout), so this dependency is
+  resolved — Theme D's live tests can run against the default (daemon) connection mode with
+  no blocker. Still verify frame-scan-through-daemon behavior on the wire before relying on
+  it (per run-guidance rule 1); don't assume 137's fix generalizes to every frame-count shape
+  without checking.
+- iter-139 (perf honesty II) reused an existing shared helper (`middle_ellipsis`) rather than
+  writing a second truncation helper, and centralized repeated field-shape logic behind one
+  small spec struct (`UnavailableMetricSpec`) instead of duplicating it across `perf
+  vitals`/`perf audit`/`perf compare`. Theme D here has the identical shape — reuse
+  `middle_ellipsis` for the frame-URL list truncation (already flagged above); if Theme A's
+  ref-resolution fix and Theme B's disambiguation fix end up sharing field names/thresholds
+  across `click`/`type`/`styles`, prefer one shared spec/helper over three copies for the
+  same reason.
 
 ## Run guidance (batch 138–142, from dogfooding session 63)
 
