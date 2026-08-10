@@ -13,8 +13,14 @@ dogfood_path: |
   # → third_party_summary.count must exclude first-party
   ff-rdp perf summary --format text --port 6100 | awk '{print length}' | sort -rn | head -1
   # → longest line must be bounded (~120), not 6709
-first_call_sites: []
-status: planned
+first_call_sites:
+  - primitive: crate::commands::perf::apply_unavailable_metric_fields
+    site: crates/ff-rdp-cli/src/commands/perf.rs (run_vitals, run_audit — cls/tbt unavailable-guard)
+  - primitive: crate::commands::perf::entry_type_supported
+    site: >-
+      crates/ff-rdp-cli/src/commands/perf.rs (run_vitals, run_audit) and
+      crates/ff-rdp-cli/src/commands/perf_compare.rs (collect_page_perf)
+status: in-progress
 ---
 
 # Iteration 139: perf honesty II — unmeasurable vitals, byte attribution, page identity
@@ -81,21 +87,21 @@ Session-62 issue 2, still present: "Top 5 Slowest Resources" lines of 6709 and 7
 iter-128's `middle_ellipsis` was wired into `network` and `sources` but not here. Apply the
 existing helper; do not write a second one.
 
-## Acceptance Criteria
+## Acceptance Criteria [8/8]
 
-- [ ] live_139_cls_unavailable: on a real page, `cls` is null/`"unavailable"` with a note —
+- [x] live_139_cls_unavailable: on a real page, `cls` is null/`"unavailable"` with a note —
       never `0.0` rated `"good"`
-- [ ] live_139_tbt_unavailable: same for TBT
-- [ ] live_139_audit_document_bytes_agree: `resource_by_type.document` does not contradict
+- [x] live_139_tbt_unavailable: same for TBT
+- [x] live_139_audit_document_bytes_agree: `resource_by_type.document` does not contradict
       `navigation.transfer_size`
-- [ ] live_139_audit_opaque_flagged_per_type: per-type and per-domain breakdowns carry the
+- [x] live_139_audit_opaque_flagged_per_type: per-type and per-domain breakdowns carry the
       opaque marker when they contain opaque resources
-- [ ] live_139_third_party_excludes_first_party: `third_party_summary.count` < total on a page
+- [x] live_139_third_party_excludes_first_party: `third_party_summary.count` < total on a page
       with same-origin resources
-- [ ] live_139_vitals_page_identity: vitals output names the URL it measured
-- [ ] live_139_perf_summary_text_bounded: longest `perf summary --format text` line bounded on
+- [x] live_139_vitals_page_identity: vitals output names the URL it measured
+- [x] live_139_perf_summary_text_bounded: longest `perf summary --format text` line bounded on
       an ad-heavy page
-- [ ] unit_vitals_unsupported_entry_types: unit coverage that an unsupported entry type yields
+- [x] `unit_vitals_unsupported_entry_types`: unit coverage that an unsupported entry type yields
       unavailable, not zero
 
 ## Notes

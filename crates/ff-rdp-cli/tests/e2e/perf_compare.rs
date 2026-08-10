@@ -101,7 +101,30 @@ fn perf_compare_two_urls() {
         assert!(vitals["lcp_ms"].is_number(), "lcp_ms must be present");
         assert!(vitals["fcp_ms"].is_number(), "fcp_ms must be present");
         assert!(vitals["ttfb_ms"].is_number(), "ttfb_ms must be present");
-        assert!(vitals["cls"].is_number(), "cls must be present");
+        // iter-139 Theme A: the fixture's `supported_entry_types` (recorded
+        // from real Firefox behavior) lists neither `layout-shift` nor
+        // `longtask` — cls/tbt_ms must be null with a note, not the
+        // computed 0.01/30.0 the raw (unreachable) fixture entries imply.
+        assert!(
+            vitals["cls"].is_null(),
+            "cls must be null when unsupported: {vitals}"
+        );
+        assert!(
+            vitals["cls_note"]
+                .as_str()
+                .is_some_and(|n| n.contains("layout-shift")),
+            "cls_note must name the missing entry type: {vitals}"
+        );
+        assert!(
+            vitals["tbt_ms"].is_null(),
+            "tbt_ms must be null when unsupported: {vitals}"
+        );
+        assert!(
+            vitals["tbt_note"]
+                .as_str()
+                .is_some_and(|n| n.contains("longtask")),
+            "tbt_note must name the missing entry type: {vitals}"
+        );
 
         // Navigation section is present.
         let navigation = &result["navigation"];

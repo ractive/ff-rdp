@@ -12,7 +12,8 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::perf::{
-    compute_cls, compute_fcp, compute_lcp, compute_tbt, compute_ttfb, is_lcp_approximate, round2,
+    compute_cls, compute_fcp, compute_lcp, compute_tbt, compute_ttfb, entry_type_supported,
+    is_lcp_approximate, round2,
 };
 use super::url_validation::validate_url_with_opts;
 
@@ -165,6 +166,13 @@ const COLLECT_SCRIPT: &str = r"(function() {
   }
   result.navigation = performance.getEntriesByType('navigation').map(function(e) { return e.toJSON(); });
   result.resource = performance.getEntriesByType('resource').map(function(e) { return e.toJSON(); });
+  // iter-139 Theme A: same structural unsupported-entry-type signal as
+  // `perf vitals`/`perf audit` — `perf compare` is exactly the 'sibling'
+  // surface the iteration plan calls out to check (it also derives cls/tbt
+  // from layout-shift/longtask, so it had the identical false-good-number
+  // exposure even though it doesn't render a `_rating` field).
+  result.supported_entry_types =
+    (typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes) || [];
   return JSON.stringify(result);
 })()";
 
@@ -237,14 +245,33 @@ fn collect_page_perf(ctx: &mut ConnectedTab, label: &str) -> Result<Value, AppEr
     let cls = compute_cls(cls_entries);
     let tbt = compute_tbt(longtask_entries, fcp);
     let lcp_approximate = is_lcp_approximate(lcp_entries);
+    let cls_supported = entry_type_supported(&all, "layout-shift");
+    let tbt_supported = entry_type_supported(&all, "longtask");
 
     let mut vitals = json!({
         "ttfb_ms": ttfb,
         "fcp_ms": fcp,
         "lcp_ms": lcp,
-        "cls": cls,
-        "tbt_ms": tbt,
+        // iter-139 Theme A: null (not the computed 0.0) plus a note when
+        // Firefox structurally cannot measure the metric — see the identical
+        // guard in `perf vitals`/`perf audit`. A silent `0.0` in a
+        // side-by-side comparison table would read as "both pages tied at a
+        // perfect score" rather than "neither is measurable".
+        "cls": if cls_supported { json!(cls) } else { Value::Null },
+        "tbt_ms": if tbt_supported { json!(tbt) } else { Value::Null },
     });
+    if !cls_supported {
+        vitals["cls_note"] = json!(
+            "cls not available — Firefox's PerformanceObserver does not support the \
+             'layout-shift' entry type, so this cannot be measured (not the same as a measured 0)."
+        );
+    }
+    if !tbt_supported {
+        vitals["tbt_note"] = json!(
+            "tbt_ms not available — Firefox's PerformanceObserver does not support the \
+             'longtask' entry type, so this cannot be measured (not the same as a measured 0)."
+        );
+    }
     if lcp_approximate {
         vitals["lcp_approximate"] = json!(true);
         vitals["lcp_note"] = json!(

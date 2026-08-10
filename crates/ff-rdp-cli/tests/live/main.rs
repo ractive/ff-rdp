@@ -50,6 +50,7 @@ mod live_133_viewport_emulation;
 mod live_135_screenshot_ff153;
 mod live_137_daemon_mode_parity;
 mod live_138_navigation_truthfulness_2;
+mod live_139_perf_honesty_2;
 mod live_61l;
 mod live_61q_resource_bus;
 mod live_61r_eval;
