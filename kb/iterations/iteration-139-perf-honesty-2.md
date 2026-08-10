@@ -15,12 +15,14 @@ dogfood_path: |
   # → longest line must be bounded (~120), not 6709
 first_call_sites:
   - primitive: crate::commands::perf::apply_unavailable_metric_fields
-    site: crates/ff-rdp-cli/src/commands/perf.rs (run_vitals, run_audit — cls/tbt unavailable-guard)
+    site: >-
+      crates/ff-rdp-cli/src/commands/perf.rs (run_vitals, run_audit — cls/tbt
+      unavailable-guard)
   - primitive: crate::commands::perf::entry_type_supported
     site: >-
       crates/ff-rdp-cli/src/commands/perf.rs (run_vitals, run_audit) and
       crates/ff-rdp-cli/src/commands/perf_compare.rs (collect_page_perf)
-status: in-progress
+status: completed
 ---
 
 # Iteration 139: perf honesty II — unmeasurable vitals, byte attribution, page identity
