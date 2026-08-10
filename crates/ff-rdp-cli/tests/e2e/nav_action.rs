@@ -22,23 +22,45 @@ fn base_args(port: u16) -> Vec<String> {
 /// immediately after dispatch.
 ///
 /// Request order: listTabs → getTarget → getWatcher → evaluateJSAsync
-/// (pre-nav epoch, best-effort) → watchTargets → watchResources → `method`
-/// (with `dom-loading`/`dom-complete` document-event followups) →
-/// unwatchResources → getTarget (refresh_console_actor after commit).
+/// (pre-nav epoch, best-effort) → evaluateJSAsync (pre-nav `location.href`
+/// baseline for the iter-138 Theme B/C same-document check) → watchTargets →
+/// watchResources → `method` (with `dom-loading`/`dom-complete` document-event
+/// followups; `dom-loading` triggers a `getTarget` refresh — iter-138 Theme F
+/// distrusts the event's own URL unconditionally for these three verbs) →
+/// evaluateJSAsync (the forced `location.href` re-resolution at commit,
+/// iter-138 Theme F) → unwatchResources → getTarget (refresh_console_actor
+/// after commit).
 ///
-/// `back`/`forward` make exactly one `evaluateJSAsync` call (the pre-nav
-/// epoch inside `wait_for_navigation_commit`); use
-/// [`nav_action_commit_server_reload`] for `reload`, which makes a second
-/// (its own pre-dispatch `location.href` capture).
+/// `back`/`forward` make exactly three `evaluateJSAsync` calls (pre-nav
+/// epoch, pre-nav href, and the Theme F commit re-resolution); use
+/// [`nav_action_commit_server_reload`] for `reload`, which makes a fourth
+/// (its own pre-dispatch `location.href` capture for `needs_href_fallback`).
+/// The first two calls' *values* don't matter to any assertion — only the
+/// third (`eval_result_location_href_example_com.json`, a real Firefox
+/// recording of `window.location.href` on example.com) does, since iter-138
+/// Theme F means the CLI now always trusts that eval over the
+/// document-event's own `url` field.
 fn nav_action_commit_server(method: &str) -> MockRdpServer {
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
         .on("getWatcher", load_fixture("get_watcher_response.json"))
-        .on_with_followup(
+        .on_sequence(
             "evaluateJSAsync",
-            load_fixture("eval_immediate_response.json"),
-            load_fixture("eval_result_ready_state_complete.json"),
+            vec![
+                (
+                    load_fixture("eval_immediate_response.json"),
+                    vec![load_fixture("eval_result_ready_state_complete.json")],
+                ),
+                (
+                    load_fixture("eval_immediate_response.json"),
+                    vec![load_fixture("eval_result_ready_state_complete.json")],
+                ),
+                (
+                    load_fixture("eval_immediate_response_location_href.json"),
+                    vec![load_fixture("eval_result_location_href_example_com.json")],
+                ),
+            ],
         )
         .on("watchTargets", load_fixture("watch_targets_response.json"))
         .on(
@@ -59,10 +81,11 @@ fn nav_action_commit_server(method: &str) -> MockRdpServer {
         )
 }
 
-/// Like [`nav_action_commit_server`] but for `reload`, which makes an extra
-/// `evaluateJSAsync` call (`location.href`, captured before dispatch as the
-/// `requested_url` fed to `needs_href_fallback`) ahead of the pre-nav-epoch
-/// call `wait_for_navigation_commit` makes for all three verbs.
+/// Like [`nav_action_commit_server`] but for `reload`, which makes one extra
+/// leading `evaluateJSAsync` call (`location.href`, captured before dispatch
+/// as the `requested_url` fed to `needs_href_fallback`) ahead of the three
+/// `wait_for_navigation_commit` makes for all three verbs (see
+/// [`nav_action_commit_server`]'s doc comment).
 fn nav_action_commit_server_reload() -> MockRdpServer {
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
@@ -78,6 +101,14 @@ fn nav_action_commit_server_reload() -> MockRdpServer {
                 (
                     load_fixture("eval_immediate_response.json"),
                     vec![load_fixture("eval_result_ready_state_complete.json")],
+                ),
+                (
+                    load_fixture("eval_immediate_response.json"),
+                    vec![load_fixture("eval_result_ready_state_complete.json")],
+                ),
+                (
+                    load_fixture("eval_immediate_response_location_href.json"),
+                    vec![load_fixture("eval_result_location_href_example_com.json")],
                 ),
             ],
         )
@@ -129,7 +160,7 @@ fn reload_outputs_json_envelope() {
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
     assert_eq!(json["results"]["action"], "reload");
-    assert_eq!(json["results"]["committed_url"], "https://example.com");
+    assert_eq!(json["results"]["committed_url"], "https://example.com/");
     assert_eq!(json["results"]["ready_state"], "complete");
     assert!(
         json["results"]["elapsed_ms"].is_u64(),
@@ -327,7 +358,7 @@ fn back_outputs_json_envelope() {
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["results"]["action"], "back");
-    assert_eq!(json["results"]["committed_url"], "https://example.com");
+    assert_eq!(json["results"]["committed_url"], "https://example.com/");
     assert_eq!(json["results"]["ready_state"], "complete");
     assert!(
         json["results"]["elapsed_ms"].is_u64(),
@@ -360,10 +391,95 @@ fn forward_outputs_json_envelope() {
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["results"]["action"], "forward");
-    assert_eq!(json["results"]["committed_url"], "https://example.com");
+    assert_eq!(json["results"]["committed_url"], "https://example.com/");
     assert_eq!(json["results"]["ready_state"], "complete");
     assert!(
         json["results"]["elapsed_ms"].is_u64(),
         "elapsed_ms must be present: {json}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// iter-138 Theme E — `--no-wait` escape hatch for back/forward/reload
+// ---------------------------------------------------------------------------
+
+/// AC: `e2e_no_wait_flag_consistency` — the `--no-wait` flag exists on every
+/// command whose commit-wait timeout message recommends it.
+///
+/// Pre-fix: the Theme B/C timeout error text told the caller to "use
+/// --no-wait to skip or increase --timeout", but `back`/`forward`/`reload`
+/// didn't accept the flag at all (`error: unexpected argument '--no-wait'
+/// found`) — there was no escape hatch whatsoever for the readiness wait on
+/// history commands. This asserts the flag now exists on all three (chosen
+/// over removing the recommendation, since it's a genuinely useful escape
+/// hatch — see the iteration plan's Theme E notes).
+#[test]
+fn e2e_no_wait_flag_consistency() {
+    for (subcommand, needs_positional) in [("back", false), ("forward", false), ("reload", false)] {
+        let _ = needs_positional; // none of these three take a positional arg
+        let out = std::process::Command::new(ff_rdp_bin())
+            .args([subcommand, "--help"])
+            .output()
+            .unwrap_or_else(|e| panic!("{subcommand} --help: {e}"));
+        assert!(
+            out.status.success(),
+            "{subcommand} --help must exit 0; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let help = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            help.contains("--no-wait"),
+            "{subcommand} --help must document --no-wait (the flag its own \
+             timeout error recommends): {help}"
+        );
+    }
+
+    // `navigate --help` already had --no-wait before this iteration — assert
+    // it still does, so the four navigation verbs stay consistent.
+    let nav_help = std::process::Command::new(ff_rdp_bin())
+        .args(["navigate", "--help"])
+        .output()
+        .expect("navigate --help");
+    assert!(
+        String::from_utf8_lossy(&nav_help.stdout).contains("--no-wait"),
+        "navigate --help must still document --no-wait"
+    );
+}
+
+/// `back --no-wait` dispatches `goBack` and returns immediately without
+/// waiting for a commit — the bare pre-iter-130 envelope, not the
+/// `{committed_url, ready_state, elapsed_ms}` shape.
+#[test]
+fn back_no_wait_returns_bare_envelope_immediately() {
+    // Only listTabs/getTarget/getWatcher are needed to resolve the target;
+    // goBack itself is a raw fire-and-forget send that this mock never has to
+    // answer, and no document-event wait is ever started.
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"));
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["back".to_owned(), "--no-wait".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "back --no-wait must succeed without a document-event reply: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["results"]["action"], "back");
+    assert!(
+        json["results"].get("committed_url").is_none(),
+        "back --no-wait must return the bare envelope, not the commit-wait \
+         one: {json}"
     );
 }

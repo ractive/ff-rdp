@@ -102,6 +102,17 @@ existing helper; do not write a second one.
 
 - The governing rule, third time in this project: **a metric that cannot be measured must not
   be reported as a good score.** See [[iteration-125-perf-audit-lcp-unavailable]].
+- **Carryover from [[iteration-138-navigation-truthfulness-2]]** (scope unchanged — checked and
+  does not apply directly, recorded here so the next investigator doesn't have to re-derive it):
+  iter-138 found a merge-semantics bug where taking "the most recent `resources-updated-array`
+  record" instead of "the most recent non-`None` value per field" silently regressed a real
+  value back to absent. `perf`'s byte/type/domain attribution in this plan (Theme B) reads from
+  `performance.getEntriesByType('resource')` via eval, not from the RDP `network-event`/
+  `resources-updated-array` actor stream iter-138 touched, so the same code path is not at risk
+  — but if Theme B's investigation turns up any place this iteration's byte-attribution bugs
+  trace back to RDP network-resource merging rather than the performance-timing API, re-check
+  for the identical "last record wins" vs. "last non-null value per field wins" mistake before
+  writing a fix from scratch.
 
 ## Run guidance (batch 138–142, from dogfooding session 63)
 

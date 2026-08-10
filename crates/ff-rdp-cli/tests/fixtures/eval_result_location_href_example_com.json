@@ -1,0 +1,10 @@
+{
+  "type": "evaluationResult",
+  "resultID": "0",
+  "hasException": false,
+  "input": "window.location.href",
+  "result": "https://example.com/",
+  "startTime": 1786359403279.748,
+  "timestamp": 1786359403282.012,
+  "from": "server1.conn0.child2/consoleActor3"
+}

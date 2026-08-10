@@ -18,9 +18,28 @@ pub enum NavAction {
     /// Reload the current page. `force = true` bypasses the HTTP cache.
     Reload {
         force: bool,
+        no_wait: bool,
     },
-    Back,
-    Forward,
+    Back {
+        no_wait: bool,
+    },
+    Forward {
+        no_wait: bool,
+    },
+}
+
+impl NavAction {
+    /// Whether this invocation should skip the commit wait (iter-138 Theme E)
+    /// — the escape hatch the Theme B/C error text has always recommended
+    /// but, before this iteration, didn't exist for `back`/`forward`/`reload`
+    /// (`error: unexpected argument '--no-wait' found`).
+    fn no_wait(self) -> bool {
+        match self {
+            Self::Reload { no_wait, .. } | Self::Back { no_wait } | Self::Forward { no_wait } => {
+                no_wait
+            }
+        }
+    }
 }
 
 /// Run `back`, `forward`, or a plain (non-`--wait-idle`) `reload`.
@@ -35,40 +54,58 @@ pub enum NavAction {
 /// `WindowGlobalTarget::reload`/`go_back`/`go_forward` (which read the ack via
 /// `recv_reply_from`) risks silently losing a `document-event` that races
 /// ahead of that ack.
+///
+/// iter-138 Theme E: `--no-wait` on any of the three skips the commit wait
+/// entirely and returns the bare `{"action": "..."}` envelope this command
+/// used to always return before iter-130 — the escape hatch the Theme B/C
+/// timeout message recommends, which previously didn't exist for these three
+/// verbs at all.
 pub fn run(cli: &Cli, action: NavAction) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
 
     let (action_name, force_reload) = match action {
-        NavAction::Reload { force } => ("reload", force),
-        NavAction::Back => ("back", false),
-        NavAction::Forward => ("forward", false),
+        NavAction::Reload { force, .. } => ("reload", force),
+        NavAction::Back { .. } => ("back", false),
+        NavAction::Forward { .. } => ("forward", false),
     };
 
-    // `reload`'s target URL is knowable ahead of time (the current page,
-    // reloaded) — capture it so `needs_href_fallback` can tell a genuine
-    // reload-of-about:blank apart from a stale event placeholder.
-    // `back`/`forward` don't know their landing URL ahead of time, so they
-    // pass "" (safe — see `wait_for_navigation_commit`'s doc comment).
-    let requested_url = match action {
-        NavAction::Reload { .. } => {
-            let console_actor = ctx.target.console_actor.clone();
-            eval_location_href(ctx.transport_mut(), &console_actor)
-        }
-        NavAction::Back | NavAction::Forward => String::new(),
-    };
-
-    let commit_json = wait_for_navigation_commit(&mut ctx, cli.timeout, &requested_url, {
+    let build_packet = {
         let target_actor = target_actor.clone();
-        move |transport| {
-            let packet = match action {
-                NavAction::Reload { force } => build_reload_packet(&target_actor, force),
-                NavAction::Back => json!({"to": target_actor.as_ref(), "type": "goBack"}),
-                NavAction::Forward => json!({"to": target_actor.as_ref(), "type": "goForward"}),
-            };
-            transport.send(&packet).map_err(AppError::from)
+        move |action: NavAction| match action {
+            NavAction::Reload { force, .. } => build_reload_packet(&target_actor, force),
+            NavAction::Back { .. } => json!({"to": target_actor.as_ref(), "type": "goBack"}),
+            NavAction::Forward { .. } => json!({"to": target_actor.as_ref(), "type": "goForward"}),
         }
-    })?;
+    };
+
+    let commit_json = if action.no_wait() {
+        // --no-wait: dispatch without reading the ack and skip the commit
+        // wait entirely, mirroring `navigate --no-wait`.
+        let packet = build_packet(action);
+        ctx.transport_mut().send(&packet).map_err(AppError::from)?;
+        json!({})
+    } else {
+        // `reload`'s target URL is knowable ahead of time (the current page,
+        // reloaded) — capture it so `needs_href_fallback` can tell a genuine
+        // reload-of-about:blank apart from a stale event placeholder.
+        // `back`/`forward` don't know their landing URL ahead of time, so
+        // they pass "" (safe — see `wait_for_navigation_commit`'s doc
+        // comment).
+        let requested_url = match action {
+            NavAction::Reload { .. } => {
+                let console_actor = ctx.target.console_actor.clone();
+                eval_location_href(ctx.transport_mut(), &console_actor)
+            }
+            NavAction::Back { .. } | NavAction::Forward { .. } => String::new(),
+        };
+
+        wait_for_navigation_commit(&mut ctx, cli.timeout, &requested_url, move |transport| {
+            transport
+                .send(&build_packet(action))
+                .map_err(AppError::from)
+        })?
+    };
 
     let mut result = if force_reload {
         json!({"action": action_name, "force": true})
@@ -93,8 +130,8 @@ pub fn run(cli: &Cli, action: NavAction) -> Result<(), AppError> {
 
     let hint_source = match action {
         NavAction::Reload { .. } => HintSource::Reload,
-        NavAction::Back => HintSource::Back,
-        NavAction::Forward => HintSource::Forward,
+        NavAction::Back { .. } => HintSource::Back,
+        NavAction::Forward { .. } => HintSource::Forward,
     };
     let hint_ctx = HintContext::new(hint_source);
     OutputPipeline::from_cli(cli)?
