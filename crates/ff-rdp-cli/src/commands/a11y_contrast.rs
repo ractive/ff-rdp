@@ -79,9 +79,7 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
     }
 
     let hint_ctx = HintContext::new(HintSource::A11yContrast).with_fail_only(fail_only);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Keep only checks that fail WCAG AA when `fail_only` is set, otherwise return

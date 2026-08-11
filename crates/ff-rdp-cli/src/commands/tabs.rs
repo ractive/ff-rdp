@@ -58,9 +58,7 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
         output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Tabs);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 #[cfg(test)]

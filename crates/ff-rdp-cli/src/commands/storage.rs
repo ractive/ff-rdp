@@ -57,18 +57,14 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
                 let envelope = output::envelope(&json!({"key": k, "value": null}), 0, &meta);
                 let hint_ctx =
                     HintContext::new(HintSource::Storage).with_storage_type(canonical_type);
-                OutputPipeline::from_cli(cli)?
-                    .finalize_with_hints(&envelope, Some(&hint_ctx))
-                    .map_err(AppError::from)
+                OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
             }
             grip => {
                 let value = resolve_string_grip(&mut ctx, grip)?;
                 let envelope = output::envelope(&json!({"key": k, "value": value}), 1, &meta);
                 let hint_ctx =
                     HintContext::new(HintSource::Storage).with_storage_type(canonical_type);
-                OutputPipeline::from_cli(cli)?
-                    .finalize_with_hints(&envelope, Some(&hint_ctx))
-                    .map_err(AppError::from)
+                OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
             }
         }
     } else {
@@ -101,9 +97,7 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
 
         let envelope = output::envelope(&storage_map, total, &meta);
         let hint_ctx = HintContext::new(HintSource::Storage).with_storage_type(canonical_type);
-        OutputPipeline::from_cli(cli)?
-            .finalize_with_hints(&envelope, Some(&hint_ctx))
-            .map_err(AppError::from)
+        OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
     }
 }
 

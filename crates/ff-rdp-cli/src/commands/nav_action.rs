@@ -134,9 +134,7 @@ pub fn run(cli: &Cli, action: NavAction) -> Result<(), AppError> {
         NavAction::Forward { .. } => HintSource::Forward,
     };
     let hint_ctx = HintContext::new(hint_source);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Reload the page and wait until network activity has been idle for `idle_ms`
@@ -420,9 +418,7 @@ fn emit_reload_result(
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Reload);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 #[cfg(test)]

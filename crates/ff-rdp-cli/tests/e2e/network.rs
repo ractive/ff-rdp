@@ -252,6 +252,48 @@ fn network_all_overrides_limit() {
 }
 
 // ---------------------------------------------------------------------------
+// e2e_network_truncation_flag (iter-141 Theme F)
+// ---------------------------------------------------------------------------
+
+/// AC `e2e_network_truncation_flag`: `slowest_truncated` is always present
+/// on the summary/detail envelope (iter-128's always-present-nullable-key
+/// convention) — plumbed end-to-end through the real CLI process, not just
+/// `build_network_summary` in isolation.
+///
+/// The `>20 requests -> slowest_truncated: true` case is covered by
+/// `build_network_summary_slowest_truncated_when_over_20_requests` (unit
+/// test, `crates/ff-rdp-cli/src/commands/network.rs`) rather than here: this
+/// repo's fixture policy requires `tests/fixtures/*.json` to be recorded
+/// from a real Firefox instance, and the only recorded network-event
+/// fixture captures 2 requests — nowhere near the 20-request threshold. This
+/// test instead proves the field reaches the CLI's stdout unchanged (`false`
+/// for a 2-request capture) — the plumbing the unit test above cannot cover
+/// on its own.
+#[test]
+fn e2e_network_truncation_flag() {
+    let server = network_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.push("network".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+    assert!(output.status.success());
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        json["results"]["slowest_truncated"], false,
+        "slowest_truncated must be present and false for a 2-request capture, got: {json}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // --filter URL
 // ---------------------------------------------------------------------------
 

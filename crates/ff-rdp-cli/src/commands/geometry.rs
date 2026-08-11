@@ -115,9 +115,7 @@ pub fn run(cli: &Cli, selectors: &[String], include_hidden: bool) -> Result<(), 
         let envelope = output::envelope(&empty, 0, &meta);
         let first_sel = selectors.first().map_or("*", String::as_str);
         let hint_ctx = HintContext::new(HintSource::Geometry).with_selector(first_sel);
-        return OutputPipeline::from_cli(cli)?
-            .finalize_with_hints(&envelope, Some(&hint_ctx))
-            .map_err(AppError::from);
+        return OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx));
     }
 
     let elements_array = geometry["elements"].as_array().cloned().unwrap_or_default();
@@ -186,9 +184,7 @@ pub fn run(cli: &Cli, selectors: &[String], include_hidden: bool) -> Result<(), 
 
     let first_sel = selectors.first().map_or("*", String::as_str);
     let hint_ctx = HintContext::new(HintSource::Geometry).with_selector(first_sel);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Render geometry results as human-readable text to stdout.

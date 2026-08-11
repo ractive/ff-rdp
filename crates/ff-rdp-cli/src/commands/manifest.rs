@@ -76,9 +76,7 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     );
 
     let envelope = output::envelope(&results, 1, &meta);
-    OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)
 }
 
 #[cfg(test)]

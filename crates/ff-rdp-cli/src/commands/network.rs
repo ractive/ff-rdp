@@ -502,9 +502,7 @@ pub fn run(
             obj.insert("insecure_requests".to_string(), json!(count));
         }
         let hint_ctx = HintContext::new(HintSource::Network).with_detail(cli.detail);
-        return OutputPipeline::from_cli(cli)?
-            .finalize_with_hints(&envelope, Some(&hint_ctx))
-            .map_err(AppError::from);
+        return OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx));
     }
 
     // Summary mode: strip _resource_id from entries before summarizing.
@@ -535,9 +533,7 @@ pub fn run(
         obj.insert("hint".to_string(), hint);
     }
     let hint_ctx = HintContext::new(HintSource::Network).with_detail(cli.detail);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Count how many entries are plain-HTTP (insecure) requests.
@@ -739,6 +735,24 @@ fn render_network_summary_text_to(summary: &Value, out: &mut dyn std::io::Write)
                 i + 1
             );
         }
+        // iter-141 Theme F: text mode must not silently show "the 20
+        // slowest" as if it were "every request" — say so explicitly when
+        // `slowest_truncated` is set.
+        if summary
+            .get("slowest_truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            let total = summary
+                .get("total_requests")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let _ = writeln!(
+                out,
+                "  (showing {} of {total} requests — use --all for the complete list)",
+                slowest.len()
+            );
+        }
     }
 
     if summary
@@ -766,6 +780,13 @@ fn render_network_summary_text(summary: &Value) {
 /// - `total_transfer_bytes`: sum of `transfer_size` across all entries
 /// - `by_cause_type`: count per `cause_type` field
 /// - `slowest`: top-20 slowest requests (url, duration_ms, status, transfer_size)
+/// - `slowest_truncated`: `true` when `total_requests` exceeds `slowest.len()`
+///   — i.e. `slowest` is a top-20 sample, not the full request list (iter-141
+///   Theme F). Previously `slowest` silently capped at 20 with no marker
+///   distinguishing "these are all N requests" from "these are the 20
+///   slowest of N"; `--all`/`--detail` switch to the entry-level `truncated`
+///   flag on the full list, but nothing said the summary's own `slowest`
+///   was *also* incomplete.
 /// - `timeout_reached`: whether the collection deadline fired while events were still arriving
 /// - `hint`: an always-present, nullable member (iter-128 Theme A) — advice to
 ///   increase `--network-timeout` when `timeout_reached` is true, `null`
@@ -821,6 +842,8 @@ pub fn build_network_summary(
             })
         })
         .collect();
+    // iter-141 Theme F: explicit marker for the silent 20-cap on `slowest`.
+    let slowest_truncated = total_requests > slowest.len();
 
     // iter-128 Theme A: `hint` is always present — `null` when there is
     // nothing to hint — so the key set never varies with capture content.
@@ -838,6 +861,7 @@ pub fn build_network_summary(
         "total_transfer_bytes": total_transfer_bytes,
         "by_cause_type": by_cause_type,
         "slowest": slowest,
+        "slowest_truncated": slowest_truncated,
         "timeout_reached": timeout_reached,
         "hint": hint,
     })
@@ -886,6 +910,7 @@ pub(crate) fn merge_summary_fields(
 ///   "total_transfer_bytes": N,
 ///   "by_cause_type": { ... },
 ///   "slowest": [ ... ],
+///   "slowest_truncated": bool,   // true when total_requests > slowest.len()
 ///   "timeout_reached": bool,
 ///   "hint": null | "..."         // iter-128 Theme A: always present; null
 ///                                 // unless truncated or timeout_reached
@@ -1342,6 +1367,43 @@ mod tests {
         assert_eq!(s["timeout_reached"], false);
         // iter-128 Theme A: hint is always present, null when not timed out.
         assert_eq!(s["hint"], Value::Null, "hint must be null, not absent");
+        // iter-141 Theme F: 3 requests, all shown in `slowest` — not truncated.
+        assert_eq!(s["slowest_truncated"], false);
+    }
+
+    // ── iter-141 Theme F: `slowest_truncated` ────────────────────────────
+
+    /// AC `e2e_network_truncation_flag`: more than 20 requests means
+    /// `slowest` only carries the top 20 — `slowest_truncated` must say so
+    /// explicitly rather than leaving a caller to infer it by comparing
+    /// `total_requests` to `slowest.len()` themselves.
+    #[test]
+    fn build_network_summary_slowest_truncated_when_over_20_requests() {
+        let entries: Vec<Value> = (0..25)
+            .map(|i| {
+                json!({"url": format!("https://example.com/{i}"), "duration_ms": f64::from(i), "status": 200, "cause_type": "script"})
+            })
+            .collect();
+        let s = build_network_summary(&entries, false);
+        assert_eq!(s["total_requests"], 25);
+        assert_eq!(s["slowest"].as_array().unwrap().len(), 20);
+        assert_eq!(
+            s["slowest_truncated"], true,
+            "25 requests > 20-slot `slowest` must be flagged truncated"
+        );
+    }
+
+    /// Exactly 20 requests: `slowest` carries all of them — not truncated.
+    #[test]
+    fn build_network_summary_slowest_not_truncated_at_exactly_20() {
+        let entries: Vec<Value> = (0..20)
+            .map(|i| {
+                json!({"url": format!("https://example.com/{i}"), "duration_ms": f64::from(i), "status": 200, "cause_type": "script"})
+            })
+            .collect();
+        let s = build_network_summary(&entries, false);
+        assert_eq!(s["slowest"].as_array().unwrap().len(), 20);
+        assert_eq!(s["slowest_truncated"], false);
     }
 
     #[test]

@@ -164,9 +164,7 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     }
 
     let hint_ctx = HintContext::new(HintSource::Console).with_has_errors(error_count > 0);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Prime the WebConsole actor's message cache so a following

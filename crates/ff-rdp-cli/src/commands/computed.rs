@@ -183,9 +183,7 @@ pub fn run(cli: &Cli, selector: &str, props: &[String], include_all: bool) -> Re
     let envelope = output::envelope(&results, total, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Computed).with_selector(selector);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 #[cfg(test)]

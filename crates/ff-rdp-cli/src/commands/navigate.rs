@@ -1843,9 +1843,7 @@ pub fn run(
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Navigate);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Find the main document's HTTP status among captured network resources
@@ -2095,9 +2093,7 @@ pub fn run_with_network(
         crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
         let envelope = output::envelope(&result, 1, &meta);
         let hint_ctx = HintContext::new(HintSource::Navigate);
-        return OutputPipeline::from_cli(cli)?
-            .finalize_with_hints(&envelope, Some(&hint_ctx))
-            .map_err(AppError::from);
+        return OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx));
     }
 
     let tab_actor = ctx.target_tab_actor().clone();
@@ -2245,9 +2241,7 @@ pub fn run_with_network(
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Navigate);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Apply output controls (sort, limit, fields) to network entries from navigate.

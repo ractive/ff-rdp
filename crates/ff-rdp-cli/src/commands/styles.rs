@@ -110,9 +110,7 @@ pub fn run(cli: &Cli, selector: &str, properties: Option<&[String]>) -> Result<(
     let envelope = output::envelope_with_truncation(&results, shown, total, truncated, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Styles).with_selector(selector);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Applied CSS rules with source locations.
@@ -183,9 +181,7 @@ pub fn run_applied(cli: &Cli, selector: &str) -> Result<(), AppError> {
     let envelope = output::envelope_with_truncation(&results, shown, total, truncated, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Styles).with_selector(selector);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Box model layout.
@@ -211,9 +207,7 @@ pub fn run_layout(cli: &Cli, selector: &str) -> Result<(), AppError> {
     let envelope = output::envelope(&results, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Styles).with_selector(selector);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Returns `true` for UA-reset stub rules that should be filtered from `--applied` output.

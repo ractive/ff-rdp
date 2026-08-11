@@ -348,9 +348,7 @@ pub fn run_list(cli: &Cli) -> Result<(), AppError> {
     });
 
     let envelope = output::envelope(&results, 1, &json!({}));
-    OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)
 }
 
 /// `ff-rdp profiles prune`.
@@ -380,9 +378,7 @@ pub fn run_prune(cli: &Cli, older_than: &str, all: bool, dry_run: bool) -> Resul
     });
 
     let envelope = output::envelope(&results, total, &json!({}));
-    OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)
 }
 
 #[cfg(test)]

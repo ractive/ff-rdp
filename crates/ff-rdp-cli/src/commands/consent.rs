@@ -40,9 +40,7 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     );
     let envelope = output::envelope(&result, 1, &meta);
 
-    OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)
 }
 
 /// One entry in the CMP recognition table: a name plus the URL substrings

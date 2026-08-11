@@ -15,6 +15,17 @@ use crate::error::AppError;
 /// This is the standard "eval and check" helper used by most commands.
 /// The `error_context` string is used as the fallback message when the
 /// exception has no message field.
+///
+/// A JS exception is surfaced as `Err(AppError::User(..))` — routed through
+/// the standard `{"error":…,"error_type":"User"}` JSON envelope, same as
+/// every other command failure (iter-141 Theme E). Previously this printed
+/// `error: <msg>` directly to stderr and returned `AppError::Exit(1)`, which
+/// bypasses `main`'s JSON-envelope emission entirely: `ff-rdp dom 'div[[['`
+/// printed the bare text `error: Document.querySelectorAll: 'div[[[' is not
+/// a valid selector` with no JSON at all, while every other error path
+/// (connection failures, protocol errors, ...) emits the envelope. A CSS
+/// syntax error is exactly the kind of well-formed-but-invalid-input case
+/// `AppError::User` exists for.
 pub(crate) fn eval_or_bail(
     ctx: &mut ConnectedTab,
     console_actor: &ActorId,
@@ -26,8 +37,7 @@ pub(crate) fn eval_or_bail(
 
     if let Some(ref exc) = eval_result.exception {
         let msg = exc.message.as_deref().unwrap_or(error_context);
-        eprintln!("error: {}", sanitize_for_terminal(msg));
-        return Err(AppError::Exit(1));
+        return Err(AppError::User(sanitize_for_terminal(msg).into_owned()));
     }
 
     Ok(eval_result)
@@ -881,8 +891,10 @@ impl SettleMethod {
 /// Poll a JS expression until it returns a truthy value or the timeout expires.
 ///
 /// Returns the elapsed time in milliseconds on success.  Returns
-/// `Err(AppError::Exit(1))` if a JS exception is thrown, or
-/// `Err(AppError::Timeout(timeout_context))` if the timeout expires.
+/// `Err(AppError::User(..))` (routed through the JSON error envelope,
+/// iter-141 Theme E — see [`eval_or_bail`]'s doc comment) if a JS exception
+/// is thrown, or `Err(AppError::Timeout(timeout_context))` if the timeout
+/// expires.
 ///
 /// A timeout of 0 means the condition is evaluated once; if falsy, a timeout
 /// error is returned immediately.
@@ -920,12 +932,11 @@ pub(crate) fn poll_js_condition(
 
         if let Some(eval_result) = eval_result {
             if let Some(ref exc) = eval_result.exception {
-                if let Some(msg) = exc.message.as_deref() {
-                    eprintln!("error: {error_context}: {msg}");
-                } else {
-                    eprintln!("error: {error_context}");
-                }
-                return Err(AppError::Exit(1));
+                let msg = match exc.message.as_deref() {
+                    Some(m) => format!("{error_context}: {m}"),
+                    None => error_context.to_owned(),
+                };
+                return Err(AppError::User(sanitize_for_terminal(&msg).into_owned()));
             }
 
             if is_truthy(&eval_result.result) {

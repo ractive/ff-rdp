@@ -116,9 +116,7 @@ pub fn run_to(
     );
     let envelope = output::envelope(&result_json, 1, &meta);
 
-    OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)
 }
 
 // ---------------------------------------------------------------------------
@@ -183,9 +181,7 @@ pub fn run_by(
     );
     let envelope = output::envelope(&result_json, 1, &meta);
 
-    OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)
 }
 
 // ---------------------------------------------------------------------------
@@ -254,9 +250,7 @@ fn run_scroll_absolute(cli: &Cli, y_expr: &str, error_label: &str) -> Result<(),
     );
     let envelope = output::envelope(&result_json, 1, &meta);
 
-    OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)
 }
 
 // ---------------------------------------------------------------------------
@@ -316,9 +310,7 @@ pub fn run_container(
     );
     let envelope = output::envelope(&result_json, 1, &meta);
 
-    OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)
 }
 
 // ---------------------------------------------------------------------------
@@ -446,9 +438,7 @@ pub fn run_until(
     );
     let envelope = output::envelope(&result_json, 1, &meta);
 
-    OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)
 }
 
 fn is_truthy_grip(grip: &ff_rdp_core::Grip) -> bool {
@@ -518,9 +508,7 @@ pub fn run_text(cli: &Cli, text: &str) -> Result<(), AppError> {
     );
     let envelope = output::envelope(&result_json, 1, &meta);
 
-    OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)
 }
 
 #[cfg(test)]

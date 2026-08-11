@@ -615,9 +615,7 @@ pub fn run(
             );
             let envelope = output::envelope(&result, 1, &meta);
             let hint_ctx = HintContext::new(HintSource::Launch);
-            OutputPipeline::from_cli(cli)?
-                .finalize_with_hints(&envelope, Some(&hint_ctx))
-                .map_err(AppError::from)
+            OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
         }
         Err(e) => Err(AppError::Internal(anyhow::anyhow!(
             "failed to check Firefox status: {e}"
