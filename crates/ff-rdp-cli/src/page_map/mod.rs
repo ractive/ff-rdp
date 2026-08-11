@@ -581,15 +581,22 @@ pub fn detect_drift(old: &PageMap, new: &PageMap) -> Vec<DriftEntry> {
 
 /// JavaScript template injected into each crawled page to extract form data.
 ///
-/// iter-140 Theme F: every generated selector now goes through
+/// iter-140 Theme F: every generated selector now goes through the
+/// `unique_selector_js_fn` snippet the caller supplies — callers pass
 /// [`crate::commands::js_helpers::UNIQUE_SELECTOR_JS_FN`] (an `#id` shortcut
 /// or a `tag:nth-child(N)` structural path) instead of ad hoc fallbacks like
 /// `[name="..."]`, which are only unique when no other element on the page
 /// shares that attribute — not guaranteed on a real page.
-pub fn form_extraction_js_template() -> String {
+///
+/// This module takes the snippet as a parameter (rather than referencing
+/// `crate::commands` directly) so `page_map/mod.rs` has no dependency on the
+/// rest of the binary crate: the fuzz harness `#[path]`-includes this file
+/// standalone (see `fuzz/fuzz_targets/parse_page_map_str.rs`), where
+/// `crate::commands` does not exist.
+pub fn form_extraction_js_template(unique_selector_js_fn: &str) -> String {
     format!(
         r#"(function extractForms() {{
-  {UNIQUE_SELECTOR_JS_FN}
+  {unique_selector_js_fn}
   const forms = [];
   // Collect named <form> elements.
   document.querySelectorAll('form').forEach(function(form, fi) {{
@@ -621,7 +628,6 @@ pub fn form_extraction_js_template() -> String {
   }});
   return JSON.stringify(forms);
 }})()"#,
-        UNIQUE_SELECTOR_JS_FN = crate::commands::js_helpers::UNIQUE_SELECTOR_JS_FN,
     )
 }
 
@@ -632,11 +638,13 @@ pub fn form_extraction_js_template() -> String {
 /// no `id` — matching every button on the page, guaranteeing the discovery
 /// turn the page-map exists to skip. Both the landmark's own `region`
 /// selector and each child element's `selector` now go through the same
-/// unique-selector generator `dom.rs` uses for `--ref` handles.
-pub fn landmark_extraction_js_template() -> String {
+/// unique-selector generator `dom.rs` uses for `--ref` handles, supplied by
+/// the caller as `unique_selector_js_fn` (see [`form_extraction_js_template`]
+/// for why this module doesn't reference `crate::commands` directly).
+pub fn landmark_extraction_js_template(unique_selector_js_fn: &str) -> String {
     format!(
         r#"(function extractLandmarks() {{
-  {UNIQUE_SELECTOR_JS_FN}
+  {unique_selector_js_fn}
   const roleMap = {{
     'nav': 'navigation', 'main': 'main', 'aside': 'complementary',
     'header': 'banner', 'footer': 'contentinfo', 'form': 'form', 'search': 'search'
@@ -665,7 +673,6 @@ pub fn landmark_extraction_js_template() -> String {
   }});
   return JSON.stringify(landmarks);
 }})()"#,
-        UNIQUE_SELECTOR_JS_FN = crate::commands::js_helpers::UNIQUE_SELECTOR_JS_FN,
     )
 }
 
@@ -874,9 +881,15 @@ mod tests {
     // test_form_extraction_js_template_shape
     // -----------------------------------------------------------------------
 
+    /// Standalone since `page_map` doesn't depend on `crate::commands` (kept
+    /// fuzz-harness-includable, see the module doc on
+    /// `form_extraction_js_template`); the real caller passes
+    /// `crate::commands::js_helpers::UNIQUE_SELECTOR_JS_FN` instead.
+    const STUB_UNIQUE_SELECTOR_JS_FN: &str = "function __ffrdpUniqueSelector(el) { return ''; }";
+
     #[test]
     fn test_form_extraction_js_template_shape() {
-        let js = form_extraction_js_template();
+        let js = form_extraction_js_template(STUB_UNIQUE_SELECTOR_JS_FN);
         assert!(js.contains("extractForms"), "should define extractForms");
         assert!(js.contains("querySelectorAll"), "should query DOM");
         assert!(js.contains("JSON.stringify"), "should return JSON string");
@@ -884,7 +897,7 @@ mod tests {
 
     #[test]
     fn test_landmark_extraction_js_template_shape() {
-        let js = landmark_extraction_js_template();
+        let js = landmark_extraction_js_template(STUB_UNIQUE_SELECTOR_JS_FN);
         assert!(
             js.contains("extractLandmarks"),
             "should define extractLandmarks"
