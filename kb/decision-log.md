@@ -354,3 +354,15 @@ Diffs `tools/ralph-loop/scripts/` against `~/.claude/skills/ralph-loop/scripts/`
 **Enforcement**: `screenshot_errors_carry_no_headless_relaunch_hint` greps the pre-`#[cfg(test)]` portion of `commands/screenshot.rs` for both literals, so a new error site cannot reintroduce them; `live_135_screenshot_error_not_misleading` forces a real capture failure against headless Firefox (a 200 000 px page defeats the renderer) and asserts neither string appears in stdout or stderr.
 
 **Applies to**: `crates/ff-rdp-cli/src/commands/screenshot.rs`, `crates/ff-rdp-cli/tests/live/live_135_screenshot_ff153.rs`, iter-135.
+
+## DEC-027: the native accessibility tree is opt-in, never the default
+
+**Decision** (iter-143, Theme B): the flag that enables Firefox's platform accessibility service and walks the native tree is **opt-in**. `ff-rdp a11y` with no flag continues to use the JS-derived fallback when the service is off, and never calls `parentAccessibilityActor.enable()` on the user's behalf. This settles the open question [[iteration-143-native-a11y-tree]] raised ("should `--native` also become the default once it is proven?").
+
+**Why**: `enable()` is browser-global and process-wide, not scoped to the tab or the connection. Its performance cost persists until the browser shuts down, and on Windows an active screen reader can block the matching `disable()`, so ff-rdp cannot reliably restore the prior state it changed. A read-only-looking query command must not mutate whole-browser state as a side effect of being run — an agent calling `a11y` to inspect a page has not consented to degrading every other tab for the life of the process. iter-136 already reached the same conclusion for the same reasons and deliberately did not enable the service; this makes that stance explicit rather than incidental.
+
+**Reversibility**: this is a UX default, not an architectural constraint. If the native path proves cheap in practice, flipping the default is a small follow-up — the reverse (retracting an on-by-default global mutation once users depend on it) is not. Choose the reversible direction first.
+
+**Consequence for Theme A**: because both sources remain reachable, `meta.source` (`"native"` | `"js-fallback"`, plus the fallback reason) is not cosmetic — it is the only way a caller can tell which tree it scored, and it must be present on every `a11y` response regardless of which path ran.
+
+**Applies to**: `ff-rdp a11y`, `a11y audit`, iter-143.
