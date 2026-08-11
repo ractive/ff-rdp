@@ -144,13 +144,12 @@ in.
       full-page capture of a sticky-header page has no repeated header band — deferred to avoid
       touching iteration-135's stitching fix without dedicated pixel-level before/after
       verification
-- [x] e2e_eval_asi_await_script: an ASI-separated await script parses without wrapper leakage —
-      see `crates/ff-rdp-cli/tests/e2e/eval.rs::e2e_eval_asi_await_script` and
-      `crates/ff-rdp-cli/tests/live/live_142_eval_asi_await.rs::live_142_eval_asi_await_script`
-      (`commands/eval.rs::top_level_statement_boundaries`, `wrap_top_level_await`)
-- [x] e2e_wait_sleep_form: a plain duration wait exists and works — see
-      `crates/ff-rdp-cli/tests/e2e/wait.rs::e2e_wait_sleep_form` (`commands/wait.rs`,
-      `--sleep-ms` / legacy `--time` alias)
+- [x] e2e_eval_asi_await_script (`e2e_eval_asi_await_script` in `tests/e2e/eval.rs`,
+      `live_142_eval_asi_await_script` in `tests/live/live_142_eval_asi_await.rs`): an
+      ASI-separated await script parses without wrapper leakage — fixed in
+      `commands/eval.rs::top_level_statement_boundaries` / `wrap_top_level_await`
+- [x] e2e_wait_sleep_form: a plain duration wait exists and works — see `e2e_wait_sleep_form` in
+      `tests/e2e/wait.rs` (`commands/wait.rs`, `sleep_ms` / legacy `--time` alias)
 - [deferred — new plan: kb/iterations/iteration-144-session-hygiene-followup.md] live_142_console_locale_pinned:
       console output is locale-stable regardless of system locale. `launch`'s `USER_JS` already
       pins `intl.accept_languages`/`intl.locale.requested`/`intl.locale.matchOS` (since
