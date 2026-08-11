@@ -111,7 +111,7 @@ index alongside.
       match where the bare selector fails
 - [x] live_140_frame_error_bounded: frame-scan error on a many-frame page is bounded in size
 - [x] live_140_frame_filter_count_accurate: `--frame` reports the filtered candidate count
-- [x] e2e_click_frame_url_in_results: `frame_url` is present in `--jq '.results.frame_url'` output and does not throw
+- [x] e2e_click_frame_url_in_results: `--jq '.results.frame_url'` does not throw
 - [x] live_140_page_map_selectors_unique: generated page-map selectors resolve to exactly one
       element
 
