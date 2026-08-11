@@ -84,6 +84,22 @@ first band, or capture in a single pass where possible.
 Make the wrapper robust to ASI, and make the await path either honor the trailing expression or
 say why it can't — not return `undefined` silently.
 
+**Adaptation from iter-141 review (output hygiene):** `eval.rs`'s own inline JS-exception
+handler was changed by iter-141's review pass — a raw exception now returns
+`Err(AppError::User(msg))` (routed through the standard JSON error envelope) instead of the old
+`eprintln!("error: ...")` + `AppError::Exit(1)` that bypassed it entirely. Build any ASI/await
+wrapper changes on top of that block, not the old bare-stderr version — `git log -p` on
+`crates/ff-rdp-cli/src/commands/eval.rs` around the exception check if the shape looks
+unfamiliar. The same envelope-bypass anti-pattern (bare `eprintln!` + `AppError::Exit(1)`, no
+JSON on stdout at all) still exists in `click.rs` (`run`'s and the per-frame scan's "genuine JS
+failure" paths, ~2 call sites) and `scroll.rs` (`run_until`'s timeout path) — same shape as the
+bug iter-141 Theme E fixed in `eval_or_bail`/`poll_js_condition`/`eval.rs`, but out of scope for
+iter-141 (no live-Firefox test coverage existed for those paths, and the comment above
+`click_element_not_found_exits_nonzero` in `tests/e2e/click.rs` documents the stderr-vs-stdout
+divergence as deliberate — verify that's still true before touching it). Worth sweeping here only
+if Theme E's ASI/await work leaves runway; otherwise file a follow-up plan rather than rushing it
+in.
+
 ### Theme F — reproducibility and diagnostics
 
 - Console messages come back in the **system locale** (German observed), because the ephemeral
