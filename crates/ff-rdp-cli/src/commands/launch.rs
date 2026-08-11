@@ -441,6 +441,21 @@ pub fn run(
     let port = debug_port.unwrap_or(cli.port);
     let host = &cli.host;
 
+    // iter-142 Theme B: opportunistically sweep `~/.ff-rdp/` housekeeping
+    // files on every `launch`, not just the rare daemon-autostart path
+    // (`resolve_connection_target`'s spawn branch, which only runs when no
+    // daemon is already up for the target port). Dogfooding session 63
+    // observed stale spawn locks and throttle-state files accumulate for
+    // exactly this reason: a session that reuses an already-running daemon
+    // across every command never takes the spawn path at all, so the
+    // existing iter-132 sweep never fires. `launch` is the one command every
+    // session actually runs, so anchoring the sweep here gives it real
+    // coverage. Each call is independently best-effort (see their own doc
+    // comments) and must never fail or slow down the launch.
+    crate::daemon::registry::gc_stale_spawn_locks();
+    crate::daemon::registry::gc_legacy_spawn_lock();
+    crate::daemon::throttle_state::gc_stale_throttle_states();
+
     // iter-133 Theme A: parse --window-size up front so a malformed value
     // fails fast, before any port-collision check or Firefox spawn.
     let window_size: Option<(u32, u32)> = window_size

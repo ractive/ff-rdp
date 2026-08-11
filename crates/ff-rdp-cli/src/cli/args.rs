@@ -493,9 +493,16 @@ scope and `const`/`let` declarations never leak across calls. The
 Top-level `await` works (iter-132): `ff-rdp eval 'await Promise.resolve(41) + 1'`
 resolves to 42. Scripts containing `await` are transparently wrapped in an
 async IIFE before evaluation — no `--async` flag or extra syntax needed. A
-single-expression script (no top-level `;`) auto-returns its value; a
-multi-statement script needs an explicit `return` to surface a value (it
-still runs either way — no SyntaxError).
+single-expression script auto-returns its value. A multi-statement script
+(statements separated by `;` OR by a plain newline — iter-142 fixed
+ASI-separated scripts being misclassified and leaking the wrapper into a
+SyntaxError) also auto-returns its value if the LAST statement is a bare
+expression, e.g. `let x = await foo(); x + 1` returns `x + 1` — every
+earlier statement still runs unwrapped, so an explicit `return` earlier in
+the script keeps working. Only when the last statement is not a bare
+expression (a declaration, a control-flow construct) does the script need
+its own explicit `return` to surface a value (it still runs either way — no
+SyntaxError).
 
 Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}
 
@@ -742,16 +749,24 @@ other. On success, the output gains {\"match_count\": N, \"chosen_index\": N}.
 
 Output: {\"results\": {\"typed\": true, \"tag\": \"INPUT\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
     Type(TypeArgs),
-    /// Wait for a condition to become true (polls every 100ms).
-    /// Exactly one of --selector, --text, --eval, or --ref must be specified.
-    #[command(long_about = "Wait for a condition to become true (polls every 100ms).
+    /// Wait for a condition to become true (polls every 100ms), or sleep for a fixed duration.
+    /// Exactly one of --selector, --text, --eval, --ref, or --sleep-ms must be specified.
+    #[command(
+        long_about = "Wait for a condition to become true (polls every 100ms), or sleep for a fixed duration.
 
-Exactly one of --selector, --text, --eval, or --ref must be specified.
+Exactly one of --selector, --text, --eval, --ref, or --sleep-ms must be specified.
 
 Use --ref <id> to wait for an element identified by its ARIA-tree ref ID
 (daemon mode only). Equivalent to --selector but uses a stable ref handle.
 
-Output: {\"results\": {\"matched\": true, \"elapsed_ms\": N, \"condition\": \"selector|text|eval\"}, \"total\": 1, \"meta\": {...}}")]
+Use --sleep-ms <N> for a plain delay with no condition and no Firefox
+connection at all — e.g. `ff-rdp wait --sleep-ms 2000`. Prefer a real
+condition (--selector/--text/--eval/--ref) whenever one exists; a fixed
+sleep is always a guess about how long something takes. --timeout-ms does
+not apply to --sleep-ms, which always runs for exactly its own duration.
+
+Output: {\"results\": {\"matched\": true, \"elapsed_ms\": N, \"condition\": \"selector|text|eval|sleep\"}, \"total\": 1, \"meta\": {...}}"
+    )]
     Wait(WaitArgs),
     /// List cookies via the Firefox StorageActor (includes httpOnly, secure, sameSite, etc.)
     #[command(
@@ -1695,8 +1710,22 @@ pub struct WaitArgs {
     /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
     #[arg(long = "ref", value_name = "REF_ID", group = "condition")]
     pub ref_id: Option<String>,
+    /// Plain sleep for this many milliseconds — no condition, no Firefox
+    /// connection, just a delay. For when you need to pace commands rather
+    /// than wait for a specific page state (use --selector/--text/--eval/--ref
+    /// instead whenever a real condition exists — a fixed sleep is always a
+    /// guess). The legacy spelling `--time` is also accepted as a hidden
+    /// alias (iter-142: this was the flag dogfooders reached for first).
+    #[arg(
+        long = "sleep-ms",
+        alias = "time",
+        value_name = "MS",
+        group = "condition"
+    )]
+    pub sleep_ms: Option<u64>,
     /// Timeout in milliseconds before giving up (canonical flag — use this one).
     /// The legacy spelling `--wait-timeout` is also accepted as a hidden alias.
+    /// Not used by --sleep-ms, which always runs for exactly its own duration.
     #[arg(long = "timeout-ms", alias = "wait-timeout", default_value_t = 5000)]
     pub wait_timeout: u64,
 }

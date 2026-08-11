@@ -424,13 +424,44 @@ pub fn prune_orphan_profiles(
         // iter-97 Theme B: a live owner-PID marker is a positive "still in
         // use" signal that overrides the mtime heuristics below — a running
         // (even fully idle) Firefox never has its profile pruned. A missing
-        // or dead marker falls through to the mtime checks unchanged.
-        if profile_is_owned_by_live_process(&path) {
-            tracing::debug!(
-                "prune_orphan_profiles: keeping {} — owner PID is alive",
-                path.display()
-            );
-            continue;
+        // marker falls through to the mtime checks unchanged.
+        //
+        // iter-142 Theme B: a marker naming a *dead* PID is the opposite
+        // signal — definitive proof of abandonment, not just "old enough to
+        // guess at". Previously a dead-owner profile still had to wait out
+        // the full `age_threshold` (7 days by default) before
+        // `prune_orphan_profiles` would touch it, so a day of crashes /
+        // `kill -9`s / restarted agents accumulated freely: dogfooding
+        // session 63 observed 62 profiles / 2.7 GB in a single day, all well
+        // under the threshold. Remove dead-owner profiles immediately,
+        // regardless of age — `max_entries` below still bounds how many a
+        // single `launch` will reclaim.
+        match read_owner_pid_marker(&path) {
+            Some(pid) if crate::daemon::process::is_process_alive(pid) => {
+                tracing::debug!(
+                    "prune_orphan_profiles: keeping {} — owner PID {pid} is alive",
+                    path.display()
+                );
+                continue;
+            }
+            Some(pid) => {
+                tracing::debug!(
+                    "prune_orphan_profiles: owner PID {pid} for {} is dead — removing immediately",
+                    path.display()
+                );
+                match std::fs::remove_dir_all(&path) {
+                    Ok(()) => summary.removed.push(path),
+                    Err(e) => tracing::warn!(
+                        "prune_orphan_profiles: failed to remove dead-owner {}: {e}",
+                        path.display()
+                    ),
+                }
+                continue;
+            }
+            None => {
+                // No marker (pre-97 profile, or the marker write failed) —
+                // fall back to the mtime heuristic below.
+            }
         }
 
         // `metadata()` (not `entry.file_type()`) so a vanished entry (race
@@ -872,6 +903,36 @@ mod tests {
         assert_eq!(summary.removed, vec![dead.clone()]);
         assert!(live.exists(), "live-owner dir must survive");
         assert!(!dead.exists(), "dead-owner dir must be reclaimed");
+    }
+
+    /// AC `live_142_profile_growth_bounded` (unit half — the policy under
+    /// test): a dead-owner profile is reclaimed **immediately**, even when
+    /// it is only seconds old — the age threshold no longer gates removal
+    /// once ownership is provably dead. This is the exact gap that let 62
+    /// profiles / 2.7 GB accumulate in a single day (dogfooding session 63):
+    /// every one of them was younger than the old 7-day age gate.
+    #[test]
+    fn unit_prune_reclaims_dead_owner_immediately_regardless_of_age() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // Fresh (1 second old) — would survive any age-gated heuristic.
+        let dead = seed_fake_profile(root.path(), &"4".repeat(16), Duration::from_secs(1));
+        let dead_pid = spawn_and_reap_child_pid();
+        std::fs::write(dead.join(OWNER_PID_MARKER), format!("{dead_pid}\n"))
+            .expect("write dead marker");
+
+        // A 168h (7-day) threshold — the dir is nowhere near stale by mtime.
+        let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
+
+        assert_eq!(
+            summary.removed,
+            vec![dead.clone()],
+            "a dead-owner profile must be reclaimed the moment ownership is \
+             provably dead, not after waiting out the age threshold"
+        );
+        assert!(
+            !dead.exists(),
+            "fresh but dead-owner profile must be removed immediately"
+        );
     }
 
     /// A missing marker falls back to the iter-96 mtime heuristic (pre-97

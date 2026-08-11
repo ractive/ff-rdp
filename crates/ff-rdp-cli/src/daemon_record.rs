@@ -7,11 +7,25 @@
 //!
 //! ## File location
 //!
-//! `~/.ff-rdp/launch-record.json` on all platforms — shares the same parent
-//! directory as the per-port proxy-daemon registry files
+//! `~/.ff-rdp/launch-record.<port>.json` on all platforms — shares the same
+//! parent directory as the per-port proxy-daemon registry files
 //! (`~/.ff-rdp/daemon.<port>.json`, iter-123 Theme B) so a single
 //! `FF_RDP_HOME` cleanup wipes all ff-rdp state. The file name differs to
 //! avoid colliding with the existing registry files.
+//!
+//! ## Per-port scoping (iter-142 Theme A)
+//!
+//! Prior to iter-142 this was a single global `launch-record.json` shared by
+//! every `launch`/`daemon start` invocation on the machine. Two concurrent
+//! agents launching Firefox on different ports (e.g. 6100 and 6101) would
+//! clobber each other's record: the second `launch` overwrote the first's
+//! entry, so a subsequent `daemon stop --port 6100` read back port 6101's
+//! PID, found it didn't match, and fell through to the proxy-daemon registry
+//! path — which reports the *daemon's own* PID, not Firefox's (see
+//! `daemon/client.rs::run_daemon_stop`). Dogfooding session 63 reproduced
+//! this 3/3 with four parallel agents on separate ports. Scoping the record
+//! filename by port (mirroring the iter-123 Theme B fix for the proxy
+//! registry) makes concurrent instances independent.
 //!
 //! The `FF_RDP_HOME` env-var overrides the home directory (same convention as
 //! `daemon/registry.rs`): when set, the file is written to
@@ -60,9 +74,12 @@ pub struct DaemonRecord {
 // Directory resolution
 // ---------------------------------------------------------------------------
 
-/// Filename used for the launch record, sharing `~/.ff-rdp/` with the
-/// per-port proxy-daemon registry files (`daemon.<port>.json`).
-const RECORD_FILENAME: &str = "launch-record.json";
+/// Return the per-port filename used for the launch record
+/// (e.g. `launch-record.6100.json`), sharing `~/.ff-rdp/` with the per-port
+/// proxy-daemon registry files (`daemon.<port>.json`).
+fn record_filename(port: u16) -> String {
+    format!("launch-record.{port}.json")
+}
 
 /// Return the directory that contains the launch-record file.
 ///
@@ -82,13 +99,13 @@ pub fn record_base_dir() -> Result<PathBuf> {
 // Test-injectable base-dir variants
 // ---------------------------------------------------------------------------
 
-/// Read the daemon record from `<dir>/launch-record.json`.
+/// Read the daemon record for `port` from `<dir>/launch-record.<port>.json`.
 ///
 /// Returns `None` if the file is absent or if the recorded PID is no longer
 /// alive (stale entry). When a stale entry is detected the file is removed
 /// so it cannot interfere with future launches.
-pub fn read_in(dir: &Path) -> Result<Option<DaemonRecord>> {
-    let path = dir.join(RECORD_FILENAME);
+pub fn read_in(dir: &Path, port: u16) -> Result<Option<DaemonRecord>> {
+    let path = dir.join(record_filename(port));
     if !path.exists() {
         return Ok(None);
     }
@@ -107,13 +124,15 @@ pub fn read_in(dir: &Path) -> Result<Option<DaemonRecord>> {
     Ok(Some(rec))
 }
 
-/// Write `rec` to `<dir>/launch-record.json` atomically (write-to-tmp + rename).
+/// Write `rec` to `<dir>/launch-record.<rec.port>.json` atomically
+/// (write-to-tmp + rename).
 pub fn write_in(dir: &Path, rec: &DaemonRecord) -> Result<()> {
     fs::create_dir_all(dir)
         .with_context(|| format!("creating daemon record directory {}", dir.display()))?;
 
-    let record_path = dir.join(RECORD_FILENAME);
-    let tmp_path = dir.join(format!("{RECORD_FILENAME}.tmp"));
+    let filename = record_filename(rec.port);
+    let record_path = dir.join(&filename);
+    let tmp_path = dir.join(format!("{filename}.tmp"));
 
     let json = serde_json::to_string_pretty(rec).context("serializing DaemonRecord to JSON")?;
 
@@ -147,9 +166,9 @@ pub fn write_in(dir: &Path, rec: &DaemonRecord) -> Result<()> {
     Ok(())
 }
 
-/// Remove `<dir>/launch-record.json` if it exists (idempotent).
-pub fn remove_in(dir: &Path) -> Result<()> {
-    let path = dir.join(RECORD_FILENAME);
+/// Remove `<dir>/launch-record.<port>.json` if it exists (idempotent).
+pub fn remove_in(dir: &Path, port: u16) -> Result<()> {
+    let path = dir.join(record_filename(port));
     if path.exists() {
         fs::remove_file(&path)
             .with_context(|| format!("removing daemon record {}", path.display()))?;
@@ -161,21 +180,23 @@ pub fn remove_in(dir: &Path) -> Result<()> {
 // Public convenience wrappers using the real cache directory
 // ---------------------------------------------------------------------------
 
-/// Read the daemon record from the default cache location.
+/// Read the daemon record for `port` from the default cache location.
 ///
 /// Returns `None` if absent or if the recorded PID is dead (stale).
-pub fn read() -> Result<Option<DaemonRecord>> {
-    read_in(&record_base_dir()?)
+pub fn read(port: u16) -> Result<Option<DaemonRecord>> {
+    read_in(&record_base_dir()?, port)
 }
 
-/// Write the daemon record to the default cache location atomically.
+/// Write the daemon record to the default cache location atomically, keyed
+/// by `rec.port`.
 pub fn write(rec: &DaemonRecord) -> Result<()> {
     write_in(&record_base_dir()?, rec)
 }
 
-/// Remove the daemon record from the default cache location (idempotent).
-pub fn remove() -> Result<()> {
-    remove_in(&record_base_dir()?)
+/// Remove the daemon record for `port` from the default cache location
+/// (idempotent).
+pub fn remove(port: u16) -> Result<()> {
+    remove_in(&record_base_dir()?, port)
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +227,7 @@ mod tests {
 
         write_in(dir.path(), &rec).expect("write_in");
 
-        let read_back = read_in(dir.path())
+        let read_back = read_in(dir.path(), rec.port)
             .expect("read_in ok")
             .expect("should be Some");
 
@@ -237,13 +258,13 @@ mod tests {
         };
 
         // Bypass the normal write_in (which doesn't check PID) by writing JSON directly.
-        let path = dir.path().join(RECORD_FILENAME);
+        let path = dir.path().join(record_filename(rec.port));
         let json = serde_json::to_string_pretty(&rec).unwrap();
         fs::write(&path, json).expect("write stale record");
         assert!(path.exists(), "file must exist before read_in");
 
         // read_in should detect the dead PID and return None.
-        let result = read_in(dir.path()).expect("read_in ok");
+        let result = read_in(dir.path(), rec.port).expect("read_in ok");
         assert!(result.is_none(), "stale PID must return None");
 
         // The file must have been removed.
@@ -254,9 +275,12 @@ mod tests {
     #[test]
     fn unit_daemon_record_atomic_write_no_tmp_left_behind() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_in(dir.path(), &sample_record()).expect("write_in");
+        let rec = sample_record();
+        write_in(dir.path(), &rec).expect("write_in");
 
-        let tmp = dir.path().join(format!("{RECORD_FILENAME}.tmp"));
+        let tmp = dir
+            .path()
+            .join(format!("{}.tmp", record_filename(rec.port)));
         assert!(
             !tmp.exists(),
             ".tmp file must not remain after atomic write"
@@ -267,7 +291,7 @@ mod tests {
     #[test]
     fn unit_daemon_record_read_absent_returns_none() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let result = read_in(dir.path()).expect("read_in ok");
+        let result = read_in(dir.path(), 6000).expect("read_in ok");
         assert!(result.is_none());
     }
 
@@ -275,14 +299,15 @@ mod tests {
     #[test]
     fn unit_daemon_record_remove_idempotent() {
         let dir = tempfile::tempdir().expect("tempdir");
-        remove_in(dir.path()).expect("remove when absent must not error");
+        remove_in(dir.path(), 6000).expect("remove when absent must not error");
 
-        write_in(dir.path(), &sample_record()).expect("write");
-        remove_in(dir.path()).expect("remove when present must not error");
-        assert!(!dir.path().join(RECORD_FILENAME).exists());
+        let rec = sample_record();
+        write_in(dir.path(), &rec).expect("write");
+        remove_in(dir.path(), rec.port).expect("remove when present must not error");
+        assert!(!dir.path().join(record_filename(rec.port)).exists());
     }
 
-    /// Overwriting with a second write replaces the first.
+    /// Overwriting the same port with a second write replaces the first.
     #[test]
     fn unit_daemon_record_overwrite_replaces() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -290,14 +315,69 @@ mod tests {
 
         let updated = DaemonRecord {
             pid: std::process::id(),
-            port: 7777,
+            port: sample_record().port,
             headless: false,
             launched_at: Utc::now(),
             profile_dir: PathBuf::from("/tmp/updated"),
         };
         write_in(dir.path(), &updated).expect("second write");
 
-        let read_back = read_in(dir.path()).expect("read_in ok").expect("Some");
-        assert_eq!(read_back.port, 7777);
+        let read_back = read_in(dir.path(), updated.port)
+            .expect("read_in ok")
+            .expect("Some");
+        assert_eq!(read_back.profile_dir, PathBuf::from("/tmp/updated"));
+    }
+
+    /// AC `unit_daemon_record_per_port_isolation` (iter-142 Theme A): two
+    /// records for different ports must not clobber each other — this is
+    /// the exact defect dogfooding session 63 reproduced 3/3 with parallel
+    /// agents on separate ports (a single global `launch-record.json` meant
+    /// the second `launch` silently overwrote the first's entry).
+    #[test]
+    fn unit_daemon_record_per_port_isolation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let rec_a = DaemonRecord {
+            pid: std::process::id(),
+            port: 6100,
+            headless: true,
+            launched_at: Utc::now(),
+            profile_dir: PathBuf::from("/tmp/profile-a"),
+        };
+        let rec_b = DaemonRecord {
+            pid: std::process::id(),
+            port: 6101,
+            headless: true,
+            launched_at: Utc::now(),
+            profile_dir: PathBuf::from("/tmp/profile-b"),
+        };
+
+        write_in(dir.path(), &rec_a).expect("write a");
+        write_in(dir.path(), &rec_b).expect("write b");
+
+        let read_a = read_in(dir.path(), 6100)
+            .expect("read a ok")
+            .expect("a present");
+        let read_b = read_in(dir.path(), 6101)
+            .expect("read b ok")
+            .expect("b present");
+
+        assert_eq!(read_a.profile_dir, PathBuf::from("/tmp/profile-a"));
+        assert_eq!(read_b.profile_dir, PathBuf::from("/tmp/profile-b"));
+
+        // Removing port 6100's record must leave port 6101's untouched.
+        remove_in(dir.path(), 6100).expect("remove a");
+        assert!(
+            read_in(dir.path(), 6100)
+                .expect("read a after remove")
+                .is_none(),
+            "port 6100 record must be gone"
+        );
+        assert!(
+            read_in(dir.path(), 6101)
+                .expect("read b after remove a")
+                .is_some(),
+            "port 6101 record must survive removing port 6100's record"
+        );
     }
 }
