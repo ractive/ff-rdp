@@ -11,6 +11,12 @@ pub struct Args {
     #[arg(long)]
     skill_dir: Option<PathBuf>,
 
+    /// Path to the canonical new-ralph-loop scripts (defaults to
+    /// $HOME/.claude/skills/new-ralph-loop/scripts). If absent, that mirror is
+    /// not checked.
+    #[arg(long)]
+    new_skill_dir: Option<PathBuf>,
+
     /// Skip the replay baselines (mirror-sync check only). Useful for CI runs
     /// that don't have access to the merged iter-61t / iter-61v history.
     #[arg(long)]
@@ -23,6 +29,24 @@ const MIRROR_FILES: &[&str] = &[
     "claims-vs-code.sh",
     "ac-fidelity-check.sh",
     "run-iteration.sh",
+];
+
+/// The same contract for the `new-ralph-loop` skill, mirrored under
+/// `tools/new-ralph-loop/scripts/`.
+///
+/// iter-146: this mirror did not exist until the post-138–142 sweep, and its
+/// absence is exactly why a fix to `ac-fidelity-check.sh` (adding `--` to a
+/// `grep -qF` so a leading-dash AC token is a pattern and not an option)
+/// landed in the mirrored `ralph-loop` copy and was silently missed in the
+/// unmirrored `new-ralph-loop` one. The workflow script is mirrored too: it
+/// carries the orchestration logic, so an unreviewable change there is at
+/// least as costly as one to the shell scripts.
+const NEW_MIRROR_FILES: &[&str] = &[
+    "claims-vs-code.sh",
+    "ac-fidelity-check.sh",
+    "preflight.sh",
+    "ralph.workflow.js",
+    "smoke.workflow.js",
 ];
 
 pub fn run(args: Args) -> Result<()> {
@@ -40,40 +64,27 @@ pub fn run(args: Args) -> Result<()> {
 
     // --- 1. Mirror-sync check (if a skill_dir is available).
     if let Some(sd) = &skill_dir {
-        if sd.is_dir() {
-            let mut drift = Vec::new();
-            for name in MIRROR_FILES {
-                let canonical = sd.join(name);
-                let mirror = mirror_dir.join(name);
-                let c = std::fs::read(&canonical)
-                    .with_context(|| format!("reading canonical {}", canonical.display()))?;
-                let m = std::fs::read(&mirror)
-                    .with_context(|| format!("reading mirror {}", mirror.display()))?;
-                if c != m {
-                    drift.push(name.to_string());
-                }
-            }
-            if !drift.is_empty() {
-                bail!(
-                    "mirror drift detected for: {}. \
-                     Run: cp ~/.claude/skills/ralph-loop/scripts/*.sh tools/ralph-loop/scripts/",
-                    drift.join(", ")
-                );
-            }
-            eprintln!(
-                "check-discipline-regression: mirror in sync ({} files)",
-                MIRROR_FILES.len()
-            );
-        } else {
-            eprintln!(
-                "check-discipline-regression: skill dir {} not found — skipping mirror-sync check",
-                sd.display()
-            );
-        }
+        check_mirror(sd, &mirror_dir, MIRROR_FILES, "ralph-loop")?;
     } else {
         eprintln!(
             "check-discipline-regression: no skill dir available — skipping mirror-sync check"
         );
+    }
+
+    // The new-ralph-loop skill has its own canonical directory and mirror; it
+    // is checked independently so a repo without the skill installed (or
+    // without the mirror yet) degrades to a notice rather than a hard failure.
+    let new_skill_dir = args.new_skill_dir.or_else(default_new_skill_dir);
+    let new_mirror_dir = repo_root.join("tools/new-ralph-loop/scripts");
+    if let Some(sd) = &new_skill_dir {
+        if new_mirror_dir.is_dir() {
+            check_mirror(sd, &new_mirror_dir, NEW_MIRROR_FILES, "new-ralph-loop")?;
+        } else {
+            eprintln!(
+                "check-discipline-regression: {} not found — skipping new-ralph-loop mirror check",
+                new_mirror_dir.display()
+            );
+        }
     }
 
     if args.skip_replay {
@@ -135,6 +146,56 @@ fn locate_repo_root() -> Result<PathBuf> {
     }
     let s = String::from_utf8(output.stdout).context("non-utf8 git output")?;
     Ok(PathBuf::from(s.trim()))
+}
+
+/// Compare every file in `files` between the canonical skill directory and its
+/// in-repo mirror, failing with the drift list and the exact fix command.
+///
+/// A missing canonical directory is a skip, not a failure: a fresh checkout
+/// without the skill installed (or a Windows CI run) must still be able to run
+/// the rest of the discipline gates.
+fn check_mirror(skill_dir: &Path, mirror_dir: &Path, files: &[&str], label: &str) -> Result<()> {
+    if !skill_dir.is_dir() {
+        eprintln!(
+            "check-discipline-regression: skill dir {} not found — skipping {label} mirror-sync check",
+            skill_dir.display()
+        );
+        return Ok(());
+    }
+
+    let mut drift = Vec::new();
+    for name in files {
+        let canonical = skill_dir.join(name);
+        let mirror = mirror_dir.join(name);
+        let c = std::fs::read(&canonical)
+            .with_context(|| format!("reading canonical {}", canonical.display()))?;
+        let m = std::fs::read(&mirror)
+            .with_context(|| format!("reading mirror {}", mirror.display()))?;
+        if c != m {
+            drift.push((*name).to_owned());
+        }
+    }
+
+    if !drift.is_empty() {
+        bail!(
+            "{label} mirror drift detected for: {}. \
+             Run: cp {}/* {}/",
+            drift.join(", "),
+            skill_dir.display(),
+            mirror_dir.display()
+        );
+    }
+
+    eprintln!(
+        "check-discipline-regression: {label} mirror in sync ({} files)",
+        files.len()
+    );
+    Ok(())
+}
+
+fn default_new_skill_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(PathBuf::from(home).join(".claude/skills/new-ralph-loop/scripts"))
 }
 
 fn default_skill_dir() -> Option<PathBuf> {

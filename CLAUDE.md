@@ -116,6 +116,14 @@ An AC without a named test is not done.
 - The ralph-loop skill scripts live in `~/.claude/skills/ralph-loop/scripts/`;
   a mirror is checked in at `tools/ralph-loop/scripts/` so changes are
   reviewable. Edit both. `check-discipline-regression` catches drift.
+  The same applies to the **new-ralph-loop** skill:
+  `~/.claude/skills/new-ralph-loop/scripts/` mirrors to
+  `tools/new-ralph-loop/scripts/` (both `.sh` files *and* `ralph.workflow.js` /
+  `smoke.workflow.js` — the workflow script carries the orchestration logic).
+  This mirror was added after the 138–142 batch: without it, a fix to
+  `ac-fidelity-check.sh` landed in the mirrored ralph-loop copy and was
+  silently missed in the unmirrored new-ralph-loop one, and an iteration plan
+  got reworded to route around the resulting false failure.
 - Skill-edit iterations (those that modify `~/.claude/skills/`) cannot run
   through ralph-loop itself — drive them by hand in a regular Claude session.
 - See `CONTRIBUTING.md` for full details and install instructions for the pre-commit hook.
