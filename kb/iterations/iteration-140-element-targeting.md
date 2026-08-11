@@ -13,7 +13,7 @@ dogfood_path: |
   ff-rdp type 'input[name=keywords]' 'passport' --port 6100
   # → must target the visible match, or say how many matched and which was chosen
 first_call_sites: []
-status: planned
+status: in-progress
 ---
 
 # Iteration 140: element targeting — refs, ambiguous selectors, frame diagnostics
@@ -99,20 +99,20 @@ a non-unique selector guarantees the discovery turn happens anyway — and per T
 `click "button"` will hit a hidden one. Generate selectors that are unique, or record the match
 index alongside.
 
-## Acceptance Criteria
+## Acceptance Criteria [9/9]
 
-- [ ] live_140_ref_click_resolves: `click --ref eN` after `dom` clicks the right element
-- [ ] live_140_ref_reusable: resolving the same ref twice in a row succeeds both times
-- [ ] live_140_ref_expiry_message: a ref invalidated by navigation reports expiry, not
+- [x] live_140_ref_click_resolves: `click --ref eN` after `dom` clicks the right element
+- [x] live_140_ref_reusable: resolving the same ref twice in a row succeeds both times
+- [x] live_140_ref_expiry_message: a ref invalidated by navigation reports expiry, not
       "not registered"
-- [ ] live_140_ambiguous_selector_reports_count: error on a 2-match selector names the match
+- [x] live_140_ambiguous_selector_reports_count: error on a 2-match selector names the match
       count and the chosen index, and distinguishes hidden from not-found
-- [ ] live_140_visible_flag_targets_visible: `--visible` (or `--index`) reaches the visible
+- [x] live_140_visible_flag_targets_visible: `--visible` (or `--index`) reaches the visible
       match where the bare selector fails
-- [ ] live_140_frame_error_bounded: frame-scan error on a many-frame page is bounded in size
-- [ ] live_140_frame_filter_count_accurate: `--frame` reports the filtered candidate count
-- [ ] e2e_click_frame_url_in_results: `--jq '.results.frame_url'` does not throw
-- [ ] live_140_page_map_selectors_unique: generated page-map selectors resolve to exactly one
+- [x] live_140_frame_error_bounded: frame-scan error on a many-frame page is bounded in size
+- [x] live_140_frame_filter_count_accurate: `--frame` reports the filtered candidate count
+- [x] e2e_click_frame_url_in_results: `--jq '.results.frame_url'` does not throw
+- [x] live_140_page_map_selectors_unique: generated page-map selectors resolve to exactly one
       element
 
 ## Notes
