@@ -580,72 +580,93 @@ pub fn detect_drift(old: &PageMap, new: &PageMap) -> Vec<DriftEntry> {
 // ---------------------------------------------------------------------------
 
 /// JavaScript template injected into each crawled page to extract form data.
-pub fn form_extraction_js_template() -> &'static str {
-    r#"(function extractForms() {
+///
+/// iter-140 Theme F: every generated selector now goes through
+/// [`crate::commands::js_helpers::UNIQUE_SELECTOR_JS_FN`] (an `#id` shortcut
+/// or a `tag:nth-child(N)` structural path) instead of ad hoc fallbacks like
+/// `[name="..."]`, which are only unique when no other element on the page
+/// shares that attribute — not guaranteed on a real page.
+pub fn form_extraction_js_template() -> String {
+    format!(
+        r#"(function extractForms() {{
+  {UNIQUE_SELECTOR_JS_FN}
   const forms = [];
   // Collect named <form> elements.
-  document.querySelectorAll('form').forEach(function(form, fi) {
+  document.querySelectorAll('form').forEach(function(form, fi) {{
     const fields = [];
-    form.querySelectorAll('input, select, textarea').forEach(function(el) {
+    form.querySelectorAll('input, select, textarea').forEach(function(el) {{
       if (el.type === 'hidden' || el.type === 'submit' || el.type === 'button') return;
       const name = el.name || el.id || el.getAttribute('aria-label') || ('field_' + fields.length);
-      fields.push({
+      fields.push({{
         name: name,
         type: el.type || 'text',
         required: el.required || el.getAttribute('aria-required') === 'true',
         placeholder: el.placeholder || null,
-        selector: el.id ? '#' + el.id : (el.name ? '[name="' + el.name + '"]' : null)
-      });
-    });
+        selector: __ffrdpUniqueSelector(el)
+      }});
+    }});
     const submitEl = form.querySelector('[type="submit"], button:not([type])');
     const formId = form.id || form.getAttribute('data-form-id') || ('form_' + fi);
-    forms.push({
+    forms.push({{
       id: formId,
-      selector: form.id ? ('form#' + form.id) : ('form:nth-of-type(' + (fi + 1) + ')'),
+      selector: __ffrdpUniqueSelector(form),
       action: form.action || null,
       method: (form.method || 'post').toUpperCase(),
       fields: fields,
-      submit: {
-        selector: submitEl ? (submitEl.id ? '#' + submitEl.id : (submitEl.type === 'submit' ? '[type="submit"]' : 'button:not([type])')) : '[type="submit"]',
+      submit: {{
+        selector: submitEl ? __ffrdpUniqueSelector(submitEl) : '[type="submit"]',
         posts_to: form.action || null
-      }
-    });
-  });
+      }}
+    }});
+  }});
   return JSON.stringify(forms);
-})()"#
+}})()"#,
+        UNIQUE_SELECTOR_JS_FN = crate::commands::js_helpers::UNIQUE_SELECTOR_JS_FN,
+    )
 }
 
 /// JavaScript template for extracting ARIA landmarks.
-pub fn landmark_extraction_js_template() -> &'static str {
-    r#"(function extractLandmarks() {
-  const roleMap = {
+///
+/// iter-140 Theme F: `.ffrdp/page-map.json` used to fall back to a bare tag
+/// name (`"selector": "button"`) whenever a landmark's interactive child had
+/// no `id` — matching every button on the page, guaranteeing the discovery
+/// turn the page-map exists to skip. Both the landmark's own `region`
+/// selector and each child element's `selector` now go through the same
+/// unique-selector generator `dom.rs` uses for `--ref` handles.
+pub fn landmark_extraction_js_template() -> String {
+    format!(
+        r#"(function extractLandmarks() {{
+  {UNIQUE_SELECTOR_JS_FN}
+  const roleMap = {{
     'nav': 'navigation', 'main': 'main', 'aside': 'complementary',
     'header': 'banner', 'footer': 'contentinfo', 'form': 'form', 'search': 'search'
-  };
+  }};
   const landmarks = [];
   const seen = new Set();
-  function addLandmark(el, role) {
+  function addLandmark(el, role) {{
     if (seen.has(el)) return;
     seen.add(el);
-    const sel = el.id ? ('[role="' + role + '"]#' + el.id) : ('[role="' + role + '"]');
+    const sel = __ffrdpUniqueSelector(el);
     const elements = [];
-    el.querySelectorAll('a[href], button, [role="button"], [role="link"]').forEach(function(child, i) {
+    el.querySelectorAll('a[href], button, [role="button"], [role="link"]').forEach(function(child, i) {{
       if (i >= 10) return;
       const label = child.getAttribute('aria-label') || child.textContent.trim().slice(0, 60);
-      const childSel = child.id ? '#' + child.id : child.tagName.toLowerCase();
-      elements.push({ label: label, selector: childSel, role: child.getAttribute('role') || child.tagName.toLowerCase() });
-    });
-    landmarks.push({ name: role, region: el.id ? ('#' + el.id) : el.tagName.toLowerCase(), elements: elements });
-  }
-  document.querySelectorAll('[role]').forEach(function(el) {
+      const childSel = __ffrdpUniqueSelector(child);
+      elements.push({{ label: label, selector: childSel, role: child.getAttribute('role') || child.tagName.toLowerCase() }});
+    }});
+    landmarks.push({{ name: role, region: sel, elements: elements }});
+  }}
+  document.querySelectorAll('[role]').forEach(function(el) {{
     const role = el.getAttribute('role');
     if (['navigation','main','complementary','banner','contentinfo','search'].includes(role)) addLandmark(el, role);
-  });
-  Object.entries(roleMap).forEach(function([tag, role]) {
-    document.querySelectorAll(tag).forEach(function(el) { addLandmark(el, role); });
-  });
+  }});
+  Object.entries(roleMap).forEach(function([tag, role]) {{
+    document.querySelectorAll(tag).forEach(function(el) {{ addLandmark(el, role); }});
+  }});
   return JSON.stringify(landmarks);
-})()"#
+}})()"#,
+        UNIQUE_SELECTOR_JS_FN = crate::commands::js_helpers::UNIQUE_SELECTOR_JS_FN,
+    )
 }
 
 // ---------------------------------------------------------------------------

@@ -1605,6 +1605,15 @@ pub struct ClickArgs {
     /// top-level attempt and the frame scan (e.g. --frame sourcepoint)
     #[arg(long, value_name = "URL_SUBSTRING")]
     pub frame: Option<String>,
+    /// When the selector matches more than one element, click the first
+    /// *visible* one instead of blindly taking DOM-order index 0. Mutually
+    /// exclusive with --index.
+    #[arg(long, conflicts_with = "index")]
+    pub visible: bool,
+    /// When the selector matches more than one element, click the Nth match
+    /// (0-based), regardless of visibility. Mutually exclusive with --visible.
+    #[arg(long, value_name = "N", conflicts_with = "visible")]
+    pub index: Option<usize>,
 }
 
 #[derive(clap::Args)]
@@ -1639,6 +1648,15 @@ pub struct TypeArgs {
     /// After typing, wait for network and DOM to idle
     #[arg(long)]
     pub settle: bool,
+    /// When the selector matches more than one element, type into the first
+    /// *visible* one instead of blindly taking DOM-order index 0. Mutually
+    /// exclusive with --index.
+    #[arg(long, conflicts_with = "index")]
+    pub visible: bool,
+    /// When the selector matches more than one element, type into the Nth
+    /// match (0-based), regardless of visibility. Mutually exclusive with --visible.
+    #[arg(long, value_name = "N", conflicts_with = "visible")]
+    pub index: Option<usize>,
 }
 
 #[derive(clap::Args)]
@@ -1967,6 +1985,15 @@ pub struct StylesArgs {
     /// Comma-separated list of CSS property names to include (computed mode only)
     #[arg(long, value_delimiter = ',', conflicts_with_all = ["applied", "layout"])]
     pub properties: Option<Vec<String>>,
+    /// When the selector matches more than one element, inspect the first
+    /// *visible* one instead of blindly taking DOM-order index 0. Mutually
+    /// exclusive with --index.
+    #[arg(long, conflicts_with = "index")]
+    pub visible: bool,
+    /// When the selector matches more than one element, inspect the Nth match
+    /// (0-based), regardless of visibility. Mutually exclusive with --visible.
+    #[arg(long, value_name = "N", conflicts_with = "visible")]
+    pub index: Option<usize>,
 }
 
 #[derive(clap::Args)]

@@ -20,8 +20,9 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::js_helpers::{
-    DispatchMode, JSON_SENTINEL, WaitForPredicate, autowait_element, build_click_js,
-    escape_selector, resolve_result, settle_page, wait_for_predicates,
+    DispatchMode, JSON_SENTINEL, MatchPolicy, WaitForPredicate, autowait_element, build_click_js,
+    escape_selector, resolve_disambiguated_target, resolve_result, settle_page,
+    wait_for_predicates,
 };
 use super::network_events::build_network_entries;
 
@@ -43,6 +44,11 @@ pub struct ClickOptions<'a> {
     /// substring, skipping both the top-level attempt and the frame scan.
     /// `None` runs the default top-level-first, scan-on-not-found behaviour.
     pub frame: Option<&'a str>,
+    /// iter-140 Theme C: `--visible` / `--index N` — disambiguate a selector
+    /// that matches more than one element before doing anything else. `None`
+    /// (the default, flag-less path) is completely unchanged: DOM-order index
+    /// 0, same timing, same JS.
+    pub match_policy: Option<MatchPolicy>,
 }
 
 impl Default for ClickOptions<'_> {
@@ -55,6 +61,7 @@ impl Default for ClickOptions<'_> {
             wait_for_timeout_ms: None,
             settle: false,
             frame: None,
+            match_policy: None,
         }
     }
 }
@@ -96,6 +103,28 @@ pub fn run_core(
 
     let wait_timeout_ms = opts.wait_timeout_ms.unwrap_or(cli.timeout);
     let console_actor = ctx.target.console_actor.clone();
+
+    // iter-140 Theme C: `--visible`/`--index` resolve an ambiguous selector to
+    // a single, genuinely-unique element selector up front, so every step
+    // below (auto-wait, the click itself) acts on exactly the element the
+    // flag named instead of blindly taking DOM-order index 0. Flag-less calls
+    // skip this entirely — see `ClickOptions::match_policy`'s doc comment.
+    let resolved_selector;
+    let mut disambiguation: Option<(usize, usize)> = None; // (match_count, chosen_index)
+    let selector: &str = if let Some(policy) = opts.match_policy {
+        let target = resolve_disambiguated_target(
+            &mut ctx,
+            &console_actor,
+            selector,
+            policy,
+            wait_timeout_ms,
+        )?;
+        disambiguation = Some((target.match_count, target.chosen_index));
+        resolved_selector = target.selector;
+        &resolved_selector
+    } else {
+        selector
+    };
 
     // A1: Auto-wait for element readiness (unless --no-wait).
     //
@@ -195,6 +224,14 @@ pub fn run_core(
     if let Some(sm) = settle_method {
         result["settle_method"] = json!(sm.as_meta_str());
     }
+    // iter-140 Theme B/C: when --visible/--index disambiguated an ambiguous
+    // selector, report how many elements matched and which was chosen — the
+    // same transparency the plan asks for on the failure path, surfaced here
+    // on success so `--visible`/`--index` calls aren't silent about it.
+    if let Some((match_count, chosen_index)) = disambiguation {
+        result["match_count"] = json!(match_count);
+        result["chosen_index"] = json!(chosen_index);
+    }
     Ok(result)
 }
 
@@ -213,14 +250,16 @@ pub fn run(
     let settle_method = result
         .as_object_mut()
         .and_then(|o| o.remove("settle_method"));
-    // iter-129: `frame_url` moves to `meta` the same way — always present
-    // (null or a URL string), never omitted.
-    let frame_url = result.as_object_mut().and_then(|o| o.remove("frame_url"));
+    // iter-140 Theme E: `--help` documents `frame_url` as present in BOTH
+    // `results` AND `meta` (never omitted from either) — the code used to
+    // `.remove()` it from `results` here, so `--jq '.results.frame_url'`
+    // threw on every call. Copy instead of removing so it stays in both.
+    let frame_url = result.get("frame_url").cloned().unwrap_or(Value::Null);
     let mut meta = json!({"selector": selector});
     if let Some(sm) = settle_method {
         meta["settle_method"] = sm;
     }
-    meta["frame_url"] = frame_url.unwrap_or(Value::Null);
+    meta["frame_url"] = frame_url;
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
@@ -410,21 +449,44 @@ fn click_in_scanned_frame(
         })
         .collect();
 
-    let all_urls = || -> String {
-        targets
+    // iter-140 Theme D: on a many-frame page (theguardian.com: 97 frames,
+    // most of them consent-string-laden ad iframe URLs) joining every URL raw
+    // produced a 65 KB error message. Cap both the number of URLs listed and
+    // each URL's length (reusing iter-128's `middle_ellipsis`, already wired
+    // into the same shape of problem for `perf`/`network` — see iter-139).
+    const MAX_LISTED_FRAME_URLS: usize = 10;
+    const FRAME_URL_MAX_LEN: usize = 80;
+    let bounded_urls = |targets: &[&TargetEvent]| -> String {
+        let total = targets.len();
+        let listed: Vec<String> = targets
             .iter()
-            .map(|t| t.url.as_deref().unwrap_or("<no-url>"))
-            .collect::<Vec<_>>()
-            .join(", ")
+            .take(MAX_LISTED_FRAME_URLS)
+            .map(|t| {
+                crate::output::middle_ellipsis(
+                    t.url.as_deref().unwrap_or("<no-url>"),
+                    FRAME_URL_MAX_LEN,
+                )
+            })
+            .collect();
+        if total > MAX_LISTED_FRAME_URLS {
+            format!(
+                "{} (+{} more)",
+                listed.join(", "),
+                total - MAX_LISTED_FRAME_URLS
+            )
+        } else {
+            listed.join(", ")
+        }
     };
 
     if let Some(filter) = frame_filter
         && candidates.is_empty()
     {
+        let all: Vec<&TargetEvent> = targets.iter().collect();
         return Err(AppError::User(format!(
             "click --frame '{filter}' matched no frame ({} frame(s) available: {})",
             targets.len(),
-            all_urls()
+            bounded_urls(&all)
         )));
     }
 
@@ -451,11 +513,17 @@ fn click_in_scanned_frame(
 
     // Nothing matched anywhere — the informative, frame-aware diagnostic
     // that replaces the old bare "element not found" / 10s timeout.
-    let n = targets.len();
+    //
+    // iter-140 Theme D: this must count `candidates` — the frames actually
+    // tried — not `targets.len()`. With `--frame guim` on a 97-frame page,
+    // `--frame` narrows the scan to a handful of candidates; reporting
+    // "matched in 0 of 97 frames" claimed every frame was tried when only the
+    // filtered subset was.
+    let tried = candidates.len();
+    let total = targets.len();
     Err(AppError::User(format!(
-        "click: selector {selector:?} matched in 0 of {n} frames (top + {} subframes: {})",
-        n.saturating_sub(1),
-        all_urls()
+        "click: selector {selector:?} matched in 0 of {tried} frame(s) tried (of {total} total): {}",
+        bounded_urls(&candidates)
     )))
 }
 

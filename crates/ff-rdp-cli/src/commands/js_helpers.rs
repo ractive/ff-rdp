@@ -6,7 +6,8 @@ use ff_rdp_core::{
 };
 use serde_json::Value;
 
-use super::connect_tab::ConnectedTab;
+use super::connect_tab::{ConnectedTab, connect_and_get_target};
+use crate::cli::args::Cli;
 use crate::error::AppError;
 
 /// Evaluate JavaScript on a tab and bail with an error if the result is an exception.
@@ -86,6 +87,53 @@ pub(crate) fn escape_selector(selector: &str) -> String {
     // Escape single quotes for embedding in '…' JS literals.
     inner.replace('\'', "\\'")
 }
+
+// ---------------------------------------------------------------------------
+// Unique-selector generation (iter-140 Theme A/F)
+// ---------------------------------------------------------------------------
+
+/// Source of a JS function `__ffrdpUniqueSelector(el)` that computes a
+/// genuinely-unique CSS selector for a live DOM element: an `#id` shortcut
+/// when available, otherwise a `tag:nth-child(N)` structural path walked up
+/// to (but not including) `document.documentElement`.
+///
+/// This is the single source of truth for "turn a DOM node into a selector
+/// safe to hand back to `document.querySelector` / `DomWalkerActor::query_selector`
+/// unchanged" — used by:
+/// - `dom.rs`'s ARIA-tree ref registration (`--ref e<N>` resolvers), so a ref
+///   round-trips into a real CSS selector instead of a bare JS expression
+///   (iter-140 Theme A bug #1).
+/// - `resolve_disambiguated_target` below, so `--visible`/`--index` on
+///   `click`/`type`/`styles` resolve to the exact chosen element.
+/// - `page_map`'s landmark/form-submit extraction, so generated page-maps
+///   hand back selectors that resolve to exactly one element (iter-140 Theme F).
+///
+/// Callers embed this once per IIFE and then call `__ffrdpUniqueSelector(el)`.
+/// The function assumes `el` lives in the top-level document (no shadow-DOM
+/// traversal) — consistent with every call site's existing scope.
+pub(crate) const UNIQUE_SELECTOR_JS_FN: &str = r"
+  function __ffrdpUniqueSelector(el) {
+    if (!el || el.nodeType !== 1) return null;
+    if (el === document.documentElement) return 'html';
+    var path = [];
+    var node = el;
+    while (node && node.nodeType === 1 && node !== document.documentElement) {
+      var part;
+      if (node.id) {
+        part = '#' + CSS.escape(node.id);
+        path.unshift(part);
+        break;
+      }
+      var sib = node;
+      var nth = 1;
+      while ((sib = sib.previousElementSibling)) { nth++; }
+      part = node.nodeName.toLowerCase() + ':nth-child(' + nth + ')';
+      path.unshift(part);
+      node = node.parentElement;
+    }
+    return path.join(' > ');
+  }
+";
 
 const POLL_INTERVAL_MS: u64 = 100;
 
@@ -182,9 +230,13 @@ pub(crate) fn autowait_element(
     // Phase 1: wait for element to exist + be visible + have non-zero rect.
     loop {
         if started.elapsed() >= timeout {
-            return Err(AppError::Timeout(format!(
-                "selector '{selector}' not ready (not found / hidden / unstable) after {timeout_ms}ms"
-            )));
+            // iter-140 Theme B: run one extra (cheap — only at the moment of
+            // failure, never per-poll) diagnostic eval so the error names how
+            // many elements matched and distinguishes "hidden" from
+            // "not found" instead of the old undifferentiated
+            // "not found / hidden / unstable" for every cause.
+            let diag = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
+            return Err(AppError::Timeout(format!("{diag} after {timeout_ms}ms")));
         }
 
         let eval =
@@ -220,9 +272,8 @@ pub(crate) fn autowait_element(
             )));
         }
         if started.elapsed() >= timeout {
-            return Err(AppError::Timeout(format!(
-                "selector '{selector}' not ready (not found / hidden / unstable) after {timeout_ms}ms"
-            )));
+            let diag = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
+            return Err(AppError::Timeout(format!("{diag} after {timeout_ms}ms")));
         }
 
         let eval =
@@ -247,6 +298,270 @@ pub(crate) fn autowait_element(
     }
 
     Ok(Value::Null) // caller will proceed with the action
+}
+
+/// Diagnose *why* a selector never became ready, for a richer timeout error
+/// than the old undifferentiated "not found / hidden / unstable" (iter-140
+/// Theme B: gov.uk's `input[name=keywords]` matches two elements — `type`
+/// silently took the hidden one and reported nothing about the other match).
+///
+/// Runs a single extra JS eval — cheap, since it only happens once, at the
+/// moment `autowait_element` gives up — that reports the match count and
+/// whether the DOM-order-0 match (the one autowait actually polled) is
+/// hidden. Distinguishes:
+/// - 0 matches → not found
+/// - 1 match, hidden → a single permanently-hidden element (not an ambiguity
+///   problem — just genuinely hidden)
+/// - 2+ matches, chosen (index 0) hidden → the exact repro from the plan:
+///   names the count and points at `--visible`/`--index` to recover
+/// - 2+ matches, chosen (index 0) visible but unstable → same match-count
+///   context, without wrongly implying the element can't be found at all
+///
+/// Best-effort: if the diagnostic eval itself throws or the transport drops,
+/// falls back to the original undifferentiated message rather than masking
+/// the real timeout with a second error.
+fn diagnose_selector_failure(
+    ctx: &mut ConnectedTab,
+    console_actor: &ActorId,
+    selector: &str,
+    escaped_selector: &str,
+) -> String {
+    let js = format!(
+        r"(function() {{
+  var matches = document.querySelectorAll('{escaped_selector}');
+  var n = matches.length;
+  if (n === 0) return JSON.stringify({{matchCount: 0}});
+  var el = matches[0];
+  var r = el.getBoundingClientRect();
+  var cs = window.getComputedStyle(el);
+  var hidden = cs.display === 'none' || cs.visibility === 'hidden' || (r.width === 0 && r.height === 0);
+  return JSON.stringify({{matchCount: n, hidden: hidden}});
+}})()"
+    );
+
+    let diag = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js)
+        .ok()
+        .filter(|r| r.exception.is_none())
+        .and_then(|r| match r.result {
+            Grip::Value(v) => v
+                .as_str()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok()),
+            _ => None,
+        });
+
+    let Some(diag) = diag else {
+        return format!("selector '{selector}' not ready (not found / hidden / unstable)");
+    };
+
+    let match_count = diag.get("matchCount").and_then(Value::as_u64).unwrap_or(0);
+    if match_count == 0 {
+        return format!("selector '{selector}' not ready — 0 elements matched (not found)");
+    }
+    let hidden = diag.get("hidden").and_then(Value::as_bool).unwrap_or(false);
+    if match_count == 1 {
+        return if hidden {
+            format!("selector '{selector}' not ready — the 1 matching element is hidden")
+        } else {
+            format!("selector '{selector}' not ready — matched 1 element (layout did not stabilise)")
+        };
+    }
+    let last_index = match_count - 1;
+    if hidden {
+        format!(
+            "selector '{selector}' not ready — matched {match_count} elements, chose index 0 \
+             which is hidden; pass --visible or --index 0..{last_index} to target a different match"
+        )
+    } else {
+        format!(
+            "selector '{selector}' not ready — matched {match_count} elements, chose index 0 \
+             (layout did not stabilise); pass --index 0..{last_index} to target a different match"
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Match-policy disambiguation (iter-140 Theme B/C)
+// ---------------------------------------------------------------------------
+
+/// How to choose among multiple elements matched by a CSS selector, when the
+/// caller explicitly asked to disambiguate via `--visible` / `--index N`.
+///
+/// The flag-less default path (`autowait_element` above) is entirely
+/// unaffected by this enum — it keeps taking DOM-order index 0 with unchanged
+/// timing, per [`crate::commands::click::ClickOptions::match_policy`]'s doc
+/// comment. This only applies when a flag is passed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MatchPolicy {
+    /// `--visible`: the first match that is not hidden (display:none,
+    /// visibility:hidden, or a zero-size rect). Reports "no visible match"
+    /// rather than silently falling back to a hidden one.
+    Visible,
+    /// `--index N`: the Nth match (0-based), regardless of visibility.
+    Index(usize),
+}
+
+impl MatchPolicy {
+    /// Build a `MatchPolicy` from the two mutually-exclusive CLI flags.
+    ///
+    /// clap's `conflicts_with` already prevents both being set on the command
+    /// line; this is a defensive second check for callers that construct the
+    /// combination programmatically (script runner steps, tests).
+    pub(crate) fn from_flags(
+        visible: bool,
+        index: Option<usize>,
+    ) -> Result<Option<Self>, AppError> {
+        match (visible, index) {
+            (true, Some(_)) => Err(AppError::User(
+                "--visible and --index are mutually exclusive".to_string(),
+            )),
+            (true, None) => Ok(Some(Self::Visible)),
+            (false, Some(n)) => Ok(Some(Self::Index(n))),
+            (false, None) => Ok(None),
+        }
+    }
+}
+
+/// The result of resolving an ambiguous selector to one specific element.
+pub(crate) struct ResolvedTarget {
+    /// A genuinely-unique CSS selector for the chosen element (an `#id`
+    /// shortcut or a `tag:nth-child(N)` structural path — see
+    /// [`UNIQUE_SELECTOR_JS_FN`]), safe to feed into `document.querySelector`
+    /// or `DomWalkerActor::query_selector` unchanged.
+    pub(crate) selector: String,
+    /// How many elements the original selector matched.
+    pub(crate) match_count: usize,
+    /// Which 0-based index was chosen among those matches.
+    pub(crate) chosen_index: usize,
+}
+
+/// Build the JS that evaluates `escaped_selector`, applies `policy` to pick
+/// one match, and returns that match's genuinely-unique selector alongside
+/// the match count — or `{ok: false, matchCount}` when `policy` can't be
+/// satisfied (no visible match / index out of range).
+fn build_disambiguation_js(escaped_selector: &str, policy: MatchPolicy) -> String {
+    let choose = match policy {
+        MatchPolicy::Index(n) => format!("var chosenIndex = ({n} < matches.length) ? {n} : -1;"),
+        MatchPolicy::Visible => r"
+  var chosenIndex = -1;
+  for (var i = 0; i < matches.length; i++) {
+    var r = matches[i].getBoundingClientRect();
+    var cs = window.getComputedStyle(matches[i]);
+    var visible = r.width > 0 && r.height > 0 && cs.display !== 'none' && cs.visibility !== 'hidden';
+    if (visible) { chosenIndex = i; break; }
+  }"
+        .to_string(),
+    };
+
+    format!(
+        r"(function() {{
+  {UNIQUE_SELECTOR_JS_FN}
+  var matches = document.querySelectorAll('{escaped_selector}');
+  var matchCount = matches.length;
+  {choose}
+  if (chosenIndex === -1) {{
+    return '{JSON_SENTINEL}' + JSON.stringify({{ok: false, matchCount: matchCount}});
+  }}
+  var chosen = matches[chosenIndex];
+  return '{JSON_SENTINEL}' + JSON.stringify({{
+    ok: true,
+    matchCount: matchCount,
+    chosenIndex: chosenIndex,
+    selector: __ffrdpUniqueSelector(chosen)
+  }});
+}})()"
+    )
+}
+
+/// Resolve a possibly-ambiguous selector to the unique selector of a single
+/// chosen element, per `policy` (iter-140 Theme B/C — `--visible`/`--index`
+/// on `click`/`type`/`styles`).
+///
+/// Polls until `timeout_ms` elapses so a `--visible` match that appears after
+/// the initial call (e.g. a hydrating SPA) is still caught, matching
+/// `autowait_element`'s existing patience on the flag-less path.
+pub(crate) fn resolve_disambiguated_target(
+    ctx: &mut ConnectedTab,
+    console_actor: &ActorId,
+    selector: &str,
+    policy: MatchPolicy,
+    timeout_ms: u64,
+) -> Result<ResolvedTarget, AppError> {
+    use std::time::{Duration, Instant};
+
+    let escaped = escape_selector(selector);
+    let js = build_disambiguation_js(&escaped, policy);
+    let timeout = Duration::from_millis(timeout_ms);
+    let poll = Duration::from_millis(POLL_INTERVAL_MS);
+    let started = Instant::now();
+
+    let last_match_count: u64 = loop {
+        let eval = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js)
+            .map_err(AppError::from)?;
+        if let Some(exc) = &eval.exception {
+            let msg = exc
+                .message
+                .as_deref()
+                .unwrap_or("selector evaluation failed");
+            return Err(AppError::User(format!(
+                "selector '{selector}' is invalid: {msg}"
+            )));
+        }
+        let value = resolve_result(ctx, &eval.result)?;
+        let match_count = value.get("matchCount").and_then(Value::as_u64).unwrap_or(0);
+        if value.get("ok").and_then(Value::as_bool) == Some(true) {
+            let resolved = value
+                .get("selector")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    AppError::Internal(anyhow::anyhow!("disambiguation JS missing 'selector'"))
+                })?;
+            let chosen_index = value.get("chosenIndex").and_then(Value::as_u64).unwrap_or(0);
+            return Ok(ResolvedTarget {
+                selector: resolved,
+                match_count: match_count as usize,
+                chosen_index: chosen_index as usize,
+            });
+        }
+        if started.elapsed() >= timeout {
+            break match_count;
+        }
+        std::thread::sleep(poll);
+    };
+
+    Err(AppError::Timeout(match policy {
+        MatchPolicy::Index(n) => format!(
+            "selector '{selector}' matched {last_match_count} element(s) after {timeout_ms}ms — \
+             index {n} is out of range (0..{})",
+            last_match_count.saturating_sub(1)
+        ),
+        MatchPolicy::Visible if last_match_count == 0 => format!(
+            "selector '{selector}' matched 0 elements (not found) after {timeout_ms}ms"
+        ),
+        MatchPolicy::Visible => format!(
+            "selector '{selector}' matched {last_match_count} element(s) after {timeout_ms}ms but \
+             none are visible — pass --index 0..{} to target a hidden one",
+            last_match_count.saturating_sub(1)
+        ),
+    }))
+}
+
+/// Connect, resolve `selector` per `policy`, and return the resolved unique
+/// selector's `String` alone. For one-shot commands (`styles`/`cascade`/
+/// `computed`) that don't otherwise need a held-open [`ConnectedTab`] before
+/// dispatching to their own `run` function — those open their own connection
+/// internally, so this makes (and drops) a short-lived one just for the
+/// resolution step.
+pub(crate) fn resolve_disambiguated_selector_standalone(
+    cli: &Cli,
+    selector: &str,
+    policy: MatchPolicy,
+    timeout_ms: u64,
+) -> Result<String, AppError> {
+    let mut ctx = connect_and_get_target(cli)?;
+    let console_actor = ctx.target.console_actor.clone();
+    let target = resolve_disambiguated_target(&mut ctx, &console_actor, selector, policy, timeout_ms)?;
+    Ok(target.selector)
 }
 
 // ---------------------------------------------------------------------------

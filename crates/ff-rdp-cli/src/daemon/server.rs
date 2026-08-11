@@ -105,8 +105,26 @@ struct RefStore {
     /// Monotonically-increasing counter.  Starts at 1; each `register-refs`
     /// call receives the current value and advances it by the number of refs
     /// registered so that successive calls produce globally-unique handles.
+    /// Reset to 1 on [`Self::clear`] so post-navigation refs restart at `e1`.
     next: u64,
-    /// `"e<N>"` → JS resolution expression (e.g. `"document.querySelectorAll('button')[2]"`).
+    /// The highest value `next` has ever reached, across every generation —
+    /// unlike `next`, this is **never** reset by [`Self::clear`].
+    ///
+    /// Used by `resolve-ref` to distinguish "this id belonged to a page that
+    /// has since navigated away" (expired) from "this id was never allocated
+    /// in this daemon session at all" (typo / wrong session). Before this
+    /// field existed, the heuristic compared against `next`, which resets to
+    /// 1 on every `clear()` — so immediately after a real navigation, *every*
+    /// previously-valid id (e.g. `e2`) looked like `n > next` and was
+    /// misreported as "not registered" instead of "expired" (iter-140 Theme A
+    /// AC3).
+    high_water: u64,
+    /// `"e<N>"` → CSS selector that resolves to exactly this element (a
+    /// genuinely-unique `#id` or `tag:nth-child(N)` structural path — see
+    /// `js_helpers::UNIQUE_SELECTOR_JS_FN`). iter-140 Theme A: this used to be
+    /// a JS expression like `"document.querySelectorAll('button')[2]"`, which
+    /// broke every consumer that fed it into `document.querySelector(...)` as
+    /// if it were plain selector text.
     refs: HashMap<String, String>,
 }
 
@@ -114,6 +132,7 @@ impl RefStore {
     fn new() -> Self {
         Self {
             next: 1,
+            high_water: 1,
             refs: HashMap::new(),
         }
     }
@@ -123,6 +142,7 @@ impl RefStore {
     fn alloc(&mut self, count: u64) -> u64 {
         let start = self.next;
         self.next = start.saturating_add(count);
+        self.high_water = self.high_water.max(self.next);
         start
     }
 
@@ -167,6 +187,7 @@ impl RefStore {
         self.refs.clear();
         // Reset counter so IDs restart at e1 after each navigation.
         self.next = 1;
+        // `high_water` is deliberately NOT reset — see its doc comment.
     }
 }
 
@@ -1276,18 +1297,49 @@ fn is_console_push_event(msg: &Value) -> bool {
 ///   document.  Earliest reliable signal.
 /// - `tabNavigated` on the tab actor once the new document has been
 ///   committed.
-/// - `frameUpdate` for nested-frame navigations.
+/// - `frameUpdate`, but **only** when it reports the top-level frame itself
+///   (see below) — same-document top-level navigations (fragment changes,
+///   `history.pushState`) that `tabNavigated`/`willNavigate` don't reliably
+///   cover.
 ///
-/// All three indicate the DOM has been replaced and any `e<N>` refs allocated
-/// against the old page are stale.  We over-invalidate rather than under-
-/// invalidate: an extra clear is harmless (the next allocation simply gets a
-/// fresh generation), whereas a missed signal could let stale refs resolve to
-/// the wrong element.
+/// `tabNavigated`/`willNavigate` indicate the top document has been replaced
+/// and any `e<N>` refs allocated against the old page are stale.
+///
+/// `frameUpdate` is **not** navigation-specific: per Firefox's
+/// `WindowGlobalTargetActor._notifyDocShellsUpdate`, the top-level target
+/// emits `frameUpdate` any time *any* docShell in the page changes — created,
+/// destroyed, or navigated — including a same-origin or cross-origin `<iframe>`
+/// that has nothing to do with the top document (e.g. an ad slot reloading).
+/// The payload is `{frames: [{id, parentID, isTopLevel, url, title}, ...]}`
+/// (or `{id, destroy: true}` for a removed frame); only an entry with
+/// `isTopLevel: true` means the top document itself changed.
+///
+/// iter-140 Theme A: treating *every* `frameUpdate` as "clear all refs" (the
+/// pre-iter-140 behaviour) made `--ref` look single-use on any page with
+/// background iframe churn — an ad iframe reloading seconds after a `dom`
+/// call would silently wipe every ref, including ones for elements the ad had
+/// nothing to do with. This was NOT harmless over-invalidation; it broke the
+/// feature in exactly the ad-heavy-page scenario `--ref` exists for.
 fn is_navigation_event(msg: &Value) -> bool {
-    matches!(
-        msg.get("type").and_then(Value::as_str),
-        Some("tabNavigated" | "willNavigate" | "frameUpdate")
-    )
+    match msg.get("type").and_then(Value::as_str) {
+        Some("tabNavigated" | "willNavigate") => true,
+        Some("frameUpdate") => frame_update_touches_top_level(msg),
+        _ => false,
+    }
+}
+
+/// Return `true` when a `frameUpdate` message's `frames` array contains an
+/// entry for the top-level frame (`isTopLevel: true`) — see
+/// [`is_navigation_event`]'s doc comment for why every other `frameUpdate`
+/// (a nested iframe changing) must NOT invalidate the ref store.
+fn frame_update_touches_top_level(msg: &Value) -> bool {
+    msg.get("frames")
+        .and_then(Value::as_array)
+        .is_some_and(|frames| {
+            frames
+                .iter()
+                .any(|f| f.get("isTopLevel").and_then(Value::as_bool) == Some(true))
+        })
 }
 
 /// Return `true` when `msg` is a `target-available-form` or
@@ -2497,15 +2549,23 @@ fn handle_daemon_message(
                     "resolver": resolver,
                 })
             } else {
-                // We don't track allocation history once the store has been
-                // cleared, so we can't be sure whether `id` was ever valid.
-                // Use `next` as a coarse heuristic: an id of the form
-                // `e<N>` with N < next likely belonged to a prior page; any
-                // other shape is almost certainly user-typo / wrong session.
+                // We don't track individual allocation history once an entry
+                // has been cleared, so we can't be sure whether `id` was ever
+                // valid. iter-140 Theme A AC3: use `high_water` — the highest
+                // counter value ever reached, which (unlike `next`) survives
+                // `clear()` — as the heuristic. An id of the form `e<N>` with
+                // N < high_water was allocated at some point in a past
+                // generation and is now gone (expired); N >= high_water was
+                // never allocated at all (typo / wrong session). Comparing
+                // against `next` instead (the pre-iter-140 behaviour) was
+                // wrong: `next` resets to 1 on every `clear()`, so
+                // immediately after a real navigation every previously-valid
+                // id looked like `n > next` and was misreported as "not
+                // registered" instead of "expired".
                 let likely_expired = id
                     .strip_prefix('e')
                     .and_then(|n| n.parse::<u64>().ok())
-                    .is_some_and(|n| n > 0 && n < store.next);
+                    .is_some_and(|n| n > 0 && n < store.high_water);
                 let hint = if likely_expired {
                     "possibly expired after navigation"
                 } else {
@@ -3999,6 +4059,75 @@ mod tests {
         assert_eq!(store.alloc(1), 1, "counter must reset to 1 after clear");
     }
 
+    /// AC: `live_140_ref_expiry_message` depends on this — `high_water` must
+    /// survive `clear()` so `resolve-ref`'s expiry heuristic can tell "was
+    /// allocated in a past generation" from "never allocated at all" (iter-140
+    /// Theme A AC3). Before this field existed, comparing against `next`
+    /// (which *does* reset) meant every id looked "never allocated" right
+    /// after a navigation.
+    #[test]
+    fn ref_store_clear_preserves_high_water_mark() {
+        let mut store = RefStore::new();
+        store.alloc(5); // next=6, high_water=6
+        assert_eq!(store.high_water, 6);
+        store.clear(); // next resets to 1, high_water must not
+        assert_eq!(store.next, 1, "next resets on clear");
+        assert_eq!(
+            store.high_water, 6,
+            "high_water must NOT reset on clear — it's the expiry heuristic's memory"
+        );
+    }
+
+    /// `frameUpdate` for a nested (non-top-level) frame must NOT be treated
+    /// as a navigation event — see `is_navigation_event`'s doc comment for
+    /// why (an ad iframe reloading would otherwise silently wipe every ref).
+    #[test]
+    fn frame_update_nested_frame_only_is_not_navigation() {
+        let msg = json!({
+            "type": "frameUpdate",
+            "frames": [{"id": 42, "parentID": 7, "isTopLevel": false, "url": "https://ads.example/"}]
+        });
+        assert!(!frame_update_touches_top_level(&msg));
+        assert!(!is_navigation_event(&msg));
+    }
+
+    /// `frameUpdate` that includes the top-level frame DOES invalidate refs —
+    /// same-document top-level navigations (fragment/pushState) that
+    /// `tabNavigated`/`willNavigate` don't reliably cover.
+    #[test]
+    fn frame_update_top_level_frame_is_navigation() {
+        let msg = json!({
+            "type": "frameUpdate",
+            "frames": [
+                {"id": 1, "parentID": null, "isTopLevel": true, "url": "https://example.com/"},
+                {"id": 42, "parentID": 1, "isTopLevel": false, "url": "https://ads.example/"}
+            ]
+        });
+        assert!(frame_update_touches_top_level(&msg));
+        assert!(is_navigation_event(&msg));
+    }
+
+    /// A `frameUpdate` frame-removal entry (`{id, destroy: true}`, no
+    /// `isTopLevel` field at all) must not be mistaken for a top-level touch.
+    #[test]
+    fn frame_update_destroy_entry_without_is_top_level_is_not_navigation() {
+        let msg = json!({
+            "type": "frameUpdate",
+            "frames": [{"id": 42, "destroy": true}]
+        });
+        assert!(!frame_update_touches_top_level(&msg));
+    }
+
+    #[test]
+    fn tab_navigated_and_will_navigate_are_always_navigation() {
+        assert!(is_navigation_event(
+            &json!({"type": "tabNavigated", "url": "https://example.com/"})
+        ));
+        assert!(is_navigation_event(
+            &json!({"type": "willNavigate", "url": "https://example.com/"})
+        ));
+    }
+
     // -----------------------------------------------------------------------
     // handle_daemon_message — alloc-refs / register-refs / resolve-ref
     // -----------------------------------------------------------------------
@@ -4162,6 +4291,66 @@ mod tests {
             "ref must be gone after navigation"
         );
         assert_eq!(state.nav_generation.load(Ordering::Relaxed), 1);
+    }
+
+    /// AC: `live_140_ref_expiry_message` — a ref that was genuinely allocated
+    /// (via `alloc-refs`, which advances `high_water`) and then invalidated by
+    /// a real navigation must report "expired", not "not registered in this
+    /// daemon session" (iter-140 Theme A AC3). This is the full-protocol
+    /// version of `ref_store_clear_preserves_high_water_mark`, going through
+    /// `alloc-refs` → `register-refs` → navigation → `resolve-ref` exactly as
+    /// the daemon wire protocol does.
+    #[test]
+    fn resolve_ref_after_navigation_reports_expiry_not_not_registered() {
+        let state = test_state();
+
+        let alloc_resp = handle_daemon_message(
+            &state,
+            &json!({"to": "daemon", "type": "alloc-refs", "count": 2}),
+            TEST_CLIENT_ID,
+            None,
+        );
+        let nav_gen = alloc_resp["nav_generation"].as_u64().unwrap();
+        let start = alloc_resp["start"].as_u64().unwrap();
+        assert_eq!(start, 1);
+
+        handle_daemon_message(
+            &state,
+            &json!({
+                "to": "daemon",
+                "type": "register-refs",
+                "nav_generation": nav_gen,
+                "refs": [
+                    {"id": "e1", "resolver": "h1:nth-child(1)"},
+                    {"id": "e2", "resolver": "p:nth-child(2)"}
+                ]
+            }),
+            TEST_CLIENT_ID,
+            None,
+        );
+
+        // Simulate a real top-level navigation (what firefox_reader_loop does
+        // on a tabNavigated/willNavigate event).
+        state.nav_generation.fetch_add(1, Ordering::Relaxed);
+        lock_or_recover!(state.ref_store).clear();
+
+        let resp = handle_daemon_message(
+            &state,
+            &json!({"to": "daemon", "type": "resolve-ref", "id": "e2"}),
+            TEST_CLIENT_ID,
+            None,
+        );
+        let err = resp["error"]
+            .as_str()
+            .expect("e2 must be gone after navigation");
+        assert!(
+            err.contains("expired"),
+            "a ref allocated before navigation must report expiry, not 'not registered': {err:?}"
+        );
+        assert!(
+            !err.contains("not registered"),
+            "must not fall back to the generic 'not registered' message: {err:?}"
+        );
     }
 
     #[test]

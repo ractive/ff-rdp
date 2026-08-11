@@ -181,9 +181,13 @@ fn click_element_not_found_exits_nonzero() {
     // the JSON error envelope on **stdout** (main.rs's single-error-emission
     // convention, iter-98 Theme D) — not stderr, which `AppError::Exit`'s
     // callers use instead for a genuine JS failure.
+    // iter-140 Theme D: the message now says "frame(s) tried (of N total)"
+    // instead of a bare frame count, so it can distinguish "every frame was
+    // tried" from "--frame narrowed the scan" (see click.rs's
+    // `click_in_scanned_frame`).
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("matched in 0 of") && stdout.contains("frames"),
+        stdout.contains("matched in 0 of") && stdout.contains("frame(s) tried"),
         "stdout should carry the frame-aware not-found diagnostic: {stdout}"
     );
 }
