@@ -198,7 +198,8 @@ fn live_eval_returns_window_scroll_y_on_csp_site() {
 
 /// `live_eval_script_error_still_surfaces`:
 /// Eval `throw new Error("boom")` on the CSP fixture page.
-/// Must exit non-zero and print the error message to stderr.
+/// Must exit non-zero and report the exception through the JSON error
+/// envelope on stdout (iter-141 Theme E — it used to go to stderr as bare text).
 #[test]
 #[ignore = "requires headless Firefox; set FF_RDP_LIVE_TESTS=1"]
 fn live_eval_script_error_still_surfaces() {
@@ -237,10 +238,23 @@ fn live_eval_script_error_still_surfaces() {
         "eval must exit non-zero when JS throws"
     );
 
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    // iter-141 Theme E routed JS exceptions through the JSON error envelope on
+    // stdout (`error_type: "User"`) instead of bare text on stderr, so that a
+    // scripted consumer can parse the failure like every other ff-rdp error.
+    let json = parse_json(&out.stdout, &out.stderr);
+    assert_eq!(
+        json["error_type"], "User",
+        "a thrown JS Error is a user error, not an internal one; got: {json}"
+    );
+    let message = json["error"].as_str().unwrap_or_default();
     assert!(
-        stderr.contains("Error") || stderr.contains("boom"),
-        "stderr must contain 'Error' or 'boom'; got: {stderr}"
+        message.contains("Error") || message.contains("boom"),
+        "envelope error must name the thrown exception; got: {json}"
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "JSON-only output: nothing may go to stderr; got: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 
