@@ -126,16 +126,34 @@ deferred rather than ticking them.
 
 - `--format text` exists to reduce token cost; a 255 KB table is a total inversion of its
   purpose, which makes Theme A the priority here.
+- iter-140 reused `middle_ellipsis` (iter-128) a second time to bound a different unbounded
+  string (its frame-scan error's URL list: `MAX_LISTED_FRAME_URLS`/`FRAME_URL_MAX_LEN` in
+  `click.rs`) rather than writing a new truncation helper — Theme A here is the same shape
+  (unbounded `message`/`attrs` text columns); reuse `middle_ellipsis` again instead of adding
+  a third truncation implementation.
+- iter-140 Theme E's bug (`click`'s `run()` used `.remove()` to move `frame_url` from
+  `results` into `meta`, so the field `--help` documented as present in **both** silently
+  never existed in `results`) was caught by literally running the `--jq` filter the `--help`
+  text advertised as safe (`--jq '.results.frame_url'`) and observing it fail. Theme F here
+  has the same class of bug (`sources`' `actor: ""`, `network`'s undocumented truncation
+  flag) — worth grepping result/meta-building code for other `.remove(...)` calls, and adding
+  an e2e test per fixed field that runs the exact `--jq` path the docs promise, the way
+  iter-140's `click_jq_results_frame_url_does_not_throw` does.
 
 ## Run guidance (batch 138–142, from dogfooding session 63)
 
 Non-negotiable working rules for whoever implements this plan:
 
-1. **Do not trust the root cause stated above.** In iterations 135, 136 and 137 the real
-   cause differed from the plan's hypothesis three times running, and twice it was our bug,
-   not Firefox's. Reproduce the symptom and verify the mechanism **on the wire** (actual RDP
-   packets / actual command output) before writing the fix. If the diagnosis here turns out
-   to be wrong, fix the real cause and correct this section.
+1. **Do not trust the root cause stated above.** In iterations 135, 136, 137 and 140 the real
+   cause differed from the plan's hypothesis, and more than once it was our bug, not
+   Firefox's. iter-140's first-pass fix for its ref-invalidation Theme (narrowing
+   `frameUpdate` handling to `isTopLevel: true`) still wasn't enough — live testing against
+   Firefox 153 showed Fission spawns a fresh actor pair for the *same* committed URL on
+   almost every RDP round-trip, so a same-URL-but-new-actor `frameUpdate` needed an explicit
+   URL comparison against the last committed navigation to avoid being misread as a real nav.
+   Reproduce the symptom and verify the mechanism **on the wire** (actual RDP packets / actual
+   command output) before writing the fix. If the diagnosis here turns out to be wrong, fix
+   the real cause and correct this section.
 2. **A live test that passes `--no-daemon` proves nothing about the default path.** That is
    exactly how iter-129 shipped a feature that did not work at all. Every live test added
    here must exercise the default (daemon) path. iter-137 added the guard at
