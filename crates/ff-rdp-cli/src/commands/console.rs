@@ -129,6 +129,10 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let mut envelope =
         output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
 

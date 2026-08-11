@@ -75,7 +75,7 @@ pub fn run_core(
     wait_for_network: Option<&str>,
     network_timeout: Option<u64>,
     opts: &ClickOptions<'_>,
-) -> Result<Value, AppError> {
+) -> Result<(Value, bool), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
 
     // When --wait-for-network is requested in direct mode, subscribe to the
@@ -232,7 +232,7 @@ pub fn run_core(
         result["match_count"] = json!(match_count);
         result["chosen_index"] = json!(chosen_index);
     }
-    Ok(result)
+    Ok((result, ctx.via_daemon))
 }
 
 pub fn run(
@@ -242,7 +242,8 @@ pub fn run(
     network_timeout: Option<u64>,
     opts: &ClickOptions<'_>,
 ) -> Result<(), AppError> {
-    let mut result = run_core(cli, selector, wait_for_network, network_timeout, opts)?;
+    let (mut result, via_daemon) =
+        run_core(cli, selector, wait_for_network, network_timeout, opts)?;
 
     // Preserve the pre-iter-61c CLI output shape: `settle_method` belongs in
     // `meta`, not in `results`.  The script runner reads it from `results`
@@ -267,6 +268,8 @@ pub fn run(
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose.
+    crate::connection_meta::merge_route(&mut meta, via_daemon);
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Click).with_selector(selector);

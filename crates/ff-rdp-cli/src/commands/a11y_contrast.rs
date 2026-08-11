@@ -59,6 +59,10 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
 
     // Apply output controls (sort, limit, fields).
     let controls = OutputControls::from_cli(cli, SortDir::Desc);

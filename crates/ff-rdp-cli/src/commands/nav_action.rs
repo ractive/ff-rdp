@@ -126,6 +126,10 @@ pub fn run(cli: &Cli, action: NavAction) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_source = match action {
@@ -213,7 +217,13 @@ fn run_reload_wait_idle_daemon(
         }
     };
 
-    emit_reload_result(cli, requests_observed + inflight_count, idle_at_ms, force)
+    emit_reload_result(
+        cli,
+        requests_observed + inflight_count,
+        idle_at_ms,
+        force,
+        true,
+    )
 }
 
 /// True when an I/O error kind signals the peer closed the connection
@@ -302,7 +312,7 @@ fn run_reload_wait_idle_direct(
     let _ =
         WatcherActor::unwatch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"]);
 
-    emit_reload_result(cli, requests_observed, idle_at_ms, force)
+    emit_reload_result(cli, requests_observed, idle_at_ms, force, false)
 }
 
 /// Drain network events from `transport` until idle or timeout.
@@ -392,6 +402,7 @@ fn emit_reload_result(
     requests_observed: u64,
     idle_at_ms: u64,
     force: bool,
+    via_daemon: bool,
 ) -> Result<(), AppError> {
     let result = if force {
         json!({
@@ -415,6 +426,8 @@ fn emit_reload_result(
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose.
+    crate::connection_meta::merge_route(&mut meta, via_daemon);
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Reload);

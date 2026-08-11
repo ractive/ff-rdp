@@ -213,6 +213,10 @@ pub fn run(cli: &Cli, args: &ThrottleArgs) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, via_daemon);
 
     let envelope = output::envelope(&results, 1, &meta);
     OutputPipeline::from_cli(cli)?.finalize(&envelope)

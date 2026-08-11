@@ -52,6 +52,11 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
+    // iter-134: `tabs` connects via a raw `RdpConnection::connect` above,
+    // bypassing `ConnectedTab`/the daemon entirely — there is no
+    // daemon-vs-direct routing decision to report, so the route is
+    // unconditionally "direct".
+    crate::connection_meta::merge_route(&mut meta, false);
     // Use envelope_with_truncation so --limit emits the same `truncated`
     // signal as other OutputControls-backed list commands (e.g. network, dom).
     let envelope =

@@ -769,7 +769,7 @@ fn execute_navigate(
         // covers those cases without changing behaviour on event-rich pages.
         wait_strategy: crate::commands::navigate::WaitStrategy::Both,
     };
-    nav_run_core(cli, &effective_url, &wait_opts)
+    nav_run_core(cli, &effective_url, &wait_opts).map(|(v, _)| v)
 }
 
 fn resolve_element_target_selector(
@@ -813,6 +813,7 @@ fn execute_click(step: &super::format::ElementStep, cli: &Cli) -> Result<Value, 
             ..Default::default()
         },
     )
+    .map(|(v, _)| v)
 }
 
 fn execute_type(
@@ -879,7 +880,7 @@ fn execute_wait(
         sleep_ms: None,
         wait_timeout: timeout,
     };
-    wait_run_core(cli, &opts)
+    wait_run_core(cli, &opts).map(|(v, _)| v)
 }
 
 fn execute_assert_text(

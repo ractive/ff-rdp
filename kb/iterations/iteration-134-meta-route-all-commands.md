@@ -14,7 +14,7 @@ dogfood_path: |
   ff-rdp screenshot --jq '.meta.route'
   # → same "daemon"/"direct" self-identification on every browser-touching command
 first_call_sites: []
-status: planned
+status: done
 ---
 
 # Iteration 134: meta.route on every command (carry-over from iter-128 Theme D)
@@ -35,23 +35,47 @@ crates/ff-rdp-cli/src/commands/` for the full list), each of which already has
 
 ## Tasks
 
-- [ ] Sweep every `crate::connection_meta::merge_into_if_verbose(&mut meta, ...)` call
+- [x] Sweep every `crate::connection_meta::merge_into_if_verbose(&mut meta, ...)` call
       site and add an adjacent `crate::connection_meta::merge_route(&mut meta,
       ctx.via_daemon)` (or the equivalent local `via_daemon` binding).
-- [ ] For commands using `connect_direct` (always `via_daemon: false`), still call
+- [x] For commands using `connect_direct` (always `via_daemon: false`), still call
       `merge_route` so `meta.route` is present and consistently `"direct"`.
-- [ ] Consider whether commands that build a bespoke envelope (bypassing
+- [x] Consider whether commands that build a bespoke envelope (bypassing
       `output::envelope`/`envelope_with_truncation`) need a call-site audit too.
-- [ ] Grep `crates/ff-rdp-cli/src/commands/*.rs` for envelope construction NOT preceded
+- [x] Grep `crates/ff-rdp-cli/src/commands/*.rs` for envelope construction NOT preceded
       by `merge_route` after the sweep — should be zero for browser-touching commands.
 
-## Acceptance Criteria [0/1]
+## Acceptance Criteria [1/1]
 
-- [ ] live_134_meta_route_all_commands: for a representative sample of browser-touching
+- [x] live_134_meta_route_all_commands: for a representative sample of browser-touching
       commands (e.g. `click`, `eval`, `screenshot`, `dom`), `meta.route` is present and
       correct (`"daemon"` by default, `"direct"` under `--no-daemon`) without `--verbose`.
 
 ## Notes
 
-Non-browser-touching commands (`daemon status`, `doctor`) are out of scope — they don't
-resolve a `via_daemon` in the first place.
+Non-browser-touching commands (`daemon status`, `doctor`, `launch`, `throttle status`) are
+out of scope — they don't resolve a `via_daemon` in the first place (`launch` spawns
+Firefox but never opens a `ConnectedTab`; `throttle status`/`daemon status` only read
+registry files).
+
+`tabs` and `screenshot` always report `"direct"` regardless of daemon mode: `tabs` uses a
+raw `RdpConnection::connect` that bypasses `ConnectedTab`/the daemon entirely, and
+`screenshot` always calls `connect_direct` (the daemon's watcher subscription breaks its
+two-step capture protocol — see `run_core`'s doc comment). `meta.route` reports the
+connection Firefox actually saw, not the flag the caller passed, so both are hardcoded
+`merge_route(&mut meta, false)` rather than threading a `ctx.via_daemon` that would always
+be `false` anyway.
+
+`navigate`'s plain `run()`/`run_core()`, `click::run_core`, `type_text::run_core`, and
+`wait::run_core` didn't expose `via_daemon` to their `run()` callers (only the inner
+`run_core` held the `ConnectedTab`) — their signatures changed to return
+`(Value, bool)` (or `(Value, Option<bool>)` for `wait`, whose `--sleep-ms` short-circuit
+never opens a connection at all). The script runner (`src/script/runner.rs`) and
+`index.rs`'s crawl path call these same `run_core`s; both were updated to discard or
+destructure the added `bool`.
+
+`sources.rs` (connects via `connect_direct`) turned up during the final envelope-construction
+audit (Task 4): it builds its own `meta` object but never called
+`merge_into_if_verbose` in the first place, so it wasn't in the original
+`merge_into_if_verbose` grep. Only `merge_route` was added here — the missing connection
+block is a separate, pre-existing gap left out of scope for this iteration.

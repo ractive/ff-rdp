@@ -104,6 +104,10 @@ pub fn run(cli: &Cli, name: Option<&str>, include_document_cookie: bool) -> Resu
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     if total == 0
         && let Some(note) = detect_consent_banner(&mut ctx)
         && let Some(m) = meta.as_object_mut()

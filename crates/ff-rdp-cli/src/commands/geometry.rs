@@ -112,6 +112,10 @@ pub fn run(cli: &Cli, selectors: &[String], include_hidden: bool) -> Result<(), 
             None,
             cli.is_verbose(),
         );
+        // iter-134: always present, not gated by --verbose — an
+        // agent can tell how this command executed without a
+        // separate `daemon status` round-trip.
+        crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
         let envelope = output::envelope(&empty, 0, &meta);
         let first_sel = selectors.first().map_or("*", String::as_str);
         let hint_ctx = HintContext::new(HintSource::Geometry).with_selector(first_sel);
@@ -173,6 +177,10 @@ pub fn run(cli: &Cli, selectors: &[String], include_hidden: bool) -> Result<(), 
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
 
     // Text short-circuit: render a human-readable table instead of JSON.
     if cli.format == "text" && cli.jq.is_none() {

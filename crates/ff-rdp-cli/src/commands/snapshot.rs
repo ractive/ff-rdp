@@ -128,6 +128,10 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
 
     let total = match &results {
         Value::Null => 0,

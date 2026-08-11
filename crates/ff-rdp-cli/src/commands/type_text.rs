@@ -40,7 +40,7 @@ pub fn run_core(
     text: &str,
     clear: bool,
     opts: &TypeOptions<'_>,
-) -> Result<serde_json::Value, AppError> {
+) -> Result<(serde_json::Value, bool), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
@@ -132,7 +132,7 @@ pub fn run_core(
         result["match_count"] = json!(match_count);
         result["chosen_index"] = json!(chosen_index);
     }
-    Ok(result)
+    Ok((result, ctx.via_daemon))
 }
 
 pub fn run(
@@ -142,7 +142,7 @@ pub fn run(
     clear: bool,
     opts: &TypeOptions<'_>,
 ) -> Result<(), AppError> {
-    let mut result_json = run_core(cli, selector, text, clear, opts)?;
+    let (mut result_json, via_daemon) = run_core(cli, selector, text, clear, opts)?;
 
     // Preserve the pre-iter-61c CLI output shape: `settle_method` belongs in
     // `meta`, not in `results`.  The script runner reads it from `results`.
@@ -160,6 +160,8 @@ pub fn run(
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose.
+    crate::connection_meta::merge_route(&mut meta, via_daemon);
     let envelope = output::envelope(&result_json, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::TypeText).with_selector(selector);

@@ -383,6 +383,10 @@ pub fn run(cli: &Cli, urls: &[String], labels: Option<&[String]>) -> Result<(), 
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&Value::Array(results), total, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Perf);
