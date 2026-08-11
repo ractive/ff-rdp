@@ -8,8 +8,8 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
 use super::js_helpers::{
-    JSON_SENTINEL, WaitForPredicate, autowait_element, escape_selector, eval_or_bail,
-    resolve_result, settle_page, wait_for_predicates,
+    JSON_SENTINEL, MatchPolicy, WaitForPredicate, autowait_element, escape_selector, eval_or_bail,
+    resolve_disambiguated_target, resolve_result, settle_page, wait_for_predicates,
 };
 
 /// Options controlling auto-wait and post-action behaviour for `type`.
@@ -25,6 +25,10 @@ pub struct TypeOptions<'a> {
     pub wait_for_timeout_ms: Option<u64>,
     /// Whether to wait for page settle after typing (--settle).
     pub settle: bool,
+    /// iter-140 Theme C: `--visible` / `--index N` — disambiguate a selector
+    /// that matches more than one element before doing anything else. `None`
+    /// (the default, flag-less path) is unchanged.
+    pub match_policy: Option<MatchPolicy>,
 }
 
 /// Type text into a DOM element and return the result value without printing.
@@ -41,6 +45,26 @@ pub fn run_core(
     let console_actor = ctx.target.console_actor.clone();
 
     let wait_timeout_ms = opts.wait_timeout_ms.unwrap_or(cli.timeout);
+
+    // iter-140 Theme C: resolve `--visible`/`--index` to a single,
+    // genuinely-unique element selector up front — see the matching comment
+    // in click.rs's run_core for why this must happen before auto-wait.
+    let resolved_selector;
+    let mut disambiguation: Option<(usize, usize)> = None; // (match_count, chosen_index)
+    let selector: &str = if let Some(policy) = opts.match_policy {
+        let target = resolve_disambiguated_target(
+            &mut ctx,
+            &console_actor,
+            selector,
+            policy,
+            wait_timeout_ms,
+        )?;
+        disambiguation = Some((target.match_count, target.chosen_index));
+        resolved_selector = target.selector;
+        &resolved_selector
+    } else {
+        selector
+    };
 
     // A2: Auto-wait for the element to be focusable (also calls .focus()).
     if !opts.no_wait {
@@ -102,6 +126,11 @@ pub fn run_core(
     let mut result = result_json;
     if let Some(sm) = settle_method {
         result["settle_method"] = json!(sm.as_meta_str());
+    }
+    // iter-140 Theme B/C: report disambiguation transparency on success too.
+    if let Some((match_count, chosen_index)) = disambiguation {
+        result["match_count"] = json!(match_count);
+        result["chosen_index"] = json!(chosen_index);
     }
     Ok(result)
 }

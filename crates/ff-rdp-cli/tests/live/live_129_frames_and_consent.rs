@@ -167,7 +167,7 @@ fn live_129_click_zero_match_error() {
     let stdout = String::from_utf8_lossy(&click.stdout);
     let combined = format!("{stdout}{stderr}");
     assert!(
-        combined.contains("matched in 0 of") && combined.contains("frames"),
+        combined.contains("matched in 0 of") && combined.contains("frame(s) tried"),
         "error must name how many frames were tried: {combined}"
     );
     assert!(

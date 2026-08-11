@@ -701,6 +701,15 @@ top-level attempt and the scan (e.g. --frame sourcepoint). If the selector
 matches nowhere, the error names how many frames were tried and their URLs
 instead of a bare timeout.
 
+When a selector matches more than one element, the default (flag-less)
+behaviour clicks DOM-order index 0 — which may be hidden. Use --visible to
+click the first non-hidden match instead, or --index N to pick a specific
+match (0-based). Mutually exclusive with each other. On success, the output
+gains {\"match_count\": N, \"chosen_index\": N}; on failure (no visible match /
+index out of range), the error names the match count. If the plain selector
+times out because it resolved to a hidden element, the error itself suggests
+--visible/--index with the observed match count.
+
 Output: {\"results\": {\"clicked\": true, \"tag\": \"...\", \"text\": \"...\", \"frame_url\": null}, \"total\": 1, \"meta\": {\"frame_url\": null, ...}}
 `frame_url` is always present (never omitted) — null when the click landed on
 the top-level document, the frame's URL string when it landed inside a frame.
@@ -724,6 +733,12 @@ input/textarea/contenteditable) before typing. Use --no-wait to skip this.
 The value is set via the native HTMLInputElement/HTMLTextAreaElement/HTMLSelectElement
 prototype setter so React/Vue/Svelte value trackers are invalidated, and `input`
 and `change` events are dispatched after the assignment.
+
+When a selector matches more than one element (e.g. two `input[name=keywords]`
+on the same page, one hidden), the default (flag-less) behaviour types into
+DOM-order index 0. Use --visible to target the first non-hidden match instead,
+or --index N for a specific match (0-based). Mutually exclusive with each
+other. On success, the output gains {\"match_count\": N, \"chosen_index\": N}.
 
 Output: {\"results\": {\"typed\": true, \"tag\": \"INPUT\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
     Type(TypeArgs),
@@ -1030,6 +1045,12 @@ Output (--all): full resolved-style object per match (dumps every property)"
     /// Inspect CSS styles for an element matching a CSS selector
     #[command(
         long_about = "Inspect CSS styles for an element matching a CSS selector.
+
+When a selector matches more than one element, use --visible to inspect the
+first non-hidden match instead of the default DOM-order index 0, or --index N
+for a specific match (0-based). Mutually exclusive with each other; resolved
+before styles are read, so the reported selector/rules are for the chosen
+element only.
 
 Output (computed):  {\"results\": [{\"selector\": \"...\", \"computed\": {\"color\": \"...\", ...}}], \"total\": N, \"meta\": {...}}
 Output (--applied): {\"results\": [{\"selector\": \"...\", \"rules\": [{\"selector\": \"...\", \"properties\": [...]}]}], \"total\": N, \"meta\": {...}}
@@ -1605,6 +1626,15 @@ pub struct ClickArgs {
     /// top-level attempt and the frame scan (e.g. --frame sourcepoint)
     #[arg(long, value_name = "URL_SUBSTRING")]
     pub frame: Option<String>,
+    /// When the selector matches more than one element, click the first
+    /// *visible* one instead of blindly taking DOM-order index 0. Mutually
+    /// exclusive with --index.
+    #[arg(long, conflicts_with = "index")]
+    pub visible: bool,
+    /// When the selector matches more than one element, click the Nth match
+    /// (0-based), regardless of visibility. Mutually exclusive with --visible.
+    #[arg(long, value_name = "N", conflicts_with = "visible")]
+    pub index: Option<usize>,
 }
 
 #[derive(clap::Args)]
@@ -1639,6 +1669,15 @@ pub struct TypeArgs {
     /// After typing, wait for network and DOM to idle
     #[arg(long)]
     pub settle: bool,
+    /// When the selector matches more than one element, type into the first
+    /// *visible* one instead of blindly taking DOM-order index 0. Mutually
+    /// exclusive with --index.
+    #[arg(long, conflicts_with = "index")]
+    pub visible: bool,
+    /// When the selector matches more than one element, type into the Nth
+    /// match (0-based), regardless of visibility. Mutually exclusive with --visible.
+    #[arg(long, value_name = "N", conflicts_with = "visible")]
+    pub index: Option<usize>,
 }
 
 #[derive(clap::Args)]
@@ -1967,6 +2006,15 @@ pub struct StylesArgs {
     /// Comma-separated list of CSS property names to include (computed mode only)
     #[arg(long, value_delimiter = ',', conflicts_with_all = ["applied", "layout"])]
     pub properties: Option<Vec<String>>,
+    /// When the selector matches more than one element, inspect the first
+    /// *visible* one instead of blindly taking DOM-order index 0. Mutually
+    /// exclusive with --index.
+    #[arg(long, conflicts_with = "index")]
+    pub visible: bool,
+    /// When the selector matches more than one element, inspect the Nth match
+    /// (0-based), regardless of visibility. Mutually exclusive with --visible.
+    #[arg(long, value_name = "N", conflicts_with = "visible")]
+    pub index: Option<usize>,
 }
 
 #[derive(clap::Args)]

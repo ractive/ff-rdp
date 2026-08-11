@@ -61,6 +61,87 @@ fn click_returns_confirmation_json() {
     assert_eq!(json["meta"]["selector"], "button.submit");
 }
 
+/// AC: `e2e_click_frame_url_in_results` — `--help` documents
+/// `{"results": {..., "frame_url": null}, "meta": {"frame_url": null, ...}}`
+/// and says `frame_url` is "always present (never omitted)" so
+/// `--jq '.results.frame_url'` never throws. Before iter-140 Theme E,
+/// `run()` `.remove()`d `frame_url` from `results` when moving it into
+/// `meta`, so the documented `results.frame_url` key never existed on the
+/// top-frame path — this reproduces that exact path (no `--frame`, a plain
+/// top-level click) against the mock server and checks both copies survive.
+#[test]
+fn click_frame_url_present_in_both_results_and_meta() {
+    let server = click_server("eval_result_click.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["click".to_owned(), "button.submit".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    // Both copies must exist — the top-frame path sets both to `null`.
+    assert!(
+        json.get("results")
+            .is_some_and(|r| r.as_object().is_some_and(|o| o.contains_key("frame_url"))),
+        "results.frame_url must be present (not omitted): {json}"
+    );
+    assert_eq!(json["results"]["frame_url"], serde_json::Value::Null);
+    assert!(
+        json.get("meta")
+            .is_some_and(|m| m.as_object().is_some_and(|o| o.contains_key("frame_url"))),
+        "meta.frame_url must be present (not omitted): {json}"
+    );
+    assert_eq!(json["meta"]["frame_url"], serde_json::Value::Null);
+}
+
+/// AC: `e2e_click_frame_url_in_results` — the `--jq '.results.frame_url'`
+/// filter the `--help` text advertises as safe must not throw / exit
+/// non-zero, on the exact path (`results.frame_url` present-but-null) the
+/// previous test proves is now correct.
+#[test]
+fn click_jq_results_frame_url_does_not_throw() {
+    let server = click_server("eval_result_click.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "click".to_owned(),
+        "button.submit".to_owned(),
+        "--jq".to_owned(),
+        ".results.frame_url".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "--jq '.results.frame_url' must not throw: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 // A1: --selector flag is an alias for the positional selector argument.
 
 #[test]
@@ -181,9 +262,13 @@ fn click_element_not_found_exits_nonzero() {
     // the JSON error envelope on **stdout** (main.rs's single-error-emission
     // convention, iter-98 Theme D) — not stderr, which `AppError::Exit`'s
     // callers use instead for a genuine JS failure.
+    // iter-140 Theme D: the message now says "frame(s) tried (of N total)"
+    // instead of a bare frame count, so it can distinguish "every frame was
+    // tried" from "--frame narrowed the scan" (see click.rs's
+    // `click_in_scanned_frame`).
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("matched in 0 of") && stdout.contains("frames"),
+        stdout.contains("matched in 0 of") && stdout.contains("frame(s) tried"),
         "stdout should carry the frame-aware not-found diagnostic: {stdout}"
     );
 }

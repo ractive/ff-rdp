@@ -70,7 +70,7 @@ fn resolve_selector<'a>(
 /// `--no-daemon` mode, refs are not available across invocations (the daemon
 /// is the ref store), so we return a clear user error.
 ///
-/// The returned `String` is owned because the ref resolver expression is heap-allocated.
+/// The returned `String` is owned because the resolved selector is heap-allocated.
 fn resolve_selector_or_ref(
     positional: Option<&str>,
     flag: Option<&str>,
@@ -91,7 +91,7 @@ fn resolve_selector_or_ref(
     }
 }
 
-/// Connect to the running daemon and resolve a ref ID to its JS resolver expression.
+/// Connect to the running daemon and resolve a ref ID to its unique CSS selector.
 ///
 /// Returns `AppError::User` with a clear message when the ref has expired,
 /// when no daemon is running, or when `--no-daemon` was passed.
@@ -509,7 +509,7 @@ fn dispatch_inner(
                 max_chars,
             }) => commands::dom_tree::run(cli, selector.as_deref(), *depth, *max_chars),
             None => {
-                // --ref resolves to a querySelectorAll expression usable as a selector.
+                // --ref resolves to a genuinely-unique CSS selector (iter-140 Theme A).
                 let resolved: Option<String> = if let Some(id) = ref_id.as_deref() {
                     Some(resolve_ref_via_daemon(cli, id)?)
                 } else {
@@ -624,6 +624,8 @@ fn dispatch_inner(
             wait_for_timeout,
             settle,
             frame,
+            visible,
+            index,
         }) => {
             let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
@@ -635,6 +637,7 @@ fn dispatch_inner(
             // Capture the resolved selector for recording (ref → concrete CSS selector).
             *recording_resolved_selector = Some(selector.clone());
             let dispatch_mode = parse_dispatch_mode(dispatch)?;
+            let match_policy = commands::js_helpers::MatchPolicy::from_flags(*visible, *index)?;
             commands::click::run(
                 cli,
                 &selector,
@@ -647,6 +650,7 @@ fn dispatch_inner(
                     wait_for_timeout_ms: *wait_for_timeout,
                     settle: *settle,
                     frame: frame.as_deref(),
+                    match_policy,
                     ..Default::default()
                 },
             )
@@ -662,6 +666,8 @@ fn dispatch_inner(
             wait_for,
             wait_for_timeout,
             settle,
+            visible,
+            index,
         }) => {
             let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
@@ -686,6 +692,7 @@ fn dispatch_inner(
                     ));
                 }
             };
+            let match_policy = commands::js_helpers::MatchPolicy::from_flags(*visible, *index)?;
             commands::type_text::run(
                 cli,
                 &selector,
@@ -696,6 +703,7 @@ fn dispatch_inner(
                     wait_for,
                     wait_for_timeout_ms: *wait_for_timeout,
                     settle: *settle,
+                    match_policy,
                     ..Default::default()
                 },
             )
@@ -708,7 +716,7 @@ fn dispatch_inner(
             wait_timeout,
         }) => {
             let effective_timeout = *wait_timeout;
-            // --ref resolves to a JS querySelectorAll expression; treat it as a --selector.
+            // --ref resolves to a genuinely-unique CSS selector; treat it as a --selector.
             let resolved_selector: Option<String> = if let Some(id) = ref_id.as_deref() {
                 Some(
                     resolve_ref_via_daemon(cli, id)
@@ -846,6 +854,8 @@ fn dispatch_inner(
             applied,
             layout,
             properties,
+            visible,
+            index,
         }) => {
             let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
@@ -854,6 +864,21 @@ fn dispatch_inner(
                 "styles",
                 cli,
             )?;
+            // iter-140 Theme C: `--visible`/`--index` resolve an ambiguous
+            // selector to one element before `styles` does anything else —
+            // `DomWalkerActor::query_selector` (which `styles` uses
+            // internally) always takes the first DOM-order match, with no
+            // way to pick a different one on its own.
+            let match_policy = commands::js_helpers::MatchPolicy::from_flags(*visible, *index)?;
+            let selector = match match_policy {
+                Some(policy) => commands::js_helpers::resolve_disambiguated_selector_standalone(
+                    cli,
+                    &selector,
+                    policy,
+                    cli.timeout,
+                )?,
+                None => selector,
+            };
             if *applied {
                 commands::styles::run_applied(cli, &selector)
             } else if *layout {

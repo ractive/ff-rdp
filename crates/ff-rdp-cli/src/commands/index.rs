@@ -372,11 +372,19 @@ fn crawl_page(
         .filter(|s| !s.is_empty());
 
     // Extract forms via our JS template.
-    let forms_json = eval_js_string(cli, form_extraction_js_template()).unwrap_or_default();
+    let forms_json = eval_js_string(
+        cli,
+        &form_extraction_js_template(crate::commands::js_helpers::UNIQUE_SELECTOR_JS_FN),
+    )
+    .unwrap_or_default();
     let forms = parse_forms_from_json(&forms_json);
 
     // Extract landmarks via our JS template.
-    let landmarks_json = eval_js_string(cli, landmark_extraction_js_template()).unwrap_or_default();
+    let landmarks_json = eval_js_string(
+        cli,
+        &landmark_extraction_js_template(crate::commands::js_helpers::UNIQUE_SELECTOR_JS_FN),
+    )
+    .unwrap_or_default();
     let landmarks = parse_landmarks_from_json(&landmarks_json);
 
     // Extract outgoing links.

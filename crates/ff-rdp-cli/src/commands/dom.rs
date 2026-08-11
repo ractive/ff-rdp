@@ -9,7 +9,9 @@ use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
-use super::js_helpers::{JSON_SENTINEL, escape_selector, eval_or_bail, resolve_result};
+use super::js_helpers::{
+    JSON_SENTINEL, UNIQUE_SELECTOR_JS_FN, escape_selector, eval_or_bail, resolve_result,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub enum OutputMode {
@@ -37,7 +39,15 @@ pub enum OutputMode {
 /// The ref ID is injected by the Rust caller as a counter (`__REF_START__`).
 /// Actionable attributes only: id, name, type, href, aria-*, data-state, role,
 /// placeholder, value (for inputs).
+///
+/// `__UNIQUE_SELECTOR_FN__` is replaced with [`js_helpers::UNIQUE_SELECTOR_JS_FN`]
+/// (iter-140 Theme A) — each node's `__resolver` is that function's output for
+/// the matched element, a genuine CSS selector, not a `querySelectorAll(sel)[i]`
+/// JS expression. The old expression form round-tripped into
+/// `document.querySelector('...')` call sites (`click`/`type`/`styles`/etc.)
+/// as a double-nested, invalid selector string — see the plan's Theme A bug #1.
 const ARIA_TREE_JS_TEMPLATE: &str = r"(function() {
+  __UNIQUE_SELECTOR_FN__
   var ACTIONABLE_ATTRS = ['id','name','type','href','placeholder','value',
     'aria-label','aria-expanded','aria-hidden','aria-haspopup','aria-selected',
     'aria-checked','aria-disabled','aria-controls','aria-describedby',
@@ -106,8 +116,10 @@ const ARIA_TREE_JS_TEMPLATE: &str = r"(function() {
       node.hasShadowRoot = true;
       node.shadowMode = sr.mode || 'open';
     }
-    // Resolver expression: re-selects this element by its querySelectorAll index.
-    node.__resolver = 'document.querySelectorAll(\'__SELECTOR__\')[' + i + ']';
+    // Resolver: a genuinely-unique CSS selector for this element (iter-140
+    // Theme A), safe to feed straight back into `document.querySelector` /
+    // `DomWalkerActor::query_selector` from any later `--ref e<N>` call.
+    node.__resolver = __ffrdpUniqueSelector(el);
     results.push(node);
   }
   if (results.length === 1) return '__FF_RDP_JSON__' + JSON.stringify(results[0]);
@@ -442,6 +454,7 @@ fn build_js_with_ref_start(selector: &str, mode: OutputMode, ref_start: u64) -> 
             ARIA_TREE_JS_TEMPLATE
                 .replace("__SELECTOR__", &escaped)
                 .replace("__REF_START__", &ref_start.to_string())
+                .replace("__UNIQUE_SELECTOR_FN__", UNIQUE_SELECTOR_JS_FN)
         }
         OutputMode::OuterHtml => format!(
             r"(function() {{

@@ -196,7 +196,14 @@ while IFS= read -r line; do
       [[ -z "$sym" ]] && continue
       # Skip noise tokens.
       case "$sym" in iter-*|README|CLAUDE|kb/*) continue ;; esac
-      if grep -qF "$sym" "$DIFF_FILE"; then
+      # iter-140: `grep -qF -- "$sym"` — without `--`, a backtick-quoted AC
+      # symbol that happens to start with `-` (e.g. a CLI flag like
+      # `--jq '.results.frame_url'`) is parsed as a grep OPTION, not a
+      # pattern, and errors out — silently counted as "no evidence found"
+      # rather than crashing the script (this runs inside an `if`, so
+      # `set -e` doesn't catch it). `--` ends option parsing so the symbol
+      # is always treated as a literal pattern.
+      if grep -qF -- "$sym" "$DIFF_FILE"; then
         evidence_found=1
         break
       fi
@@ -214,7 +221,7 @@ while IFS= read -r line; do
   # Heuristic 3: ::-qualified or SCREAMING_SNAKE token in plain text.
   if [[ $evidence_found -eq 0 ]]; then
     for sym in $(printf '%s' "$text" | grep -oE '[A-Z][A-Za-z0-9_]+(::[A-Za-z_][A-Za-z0-9_]*)+|\b[A-Z][A-Z0-9_]{4,}\b' || true); do
-      if grep -qF "$sym" "$DIFF_FILE"; then
+      if grep -qF -- "$sym" "$DIFF_FILE"; then
         evidence_found=1
         break
       fi
