@@ -14,7 +14,7 @@ dogfood_path: |
   ff-rdp a11y contrast --fail-only --format text --port 6100
   # → must not print a bare [] that hides capped:true
 first_call_sites: []
-status: planned
+status: completed
 ---
 
 # Iteration 141: output hygiene — text padding, invalid JSON, snapshot economics
