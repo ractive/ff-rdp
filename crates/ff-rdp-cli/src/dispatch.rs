@@ -872,7 +872,10 @@ fn dispatch_inner(
             let match_policy = commands::js_helpers::MatchPolicy::from_flags(*visible, *index)?;
             let selector = match match_policy {
                 Some(policy) => commands::js_helpers::resolve_disambiguated_selector_standalone(
-                    cli, &selector, policy, cli.timeout,
+                    cli,
+                    &selector,
+                    policy,
+                    cli.timeout,
                 )?,
                 None => selector,
             };

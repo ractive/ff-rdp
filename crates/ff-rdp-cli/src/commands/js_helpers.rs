@@ -243,13 +243,23 @@ pub(crate) fn autowait_element(
             WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &readiness_js)
                 .map_err(AppError::from)?;
 
-        if let Some(ref exc) = eval.exception {
-            let msg = exc
-                .message
-                .as_deref()
-                .unwrap_or("element readiness check failed");
+        if eval.exception.is_some() {
+            // iter-140 Theme B (on-the-wire correction): `display:none` /
+            // `visibility:hidden` on the DOM-order-0 match throws
+            // immediately here — this branch returns on the *first* eval,
+            // before the timeout loop above ever gets a chance to run
+            // `diagnose_selector_failure`. A selector matching one hidden
+            // element and one visible one (both legitimate real-page shapes:
+            // an a11y-hidden duplicate, an inactive tab panel) used to report
+            // only the bare JS message with no match count — exactly the
+            // "distinguishes hidden from not-found" gap Theme B exists to
+            // close, just reached from a different code path than the
+            // timeout branch. Route through the same diagnostic so both
+            // paths report match count / chosen index identically.
+            let diag = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
+            let elapsed_ms = started.elapsed().as_millis();
             return Err(AppError::Timeout(format!(
-                "selector '{selector}' not ready after {timeout_ms}ms: {msg}"
+                "{diag} (after {elapsed_ms}ms, timeout {timeout_ms}ms)"
             )));
         }
 
@@ -362,7 +372,9 @@ fn diagnose_selector_failure(
         return if hidden {
             format!("selector '{selector}' not ready — the 1 matching element is hidden")
         } else {
-            format!("selector '{selector}' not ready — matched 1 element (layout did not stabilise)")
+            format!(
+                "selector '{selector}' not ready — matched 1 element (layout did not stabilise)"
+            )
         };
     }
     let last_index = match_count - 1;
@@ -516,11 +528,14 @@ pub(crate) fn resolve_disambiguated_target(
                 .ok_or_else(|| {
                     AppError::Internal(anyhow::anyhow!("disambiguation JS missing 'selector'"))
                 })?;
-            let chosen_index = value.get("chosenIndex").and_then(Value::as_u64).unwrap_or(0);
+            let chosen_index = value
+                .get("chosenIndex")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             return Ok(ResolvedTarget {
                 selector: resolved,
-                match_count: match_count as usize,
-                chosen_index: chosen_index as usize,
+                match_count: usize::try_from(match_count).unwrap_or(usize::MAX),
+                chosen_index: usize::try_from(chosen_index).unwrap_or(usize::MAX),
             });
         }
         if started.elapsed() >= timeout {
@@ -535,9 +550,9 @@ pub(crate) fn resolve_disambiguated_target(
              index {n} is out of range (0..{})",
             last_match_count.saturating_sub(1)
         ),
-        MatchPolicy::Visible if last_match_count == 0 => format!(
-            "selector '{selector}' matched 0 elements (not found) after {timeout_ms}ms"
-        ),
+        MatchPolicy::Visible if last_match_count == 0 => {
+            format!("selector '{selector}' matched 0 elements (not found) after {timeout_ms}ms")
+        }
         MatchPolicy::Visible => format!(
             "selector '{selector}' matched {last_match_count} element(s) after {timeout_ms}ms but \
              none are visible — pass --index 0..{} to target a hidden one",
@@ -560,7 +575,8 @@ pub(crate) fn resolve_disambiguated_selector_standalone(
 ) -> Result<String, AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
-    let target = resolve_disambiguated_target(&mut ctx, &console_actor, selector, policy, timeout_ms)?;
+    let target =
+        resolve_disambiguated_target(&mut ctx, &console_actor, selector, policy, timeout_ms)?;
     Ok(target.selector)
 }
 

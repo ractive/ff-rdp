@@ -433,6 +433,14 @@ fn build_click_js_for_mode(escaped_selector: &str, mode: DispatchMode) -> String
 /// does not throw. Returns a descriptive `AppError::User` — never the bare
 /// upstream timeout — when `frame_filter` matches no frame, or when every
 /// candidate frame's eval still throws the not-found error.
+// iter-140 Theme D: on a many-frame page (theguardian.com: 97 frames, most
+// of them consent-string-laden ad iframe URLs) joining every URL raw
+// produced a 65 KB error message. Cap both the number of URLs listed and
+// each URL's length (reusing iter-128's `middle_ellipsis`, already wired
+// into the same shape of problem for `perf`/`network` — see iter-139).
+const MAX_LISTED_FRAME_URLS: usize = 10;
+const FRAME_URL_MAX_LEN: usize = 80;
+
 fn click_in_scanned_frame(
     ctx: &mut ConnectedTab,
     selector: &str,
@@ -449,13 +457,6 @@ fn click_in_scanned_frame(
         })
         .collect();
 
-    // iter-140 Theme D: on a many-frame page (theguardian.com: 97 frames,
-    // most of them consent-string-laden ad iframe URLs) joining every URL raw
-    // produced a 65 KB error message. Cap both the number of URLs listed and
-    // each URL's length (reusing iter-128's `middle_ellipsis`, already wired
-    // into the same shape of problem for `perf`/`network` — see iter-139).
-    const MAX_LISTED_FRAME_URLS: usize = 10;
-    const FRAME_URL_MAX_LEN: usize = 80;
     let bounded_urls = |targets: &[&TargetEvent]| -> String {
         let total = targets.len();
         let listed: Vec<String> = targets
