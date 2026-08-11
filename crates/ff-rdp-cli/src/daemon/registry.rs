@@ -399,6 +399,45 @@ pub(crate) fn gc_stale_spawn_locks() {
 }
 
 // ---------------------------------------------------------------------------
+// Legacy (port-less) spawn-lock GC (iter-142 Theme B)
+// ---------------------------------------------------------------------------
+
+/// The port-less spawn-lock name a pre-iter-123 ff-rdp build wrote, before
+/// the registry was scoped per Firefox port. [`parse_spawn_lock_port`]
+/// requires a `daemon.<PORT>.spawn.lock` shape, so this exact filename can
+/// never match it and [`gc_stale_spawn_locks_in`] never touches it — it sits
+/// forever on any host that ever ran a pre-123 build (dogfooding session 63,
+/// item 30). No current build writes this file, so unlike the per-port
+/// locks there is no registry entry to consult for liveness; the
+/// `try_lock_exclusive` gate below is the only safety check available, and
+/// is sufficient — nothing in the current codebase acquires this name, so
+/// the only way the lock is exclusive-lockable-but-still-needed is if some
+/// other pre-123 process is mid-flight, which the flock check catches.
+const LEGACY_SPAWN_LOCK_FILENAME: &str = "daemon.spawn.lock";
+
+/// Remove `<dir>/daemon.spawn.lock` if present and not currently
+/// flock-held by another process. Idempotent; every error is swallowed —
+/// this is opportunistic housekeeping riding along the same path as
+/// [`gc_stale_spawn_locks_in`].
+pub(crate) fn gc_legacy_spawn_lock_in(dir: &Path) {
+    let path = dir.join(LEGACY_SPAWN_LOCK_FILENAME);
+    let Ok(file) = fs::OpenOptions::new().write(true).open(&path) else {
+        return;
+    };
+    if file.try_lock_exclusive().is_ok() {
+        let _ = fs::remove_file(&path);
+        let _ = fs2::FileExt::unlock(&file);
+    }
+}
+
+/// [`gc_legacy_spawn_lock_in`] against the real `~/.ff-rdp/` directory.
+pub(crate) fn gc_legacy_spawn_lock() {
+    if let Ok(dir) = registry_dir() {
+        gc_legacy_spawn_lock_in(&dir);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -846,5 +885,65 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("does-not-exist");
         gc_stale_spawn_locks_in(&missing);
+    }
+
+    // -----------------------------------------------------------------
+    // iter-142 Theme B: legacy (port-less) spawn-lock GC
+    // -----------------------------------------------------------------
+
+    /// AC `unit_legacy_spawn_lock_collected`: the pre-iter-123 port-less
+    /// `daemon.spawn.lock` name — which `parse_spawn_lock_port` can never
+    /// match, so `gc_stale_spawn_locks_in` never touches it — is removed by
+    /// the dedicated legacy sweep.
+    #[test]
+    fn unit_legacy_spawn_lock_collected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join(LEGACY_SPAWN_LOCK_FILENAME), []).expect("write legacy lock");
+
+        // Confirm the per-port GC really does leave it alone — that's the
+        // defect this dedicated sweep exists to close.
+        gc_stale_spawn_locks_in(dir.path());
+        assert!(
+            dir.path().join(LEGACY_SPAWN_LOCK_FILENAME).exists(),
+            "sanity: the per-port GC must not collect the legacy name"
+        );
+
+        gc_legacy_spawn_lock_in(dir.path());
+        assert!(
+            !dir.path().join(LEGACY_SPAWN_LOCK_FILENAME).exists(),
+            "the legacy port-less lock must be collected"
+        );
+    }
+
+    /// A legacy lock file currently flock-held by another process must
+    /// survive the sweep — same non-negotiable safety property as the
+    /// per-port GC.
+    #[test]
+    fn unit_legacy_spawn_lock_held_lock_survives() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(LEGACY_SPAWN_LOCK_FILENAME);
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&path)
+            .expect("create legacy lock");
+        file.lock_exclusive().expect("hold the lock");
+
+        gc_legacy_spawn_lock_in(dir.path());
+
+        assert!(
+            path.exists(),
+            "a legacy lock currently held by someone else must never be deleted"
+        );
+    }
+
+    /// GC against a directory with no legacy lock, or a nonexistent
+    /// directory, must be a silent no-op.
+    #[test]
+    fn unit_legacy_spawn_lock_noop_when_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        gc_legacy_spawn_lock_in(dir.path());
+        gc_legacy_spawn_lock_in(&dir.path().join("does-not-exist"));
     }
 }

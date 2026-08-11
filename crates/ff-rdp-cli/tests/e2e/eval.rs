@@ -642,6 +642,52 @@ fn eval_meta_eval_path_page_await() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// iter-142 Theme E: ASI-separated top-level-await scripts
+// ---------------------------------------------------------------------------
+
+/// AC: `e2e_eval_asi_await_script` — an ASI-separated (no `;` anywhere)
+/// two-line top-level-await script must succeed end-to-end through the real
+/// CLI, not just at the `build_script` unit level. Pre-iter-142, the
+/// generated wrapper for this exact script
+/// (`await Promise.resolve(1)\n42`) was itself invalid JS — Firefox would
+/// have rejected it with a `SyntaxError` before ever reaching
+/// `evaluateJSAsync`'s result path. This test can't observe Firefox's
+/// parser (the mock server returns a canned fixture regardless of the sent
+/// script), but it does prove the CLI's full request/response plumbing
+/// (connect → target → evaluateJSAsync → envelope) still exits 0 and
+/// produces a normal result envelope for this script shape — combined with
+/// `crates/ff-rdp-cli/src/commands/eval.rs`'s
+/// `build_script_asi_separated_await_script_wraps_without_leaking_and_returns_tail`
+/// unit test (which does inspect the generated wrapper text), the two
+/// together cover both "the wrapper is valid JS" and "the CLI path works".
+#[test]
+fn e2e_eval_asi_await_script() {
+    let server = eval_server("eval_result_number.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["eval".to_owned(), "await Promise.resolve(1)\n42".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "ASI-separated await script must exit 0, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    assert_eq!(json["results"], 42);
+}
+
 /// AC: `e2e_help_viewport_pointers` — `eval --help` documents the headless
 /// `resizeTo()` no-op and points at `launch --window-size` for a real
 /// window size.

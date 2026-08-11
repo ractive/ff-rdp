@@ -64,6 +64,99 @@ fn wait_selector_succeeds_immediately() {
     assert!(json["results"]["elapsed_ms"].is_number());
 }
 
+// ---------------------------------------------------------------------------
+// iter-142 Theme F: plain sleep form
+// ---------------------------------------------------------------------------
+
+/// AC: `e2e_wait_sleep_form` — `ff-rdp wait --sleep-ms <N>` sleeps for
+/// approximately `N` ms and succeeds with NO server listening at all on the
+/// target port — proving the sleep form genuinely skips the Firefox
+/// connection rather than merely tolerating a fast-failing one.
+#[test]
+fn e2e_wait_sleep_form() {
+    // Discover a port nothing is listening on — no MockRdpServer spawned.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local_addr").port();
+    drop(listener);
+
+    let mut args = base_args(port);
+    // base_args includes --no-daemon; irrelevant here since the sleep path
+    // never opens a connection at all, daemon or otherwise.
+    args.extend(["wait".to_owned(), "--sleep-ms".to_owned(), "50".to_owned()]);
+
+    let started = std::time::Instant::now();
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    let elapsed = started.elapsed();
+
+    assert!(
+        output.status.success(),
+        "expected success with no server listening on port {port}, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_millis(50),
+        "must actually sleep for the requested duration, elapsed={elapsed:?}"
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    assert_eq!(json["results"]["matched"], true);
+    assert_eq!(json["results"]["elapsed_ms"], 50);
+}
+
+/// The legacy `--time` alias (the flag name dogfooding session 63 reached
+/// for) parses identically to `--sleep-ms`.
+#[test]
+fn e2e_wait_sleep_form_time_alias() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local_addr").port();
+    drop(listener);
+
+    let mut args = base_args(port);
+    args.extend(["wait".to_owned(), "--time".to_owned(), "20".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    assert!(
+        output.status.success(),
+        "--time alias must work like --sleep-ms, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    assert_eq!(json["results"]["matched"], true);
+    assert_eq!(json["results"]["elapsed_ms"], 20);
+}
+
+/// `wait` with no condition flag at all (the pre-iter-142 dogfooding
+/// friction point) must still fail — `--sleep-ms` opts *in* to a delay, it
+/// does not become the default.
+#[test]
+fn wait_requires_a_condition_or_sleep() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local_addr").port();
+    drop(listener);
+
+    let mut args = base_args(port);
+    args.push("wait".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    assert!(
+        !output.status.success(),
+        "wait with no condition/sleep must fail"
+    );
+}
+
 #[test]
 fn wait_eval_succeeds_immediately() {
     let server = wait_server("eval_result_wait_true.json");

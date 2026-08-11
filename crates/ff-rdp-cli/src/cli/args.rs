@@ -742,16 +742,24 @@ other. On success, the output gains {\"match_count\": N, \"chosen_index\": N}.
 
 Output: {\"results\": {\"typed\": true, \"tag\": \"INPUT\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
     Type(TypeArgs),
-    /// Wait for a condition to become true (polls every 100ms).
-    /// Exactly one of --selector, --text, --eval, or --ref must be specified.
-    #[command(long_about = "Wait for a condition to become true (polls every 100ms).
+    /// Wait for a condition to become true (polls every 100ms), or sleep for a fixed duration.
+    /// Exactly one of --selector, --text, --eval, --ref, or --sleep-ms must be specified.
+    #[command(
+        long_about = "Wait for a condition to become true (polls every 100ms), or sleep for a fixed duration.
 
-Exactly one of --selector, --text, --eval, or --ref must be specified.
+Exactly one of --selector, --text, --eval, --ref, or --sleep-ms must be specified.
 
 Use --ref <id> to wait for an element identified by its ARIA-tree ref ID
 (daemon mode only). Equivalent to --selector but uses a stable ref handle.
 
-Output: {\"results\": {\"matched\": true, \"elapsed_ms\": N, \"condition\": \"selector|text|eval\"}, \"total\": 1, \"meta\": {...}}")]
+Use --sleep-ms <N> for a plain delay with no condition and no Firefox
+connection at all — e.g. `ff-rdp wait --sleep-ms 2000`. Prefer a real
+condition (--selector/--text/--eval/--ref) whenever one exists; a fixed
+sleep is always a guess about how long something takes. --timeout-ms does
+not apply to --sleep-ms, which always runs for exactly its own duration.
+
+Output: {\"results\": {\"matched\": true, \"elapsed_ms\": N, \"condition\": \"selector|text|eval|sleep\"}, \"total\": 1, \"meta\": {...}}"
+    )]
     Wait(WaitArgs),
     /// List cookies via the Firefox StorageActor (includes httpOnly, secure, sameSite, etc.)
     #[command(
@@ -1695,8 +1703,22 @@ pub struct WaitArgs {
     /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
     #[arg(long = "ref", value_name = "REF_ID", group = "condition")]
     pub ref_id: Option<String>,
+    /// Plain sleep for this many milliseconds — no condition, no Firefox
+    /// connection, just a delay. For when you need to pace commands rather
+    /// than wait for a specific page state (use --selector/--text/--eval/--ref
+    /// instead whenever a real condition exists — a fixed sleep is always a
+    /// guess). The legacy spelling `--time` is also accepted as a hidden
+    /// alias (iter-142: this was the flag dogfooders reached for first).
+    #[arg(
+        long = "sleep-ms",
+        alias = "time",
+        value_name = "MS",
+        group = "condition"
+    )]
+    pub sleep_ms: Option<u64>,
     /// Timeout in milliseconds before giving up (canonical flag — use this one).
     /// The legacy spelling `--wait-timeout` is also accepted as a hidden alias.
+    /// Not used by --sleep-ms, which always runs for exactly its own duration.
     #[arg(long = "timeout-ms", alias = "wait-timeout", default_value_t = 5000)]
     pub wait_timeout: u64,
 }

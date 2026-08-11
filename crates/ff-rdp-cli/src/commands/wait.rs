@@ -13,6 +13,11 @@ pub struct WaitOptions<'a> {
     pub selector: Option<&'a str>,
     pub text: Option<&'a str>,
     pub eval: Option<&'a str>,
+    /// iter-142 Theme F: a plain sleep, in milliseconds — no condition, no
+    /// Firefox connection. Mutually exclusive with `selector`/`text`/`eval`
+    /// at the CLI layer (the `condition` ArgGroup); `run_core` also treats
+    /// it as taking priority if a caller somehow sets more than one.
+    pub sleep_ms: Option<u64>,
     pub wait_timeout: u64,
 }
 
@@ -37,9 +42,21 @@ fn warn_if_timeout_alias_used() {
 ///
 /// Called by the script runner, which handles its own NDJSON output.
 pub fn run_core(cli: &Cli, opts: &WaitOptions<'_>) -> Result<serde_json::Value, AppError> {
+    // iter-142 Theme F: --sleep-ms is a plain delay — no condition to poll,
+    // no Firefox connection needed at all. Takes priority over the other
+    // fields so a caller that somehow sets both never falls through to the
+    // (meaningless, since sleep_ms doesn't describe a JS condition)
+    // condition-polling path below.
+    if let Some(ms) = opts.sleep_ms {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        return Ok(
+            json!({"matched": true, "elapsed_ms": ms, "condition": format!("sleep={ms}ms")}),
+        );
+    }
+
     if opts.selector.is_none() && opts.text.is_none() && opts.eval.is_none() {
         return Err(AppError::User(
-            "wait: specify at least one of --selector, --text, or --eval".into(),
+            "wait: specify at least one of --selector, --text, --eval, --ref, or --sleep-ms".into(),
         ));
     }
 
@@ -144,6 +161,7 @@ mod tests {
             selector: Some("button.submit"),
             text: None,
             eval: None,
+            sleep_ms: None,
             wait_timeout: 5000,
         };
         let js = build_wait_js(&opts).unwrap();
@@ -157,6 +175,7 @@ mod tests {
             selector: None,
             text: Some("Success"),
             eval: None,
+            sleep_ms: None,
             wait_timeout: 5000,
         };
         let js = build_wait_js(&opts).unwrap();
@@ -169,10 +188,56 @@ mod tests {
             selector: None,
             text: None,
             eval: Some("document.readyState === 'complete'"),
+            sleep_ms: None,
             wait_timeout: 5000,
         };
         let js = build_wait_js(&opts).unwrap();
         assert!(js.contains("document.readyState === 'complete'"));
+    }
+
+    // iter-142 Theme F: plain sleep form
+
+    /// AC `e2e_wait_sleep_form` (unit half): `run_core` with `sleep_ms` set
+    /// sleeps for approximately that duration and returns a `matched: true`
+    /// result without requiring any condition field — it must never reach
+    /// `connect_and_get_target` (which would fail with no live Firefox in a
+    /// unit test), proving the sleep path really does skip the connection.
+    #[test]
+    fn run_core_sleep_form_does_not_require_a_connection() {
+        use clap::Parser as _;
+        let cli = Cli::try_parse_from(["ff-rdp", "wait", "--sleep-ms", "5"])
+            .expect("should parse --sleep-ms 5");
+        let opts = WaitOptions {
+            selector: None,
+            text: None,
+            eval: None,
+            sleep_ms: Some(5),
+            wait_timeout: 5000,
+        };
+        let started = std::time::Instant::now();
+        let result = run_core(&cli, &opts).expect("sleep form must succeed with no connection");
+        let elapsed = started.elapsed();
+
+        assert_eq!(result["matched"], true);
+        assert_eq!(result["elapsed_ms"], 5);
+        assert!(
+            elapsed >= std::time::Duration::from_millis(5),
+            "must actually sleep for the requested duration, elapsed={elapsed:?}"
+        );
+    }
+
+    /// `--time` is accepted as a hidden legacy alias for `--sleep-ms` —
+    /// this is the exact flag name dogfooding session 63 reached for first.
+    #[test]
+    fn wait_args_time_alias_parses_as_sleep_ms() {
+        use crate::cli::args::Command;
+        use clap::Parser as _;
+        let cli = Cli::try_parse_from(["ff-rdp", "wait", "--time", "6000"])
+            .expect("should parse --time 6000");
+        let Command::Wait(args) = cli.command else {
+            panic!("expected Command::Wait");
+        };
+        assert_eq!(args.sleep_ms, Some(6000));
     }
 
     // iter-85 Theme K-followup: deprecation warning for --timeout alias

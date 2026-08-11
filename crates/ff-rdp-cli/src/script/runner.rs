@@ -873,6 +873,10 @@ fn execute_wait(
         selector: step.selector.as_deref(),
         text: step.text.as_deref(),
         eval: step.eval.as_deref(),
+        // iter-142: recorded scripts have no sleep step type yet — only the
+        // interactive `wait --sleep-ms` CLI form is in scope for this
+        // iteration.
+        sleep_ms: None,
         wait_timeout: timeout,
     };
     wait_run_core(cli, &opts)

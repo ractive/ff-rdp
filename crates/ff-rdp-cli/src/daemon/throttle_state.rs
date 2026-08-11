@@ -96,6 +96,65 @@ pub(crate) fn read_throttle_state_in(dir: &Path, port: u16) -> Result<Option<Thr
 }
 
 // ---------------------------------------------------------------------------
+// Stale throttle-state GC (iter-142 Theme B)
+// ---------------------------------------------------------------------------
+//
+// iter-132 Theme E swept stale `daemon.<port>.spawn.lock` files but
+// deliberately left `daemon.<port>.throttle.json` alone (see
+// `registry::parse_spawn_lock_port`'s doc comment) — the file was never in
+// scope for that GC. Dogfooding session 63 observed 5 throttle files for
+// dead daemon pids accumulate with no cleanup path at all. Mirrors the
+// spawn-lock GC's shape: parse the port out of the filename, check the
+// recorded `daemon_pid` for liveness, remove if dead.
+
+/// Parse the Firefox port out of a `daemon.<PORT>.throttle.json` filename.
+///
+/// Returns `None` for anything else in the registry directory —
+/// `daemon.<port>.json`, `daemon.<port>.spawn.lock`, `daemon.log`, etc.
+fn parse_throttle_state_port(filename: &str) -> Option<u16> {
+    filename
+        .strip_prefix("daemon.")?
+        .strip_suffix(".throttle.json")?
+        .parse()
+        .ok()
+}
+
+/// Sweep `<dir>/daemon.*.throttle.json` files whose recorded `daemon_pid` is
+/// no longer alive.
+///
+/// Deliberately narrow: only exact `daemon.<PORT>.throttle.json` filenames
+/// are touched; a corrupt/unparsable file is left alone rather than removed
+/// (an I/O or parse error is not proof of staleness). Every error is
+/// swallowed — this is opportunistic housekeeping that must never fail the
+/// caller's real operation.
+pub(crate) fn gc_stale_throttle_states_in(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Some(port) = parse_throttle_state_port(&name) else {
+            continue;
+        };
+        let Ok(Some(state)) = read_throttle_state_in(dir, port) else {
+            continue;
+        };
+        if !super::process::is_process_alive(state.daemon_pid) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// [`gc_stale_throttle_states_in`] against the real `~/.ff-rdp/` directory.
+pub(crate) fn gc_stale_throttle_states() {
+    if let Ok(dir) = registry::registry_dir() {
+        gc_stale_throttle_states_in(&dir);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public convenience wrappers that use the real `~/.ff-rdp/` directory.
 // ---------------------------------------------------------------------------
 
@@ -177,5 +236,76 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::write(dir.path().join(state_filename(6000)), b"not json").expect("write garbage");
         assert!(read_throttle_state_in(dir.path(), 6000).is_err());
+    }
+
+    // -----------------------------------------------------------------
+    // iter-142 Theme B: stale throttle-state GC
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn unit_parse_throttle_state_port_matches_exact_suffix_only() {
+        assert_eq!(
+            parse_throttle_state_port("daemon.6000.throttle.json"),
+            Some(6000)
+        );
+        assert_eq!(parse_throttle_state_port("daemon.6000.json"), None);
+        assert_eq!(parse_throttle_state_port("daemon.6000.spawn.lock"), None);
+        assert_eq!(parse_throttle_state_port("daemon.log"), None);
+        assert_eq!(
+            parse_throttle_state_port("daemon.6000.throttle.json.tmp"),
+            None
+        );
+    }
+
+    /// AC `live_142_throttle_json_gc` (unit half): a throttle state whose
+    /// `daemon_pid` is dead is removed by the sweep; one whose `daemon_pid`
+    /// is alive (the current test process) is left alone.
+    #[test]
+    fn unit_gc_stale_throttle_states_removes_dead_keeps_live() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Dead daemon pid (spawn+reap a trivial child for a portable dead PID).
+        #[cfg(unix)]
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn `true`");
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .spawn()
+            .expect("spawn cmd exit");
+        let dead_pid = child.id();
+        child.wait().expect("child exits");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        write_throttle_state_in(dir.path(), 6000, &sample_state(dead_pid)).expect("write dead");
+        write_throttle_state_in(dir.path(), 6001, &sample_state(std::process::id()))
+            .expect("write live");
+
+        gc_stale_throttle_states_in(dir.path());
+
+        assert!(
+            !dir.path().join(state_filename(6000)).exists(),
+            "dead-pid throttle state must be collected"
+        );
+        assert!(
+            dir.path().join(state_filename(6001)).exists(),
+            "live-pid throttle state must survive"
+        );
+    }
+
+    /// GC on a directory with no throttle-state files is a silent no-op —
+    /// mirrors `daemon.<port>.json` / `daemon.<port>.spawn.lock` files must
+    /// never be touched by this sweep.
+    #[test]
+    fn unit_gc_stale_throttle_states_ignores_other_registry_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("daemon.6000.json"), b"{}").expect("write registry file");
+        fs::write(dir.path().join("daemon.6000.spawn.lock"), []).expect("write lock file");
+
+        gc_stale_throttle_states_in(dir.path());
+
+        assert!(dir.path().join("daemon.6000.json").exists());
+        assert!(dir.path().join("daemon.6000.spawn.lock").exists());
     }
 }

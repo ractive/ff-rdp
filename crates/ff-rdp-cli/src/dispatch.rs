@@ -713,6 +713,7 @@ fn dispatch_inner(
             text,
             eval,
             ref_id,
+            sleep_ms,
             wait_timeout,
         }) => {
             let effective_timeout = *wait_timeout;
@@ -735,6 +736,7 @@ fn dispatch_inner(
                     selector: resolved_selector.as_deref().or(selector.as_deref()),
                     text: text.as_deref(),
                     eval: eval.as_deref(),
+                    sleep_ms: *sleep_ms,
                     wait_timeout: effective_timeout,
                 },
             )

@@ -13,7 +13,7 @@ dogfood_path: |
   ff-rdp navigate https://www.bbc.com/news --port 6100
   # → non-Sourcepoint CMP: must either dismiss it or warn that it did not
 first_call_sites: []
-status: planned
+status: in-progress
 ---
 
 # Iteration 142: session hygiene — daemon stop, disk growth, consent coverage, eval edges
@@ -115,22 +115,48 @@ in.
   (`ff-rdp click "#bbccookies-prompt button, #cookiePrompt button, #cookiePrompt a"` — the third
   alternative is a policy link). Hints should prefer buttons over links.
 
-## Acceptance Criteria
+## Acceptance Criteria [6/10]
 
-- [ ] live_142_daemon_stop_no_false_error: `daemon stop` after `launch` exits 0 and reports the
-      Firefox pid that `launch` returned
-- [ ] live_142_profile_growth_bounded: repeated launch/stop cycles do not leave unbounded temp
-      profiles — name the chosen policy in the test
-- [ ] live_142_throttle_json_gc: throttle state files for dead pids are collected; live ones are not
-- [ ] unit_legacy_spawn_lock_collected: the port-less `daemon.spawn.lock` name is collectable
-- [ ] live_142_auto_consent_honest: on a page whose CMP is not handled, `auto_consent` does not
-      report success — a warning names what was found
-- [ ] live_142_bbc_cmp_dismissed: BBC's cookie banner is dismissed by `consent accept`
-- [ ] live_142_full_page_no_duplicate_header: full-page capture of a sticky-header page has no
-      repeated header band
-- [ ] e2e_eval_asi_await_script: an ASI-separated await script parses without wrapper leakage
-- [ ] e2e_wait_sleep_form: a plain duration wait exists and works
-- [ ] live_142_console_locale_pinned: console output is locale-stable regardless of system locale
+- [x] live_142_daemon_stop_no_false_error: `daemon stop` after `launch` exits 0 and reports the
+      Firefox pid that `launch` returned — see
+      `crates/ff-rdp-cli/tests/live/live_142_daemon_stop_pid_honesty.rs`; root cause was
+      `launch-record.json` being a single global file clobbered by concurrent ports, fixed by
+      scoping it per port (`daemon_record.rs`)
+- [x] live_142_profile_growth_bounded: repeated launch/stop cycles do not leave unbounded temp
+      profiles — name the chosen policy in the test — see
+      `crates/ff-rdp-cli/tests/live/live_142_disk_growth.rs::live_142_profile_growth_bounded`;
+      policy: a dead-owner-pid profile is reclaimed by the very next `launch`, not gated by the
+      7-day age threshold (`util/profile_dir.rs::prune_orphan_profiles`)
+- [x] live_142_throttle_json_gc: throttle state files for dead pids are collected; live ones are not
+      — see `crates/ff-rdp-cli/tests/live/live_142_disk_growth.rs::live_142_throttle_json_gc`
+      (`daemon/throttle_state.rs::gc_stale_throttle_states`)
+- [x] unit_legacy_spawn_lock_collected: the port-less `daemon.spawn.lock` name is collectable —
+      see `crates/ff-rdp-cli/src/daemon/registry.rs::unit_legacy_spawn_lock_collected`
+- [deferred — new plan: kb/iterations/iteration-144-session-hygiene-followup.md] live_142_auto_consent_honest:
+      on a page whose CMP is not handled, `auto_consent` does not report success — a warning
+      names what was found. `launch`'s `auto_consent` field is set from the CLI flag alone
+      (`commands/launch.rs:603`) and `launch` returns before any page loads, so it structurally
+      cannot attest to a real dismiss within this iteration's scope — see the follow-up plan's
+      "Why these three were deferred" section
+- [deferred — new plan: kb/iterations/iteration-144-session-hygiene-followup.md] live_142_bbc_cmp_dismissed:
+      BBC's cookie banner is dismissed by `consent accept`
+- [deferred — new plan: kb/iterations/iteration-144-session-hygiene-followup.md] live_142_full_page_no_duplicate_header:
+      full-page capture of a sticky-header page has no repeated header band — deferred to avoid
+      touching iteration-135's stitching fix without dedicated pixel-level before/after
+      verification
+- [x] e2e_eval_asi_await_script: an ASI-separated await script parses without wrapper leakage —
+      see `crates/ff-rdp-cli/tests/e2e/eval.rs::e2e_eval_asi_await_script` and
+      `crates/ff-rdp-cli/tests/live/live_142_eval_asi_await.rs::live_142_eval_asi_await_script`
+      (`commands/eval.rs::top_level_statement_boundaries`, `wrap_top_level_await`)
+- [x] e2e_wait_sleep_form: a plain duration wait exists and works — see
+      `crates/ff-rdp-cli/tests/e2e/wait.rs::e2e_wait_sleep_form` (`commands/wait.rs`,
+      `--sleep-ms` / legacy `--time` alias)
+- [deferred — new plan: kb/iterations/iteration-144-session-hygiene-followup.md] live_142_console_locale_pinned:
+      console output is locale-stable regardless of system locale. `launch`'s `USER_JS` already
+      pins `intl.accept_languages`/`intl.locale.requested`/`intl.locale.matchOS` (since
+      iter-61j) yet dogfooding session 63 still observed German output — the implementation
+      environment for this iteration has no non-English-locale Firefox to reproduce with, so a
+      fix cannot be verified here; see the follow-up plan
 
 ## Notes
 

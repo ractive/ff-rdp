@@ -939,13 +939,13 @@ pub(crate) fn run_daemon_stop(cli: &Cli, port: u16) -> Result<(), AppError> {
     //    not address. `read()` already filters out stale (dead-PID)
     //    records, so we don't need to recheck liveness here.
     // ----------------------------------------------------------------
-    match crate::daemon_record::read()
+    match crate::daemon_record::read(port)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon record: {e}")))?
     {
         Some(rec) if rec.port == port => {
             // Live instance found via DaemonRecord and matches --port — kill it.
             let (stopped, port_free, escalation_msg) = kill_pid_and_wait_port(rec.pid, rec.port);
-            crate::daemon_record::remove().ok();
+            crate::daemon_record::remove(rec.port).ok();
 
             if !port_free {
                 let msg = if escalation_msg.is_empty() {
@@ -1025,7 +1025,24 @@ pub(crate) fn run_daemon_stop(cli: &Cli, port: u16) -> Result<(), AppError> {
         return OutputPipeline::from_cli(cli)?.finalize(&envelope);
     }
 
-    // 1. Try graceful shutdown via RPC first.
+    // iter-142 Theme A: `info.pid` is the *proxy daemon's own* PID
+    // (`std::process::id()`, set in `daemon/server.rs`), not Firefox's — the
+    // daemon connects to an already-running Firefox as an RDP client, it
+    // never spawns one. Killing only `info.pid` stops the proxy but leaves
+    // Firefox (and the listening debug port callers actually care about)
+    // untouched — exactly the "port still listening" false-negative
+    // dogfooding session 63 reproduced 3/3, and the reason the error
+    // reported the daemon's PID as if it were Firefox's. Resolve the real
+    // Firefox process via the same ownership-verified port-owner lookup
+    // `stop_prior_instance` uses, so both the kill and the reported `pid`
+    // target the process that is actually holding the port.
+    let firefox_pid = crate::port_owner::find_listener(firefox_port)
+        .ok()
+        .flatten()
+        .filter(|owner| crate::util::profile_dir::pid_is_ff_rdp_spawned(owner.pid))
+        .map(|owner| owner.pid);
+
+    // 1. Try graceful shutdown via RPC first (asks the proxy daemon to exit).
     let rpc_ok = daemon_rpc(
         cli,
         firefox_port,
@@ -1047,22 +1064,33 @@ pub(crate) fn run_daemon_stop(cli: &Cli, port: u16) -> Result<(), AppError> {
         }
     }
 
-    // 2. If still alive, SIGTERM the Firefox process group (not just the daemon PID).
-    //    Firefox spawns GPU/RDD child processes in the same group; killing only the
-    //    daemon leaves those children alive and holding the port open.
+    // 2. If the proxy daemon is still alive, SIGTERM then SIGKILL it directly
+    //    — this only stops the proxy, not Firefox (see note above).
     if process::is_process_alive(info.pid) {
         process::kill_process_group(info.pid);
-        // Wait up to 2 s for the process group to exit.
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while process::is_process_alive(info.pid) && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
-
-    // 3. If SIGTERM was not enough, SIGKILL the group as a last resort.
     if process::is_process_alive(info.pid) {
         process::kill_process_group_force(info.pid);
         std::thread::sleep(Duration::from_millis(300));
+    }
+
+    // 3. Independently stop the actual Firefox process (if one was found and
+    //    verified as ff-rdp-owned) — this is the process actually holding
+    //    `firefox_port` open. Mirrors the SIGTERM→wait→SIGKILL ladder above.
+    if let Some(pid) = firefox_pid {
+        process::kill_process_group(pid);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while process::is_process_alive(pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if process::is_process_alive(pid) {
+            process::kill_process_group_force(pid);
+            std::thread::sleep(Duration::from_millis(300));
+        }
     }
 
     // 4. Clean up the daemon registry regardless of process state.
@@ -1072,15 +1100,22 @@ pub(crate) fn run_daemon_stop(cli: &Cli, port: u16) -> Result<(), AppError> {
     //    (max PORT_FREE_WAIT_BOUND with SIGTERM+SIGKILL escalation on timeout).
     //    This confirms that the OS has reclaimed the socket, so a subsequent
     //    `launch` on the same port will succeed immediately without a "port in use" error.
-    let (port_free, escalation_msg) = wait_port_free_with_escalation(info.pid, firefox_port);
+    //    Escalate against the real Firefox PID when known — escalating
+    //    against the daemon PID (the pre-iter-142 behaviour) can never free
+    //    the port, since the daemon never held it.
+    let escalation_target = firefox_pid.unwrap_or(info.pid);
+    let (port_free, escalation_msg) =
+        wait_port_free_with_escalation(escalation_target, firefox_port);
 
     if !port_free {
         return Err(AppError::User(escalation_msg));
     }
 
-    let stopped = !process::is_process_alive(info.pid);
+    let daemon_stopped = !process::is_process_alive(info.pid);
+    let firefox_stopped = firefox_pid.is_none_or(|pid| !process::is_process_alive(pid));
+    let stopped = daemon_stopped && firefox_stopped;
     let meta = json!({});
-    let envelope = output::envelope(&json!({"stopped": stopped}), 1, &meta);
+    let envelope = output::envelope(&json!({"stopped": stopped, "pid": firefox_pid}), 1, &meta);
     OutputPipeline::from_cli(cli)?.finalize(&envelope)
 }
 
@@ -1095,12 +1130,12 @@ pub(crate) fn run_daemon_stop(cli: &Cli, port: u16) -> Result<(), AppError> {
 /// 3. Fall back to port-owner lookup.
 pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> {
     // 1. Check shared DaemonRecord first (covers instances started via `launch`).
-    match crate::daemon_record::read()
+    match crate::daemon_record::read(port)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon record: {e}")))?
     {
         Some(rec) if rec.port == port && process::is_process_alive(rec.pid) => {
             let (_stopped, port_free, _escalation_msg) = kill_pid_and_wait_port(rec.pid, rec.port);
-            crate::daemon_record::remove().ok();
+            crate::daemon_record::remove(rec.port).ok();
             if !port_free {
                 return Err(AppError::User(format!(
                     "port {port} is still in use after stopping the prior instance (pid {}). \
@@ -1112,7 +1147,7 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> 
         }
         Some(rec) if rec.port == port => {
             // Record exists but PID is dead — clean up and proceed (port may already be free).
-            crate::daemon_record::remove().ok();
+            crate::daemon_record::remove(rec.port).ok();
         }
         _ => {}
     }

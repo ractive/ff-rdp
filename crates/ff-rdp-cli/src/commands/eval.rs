@@ -104,6 +104,17 @@ pub(crate) fn load_script(
 /// `evaluateJSAsync` already knows how to await. `eval_path` stays
 /// `"page-await"` either way; from the caller's perspective only the
 /// previously-broken await scripts start working, nothing else changes.
+///
+/// iter-142 Theme E fixed two follow-on defects in the same wrap: (1) the
+/// single-vs-multi-statement heuristic (used to decide whether the wrap
+/// synthesizes a `return`) only recognized `;` as a statement separator, so
+/// an ASI-separated (newline-only) multi-statement script like
+/// `await Promise.resolve(1)\n42` was misclassified as one expression and
+/// wrapped into invalid JS — a syntax error reported past the end of the
+/// user's input; (2) even when correctly classified as multi-statement, the
+/// wrap never returned anything, so a trailing bare expression silently
+/// became `{"type":"undefined"}` instead of its real value. See
+/// [`top_level_statement_boundaries`] and [`wrap_top_level_await`].
 pub(crate) fn build_script(user_script: &str, stringify: bool, _isolate: bool) -> String {
     // The stringify helper: if the value is already a string, return it as-is;
     // otherwise JSON.stringify it. This prevents double-encoding when the JS
@@ -148,13 +159,15 @@ const STATEMENT_LEADING_KEYWORDS: &[&str] = &[
 /// Best-effort (not a JS parser) check for whether `script` is a single
 /// expression, safe to wrap as `return (<script>)` without a syntax error.
 ///
-/// Two simplifications, both fail *safe* (degrade to the no-auto-return
-/// wrap path in [`wrap_top_level_await`], which still evaluates — it just
-/// won't surface a value unless the script has an explicit `return`):
+/// Simplifications, all fail *safe* (degrade to the no-auto-return wrap
+/// path in [`wrap_top_level_await`], which still evaluates — it just won't
+/// surface a value unless the script has an explicit `return`):
 ///
-/// - A `;` inside a string/template literal (e.g. `await foo("a;b")`) is
-///   indistinguishable here from a real statement separator, so such
-///   scripts are treated as multi-statement even though they are not.
+/// - A `;`/newline inside a string/template literal is tracked (see
+///   [`top_level_statement_boundaries`]) so those don't false-positive as
+///   statement separators, but the tracking is char-based, not a real
+///   tokenizer — it does not understand regex literals or escaped quotes,
+///   so a regex containing `;`/newline-adjacent punctuation could misfire.
 /// - Only a fixed, common prefix list is checked against statement-leading
 ///   keywords; more obscure statement forms (labelled statements, etc.)
 ///   are not recognized and would be (harmlessly) treated as expressions,
@@ -169,10 +182,158 @@ fn looks_like_single_expression(script: &str) -> bool {
     if body.is_empty() {
         return false;
     }
-    !body.contains(';')
+    !looks_like_multi_statement(body)
         && !STATEMENT_LEADING_KEYWORDS
             .iter()
             .any(|kw| body_starts_with_keyword(body, kw))
+}
+
+/// Whether `c` can end a complete JS statement/expression on its own —
+/// identifiers, numbers, closing brackets, and string terminators all
+/// qualify. Used by [`top_level_statement_boundaries`] to judge whether a
+/// newline might be an Automatic Semicolon Insertion (ASI) boundary.
+fn is_statement_end_char(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+        || c == '_'
+        || c == '$'
+        || matches!(c, ')' | ']' | '}' | '\'' | '"' | '`')
+}
+
+/// Whether `c` can only appear as a *continuation* of the previous line's
+/// expression — a binary operator, member-access `.`, comma, or another
+/// closing/continuation character. Seeing one of these as the first
+/// character on a new line means the preceding newline is NOT an ASI
+/// boundary (real JS ASI famously glues a leading `.`/`+`/`-`/etc. onto the
+/// previous statement rather than inserting a semicolon).
+fn is_continuation_start_char(c: char) -> bool {
+    matches!(
+        c,
+        '.' | ')'
+            | ']'
+            | '}'
+            | ','
+            | '+'
+            | '-'
+            | '*'
+            | '/'
+            | '%'
+            | '<'
+            | '>'
+            | '='
+            | '!'
+            | '&'
+            | '|'
+            | '^'
+            | '?'
+            | ':'
+            | ';'
+    )
+}
+
+/// Scan `body` (best-effort — see [`looks_like_single_expression`]'s doc
+/// comment for the acknowledged gaps) and return, in order, the byte
+/// offsets where a new top-level JS statement appears to begin: one past
+/// each top-level `;`, or the first non-whitespace character after each
+/// top-level newline that looks like an ASI boundary
+/// ([`is_statement_end_char`] before it, NOT [`is_continuation_start_char`]
+/// after).
+///
+/// iter-142 Theme E: the pre-existing `;`-only check missed ASI-separated
+/// statements entirely — `await Promise.resolve(1)\n42` has no `;` at all,
+/// so it was misclassified as a single expression and wrapped as
+/// `return (\nawait Promise.resolve(1)\n42\n)`, which is itself a syntax
+/// error (`missing ) in parenthetical`) pointing past the end of the user's
+/// input. Newlines are now a statement-separator signal too, gated by
+/// [`is_statement_end_char`]/[`is_continuation_start_char`] so common
+/// multi-line *single*-expression styles (method chains starting each
+/// continuation line with `.`) are not misclassified as multi-statement.
+///
+/// Tracks single/double-quote and template-literal string state (a `;` or
+/// newline *inside* a string is never mistaken for a separator — the old
+/// `;`-only check did not do this either) and `(`/`[`/`{` nesting depth (a
+/// multi-line object/array literal or argument list is never split).
+fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Str {
+        None,
+        Single,
+        Double,
+        Template,
+    }
+
+    let mut boundaries = Vec::new();
+    let mut state = Str::None;
+    let mut depth: i32 = 0;
+    let mut prev_significant: Option<char> = None;
+    let chars: Vec<(usize, char)> = body.char_indices().collect();
+    let n = chars.len();
+    let mut i = 0;
+
+    while i < n {
+        let (byte_idx, c) = chars[i];
+        match state {
+            Str::Single => {
+                if c == '\'' {
+                    state = Str::None;
+                    prev_significant = Some(c);
+                }
+                i += 1;
+                continue;
+            }
+            Str::Double => {
+                if c == '"' {
+                    state = Str::None;
+                    prev_significant = Some(c);
+                }
+                i += 1;
+                continue;
+            }
+            Str::Template => {
+                if c == '`' {
+                    state = Str::None;
+                    prev_significant = Some(c);
+                }
+                i += 1;
+                continue;
+            }
+            Str::None => {}
+        }
+
+        match c {
+            '\'' => state = Str::Single,
+            '"' => state = Str::Double,
+            '`' => state = Str::Template,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ';' if depth == 0 => boundaries.push(byte_idx + c.len_utf8()),
+            '\n' if depth == 0 => {
+                let mut j = i + 1;
+                while j < n && chars[j].1.is_whitespace() {
+                    j += 1;
+                }
+                if let (Some(prev), Some(&(next_byte, next))) = (prev_significant, chars.get(j))
+                    && is_statement_end_char(prev)
+                    && !is_continuation_start_char(next)
+                {
+                    boundaries.push(next_byte);
+                }
+            }
+            _ => {}
+        }
+
+        if depth == 0 && state == Str::None && !c.is_whitespace() {
+            prev_significant = Some(c);
+        }
+        i += 1;
+    }
+
+    boundaries
+}
+
+/// Whether `body` looks like more than one top-level JS statement — see
+/// [`top_level_statement_boundaries`].
+fn looks_like_multi_statement(body: &str) -> bool {
+    !top_level_statement_boundaries(body).is_empty()
 }
 
 /// Whether `body` starts with the statement-leading keyword `kw`, at a real
@@ -234,19 +395,47 @@ fn contains_await_keyword(script: &str) -> bool {
 /// (see [`build_script`]'s "Top-level `await`" doc section).
 ///
 /// When `base` is a single expression, the wrap preserves the pre-await
-/// completion-value contract exactly: `return (<base>)`. When it is not
-/// (multiple statements), the raw statements run as the function body with
-/// no implicit return — any explicit `return` inside now works (it would
-/// have been a `SyntaxError: Illegal return statement` in top-level script
-/// context), but a script relying on completion-value auto-return of its
-/// last expression gets `undefined` instead. That is strictly better than
-/// the pre-fix behavior (a `SyntaxError` on the `await` token itself).
+/// completion-value contract exactly: `return (<base>)`.
+///
+/// When it is not (multiple statements), a function body has no
+/// script-style completion-value semantics — only an explicit `return`
+/// inside it produces a value, so the naive wrap (all statements verbatim,
+/// no synthesized `return`) silently turned a trailing expression into
+/// `undefined` even though the exact same statements evaluated directly (no
+/// `await`, no wrap) would have surfaced it as the completion value. This
+/// was flagged as the worst failure mode in Theme E: an agent gets
+/// `{"type":"undefined"}` with no indication anything went wrong.
+///
+/// iter-142 fix: if the *last* top-level statement
+/// ([`top_level_statement_boundaries`]) is itself a bare expression, split
+/// it off and wrap only that part in `return (…)` — every earlier statement
+/// still runs unwrapped, so an explicit `return` earlier in the script (a
+/// `SyntaxError: Illegal return statement` in top-level script context, so
+/// this only appears in scripts that already relied on the `await` wrap)
+/// keeps working exactly as before. When the last statement is NOT a bare
+/// expression (a declaration, a control-flow construct, an explicit
+/// `return` a user already wrote), there is nothing safe to auto-return —
+/// the wrap falls back to the no-auto-return form, same as before this
+/// iteration.
 fn wrap_top_level_await(base: &str, base_is_single_expression: bool) -> String {
     if base_is_single_expression {
-        format!("(async function(){{return (\n{base}\n);}})()")
-    } else {
-        format!("(async function(){{\n{base}\n}})()")
+        return format!("(async function(){{return (\n{base}\n);}})()");
     }
+
+    if let Some(split_at) = top_level_statement_boundaries(base).last().copied() {
+        let prefix = base[..split_at].trim_end();
+        let last = base[split_at..].trim();
+        if !last.is_empty() && looks_like_single_expression(last) {
+            let last_expr = last.strip_suffix(';').unwrap_or(last).trim();
+            return if prefix.is_empty() {
+                format!("(async function(){{return (\n{last_expr}\n);}})()")
+            } else {
+                format!("(async function(){{\n{prefix}\nreturn (\n{last_expr}\n);}})()")
+            };
+        }
+    }
+
+    format!("(async function(){{\n{base}\n}})()")
 }
 
 /// Build the final JavaScript source, exposed for use by the script runner.
@@ -777,18 +966,108 @@ mod tests {
         assert!(!s.contains("eval("), "must not contain eval(): {s}");
     }
 
-    /// A multi-statement script with top-level await must still evaluate
-    /// (no SyntaxError) even though it forgoes the auto-return optimization.
+    /// iter-142 Theme E: a multi-statement script with top-level `await`
+    /// whose *last* statement is a bare expression now has that trailing
+    /// expression auto-returned — matching the non-await path's native
+    /// eval-completion-value semantics — instead of silently discarding it
+    /// as `undefined` (the "worst failure mode" flagged in the iteration
+    /// plan). The earlier statement (`let x = await foo();`) still runs
+    /// unwrapped, ahead of the synthesized `return`.
     #[test]
-    fn build_script_wraps_top_level_await_multi_statement_no_auto_return() {
+    fn build_script_wraps_top_level_await_multi_statement_honors_trailing_expression() {
         let s = build_script("let x = await foo(); x + 1", false, false);
         assert!(
             s.starts_with("(async function(){"),
             "expected async-IIFE wrap, got: {s}"
         );
-        assert!(!s.contains("return ("), "must not force a return: {s}");
-        assert!(s.contains("let x = await foo(); x + 1"));
+        assert!(
+            s.contains("let x = await foo();"),
+            "earlier statement must still run: {s}"
+        );
+        assert!(
+            s.contains("return (\nx + 1\n)"),
+            "trailing bare expression must be auto-returned: {s}"
+        );
         assert!(!s.contains("eval("), "must not contain eval(): {s}");
+    }
+
+    /// When the last statement is NOT a bare expression (here: a
+    /// declaration with no completion value of its own), there is nothing
+    /// safe to auto-return — the wrap must fall back to the no-auto-return
+    /// form rather than guessing.
+    #[test]
+    fn build_script_wraps_top_level_await_multi_statement_no_auto_return_for_declaration_tail() {
+        let s = build_script("await foo(); let x = 1", false, false);
+        assert!(
+            s.starts_with("(async function(){"),
+            "expected async-IIFE wrap, got: {s}"
+        );
+        assert!(
+            !s.contains("return ("),
+            "a trailing declaration has no completion value to auto-return: {s}"
+        );
+        assert!(s.contains("await foo(); let x = 1"));
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
+    }
+
+    /// AC `e2e_eval_asi_await_script` (unit half — the exact dogfooding
+    /// session 63 repro): an ASI-separated (no `;` at all) two-line script
+    /// must not leak the async-IIFE wrapper as a syntax error pointing past
+    /// the end of the user's input, AND the trailing expression's value
+    /// must be honored (not silently `undefined`) — both symptoms shared
+    /// the same root cause (see `top_level_statement_boundaries`'s doc
+    /// comment).
+    #[test]
+    fn build_script_asi_separated_await_script_wraps_without_leaking_and_returns_tail() {
+        let s = build_script("await Promise.resolve(1)\n42", false, false);
+        assert!(
+            s.starts_with("(async function(){"),
+            "expected async-IIFE wrap, got: {s}"
+        );
+        assert!(
+            s.contains("await Promise.resolve(1)"),
+            "the await statement must still run: {s}"
+        );
+        assert!(
+            s.contains("return (\n42\n)"),
+            "the ASI-separated trailing expression must be auto-returned: {s}"
+        );
+        // The old bug wrapped the whole two-line body as a single
+        // `return (…)` expression, which is itself invalid JS — assert the
+        // await statement is NOT inside the returned parenthetical.
+        assert!(
+            !s.contains("return (\nawait Promise.resolve(1)\n42\n)"),
+            "must not reproduce the pre-fix leaky wrap: {s}"
+        );
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
+    }
+
+    /// `looks_like_multi_statement` (via `looks_like_single_expression`)
+    /// must recognize ASI-separated statements even with zero `;`
+    /// characters anywhere in the script.
+    #[test]
+    fn looks_like_single_expression_rejects_asi_separated_statements() {
+        assert!(!looks_like_single_expression(
+            "await Promise.resolve(1)\n42"
+        ));
+        assert!(!looks_like_single_expression("foo()\nbar()"));
+    }
+
+    /// A common legitimate multi-line style — a method chain whose
+    /// continuation lines start with `.` — must still be recognized as a
+    /// single expression, not misclassified as ASI-separated statements.
+    #[test]
+    fn looks_like_single_expression_accepts_multiline_method_chain() {
+        assert!(looks_like_single_expression(
+            "document\n  .querySelector('a')\n  .click()"
+        ));
+    }
+
+    /// A multi-line object literal (newlines inside `{}`/`()` at non-zero
+    /// bracket depth) must not be split into fake statements.
+    #[test]
+    fn looks_like_single_expression_accepts_multiline_object_literal() {
+        assert!(looks_like_single_expression("({\n  a: 1,\n  b: 2\n})"));
     }
 
     /// Scripts without `await` must be completely unaffected by the new
