@@ -257,14 +257,22 @@ mod tests {
         );
     }
 
-    /// AC `live_142_throttle_json_gc` (unit half): a throttle state whose
-    /// `daemon_pid` is dead is removed by the sweep; one whose `daemon_pid`
-    /// is alive (the current test process) is left alone.
-    #[test]
-    fn unit_gc_stale_throttle_states_removes_dead_keeps_live() {
-        let dir = tempfile::tempdir().expect("tempdir");
-
-        // Dead daemon pid (spawn+reap a trivial child for a portable dead PID).
+    /// Spawn+reap a trivial child process and return its now-dead PID.
+    ///
+    /// The spawn happens inside this function so the `Child` handle is
+    /// dropped before the caller ever sees the PID. This matters on
+    /// Windows: `is_process_alive` (`daemon/process.rs`) checks liveness
+    /// via `OpenProcess`, which succeeds for an already-exited process as
+    /// long as *any* handle to it (including our own `std::process::Child`)
+    /// is still open — the process object isn't destroyed, and the PID
+    /// isn't eligible for reuse, until the last handle closes. A test that
+    /// keeps its own `Child` alive across the `is_process_alive` check
+    /// therefore self-defeats: the check reports "alive" not because the
+    /// process is running, but because the test's own handle is still open.
+    /// Scoping the spawn to this function's return boundary (like
+    /// `util/profile_dir.rs`'s equivalent helper) closes that handle before
+    /// any liveness check runs.
+    fn spawn_and_reap_child_pid() -> u32 {
         #[cfg(unix)]
         let mut child = std::process::Command::new("true")
             .spawn()
@@ -274,8 +282,20 @@ mod tests {
             .args(["/C", "exit", "0"])
             .spawn()
             .expect("spawn cmd exit");
-        let dead_pid = child.id();
+        let pid = child.id();
         child.wait().expect("child exits");
+        // `child` drops here (handle closes) before the caller sees `pid`.
+        pid
+    }
+
+    /// AC `live_142_throttle_json_gc` (unit half): a throttle state whose
+    /// `daemon_pid` is dead is removed by the sweep; one whose `daemon_pid`
+    /// is alive (the current test process) is left alone.
+    #[test]
+    fn unit_gc_stale_throttle_states_removes_dead_keeps_live() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let dead_pid = spawn_and_reap_child_pid();
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         write_throttle_state_in(dir.path(), 6000, &sample_state(dead_pid)).expect("write dead");
