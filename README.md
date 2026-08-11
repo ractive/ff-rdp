@@ -224,6 +224,9 @@ ff-rdp wait --text "Success" --wait-timeout 10000
 # Wait for a JavaScript expression to become truthy
 ff-rdp wait --eval "document.readyState === 'complete'"
 
+# Plain sleep, no condition or Firefox connection needed (--time is a legacy alias)
+ff-rdp wait --sleep-ms 2000
+
 # List cookies
 ff-rdp cookies
 
@@ -380,6 +383,17 @@ ff-rdp --no-daemon eval "1+1"
   whether that owner process is still alive and, if so, keeps the profile
   regardless of age. This is a positive "still in use" signal that closes the
   gap where a fully-idle-but-running Firefox could look stale by mtime alone.
+- A marker naming a **dead** PID is reclaimed by the very next `launch`
+  immediately, without waiting out the age threshold — a dead owner is
+  definitive proof of abandonment, not just "old enough to guess at" (iter-142;
+  fixes an observed 62 profiles / 2.7 GB accumulating in a single day, all
+  younger than the old 7-day gate).
+- Every `ff-rdp launch` also sweeps `~/.ff-rdp/` housekeeping files: stale
+  per-port spawn locks, the legacy port-less `daemon.spawn.lock` name, and
+  `daemon.<port>.throttle.json` state files whose recorded daemon PID is no
+  longer alive (iter-142). Previously this only ran on the rare
+  daemon-autostart path, so a session that reused an already-running daemon
+  never triggered it at all.
 - `ff-rdp profiles list` / `ff-rdp profiles prune` inspect and reclaim the
   profile directory explicitly; `ff-rdp doctor` warns when the profile store
   grows past 100 entries or 1 GiB. `profiles prune --all` skips the age gate
