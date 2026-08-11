@@ -178,10 +178,19 @@ fn eval_exception_exits_nonzero() {
     assert!(!output.status.success(), "expected failure for exception");
     assert_eq!(output.status.code(), Some(1));
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    // iter-141 Theme E: a JS exception thrown by the evaluated script is
+    // routed through the standard JSON error envelope on stdout — the
+    // single emission per the JSON-only output convention — rather than a
+    // bare `error: ...` line on stderr.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout must be a JSON error envelope: {e}\nstdout: {stdout}"));
+    assert_eq!(json["error_type"], "User", "got: {json}");
     assert!(
-        stderr.contains("test error"),
-        "stderr should mention the error: {stderr}"
+        json["error"]
+            .as_str()
+            .is_some_and(|s| s.contains("test error")),
+        "envelope error should mention the error: {json}"
     );
 }
 

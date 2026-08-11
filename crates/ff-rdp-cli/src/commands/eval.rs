@@ -348,19 +348,23 @@ pub fn run(
         Err(e) => return Err(AppError::from(e)),
     };
 
-    // If an exception occurred, print it to stderr and exit non-zero.
+    // If an exception occurred, route it through the standard JSON error
+    // envelope (iter-141 Theme E) rather than printing bare text to stderr.
+    // `eval` is a well-formed-but-invalid-*input* case in exactly the sense
+    // Theme E covers for `eval_or_bail`/`poll_js_condition` (invalid CSS
+    // selectors, "element not found" polling failures): the script the
+    // caller supplied threw, which is on them, not an ff-rdp bug — so this
+    // is `AppError::User`, not the `AppError::Exit(1)` that used to bypass
+    // `main`'s envelope emission entirely (`ff-rdp eval "throw new
+    // Error('x')"` printed `error: x` plus a pretty-JSON dump with no JSON
+    // envelope on stdout at all, while every other command failure emits
+    // one).
     if let Some(ref exc) = eval_result.exception {
         let msg = exc
             .message
             .as_deref()
             .unwrap_or("evaluation threw an exception");
-        let detail = exc.value.to_json();
-        eprintln!("error: {}", sanitize_for_terminal(msg));
-        eprintln!(
-            "{}",
-            serde_json::to_string_pretty(&detail).unwrap_or_default()
-        );
-        return Err(AppError::Exit(1));
+        return Err(AppError::User(sanitize_for_terminal(msg).into_owned()));
     }
 
     // Compute the JSON representation before we potentially move the grip into
