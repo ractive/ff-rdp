@@ -132,9 +132,7 @@ pub fn run(cli: &Cli, name: Option<&str>, include_document_cookie: bool) -> Resu
     attach_storage_degraded_warning(&mut envelope, storage_actor_empty, document_cookie_merged);
 
     let hint_ctx = HintContext::new(HintSource::Cookies);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Attach a `warnings[]` degradation marker to the output `envelope` when the

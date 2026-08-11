@@ -585,9 +585,7 @@ pub fn run(
 
     let envelope = output::envelope(&Value::Array(results), total, &meta);
     let hint_ctx = HintContext::new(HintSource::Styles).with_selector(selector);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Map RDP errors to user-friendly messages for the cascade command.

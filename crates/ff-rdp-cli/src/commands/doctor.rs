@@ -191,9 +191,7 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     crate::connection_meta::merge_into(&mut meta, host, port, firefox_version);
     let envelope = output::envelope(&results, probes.len(), &meta);
 
-    OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
-        .map_err(AppError::from)?;
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)?;
 
     if any_failed {
         Err(AppError::Exit(1))

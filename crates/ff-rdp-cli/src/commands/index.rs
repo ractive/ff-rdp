@@ -105,10 +105,16 @@ fn run_crawl(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
         .transpose()
         .map_err(|e| AppError::User(format!("--exclude regex: {e}")))?;
 
-    // BFS state.
+    // BFS state. `enqueued` tracks every URL ever pushed onto `queue`
+    // (separately from `visited`, which only gains an entry once a page has
+    // actually been crawled) so a URL discovered as an outgoing link on
+    // multiple pages before it's popped is enqueued once, not once per
+    // referring page (iter-141 Theme B: "each URL is also enqueued twice").
     let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut enqueued: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut queue: VecDeque<(String, u32)> = VecDeque::new();
     queue.push_back((base_url.clone(), 0));
+    enqueued.insert(base_url.clone());
 
     let mut pages: BTreeMap<String, Page> = BTreeMap::new();
 
@@ -179,7 +185,7 @@ fn run_crawl(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
                 // Enqueue outgoing links for the next depth level.
                 if current_depth < opts.depth {
                     for link in &outgoing_links {
-                        if !visited.contains(link) {
+                        if !visited.contains(link) && enqueued.insert(link.clone()) {
                             queue.push_back((link.clone(), current_depth + 1));
                         }
                     }
@@ -341,8 +347,14 @@ fn crawl_page(
     base_url: &str,
     cross_origin: bool,
 ) -> anyhow::Result<CrawledPage> {
-    // Navigate to the page.
-    use crate::commands::navigate::{WaitAfterNav, WaitLevel, run as navigate_run};
+    // Navigate to the page. Uses `run_core` — the non-printing entry point
+    // also used by the script runner — rather than the public `navigate::run`
+    // (iter-141 Theme B). `run` unconditionally prints a JSON envelope to
+    // stdout; calling it once per crawled page interleaved its output with
+    // `index`'s own summary JSON, producing two (or `--max-pages` many)
+    // concatenated JSON documents on stdout that `jq`/`json.load` cannot
+    // parse — a JSON-only CLI must emit exactly one document.
+    use crate::commands::navigate::{WaitAfterNav, WaitLevel, run_core as navigate_run_core};
     let wait_opts = WaitAfterNav {
         wait_text: None,
         wait_selector: None,
@@ -356,7 +368,7 @@ fn crawl_page(
         // readystate fallback that plain `ff-rdp navigate` already defaults to.
         wait_strategy: crate::commands::navigate::WaitStrategy::Both,
     };
-    navigate_run(cli, url, &wait_opts, false).map_err(|e| anyhow::anyhow!("navigate: {e}"))?;
+    navigate_run_core(cli, url, &wait_opts).map_err(|e| anyhow::anyhow!("navigate: {e}"))?;
 
     // Check if we got redirected to a login page.
     let current_url = eval_js_value(cli, "location.href")
@@ -673,13 +685,122 @@ fn url_to_slug(url: &str, base_url: &str) -> String {
     path.replace('/', "-")
 }
 
+/// One `robots.txt` record: the (lowercased) user-agent names it declares,
+/// and the `Disallow:` paths listed under it.
+///
+/// Per the robots.txt convention (and the gov.uk file that exposed the
+/// iter-141 bug), one or more consecutive `User-agent:` lines share the
+/// rules that follow, up to the next `User-agent:` line that appears *after*
+/// at least one rule line — that boundary starts a new group. Rules
+/// declared under a specific named agent (e.g. `User-agent: deepcrawl`)
+/// apply ONLY to a crawler identifying as that agent; they must never leak
+/// into the wildcard `User-agent: *` group that generic crawlers (including
+/// ff-rdp, which sends no custom crawler UA) fall under.
+#[derive(Debug, PartialEq, Eq)]
+struct RobotsGroup {
+    user_agents: Vec<String>,
+    disallow: Vec<String>,
+}
+
+/// Case-insensitively strip a `directive:` prefix (e.g. `"user-agent:"`),
+/// returning the remainder unmodified (original case preserved) when it
+/// matches, or `None` when `line` doesn't start with `directive`.
+fn strip_directive_ci<'a>(line: &'a str, directive: &str) -> Option<&'a str> {
+    if line.len() >= directive.len() && line[..directive.len()].eq_ignore_ascii_case(directive) {
+        Some(&line[directive.len()..])
+    } else {
+        None
+    }
+}
+
+/// Parse a `robots.txt` body into its user-agent groups (iter-141 Theme B).
+///
+/// Only `User-agent:` and `Disallow:` directives are modeled — `Allow:`,
+/// `Sitemap:`, `Crawl-delay:`, and inline `#` comments are recognized (so
+/// they don't get mis-parsed as a stray `Disallow:`) but otherwise ignored,
+/// since nothing in this crawler currently needs finer-grained precedence
+/// than "does any `Disallow:` prefix match this path".
+fn parse_robots_groups(body: &str) -> Vec<RobotsGroup> {
+    let mut groups: Vec<RobotsGroup> = Vec::new();
+    let mut cur_uas: Vec<String> = Vec::new();
+    let mut cur_disallow: Vec<String> = Vec::new();
+    // Whether a rule line (Disallow/Allow) has been seen since the last
+    // User-agent line — a fresh User-agent line after this closes the
+    // current group and starts a new one; consecutive User-agent lines
+    // (this still false) instead accumulate into the same group.
+    let mut seen_rule = false;
+
+    for raw_line in body.lines() {
+        // Strip inline `#` comments, then surrounding whitespace.
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(rest) = strip_directive_ci(line, "user-agent:") {
+            if seen_rule && !cur_uas.is_empty() {
+                groups.push(RobotsGroup {
+                    user_agents: std::mem::take(&mut cur_uas),
+                    disallow: std::mem::take(&mut cur_disallow),
+                });
+                seen_rule = false;
+            }
+            cur_uas.push(rest.trim().to_lowercase());
+        } else if let Some(rest) = strip_directive_ci(line, "disallow:") {
+            seen_rule = true;
+            let p = rest.trim();
+            if !p.is_empty() {
+                cur_disallow.push(p.to_owned());
+            }
+        } else if strip_directive_ci(line, "allow:").is_some() {
+            seen_rule = true;
+        }
+        // Other directives (Sitemap, Crawl-delay, ...) are ignored.
+    }
+    if !cur_uas.is_empty() {
+        groups.push(RobotsGroup {
+            user_agents: cur_uas,
+            disallow: cur_disallow,
+        });
+    }
+    groups
+}
+
+/// Select the `Disallow:` paths that apply to us from a parsed set of
+/// `robots.txt` groups (iter-141 Theme B).
+///
+/// ff-rdp does not register a custom crawler user-agent, so only the
+/// wildcard `User-agent: *` group ever applies — a group scoped to a named
+/// agent (e.g. `deepcrawl`) must never block a crawl that isn't that agent,
+/// which is exactly the gov.uk bug this fixes (`Disallow: /` under
+/// `User-agent: deepcrawl` was being applied to us, indexing 1 page instead
+/// of the requested 3).
+///
+/// Returns `None` if the wildcard group disallows the entire site
+/// (`Disallow: /` or `Disallow: /*`); `Some(vec![])` if there is no
+/// wildcard group at all (nothing applies to us); otherwise the wildcard
+/// group's `Disallow:` paths.
+fn select_group_disallows(groups: &[RobotsGroup]) -> Option<Vec<String>> {
+    let Some(wildcard) = groups
+        .iter()
+        .find(|g| g.user_agents.iter().any(|ua| ua == "*"))
+    else {
+        return Some(Vec::new());
+    };
+    if wildcard.disallow.iter().any(|p| p == "/" || p == "/*") {
+        return None;
+    }
+    Some(wildcard.disallow.clone())
+}
+
 /// Fetch disallowed paths from `robots.txt` synchronously.
 ///
 /// Returns an empty `Vec` on any error (fail-open: we don't want a missing
 /// robots.txt to block the crawl).
 ///
 /// Returns `None` if the entire site is disallowed (`Disallow: /` or
-/// `Disallow: /*`).
+/// `Disallow: /*`) under the wildcard `User-agent: *` group specifically —
+/// see [`select_group_disallows`].
 fn fetch_disallowed_paths_inner(base_url: &str) -> Option<Vec<String>> {
     use std::io::Read as _;
     let robots_url = format!("{base_url}/robots.txt");
@@ -688,21 +809,8 @@ fn fetch_disallowed_paths_inner(base_url: &str) -> Option<Vec<String>> {
     let mut body_str = String::new();
     limited.read_to_string(&mut body_str).ok()?;
 
-    let mut paths = Vec::new();
-    for line in body_str.lines() {
-        let line = line.trim();
-        if let Some(path) = line.strip_prefix("Disallow:") {
-            let p = path.trim();
-            if p == "/" || p == "/*" {
-                // Entire site disallowed.
-                return None;
-            }
-            if !p.is_empty() {
-                paths.push(p.to_owned());
-            }
-        }
-    }
-    Some(paths)
+    let groups = parse_robots_groups(&body_str);
+    select_group_disallows(&groups)
 }
 
 /// Fetch disallowed paths from `robots.txt`, returning an empty `Vec` if the
@@ -748,4 +856,122 @@ pub fn write_page_map(path: &Path, map: &PageMap, format: &str) -> anyhow::Resul
     // Use safe_write so a symlink pre-positioned at the destination is refused.
     crate::util::safe_io::safe_write(path, content.as_bytes())
         .with_context(|| format!("writing page-map to '{}'", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── iter-141 Theme B: robots.txt user-agent grouping ─────────────────
+
+    /// The exact shape reported from gov.uk in dogfooding session 63:
+    /// `User-agent: *` disallows a couple of narrow paths, while
+    /// `Disallow: /` sits under an unrelated `User-agent: deepcrawl` group.
+    /// A generic crawler (ff-rdp sends no custom UA) must honor only the
+    /// wildcard group's rules — not the `deepcrawl`-scoped `Disallow: /`.
+    #[test]
+    fn unit_robots_foreign_ua_disallow_all_does_not_block_wildcard_crawl() {
+        let body = "\
+User-agent: *
+Disallow: /*/print$
+Disallow: /search/all*
+
+User-agent: deepcrawl
+Disallow: /
+";
+        let groups = parse_robots_groups(body);
+        assert_eq!(groups.len(), 2, "expected two groups, got: {groups:?}");
+
+        let disallow =
+            select_group_disallows(&groups).expect("wildcard group must not block everything");
+        assert_eq!(
+            disallow,
+            vec!["/*/print$".to_owned(), "/search/all*".to_owned()],
+            "only the wildcard group's Disallow paths must apply"
+        );
+    }
+
+    /// A wildcard group that genuinely disallows everything must still
+    /// block the crawl (the fix must not swing the other way and start
+    /// ignoring a real full-site block).
+    #[test]
+    fn unit_robots_wildcard_disallow_all_blocks_crawl() {
+        let body = "User-agent: *\nDisallow: /\n";
+        let groups = parse_robots_groups(body);
+        assert_eq!(select_group_disallows(&groups), None);
+    }
+
+    /// A robots.txt with only named (non-wildcard) groups has nothing that
+    /// applies to a generic crawler — the disallow list must be empty, not
+    /// inherited from an unrelated named agent.
+    #[test]
+    fn unit_robots_no_wildcard_group_means_nothing_disallowed() {
+        let body = "User-agent: deepcrawl\nDisallow: /\n";
+        let groups = parse_robots_groups(body);
+        assert_eq!(select_group_disallows(&groups), Some(Vec::new()));
+    }
+
+    /// Multiple consecutive `User-agent:` lines share one group's rules —
+    /// the standard robots.txt "one or more agents, then rules" shape.
+    #[test]
+    fn unit_robots_consecutive_user_agents_share_one_group() {
+        let body = "User-agent: googlebot\nUser-agent: *\nDisallow: /private\n";
+        let groups = parse_robots_groups(body);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].user_agents, vec!["googlebot", "*"]);
+        assert_eq!(
+            select_group_disallows(&groups),
+            Some(vec!["/private".to_owned()])
+        );
+    }
+
+    /// Comments and blank lines must not be mis-parsed as directives.
+    #[test]
+    fn unit_robots_ignores_comments_and_blank_lines() {
+        let body = "\
+# comment line
+User-agent: *
+# another comment
+Disallow: /admin # trailing comment
+
+Sitemap: https://example.com/sitemap.xml
+";
+        let groups = parse_robots_groups(body);
+        assert_eq!(
+            select_group_disallows(&groups),
+            Some(vec!["/admin".to_owned()])
+        );
+    }
+
+    // ── iter-141 Theme B: double-enqueue ──────────────────────────────────
+
+    /// `enqueued` must dedupe a URL that is discovered as an outgoing link
+    /// from multiple pages before it's popped — regression guard for the
+    /// crawl loop's `enqueued.insert(link.clone())` gate (the loop itself
+    /// needs a live Firefox crawl to exercise end-to-end; this unit test
+    /// pins the underlying dedup primitive so a future refactor can't drop
+    /// the `enqueued` check without a test noticing).
+    #[test]
+    fn unit_enqueue_dedup_across_multiple_referring_pages() {
+        let visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut enqueued: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut queue: VecDeque<(String, u32)> = VecDeque::new();
+        enqueued.insert("https://example.com/".to_owned());
+
+        // Two different "pages" both link to the same URL.
+        for _ in 0..2 {
+            let links = vec!["https://example.com/about".to_owned()];
+            for link in &links {
+                if !visited.contains(link) && enqueued.insert(link.clone()) {
+                    queue.push_back((link.clone(), 1));
+                }
+            }
+        }
+
+        assert_eq!(
+            queue.len(),
+            1,
+            "the same URL discovered from two referring pages must be enqueued once, got: {queue:?}"
+        );
+    }
 }

@@ -386,9 +386,7 @@ pub fn run(cli: &Cli, urls: &[String], labels: Option<&[String]>) -> Result<(), 
     let envelope = output::envelope(&Value::Array(results), total, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Perf);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 #[cfg(test)]

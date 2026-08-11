@@ -405,9 +405,7 @@ pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
     let envelope = output::envelope(&results, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Screenshot);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Two-step screenshot protocol (canonical path) with FF 151+ fallback.

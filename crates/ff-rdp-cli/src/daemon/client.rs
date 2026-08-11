@@ -879,7 +879,7 @@ pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
 
     let meta = json!({});
     let envelope = output::envelope(&result, 1, &meta);
-    Ok(OutputPipeline::from_cli(cli)?.finalize(&envelope)?)
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)
 }
 
 /// Stop a Firefox instance identified by PID and port.
@@ -983,7 +983,7 @@ pub(crate) fn run_daemon_stop(cli: &Cli, port: u16) -> Result<(), AppError> {
                 1,
                 &meta,
             );
-            return Ok(OutputPipeline::from_cli(cli)?.finalize(&envelope)?);
+            return OutputPipeline::from_cli(cli)?.finalize(&envelope);
         }
         _ => {
             // No record, or record is for a different port — fall through
@@ -1009,7 +1009,7 @@ pub(crate) fn run_daemon_stop(cli: &Cli, port: u16) -> Result<(), AppError> {
             1,
             &meta,
         );
-        return Ok(OutputPipeline::from_cli(cli)?.finalize(&envelope)?);
+        return OutputPipeline::from_cli(cli)?.finalize(&envelope);
     };
 
     let firefox_port = info.firefox_port;
@@ -1022,7 +1022,7 @@ pub(crate) fn run_daemon_stop(cli: &Cli, port: u16) -> Result<(), AppError> {
             1,
             &meta,
         );
-        return Ok(OutputPipeline::from_cli(cli)?.finalize(&envelope)?);
+        return OutputPipeline::from_cli(cli)?.finalize(&envelope);
     }
 
     // 1. Try graceful shutdown via RPC first.
@@ -1081,7 +1081,7 @@ pub(crate) fn run_daemon_stop(cli: &Cli, port: u16) -> Result<(), AppError> {
     let stopped = !process::is_process_alive(info.pid);
     let meta = json!({});
     let envelope = output::envelope(&json!({"stopped": stopped}), 1, &meta);
-    Ok(OutputPipeline::from_cli(cli)?.finalize(&envelope)?)
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)
 }
 
 /// Stop an existing Firefox instance on `port` to make way for a fresh launch.

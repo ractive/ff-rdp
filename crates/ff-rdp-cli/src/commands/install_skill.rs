@@ -386,7 +386,7 @@ fn run_list(
     let results = Value::Array(items);
     let meta = json!({ "scope": scope.as_str() });
     let envelope = output::envelope(&results, total, &meta);
-    pipeline.finalize(&envelope).map_err(AppError::Internal)
+    pipeline.finalize(&envelope)
 }
 
 // ---------------------------------------------------------------------------
@@ -413,7 +413,7 @@ fn run_uninstall(
         let meta = json!({ "scope": scope.as_str() });
         let result = json!({ "uninstalled": false, "reason": "not installed", "path": install_path.to_string_lossy() });
         let envelope = output::envelope(&result, 1, &meta);
-        return pipeline.finalize(&envelope).map_err(AppError::Internal);
+        return pipeline.finalize(&envelope);
     }
 
     // Check for user-modified files unless --force.
@@ -433,7 +433,7 @@ fn run_uninstall(
     let meta = json!({ "scope": scope.as_str() });
     let result = json!({ "uninstalled": true, "path": install_path.to_string_lossy() });
     let envelope = output::envelope(&result, 1, &meta);
-    pipeline.finalize(&envelope).map_err(AppError::Internal)
+    pipeline.finalize(&envelope)
 }
 
 fn check_uninstall_safety(install_path: &Path, known_names: &[PathBuf]) -> Result<(), AppError> {
@@ -537,5 +537,5 @@ fn run_install(
         "dry_run": dry_run,
     });
     let envelope = output::envelope(&results, total, &meta);
-    pipeline.finalize(&envelope).map_err(AppError::Internal)
+    pipeline.finalize(&envelope)
 }

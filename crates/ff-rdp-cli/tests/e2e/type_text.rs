@@ -298,9 +298,18 @@ fn type_text_element_not_found_exits_nonzero() {
     );
     assert_eq!(output.status.code(), Some(1));
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    // iter-141 Theme E: a JS exception (here, `poll_js_condition`'s "Element
+    // not found" eval failure) is routed through the standard JSON error
+    // envelope on stdout — the single emission per the JSON-only output
+    // convention — rather than a bare `error: ...` line on stderr.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout must be a JSON error envelope: {e}\nstdout: {stdout}"));
+    assert_eq!(json["error_type"], "User", "got: {json}");
     assert!(
-        stderr.contains("Element not found"),
-        "stderr should mention element not found: {stderr}"
+        json["error"]
+            .as_str()
+            .is_some_and(|s| s.contains("Element not found")),
+        "envelope error should mention element not found: {json}"
     );
 }

@@ -413,9 +413,7 @@ pub fn run(
     let envelope = output::envelope(&results, breakpoint_count, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Responsive);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)?;
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
 
     // --strict: the envelope has been emitted; a media-query mismatch now
     // becomes a non-zero exit (iter-98 Theme A). The default (non-strict) run

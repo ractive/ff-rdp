@@ -104,9 +104,7 @@ pub fn run(
     }
 
     let hint_ctx = HintContext::new(HintSource::A11y);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Render an accessibility tree node (and its children) as an indented text tree.
@@ -439,9 +437,7 @@ pub fn run_critical(cli: &Cli, root_selector: Option<&str>) -> Result<(), AppErr
         output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
 
     let hint_ctx = HintContext::new(HintSource::A11y);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// JS audit: returns a JSON array of violation records. Each record has

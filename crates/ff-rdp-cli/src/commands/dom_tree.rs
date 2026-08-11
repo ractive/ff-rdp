@@ -75,9 +75,7 @@ pub fn run(cli: &Cli, selector: Option<&str>, depth: u32, max_chars: u32) -> Res
     let envelope = output::envelope(&results, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::DomTree);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Render DOM tree as indented text to stdout.

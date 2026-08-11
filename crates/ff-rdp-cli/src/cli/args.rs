@@ -1822,7 +1822,9 @@ pub struct SnapshotArgs {
     /// Mutually exclusive with --depth. Must be ≥ 1.
     #[arg(long, value_name = "N", conflicts_with = "depth")]
     pub max_depth: Option<u32>,
-    /// Maximum total characters of text content to include (default: 50000)
+    /// Maximum size, in bytes of serialized JSON, of the whole output tree
+    /// (tags, attributes, and structure — not just leaf text content;
+    /// default: 50000). `meta.truncated` reports whether anything was cut.
     #[arg(long, default_value_t = 50000)]
     pub max_chars: u32,
 }

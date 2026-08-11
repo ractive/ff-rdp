@@ -459,9 +459,7 @@ pub fn run(
     } else {
         pipeline
     };
-    let pipeline_result = pipeline
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from);
+    let pipeline_result = pipeline.finalize_with_hints(&envelope, Some(&hint_ctx));
 
     // Release the server-side object actor after output is flushed.
     //

@@ -273,16 +273,12 @@ pub fn run(
         let first = limited.into_iter().next().unwrap_or(Value::Null);
         let total = usize::from(!matches!(first, Value::Null));
         let envelope = output::envelope(&first, total, &meta);
-        return OutputPipeline::from_cli(cli)?
-            .finalize_with_hints(&envelope, Some(&hint_ctx))
-            .map_err(AppError::from);
+        return OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx));
     }
 
     let envelope =
         output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Extract `__resolver` fields from ARIA-tree results and return them as
@@ -429,9 +425,7 @@ pub fn run_count(cli: &Cli, selector: &str) -> Result<(), AppError> {
     let envelope = output::envelope(&results, usize::try_from(count).unwrap_or(0), &meta);
 
     let hint_ctx = HintContext::new(HintSource::Dom).with_selector(selector);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Wrapper used in tests (ref start defaults to 1, matching --no-daemon behaviour).
@@ -598,9 +592,7 @@ pub fn run_stats(cli: &Cli) -> Result<(), AppError> {
     let envelope = output::envelope(&stats, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::DomStats);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 #[cfg(test)]

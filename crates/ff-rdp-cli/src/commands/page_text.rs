@@ -36,9 +36,7 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     let envelope = output::envelope(&json!(text), 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::PageText);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Resolve a Grip to a string, fetching the full content if it's a LongString.

@@ -182,9 +182,7 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
     let envelope = output::envelope_with_truncation(&result_json, shown, total, truncated, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Sources);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Probe whether the page CSP allows `eval()` by attempting a no-op eval.

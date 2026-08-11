@@ -108,19 +108,39 @@ Fix the ones that mislead (truncation flags, `error_type` misclassification, sil
 fields); the cosmetic ones are optional if the iteration is running long — say which were
 deferred rather than ticking them.
 
+**Theme F disposition (iter-141 implementation):**
+- Fixed: `network`'s silent 20-cap on `slowest` now carries an explicit
+  `slowest_truncated` marker (JSON and `--format text`) — see
+  `build_network_summary` / `e2e_network_truncation_flag`.
+- Fixed: jq syntax/compile/runtime errors and `--jq-strict` missing-path errors now
+  report `error_type: "User"`, not `"Internal"` — see
+  `OutputPipeline::finalize_with_hints` / `e2e_jq_error_type_is_user`.
+- Not a bug: `--jq '.a.b.c'` on a missing path silently omitting output is the
+  documented `JqMissingPolicy::SilentOmit` default ("least surprise for pipelines",
+  iter-86 Theme D); `--jq-strict` is the existing, already-tested escape hatch that
+  errors instead. No change needed.
+- **Deferred** (cosmetic, no misleading data — new iteration plan needed):
+  `sources`' `actor: ""` (the native `ThreadActor::list_sources` path already sets a
+  real `actor`, but modern Firefox appears to always hit the JS-eval fallback, which
+  cannot recover an actor ID — needs a live-Firefox investigation to confirm before
+  attempting a fix, out of scope for this pass), `--fields url,bogusfield` silently
+  dropping unknown field names, `cookies --format text`'s raw-epoch-ms `expires` /
+  blank `sameSite`, `storage localStorage --format text`'s empty-with-no-header-row
+  output, and `--format text` totals vs `--detail` JSON disagreement in `network`.
+
 ## Acceptance Criteria
 
-- [ ] live_141_console_text_bounded: `console --level error --format text` on a page with a
+- [x] live_141_console_text_bounded: `console --level error --format text` on a page with a
       very long message stays bounded; no row padded to another row's width
-- [ ] live_141_index_single_json_document: `index` stdout parses as exactly one JSON document
-- [ ] live_141_index_robots_user_agent_groups: a robots.txt with a foreign-UA `Disallow: /` does
+- [x] live_141_index_single_json_document: `index` stdout parses as exactly one JSON document
+- [x] live_141_index_robots_user_agent_groups: a robots.txt with a foreign-UA `Disallow: /` does
       not block our crawl
-- [ ] live_141_snapshot_truncation_in_meta: `meta` reports truncation and the effective bound
-- [ ] live_141_text_empty_result_keeps_metadata: `a11y contrast --fail-only --format text` with
+- [x] live_141_snapshot_truncation_in_meta: `meta` reports truncation and the effective bound
+- [x] live_141_text_empty_result_keeps_metadata: `a11y contrast --fail-only --format text` with
       zero failures still reports sampled count and capped state
-- [ ] e2e_invalid_selector_json_envelope: invalid CSS returns `{"error":…,"error_type":"User"}`
-- [ ] e2e_network_truncation_flag: truncated `network` JSON carries an explicit marker
-- [ ] e2e_jq_error_type_is_user: jq syntax errors are not `error_type: "Internal"`
+- [x] e2e_invalid_selector_json_envelope: invalid CSS returns `{"error":…,"error_type":"User"}`
+- [x] e2e_network_truncation_flag: truncated `network` JSON carries an explicit marker
+- [x] e2e_jq_error_type_is_user: jq syntax errors are not `error_type: "Internal"`
 
 ## Notes
 

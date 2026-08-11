@@ -486,9 +486,7 @@ pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppE
         output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Perf);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Collect all CWV-relevant entry types in a single eval and compute Core Web Vitals.
@@ -650,9 +648,7 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
     let envelope = output::envelope(&results, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::PerfVitals);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Aggregate mapped performance entries by domain, returning a Vec sorted by transfer_size descending.
@@ -819,9 +815,7 @@ pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
     let envelope = output::envelope(&results, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::PerfSummary);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Render a `perf summary` result as human-readable text to stdout.
@@ -1348,9 +1342,7 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
     let envelope = output::envelope(&results, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::PerfAudit);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Render an audit result as human-readable text to stdout.
@@ -1569,9 +1561,7 @@ pub fn run_group_by_domain(
     let envelope = output::envelope(&json!(results), total, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Perf);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 // ── CWV computation helpers ──────────────────────────────────────────────────

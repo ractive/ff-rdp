@@ -518,3 +518,63 @@ fn dom_first_conflicts_with_count() {
         String::from_utf8_lossy(&output.stdout)
     );
 }
+
+// ---------------------------------------------------------------------------
+// e2e_invalid_selector_json_envelope (iter-141 Theme E)
+// ---------------------------------------------------------------------------
+
+/// AC `e2e_invalid_selector_json_envelope`: a JS exception during a `dom`
+/// query (e.g. `ff-rdp dom 'div[[['` — Firefox raises
+/// `Document.querySelectorAll: 'div[[[' is not a valid selector`) must be
+/// routed through the standard `{"error":…,"error_type":"User"}` JSON
+/// envelope like every other command failure, not printed as bare text on
+/// stderr with no JSON at all (the pre-fix behaviour of `eval_or_bail`).
+///
+/// This reuses the already-recorded `eval_result_exception.json` fixture
+/// (per this repo's fixture policy — `tests/fixtures/*.json` must come from
+/// a real Firefox instance, never be hand-crafted) rather than a
+/// selector-specific fixture: the fix is in `eval_or_bail`'s generic
+/// exception handling, which is exercised identically regardless of the
+/// exception's message text, so the exact wording doesn't matter here — only
+/// that *any* JS exception now produces the envelope.
+#[test]
+fn e2e_invalid_selector_json_envelope() {
+    let server = dom_server("eval_result_exception.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["dom".to_owned(), "div[[[".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        !output.status.success(),
+        "expected failure for a JS exception during the DOM query"
+    );
+    assert_eq!(output.status.code(), Some(1), "AppError::User exits 1");
+
+    // The old behaviour printed `error: <msg>` to stderr with NO JSON on
+    // stdout at all — assert stdout is non-empty AND parses as the standard
+    // error envelope shape.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.trim().is_empty(),
+        "the JSON error envelope must be emitted on stdout, not silently dropped"
+    );
+    let json: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout must be a JSON error envelope: {e}\nstdout: {stdout}"));
+    assert_eq!(
+        json["error_type"], "User",
+        "a JS exception must be classified as a User error, got: {json}"
+    );
+    assert!(
+        json["error"].as_str().is_some_and(|s| !s.is_empty()),
+        "envelope must carry a non-empty `error` message: {json}"
+    );
+}

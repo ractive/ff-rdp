@@ -98,7 +98,29 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
     // a few bytes of each other, s61 #9). Bound the *whole* serialized output
     // here, on the Rust side, after the JS walk returns.
     let results = bound_snapshot_output(results, max_chars);
-    let mut meta = json!({"depth": depth, "max_chars": max_chars});
+
+    // iter-141 Theme C: surface truncation in `meta`. Previously the only
+    // signal was a `truncated: true` marker buried inside `results` at
+    // whatever depth the pruning happened to stop — dogfooding session 63
+    // found it at line 3248 of a 231 KB response, with `meta` silent on the
+    // subject entirely, so a caller had no cheap way (e.g. `--jq '.meta'`)
+    // to detect a partial snapshot without scanning the whole tree. Both
+    // keys are always present (iter-128's always-present-nullable-key
+    // convention) so `capped: false` reads as an explicit "no, nothing was
+    // cut" rather than an absent key that's indistinguishable from "unknown".
+    //
+    // `truncated` is true if either mechanism cut anything: the whole-tree
+    // `--max-chars` budget (`bound_snapshot_output`, root-level `truncated:
+    // true`/`children_omitted`) or the JS walker's own per-leaf text cap
+    // (`textTruncated`, iter-131). `text_truncated` isolates the latter so a
+    // caller can tell which kind of truncation happened.
+    let (truncated, text_truncated) = snapshot_truncation_flags(&results);
+    let mut meta = json!({
+        "depth": depth,
+        "max_chars": max_chars,
+        "truncated": truncated,
+        "text_truncated": text_truncated,
+    });
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
@@ -123,9 +145,21 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
     }
 
     let hint_ctx = HintContext::new(HintSource::Snapshot);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
+}
+
+/// Derive the `(truncated, text_truncated)` pair reported in `meta` from a
+/// bounded snapshot tree (iter-141 Theme C).
+///
+/// `text_truncated` reflects the JS walker's own per-leaf `--max-chars` text
+/// cap (`textTruncated`, iter-131); `truncated` is `true` when either that
+/// or the whole-tree Rust-side bounding pass (`bound_snapshot_output`'s
+/// root-level `truncated: true`) cut anything. Split out from `run` so the
+/// flag derivation is unit-testable without a live Firefox connection.
+fn snapshot_truncation_flags(results: &Value) -> (bool, bool) {
+    let structure_truncated = matches!(results.get("truncated"), Some(Value::Bool(true)));
+    let text_truncated = matches!(results.get("textTruncated"), Some(Value::Bool(true)));
+    (structure_truncated || text_truncated, text_truncated)
 }
 
 /// Bound the whole serialized snapshot tree to (approximately) `max_chars`
@@ -358,6 +392,51 @@ fn render_node(node: &Value, depth: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── iter-141 Theme C: snapshot_truncation_flags ──────────────────────
+    //
+    // AC `live_141_snapshot_truncation_in_meta`: `meta` must report
+    // truncation and the effective bound rather than leaving the caller to
+    // find a `truncated: true` marker buried inside `results`.
+
+    #[test]
+    fn snapshot_truncation_flags_neither_truncated() {
+        let results = json!({"tag": "div", "children": []});
+        assert_eq!(snapshot_truncation_flags(&results), (false, false));
+    }
+
+    #[test]
+    fn snapshot_truncation_flags_structure_truncated_only() {
+        let results = json!({"tag": "div", "truncated": true, "children_omitted": 5});
+        assert_eq!(snapshot_truncation_flags(&results), (true, false));
+    }
+
+    #[test]
+    fn snapshot_truncation_flags_text_truncated_only() {
+        let results = json!({"tag": "div", "textTruncated": true});
+        assert_eq!(snapshot_truncation_flags(&results), (true, true));
+    }
+
+    #[test]
+    fn snapshot_truncation_flags_both_truncated() {
+        let results = json!({"tag": "div", "truncated": true, "textTruncated": true});
+        assert_eq!(snapshot_truncation_flags(&results), (true, true));
+    }
+
+    /// A non-boolean/absent `truncated` value (e.g. the depth-limit marker's
+    /// own `truncated: "<n> children not shown"` string on a *child* node,
+    /// which is a different, node-scoped marker — only the root's own
+    /// literal `Bool(true)` counts) must not be mistaken for `true`.
+    #[test]
+    fn snapshot_truncation_flags_ignores_non_bool_truncated_value() {
+        let results = json!({"tag": "div", "truncated": "3 children not shown"});
+        assert_eq!(snapshot_truncation_flags(&results), (false, false));
+    }
+
+    #[test]
+    fn snapshot_truncation_flags_null_tree() {
+        assert_eq!(snapshot_truncation_flags(&Value::Null), (false, false));
+    }
 
     // ── render_snapshot_text smoke tests ─────────────────────────────────────
     //

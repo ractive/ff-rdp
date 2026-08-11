@@ -312,3 +312,95 @@ fn tabs_timeout_flag_is_respected() {
         "expected some output on timeout"
     );
 }
+
+// ---------------------------------------------------------------------------
+// e2e_jq_error_type_is_user (iter-141 Theme F)
+// ---------------------------------------------------------------------------
+
+/// AC `e2e_jq_error_type_is_user`: a `--jq` filter with a syntax error is a
+/// user input error, not an internal one — `error_type` must be `"User"`,
+/// not `"Internal"`.
+///
+/// Previously `OutputPipeline::finalize_with_hints` returned
+/// `anyhow::Result<()>`, so a jq parse error propagated through the blanket
+/// `From<anyhow::Error> for AppError` impl, which unconditionally maps to
+/// `AppError::Internal` — collapsing a plainly user-caused syntax error into
+/// the same bucket as a genuine bug in ff-rdp itself.
+#[test]
+fn e2e_jq_error_type_is_user() {
+    let list_tabs_response = load_fixture("list_tabs_response.json");
+    let server = MockRdpServer::new().on("listTabs", list_tabs_response);
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "tabs".to_owned(),
+        "--jq".to_owned(),
+        "this is not valid %%%".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        !output.status.success(),
+        "a jq syntax error must fail the command"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "AppError::User exits 1, not the Internal bucket's own exit code"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout must be a JSON error envelope: {e}\nstdout: {stdout}"));
+    assert_eq!(
+        json["error_type"], "User",
+        "a jq syntax error is a user input error, got: {json}"
+    );
+}
+
+/// A `--jq` path that resolves to nothing under `--jq-strict` is also a user
+/// input condition (the filter just doesn't match this envelope's shape),
+/// not an internal error.
+#[test]
+fn e2e_jq_strict_missing_path_error_type_is_user() {
+    let list_tabs_response = load_fixture("list_tabs_response.json");
+    let server = MockRdpServer::new().on("listTabs", list_tabs_response);
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "tabs".to_owned(),
+        "--jq".to_owned(),
+        ".results.this_path_does_not_exist".to_owned(),
+        "--jq-strict".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        !output.status.success(),
+        "a missing path under --jq-strict must fail the command"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout must be a JSON error envelope: {e}\nstdout: {stdout}"));
+    assert_eq!(
+        json["error_type"], "User",
+        "a --jq-strict missing path is a user input error, got: {json}"
+    );
+}

@@ -120,9 +120,7 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     }
 
     let hint_ctx = HintContext::new(HintSource::A11ySummary);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 fn render_summary_text(results: &Value) {

@@ -270,9 +270,7 @@ pub fn run(
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Click).with_selector(selector);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Cheap, single-shot existence probe: does `selector` match anything in the

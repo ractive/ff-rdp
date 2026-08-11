@@ -163,7 +163,5 @@ pub fn run(
     let envelope = output::envelope(&result_json, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::TypeText).with_selector(selector);
-    OutputPipeline::from_cli(cli)?
-        .finalize_with_hints(&envelope, Some(&hint_ctx))
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }

@@ -198,9 +198,7 @@ pub fn run(cli: &Cli, args: &EmulateArgs) -> Result<(), AppError> {
     );
 
     let envelope = output::envelope(&results, 1, &meta);
-    OutputPipeline::from_cli(cli)?
-        .finalize(&envelope)
-        .map_err(AppError::from)
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)
 }
 
 /// Send each user-specified field to the actor. Kept separate from
