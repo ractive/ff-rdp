@@ -128,7 +128,7 @@ deferred rather than ticking them.
   blank `sameSite`, `storage localStorage --format text`'s empty-with-no-header-row
   output, and `--format text` totals vs `--detail` JSON disagreement in `network`.
 
-## Acceptance Criteria
+## Acceptance Criteria [8/8]
 
 - [x] live_141_console_text_bounded: `console --level error --format text` on a page with a
       very long message stays bounded; no row padded to another row's width
