@@ -996,6 +996,42 @@ mod tests {
     }
 
     #[test]
+    fn match_policy_from_flags_visible_only() {
+        assert_eq!(
+            MatchPolicy::from_flags(true, None).unwrap(),
+            Some(MatchPolicy::Visible)
+        );
+    }
+
+    #[test]
+    fn match_policy_from_flags_index_only() {
+        assert_eq!(
+            MatchPolicy::from_flags(false, Some(2)).unwrap(),
+            Some(MatchPolicy::Index(2))
+        );
+    }
+
+    #[test]
+    fn match_policy_from_flags_neither_is_none() {
+        assert_eq!(MatchPolicy::from_flags(false, None).unwrap(), None);
+    }
+
+    #[test]
+    fn match_policy_from_flags_both_is_error() {
+        // Defensive check for programmatic callers (script runner steps,
+        // tests) that construct the combination without going through
+        // clap's `conflicts_with`, which already prevents this on the CLI.
+        let err = MatchPolicy::from_flags(true, Some(1)).unwrap_err();
+        let AppError::User(msg) = &err else {
+            panic!("expected AppError::User, got: {err:?}");
+        };
+        assert!(
+            msg.contains("mutually exclusive"),
+            "expected a mutually-exclusive User error, got: {msg:?}"
+        );
+    }
+
+    #[test]
     fn is_truthy_true_values() {
         assert!(is_truthy(&Grip::Value(json!(true))));
         assert!(is_truthy(&Grip::Value(json!(1))));
