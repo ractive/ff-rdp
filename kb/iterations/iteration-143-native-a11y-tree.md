@@ -54,6 +54,17 @@ Fix: report the source in `meta` (e.g. `"source": "native" | "js-fallback"` plus
 reason when it fell back). Same treatment for `a11y audit`/`--interactive` if they share
 the path.
 
+Implementation precedent: [[iteration-134-meta-route-all-commands]] just rolled out the
+same "always present regardless of `--verbose`" shape for `meta.route` via a small
+`connection_meta::merge_route(&mut meta, via_daemon)` helper called at every relevant
+command's meta-building call site (not gated behind the existing
+`merge_into_if_verbose`). A `connection_meta::merge_source` (or local equivalent) called
+the same way — right before `output::envelope(...)` in `a11y::run`/`run_critical` and
+`a11y audit` — is the straightforward way to satisfy this theme without inventing a new
+pattern. Note `a11y.rs` and `a11y_contrast.rs` already gained a `merge_route` call site in
+iter-134; `meta.source` is an independent field added at the same call site, not a
+replacement for it.
+
 ### Theme B — no way to ask for the real thing
 
 There is no opt-in. A user who wants the platform tree has to enable Firefox
@@ -65,9 +76,12 @@ restores the previous state afterwards when it was ff-rdp that turned it on. Mus
 honestly: if `enable` fails or `bootstrap` still reports disabled, say so rather than
 silently falling back.
 
-Open question to settle first: should `--native` also become the default once it is
-proven, or stay opt-in because of the global performance cost? Decide in
-[[decision-log]] before writing the flag.
+**Resolved before this iteration started**: [[decision-log]] DEC-027 (filed ahead of
+iter-143 landing) already answers the default-vs-opt-in question — `--native` stays
+opt-in, never the default, because `enable()` is browser-global/process-wide and its
+`disable()` can be blocked by an active Windows screen reader. No further decision-log
+work is needed for this theme; implement the flag opt-in from the start rather than
+re-opening the question.
 
 ### Theme C — bound the stall
 
@@ -76,7 +90,7 @@ the service is off will block for the full socket read timeout. Consider a short
 purpose-specific deadline on accessibility walker requests so a mistake costs
 milliseconds, not the default timeout.
 
-## Acceptance Criteria
+## Acceptance Criteria [1/5]
 
 - [ ] live_a11y_source_meta: `ff-rdp a11y` output carries a `meta.source` of
       `js-fallback` against a Firefox with the accessibility service off
@@ -86,7 +100,10 @@ milliseconds, not the default timeout.
       `bootstrap().state.enabled` is back to its pre-run value
 - [ ] unit/e2e: enable failure surfaces as an explicit error or an annotated fallback,
       never a silent one
-- [ ] [[decision-log]] records the default-vs-opt-in decision
+- [x] [[decision-log]] records the default-vs-opt-in decision — done ahead of this
+      iteration's implementation work: DEC-027 (filed on main before this branch existed)
+      settles opt-in-never-default. No code landed yet for this iteration; only the
+      decision-log prerequisite is satisfied.
 
 ## Notes
 
