@@ -216,8 +216,15 @@ fn live_daemon_stop_profile_path_matches_launch_json() {
 /// `write_owner_pid_marker`/`read_owner_pid_marker` there).
 const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
 
+/// Path to the owner-test marker (iter-151 Theme A) — mirrors the product's
+/// private `util::profile_dir::OWNER_TEST_MARKER`, same duplication
+/// rationale as [`OWNER_PID_MARKER`] above.
+const OWNER_TEST_MARKER: &str = ".ff-rdp-owner-test";
+
 /// Scan `root` for `ff-rdp-profile-*` directories whose owner-PID marker
-/// names a still-alive process, returning `(dir, pid)` pairs.
+/// names a still-alive process, returning `(dir, pid, spawning_test)` pairs.
+/// `spawning_test` is `None` for a profile with no owner-test marker (a
+/// normal interactive `ff-rdp launch`, or a pre-iter-151 profile).
 ///
 /// iter-146 Theme B: unlike a `daemon status` check (the precondition this
 /// replaces), this also catches a Firefox instance launched via `ff-rdp
@@ -227,7 +234,11 @@ const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
 /// it passed in isolation but failed late in a full sequential suite run
 /// with an opaque `left: 1 / right: 0`, because `prune --all` **correctly**
 /// refused to delete a profile some earlier test's Firefox still owned.
-fn live_owned_profile_dirs(root: &str) -> Vec<(std::path::PathBuf, u32)> {
+///
+/// iter-151 Theme A: also reads [`OWNER_TEST_MARKER`] so the precondition
+/// message below names the culprit test directly instead of leaving the
+/// reader to bisect the full live suite.
+fn live_owned_profile_dirs(root: &str) -> Vec<(std::path::PathBuf, u32, Option<String>)> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
@@ -241,7 +252,14 @@ fn live_owned_profile_dirs(root: &str) -> Vec<(std::path::PathBuf, u32)> {
         .filter_map(|e| {
             let marker = e.path().join(OWNER_PID_MARKER);
             let pid: u32 = std::fs::read_to_string(&marker).ok()?.trim().parse().ok()?;
-            pid_alive(pid).then_some((e.path(), pid))
+            if !pid_alive(pid) {
+                return None;
+            }
+            let test_name = std::fs::read_to_string(e.path().join(OWNER_TEST_MARKER))
+                .ok()
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty());
+            Some((e.path(), pid, test_name))
         })
         .collect()
 }
@@ -306,7 +324,10 @@ fn live_profiles_prune_removes_all_when_no_firefox_running() {
         live_owners.len(),
         live_owners
             .iter()
-            .map(|(dir, pid)| format!("{} (pid {pid})", dir.display()))
+            .map(|(dir, pid, test_name)| {
+                let who = test_name.as_deref().unwrap_or("unknown test");
+                format!("{} (pid {pid}, spawned by {who})", dir.display())
+            })
             .collect::<Vec<_>>()
             .join(", ")
     );

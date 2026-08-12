@@ -22,7 +22,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::common::live_tests_enabled;
-use crate::common::{LiveFirefox, RawFirefox, ff_rdp_bin, kill_pid, pid_alive};
+use crate::common::{FirefoxGuard, LiveFirefox, RawFirefox, ff_rdp_bin, kill_pid, pid_alive};
 
 /// Run `ff-rdp --port <port> <args...>` inside an isolated `FF_RDP_HOME` and
 /// return the parsed JSON envelope (or `None` on non-JSON output).
@@ -403,6 +403,32 @@ fn live_daemon_stop_prior_instance_targets_debug_port_not_cli_port() {
         ])
         .output()
         .expect("failed to spawn ff-rdp launch --replace");
+
+    // On the success path `--replace` starts a REPLACEMENT Firefox on the
+    // target port. `ff_target`'s guard owns only the pre-replace PID, so
+    // without this guard the replacement outlives the test — one orphan per
+    // run (iter-151 follow-up: the `--replace` leak class).
+    //
+    // NOTE: `launch --replace` writes TWO top-level JSON envelopes to stdout
+    // when it had a prior instance to stop — the stop result
+    // (`{"results":{"stopped":true,"pid":<prior>}}`) followed by the launch
+    // result (`{"results":{"pid":<replacement>,...}}`). A plain
+    // `serde_json::from_slice` over the whole buffer therefore FAILS, which
+    // silently yielded no guard and let the replacement leak. Stream-parse
+    // and take the LAST envelope carrying a pid — that is the launch. The
+    // double envelope is itself a product bug (it breaks the JSON-only output
+    // contract for every consumer of `launch --replace`); it is tracked in
+    // [[iteration-153-launch-replace-double-envelope]] rather than fixed here.
+    // Bound before the assertions below so a panic still unwinds through the
+    // kill; `None` on the topology-only failure path, where nothing spawned.
+    let _replacement = serde_json::Deserializer::from_slice(&replace_out.stdout)
+        .into_iter::<serde_json::Value>()
+        .filter_map(Result::ok)
+        .filter_map(|json| json["results"]["pid"].as_u64())
+        .filter_map(|pid| u32::try_from(pid).ok())
+        .last()
+        .map(FirefoxGuard::new);
+
     if !replace_out.status.success() {
         let stdout = String::from_utf8_lossy(&replace_out.stdout);
         assert!(

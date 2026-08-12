@@ -47,6 +47,12 @@ struct ManagedProfileEntry {
     /// age-gated path excludes live-owner entries outright); the prune step
     /// uses it to warn and to populate `removed_live`.
     live_owner: bool,
+    /// iter-151 Theme A: the spawning test's name, if the entry carries an
+    /// `.ff-rdp-owner-test` marker (only ever written by the live-test
+    /// harness — see `util::profile_dir::SPAWNING_TEST_ENV`). Only populated
+    /// alongside `live_owner`; used to name the culprit in the `--all` warn
+    /// log instead of a bare PID.
+    owner_test: Option<String>,
 }
 
 /// Scan the direct children of `root`, returning only entries that match the
@@ -88,6 +94,7 @@ fn scan_managed_profiles(root: &Path) -> Vec<ManagedProfileEntry> {
             // Set later by `select_prune_targets` on the `--all` path; the
             // aggregation callers (`profiles list`, doctor) never read it.
             live_owner: false,
+            owner_test: None,
         });
     }
     out
@@ -195,6 +202,14 @@ fn select_prune_targets(root: &Path, older_than: Option<Duration>) -> Vec<Manage
                 // vanishes — it is selected *and* flagged so the caller warns.
                 None => {
                     entry.live_owner = live_owner;
+                    if live_owner {
+                        // iter-151 Theme A: name the culprit test, when known,
+                        // so the `--all` warn log below doesn't force the
+                        // operator to bisect ~200 live tests to find who owns
+                        // this PID.
+                        entry.owner_test =
+                            crate::util::profile_dir::read_owner_test_marker(&entry.path);
+                    }
                     Some(entry)
                 }
                 // Age-gated: a live owner always wins — skip it entirely.
@@ -273,10 +288,20 @@ pub(crate) fn prune_profiles(
         // surface it in `removed_live` so the operator sees what was reclaimed
         // out from under a still-running session.
         if entry.live_owner {
-            tracing::warn!(
-                "profiles prune --all: removing {} whose owner Firefox is still alive",
-                entry.path.display()
-            );
+            // iter-151 Theme A: name the spawning test when the entry
+            // carries that marker, instead of forcing a bisection hunt.
+            if let Some(test_name) = &entry.owner_test {
+                tracing::warn!(
+                    "profiles prune --all: removing {} whose owner Firefox is still alive \
+                     (spawned by test {test_name:?})",
+                    entry.path.display()
+                );
+            } else {
+                tracing::warn!(
+                    "profiles prune --all: removing {} whose owner Firefox is still alive",
+                    entry.path.display()
+                );
+            }
         }
         match std::fs::remove_dir_all(&entry.path) {
             Ok(()) => {

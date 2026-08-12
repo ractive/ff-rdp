@@ -1,17 +1,20 @@
 ---
 branch: iter-151/residual-live-firefox-leak
 date: 2026-08-12
-depends_on: [kb/iterations/iteration-146-live-suite-reliability.md]
+depends_on:
+  - kb/iterations/iteration-146-live-suite-reliability.md
 dogfood_path: |
   FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live -- --include-ignored --test-threads=1 live_1
-  pgrep -af 'start-debugger-server'
-  # → after the chunk exits, zero ff-rdp-spawned Firefox processes may survive;
-  #   today roughly one leaks per ~100 live tests, from a source not yet named
+  ff-rdp profiles list --jq '.results.count'
+  # → after the chunk exits, `count` must be 0 (see the Notes entry on why this beats a
+  #   `pgrep -af start-debugger-server` scan in this shared sandbox). Prefer this over the
+  #   raw pgrep count used to first find this leak — see Resolution for the confirmed fix.
 first_call_sites: []
-status: planned
+status: in-progress
 title: "Iteration 151: a residual live-suite Firefox leak survives iteration-146"
 type: iteration
-tags: [iteration]
+tags:
+  - iteration
 ---
 
 # Iteration 151: a residual live-suite Firefox leak survives iteration-146
@@ -98,18 +101,120 @@ neighbourhood; the leak appears at full-suite scale. Whatever assertion replaces
 to fail on the evidence above. A post-run check that counts `start-debugger-server` processes
 attributable to this suite (via Theme A's marker) is the shape to aim for.
 
-## Acceptance Criteria [0/4]
+## Resolution (confirmed live, not a hypothesis — see Run guidance rule 1)
 
-- [ ] live_151_leaked_profile_names_its_test: a profile directory left behind by a live test
+Two real, still-open instances of the exact "no RAII guard across an assertion" bug class
+[[iteration-146-live-suite-reliability]] Theme A fixed in `live_96_profile_cleanup.rs`'s
+`launch_headless` — 146's own fix was correct but scoped to one file, and these were never
+migrated:
+
+1. **`live_90_daemon_lifecycle.rs` (×2 tests), `live_daemon_stop_mdn.rs`, and
+   `live_142_daemon_stop_pid_honesty.rs`** each wrapped their `LiveFirefox` guard in
+   `std::mem::ManuallyDrop` immediately after spawning, so `daemon stop` (or `launch --replace`)
+   alone was responsible for killing Firefox. But every assertion between that point and the
+   final liveness/port-free check ran with **no** guard at all — a failure in any of them (a
+   non-zero `daemon stop`, a slow port release under contention, a pid-honesty mismatch) panics
+   with Firefox still alive and nothing left to reap it. Fix: remove the `ManuallyDrop`
+   suppression in all four call sites — the guard now stays a normal binding for the rest of each
+   function. `daemon stop`'s own cleanup is still asserted (the belt); the guard's `Drop` at
+   function end — a no-op once Firefox is already dead on the happy path — is the suspenders.
+   **Proven live**, not by inspection alone: `live_151_root_cause_documented` drives both the
+   pre-fix (`ManuallyDrop`) and fixed (normal binding) shapes against a real Firefox process
+   inside an identical `catch_unwind`'d panic and asserts on actual PID liveness afterward. Run
+   2026-08-12: pre-fix shape leaked pid 98074 (confirmed still alive 300ms after the panic,
+   manually reaped); fixed shape reaped pid 98140 through the same panic automatically. PASS.
+2. **`live_142_disk_growth.rs`'s `launch_headless`** launched Firefox via a bare `Command` with
+   no guard whatsoever and relied entirely on a *manual*, later `kill_pid` call — this is the
+   exact pre-146 `live_96_profile_cleanup.rs` shape (see 146's own postmortem in this file's "What
+   146 fixed, and what it didn't" section above), just never migrated when 146 fixed that
+   specific file. `live_142_profile_growth_bounded` had an `assert!` between spawn and its
+   deliberate force-kill; `live_142_throttle_json_gc` had two `assert!`s between spawn and its
+   manual `kill_pid` cleanup at the very end. Fix: added `FirefoxGuard`, a small local RAII
+   wrapper constructed immediately once each PID is known (this file's launches need a custom
+   `FF_RDP_HOME` env var that `common::LiveFirefox` doesn't expose, so it can't reuse that type
+   outright).
+
+Why 146's Theme A fix didn't cover either: 146 scoped its search (correctly, for its own
+symptom) to the file the orphan-sweep test caught leaking at the time —
+`live_96_profile_cleanup.rs`. It never audited the rest of the suite for the same shape, and
+146's own scope-check that *did* flag related duplication (the six `firefox_with_daemon`
+wrappers) was a code-smell note, not a leak-source search — none of the four `ManuallyDrop`
+sites or `live_142_disk_growth.rs` were touched.
+
+Also fixed for completeness (Theme A, self-identification): `commands::launch::run` now writes an
+`.ff-rdp-owner-test` marker naming the spawning test alongside `.ff-rdp-owner-pid`, gated on the
+live-test harness setting `FF_RDP_LIVE_TEST_NAME` (see `tests/common/mod.rs`'s
+`SPAWNING_TEST_ENV` / `crate::util::profile_dir::SPAWNING_TEST_ENV`). `profiles prune --all`'s
+warn log and `live_96_profile_cleanup.rs`'s precondition message both now name the culprit test
+when the marker is present.
+
+**Not fixed, deferred as follow-up** (see Notes): four live suites (`live_oneway.rs`,
+`live_target_destroyed.rs`, `live_cross_actor.rs`, `live_61l.rs`) each define their own duplicate
+local `LiveFirefox` struct with an already-correct `Drop` impl, predating the iter-100b
+consolidation into `tests/common/mod.rs`. They are not a correctness risk (their guards already
+work), so they were left alone rather than expanding this iteration's diff — but they don't get
+Theme A's owner-test marker, since only `common::LiveFirefox` writes `SPAWNING_TEST_ENV`.
+Consolidating them is exactly the cleanup [[iteration-146-live-suite-reliability]]'s scope-check
+flagged; still worth doing, just not required to close this leak.
+
+## Acceptance Criteria [2/4]
+
+> The two chunk-orphan ACs below are deliberately **not ticked**: their named tests are
+> implemented and compiled but were never executed end-to-end, and CLAUDE.md is explicit that
+> "an AC without a named test is not done". They are settled by the post-batch chunked live
+> sweep on `main`, not by this PR. Tick them there, with the run's actual orphan count.
+
+- [x] live_151_leaked_profile_names_its_test: a profile directory left behind by a live test
       identifies the spawning test, and a deliberately-leaked instance is traceable to its test
-      from the artifact alone
-- [ ] live_151_chunk_a_leaves_no_orphans: a full `live_1` chunk run leaves zero surviving
-      ff-rdp-spawned Firefox processes
-- [ ] live_151_chunk_b_leaves_no_orphans: a full `--skip live_1` chunk run leaves zero surviving
-      ff-rdp-spawned Firefox processes, and `live_96_profile_cleanup`'s precondition passes
-      without manual cleanup
-- [ ] live_151_root_cause_documented: this plan's Resolution names the confirmed leak source(s)
-      and why 146's Theme A fix did not cover them — not a hypothesis
+      from the artifact alone — verified live 2026-08-12, PASS
+- [ ] live_151_chunk_a_leaves_no_orphans: a full chunk-A run (the filter this plan's dogfood_path
+      and Environment quirks section document) leaves zero surviving ff-rdp-spawned Firefox
+      processes — implemented and compiled; gated behind `FF_RDP_LIVE_SUITE_CHECK=1` (nests a
+      ~6 min chunk run, see the test's own doc comment) and not exercised end-to-end in this
+      session's time budget — the mechanism it exercises (`live_96`'s live-owner precondition
+      scanning the real profile root) was verified directly: a targeted 13-test live run covering
+      every Theme B fix site left `profiles list` reporting `count: 0` afterward
+- [ ] live_151_chunk_b_leaves_no_orphans: the complementary chunk-B run (skips chunk A's filter)
+      leaves zero surviving ff-rdp-spawned Firefox processes, and `live_96_profile_cleanup`'s
+      precondition passes without manual cleanup — same status as
+      `live_151_chunk_a_leaves_no_orphans` above; `live_profiles_prune_removes_all_when_no_
+      firefox_running` (the precondition test) itself PASSed in the same targeted run
+- [x] live_151_root_cause_documented: this plan's Resolution names the confirmed leak source(s)
+      and why 146's Theme A fix did not cover them — proven live by the identically-named test,
+      not a hypothesis (see Resolution above), and extended in review with the `--replace` class
+      below, verified live 2026-08-12 (0 new orphans across both fixed sites)
+
+## Review finding: the audit looked for the wrong thing (2026-08-12, PR #188)
+
+An independent review of this PR found **two high-severity leaks this iteration had missed**,
+both of which leak on *every* run rather than intermittently:
+
+- `live_86_perf_field_fixes.rs`'s `live_launch_replace_handles_stuck_prior`
+- `live_123_daemon_autostart_and_registry.rs`'s `live_daemon_stop_prior_instance_targets_debug_port_not_cli_port`
+
+`ff-rdp launch --replace` reaps the prior Firefox and starts a **new** one. A `LiveFirefox`
+guard owns only the PID it launched itself, so after a `--replace` it kills a process that is
+already dead while the replacement survives the test with nothing owning it.
+
+**Why the original audit missed it:** it searched for *discarded guards* (`ManuallyDrop`,
+`mem::forget`). It never searched for *processes that nothing ever owned*. Two deterministic
+leaks across ~213 live tests is ~1 per 100 — which fits the measured rate considerably better
+than the intermittent panic-path `ManuallyDrop` mechanism this plan originally blamed. The
+`ManuallyDrop` fixes are still correct and still worth having; they were simply not the whole
+story, and probably not the main one.
+
+**A second defect surfaced while fixing it:** `launch --replace` writes **two top-level JSON
+envelopes** to stdout (the stop result, then the launch result), so a whole-buffer
+`serde_json::from_slice` fails and a guard bound from `results.pid` silently gets `None`. That
+is why the first attempt at this fix still leaked, and why `live_86` (single envelope — no
+daemon record to stop) behaved differently from `live_123` (two envelopes). Both sites now
+stream-parse and take the last pid-bearing envelope. The double envelope is a real product bug
+in its own right — it breaks the JSON-only output contract for every consumer of
+`launch --replace` — and is tracked in [[iteration-153-launch-replace-double-envelope]].
+
+The remaining five review findings (guard coverage in `live_90`, the spawn→guard window in
+`live_142`, owner-marker coverage across raw launch sites, `Drop` signalling a known-dead PID,
+and helper de-duplication) are filed as [[iteration-152-live-guard-coverage-sweep]].
 
 ## Notes
 
@@ -133,6 +238,26 @@ attributable to this suite (via Theme A's marker) is the shape to aim for.
   possible and is the recommended way to reproduce.
 - Every live test added here must exercise the **default daemon path**. Do not add entries to the
   shrink-only grandfather list in `crates/ff-rdp-cli/tests/no_daemon_live_test_guard.rs`.
+- Implementation session (2026-08-12): a targeted live run covering every Theme B fix site —
+  `live_142_daemon_stop_pid_honesty`, `live_142_disk_growth` (both tests), `live_151_residual_leak`
+  (all 4), `live_90_daemon_lifecycle` (all 3), `live_96_profile_cleanup` (all 3) — 13/13 passed in
+  15.25s with `--test-threads=1`, and `ff-rdp profiles list` reported `count: 0` immediately
+  afterward (stronger evidence than a `pgrep` scan — see the pgrep-noise observation above, which
+  reproduced again in this same session: `pgrep -af start-debugger-server` kept matching a
+  different already-gone PID on every successive call).
+- Follow-up filed as a note, not a new plan (small, non-blocking, no user-visible surface):
+  `live_oneway.rs`, `live_target_destroyed.rs`, `live_cross_actor.rs`, and `live_61l.rs` each
+  still define their own duplicate local `LiveFirefox`/`Drop` pair instead of using
+  `tests/common/mod.rs`'s. Consolidating them would also give them Theme A's owner-test marker
+  for free. Not done here to keep this iteration's diff scoped to the confirmed leak sources.
+- The two `live_151_chunk_*_leaves_no_orphans` tests nest a full chunk run inside themselves via
+  `std::env::current_exe()` and are gated behind an additional `FF_RDP_LIVE_SUITE_CHECK=1` (on
+  top of `FF_RDP_LIVE_TESTS=1`) specifically so a normal live-suite invocation — including CI's
+  `live.yml`, which runs the whole suite with no filter — doesn't silently double in duration.
+  They were not run end-to-end in this implementation session (each nests ~6 minutes and the
+  session's background-command budget was better spent verifying every individual fix site
+  directly, per the note above); a human or CI operator opting into
+  `FF_RDP_LIVE_SUITE_CHECK=1` is the intended way to exercise them for real.
 
 ## Run guidance (batch 149 → 151 → 150 → 148)
 

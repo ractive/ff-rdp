@@ -30,6 +30,30 @@ pub fn ff_rdp_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }
 
+/// Env var [`LiveFirefox::try_launch`] sets on every `ff-rdp launch` it
+/// spawns, naming the currently-running test (iter-151 Theme A).
+///
+/// Mirrors the product's private `crate::util::profile_dir::SPAWNING_TEST_ENV`
+/// — duplicated, not imported, because this crate ships no `[lib]` target
+/// for an integration-test binary to pull from (the same reason this file
+/// already duplicates `OWNER_PID_MARKER`-shaped constants per test file
+/// rather than sharing them with `src/`). Keep both in sync by hand.
+pub const SPAWNING_TEST_ENV: &str = "FF_RDP_LIVE_TEST_NAME";
+
+/// Best-effort name of the currently running `#[test]` function.
+///
+/// `cargo test`'s harness spawns every test body on its own thread named
+/// after the test's fully-qualified path (so panics/backtraces can identify
+/// it) — this reads that name back for [`SPAWNING_TEST_ENV`]. Falls back to
+/// `"unknown"` when no thread name is set (e.g. code calling this outside
+/// the test harness), which is still strictly more useful than no marker at
+/// all.
+fn current_test_name() -> String {
+    std::thread::current()
+        .name()
+        .map_or_else(|| "unknown".to_owned(), str::to_owned)
+}
+
 /// True when live Firefox tests are enabled (`FF_RDP_LIVE_TESTS=1`).
 ///
 /// Deduped in iter-100b from ~16 byte-identical copies that each live suite
@@ -193,6 +217,32 @@ pub fn pid_alive(pid: u32) -> bool {
     }
 }
 
+/// RAII guard that kills a Firefox process by raw PID on drop.
+///
+/// Use this for instances this suite spawns *indirectly* — notably the fresh
+/// Firefox that `ff-rdp launch --replace` starts after reaping the prior one.
+/// A [`LiveFirefox`] guard only owns the PID it launched itself, so after a
+/// `--replace` it reaps a process that is already dead while the replacement
+/// survives the test. Bind this guard from the replacement's `results.pid`
+/// *before* any assertion, so a panic still unwinds through the kill.
+pub struct FirefoxGuard(u32);
+
+impl FirefoxGuard {
+    pub fn new(pid: u32) -> Self {
+        Self(pid)
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.0
+    }
+}
+
+impl Drop for FirefoxGuard {
+    fn drop(&mut self) {
+        kill_pid(self.0);
+    }
+}
+
 /// Kill a process by PID, ignoring errors (process may already be gone).
 #[cfg(unix)]
 pub fn kill_pid(pid: u32) {
@@ -288,6 +338,10 @@ impl LiveFirefox {
         let output = Command::new(ff_rdp_bin())
             .args(["launch", "--headless", "--debug-port", &port.to_string()])
             .args(extra_args)
+            // iter-151 Theme A: identify the spawning test so a leaked
+            // profile is traceable from the artifact alone — see
+            // `SPAWNING_TEST_ENV`'s doc comment.
+            .env(SPAWNING_TEST_ENV, current_test_name())
             .stderr(std::process::Stdio::null())
             .output()
             .ok()?;
