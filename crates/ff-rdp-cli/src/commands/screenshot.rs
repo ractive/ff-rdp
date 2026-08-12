@@ -402,6 +402,11 @@ pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
+    // iter-134: screenshot always connects directly (see `run_core`'s doc
+    // comment — the daemon's watcher subscription breaks the two-step
+    // capture protocol), and the `--window-size` batch path never opens an
+    // RDP connection at all, so the route is unconditionally "direct".
+    crate::connection_meta::merge_route(&mut meta, false);
     let envelope = output::envelope(&results, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Screenshot);

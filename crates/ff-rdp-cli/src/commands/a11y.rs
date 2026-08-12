@@ -72,6 +72,10 @@ pub fn run(
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     if used_js_fallback && let Some(m) = meta.as_object_mut() {
         m.insert("fallback".to_string(), json!(true));
         m.insert("fallback_method".to_string(), json!("js-eval"));
@@ -426,6 +430,10 @@ pub fn run_critical(cli: &Cli, root_selector: Option<&str>) -> Result<(), AppErr
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
 
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
     let mut items = violations;

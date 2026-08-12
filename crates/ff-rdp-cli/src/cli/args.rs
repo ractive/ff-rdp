@@ -176,6 +176,10 @@ COOKBOOK:
 OUTPUT FORMAT (iter-60 compact defaults):
   Default JSON: {\"results\": ..., \"total\": N}  (meta omitted when empty)
   --verbose restores meta.connection (host, port, pid, uptime) to the envelope
+  meta.route (iter-128, all commands since iter-134) is always present on
+    every browser-touching command's envelope — \"daemon\" or \"direct\" —
+    regardless of --verbose, so you can tell how a command executed without a
+    separate `daemon status` call
   Truncated output adds: {\"truncated\": true, \"hint\": \"showing 20 of 84, use --all\"}
   --format json  (default) machine-readable JSON — the stable API contract
   --format text  human-readable tables and trees
@@ -630,9 +634,9 @@ Field fidelity by source:
 `hint` is always present (iter-128) — null when there's nothing to report, a
 string when results are truncated, a timeout fired, or the capture was empty.
 
-`meta.route` (iter-128) is always present — \"daemon\" or \"direct\" — regardless
-of --verbose, so you can tell how this command executed without a separate
-`daemon status` call.
+`meta.route` (iter-128; all browser-touching commands since iter-134) is
+always present — \"daemon\" or \"direct\" — regardless of --verbose, so you
+can tell how this command executed without a separate `daemon status` call.
 
 Default: 20 results, sorted by duration (slowest first).
 Output (summary mode): {\"results\": {\"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"hint\": null}, \"total\": N, \"meta\": {\"route\": \"daemon\", ...}}

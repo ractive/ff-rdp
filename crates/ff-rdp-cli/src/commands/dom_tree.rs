@@ -65,6 +65,10 @@ pub fn run(cli: &Cli, selector: Option<&str>, depth: u32, max_chars: u32) -> Res
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
 
     // Text short-circuit: render indented tree instead of JSON.
     if cli.format == "text" && cli.jq.is_none() {

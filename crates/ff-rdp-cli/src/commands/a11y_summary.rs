@@ -111,6 +111,10 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&output_results, 1, &meta);
 
     // Custom text rendering for a11y summary.

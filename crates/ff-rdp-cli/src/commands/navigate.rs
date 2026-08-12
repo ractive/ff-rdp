@@ -1480,7 +1480,7 @@ pub fn run_core(
     cli: &Cli,
     url: &str,
     wait_opts: &WaitAfterNav<'_>,
-) -> Result<serde_json::Value, AppError> {
+) -> Result<(serde_json::Value, bool), AppError> {
     validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
@@ -1795,7 +1795,7 @@ pub fn run_core(
     {
         obj.insert("wait_for".to_string(), wf);
     }
-    Ok(result)
+    Ok((result, ctx.via_daemon))
 }
 
 /// Run the iter-129 CMP-detection-and-accept flow and merge its result into
@@ -1828,7 +1828,7 @@ pub fn run(
     wait_opts: &WaitAfterNav<'_>,
     auto_consent: bool,
 ) -> Result<(), AppError> {
-    let mut result = run_core(cli, url, wait_opts)?;
+    let (mut result, via_daemon) = run_core(cli, url, wait_opts)?;
     if auto_consent {
         merge_auto_consent(cli, &mut result);
     }
@@ -1840,6 +1840,9 @@ pub fn run(
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — matches the
+    // `--with-network` variant below, which already got this in iter-128.
+    crate::connection_meta::merge_route(&mut meta, via_daemon);
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Navigate);

@@ -47,6 +47,7 @@ mod live_130_navigation_truthfulness;
 mod live_131_measurement_honesty;
 mod live_132_cli_polish;
 mod live_133_viewport_emulation;
+mod live_134_meta_route_all_commands;
 mod live_135_screenshot_ff153;
 mod live_137_daemon_mode_parity;
 mod live_138_navigation_truthfulness_2;

@@ -114,6 +114,10 @@ pub fn run_to(
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&result_json, 1, &meta);
 
     OutputPipeline::from_cli(cli)?.finalize(&envelope)
@@ -179,6 +183,10 @@ pub fn run_by(
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&result_json, 1, &meta);
 
     OutputPipeline::from_cli(cli)?.finalize(&envelope)
@@ -248,6 +256,10 @@ fn run_scroll_absolute(cli: &Cli, y_expr: &str, error_label: &str) -> Result<(),
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&result_json, 1, &meta);
 
     OutputPipeline::from_cli(cli)?.finalize(&envelope)
@@ -308,6 +320,10 @@ pub fn run_container(
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&result_json, 1, &meta);
 
     OutputPipeline::from_cli(cli)?.finalize(&envelope)
@@ -436,6 +452,10 @@ pub fn run_until(
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&result_json, 1, &meta);
 
     OutputPipeline::from_cli(cli)?.finalize(&envelope)
@@ -506,6 +526,10 @@ pub fn run_text(cli: &Cli, text: &str) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&result_json, 1, &meta);
 
     OutputPipeline::from_cli(cli)?.finalize(&envelope)

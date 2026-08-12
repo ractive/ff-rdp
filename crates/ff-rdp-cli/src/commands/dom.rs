@@ -239,6 +239,10 @@ pub fn run(
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
 
     // Normalise to an array unconditionally (dogfood-49 #3): every `dom`
     // call now returns `results` as an array regardless of match count so
@@ -422,6 +426,10 @@ pub fn run_count(cli: &Cli, selector: &str) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&results, usize::try_from(count).unwrap_or(0), &meta);
 
     let hint_ctx = HintContext::new(HintSource::Dom).with_selector(selector);
@@ -589,6 +597,10 @@ pub fn run_stats(cli: &Cli) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&stats, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::DomStats);
