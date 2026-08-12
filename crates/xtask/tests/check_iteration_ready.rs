@@ -285,7 +285,7 @@ dogfood_path: |
     for i in 1..=11 {
         assert!(
             combined.contains(&format!("[{i}/11]")),
-            "expected '[{i}/10]' in output (aggregator must not short-circuit).\n--- combined ---\n{combined}"
+            "expected '[{i}/11]' in output (aggregator must not short-circuit).\n--- combined ---\n{combined}"
         );
     }
 
