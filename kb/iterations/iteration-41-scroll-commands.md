@@ -2,7 +2,7 @@
 title: "Iteration 41: Scroll Commands"
 date: 2026-04-09
 type: iteration
-status: completed
+status: done
 branch: iter-41/scroll-commands
 tags:
   - iteration

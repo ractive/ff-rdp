@@ -2,7 +2,7 @@
 title: "Iteration 59: Auto-wait, pointer events, and retry in interaction primitives"
 type: iteration
 date: 2026-05-15
-status: completed
+status: done
 branch: iter-59/autowait-pointer-retry
 depends_on: []
 tags:

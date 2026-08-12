@@ -2,7 +2,7 @@
 title: "Iteration 88: cascade fifth attempt — single theme, pre-fix repro, real-site CLI evidence"
 type: iteration
 date: 2026-05-29
-status: completed
+status: done
 branch: iter-88/cascade-fifth-attempt-single-theme
 depends_on:
   - iteration-87-gate-hardening-required-checks-and-dogfood-linter

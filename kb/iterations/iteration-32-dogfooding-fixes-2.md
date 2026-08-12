@@ -1,7 +1,7 @@
 ---
 title: "Iteration 32: Dogfooding Fixes Round 2"
 type: iteration
-status: completed
+status: done
 date: 2026-04-08
 tags:
   - iteration

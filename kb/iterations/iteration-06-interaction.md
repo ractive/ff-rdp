@@ -8,7 +8,7 @@ tags:
   - type
   - wait
   - interaction
-status: completed
+status: done
 branch: iter-6/interaction
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: "Iteration 15: Launch & Connection Reliability"
-status: completed
+status: done
 date: 2026-04-06
 tags:
   - iteration

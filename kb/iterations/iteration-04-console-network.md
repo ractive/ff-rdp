@@ -3,7 +3,7 @@ title: "Iteration 4: Console + Network Monitoring"
 type: iteration
 date: 2026-04-06
 tags: [iteration, console, network, monitoring]
-status: completed
+status: done
 branch: iter-4/console-network
 ---
 

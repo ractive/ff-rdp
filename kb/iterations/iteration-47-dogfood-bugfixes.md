@@ -2,7 +2,7 @@
 title: "Iteration 47: Dogfooding 38 Bug Fixes"
 type: iteration
 date: 2026-04-17
-status: completed
+status: done
 branch: iter-47/dogfood-bugfixes
 tags:
   - iteration

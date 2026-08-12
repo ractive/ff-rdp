@@ -1,7 +1,7 @@
 ---
 title: "Iteration 24: Responsive Testing & Page Comparison"
 type: iteration
-status: completed
+status: done
 date: 2026-04-07
 tags:
   - iteration

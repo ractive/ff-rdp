@@ -20,7 +20,7 @@ first_call_sites:
     site: crates/ff-rdp-core enumerate_frame_targets (opt-in frame-aware path)
   - primitive: TargetEvent console_actor/browsing_context_id fields
     site: crates/ff-rdp-cli consent flow (auto-consent CMP accept via frame consoleActor)
-status: completed
+status: done
 ---
 
 # Iteration 129: consent handling + cross-origin frame reach

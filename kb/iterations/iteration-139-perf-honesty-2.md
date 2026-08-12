@@ -22,7 +22,7 @@ first_call_sites:
     site: >-
       crates/ff-rdp-cli/src/commands/perf.rs (run_vitals, run_audit) and
       crates/ff-rdp-cli/src/commands/perf_compare.rs (collect_page_perf)
-status: completed
+status: done
 ---
 
 # Iteration 139: perf honesty II — unmeasurable vitals, byte attribution, page identity

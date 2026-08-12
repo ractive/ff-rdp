@@ -13,7 +13,7 @@ dogfood_path: |
   ff-rdp navigate https://www.bbc.com/news --port 6100
   # → non-Sourcepoint CMP: must either dismiss it or warn that it did not
 first_call_sites: []
-status: completed
+status: done
 ---
 
 # Iteration 142: session hygiene — daemon stop, disk growth, consent coverage, eval edges

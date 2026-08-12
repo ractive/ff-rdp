@@ -2,7 +2,7 @@
 title: "Iteration 43: Pre-Release DX Fixes"
 date: 2026-04-13
 type: iteration
-status: completed
+status: done
 branch: iter-43/dx-fixes
 tags:
   - iteration

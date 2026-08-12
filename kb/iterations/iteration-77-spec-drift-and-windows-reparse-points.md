@@ -2,7 +2,7 @@
 title: "Iteration 77: Spec drift cleanup + Windows reparse-point safe_io"
 type: iteration
 date: 2026-05-24
-status: completed
+status: done
 branch: iter-77/spec-drift-and-windows-reparse-points
 depends_on:
   - iteration-73-spec-fidelity-gates

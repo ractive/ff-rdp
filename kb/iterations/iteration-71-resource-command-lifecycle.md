@@ -2,7 +2,7 @@
 title: "Iteration 71: ResourceCommand lifecycle — unwatch + Session integration + drop legacy startListeners"
 type: iteration
 date: 2026-05-24
-status: completed
+status: done
 branch: iter-71/resource-lifecycle
 depends_on:
   - iteration-61q-resource-command-bus

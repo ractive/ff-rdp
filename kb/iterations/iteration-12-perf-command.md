@@ -6,7 +6,7 @@ tags:
   - iteration
   - performance
   - core-web-vitals
-status: completed
+status: done
 branch: iter-12/perf-command
 ---
 

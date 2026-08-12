@@ -1,7 +1,7 @@
 ---
 title: "Iteration 36: Fix Console --follow (No Output)"
 type: iteration
-status: completed
+status: done
 date: 2026-04-08
 tags: [iteration, bugfix, console, firefox-149, protocol, research]
 branch: iter-36/console-follow-fix

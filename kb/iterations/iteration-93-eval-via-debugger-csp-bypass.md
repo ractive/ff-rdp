@@ -2,7 +2,7 @@
 title: "Iteration 93: eval via the DevTools console scope — CSP bypass on strict sites"
 type: iteration
 date: 2026-06-01
-status: completed
+status: done
 branch: iter-93/eval-via-debugger-csp-bypass
 depends_on:
   - iteration-92-full-page-and-navigate-parity

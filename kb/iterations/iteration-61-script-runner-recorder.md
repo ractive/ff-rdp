@@ -2,7 +2,7 @@
 title: "Iteration 61: Script runner and session recorder"
 type: iteration
 date: 2026-05-15
-status: completed
+status: done
 branch: iter-61/script-runner-recorder
 depends_on:
   - iteration-60-compact-responses-refs

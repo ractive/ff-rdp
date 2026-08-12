@@ -2,7 +2,7 @@
 title: "Iteration 49: Scroll & Reload Fixes"
 type: iteration
 date: 2026-04-23
-status: completed
+status: done
 branch: iter-49/scroll-reload-fixes
 tags:
   - iteration

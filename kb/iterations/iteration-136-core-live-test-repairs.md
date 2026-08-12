@@ -14,7 +14,7 @@ first_call_sites:
     site: >-
       crates/ff-rdp-cli/src/commands/a11y.rs (fast JS fallback when the a11y service
       is off)
-status: completed
+status: done
 ---
 
 # Iteration 136: repair four stale ff-rdp-core live tests

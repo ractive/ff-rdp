@@ -2,7 +2,7 @@
 title: "Iteration 112: windows-latest CI hangs launching live Firefox in tests/live/live_61l.rs"
 type: iteration
 date: 2026-07-10
-status: completed
+status: done
 branch: iter-112/windows-live-firefox-launch-hang
 depends_on:
   - kb/iterations/iteration-108-windows-ci-preexisting-reds.md

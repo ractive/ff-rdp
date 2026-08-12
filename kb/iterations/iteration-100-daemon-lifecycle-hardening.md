@@ -2,7 +2,7 @@
 title: "Iteration 100: daemon lifecycle hardening — thread supervision, honest idle timeout, signal cleanup, spawn/kill races, auto-start observability"
 type: iteration
 date: 2026-07-09
-status: completed
+status: done
 branch: iter-100/daemon-lifecycle-hardening
 depends_on: []
 firefox_refs: []

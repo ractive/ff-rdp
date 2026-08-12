@@ -1,7 +1,7 @@
 ---
 title: "Iteration 35: Fix Screenshot Command (Firefox 149 Timeout)"
 type: iteration
-status: completed
+status: done
 date: 2026-04-08
 tags:
   - iteration

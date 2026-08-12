@@ -1,7 +1,7 @@
 ---
 title: "Iteration 50: Contextual Command Hints"
 type: iteration
-status: completed
+status: done
 date: 2026-04-24
 branch: iter-50/contextual-hints
 tags:

@@ -2,7 +2,7 @@
 title: "Iteration 79: Fix navigate readiness-event misses + surface styles/computed under dom --help"
 type: iteration
 date: 2026-05-25
-status: completed
+status: done
 branch: iter-79/navigate-readiness-and-dom-help
 depends_on:
   - iteration-77-spec-drift-and-windows-reparse-points

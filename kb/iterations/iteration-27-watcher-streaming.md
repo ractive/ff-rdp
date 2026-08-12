@@ -1,7 +1,7 @@
 ---
 title: "Iteration 27: Watcher & Streaming"
 type: iteration
-status: completed
+status: done
 date: 2026-04-07
 tags:
   - iteration

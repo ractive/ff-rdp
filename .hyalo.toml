@@ -18,5 +18,7 @@ orphan = true
 
 [views.completed-with-todos]
 fields = ["tasks"]
-properties = ["status=completed"]
+# Iteration plans use `status=done` (normalized 2026-08-12; `completed` was a
+# synonym the merge workflow wrote). kb/research/ still uses `completed`.
+properties = ["status=done"]
 task = "todo"

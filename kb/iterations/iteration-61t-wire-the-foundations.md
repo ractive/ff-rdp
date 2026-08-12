@@ -2,7 +2,7 @@
 title: "Iteration 61t: Wire the foundations (Registry, ResourceCommand bus, ScopedGrip, resources-destroyed)"
 type: iteration
 date: 2026-05-23
-status: completed
+status: done
 branch: iter-61t/wire-the-foundations
 depends_on:
   - iteration-61p-actor-registry-and-front-lifecycle

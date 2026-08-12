@@ -10,7 +10,7 @@ dogfood_path: |
   #   `pgrep -af start-debugger-server` scan in this shared sandbox). Prefer this over the
   #   raw pgrep count used to first find this leak — see Resolution for the confirmed fix.
 first_call_sites: []
-status: completed
+status: done
 title: "Iteration 151: a residual live-suite Firefox leak survives iteration-146"
 type: iteration
 tags:

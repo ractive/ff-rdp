@@ -2,7 +2,7 @@
 title: "Iteration 53: Stability Fixes"
 type: iteration
 date: 2026-05-06
-status: completed
+status: done
 branch: iter-53/stability-fixes
 tags:
   - iteration

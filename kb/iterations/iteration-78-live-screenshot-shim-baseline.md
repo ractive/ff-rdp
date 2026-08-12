@@ -2,7 +2,7 @@
 title: "Iteration 78: Live tests for iter-77 spec-drift fixes"
 type: iteration
 date: 2026-05-25
-status: completed
+status: done
 branch: iter-78/live-tests-for-iter-77
 depends_on:
   - iteration-77-spec-drift-and-windows-reparse-points

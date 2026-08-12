@@ -2,7 +2,7 @@
 title: "Iteration 58: ff-rdp-debug Skill (v0)"
 type: iteration
 date: 2026-05-13
-status: completed
+status: done
 branch: iter-58/ff-rdp-debug-skill
 depends_on:
   - iteration-57-dogfood-42-fixes

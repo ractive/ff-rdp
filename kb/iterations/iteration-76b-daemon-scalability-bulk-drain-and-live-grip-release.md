@@ -2,7 +2,7 @@
 title: "Iteration 76b: Daemon scalability follow-up — bulk-frame drain, wire up grip release, type-safe Grip dispatch"
 type: iteration
 date: 2026-05-25
-status: completed
+status: done
 branch: iter-76b/daemon-scalability-bulk-drain-and-live-grip-release
 depends_on:
   - iteration-75b-pre-create-pr-discipline-gate

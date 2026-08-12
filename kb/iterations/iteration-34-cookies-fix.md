@@ -1,7 +1,7 @@
 ---
 title: "Iteration 34: Fix Cookies Command (StorageActor Crash)"
 type: iteration
-status: completed
+status: done
 date: 2026-04-08
 tags:
   - iteration

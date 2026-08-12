@@ -2,7 +2,7 @@
 title: "Iteration 106: live-test masking cascade — chrome CSP bypass regression, DNS-failure error shape, cross-invocation daemon buffer visibility"
 type: iteration
 date: 2026-07-09
-status: completed
+status: done
 branch: iter-106/live-test-masking-cascade
 depends_on:
   - iteration-100-daemon-lifecycle-hardening

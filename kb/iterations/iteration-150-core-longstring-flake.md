@@ -9,7 +9,7 @@ dogfood_path: |
   # → 10 consecutive runs must pass; today the test fails intermittently and
   #   passes on rerun, which is how it has survived two separate sightings
 first_call_sites: []
-status: completed
+status: done
 title: "Iteration 150: resolve_slot_longstring_grip_fetches_full_value is intermittently red"
 type: iteration
 tags:

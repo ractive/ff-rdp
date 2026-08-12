@@ -1,6 +1,6 @@
 ---
 title: "Iteration 17: LLM Ergonomics & Convenience"
-status: completed
+status: done
 date: 2026-04-06
 tags:
   - iteration

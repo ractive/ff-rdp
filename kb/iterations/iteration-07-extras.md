@@ -8,7 +8,7 @@ tags:
   - cookies
   - storage
   - launch
-status: completed
+status: done
 branch: iter-7/extras
 ---
 

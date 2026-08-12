@@ -2,7 +2,7 @@
 title: "Iteration 61w: Security hardening (auth, refstore, terminal escapes) + bulk-packet skip + kb refresh"
 type: iteration
 date: 2026-05-23
-status: completed
+status: done
 branch: iter-61w/security-hardening-and-cleanup
 depends_on:
   - iteration-61t-wire-the-foundations

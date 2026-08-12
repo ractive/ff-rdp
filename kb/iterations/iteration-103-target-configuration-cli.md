@@ -2,7 +2,7 @@
 title: "Iteration 103: emulate command — expose the target-configuration actor (UA, color-scheme, DPR, print, touch, JS, offline, cache)"
 type: iteration
 date: 2026-07-09
-status: completed
+status: done
 branch: iter-103/emulate-target-configuration
 depends_on: []
 firefox_refs:

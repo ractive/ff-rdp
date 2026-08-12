@@ -8,7 +8,7 @@ tags:
   - connection
   - performance
   - cross-platform
-status: completed
+status: done
 branch: iter-13/connection-daemon
 ---
 

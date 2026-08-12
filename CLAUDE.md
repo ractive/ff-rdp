@@ -31,7 +31,18 @@ Before committing or creating a PR, run **in this order** and fix all issues:
 3. `cargo test --workspace -q`
 
 Never skip a step. Never commit code that fails any of these.
-Do *not* merge with "--squash".
+
+Merge PRs **on GitHub** (`gh pr merge <n> --merge --delete-branch`), not with a local
+`git merge` + `git push origin main`. A local merge bypasses the PR flow entirely, so branch
+protection and required checks are never consulted — which leaves the protection config
+untestable. If a GitHub merge is refused, that is the enforcement working: report the reason
+and stop; never fall back to a local merge. Do *not* merge with `--squash`.
+
+Iteration plan `status:` vocabulary is `planned | in-progress | in-review | done | obsolete`,
+enforced by `cargo run -p xtask -- check-iteration-plan`. Use `done`, never `completed` — the
+latter was a synonym that the merge workflow wrote, and the 142 plans carrying it were
+normalized on 2026-08-12 so each state has exactly one word. (`kb/research/` documents still
+use `completed`; the validator does not govern them.)
 
 ### Live tests
 Some tests require a running Firefox instance and are gated by an env var:

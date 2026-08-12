@@ -2,7 +2,7 @@
 title: "Iteration 55: Daemon Hardening, Module Borders & Agent-Friendly Docs"
 type: iteration
 date: 2026-05-10
-status: completed
+status: done
 branch: iter-55/daemon-hardening-docs
 tags:
   - iteration

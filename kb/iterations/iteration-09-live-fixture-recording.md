@@ -8,7 +8,7 @@ tags:
   - fixtures
   - live-tests
   - recording
-status: completed
+status: done
 branch: iter-9/live-fixture-recording
 ---
 

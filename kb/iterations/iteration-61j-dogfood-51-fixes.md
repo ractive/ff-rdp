@@ -2,7 +2,7 @@
 title: "Iteration 61j: Dogfood-51 fixes — page-text dup, --stringify object, computed multi-prop, locale, watcher engage, --full-page, skill drift"
 type: iteration
 date: 2026-05-23
-status: completed
+status: done
 branch: iter-61j/dogfood-51-fixes
 depends_on:
   - iteration-61i-dogfood-49-fixes

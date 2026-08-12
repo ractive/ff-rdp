@@ -11,7 +11,7 @@ dogfood_path: |
   #   restore it, meta must say so; the browser is left in a degraded state
   #   and a non-verbose caller currently has no way to learn that
 first_call_sites: []
-status: completed
+status: done
 title: "Iteration 149: a11y --native must report a failed service restore"
 type: iteration
 tags:

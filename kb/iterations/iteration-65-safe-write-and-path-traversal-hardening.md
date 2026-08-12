@@ -2,7 +2,7 @@
 title: "Iteration 65: Safe-write helper + path-traversal hardening"
 type: iteration
 date: 2026-05-24
-status: completed
+status: done
 branch: iter-65/safe-write
 depends_on:
   - iteration-63-daemon-lockrecover-and-quick-sec-fixes

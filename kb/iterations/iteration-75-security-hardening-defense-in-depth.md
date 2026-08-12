@@ -2,7 +2,7 @@
 title: "Iteration 75: Security hardening — defense in depth (bulk cap, profile dir, supply chain)"
 type: iteration
 date: 2026-05-24
-status: completed
+status: done
 branch: iter-75/security-hardening-defense-in-depth
 depends_on:
   - iteration-72-transport-polish

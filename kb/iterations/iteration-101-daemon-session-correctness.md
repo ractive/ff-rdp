@@ -2,7 +2,7 @@
 title: "Iteration 101: daemon session correctness — target-switch re-watch, concurrent clients, type-aware buffer, --since parity"
 type: iteration
 date: 2026-07-09
-status: completed
+status: done
 branch: iter-101/daemon-session-correctness
 depends_on:
   - iteration-100-daemon-lifecycle-hardening

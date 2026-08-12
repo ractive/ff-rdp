@@ -2,7 +2,7 @@
 title: "Iteration 10: Object Inspection & Native Actor Access"
 type: iteration
 date: 2026-04-06
-status: completed
+status: done
 branch: iter-10/object-inspect
 tags:
   - iteration

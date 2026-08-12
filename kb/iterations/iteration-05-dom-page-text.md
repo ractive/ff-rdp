@@ -7,7 +7,7 @@ tags:
   - dom
   - inspector
   - page-text
-status: completed
+status: done
 branch: iter-5/dom-page-text
 ---
 
