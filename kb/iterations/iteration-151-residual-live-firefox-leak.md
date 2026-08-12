@@ -113,6 +113,15 @@ attributable to this suite (via Theme A's marker) is the shape to aim for.
 
 ## Notes
 
+- iter-149 review (this session, 2026-08-12): running `check-dogfood-script` with
+  `FF_RDP_LIVE_TESTS=1` against iter-149's `dogfood_path` (`ff-rdp launch --headless --port 6100`
+  → `navigate` → `a11y --native`) left zero `ff-rdp-profile-*` directories and zero surviving
+  `start-debugger-server` processes afterward — that single-invocation launch/a11y/exit path is
+  not, by itself, a reproduction of this leak. Also observed: `pgrep -af start-debugger-server`
+  transiently matched PIDs in this shared sandbox that `ps -p <pid>` immediately reported as
+  already gone — i.e. plain process-count snapshots can be noisy here independent of anything
+  ff-rdp does. Both observations support Theme A/C's approach (a per-test ownership marker, not a
+  raw process count) over trying to tighten the pgrep-based measurement itself.
 - Do not "fix" this by widening cleanup (a blanket kill of stray Firefox at suite start or end).
   That hides the leak exactly the way [[iteration-146-live-suite-reliability]] Theme C refused to
   hide the daemon-parity flake, and it would mask a *product* leak if one is ever the cause.
