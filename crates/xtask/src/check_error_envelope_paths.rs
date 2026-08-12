@@ -43,7 +43,7 @@ pub struct EnvelopeFinding {
 
 const LOOKAHEAD_LINES: usize = 6;
 const LOOKBACK_JUSTIFICATION_LINES: usize = 2;
-const JUSTIFICATION_MARKER: &str = "stderr-ok:";
+const JUSTIFICATION_MARKER: &str = "// stderr-ok:";
 
 /// Scan one file's source text for the print-then-bypass idiom.
 pub fn check_source(file_label: &str, src: &str) -> Vec<EnvelopeFinding> {
@@ -191,6 +191,19 @@ fn do_thing() -> Result<(), AppError> {
 "#;
         let findings = check_source("fake.rs", src);
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn rejects_marker_text_outside_a_comment() {
+        let src = r#"
+fn do_thing() -> Result<(), AppError> {
+    let msg = "stderr-ok: not actually a justification comment";
+    eprintln!("{msg}");
+    return Err(AppError::Exit(1));
+}
+"#;
+        let findings = check_source("fake.rs", src);
+        assert_eq!(findings.len(), 1);
     }
 
     #[test]

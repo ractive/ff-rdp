@@ -31,7 +31,7 @@ pub struct UnannotatedFinding {
 }
 
 const LOOKBACK_JUSTIFICATION_LINES: usize = 2;
-const JUSTIFICATION_MARKER: &str = "stderr-ok:";
+const JUSTIFICATION_MARKER: &str = "// stderr-ok:";
 
 /// Scan one file's source text for `eprintln!` sites missing the
 /// `// stderr-ok:` justification comment.
@@ -140,6 +140,18 @@ fn do_thing() {
     let unrelated = 1;
     let _ = unrelated;
     eprintln!("debug: something");
+}
+"#;
+        let findings = check_source("fake.rs", src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn rejects_marker_text_outside_a_comment() {
+        let src = r#"
+fn do_thing() {
+    let msg = "stderr-ok: not actually a justification comment";
+    eprintln!("{msg}");
 }
 "#;
         let findings = check_source("fake.rs", src);
