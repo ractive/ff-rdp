@@ -1183,10 +1183,13 @@ fn map_send_io_error(e: std::io::Error) -> ProtocolError {
     }
 }
 
-/// Crate-wide lock guarding `MAX_FRAME_BYTES_CELL`, the process-global cap
-/// read by every [`recv_from`] call and mutated at runtime only by tests (via
-/// [`set_max_frame_bytes`]) and the CLI's one-time `--max-frame-mb` startup
-/// call.
+/// Test-only lock guarding `MAX_FRAME_BYTES_CELL`, the process-global cap
+/// read by every [`recv_from`] call. This lock exists only in `#[cfg(test)]`
+/// builds — it does not run in, and does not guard, the release binary's
+/// production path, where the CLI's `--max-frame-mb` flag sets the cap once
+/// at startup (via [`set_max_frame_bytes`]) before any concurrent access is
+/// possible. Within test builds, the cap is mutated at runtime only by tests
+/// (also via [`set_max_frame_bytes`]).
 ///
 /// `cargo test` runs every test in the crate's unit-test binary on a shared
 /// thread pool, so the cap is genuinely shared mutable state across
