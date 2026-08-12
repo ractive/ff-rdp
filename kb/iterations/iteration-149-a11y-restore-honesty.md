@@ -1,0 +1,125 @@
+---
+branch: iter-149/a11y-restore-honesty
+date: 2026-08-12
+depends_on: [kb/iterations/iteration-143-native-a11y-tree.md]
+dogfood_path: |
+  ff-rdp launch --headless --port 6100
+  ff-rdp navigate https://example.com --port 6100
+  ff-rdp a11y --native --port 6100 --jq '.meta'
+  # → when ff-rdp enabled the platform accessibility service and could not
+  #   restore it, meta must say so; the browser is left in a degraded state
+  #   and a non-verbose caller currently has no way to learn that
+first_call_sites: []
+status: planned
+title: "Iteration 149: a11y --native must report a failed service restore"
+type: iteration
+tags: [iteration]
+---
+
+# Iteration 149: `a11y --native` must report a failed service restore
+
+Follow-up to [[iteration-143-native-a11y-tree]]. Found by reading the merged diff of that
+iteration (`aeca4d0`) during the 134–146 batch, not in a dogfooding session — evidence inline.
+
+## Why this exists
+
+[[iteration-143-native-a11y-tree]] added the opt-in `--native` flag per [[decision-log]]
+DEC-027: it enables Firefox's platform accessibility service, walks the native tree, and
+restores the prior state afterwards. The enable path is careful and honest — it refuses to walk
+the tree if `bootstrap()` still reports the service disabled, rather than silently falling back.
+
+The **restore** path is not. `crates/ff-rdp-cli/src/commands/a11y.rs`:
+
+```rust
+if we_enabled {
+    // Best-effort restore: report a failure but don't let it mask the
+    // primary result. On Windows an active screen reader can block
+    // `disable` (kb/rdp/actors/accessibility.md) — that's an expected
+    // limitation, not a bug in ff-rdp.
+    if let Err(e) = AccessibilityActor::disable_service(ctx.transport_mut(), &parent_actor) {
+        if cli.is_verbose() {
+            eprintln!("debug: --native: failed to restore the accessibility service ...");
+        }
+    }
+    // ...
+}
+```
+
+and at the call site:
+
+```rust
+let (tree, _we_enabled) = run_native_opt_in(...)?;
+```
+
+So when `disable()` fails, ff-rdp leaves Firefox's accessibility service **enabled
+browser-wide for the remaining life of the process** and the default JSON output says nothing.
+The caller learns about it only by passing `--verbose` and reading stderr. The function computes
+exactly the fact a caller needs (`we_enabled`) and the call site discards it with an underscore.
+
+The comment is right about the cause and wrong about the consequence. A screen reader blocking
+`disable()` genuinely is an expected platform limitation and not an ff-rdp bug — but an expected
+limitation still has to be *reported*. The user-visible outcome is a browser that is slower for
+every other tab, caused by a command that looked read-only, with no trace in its output.
+
+**This contradicts iteration-143's own Theme A.** Theme A exists because "a caller cannot tell
+[the native and JS trees] apart except by `--verbose` stderr" was judged unacceptable for tree
+provenance. The same iteration then reproduced that exact pattern for a side effect that
+outlives the command. DEC-027's argument was that a query command must not silently mutate
+browser-global state; leaving it mutated *and* not saying so is the failure mode that decision
+was written to prevent.
+
+Same class as iter-125's false-good LCP, iter-139's fabricated CLS, and iter-141's
+bare-stderr JS exceptions: the JSON envelope stops telling the truth precisely when something
+went wrong.
+
+## Themes
+
+### Theme A — surface the failed restore in the envelope
+
+Add a `meta` field (e.g. `service_left_enabled: true` with `service_restore_error: "<reason>"`)
+whenever ff-rdp enabled the service and could not restore it. Follow iter-128's
+always-present-nullable-key convention if that reads better here — decide once and state it in
+the plan, rather than making the key's presence itself the signal in a way callers must
+special-case.
+
+Keep the existing behaviour that a restore failure does not mask the primary result: the tree
+was walked successfully and must still be returned. This is an additional fact about the
+envelope, not an error.
+
+### Theme B — stop discarding the signal
+
+`let (tree, _we_enabled) = ...` throws away the value Theme A needs. Thread it (or a richer
+restore-outcome type) to the envelope construction.
+
+Prefer a small enum over a bare `bool` — `RestoreOutcome::{NotNeeded, Restored, Failed(String)}`
+carries the three real cases without the caller having to infer "we didn't enable it" from
+`false`.
+
+### Theme C — say it on stderr too, unconditionally
+
+The `--verbose`-gated `eprintln!` should fire regardless of verbosity when the restore *failed*.
+A human running the command interactively should not have to opt in to learning that their
+browser was left degraded. Keep the success-path notice verbose-gated — that one is noise.
+
+## Acceptance Criteria [0/4]
+
+- [ ] live_149_restore_failure_reported_in_meta: when `disable_service` fails after ff-rdp
+      enabled the service, the JSON envelope carries the left-enabled signal and the reason,
+      and the walked tree is still returned in `results`
+- [ ] live_149_successful_restore_reports_clean: a normal `--native` run that restores the
+      service reports no left-enabled signal, and the service is observably disabled afterwards
+- [ ] live_149_service_already_on_is_not_touched: when the service was already enabled before
+      the command, ff-rdp neither disables it nor claims to have left it enabled
+- [ ] unit_149_restore_outcome_maps_to_meta: each `RestoreOutcome` variant maps to the intended
+      envelope shape, including the not-needed case
+
+## Notes
+
+- Forcing a real `disable()` failure on macOS/Linux is the hard part of Theme A's live test. If
+  it cannot be induced against real Firefox, inject at the actor boundary rather than skipping
+  the AC — and say so in the AC text. Do not tick a live AC that was only exercised by a mock.
+- Verify on the wire first, per the run guidance that has now corrected four plan hypotheses in
+  this series (including two of mine in [[iteration-146-live-suite-reliability]]). Confirm the
+  current silent-failure behaviour by observation before changing it.
+- Every live test added here must exercise the **default daemon path**. Do not add entries to
+  the shrink-only grandfather list in `crates/ff-rdp-cli/tests/no_daemon_live_test_guard.rs`.
