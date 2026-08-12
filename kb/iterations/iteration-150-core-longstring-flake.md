@@ -80,14 +80,15 @@ of those converts a visible intermittent into an invisible one — the same trad
 
 ## Acceptance Criteria [3/3]
 
-- [x] unit_150_longstring_deterministic_repeat:
-      `resolve_slot_longstring_grip_fetches_full_value` passes 50 consecutive runs in isolation
-      and 20 consecutive runs of the full `-p ff-rdp-core` suite
-- [x] unit_150_mechanism_documented: this plan's Resolution section names the confirmed
-      mechanism and the pre-fix failure rate measured in Theme A, not a hypothesis
-- [x] unit_150_regression_pinned: if the cause was a product bug, a test exercises the specific
-      longstring path deterministically; if it was test contamination, a test or harness change
-      makes the isolation failure impossible rather than unlikely
+- [x] unit_150_longstring_deterministic_repeat: `resolve_slot_longstring_grip_fetches_full_value`
+      passes 50 consecutive runs in isolation and 20 consecutive runs of the full
+      `-p ff-rdp-core` suite (measured: 50/50 isolated, 20/20 full-suite post-fix; 2/20 pre-fix)
+- [x] unit_150_mechanism_documented: Resolution section names `FRAME_CAP_LOCK`'s missing
+      cross-module read/write guard as the confirmed mechanism (not a hypothesis), with the
+      pre-fix failure rate (2/20 = 10%) measured in Theme A
+- [x] unit_150_regression_pinned: `frame_cap_lock_read_guard_excludes_writers` deterministically
+      proves `FRAME_CAP_LOCK`'s read/write exclusion — confirmed test contamination, not a product
+      bug, so isolation is now impossible to violate, not merely unlikely
 
 ## Resolution
 
