@@ -2,7 +2,7 @@
 title: "Iteration 61c: NDJSON contract + secret-leak fixes + recorder fidelity"
 type: iteration
 date: 2026-05-16
-status: completed
+status: done
 branch: iter-61c/runner-secret-leak-fixes
 depends_on:
   - iteration-61b-recorder-cli-wiring

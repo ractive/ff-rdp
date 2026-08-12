@@ -1,6 +1,6 @@
 ---
 title: "Iteration 11: Native Cookie Access via StorageActor"
-status: completed
+status: done
 branch: iter-11/native-cookies
 date: 2026-04-06
 tags:

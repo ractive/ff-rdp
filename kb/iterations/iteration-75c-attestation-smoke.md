@@ -2,7 +2,7 @@
 title: "Iteration 75c: PR-time smoke check that `gh attestation verify` works on a freshly built artifact"
 type: iteration
 date: 2026-05-24
-status: completed
+status: done
 branch: iter-75c/attestation-smoke
 depends_on:
   - iteration-75-security-hardening-defense-in-depth

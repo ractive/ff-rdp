@@ -1,7 +1,7 @@
 ---
 title: "Iteration 23: Native DOM & CSS Inspection"
 type: iteration
-status: completed
+status: done
 date: 2026-04-07
 tags:
   - iteration

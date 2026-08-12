@@ -13,7 +13,7 @@ dogfood_path: |
   ff-rdp type 'input[name=keywords]' 'passport' --port 6100
   # → must target the visible match, or say how many matched and which was chosen
 first_call_sites: []
-status: completed
+status: done
 ---
 
 # Iteration 140: element targeting — refs, ambiguous selectors, frame diagnostics

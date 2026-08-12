@@ -16,7 +16,7 @@ first_call_sites:
       ThrottleProfileArg::Status + throttle_state::{ThrottleState,
       read_throttle_state, write_throttle_state}
     site: crates/ff-rdp-cli/src/commands/throttle.rs (run/run_status)
-status: completed
+status: done
 ---
 
 # Iteration 131: measurement honesty — perf transfer sizes, responsive simulation, snapshot bounds, throttle state

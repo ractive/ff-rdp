@@ -1,7 +1,7 @@
 ---
 title: "Iteration 40: Daemon Simplification & Security Hardening"
 type: iteration
-status: completed
+status: done
 date: 2026-04-09
 branch: iter-40/daemon-simplification
 tags:

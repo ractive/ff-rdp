@@ -19,7 +19,7 @@ first_call_sites:
     site: >-
       crates/ff-rdp-cli/src/commands/frame_targets.rs (request_frame_targets replay
       of the daemon snapshot)
-status: completed
+status: done
 ---
 
 # Iteration 137: daemon-mode parity — frame targets, concurrency, network source

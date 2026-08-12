@@ -9,7 +9,7 @@ dogfood_path: |
   # → after the suite exits, zero ff-rdp-owned Firefox processes may remain and
   #   zero ff-rdp-profile-* directories may be left pinned
 first_call_sites: []
-status: completed
+status: done
 title: "Iteration 146: live suite reliability — leaked Firefox, order-dependent tests, daemon-parity flake"
 type: iteration
 tags:

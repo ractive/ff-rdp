@@ -2,7 +2,7 @@
 title: "Iteration 110: post-batch full live-suite sweep — run everything against real Firefox once, fix all fallout"
 type: iteration
 date: 2026-07-09
-status: completed
+status: done
 branch: iter-110/post-batch-live-sweep
 depends_on:
   - kb/iterations/iteration-109-network-throttle-block.md

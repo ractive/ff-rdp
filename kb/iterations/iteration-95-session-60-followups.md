@@ -2,7 +2,7 @@
 title: "Iteration 95: session-60 follow-ups — daemon stop process-group kill, cascade computed-field population, doctor staleness check"
 type: iteration
 date: 2026-06-01
-status: completed
+status: done
 branch: iter-95/session-60-followups
 depends_on:
   - iteration-94-session-59-polish-bundle

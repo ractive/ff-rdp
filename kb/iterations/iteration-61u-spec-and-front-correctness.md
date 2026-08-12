@@ -2,7 +2,7 @@
 title: "Iteration 61u: Spec & Front correctness (oneway, longstring, renames, missing watcher methods)"
 type: iteration
 date: 2026-05-23
-status: completed
+status: done
 branch: iter-61u/spec-and-front-correctness
 depends_on:
   - iteration-61s-typed-protocol-ides

@@ -2,7 +2,7 @@
 title: "Iteration 61b: Recorder CLI wiring + iter-61 review-feedback fixes"
 type: iteration
 date: 2026-05-16
-status: completed
+status: done
 branch: iter-61b/recorder-cli-wiring
 depends_on:
   - iteration-61-script-runner-recorder

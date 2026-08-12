@@ -2,7 +2,7 @@
 title: "Iteration 99: cookies --help stack overflow (Windows STATUS_STACK_OVERFLOW)"
 type: iteration
 date: 2026-07-08
-status: completed
+status: done
 branch: iter-99/cookies-help-stack-overflow
 depends_on: []
 firefox_refs: []

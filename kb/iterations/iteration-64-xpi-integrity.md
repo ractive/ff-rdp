@@ -2,7 +2,7 @@
 title: "Iteration 64: XPI integrity — vendor or pin Consent-O-Matic"
 type: iteration
 date: 2026-05-24
-status: completed
+status: done
 branch: iter-64/xpi-integrity
 depends_on:
   - iteration-63-daemon-lockrecover-and-quick-sec-fixes

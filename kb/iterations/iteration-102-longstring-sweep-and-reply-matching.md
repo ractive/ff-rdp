@@ -2,7 +2,7 @@
 title: "Iteration 102: longString sweep + retiring blind transport.request — no silently-truncated values, no unmatched replies"
 type: iteration
 date: 2026-07-09
-status: completed
+status: done
 branch: iter-102/longstring-sweep
 depends_on: []
 firefox_refs:

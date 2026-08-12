@@ -7,7 +7,7 @@ tags:
   - connection
   - tabs
   - e2e
-status: completed
+status: done
 branch: iter-2/connect-tabs
 ---
 

@@ -72,7 +72,13 @@ pub fn parse_plan(content: &str) -> Result<ParsedPlan> {
 pub fn validate_plan(plan: &ParsedPlan) -> (Vec<String>, Vec<String>) {
     let mut findings = Vec::new();
     let mut warnings = Vec::new();
-    let valid_statuses = ["planned", "in-progress", "in-review", "done"];
+    // `obsolete` is a real terminal state distinct from `done` — a plan that was
+    // superseded or abandoned rather than delivered (3 such plans exist). It is
+    // NOT a synonym for `done`, so it is accepted here rather than normalized
+    // away. `completed` deliberately is NOT accepted: it was a synonym for
+    // `done` that the merge workflow used to write, and the 142 plans carrying
+    // it were normalized to `done` so the vocabulary has one word per state.
+    let valid_statuses = ["planned", "in-progress", "in-review", "done", "obsolete"];
 
     // Validate status field.
     match &plan.frontmatter.status {

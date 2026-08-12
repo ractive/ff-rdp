@@ -1,7 +1,7 @@
 ---
 title: "Iteration 39: LLM Ergonomics — Help Text, Hints & Recipes"
 type: iteration
-status: completed
+status: done
 date: 2026-04-09
 branch: iter-39/llm-ergonomics
 tags:

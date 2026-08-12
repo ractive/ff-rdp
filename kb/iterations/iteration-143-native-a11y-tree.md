@@ -22,7 +22,7 @@ first_call_sites:
     site: crates/ff-rdp-cli/src/commands/a11y.rs
   - primitive: connection_meta::merge_source on a11y contrast output
     site: crates/ff-rdp-cli/src/commands/a11y_contrast.rs
-status: completed
+status: done
 ---
 
 # Iteration 143: decide and expose how `ff-rdp a11y` gets its tree

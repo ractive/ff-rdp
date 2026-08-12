@@ -2,7 +2,7 @@
 title: "Iteration 52: Input & Eval Ergonomics"
 type: iteration
 date: 2026-05-06
-status: completed
+status: done
 branch: iter-52/input-eval-ergonomics
 tags:
   - iteration

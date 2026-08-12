@@ -2,7 +2,7 @@
 title: "Iteration 51: Connection Diagnostics & Onboarding"
 type: iteration
 date: 2026-05-06
-status: completed
+status: done
 branch: iter-51/connection-diagnostics
 tags:
   - iteration

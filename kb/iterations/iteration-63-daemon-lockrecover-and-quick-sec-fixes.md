@@ -2,7 +2,7 @@
 title: "Iteration 63: Daemon lock-recover sweep + file:// gating + table sanitization"
 type: iteration
 date: 2026-05-24
-status: completed
+status: done
 branch: iter-63/quick-sec-fixes
 depends_on:
   - iteration-61w-security-hardening-and-cleanup

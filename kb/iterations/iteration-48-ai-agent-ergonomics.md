@@ -2,7 +2,7 @@
 title: "Iteration 48: AI-Agent Ergonomics"
 type: iteration
 date: 2026-04-17
-status: completed
+status: done
 branch: iter-48/ai-agent-ergonomics
 tags:
   - iteration

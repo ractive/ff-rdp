@@ -2,7 +2,7 @@
 title: "Iteration 42: Site Audit Skill"
 date: 2026-04-09
 type: iteration
-status: completed
+status: done
 branch: iter-42/site-audit-skill
 tags:
   - iteration

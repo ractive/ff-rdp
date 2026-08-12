@@ -11,7 +11,7 @@ dogfood_path: |
   ff-rdp navigate https://example.com >/dev/null
   ff-rdp eval 'document.querySelector("h1").textContent'
 first_call_sites: []
-status: completed
+status: done
 ---
 
 # Iteration 132: CLI polish — error surfaces, live DOM values, ergonomics, housekeeping

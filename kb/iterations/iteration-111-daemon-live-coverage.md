@@ -2,7 +2,7 @@
 title: "Iteration 111: daemon live coverage — cross-process follow + full error-shape parity"
 type: iteration
 date: 2026-07-09
-status: completed
+status: done
 branch: iter-111/daemon-live-coverage
 depends_on:
   - iteration-101-daemon-session-correctness

@@ -2,7 +2,7 @@
 title: "Iteration 68: Supply-chain CI gates + parser fuzz harnesses"
 type: iteration
 date: 2026-05-24
-status: completed
+status: done
 branch: iter-68/supply-chain-and-fuzz
 depends_on:
   - iteration-63-daemon-lockrecover-and-quick-sec-fixes

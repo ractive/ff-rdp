@@ -2,7 +2,7 @@
 title: "Iteration 69: Reply-vs-event correctness + shared reply-loop helpers"
 type: iteration
 date: 2026-05-24
-status: completed
+status: done
 branch: iter-69/reply-vs-event
 depends_on:
   - iteration-61p-actor-registry-and-front-lifecycle
