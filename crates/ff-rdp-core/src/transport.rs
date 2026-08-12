@@ -1439,44 +1439,69 @@ mod tests {
         // FrameCapGuard restores the previous value on drop.
     }
 
-    /// AC (iter-150) `unit_150_regression_pinned`: proves the `FRAME_CAP_LOCK`
-    /// read/write contract actually excludes concurrent access, deterministically
-    /// — not "usually excludes", which is what the pre-fix code gave when
+    /// AC (iter-150) `unit_150_regression_pinned`: proves the real,
+    /// process-global `FRAME_CAP_LOCK` actually excludes concurrent access —
+    /// not "usually excludes", which is what the pre-fix code gave when
     /// `resolve_slot_longstring_grip_fetches_full_value` read the cap with no
     /// guard at all.
     ///
-    /// This does not depend on timing or scheduling luck: `try_write` is
-    /// documented to fail immediately (never block) when a reader holds the
-    /// lock, so holding a `read` guard on this thread and asserting the next
-    /// line either passes or fails is a fact about the `RwLock`, not a
-    /// probabilistic race window.
+    /// **Why the assertions below are the ones they are.** iter-150 review
+    /// caught a real flake in an earlier version of this test: it asserted
+    /// `FRAME_CAP_LOCK.try_read().is_ok()` (readers do not exclude readers)
+    /// and a final `try_write().is_ok()` while the five cap-mutating tests
+    /// (`max_frame_mb_knob_works` et al.) were running concurrently. Both are
+    /// genuinely racy against siblings: a writer-preferring `RwLock` can make
+    /// `try_read` fail while a writer is merely *queued*, and a concurrent
+    /// writer test can win the final `try_write` outright. Measured ~12%
+    /// (35/300) under elevated contention (`--test-threads=6`, filtered to
+    /// these tests).
+    ///
+    /// The fix is NOT to swap in a fresh test-local `RwLock` — that would
+    /// only re-assert `std`'s own documented semantics and would prove
+    /// nothing whatsoever about `FRAME_CAP_LOCK`, leaving this AC vacuous.
+    /// Instead this test asserts only the properties that hold *regardless*
+    /// of what sibling threads are doing, by first acquiring the lock with a
+    /// blocking call (which serializes against those siblings) and then
+    /// asserting exclusion from the same thread — `std`'s `RwLock` is not
+    /// reentrant, so those outcomes are facts, not races.
     #[test]
     fn frame_cap_lock_read_guard_excludes_writers() {
-        let read_guard = FRAME_CAP_LOCK.read().unwrap();
+        // Blocking acquire: serializes against the cap-mutating tests rather
+        // than racing them. Once held, everything below is deterministic.
+        let write_guard = FRAME_CAP_LOCK.write().unwrap();
 
-        // A cap-mutating test's `.write()` must not be able to proceed while
-        // any reader (like the longstring test) holds the cap at its default.
+        // While a cap-mutating test holds the write lock, a cap-*reading*
+        // test (the longstring test) must be excluded — this is the exact
+        // exclusion whose absence made that test intermittently observe a
+        // transiently-shrunk 1024-byte cap.
+        assert!(
+            FRAME_CAP_LOCK.try_read().is_err(),
+            "a writer is held, so a concurrent cap-reader must be excluded"
+        );
         assert!(
             FRAME_CAP_LOCK.try_write().is_err(),
-            "a reader is held, so a concurrent writer must be excluded"
+            "a writer is held, so a second writer must be excluded"
         );
 
-        // Other readers (e.g. two future tests both depending on the default
-        // cap) are not excluded by each other — only a writer excludes.
-        let second_read_guard = FRAME_CAP_LOCK.try_read();
+        drop(write_guard);
+
+        // Symmetrically: while a cap-reader holds the lock, no cap-mutator
+        // may proceed. Also deterministic — we hold the shared guard, so a
+        // writer cannot acquire regardless of sibling activity.
+        let read_guard = FRAME_CAP_LOCK.read().unwrap();
         assert!(
-            second_read_guard.is_ok(),
-            "readers must not exclude other readers"
+            FRAME_CAP_LOCK.try_write().is_err(),
+            "a reader is held, so a concurrent cap-mutator must be excluded"
         );
-        drop(second_read_guard);
-
         drop(read_guard);
 
-        // Once every reader has released, a writer can proceed.
-        assert!(
-            FRAME_CAP_LOCK.try_write().is_ok(),
-            "writer must be able to proceed once all readers have dropped"
-        );
+        // NOTE: "readers do not exclude other readers" and "a writer can
+        // proceed once all readers drop" are deliberately NOT asserted here.
+        // Both depend on sibling threads holding no conflicting guard at that
+        // instant, which no amount of care makes true under `cargo test`'s
+        // default parallelism — they were the ~12% flake. They are `std`
+        // guarantees, not this crate's contract, and pinning them here would
+        // buy nothing.
     }
 
     /// AC: `redact_threshold_tunable`.  A long non-sensitive string passes

@@ -88,7 +88,41 @@ of those converts a visible intermittent into an invisible one — the same trad
       pre-fix failure rate (2/20 = 10%) measured in Theme A
 - [x] unit_150_regression_pinned: `frame_cap_lock_read_guard_excludes_writers` deterministically
       proves `FRAME_CAP_LOCK`'s read/write exclusion — confirmed test contamination, not a product
-      bug, so isolation is now impossible to violate, not merely unlikely
+      bug, so isolation is now impossible to violate, not merely unlikely (measured post-review:
+      0/100 runs failed under the 6-thread contention harness that reproduced the review's flake
+      at ~12%)
+
+## Review finding: the regression test was itself flaky (2026-08-12, PR #189)
+
+The first version of `frame_cap_lock_read_guard_excludes_writers` asserted its exclusion
+properties against the **shared, process-global** `FRAME_CAP_LOCK` — the same lock the five
+cap-mutating tests take a write guard on. Two of its assertions were therefore racy against
+sibling threads:
+
+- `try_read().is_ok()` ("readers do not exclude readers") — a writer-preferring `RwLock` can
+  fail a `try_read` while a writer is merely *queued*.
+- the final `try_write().is_ok()` — a concurrently running writer test can win that race.
+
+Measured at ~12% (35/300) under elevated contention (`--test-threads=6`, filtered to these six
+tests). The test written to prove this iteration's flake was fixed was itself an instance of
+the same defect class.
+
+**The fix that was almost shipped, and why it was wrong.** The review's first correction swapped
+in a fresh test-local `std::sync::RwLock::new(())`. That removes the flake, but it also removes
+the test's meaning: it then asserts `std`'s own documented `RwLock` semantics and proves nothing
+whatsoever about `FRAME_CAP_LOCK`, leaving `unit_150_regression_pinned` vacuous — a green
+checkbox over a tautology.
+
+**What landed instead.** The test keeps asserting against the real global lock, but only the
+properties that hold *regardless* of sibling activity: acquire with a blocking call (which
+serializes against the cap-mutators rather than racing them), then assert from the same thread
+that the lock excludes — `std`'s `RwLock` is not reentrant, so those outcomes are facts, not
+races. The two genuinely racy assertions are dropped, with a comment explaining that they are
+`std` guarantees rather than this crate's contract and pinning them would buy nothing.
+Verified 0/100 under the identical contention harness.
+
+**Carry-over lesson:** "make the flaky test deterministic" and "keep the test meaningful" are
+separate goals, and the cheapest way to achieve the first is to quietly abandon the second.
 
 ## Resolution
 
