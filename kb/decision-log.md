@@ -425,3 +425,40 @@ fixture, not a reproduced-then-fixed defect.
 
 **Applies to**: `crates/ff-rdp-cli/src/commands/{launch,consent,tabs,screenshot}.rs`,
 `crates/ff-rdp-cli/tests/live/live_144_session_hygiene_followup.rs`, iter-144.
+
+## DEC-029: cap-mutating unit tests take a `write` guard, cap-dependent unit tests take a `read` guard — the plain `ff-rdp-core` suite runs parallel, unlike the live suite
+
+**Decision** (iter-150): `transport::FRAME_CAP_LOCK`, previously a private
+`Mutex<()>` inside `transport::tests` used only by the five tests that mutate
+`MAX_FRAME_BYTES_CELL`, is now a crate-visible (`pub(crate)`)
+`RwLock<()>`. The five cap-mutating tests now take `.write()` (unchanged
+behaviour — a writer still excludes everyone). Any test elsewhere in the
+crate whose correctness depends on `recv_from` seeing the *default* cap
+during a real oversized round-trip must now take `.read()` for the duration
+of that round-trip;
+`specs::types::tests::resolve_slot_longstring_grip_fetches_full_value` is the
+first adopter.
+
+**Why**: `resolve_slot_longstring_grip_fetches_full_value` failed
+intermittently (`FrameTooLarge`), reproduced in review passes twice
+(iter-141, iter-146) before iter-150 root-caused it: it reads
+`transport::max_frame_bytes()` via a real 20 KB `recv_from` round-trip
+without any guard, so it could observe a transiently-shrunk 1024-byte cap set
+by e.g. `max_frame_mb_knob_works` running concurrently. Confirmed by forcing
+the interleave deterministically (a throwaway harness that hammered the cap
+between two values on one thread while looping the longstring round-trip on
+another reliably produced `FrameTooLarge` on the first or second iteration
+against the pre-fix code, and zero times in 20 full-suite runs post-fix).
+This is a **different flavor** of process-global-state bug than DEC-022's
+`live_bulk_cap` leak: that was a *sequential* leak (a restore that didn't
+run), fixed with an RAII guard and addressed by the live suite's
+`--test-threads=1` serialization. The plain `cargo test -p ff-rdp-core`
+suite is **not** serialized — it is the default parallel unit-test binary
+that runs on every CI job on every PR — so an RAII restore alone is
+insufficient: the cap can be *correctly* restored afterward and a concurrent
+reader can still observe it shrunk *during* the guarded window. `RwLock`
+over `Mutex` so unrelated reader tests don't serialize against each other,
+only against the rare writer.
+
+**Applies to**: `crates/ff-rdp-core/src/transport.rs`,
+`crates/ff-rdp-core/src/specs/types.rs`, iter-150.
