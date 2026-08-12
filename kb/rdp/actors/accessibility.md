@@ -58,7 +58,19 @@ Each node in the tree is its own actor.
 
 ## Gotchas
 
-- Accessibility service is a system-wide singleton. Once enabled, performance cost persists until shutdown.
+- Accessibility service is a system-wide singleton. Once enabled, performance cost persists until
+  shutdown **while some RDP consumer keeps a connection open**. Observed live in iter-149: when the
+  connection that called `enable()` disconnects (the normal case for `ff-rdp a11y --native`, which
+  makes one short-lived direct connection per invocation), Firefox tears the service back down on
+  its own — a *later, separate* connection sees it disabled again, regardless of whether the
+  original connection's own `disable()` call succeeded. This means `ff-rdp a11y --native`'s failed
+  restore is a real but narrow window (the service stays on only for the remainder of that one
+  process's lifetime, not indefinitely) — still worth reporting (`meta.service_left_enabled`,
+  iter-149), just not the "left on for the rest of the Firefox session" hazard the original
+  iter-149 plan hypothesized. See `live_149_service_already_on_is_not_touched`
+  (`crates/ff-rdp-cli/tests/live/live_149_a11y_restore_honesty.rs`), which had to hold a second,
+  independent connection open to construct a genuine "already enabled" precondition for a separate
+  call to observe.
 - On Windows, an active screen reader can prevent `disable`.
 - **There is no `getRootNode` and no `getDocument` packet type** (iter-136). Both
   are absent from `accessibleWalkerSpec`; `getDocument` exists only as an
@@ -89,7 +101,15 @@ form's `getRoot` response — `RootActor::get_root`). The CLI's
 3. Otherwise calls `enable()`, re-checks `bootstrap()`, and errors explicitly
    (never silently falls back) if it still reports disabled.
 4. Walks the tree, then calls `disable()` — but only when step 2/3 is what
-   turned the service on.
+   turned the service on. The outcome (`RestoreOutcome::{NotNeeded,Restored,
+   Failed}`, iter-149) is reported in the envelope as
+   `meta.service_left_enabled` (bool, always present) and
+   `meta.service_restore_error` (nullable string), and — when the restore
+   failed — unconditionally on stderr too, not just under `--verbose`. Before
+   iter-149 a failed `disable()` (e.g. blocked by a Windows screen reader,
+   see below) was reported only via `--verbose` stderr, leaving the service
+   silently enabled browser-wide with no trace in the default JSON output —
+   see [[iteration-149-a11y-restore-honesty]].
 
 This is opt-in, never the default: `enable()` is browser-global and
 process-wide, and its performance cost persists until the browser shuts down.

@@ -44,6 +44,63 @@ impl A11ySource {
     }
 }
 
+/// Outcome of attempting to restore the platform accessibility service to
+/// its pre-command state after an opt-in `--native` run (iter-149, follow-up
+/// to iter-143 Theme B).
+///
+/// Threaded from [`run_native_opt_in`] to the envelope via
+/// [`RestoreOutcome::merge_into`] so a failed restore is visible in the
+/// default (non-`--verbose`) JSON output, not only on stderr behind
+/// `--verbose`. See `kb/iterations/iteration-149-a11y-restore-honesty.md`.
+///
+/// A failed `disable()` does *not* necessarily mean Firefox's platform
+/// accessibility service stays enabled indefinitely: verified live
+/// (`live_149_service_already_on_is_not_touched`), Firefox tears the service
+/// back down once the connection that enabled it disconnects — which for
+/// this one-shot CLI connection happens moments after this outcome is
+/// computed, whether or not `disable()` itself succeeded. The risk this
+/// variant reports is real but narrow: the service stays on for the
+/// remainder of *this* connection's lifetime, longer for a caller that holds
+/// the connection open (e.g. an embedding), not "until Firefox restarts" —
+/// see `kb/rdp/actors/accessibility.md` Gotchas.
+#[derive(Debug, PartialEq, Eq)]
+enum RestoreOutcome {
+    /// ff-rdp did not enable the service for this call — either it was
+    /// already enabled before the command ran (so this call must not touch
+    /// it), or the call never took the `--native` opt-in path at all.
+    /// Either way there was nothing to restore.
+    NotNeeded,
+    /// ff-rdp enabled the service and successfully restored it to disabled
+    /// afterward.
+    Restored,
+    /// ff-rdp enabled the service but `disable_service` failed. The `String`
+    /// is the formatted [`ff_rdp_core::ProtocolError`] — on Windows this is
+    /// typically an active screen reader blocking `disable`
+    /// (`kb/rdp/actors/accessibility.md`), an expected platform limitation
+    /// that nonetheless must be reported.
+    Failed(String),
+}
+
+impl RestoreOutcome {
+    /// Always inserts both `service_left_enabled` (bool) and
+    /// `service_restore_error` (nullable string) — the iter-128
+    /// always-present-nullable-key convention (see
+    /// `kb/iterations/iteration-128-network-hint-always-present.md`), the
+    /// same treatment [`A11ySource::merge_into`] already gives `meta.source`.
+    /// A caller never has to special-case "key absent means nothing went
+    /// wrong".
+    fn merge_into(&self, meta: &mut Value) {
+        let (left_enabled, error) = match self {
+            RestoreOutcome::NotNeeded | RestoreOutcome::Restored => (false, None),
+            RestoreOutcome::Failed(reason) => (true, Some(reason.clone())),
+        };
+        if let Some(obj) = meta.as_object_mut() {
+            obj.insert("service_left_enabled".to_string(), json!(left_enabled));
+            obj.insert("service_restore_error".to_string(), json!(error));
+        }
+    }
+}
+
 /// Purpose-specific ceiling for accessibility walker requests (iter-143 Theme
 /// C). The walker's root accessor stalls — it does not error — while the
 /// platform accessibility service is off (iter-136): Firefox's
@@ -93,23 +150,30 @@ pub fn run(
     // `--native` conflicts with `--selector`/`--ref` at the clap level (both
     // are inherently JS-derived paths — there is no native "root at
     // selector" primitive), so at most one of these two branches applies.
-    let (tree, source) = if let Some(sel) = selector {
+    let (tree, source, restore_outcome) = if let Some(sel) = selector {
         (
             run_selector_mode(&mut ctx, sel, depth, max_chars)?,
             A11ySource::JsFallback("selector-mode"),
+            RestoreOutcome::NotNeeded,
         )
     } else if native {
         // Theme B: explicit opt-in to the platform tree. Never silently
         // falls back — any failure (enable failing, bootstrap still
         // reporting disabled, a stalled/erroring walker request) surfaces as
-        // an explicit error.
-        let (tree, _we_enabled) =
+        // an explicit error. iter-149: the restore outcome is threaded
+        // through instead of discarded, so a failed restore can be reported
+        // in the envelope below rather than only on --verbose stderr.
+        let (tree, restore_outcome) =
             run_native_opt_in(&mut ctx, &accessibility_actor, depth, max_chars, cli)?;
-        (tree, A11ySource::Native)
+        (tree, A11ySource::Native, restore_outcome)
     } else {
         // Use native RDP protocol with JS eval fallback for Firefox 149+ where
         // both `getDocument` and `getRootNode` are unrecognized on the walker.
-        run_native_or_js_fallback(&mut ctx, &accessibility_actor, depth, max_chars, cli)?
+        // This path never enables the service itself, so there is nothing to
+        // restore.
+        let (tree, source) =
+            run_native_or_js_fallback(&mut ctx, &accessibility_actor, depth, max_chars, cli)?;
+        (tree, source, RestoreOutcome::NotNeeded)
     };
 
     // Apply interactive filter.
@@ -153,6 +217,11 @@ pub fn run(
     // iter-143 Theme A: always present — the only way a caller can tell
     // which tree it is scoring without a separate --verbose round-trip.
     source.merge_into(&mut meta);
+    // iter-149: always present — a caller must be able to tell that ff-rdp
+    // left the platform accessibility service enabled without opting into
+    // --verbose stderr. The tree above is still the primary result even when
+    // this reports a failure (a restore failure never masks a successful walk).
+    restore_outcome.merge_into(&mut meta);
     // Legacy fields kept for existing consumers: only set for an *automatic*
     // fallback (the caller asked for the native tree and didn't get it), not
     // for `--selector`, which is always JS-derived by design.
@@ -347,15 +416,17 @@ fn run_native_or_js_fallback(
 /// reporting disabled after `enable`, or a stalled/erroring walker request —
 /// surfaces as an explicit error instead of a silent substitution.
 ///
-/// Returns the tree and whether this call enabled the service (`we_enabled`)
-/// — surfaced so tests and `--verbose` diagnostics can confirm restoration.
+/// Returns the tree and the [`RestoreOutcome`] of the post-walk restore
+/// attempt (iter-149) — surfaced so the caller can report a failed restore in
+/// the envelope, and so tests and `--verbose` diagnostics can confirm
+/// restoration.
 fn run_native_opt_in(
     ctx: &mut ConnectedTab,
     accessibility_actor: &ActorId,
     depth: u32,
     max_chars: u32,
     cli: &Cli,
-) -> Result<(AccessibleNode, bool), AppError> {
+) -> Result<(AccessibleNode, RestoreOutcome), AppError> {
     let root_form = RootActor::get_root(ctx.transport_mut()).map_err(|e| map_a11y_error(e, cli))?;
     let parent_actor: ActorId = root_form
         .get("parentAccessibilityActor")
@@ -406,24 +477,62 @@ fn run_native_opt_in(
 
     let walk_result = walk_native_tree_bounded(ctx, accessibility_actor, depth, max_chars, cli);
 
-    if we_enabled {
-        // Best-effort restore: report a failure but don't let it mask the
-        // primary result. On Windows an active screen reader can block
-        // `disable` (kb/rdp/actors/accessibility.md) — that's an expected
-        // limitation, not a bug in ff-rdp.
-        if let Err(e) = AccessibilityActor::disable_service(ctx.transport_mut(), &parent_actor) {
+    // Best-effort restore: report a failure (iter-149: in both the envelope
+    // and unconditionally on stderr) but don't let it mask the primary
+    // result — the tree above is returned regardless of what happens here.
+    // On Windows an active screen reader can block `disable`
+    // (kb/rdp/actors/accessibility.md) — that's an expected platform
+    // limitation, not a bug in ff-rdp, but an expected limitation still has
+    // to be reported rather than silently leaving the service enabled.
+    let restore_outcome = if we_enabled {
+        let disable_target = force_restore_failure_target(&parent_actor);
+        if let Err(e) = AccessibilityActor::disable_service(ctx.transport_mut(), &disable_target) {
+            // Unconditional, not --verbose-gated: a human running this
+            // interactively should not have to opt in to learning their
+            // browser was left degraded (Theme C).
+            eprintln!(
+                "warning: --native: failed to restore the accessibility service to disabled \
+                 after this opt-in run: {e}. Firefox's platform accessibility service stays \
+                 enabled for as long as this connection remains open — normally that's just \
+                 until this command exits, but a caller that reuses the connection will run \
+                 every command slower until the service is disabled. See \
+                 meta.service_restore_error in this command's output."
+            );
+            RestoreOutcome::Failed(e.to_string())
+        } else {
             if cli.is_verbose() {
-                eprintln!(
-                    "debug: --native: failed to restore the accessibility service to disabled \
-                     after this opt-in run: {e}"
-                );
+                eprintln!("debug: --native: restored the accessibility service to disabled");
             }
-        } else if cli.is_verbose() {
-            eprintln!("debug: --native: restored the accessibility service to disabled");
+            RestoreOutcome::Restored
         }
-    }
+    } else {
+        RestoreOutcome::NotNeeded
+    };
 
-    walk_result.map(|tree| (tree, we_enabled))
+    walk_result.map(|tree| (tree, restore_outcome))
+}
+
+/// Test-only actor-boundary fault injection for iter-149's
+/// `live_149_restore_failure_reported_in_meta` live test.
+///
+/// Forcing a real `disable()` failure against a live Firefox is otherwise
+/// only reachable on Windows with an active screen reader blocking the call
+/// (`kb/rdp/actors/accessibility.md`) — not reproducible in this project's
+/// macOS/Linux live-test environment (`kb/iterations/iteration-149-a11y-restore-honesty.md`
+/// Notes). When `FF_RDP_A11Y_FORCE_RESTORE_FAILURE=1` is set, the *restore*
+/// call targets a deliberately-invalid actor ID instead of the real
+/// `parentAccessibilityActor`, so Firefox genuinely answers with a
+/// `noSuchActor`-style error over the wire — a real protocol failure, not a
+/// mock. `enable_service` above is never affected by this: the service really
+/// is turned on, and — because the disable call is the one being corrupted —
+/// really is left on afterward. Never set in normal use; not documented in
+/// `--help`.
+fn force_restore_failure_target(real: &ActorId) -> ActorId {
+    if std::env::var("FF_RDP_A11Y_FORCE_RESTORE_FAILURE").as_deref() == Ok("1") {
+        ActorId::from(format!("{}-ff-rdp-149-force-failure", real.as_ref()))
+    } else {
+        real.clone()
+    }
 }
 
 /// Walk the native accessibility tree (walker → root → recursive children),
@@ -1095,5 +1204,46 @@ mod tests {
     #[test]
     fn render_a11y_text_does_not_panic_with_empty_object() {
         render_a11y_text(&json!({}), 0);
+    }
+
+    // ── RestoreOutcome::merge_into (iter-149) ───────────────────────────────
+
+    #[test]
+    fn unit_149_restore_outcome_maps_to_meta() {
+        let mut not_needed = json!({});
+        RestoreOutcome::NotNeeded.merge_into(&mut not_needed);
+        assert_eq!(not_needed["service_left_enabled"], false);
+        assert!(not_needed["service_restore_error"].is_null());
+
+        let mut restored = json!({});
+        RestoreOutcome::Restored.merge_into(&mut restored);
+        assert_eq!(restored["service_left_enabled"], false);
+        assert!(restored["service_restore_error"].is_null());
+
+        let mut failed = json!({});
+        RestoreOutcome::Failed("noSuchActor".to_string()).merge_into(&mut failed);
+        assert_eq!(failed["service_left_enabled"], true);
+        assert_eq!(failed["service_restore_error"], "noSuchActor");
+    }
+
+    #[test]
+    fn restore_outcome_merge_into_overwrites_existing_keys() {
+        // A restore-failure envelope must not accumulate a stale success
+        // signal from an earlier call site — merge_into always replaces both
+        // keys rather than only inserting when absent.
+        let mut meta = json!({"service_left_enabled": false, "service_restore_error": null});
+        RestoreOutcome::Failed("disable() timed out".to_string()).merge_into(&mut meta);
+        assert_eq!(meta["service_left_enabled"], true);
+        assert_eq!(meta["service_restore_error"], "disable() timed out");
+    }
+
+    #[test]
+    fn force_restore_failure_target_defaults_to_real_actor() {
+        // No env mutation here: this crate denies `unsafe_code`, and
+        // `std::env::set_var`/`remove_var` require `unsafe` since the 2024
+        // edition. The flag is not set by the test harness, so this simply
+        // asserts the default (unset) behaviour.
+        let real: ActorId = "conn0/accessibility1".into();
+        assert_eq!(force_restore_failure_target(&real), real);
     }
 }
