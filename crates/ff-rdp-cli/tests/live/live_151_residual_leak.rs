@@ -32,10 +32,22 @@
 //!    bare `Command` with no guard whatsoever and relied entirely on a
 //!    *manual*, later `kill_pid` call for cleanup — this is the exact
 //!    pre-146 `live_96_profile_cleanup.rs` shape, just never migrated when
-//!    146 fixed that file. Fixed by adding `FirefoxGuard`, a small local
-//!    RAII wrapper (this file's launches need a custom `FF_RDP_HOME` env var
-//!    that `common::LiveFirefox` doesn't expose, so it can't reuse that type
-//!    outright).
+//!    146 fixed that file. Fixed by adding `common::FirefoxGuard`, a small
+//!    RAII wrapper over a raw PID (this file's launches need a custom
+//!    `FF_RDP_HOME` env var that `common::LiveFirefox` doesn't expose, so it
+//!    can't reuse that type outright).
+//! 3. `launch --replace` starts a REPLACEMENT Firefox after reaping the prior
+//!    instance, and a `LiveFirefox` guard owns only the PID it launched
+//!    itself — so `live_86_perf_field_fixes.rs`'s
+//!    `live_launch_replace_handles_stuck_prior` and
+//!    `live_123_daemon_autostart_and_registry.rs`'s port-scoping test each
+//!    orphaned one Firefox on *every* run, happy path included. This class
+//!    was missed by the original Theme B audit (which looked only for
+//!    discarded guards, not for processes nothing ever owned) and is the
+//!    better arithmetic fit for the measured ~1-orphan-per-100-tests rate
+//!    than the intermittent `ManuallyDrop` panics of mechanism 1. Fixed by
+//!    binding a `common::FirefoxGuard` over the replacement's `results.pid`
+//!    before any assertion at both sites.
 //!
 //! [`live_151_root_cause_documented`] reproduces mechanism 1 live: it drives
 //! both the pre-fix (`ManuallyDrop`) and fixed (normal binding) shapes
@@ -381,6 +393,25 @@ fn assert_chunk_leaves_no_orphans(caller: &str, filter: &[&str], skip: &[&str]) 
         ),
         Err(e) => eprintln!("{caller}: nested chunk run failed to spawn: {e}"),
     }
+
+    // A harness that cannot re-exec itself is a broken harness, not a skip.
+    // Without this the survivor assertion below passes trivially — zero tests
+    // ran, so nothing could have leaked — and a ~6 minute leak check reports
+    // green having verified nothing at all.
+    let status = status.unwrap_or_else(|e| {
+        panic!(
+            "{caller}: FAIL — could not spawn the nested chunk run ({e}); this opt-in check \
+                must not report success without actually executing the chunk"
+        )
+    });
+    // A non-zero exit is tolerated (an unrelated test in the chunk may be red,
+    // which is not this check's business) but termination by signal is not:
+    // a killed chunk did not finish, so "no survivors" would prove nothing.
+    assert!(
+        status.code().is_some(),
+        "{caller}: FAIL — the nested chunk run was terminated by signal rather than exiting \
+         ({status}); its survivor count is not meaningful"
+    );
 
     let survivors: Vec<_> = live_owned_profile_dirs(&root)
         .into_iter()

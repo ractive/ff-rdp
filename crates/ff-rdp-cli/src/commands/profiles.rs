@@ -293,7 +293,7 @@ pub(crate) fn prune_profiles(
             if let Some(test_name) = &entry.owner_test {
                 tracing::warn!(
                     "profiles prune --all: removing {} whose owner Firefox is still alive \
-                     (spawned by test {test_name})",
+                     (spawned by test {test_name:?})",
                     entry.path.display()
                 );
             } else {

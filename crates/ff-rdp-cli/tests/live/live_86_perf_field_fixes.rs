@@ -17,7 +17,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::common::live_tests_enabled;
-use crate::common::{LiveFirefox, base_args, ff_rdp_bin};
+use crate::common::{FirefoxGuard, LiveFirefox, base_args, ff_rdp_bin};
 
 // ---------------------------------------------------------------------------
 // Theme A — daemon stop frees port
@@ -132,6 +132,29 @@ fn live_launch_replace_handles_stuck_prior() {
         .output()
         .expect("live_launch_replace_handles_stuck_prior: failed to spawn ff-rdp launch");
 
+    // `--replace` reaps the prior instance and starts a NEW one. `ff`'s guard
+    // owns only the prior PID — which `--replace` has just killed — so without
+    // a guard over the replacement this test orphans one Firefox on every run,
+    // happy path included (iter-151 follow-up: the `--replace` leak class the
+    // original Theme B audit missed). Bind the guard from `results.pid` before
+    // the success assertion so a panic still unwinds through the kill.
+    //
+    // Stream-parse and take the LAST envelope carrying a pid: when the prior
+    // instance has a daemon record, `launch --replace` emits TWO top-level
+    // JSON envelopes (stop, then launch) and a whole-buffer parse fails. That
+    // does not happen on this test's topology today, but relying on it would
+    // make the guard silently vanish the moment it did — the exact failure
+    // that let `live_123_daemon_autostart_and_registry.rs` leak. The double
+    // envelope is a product bug tracked in
+    // [[iteration-153-launch-replace-double-envelope]].
+    let replacement = serde_json::Deserializer::from_slice(&out.stdout)
+        .into_iter::<serde_json::Value>()
+        .filter_map(Result::ok)
+        .filter_map(|json| json["results"]["pid"].as_u64())
+        .filter_map(|pid| u32::try_from(pid).ok())
+        .last()
+        .map(FirefoxGuard::new);
+
     assert!(
         out.status.success(),
         "live_launch_replace_handles_stuck_prior: FAIL — launch --replace returned non-zero\n\
@@ -140,8 +163,15 @@ fn live_launch_replace_handles_stuck_prior() {
         String::from_utf8_lossy(&out.stdout)
     );
 
+    let replacement = replacement.expect(
+        "live_launch_replace_handles_stuck_prior: launch --replace succeeded but reported no \
+         results.pid — the replacement cannot be reaped and would leak",
+    );
+
     eprintln!(
-        "live_launch_replace_handles_stuck_prior: PASS — launch --replace succeeded on port {port}"
+        "live_launch_replace_handles_stuck_prior: PASS — launch --replace succeeded on port \
+         {port}, replacement pid={}",
+        replacement.pid()
     );
 }
 

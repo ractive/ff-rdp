@@ -217,6 +217,32 @@ pub fn pid_alive(pid: u32) -> bool {
     }
 }
 
+/// RAII guard that kills a Firefox process by raw PID on drop.
+///
+/// Use this for instances this suite spawns *indirectly* — notably the fresh
+/// Firefox that `ff-rdp launch --replace` starts after reaping the prior one.
+/// A [`LiveFirefox`] guard only owns the PID it launched itself, so after a
+/// `--replace` it reaps a process that is already dead while the replacement
+/// survives the test. Bind this guard from the replacement's `results.pid`
+/// *before* any assertion, so a panic still unwinds through the kill.
+pub struct FirefoxGuard(u32);
+
+impl FirefoxGuard {
+    pub fn new(pid: u32) -> Self {
+        Self(pid)
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.0
+    }
+}
+
+impl Drop for FirefoxGuard {
+    fn drop(&mut self) {
+        kill_pid(self.0);
+    }
+}
+
 /// Kill a process by PID, ignoring errors (process may already be gone).
 #[cfg(unix)]
 pub fn kill_pid(pid: u32) {

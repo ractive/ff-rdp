@@ -19,7 +19,7 @@
 use std::process::Command;
 use std::time::Duration;
 
-use crate::common::{ff_rdp_bin, kill_pid, live_tests_enabled};
+use crate::common::{FirefoxGuard, ff_rdp_bin, kill_pid, live_tests_enabled};
 
 /// Attempt to bind `:0` to discover a free port.
 fn free_port() -> Option<u16> {
@@ -27,33 +27,19 @@ fn free_port() -> Option<u16> {
     Some(l.local_addr().ok()?.port())
 }
 
-/// RAII guard that SIGKILLs a Firefox PID on drop — a belt-and-suspenders
-/// safety net for this file's launches (iter-151 Theme B).
-///
-/// This file cannot reuse `common::LiveFirefox` outright:
-/// `live_142_throttle_json_gc` needs a custom `FF_RDP_HOME` env var on its
-/// `launch` invocation, which `LiveFirefox::try_launch` doesn't expose. Both
-/// tests below used to launch via a bare `Command` with no guard at all and
-/// rely entirely on a *manual*, later `kill_pid` call for cleanup — the
-/// exact "no RAII guard across an assertion" shape iter-146 fixed in
-/// `live_96_profile_cleanup.rs`'s `launch_headless` (see that file's doc
-/// comment) but left unfixed here: any assertion between spawn and the
-/// manual `kill_pid` panicking left Firefox alive with nothing left to reap
-/// it — a real, still-open instance of the exact bug class iter-146 was
-/// meant to close suite-wide.
-struct FirefoxGuard(u32);
-
-impl FirefoxGuard {
-    fn pid(&self) -> u32 {
-        self.0
-    }
-}
-
-impl Drop for FirefoxGuard {
-    fn drop(&mut self) {
-        kill_pid(self.0);
-    }
-}
+// The RAII guard used throughout this file is `common::FirefoxGuard`.
+//
+// This file cannot reuse `common::LiveFirefox` outright:
+// `live_142_throttle_json_gc` needs a custom `FF_RDP_HOME` env var on its
+// `launch` invocation, which `LiveFirefox::try_launch` doesn't expose. Both
+// tests below used to launch via a bare `Command` with no guard at all and
+// rely entirely on a *manual*, later `kill_pid` call for cleanup — the
+// exact "no RAII guard across an assertion" shape iter-146 fixed in
+// `live_96_profile_cleanup.rs`'s `launch_headless` (see that file's doc
+// comment) but left unfixed here: any assertion between spawn and the
+// manual `kill_pid` panicking left Firefox alive with nothing left to reap
+// it — a real, still-open instance of the exact bug class iter-146 was
+// meant to close suite-wide.
 
 /// Launch Firefox headless via the CLI on a freshly discovered port and
 /// return `(guard, port, results)` — `results` is the `results` object of
@@ -82,7 +68,7 @@ fn launch_headless() -> Option<(FirefoxGuard, u16, serde_json::Value)> {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
     let results = json.get("results")?.clone();
     let pid = u32::try_from(results["pid"].as_u64()?).ok()?;
-    Some((FirefoxGuard(pid), port, results))
+    Some((FirefoxGuard::new(pid), port, results))
 }
 
 /// Spawn+reap a trivial child process, returning its now-dead PID.
@@ -260,7 +246,7 @@ fn live_142_throttle_json_gc() {
     // known, before either assertion below — see `FirefoxGuard`'s doc
     // comment for why this file can't just use `common::LiveFirefox` here
     // (the custom `FF_RDP_HOME` env var above).
-    let _guard = FirefoxGuard(pid);
+    let _guard = FirefoxGuard::new(pid);
 
     assert!(
         !dead_path.exists(),

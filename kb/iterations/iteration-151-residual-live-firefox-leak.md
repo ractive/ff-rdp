@@ -181,7 +181,40 @@ flagged; still worth doing, just not required to close this leak.
       firefox_running` (the precondition test) itself PASSed in the same targeted run
 - [x] live_151_root_cause_documented: this plan's Resolution names the confirmed leak source(s)
       and why 146's Theme A fix did not cover them — proven live by the identically-named test,
-      not a hypothesis (see Resolution above)
+      not a hypothesis (see Resolution above), and extended in review with the `--replace` class
+      below, verified live 2026-08-12 (0 new orphans across both fixed sites)
+
+## Review finding: the audit looked for the wrong thing (2026-08-12, PR #188)
+
+An independent review of this PR found **two high-severity leaks this iteration had missed**,
+both of which leak on *every* run rather than intermittently:
+
+- `live_86_perf_field_fixes.rs`'s `live_launch_replace_handles_stuck_prior`
+- `live_123_daemon_autostart_and_registry.rs`'s `live_daemon_stop_prior_instance_targets_debug_port_not_cli_port`
+
+`ff-rdp launch --replace` reaps the prior Firefox and starts a **new** one. A `LiveFirefox`
+guard owns only the PID it launched itself, so after a `--replace` it kills a process that is
+already dead while the replacement survives the test with nothing owning it.
+
+**Why the original audit missed it:** it searched for *discarded guards* (`ManuallyDrop`,
+`mem::forget`). It never searched for *processes that nothing ever owned*. Two deterministic
+leaks across ~213 live tests is ~1 per 100 — which fits the measured rate considerably better
+than the intermittent panic-path `ManuallyDrop` mechanism this plan originally blamed. The
+`ManuallyDrop` fixes are still correct and still worth having; they were simply not the whole
+story, and probably not the main one.
+
+**A second defect surfaced while fixing it:** `launch --replace` writes **two top-level JSON
+envelopes** to stdout (the stop result, then the launch result), so a whole-buffer
+`serde_json::from_slice` fails and a guard bound from `results.pid` silently gets `None`. That
+is why the first attempt at this fix still leaked, and why `live_86` (single envelope — no
+daemon record to stop) behaved differently from `live_123` (two envelopes). Both sites now
+stream-parse and take the last pid-bearing envelope. The double envelope is a real product bug
+in its own right — it breaks the JSON-only output contract for every consumer of
+`launch --replace` — and is tracked in [[iteration-153-launch-replace-double-envelope]].
+
+The remaining five review findings (guard coverage in `live_90`, the spawn→guard window in
+`live_142`, owner-marker coverage across raw launch sites, `Drop` signalling a known-dead PID,
+and helper de-duplication) are filed as [[iteration-152-live-guard-coverage-sweep]].
 
 ## Notes
 
