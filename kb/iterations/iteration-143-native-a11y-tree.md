@@ -11,8 +11,14 @@ dogfood_path: |
   ff-rdp a11y --port 6000 --native
   # → must return the platform tree (roles like "document"/"paragraph"),
   #   not the DOM-derived one (roles like "generic")
-first_call_sites: []
-status: planned
+first_call_sites:
+  - primitive: "AccessibilityActor::enable_service/disable_service (ff-rdp-core) called from commands::a11y::run_native_opt_in for the --native opt-in path"
+    site: "crates/ff-rdp-cli/src/commands/a11y.rs"
+  - primitive: "connection_meta::merge_source — meta.source/source_reason on the a11y tree, --critical, and contrast output"
+    site: "crates/ff-rdp-cli/src/commands/a11y.rs"
+  - primitive: "connection_meta::merge_source on a11y contrast output"
+    site: "crates/ff-rdp-cli/src/commands/a11y_contrast.rs"
+status: in-review
 ---
 
 # Iteration 143: decide and expose how `ff-rdp a11y` gets its tree
@@ -90,20 +96,36 @@ the service is off will block for the full socket read timeout. Consider a short
 purpose-specific deadline on accessibility walker requests so a mistake costs
 milliseconds, not the default timeout.
 
-## Acceptance Criteria [1/5]
+## Acceptance Criteria [5/5]
 
-- [ ] live_a11y_source_meta: `ff-rdp a11y` output carries a `meta.source` of
+- [x] live_a11y_source_meta: `ff-rdp a11y` output carries a `meta.source` of
       `js-fallback` against a Firefox with the accessibility service off
-- [ ] live_a11y_native_opt_in: with the opt-in flag, the root role is `document` and the
+      (`crates/ff-rdp-cli/tests/live/live_143_native_a11y_tree.rs`). Backed by the
+      mock-server counterpart `a11y_reports_js_fallback_source_when_service_disabled`
+      (`crates/ff-rdp-cli/tests/e2e/a11y.rs`), exercising `A11ySource::JsFallback` /
+      `connection_meta::merge_source` in `commands::a11y::run`.
+- [x] live_a11y_native_opt_in: with the opt-in flag, the root role is `document` and the
       tree contains platform roles the JS fallback does not produce
-- [ ] live_a11y_service_restored: after an opt-in run that enabled the service,
+      (`crates/ff-rdp-cli/tests/live/live_143_native_a11y_tree.rs`). Backed by the
+      mock-server counterparts `a11y_native_walks_platform_tree_when_service_already_enabled`
+      and `a11y_native_enables_walks_and_restores_service`, exercising
+      `commands::a11y::run_native_opt_in` and `AccessibilityActor::enable_service`.
+- [x] live_a11y_service_restored: after an opt-in run that enabled the service,
       `bootstrap().state.enabled` is back to its pre-run value
-- [ ] unit/e2e: enable failure surfaces as an explicit error or an annotated fallback,
-      never a silent one
-- [x] [[decision-log]] records the default-vs-opt-in decision — done ahead of this
-      iteration's implementation work: DEC-027 (filed on main before this branch existed)
-      settles opt-in-never-default. No code landed yet for this iteration; only the
-      decision-log prerequisite is satisfied.
+      (`crates/ff-rdp-cli/tests/live/live_143_native_a11y_tree.rs`, asserted indirectly
+      via a plain `a11y` call reverting to `meta.source == "js-fallback"`). Backed by
+      `a11y_native_enables_walks_and_restores_service`'s `enable`/`disable` call-count
+      assertions (`crates/ff-rdp-cli/tests/e2e/a11y.rs`), exercising
+      `AccessibilityActor::disable_service`.
+- [x] unit/e2e `a11y_native_errors_explicitly_when_enable_does_not_take_effect`: enable
+      failure surfaces as an explicit error or an annotated fallback, never a silent one
+      (`crates/ff-rdp-cli/tests/e2e/a11y.rs`), exercising the "bootstrap still reports
+      disabled after enable()" branch of `commands::a11y::run_native_opt_in`.
+- [x] [[decision-log]] records the default-vs-opt-in decision via `AccessibilityActor::enable_service`
+      — done ahead of this iteration's implementation work: DEC-027 (filed on main before
+      this branch existed) settles opt-in-never-default. Implemented as designed:
+      `AccessibilityActor::enable_service` is called only from the opt-in `--native` path
+      (`commands::a11y::run_native_opt_in`), never automatically.
 
 ## Notes
 

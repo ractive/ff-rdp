@@ -64,6 +64,25 @@ pub fn merge_route(meta: &mut Value, via_daemon: bool) {
     }
 }
 
+/// Merge `meta.source` — `"native"` or `"js-fallback"` — into `meta`
+/// (iter-143 Theme A).
+///
+/// Same unconditional treatment as [`merge_route`]: a caller scoring
+/// accessibility output needs to know which tree it is looking at — the
+/// native platform tree (real accessible roles like `document`/`paragraph`)
+/// or the DOM-derived approximation (`generic`, …) — without a separate
+/// `--verbose` round-trip. `reason` is populated only when `source` is
+/// `"js-fallback"`, naming why the native path was not used (e.g.
+/// `"accessibility-service-disabled"`, `"selector-mode"`).
+pub fn merge_source(meta: &mut Value, source: &str, reason: Option<&str>) {
+    if let Some(obj) = meta.as_object_mut() {
+        obj.insert("source".to_string(), Value::String(source.to_owned()));
+        if let Some(r) = reason {
+            obj.insert("source_reason".to_string(), Value::String(r.to_owned()));
+        }
+    }
+}
+
 fn cached_owner(host: &str, port: u16) -> Option<PortOwner> {
     // Only cache for loopback hosts. A remote port would require a different
     // lookup strategy entirely; we just skip the cache for those.
@@ -238,6 +257,35 @@ mod tests {
         let mut meta = json!({});
         merge_route(&mut meta, false);
         assert_eq!(meta["route"], "direct");
+    }
+
+    /// iter-143 Theme A: `merge_source` sets `source` unconditionally and
+    /// omits `source_reason` when none is given (the native path).
+    #[test]
+    fn merge_source_native_omits_reason() {
+        let mut meta = json!({});
+        merge_source(&mut meta, "native", None);
+        assert_eq!(meta["source"], "native");
+        assert!(meta.get("source_reason").is_none());
+    }
+
+    #[test]
+    fn merge_source_js_fallback_includes_reason() {
+        let mut meta = json!({});
+        merge_source(
+            &mut meta,
+            "js-fallback",
+            Some("accessibility-service-disabled"),
+        );
+        assert_eq!(meta["source"], "js-fallback");
+        assert_eq!(meta["source_reason"], "accessibility-service-disabled");
+    }
+
+    #[test]
+    fn merge_source_makes_meta_non_empty() {
+        let mut meta = json!({});
+        merge_source(&mut meta, "native", None);
+        assert!(!is_meta_empty(&meta), "meta with source must not be empty");
     }
 
     #[test]

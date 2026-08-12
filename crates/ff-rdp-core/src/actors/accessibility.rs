@@ -92,6 +92,56 @@ impl AccessibilityActor {
             .unwrap_or(false))
     }
 
+    /// Enable the platform accessibility service via `enable()` on the root
+    /// actor's `parentAccessibilityActor` (obtained from
+    /// [`crate::actors::root::RootActor::get_root`]'s
+    /// `"parentAccessibilityActor"` field).
+    ///
+    /// This is a **browser-global, process-wide** change (iter-136, iter-143
+    /// Theme B / DEC-027): its performance cost persists until the browser
+    /// shuts down, and it is not scoped to the tab or connection that made
+    /// the call. Callers MUST NOT call this unconditionally — check
+    /// [`Self::is_service_enabled`] first, only call `enable_service` when it
+    /// reports `false`, and only when the caller has explicit opt-in from the
+    /// user (e.g. a `--native` flag) to make a whole-browser mutation. Pair a
+    /// successful call with [`Self::disable_service`] once the caller is done
+    /// — but only when this call is what turned the service on, never when it
+    /// was already running for some other reason.
+    pub fn enable_service(
+        transport: &mut RdpTransport,
+        parent_accessibility_actor: &ActorId,
+    ) -> Result<(), ProtocolError> {
+        actor_request(
+            transport,
+            parent_accessibility_actor.as_ref(),
+            "enable",
+            None,
+        )?;
+        Ok(())
+    }
+
+    /// Disable the platform accessibility service via `disable()` on the root
+    /// actor's `parentAccessibilityActor`. The inverse of
+    /// [`Self::enable_service`].
+    ///
+    /// On Windows an active screen reader can block `disable` from taking
+    /// effect (kb/rdp/actors/accessibility.md). Callers should treat a
+    /// failure here as best-effort — report it, but don't let it mask the
+    /// primary result of whatever the caller was doing with the service
+    /// enabled.
+    pub fn disable_service(
+        transport: &mut RdpTransport,
+        parent_accessibility_actor: &ActorId,
+    ) -> Result<(), ProtocolError> {
+        actor_request(
+            transport,
+            parent_accessibility_actor.as_ref(),
+            "disable",
+            None,
+        )?;
+        Ok(())
+    }
+
     /// Get the children of an accessible node.
     ///
     /// `children` is a **method on the accessible actor itself**
@@ -386,8 +436,63 @@ pub fn filter_interactive(node: &AccessibleNode) -> Option<AccessibleNode> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+
     use super::*;
     use serde_json::json;
+
+    /// Spins up a loopback TCP listener that replies with `response` to the
+    /// first request it receives, mirroring the pattern used across the
+    /// other actor test suites (e.g. `actors::root::tests`).
+    fn make_transport_with_response(response: serde_json::Value) -> RdpTransport {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (accept, _) = listener.accept().unwrap();
+
+        std::thread::spawn(move || {
+            let mut srv_reader = BufReader::new(&accept);
+            let _ = crate::transport::recv_from(&mut srv_reader).unwrap();
+            let frame = crate::transport::encode_frame(&serde_json::to_string(&response).unwrap());
+            (&accept).write_all(frame.as_bytes()).unwrap();
+        });
+
+        let writer = client.try_clone().unwrap();
+        let reader = BufReader::new(client);
+        RdpTransport::from_parts(reader, writer)
+    }
+
+    #[test]
+    fn enable_service_sends_enable_to_parent_actor() {
+        let response = json!({ "from": "server1.conn0.parentAccessibilityActor6" });
+        let mut transport = make_transport_with_response(response);
+        let parent: ActorId = "server1.conn0.parentAccessibilityActor6".into();
+        AccessibilityActor::enable_service(&mut transport, &parent)
+            .expect("enable_service should succeed on a plain {} reply");
+    }
+
+    #[test]
+    fn disable_service_sends_disable_to_parent_actor() {
+        let response = json!({ "from": "server1.conn0.parentAccessibilityActor6" });
+        let mut transport = make_transport_with_response(response);
+        let parent: ActorId = "server1.conn0.parentAccessibilityActor6".into();
+        AccessibilityActor::disable_service(&mut transport, &parent)
+            .expect("disable_service should succeed on a plain {} reply");
+    }
+
+    #[test]
+    fn enable_service_propagates_actor_error() {
+        let response = json!({
+            "from": "server1.conn0.parentAccessibilityActor6",
+            "error": "unrecognizedPacketType",
+            "message": "enable"
+        });
+        let mut transport = make_transport_with_response(response);
+        let parent: ActorId = "server1.conn0.parentAccessibilityActor6".into();
+        let err = AccessibilityActor::enable_service(&mut transport, &parent).unwrap_err();
+        assert!(err.is_unrecognized_packet_type());
+    }
 
     #[test]
     fn parse_accessible_node_full() {

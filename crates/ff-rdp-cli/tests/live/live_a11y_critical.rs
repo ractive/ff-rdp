@@ -70,6 +70,11 @@ fn a11y_critical_filters_to_violations() {
     );
     assert_eq!(results[0]["violation"], "missing-alt");
     assert_eq!(results[0]["role"], "img");
+    // iter-143 Theme A: --critical is always JS-derived (no native-actor
+    // equivalent for a WCAG-critical severity), so meta.source is always
+    // reported as such.
+    assert_eq!(json["meta"]["source"], "js-fallback");
+    assert_eq!(json["meta"]["source_reason"], "critical-audit-js-only");
 
     // Clean page: <img> has alt, no other violators.
     let good = "data:text/html,<title>good</title><img alt=\"hero\" src=\"x.png\">";
