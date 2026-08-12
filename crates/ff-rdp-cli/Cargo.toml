@@ -74,6 +74,9 @@ dirs = { workspace = true }
 filetime = { workspace = true }
 jsonschema = "0.27"
 sha2 = "0.10"
+# iter-144 Theme D: live_144_full_page_no_duplicate_header decodes captured
+# PNG pixel rows to detect a repeated header band — test-only, never shipped.
+png = "0.17"
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = { workspace = true }

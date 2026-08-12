@@ -709,6 +709,123 @@ pub fn assert_colors_equal(actual: &str, expected: &str, context: &str) {
     );
 }
 
+// ---------------------------------------------------------------------------
+// PNG pixel decoding (iter-144 Theme D)
+// ---------------------------------------------------------------------------
+//
+// `live_144_full_page_no_duplicate_header` needs actual pixel rows — the
+// existing `png_dimensions`-style IHDR peek (used by earlier live suites)
+// only reads the uncompressed header, not the (zlib-compressed) image data.
+// The `png` crate is a dev-dependency solely for this.
+
+/// A decoded RGBA8 raster: `width`/`height` in pixels, `pixels` row-major,
+/// 4 bytes (R, G, B, A) per pixel.
+pub struct DecodedImage {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
+}
+
+impl DecodedImage {
+    /// Return the `(r, g, b, a)` pixel at `(x, y)`, or `None` if out of
+    /// bounds.
+    pub fn pixel(&self, x: u32, y: u32) -> Option<(u8, u8, u8, u8)> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let idx = ((y * self.width + x) * 4) as usize;
+        let px = self.pixels.get(idx..idx + 4)?;
+        Some((px[0], px[1], px[2], px[3]))
+    }
+
+    /// Fraction (`0.0..=1.0`) of pixels in row `y` whose color is within
+    /// `tolerance` (per channel, RGB only — alpha ignored) of `color`.
+    /// Returns `0.0` for an out-of-bounds row.
+    pub fn row_color_fraction(&self, y: u32, color: (u8, u8, u8), tolerance: u8) -> f64 {
+        if y >= self.height || self.width == 0 {
+            return 0.0;
+        }
+        let close = |a: u8, b: u8| a.abs_diff(b) <= tolerance;
+        let mut matches = 0u32;
+        for x in 0..self.width {
+            if let Some((r, g, b, _)) = self.pixel(x, y)
+                && close(r, color.0)
+                && close(g, color.1)
+                && close(b, color.2)
+            {
+                matches += 1;
+            }
+        }
+        f64::from(matches) / f64::from(self.width)
+    }
+
+    /// Count the number of separate vertical runs of rows whose
+    /// [`row_color_fraction`] for `color` meets or exceeds `min_fraction`.
+    ///
+    /// A page with one `position: fixed`/`sticky` header of `color` produces
+    /// exactly one run; the iter-144 Theme D duplicate-header artifact
+    /// produces more than one (the header repainted at an internal tile
+    /// boundary further down the full-page capture).
+    pub fn color_row_run_count(
+        &self,
+        color: (u8, u8, u8),
+        tolerance: u8,
+        min_fraction: f64,
+    ) -> u32 {
+        let mut runs = 0u32;
+        let mut in_run = false;
+        for y in 0..self.height {
+            let matches = self.row_color_fraction(y, color, tolerance) >= min_fraction;
+            if matches && !in_run {
+                runs += 1;
+            }
+            in_run = matches;
+        }
+        runs
+    }
+}
+
+/// Decode PNG bytes (as produced by `ff-rdp screenshot --base64`) into a
+/// [`DecodedImage`]. Panics on malformed input — live tests want a loud
+/// failure naming the decode error, not a silent skip, since a decode
+/// failure here means the screenshot command itself produced a broken PNG.
+pub fn decode_png(bytes: &[u8]) -> DecodedImage {
+    let decoder = png::Decoder::new(bytes);
+    let mut reader = decoder
+        .read_info()
+        .unwrap_or_else(|e| panic!("decode_png: failed to read PNG header: {e}"));
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut buf)
+        .unwrap_or_else(|e| panic!("decode_png: failed to decode PNG frame: {e}"));
+    buf.truncate(info.buffer_size());
+
+    let width = info.width;
+    let height = info.height;
+
+    // Normalize to RGBA8 regardless of the PNG's actual color type — the
+    // captures under test are always RGB(A)8, but this keeps the helper
+    // honest about what it assumes rather than silently misreading bytes.
+    let pixels = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => {
+            let mut out = Vec::with_capacity(buf.len() / 3 * 4);
+            for chunk in buf.chunks_exact(3) {
+                out.extend_from_slice(chunk);
+                out.push(255);
+            }
+            out
+        }
+        other => panic!("decode_png: unsupported color type {other:?} (expected Rgb/Rgba)"),
+    };
+
+    DecodedImage {
+        width,
+        height,
+        pixels,
+    }
+}
+
 #[cfg(test)]
 mod color_tests {
     use super::*;

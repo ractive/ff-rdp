@@ -664,6 +664,83 @@ fn try_two_step_screenshot(
     }
 }
 
+/// Attribute `freeze_fixed_and_sticky_js` stamps on every element it mutates,
+/// so `unfreeze_fixed_and_sticky_js` can find exactly those elements again
+/// without re-walking the whole DOM by computed style (which could pick up
+/// elements a page's own script repositioned mid-capture).
+const FROZEN_MARKER_ATTR: &str = "data-ffrdp-frozen";
+
+/// Attribute holding each frozen element's original `style` attribute value
+/// (empty string if it had none), so `unfreeze_fixed_and_sticky_js` can
+/// restore it byte-for-byte rather than guessing which properties to strip.
+const FROZEN_STYLE_ATTR: &str = "data-ffrdp-frozen-style";
+
+/// JS that pins every `position: fixed`/`sticky` element to its current
+/// on-screen location via `position: absolute` + explicit `top`/`left`,
+/// before a full-page capture (iter-144 Theme D).
+///
+/// `BrowsingContext.drawSnapshot`'s full-page path renders a rect taller than
+/// the real viewport; Gecko's compositor treats `fixed`/`sticky` elements as
+/// pinned to the *viewport*, not the document, and (per dogfooding session 63
+/// against a long BBC News page) repaints them at intervals in the
+/// synthesized tall snapshot — the fixed header shows up more than once
+/// stitched down the page. Converting them to `absolute` with a computed
+/// `top`/`left` removes that viewport-relative behavior entirely: the
+/// element renders exactly once, at the position it already occupied on
+/// screen, and normal single-pass compositing draws it there only.
+///
+/// Best-effort: failures are swallowed by the caller (`eval_or_bail`'s
+/// `Result` is discarded) rather than failing the whole capture — a page
+/// whose fixed header can't be frozen should still get a (possibly
+/// header-duplicated) screenshot rather than none at all.
+fn freeze_fixed_and_sticky_js() -> String {
+    format!(
+        r"(function() {{
+  var els = document.querySelectorAll('*');
+  var frozen = 0;
+  for (var i = 0; i < els.length; i++) {{
+    var el = els[i];
+    var cs = window.getComputedStyle(el);
+    if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+    var rect = el.getBoundingClientRect();
+    el.setAttribute('{FROZEN_MARKER_ATTR}', '1');
+    el.setAttribute('{FROZEN_STYLE_ATTR}', el.getAttribute('style') || '');
+    el.style.position = 'absolute';
+    el.style.top = (rect.top + window.scrollY) + 'px';
+    el.style.left = (rect.left + window.scrollX) + 'px';
+    frozen++;
+  }}
+  return JSON.stringify({{frozen: frozen}});
+}})()"
+    )
+}
+
+/// Undo [`freeze_fixed_and_sticky_js`]: restore every marked element's
+/// original `style` attribute (or remove it if it had none) and clear the
+/// marker attributes. Always run after a full-page capture, success or
+/// failure, so a screenshot call never leaves the live page mutated.
+fn unfreeze_fixed_and_sticky_js() -> String {
+    format!(
+        r#"(function() {{
+  var els = document.querySelectorAll('[{FROZEN_MARKER_ATTR}="1"]');
+  var restored = 0;
+  for (var i = 0; i < els.length; i++) {{
+    var el = els[i];
+    var orig = el.getAttribute('{FROZEN_STYLE_ATTR}');
+    if (orig) {{
+      el.setAttribute('style', orig);
+    }} else {{
+      el.removeAttribute('style');
+    }}
+    el.removeAttribute('{FROZEN_MARKER_ATTR}');
+    el.removeAttribute('{FROZEN_STYLE_ATTR}');
+    restored++;
+  }}
+  return JSON.stringify({{restored: restored}});
+}})()"#
+    )
+}
+
 /// Fallback to `ScreenshotActor::screenshot_via_process_drawsnapshot` and encode
 /// the returned PNG bytes as a `data:image/png;base64,...` data URL.
 ///
@@ -676,6 +753,13 @@ fn try_two_step_screenshot(
 /// to the JS call.  The previous hard-rejection of `full_page=true` was the
 /// root cause of the iter-92 Theme A regression where `--full-page` silently
 /// produced a viewport-sized PNG instead of an error.
+///
+/// iter-144 Theme D: when `full_page`, freezes `fixed`/`sticky` elements
+/// (see [`freeze_fixed_and_sticky_js`]) immediately before the capture and
+/// always restores them (see [`unfreeze_fixed_and_sticky_js`]) immediately
+/// after — including on a capture error — so a sticky header is captured
+/// once instead of duplicated down the page, and the live page is never
+/// left in the frozen state.
 fn screenshot_via_process_drawsnapshot_fallback(
     ctx: &mut super::connect_tab::ConnectedTab,
     browsing_ctx_id: u64,
@@ -738,13 +822,40 @@ fn screenshot_via_process_drawsnapshot_fallback(
         None
     };
 
-    let png_bytes = ScreenshotActor::screenshot_via_process_drawsnapshot(
+    // iter-144 Theme D: freeze fixed/sticky elements immediately before the
+    // capture, restore immediately after — on every exit path, including a
+    // capture error, so the live page is never left mutated. Both eval calls
+    // are best-effort (`eval_or_bail`'s `Result` discarded): a page whose
+    // header can't be frozen/restored should not turn a working screenshot
+    // (or a real capture error) into an unrelated JS failure.
+    if full_page {
+        let console_actor = ctx.target.console_actor.clone();
+        let _ = eval_or_bail(
+            ctx,
+            &console_actor,
+            &freeze_fixed_and_sticky_js(),
+            "screenshot: freeze fixed/sticky elements",
+        );
+    }
+
+    let capture_result = ScreenshotActor::screenshot_via_process_drawsnapshot(
         ctx.transport_mut(),
         browsing_ctx_id,
         full_page,
         full_page_rect,
-    )
-    .map_err(|e| {
+    );
+
+    if full_page {
+        let console_actor = ctx.target.console_actor.clone();
+        let _ = eval_or_bail(
+            ctx,
+            &console_actor,
+            &unfreeze_fixed_and_sticky_js(),
+            "screenshot: restore fixed/sticky elements",
+        );
+    }
+
+    let png_bytes = capture_result.map_err(|e| {
         // iter-135 Theme C: the old text ended with a "relaunch in headless
         // mode" instruction, which was wrong for the (common) case of an
         // already-headless session.  It also appended
@@ -960,5 +1071,49 @@ mod tests {
     fn is_actor_module_load_failure_rejects_timeout() {
         let err = ff_rdp_core::ProtocolError::Timeout;
         assert!(!is_actor_module_load_failure(&err));
+    }
+
+    // ── fixed/sticky freeze-for-capture (iter-144 Theme D) ──────────────
+
+    /// AC: `live_144_full_page_no_duplicate_header` (mechanism half) —
+    /// `freeze_fixed_and_sticky_js` matches both `position` values that can
+    /// trigger the duplicate-header artifact, marks the elements it mutates
+    /// so `unfreeze_fixed_and_sticky_js` can find exactly those, and pins
+    /// them via an on-screen-derived `top`/`left` rather than a fixed
+    /// literal (which would misplace a header that isn't at y=0).
+    #[test]
+    fn freeze_js_matches_fixed_and_sticky_and_uses_bounding_rect() {
+        let js = freeze_fixed_and_sticky_js();
+        assert!(js.contains("cs.position !== 'fixed'"));
+        assert!(js.contains("cs.position !== 'sticky'"));
+        assert!(js.contains("getBoundingClientRect"));
+        assert!(js.contains("position = 'absolute'"));
+        assert!(js.contains(FROZEN_MARKER_ATTR));
+        assert!(js.contains(FROZEN_STYLE_ATTR));
+    }
+
+    /// `unfreeze_fixed_and_sticky_js` selects only elements carrying the
+    /// freeze pass's own marker attribute (never a page's pre-existing
+    /// `position: fixed` styling that the freeze pass didn't touch, and
+    /// never a same-named attribute a page happens to set itself), and
+    /// restores the saved `style` attribute rather than clearing individual
+    /// properties (so it can't drop styling the freeze pass didn't add).
+    #[test]
+    fn unfreeze_js_selects_only_marked_elements_and_restores_saved_style() {
+        let js = unfreeze_fixed_and_sticky_js();
+        assert!(js.contains(&format!("[{FROZEN_MARKER_ATTR}=\"1\"]")));
+        assert!(js.contains(FROZEN_STYLE_ATTR));
+        assert!(js.contains("setAttribute('style', orig)"));
+        assert!(js.contains("removeAttribute('style')"));
+        assert!(js.contains(&format!("removeAttribute('{FROZEN_MARKER_ATTR}')")));
+    }
+
+    /// The freeze/unfreeze marker and style-backup attributes must be
+    /// distinct — using the same name for both would make the restore pass
+    /// unable to tell "marked" from "has a saved style", silently corrupting
+    /// whichever page the capture ran against.
+    #[test]
+    fn freeze_marker_and_style_attrs_are_distinct() {
+        assert_ne!(FROZEN_MARKER_ATTR, FROZEN_STYLE_ATTR);
     }
 }

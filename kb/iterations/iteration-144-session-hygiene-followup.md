@@ -92,19 +92,34 @@ confirm German (or any non-English) console/error text actually appears despite 
 non-English Firefox can be obtained in the implementation environment, defer again with a note
 rather than shipping a guess.
 
-## Acceptance Criteria
+## Acceptance Criteria [4/5]
 
-- [ ] live_144_auto_consent_field_honest: `launch --auto-consent`'s reported field never claims a
-      dismiss happened when `tabs`/a follow-up check shows the CMP banner still present
-- [ ] live_144_bbc_cmp_dismissed: `consent accept` dismisses BBC's cookie banner
-      (`#bbccookies-continue-button`) on www.bbc.com
-- [ ] live_144_no_consent_o_matic_tab_leak: `tabs` after `--auto-consent` does not include a
-      `Consent-O-Matic Options` entry (or it is filtered from the listing)
-- [ ] live_144_full_page_no_duplicate_header: full-page capture of a sticky-header page (BBC
-      News or an equivalent fixture) has no repeated header band, verified pixel-level
-- [ ] live_144_console_locale_pinned: console output is locale-stable on a genuinely
-      non-English-locale Firefox — name the reproduction method used in the test, since this AC
-      cannot be ticked without one
+- [x] live_144_auto_consent_field_honest: `launch --auto-consent`'s reported field never claims a
+      dismiss happened when `tabs`/a follow-up check shows the CMP banner still present —
+      verified: `results.auto_consent_extension_installed=true` and the old `auto_consent` key is
+      gone (`crates/ff-rdp-cli/tests/live/live_144_session_hygiene_followup.rs`)
+- [x] live_144_bbc_cmp_dismissed: `consent accept` dismisses BBC's cookie banner
+      (`#bbccookies-continue-button`) on www.bbc.com — verified live against the real site:
+      `results = {"cmp":"bbc","action":"accepted"}` and the control's post-click bounding rect is
+      zero-size (`crates/ff-rdp-cli/tests/live/live_144_session_hygiene_followup.rs`,
+      network-gated on `FF_RDP_LIVE_NETWORK_TESTS=1`)
+- [x] live_144_no_consent_o_matic_tab_leak: `tabs` after `--auto-consent` does not include a
+      `Consent-O-Matic Options` entry (or it is filtered from the listing) — verified
+      (`crates/ff-rdp-cli/tests/live/live_144_session_hygiene_followup.rs`)
+- [x] live_144_full_page_no_duplicate_header: full-page capture of a sticky-header page (BBC
+      News or an equivalent fixture) has no repeated header band, verified pixel-level — verified
+      against a deterministic local fixture via PNG row decoding
+      (`crates/ff-rdp-cli/tests/live/live_144_session_hygiene_followup.rs`); see that test's
+      module doc for why this lands as a forward-looking regression guard rather than a
+      reproduced-then-fixed defect — the historic BBC symptom could not be reproduced in this
+      environment despite a deliberate before/after attempt (also tried directly against the
+      real BBC page; no duplicate found there either). The freeze/restore mitigation is landed
+      regardless, per DEC-028.
+- [deferred — new plan: kb/iterations/iteration-147-console-locale-repro.md] live_144_console_locale_pinned:
+      re-deferred a second time — this implementation environment has only an English macOS
+      Firefox available (checked for a `--lang` flag and a `MOZ_LOCALE`-style override; neither
+      exists on this build), so the symptom cannot be reproduced here either. See
+      [[iteration-147-console-locale-repro]] for what would unblock it.
 
 ## Notes
 

@@ -10,6 +10,34 @@ use crate::output;
 use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
+/// Known localized titles of Consent-O-Matic's options page
+/// (`ui.js`'s `OPTIONS_TITLE` message table, vendored in
+/// `crates/ff-rdp-cli/assets/extensions/consent-o-matic-1.1.5.xpi`).
+/// `launch`'s pinned `intl.locale.requested = "en-US"` (`USER_JS` in
+/// `commands/launch.rs`) should keep this at the English string, but all
+/// five shipped locales are matched defensively — see the iteration-144
+/// Theme F note about that pin's reliability being itself under
+/// investigation.
+const CONSENT_O_MATIC_OPTIONS_TITLES: &[&str] = &[
+    "Consent-O-Matic Options",       // en
+    "Consent-O-Matic indstillinger", // da
+    "Consent-O-Matic Einstellungen", // de
+    "Opções do Consent-O-Matic",     // pt
+    "Options de Consent-O-Matic",    // fr
+];
+
+/// True for the permanent options tab `launch --auto-consent` leaves open
+/// after installing Consent-O-Matic (iter-144 Theme C). Matches on both the
+/// `moz-extension://` scheme (the extension's per-profile UUID is random,
+/// so the URL can't be matched exactly) and a known localized title, so an
+/// unrelated extension's options tab in a caller-supplied `--profile`
+/// isn't accidentally hidden.
+fn is_consent_o_matic_options_tab(tab: &Value) -> bool {
+    let url = tab.get("url").and_then(Value::as_str).unwrap_or_default();
+    let title = tab.get("title").and_then(Value::as_str).unwrap_or_default();
+    url.starts_with("moz-extension://") && CONSENT_O_MATIC_OPTIONS_TITLES.contains(&title)
+}
+
 pub fn run(cli: &Cli) -> Result<(), AppError> {
     let mut connection = RdpConnection::connect(
         &cli.host,
@@ -39,6 +67,13 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
         Value::Array(arr) => arr,
         other => vec![other],
     };
+    // iter-144 Theme C: `launch --auto-consent` installs Consent-O-Matic,
+    // which opens its own options tab on first run and never closes it —
+    // that synthetic tab isn't something a caller targeting `--tab N`
+    // should ever see or count against tab indices, so it's filtered
+    // before sort/limit/total are computed (kb/iterations/
+    // iteration-142-session-hygiene.md Theme C).
+    items.retain(|item| !is_consent_o_matic_options_tab(item));
     controls.apply_sort(&mut items);
     let (limited, total, truncated) = controls.apply_limit(items, None);
     let shown = limited.len();
@@ -78,6 +113,77 @@ mod tests {
             sort_dir: SortDir::Asc,
             fields,
         }
+    }
+
+    // ── Consent-O-Matic options tab filtering (iter-144 Theme C) ────────
+
+    /// AC: `live_144_no_consent_o_matic_tab_leak` (matching half) — the
+    /// exact shape observed live: `launch --auto-consent` on port 6103
+    /// left `{"title":"Consent-O-Matic Options","url":"moz-extension://
+    /// 959682e5-.../options.html"}` in the `tabs` listing.
+    #[test]
+    fn is_consent_o_matic_options_tab_matches_live_shape() {
+        let tab = json!({
+            "actor": "server1.conn1.tabDescriptor2",
+            "title": "Consent-O-Matic Options",
+            "url": "moz-extension://959682e5-00b2-4372-a120-ed784d7b7b73/options.html",
+            "selected": false,
+        });
+        assert!(is_consent_o_matic_options_tab(&tab));
+    }
+
+    #[test]
+    fn is_consent_o_matic_options_tab_matches_every_shipped_locale() {
+        for title in CONSENT_O_MATIC_OPTIONS_TITLES {
+            let tab = json!({
+                "title": title,
+                "url": "moz-extension://any-uuid/options.html",
+            });
+            assert!(
+                is_consent_o_matic_options_tab(&tab),
+                "locale title {title:?} should match"
+            );
+        }
+    }
+
+    /// AC: `live_144_no_consent_o_matic_tab_leak` (no-match half) — a real
+    /// page tab, and a same-titled tab on a non-extension scheme (so the
+    /// filter can't be spoofed by page content), must not be filtered.
+    #[test]
+    fn is_consent_o_matic_options_tab_no_match_for_normal_tab() {
+        let normal = json!({"title": "Example", "url": "https://example.com"});
+        assert!(!is_consent_o_matic_options_tab(&normal));
+
+        let same_title_wrong_scheme =
+            json!({"title": "Consent-O-Matic Options", "url": "https://example.com"});
+        assert!(!is_consent_o_matic_options_tab(&same_title_wrong_scheme));
+    }
+
+    /// A different extension's options tab (arbitrary title, moz-extension
+    /// scheme) must not be filtered — only Consent-O-Matic's known titles
+    /// match, so a caller-supplied `--profile` with other extensions keeps
+    /// seeing their tabs.
+    #[test]
+    fn is_consent_o_matic_options_tab_no_match_for_other_extension() {
+        let other = json!({
+            "title": "uBlock Origin",
+            "url": "moz-extension://other-uuid/options.html",
+        });
+        assert!(!is_consent_o_matic_options_tab(&other));
+    }
+
+    #[test]
+    fn consent_o_matic_tab_filtered_out_of_tabs_list() {
+        let mut items = vec![
+            json!({"title": "Example", "url": "https://example.com"}),
+            json!({
+                "title": "Consent-O-Matic Options",
+                "url": "moz-extension://uuid/options.html",
+            }),
+        ];
+        items.retain(|item| !is_consent_o_matic_options_tab(item));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["title"], "Example");
     }
 
     #[test]

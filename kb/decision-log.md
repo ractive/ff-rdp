@@ -366,3 +366,62 @@ Diffs `tools/ralph-loop/scripts/` against `~/.claude/skills/ralph-loop/scripts/`
 **Consequence for Theme A**: because both sources remain reachable, `meta.source` (`"native"` | `"js-fallback"`, plus the fallback reason) is not cosmetic — it is the only way a caller can tell which tree it scored, and it must be present on every `a11y` response regardless of which path ran.
 
 **Applies to**: `ff-rdp a11y`, `a11y audit`, iter-143.
+
+## DEC-028: `launch`'s consent field is renamed, not fixed in place — and the freeze-for-capture pattern generalises DEC-027's "restore only what you changed"
+
+**Decision** (iter-144, Theme C): `launch --auto-consent`'s JSON field is renamed
+`auto_consent_extension_installed` (was `auto_consent`). It is still set
+unconditionally from the CLI flag — that is now honest, because the new name
+only claims "the extension was installed into the profile", which `launch`
+can actually know before any page loads. It no longer claims a dismiss
+happened, which `launch` never could know (iteration-142's dogfooding
+finding: `auto_consent: true` reported while a banner still covered the
+page). A real dismiss attestation already existed and is unchanged:
+`navigate --auto-consent` / `consent accept` report `results.consent =
+{"cmp": ..., "action": ...}` (DEC-023), which run after a page has loaded
+and can check the DOM.
+
+**Why rename instead of leaving the name and just documenting the caveat**:
+a field named `auto_consent` reads as "consent was automatically handled" to
+any caller who has not read the source — the iteration-142 finding is
+exactly that misreading happening to a real dogfooding session. A false
+name with an accurate docstring is still a false name to `--jq
+'.results.auto_consent'`. Grepped for consumers before renaming (none in
+fixtures, README, or other command source — `navigate`'s unrelated
+`auto_consent` CLI flag and its own `merge_auto_consent` helper are a
+different field on a different command and were not touched).
+
+**Also landed in this iteration**: a `NATIVE_CMP_TABLE` in `consent.rs` for
+same-origin (non-iframe) CMPs — BBC's own `#bbccookies-continue-button` sits
+in the top document, not behind Sourcepoint's iframe, and is tried before
+`CMP_TABLE` since Sourcepoint's overlay can sit in front of it on first
+paint (verified live: the element exists with a zero-size rect until
+Sourcepoint is dismissed, so `native_accept_js` requires a non-zero
+bounding rect, not just DOM presence, before it will click). `tabs` filters
+the `Consent-O-Matic Options` tab `--auto-consent` leaves open by matching
+`moz-extension://` scheme plus a table of the five titles the vendored XPI
+ships (locale-defensive, since the launch-time locale pin under
+investigation in [[iteration-147-console-locale-repro]] cannot yet be
+trusted to hold).
+
+**Screenshot freeze pattern reuses DEC-027's shape** (Theme D): before a
+`--full-page` capture, every `position: fixed`/`sticky` element is pinned to
+`position: absolute` with its current on-screen `top`/`left` (so the
+compositor never treats it as viewport-relative during the
+taller-than-viewport `drawSnapshot` call), and always restored afterward —
+success or capture failure — exactly the "only touch what you changed, and
+always undo it" discipline DEC-027 established for the accessibility
+service. Unlike DEC-027's underlying bug, the specific duplicate-header
+symptom this was meant to fix (dogfooding session 63, BBC News) could not
+be reproduced in the implementation environment despite a deliberate
+before/after attempt across page heights 2 000–20 000 px (spanning common
+GPU texture-tile boundaries) with both `fixed` and `sticky` headers, and
+against the real BBC page directly — see
+`live_144_full_page_no_duplicate_header`'s module doc. The freeze/restore
+code is landed anyway as a defensive, unit- and live-regression-tested
+mitigation matching the plan's own suggested approach, but the AC is
+satisfied by a forward-looking invariant check on a deterministic local
+fixture, not a reproduced-then-fixed defect.
+
+**Applies to**: `crates/ff-rdp-cli/src/commands/{launch,consent,tabs,screenshot}.rs`,
+`crates/ff-rdp-cli/tests/live/live_144_session_hygiene_followup.rs`, iter-144.
