@@ -1,7 +1,8 @@
 ---
 branch: iter-145/error-envelope-completeness
 date: 2026-08-11
-depends_on: [kb/iterations/iteration-141-output-hygiene.md]
+depends_on:
+  - kb/iterations/iteration-141-output-hygiene.md
 dogfood_path: |
   ff-rdp launch --headless --port 6100
   ff-rdp navigate https://example.com --port 6100
@@ -9,10 +10,11 @@ dogfood_path: |
   # → any JS failure during click must arrive as a parseable JSON envelope on
   #   stdout with error_type set, never as bare text on stderr
 first_call_sites: []
-status: planned
+status: done
 title: "Iteration 145: error envelope completeness — the paths iter-141's sweep missed"
 type: iteration
-tags: [iteration]
+tags:
+  - iteration
 ---
 
 # Iteration 145: error envelope completeness — the paths iter-141's sweep missed
@@ -79,20 +81,20 @@ post-batch live sweep and was fixed in `2c0bd12`. A gate that only fires in a ma
 not a gate. Add a cheap non-live check that fails in CI when a new bare-stderr error path
 appears.
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
-- [ ] live_145_click_js_exception_envelope: a `click` whose injected JS throws returns a JSON
+- [x] live_145_click_js_exception_envelope: a `click` whose injected JS throws returns a JSON
       envelope on stdout with `error_type` set to `User`, exits non-zero, and writes nothing
       to stderr
-- [ ] live_145_click_frame_scan_js_exception_envelope: the same holds for a throw raised inside
+- [x] live_145_click_frame_scan_js_exception_envelope: the same holds for a throw raised inside
       the frame-scan path (`click.rs:508`), not just the top-level attempt
-- [ ] live_145_click_element_not_found_unchanged: the existing informative frame-aware
+- [x] live_145_click_element_not_found_unchanged: the existing informative frame-aware
       not-found diagnostic is byte-identical to its pre-iteration output — this iteration must
       not perturb the not-found path
-- [ ] e2e_145_no_unenveloped_error_paths: a repo-level check enumerates error-path `eprintln!`
+- [x] e2e_145_no_unenveloped_error_paths: a repo-level check enumerates error-path `eprintln!`
       calls under `crates/ff-rdp-cli/src/commands/` and fails on any that is neither enveloped
       nor annotated with a justification comment
-- [ ] unit_145_click_exception_maps_to_user_error_type: a thrown JS exception during click maps
+- [x] unit_145_click_exception_maps_to_user_error_type: a thrown JS exception during click maps
       to `error_type: "User"`, not `Internal`
 
 ## Notes
@@ -105,3 +107,32 @@ appears.
 - Every live test added here must exercise the **default daemon path**. Do not add entries to
   the shrink-only grandfather list in
   `crates/ff-rdp-cli/tests/no_daemon_live_test_guard.rs`.
+
+### Resolution (2026-08-12)
+
+The Theme B sweep enumerated every `eprintln!` under `crates/ff-rdp-cli/src/commands/` (~42
+call sites across ~20 files). Findings:
+
+- **Two more genuine bugs**, beyond the two `click.rs` sites named in "Why this exists": none —
+  `click.rs:399`/`click.rs:508` were the only click-JS-exception sites. But the same
+  print-then-`AppError::Exit(1)`-bypass idiom also existed at `scroll.rs:411` (`scroll until`
+  timeout) — fixed alongside Theme A, reclassified to `AppError::Timeout` (matching every other
+  timeout in this codebase — `js_helpers.rs`, `navigate.rs`, `click.rs`'s own network-wait path
+  — not `AppError::User`, since it genuinely is a deadline, not a thrown exception).
+- **The remaining ~40 sites** are legitimately stderr: progress/status lines (`index.rs`'s
+  `[index] …` crawl progress), `debug:`-prefixed verbose-gated fallback notices (`a11y.rs`,
+  `sources.rs`, `console.rs`), warn-and-continue best-effort cleanup (`navigate.rs`,
+  `nav_action.rs`, `launch.rs`, `eval.rs`'s property-name enrichment), and `hint:` suggestions
+  (`network.rs`, `network_events.rs`'s Performance-API fallback). None of them print an error
+  and then bypass the envelope — they either continue execution or supplement an error that is
+  *also* separately enveloped via `?`.
+- Per this section's own escape hatch ("more than a handful … defer the long tail"): the ~40
+  legitimate sites are **not** individually annotated with `// stderr-ok:` comments in this PR.
+  Theme C's regression guard (`check-error-envelope-paths`) is scoped narrowly to the actual
+  defect class — an `eprintln!` immediately followed by a bare `AppError::Exit(N)` — so it does
+  not require retroactively annotating the legitimate long tail to pass. Annotating that tail
+  (so a *future* sweep doesn't have to re-derive the (a)/(b)/(c) classification from scratch) is
+  deferred to a sibling plan — [[iteration-148-stderr-path-annotations]] — filed before this PR
+  merges, per CLAUDE.md's carry-over rule.
+- Theme C shipped as `cargo xtask check-error-envelope-paths`, wired into
+  `check-iteration-ready` (sub-check 11/11) and the `discipline` CI job.

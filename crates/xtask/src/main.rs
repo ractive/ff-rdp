@@ -3,6 +3,7 @@ mod check_daemon_locks;
 mod check_dead_primitives;
 mod check_discipline_regression;
 mod check_dogfood_script;
+mod check_error_envelope_paths;
 mod check_firefox_refs;
 mod check_iteration_plan;
 mod check_iteration_ready;
@@ -56,6 +57,9 @@ enum Commands {
     CheckPreFixRepro(check_pre_fix_repro::Args),
     /// Resolve a branch name (iter-N/slug) to the absolute path of its iteration plan.
     FindIterationPlan(find_iteration_plan::Args),
+    /// Fail if any `eprintln!` in crates/ff-rdp-cli/src/commands/ is immediately
+    /// followed by a bare `AppError::Exit(N)` that bypasses the JSON error envelope.
+    CheckErrorEnvelopePaths(check_error_envelope_paths::Args),
 }
 
 fn main() -> Result<()> {
@@ -74,5 +78,6 @@ fn main() -> Result<()> {
         Commands::FindIterationPlan(args) => find_iteration_plan::run(args),
         Commands::CheckDogfoodScript(args) => check_dogfood_script::run(args),
         Commands::CheckPreFixRepro(args) => check_pre_fix_repro::run(args),
+        Commands::CheckErrorEnvelopePaths(args) => check_error_envelope_paths::run(args),
     }
 }

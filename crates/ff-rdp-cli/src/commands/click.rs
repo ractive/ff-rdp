@@ -347,6 +347,30 @@ fn selector_exists_in_targets(
 /// pointless frame scan).
 const ELEMENT_NOT_FOUND_MARKER: &str = "Element not found:";
 
+/// Classify a thrown click-JS exception message.
+///
+/// `None` means "element not found" — the caller should proceed to (or
+/// continue) the frame scan. `Some(err)` means a genuine JS failure that must
+/// be surfaced immediately rather than triggering (or continuing) a scan that
+/// cannot help.
+///
+/// iter-145 Theme A: the genuine-failure case routes through the standard
+/// JSON error envelope (`AppError::User`, matching `eval.rs`'s iter-141
+/// Theme E handling of a thrown script exception) instead of printing bare
+/// text to stderr and bypassing `main`'s envelope emission via
+/// `AppError::Exit(1)`. A thrown click-JS exception is the caller's
+/// selector/page misbehaving, not an ff-rdp bug, so `User` is the right
+/// classification — same reasoning as `eval.rs`. Shared by both call sites
+/// (`do_click`'s top-level attempt and `click_in_scanned_frame`'s per-frame
+/// retry) so the classification can't drift between them.
+fn classify_click_exception(msg: &str) -> Option<AppError> {
+    if msg.contains(ELEMENT_NOT_FOUND_MARKER) {
+        None
+    } else {
+        Some(AppError::User(sanitize_for_terminal(msg).into_owned()))
+    }
+}
+
 /// Click `selector`, returning the parsed result JSON and — when the click
 /// landed inside a non-top frame — that frame's URL.
 ///
@@ -396,11 +420,10 @@ fn do_click(
     };
 
     let msg = exc.message.unwrap_or_else(|| "click failed".to_owned());
-    if !msg.contains(ELEMENT_NOT_FOUND_MARKER) {
+    if let Some(err) = classify_click_exception(&msg) {
         // A genuine JS failure (not a missing-selector case) — surface it
         // immediately rather than paying for a frame scan that cannot help.
-        eprintln!("error: {}", sanitize_for_terminal(&msg));
-        return Err(AppError::Exit(1));
+        return Err(err);
     }
 
     let targets = fetch_frame_targets(ctx)?;
@@ -505,11 +528,10 @@ fn click_in_scanned_frame(
             return Ok((json_val, Some(frame_url)));
         };
         let msg = exc.message.unwrap_or_default();
-        if !msg.contains(ELEMENT_NOT_FOUND_MARKER) {
+        if let Some(err) = classify_click_exception(&msg) {
             // A genuine JS failure inside this frame — surface it directly
             // rather than silently trying the next candidate.
-            eprintln!("error: {}", sanitize_for_terminal(&msg));
-            return Err(AppError::Exit(1));
+            return Err(err);
         }
     }
 
@@ -756,5 +778,47 @@ mod tests {
             panic!("expected Click command");
         };
         assert!(args.frame.is_none());
+    }
+
+    // ── iter-145 Theme A: click JS exceptions route through the envelope ───
+
+    /// AC: `unit_145_click_exception_maps_to_user_error_type` — a thrown JS
+    /// exception during click maps to `error_type: "User"`, not `Internal`.
+    #[test]
+    fn unit_145_click_exception_maps_to_user_error_type() {
+        let err = classify_click_exception("TypeError: something broke")
+            .expect("a genuine JS exception must classify as an error, not be swallowed");
+        assert!(
+            matches!(err, AppError::User(_)),
+            "thrown click exception must map to error_type User, not Internal: {err:?}"
+        );
+    }
+
+    #[test]
+    fn classify_click_exception_element_not_found_returns_none() {
+        // The frame-scan salvage marker must NOT classify as a genuine
+        // failure — it means "keep scanning frames", per
+        // `ELEMENT_NOT_FOUND_MARKER`'s doc comment.
+        assert!(
+            classify_click_exception(
+                "Element not found: button — use ff-rdp dom SELECTOR --count to verify the selector matches"
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn classify_click_exception_sanitizes_message_for_terminal() {
+        // The classified message must go through `sanitize_for_terminal`
+        // (control chars stripped) — the same treatment `eval.rs` applies to
+        // thrown exception text before it reaches the JSON envelope.
+        let err = classify_click_exception("boom\x1b[31mred\x1b[0m").unwrap();
+        let AppError::User(msg) = err else {
+            panic!("expected AppError::User, got {err:?}");
+        };
+        assert!(
+            !msg.contains('\x1b'),
+            "raw ANSI escape must be stripped: {msg:?}"
+        );
     }
 }

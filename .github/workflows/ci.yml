@@ -162,6 +162,11 @@ jobs:
         # check-oneway-conformance requires FF_RDP_FIREFOX_PATH; it skips gracefully
         # when neither the env var nor ~/devel/firefox are present.
         run: cargo run -p xtask -- check-oneway-conformance
+      - name: Check error envelope paths (iter-145)
+        # Fails if an eprintln! in crates/ff-rdp-cli/src/commands/ is immediately
+        # followed by AppError::Exit(N), the bare-stderr-then-bypass idiom that let
+        # click-time JS exceptions skip the JSON error envelope pre-iter-145.
+        run: cargo run -p xtask -- check-error-envelope-paths
 
   # iter-75c: PR-time smoke that proves `gh attestation verify` will succeed
   # against a freshly built artifact. Builds the Linux x86_64 CLI, runs
