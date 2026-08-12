@@ -256,10 +256,7 @@ fn live_145_click_frame_scan_js_exception_envelope() {
         "daemon never reported live frame targets"
     );
 
-    let click = run(
-        port,
-        &["click", INVALID_SELECTOR, "--frame", "/frame"],
-    );
+    let click = run(port, &["click", INVALID_SELECTOR, "--frame", "/frame"]);
     stop_daemon(port);
 
     assert!(
