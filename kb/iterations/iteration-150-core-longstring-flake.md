@@ -98,3 +98,35 @@ of those converts a visible intermittent into an invisible one — the same trad
   when the symptom will not appear.
 - Cheap first step before anything else: check whether the two recorded sightings share a
   platform, a parallelism setting, or a neighbouring test.
+
+## Run guidance (batch 149 → 151 → 150 → 148)
+
+Non-negotiable working rules for whoever implements this plan:
+
+1. **Do not trust the root cause stated above.** Across iterations 135–146 the real cause
+   differed from the plan's hypothesis at least six times, and twice the wrong hypothesis was in
+   a plan Claude itself wrote — [[iteration-146-live-suite-reliability]] guessed `LiveFirefox` for
+   the leak and a daemon restart for the parity flake; both were wrong (two real bugs in
+   `daemon/server.rs`). Reproduce the symptom and verify the mechanism **on the wire** (actual RDP
+   packets / actual command output) before writing the fix. If the diagnosis here turns out to be
+   wrong, fix the real cause and correct this section.
+2. **A live test that passes `--no-daemon` proves nothing about the default path.** Every live
+   test added here must exercise the default (daemon) path. iter-137's guard is at
+   `crates/ff-rdp-cli/tests/no_daemon_live_test_guard.rs` with a shrink-only grandfather list —
+   **do not add entries to that list.**
+
+### Environment quirks (measured, session of 2026-08-12)
+
+- Long background commands are killed at ~9–10 min. A full live run of `ff-rdp-cli` takes ~12 min
+  and was killed three times. Run it in **two chunks**:
+  `cargo test-live -p ff-rdp-cli -- --include-ignored --test-threads=1 live_1` and the same with
+  `--skip live_1`. Each finishes inside the budget.
+- Prewarm with `cargo build --workspace --all-targets` first — this avoids the xtask nested-cargo
+  deadlock.
+- Kill stray ff-rdp Firefox instances **before** any live run; a leftover breaks the daemon-stop
+  and profile-prune tests. The developer's own browser is a separate process with no debugger
+  port — do not kill it.
+- `pgrep -f "firefox.*ff-rdp-profile"` matches its **own** shell command line, so counting orphans
+  that way over-reports by exactly one. Use `pgrep -af start-debugger-server`.
+- `ff-rdp-core` live tests must also run sequentially (`--test-threads=1`) against a headless
+  Firefox on port 6000; in parallel, 4 tests fail from shared-Firefox interference.
