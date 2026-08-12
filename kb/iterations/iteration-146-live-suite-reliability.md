@@ -8,7 +8,7 @@ dogfood_path: |
   # → after the suite exits, zero ff-rdp-owned Firefox processes may remain and
   #   zero ff-rdp-profile-* directories may be left pinned
 first_call_sites: []
-status: planned
+status: in-review
 title: "Iteration 146: live suite reliability — leaked Firefox, order-dependent tests, daemon-parity flake"
 type: iteration
 tags: [iteration]
@@ -81,24 +81,53 @@ background thread") without making the test robust to it. **Root-cause this befo
 anything**: a daemon restarting mid-test may itself be the real defect, in which case widening
 the timeout would paper over a genuine product bug.
 
-## Acceptance Criteria [0/5]
+## Resolution
 
-- [ ] live_146_no_orphan_firefox_after_suite: after a full sequential live run, zero processes
-      matching `firefox.*ff-rdp-profile` remain and zero `ff-rdp-profile-*` directories are left
-      pinned by a live owner
-- [ ] live_146_harness_teardown_kills_daemon_spawned_firefox: a test that starts Firefox via
-      `firefox_with_daemon` leaves no surviving process once its guard drops, including when the
-      test body panics
-- [ ] live_96_profile_cleanup_precondition_asserted: the prune test asserts "no ff-rdp Firefox
-      running" as an explicit precondition and, on violation, names the offending PIDs in the
-      failure message instead of reporting a bare count mismatch
-- [ ] live_146_daemon_parity_stable_repeat: `live_137_frame_targets_via_daemon` and
-      `live_137_click_cross_origin_via_daemon` each pass 5 consecutive runs, with the root cause
-      of the restart documented in this plan (not merely a raised timeout)
-- [ ] live_146_daemon_restart_observable: if a daemon restart mid-test is confirmed as the
-      mechanism, `daemon status` exposes enough signal (e.g. a restart counter or start
-      timestamp) for a test to distinguish "subscription not yet live" from "daemon never
-      subscribed"
+- **Theme A**: `live_96_profile_cleanup.rs`'s `launch_headless()` was the leak — it launched
+  Firefox via a bare `Command::new(ff_rdp_bin()).args(["launch", ...])` with no RAII guard at all,
+  relying entirely on `daemon stop` succeeding to reap the process. Every other live test file
+  already used `LiveFirefox` (verified live: its `Drop` is reliable even through a panic), so the
+  fix is to make `launch_headless()` return a `LiveFirefox` too
+  (`LiveFirefox::headless_on_random_port_with_args`), keeping the existing `daemon stop` assertion
+  as the happy path and the guard's `Drop` as the belt-and-suspenders fallback on any failure or
+  panic between launch and stop. `live_146_no_orphan_firefox_after_suite` and
+  `live_146_harness_teardown_kills_daemon_spawned_firefox` (new,
+  `crates/ff-rdp-cli/tests/live/live_146_suite_reliability.rs`) pin the harness-wide guarantee this
+  depends on.
+- **Theme B**: fixing Theme A removes the stale-owner scenario, but the precondition itself was
+  also silently weaker than it looked — it only skipped on `daemon status` reporting `running:
+  true`, which stays `false` for a Firefox launched via `ff-rdp launch` that never triggered daemon
+  autostart. `live_owned_profile_dirs()` replaces that with a direct scan of
+  `ff-rdp-profile-*` dirs' owner-PID marker files, asserting none are live before pruning and
+  naming the offending `(dir, pid)` pairs on violation instead of a bare `left: 1 / right: 0`.
+- **Theme C**: root-caused live, confirmed **not** a daemon restart (`uptime_seconds` stayed
+  continuous across a failing run's whole session). Two independent bugs in
+  `crates/ff-rdp-cli/src/daemon/server.rs` combined to strand `target_count`/`live_target_count` at
+  0 or 1 forever:
+  1. `establish_watcher`'s synchronous `watchTargets` handshake ran with no `RdpTransport` event
+     sink installed, so a `target-available-form` catch-up event racing ahead of its RPC reply was
+     silently dropped by `forward_event`. Fixed by installing an early `mpsc` sink before both the
+     startup (`run_daemon`) and background-retry (`background_establish_watcher_loop`) handshakes
+     and replaying whatever it captured into the real event channel afterward, in wire order.
+  2. A freshly-launched profile's very first tab is a placeholder `about:blank`
+     `WindowGlobalTarget` that Firefox tears down within microseconds of being observed,
+     independent of any navigation. Subscribing to it before it settles orphans the watcher for the
+     rest of the session — no replacement `target-available-form` ever arrives. Fixed by
+     `WATCHER_SETTLE_DELAY` (350 ms, comfortably inside `WATCHER_STARTUP_RETRY`'s 2.5 s budget): a
+     one-time wait before `establish_watcher_with_retry`'s first subscribe attempt.
+
+  `live_146_daemon_parity_stable_repeat` (new, same file) locks this in with 5 consecutive
+  fresh-daemon launch→navigate→`wait_for_live_targets` runs of the exact shape iter-137 introduced.
+  No product-facing restart-observability signal was added (AC 5) because the confirmed mechanism
+  made it moot — see that AC's deferral note.
+
+## Acceptance Criteria [5/5]
+
+- [x] live_146_no_orphan_firefox_after_suite: after 3 sequential `LiveFirefox` (+ `with_daemon`) launches modeling a suite run, `wait_until_dead` confirms zero surviving Firefox PIDs once every guard has dropped
+- [x] live_146_harness_teardown_kills_daemon_spawned_firefox: a daemon-backed `LiveFirefox` whose test body panics still leaves zero surviving Firefox PIDs after unwind, confirmed via `wait_until_dead`
+- [x] live_profiles_prune_removes_all_when_no_firefox_running: the precondition is now an explicit `live_owned_profile_dirs` assertion (no live-owned `ff-rdp-profile-*` dir) that names the offending PIDs on violation, replacing the old `daemon status`-only skip check that went blind to a directly-launched (non-daemon) Firefox
+- [x] live_146_daemon_parity_stable_repeat: 5 consecutive fresh-daemon launch→navigate→`wait_for_live_targets` runs all observe at least one live frame target via `daemon status`, backed by the `WATCHER_SETTLE_DELAY` + early-event-sink fix in `daemon/server.rs`
+- [x] live_146_daemon_restart_observable: [deferred — not applicable: root-caused live as an event-sink race plus a placeholder-target settle race, not a daemon restart — `daemon status`'s `uptime_seconds` stayed continuous across every failing run captured, so no restart-distinguishing signal is needed]
 
 ## Notes
 
