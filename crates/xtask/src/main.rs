@@ -10,8 +10,10 @@ mod check_iteration_ready;
 mod check_live_test_layout;
 mod check_oneway_conformance;
 mod check_pre_fix_repro;
+mod check_stderr_annotations;
 mod check_todo_annotations;
 mod find_iteration_plan;
+mod stderr_scan;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -60,6 +62,9 @@ enum Commands {
     /// Fail if any `eprintln!` in crates/ff-rdp-cli/src/commands/ is immediately
     /// followed by a bare `AppError::Exit(N)` that bypasses the JSON error envelope.
     CheckErrorEnvelopePaths(check_error_envelope_paths::Args),
+    /// Fail if any `eprintln!` in crates/ff-rdp-cli/src/commands/ (outside
+    /// #[cfg(test)] modules) lacks a `// stderr-ok: <reason>` justification comment.
+    CheckStderrAnnotations(check_stderr_annotations::Args),
 }
 
 fn main() -> Result<()> {
@@ -79,5 +84,6 @@ fn main() -> Result<()> {
         Commands::CheckDogfoodScript(args) => check_dogfood_script::run(args),
         Commands::CheckPreFixRepro(args) => check_pre_fix_repro::run(args),
         Commands::CheckErrorEnvelopePaths(args) => check_error_envelope_paths::run(args),
+        Commands::CheckStderrAnnotations(args) => check_stderr_annotations::run(args),
     }
 }

@@ -588,6 +588,8 @@ pub fn run(
                 result_json["propertyNames"] = json!(names);
             }
             Err(e) => {
+                // stderr-ok: (b) best-effort, warn-and-continue — see the
+                // comment above; the eval result itself is unaffected.
                 eprintln!("warning: could not fetch property names: {e}");
             }
         }

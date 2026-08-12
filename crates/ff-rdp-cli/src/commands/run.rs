@@ -112,7 +112,11 @@ pub fn run(cli: &Cli, opts: &RunCommandOpts<'_>) -> Result<(), AppError> {
     // This ensures the output file is valid JSON with the steps array closed.
     if let Some(rec) = run_opts.recorder.take() {
         match rec.finish() {
+            // stderr-ok: (b) progress line — stdout carries run_result's
+            // JSON envelope; this is a side-channel status confirmation.
             Ok(out_path) => eprintln!("recording saved to: {}", out_path.display()),
+            // stderr-ok: (b) warn-and-continue — the script's own result
+            // (run_result) is returned regardless of recorder finalisation.
             Err(e) => eprintln!("warning: failed to finalise recording: {e}"),
         }
     }

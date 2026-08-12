@@ -320,6 +320,7 @@ fn run_native_or_js_fallback(
         Ok(true) => {}
         Ok(false) => {
             if cli.is_verbose() {
+                // stderr-ok: (b) debug/diagnostic, gated on --verbose.
                 eprintln!(
                     "debug: platform accessibility service is disabled; falling back to JS eval \
                      (enable it in Firefox to get the native accessibility tree, or pass --native \
@@ -344,6 +345,7 @@ fn run_native_or_js_fallback(
         Ok(w) => w,
         Err(e) if e.is_unrecognized_packet_type() => {
             if cli.is_verbose() {
+                // stderr-ok: (b) debug/diagnostic, gated on --verbose.
                 eprintln!(
                     "debug: accessibility getWalker unrecognized in this Firefox version; \
                      falling back to JS eval"
@@ -354,6 +356,7 @@ fn run_native_or_js_fallback(
         }
         Err(ProtocolError::Timeout) => {
             if cli.is_verbose() {
+                // stderr-ok: (b) debug/diagnostic, gated on --verbose.
                 eprintln!(
                     "debug: accessibility getWalker timed out after {}s (bounded deadline, \
                      iter-143); falling back to JS eval",
@@ -372,6 +375,7 @@ fn run_native_or_js_fallback(
         Err(e) if e.is_unrecognized_packet_type() => {
             // Both getDocument and getRootNode failed — Firefox 149+ protocol change.
             if cli.is_verbose() {
+                // stderr-ok: (b) debug/diagnostic, gated on --verbose.
                 eprintln!(
                     "debug: accessibility walker root methods unrecognized in this Firefox \
                      version (tried getDocument and getRootNode); falling back to JS eval"
@@ -382,6 +386,7 @@ fn run_native_or_js_fallback(
         }
         Err(ProtocolError::Timeout) => {
             if cli.is_verbose() {
+                // stderr-ok: (b) debug/diagnostic, gated on --verbose.
                 eprintln!(
                     "debug: accessibility walker root request timed out after {}s (bounded \
                      deadline, iter-143); falling back to JS eval",
@@ -467,6 +472,7 @@ fn run_native_opt_in(
             ));
         }
         if cli.is_verbose() {
+            // stderr-ok: (b) debug/diagnostic, gated on --verbose.
             eprintln!(
                 "debug: --native: platform accessibility service was off; enabled it for this \
                  command and will restore it to disabled afterward"
@@ -487,9 +493,8 @@ fn run_native_opt_in(
     let restore_outcome = if we_enabled {
         let disable_target = force_restore_failure_target(&parent_actor);
         if let Err(e) = AccessibilityActor::disable_service(ctx.transport_mut(), &disable_target) {
-            // Unconditional, not --verbose-gated: a human running this
-            // interactively should not have to opt in to learning their
-            // browser was left degraded (Theme C).
+            // stderr-ok: (c) duplicate of meta.service_restore_error in the
+            // envelope — unconditional per iter-149 Theme C (see above).
             eprintln!(
                 "warning: --native: failed to restore the accessibility service to disabled \
                  after this opt-in run: {e}. Firefox's platform accessibility service stays \
@@ -501,6 +506,7 @@ fn run_native_opt_in(
             RestoreOutcome::Failed(e.to_string())
         } else {
             if cli.is_verbose() {
+                // stderr-ok: (b) debug/diagnostic, gated on --verbose.
                 eprintln!("debug: --native: restored the accessibility service to disabled");
             }
             RestoreOutcome::Restored

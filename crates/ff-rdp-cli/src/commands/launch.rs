@@ -576,6 +576,8 @@ pub fn run(
                 profile_dir: profile_path.clone().unwrap_or_default(),
             };
             if let Err(e) = crate::daemon_record::write(&daemon_rec) {
+                // stderr-ok: (b) warn-and-continue — launch still succeeds,
+                // just without a `daemon stop` handle for this instance.
                 eprintln!("warning: could not write daemon record: {e:#}");
             }
 

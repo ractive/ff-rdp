@@ -331,6 +331,11 @@ pub fn run(args: Args) -> Result<()> {
         run_xtask("check-error-envelope-paths", &[])
     }));
 
+    // --- 12. check-stderr-annotations (iter-148)
+    results.push(run_or_skip("check-stderr-annotations", &mut || {
+        run_xtask("check-stderr-annotations", &[])
+    }));
+
     let total = results.len();
     for (i, result) in results.iter().enumerate() {
         print_result(i + 1, total, result);

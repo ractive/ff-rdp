@@ -31,6 +31,8 @@ use super::url_validation::validate_url_with_opts;
 /// Failures are logged and swallowed — the drain has already completed.
 fn restore_timeout(transport: &mut RdpTransport, original_timeout_ms: u64) {
     if let Err(e) = transport.set_read_timeout(Some(Duration::from_millis(original_timeout_ms))) {
+        // stderr-ok: (b) warn-and-continue — see the doc comment above; the
+        // drain already completed so this failure is logged and swallowed.
         eprintln!("warning: failed to restore socket read timeout: {e:#}");
     }
 }

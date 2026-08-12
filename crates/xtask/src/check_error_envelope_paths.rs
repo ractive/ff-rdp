@@ -1,6 +1,6 @@
-use anyhow::{Context, Result};
+use crate::stderr_scan::{locate_repo_root, scan_rs_files, strip_test_module};
+use anyhow::Result;
 use clap::Args as ClapArgs;
-use std::path::Path;
 
 /// iter-145 Theme C regression guard.
 ///
@@ -43,17 +43,7 @@ pub struct EnvelopeFinding {
 
 const LOOKAHEAD_LINES: usize = 6;
 const LOOKBACK_JUSTIFICATION_LINES: usize = 2;
-const JUSTIFICATION_MARKER: &str = "stderr-ok:";
-
-/// Strip everything from the first `#[cfg(test)]` module onward — a cheap
-/// heuristic (not a real parser) that is good enough because every source
-/// file in `commands/` puts its `#[cfg(test)] mod tests { ... }` block last.
-fn strip_test_module(src: &str) -> &str {
-    match src.find("#[cfg(test)]") {
-        Some(idx) => &src[..idx],
-        None => src,
-    }
-}
+const JUSTIFICATION_MARKER: &str = "// stderr-ok:";
 
 /// Scan one file's source text for the print-then-bypass idiom.
 pub fn check_source(file_label: &str, src: &str) -> Vec<EnvelopeFinding> {
@@ -94,48 +84,6 @@ pub fn check_source(file_label: &str, src: &str) -> Vec<EnvelopeFinding> {
     findings
 }
 
-fn scan_dir(dir: &Path, repo_root: &Path) -> Result<Vec<EnvelopeFinding>> {
-    let mut findings = Vec::new();
-    let mut entries: Vec<_> = std::fs::read_dir(dir)
-        .with_context(|| format!("reading directory {}", dir.display()))?
-        .filter_map(|e| e.ok())
-        .collect();
-    entries.sort_by_key(std::fs::DirEntry::path);
-
-    for entry in entries {
-        let path = entry.path();
-        if path.is_dir() {
-            findings.extend(scan_dir(&path, repo_root)?);
-            continue;
-        }
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-            continue;
-        }
-        let src = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let label = path
-            .strip_prefix(repo_root)
-            .unwrap_or(&path)
-            .display()
-            .to_string();
-        findings.extend(check_source(&label, &src));
-    }
-
-    Ok(findings)
-}
-
-fn locate_repo_root() -> Result<std::path::PathBuf> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .context("running git rev-parse --show-toplevel")?;
-    if !output.status.success() {
-        anyhow::bail!("git rev-parse --show-toplevel failed");
-    }
-    let s = String::from_utf8(output.stdout).context("non-utf8 git output")?;
-    Ok(std::path::PathBuf::from(s.trim()))
-}
-
 pub fn run(args: Args) -> Result<()> {
     let repo_root = locate_repo_root()?;
     let dir = match args.dir {
@@ -147,7 +95,7 @@ pub fn run(args: Args) -> Result<()> {
         anyhow::bail!("directory does not exist: {}", dir.display());
     }
 
-    let findings = scan_dir(&dir, &repo_root)?;
+    let findings = scan_rs_files(&dir, &repo_root, &mut check_source)?;
 
     if findings.is_empty() {
         println!("check-error-envelope-paths: PASS (no bare-stderr-then-bypass error paths)");
@@ -243,6 +191,19 @@ fn do_thing() -> Result<(), AppError> {
 "#;
         let findings = check_source("fake.rs", src);
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn rejects_marker_text_outside_a_comment() {
+        let src = r#"
+fn do_thing() -> Result<(), AppError> {
+    let msg = "stderr-ok: not actually a justification comment";
+    eprintln!("{msg}");
+    return Err(AppError::Exit(1));
+}
+"#;
+        let findings = check_source("fake.rs", src);
+        assert_eq!(findings.len(), 1);
     }
 
     #[test]

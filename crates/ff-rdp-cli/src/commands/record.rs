@@ -12,6 +12,8 @@ use crate::script::recorder;
 pub fn run_start(output_path: &Path, name: Option<&str>) -> Result<(), AppError> {
     recorder::start_recording(output_path, name)
         .map_err(|e| AppError::User(format!("record start: {e}")))?;
+    // stderr-ok: (b) progress line — mirrors `record stop`'s stdout path
+    // confirmation but on start there's no meaningful stdout payload yet.
     eprintln!("recording started: {}", output_path.display());
     Ok(())
 }
