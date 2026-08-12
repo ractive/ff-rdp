@@ -1,7 +1,8 @@
 ---
 branch: iter-149/a11y-restore-honesty
 date: 2026-08-12
-depends_on: [kb/iterations/iteration-143-native-a11y-tree.md]
+depends_on:
+  - kb/iterations/iteration-143-native-a11y-tree.md
 dogfood_path: |
   ff-rdp launch --headless --port 6100
   ff-rdp navigate https://example.com --port 6100
@@ -10,10 +11,11 @@ dogfood_path: |
   #   restore it, meta must say so; the browser is left in a degraded state
   #   and a non-verbose caller currently has no way to learn that
 first_call_sites: []
-status: planned
+status: completed
 title: "Iteration 149: a11y --native must report a failed service restore"
 type: iteration
-tags: [iteration]
+tags:
+  - iteration
 ---
 
 # Iteration 149: `a11y --native` must report a failed service restore
@@ -101,17 +103,51 @@ The `--verbose`-gated `eprintln!` should fire regardless of verbosity when the r
 A human running the command interactively should not have to opt in to learning that their
 browser was left degraded. Keep the success-path notice verbose-gated — that one is noise.
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
-- [ ] live_149_restore_failure_reported_in_meta: when `disable_service` fails after ff-rdp
+- [x] live_149_restore_failure_reported_in_meta: when `disable_service` fails after ff-rdp
       enabled the service, the JSON envelope carries the left-enabled signal and the reason,
       and the walked tree is still returned in `results`
-- [ ] live_149_successful_restore_reports_clean: a normal `--native` run that restores the
+- [x] live_149_successful_restore_reports_clean: a normal `--native` run that restores the
       service reports no left-enabled signal, and the service is observably disabled afterwards
-- [ ] live_149_service_already_on_is_not_touched: when the service was already enabled before
+- [x] live_149_service_already_on_is_not_touched: when the service was already enabled before
       the command, ff-rdp neither disables it nor claims to have left it enabled
-- [ ] unit_149_restore_outcome_maps_to_meta: each `RestoreOutcome` variant maps to the intended
+- [x] unit_149_restore_outcome_maps_to_meta: each `RestoreOutcome` variant maps to the intended
       envelope shape, including the not-needed case
+
+## Implementation findings (iter-149, corrections to the plan above)
+
+Per the "do not trust the root cause" rule below, two things stated or implied above turned out
+wrong on verification. Both were caught by writing the live tests against real Firefox, not by
+reasoning about the code.
+
+1. **`a11y` has no daemon-routed path to test.** `run()` in `crates/ff-rdp-cli/src/commands/a11y.rs`
+   calls `connect_direct(cli)` unconditionally — the same one-shot-direct family as `screenshot`,
+   `cookies`, `storage`, `sources`, `computed`. There is no "default daemon path" for this command
+   to additionally exercise; every live test here already takes the only connection path `a11y`
+   has. `live_149_a11y_restore_honesty.rs`'s module doc records this so nobody re-litigates it.
+2. **A failed restore does not leave the service enabled "for the remaining life of the process"**
+   (the wording used above, and in the original code comment this iteration replaced). Verified
+   live: Firefox tears the platform accessibility service back down once the RDP connection that
+   enabled it disconnects, independent of whether the explicit `disable()` call succeeded. Because
+   `a11y --native` makes one short-lived direct connection per invocation, a failed restore's
+   window is really just "until this command's process exits" (milliseconds), not an indefinite
+   browser-wide slowdown — unless a caller reuses the connection (e.g. an embedding), in which case
+   it genuinely does persist. `live_149_service_already_on_is_not_touched` had to open a *second*,
+   independently-held connection (`hold_service_enabled`) to construct a genuine "already enabled"
+   precondition, because leaving one CLI invocation's own connection "enabled" does not survive
+   into the next invocation. Production wording (error message, `--help`, doc comments) was
+   corrected to match; `kb/rdp/actors/accessibility.md` Gotchas updated. The `meta.service_left_enabled`
+   /`meta.service_restore_error` fields are still worth reporting — the failure is real and the
+   window, however short, is real — just not the hazard originally hypothesized.
+
+Actor-boundary fault injection (used for `live_149_restore_failure_reported_in_meta` and
+`live_149_service_already_on_is_not_touched`, per the Notes below): `run_native_opt_in` reads
+`FF_RDP_A11Y_FORCE_RESTORE_FAILURE=1` and, only when set, targets the *restore* call at a
+deliberately-invalid actor ID instead of the real `parentAccessibilityActor`. `enable_service` is
+untouched by the flag, so the service really is enabled; the restore call still goes out over the
+wire and Firefox genuinely answers with a `noSuchActor`-style error — a real protocol failure, not
+a mocked one. Not documented in `--help`; test-only.
 
 ## Notes
 
