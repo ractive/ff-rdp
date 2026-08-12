@@ -95,10 +95,18 @@ fn live_daemon_stop_after_launch_frees_port() {
         return;
     };
     let port = ff.port();
-    // Forget `ff` so Drop doesn't kill Firefox before `daemon stop` does.
-    // We'll verify the port is free ourselves.
-    let _keep = std::mem::ManuallyDrop::new(ff);
-
+    // iter-151 Theme B: `ff` used to be suppressed via `ManuallyDrop` here so
+    // `daemon stop` alone was responsible for killing Firefox — but every
+    // assertion between this point and the final `wait_port_free` check ran
+    // with NO guard at all, so a failure anywhere in that window (a
+    // non-zero `daemon stop`, a slow port release under CPU contention, ...)
+    // panicked with Firefox still alive and nothing left to reap it. This is
+    // the exact "no RAII guard across an assertion" shape iter-146 fixed in
+    // `live_96_profile_cleanup.rs`'s `launch_headless` — see that file's doc
+    // comment. `ff` now stays a normal binding: `daemon stop`'s own cleanup
+    // (still asserted below) is the belt, and this guard's `Drop` — firing
+    // at the end of this function, a harmless no-op once Firefox is already
+    // dead — is the suspenders.
     assert!(
         std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok(),
         "live_daemon_stop_after_launch_frees_port: port {port} must be open before stop"
@@ -154,10 +162,14 @@ fn live_launch_replace_handles_prior_instance() {
     };
     let port = ff.port();
     let prior_pid = ff.pid();
-    // Suppress Drop so `launch --replace` is the one that kills the prior
-    // instance — the test then asserts the new PID differs from `prior_pid`.
-    let _keep = std::mem::ManuallyDrop::new(ff);
-
+    // iter-151 Theme B: `ff` used to be suppressed via `ManuallyDrop` here,
+    // relying entirely on `launch --replace` to kill the prior instance —
+    // see the matching fix (and full rationale) a few lines up in
+    // `live_daemon_stop_after_launch_frees_port`. `ff` now stays a normal
+    // binding: `launch --replace` is still the one expected to do the
+    // killing (asserted below via `new_pid != prior_pid`), and this guard's
+    // `Drop` at function end is the safety net if any assertion in between
+    // panics first.
     let out = Command::new(ff_rdp_bin())
         .args([
             "launch",

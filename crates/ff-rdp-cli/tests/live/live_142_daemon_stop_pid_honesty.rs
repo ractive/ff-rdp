@@ -64,10 +64,15 @@ fn live_142_daemon_stop_no_false_error() {
     };
     let port_a = ff_a.port();
     let pid_a = ff_a.pid();
-    // Transfer ownership to ManuallyDrop so Drop doesn't kill instance A
-    // before `daemon stop` does — the test asserts the stop path reaps it.
-    let _keep_a = std::mem::ManuallyDrop::new(ff_a);
-
+    // iter-151 Theme B: `ff_a` used to be suppressed via `ManuallyDrop` here
+    // so `daemon stop` alone was responsible for killing instance A — but
+    // three assertions (stop succeeded, reported the right pid, freed the
+    // port) run before that's confirmed, and a failure in any of them
+    // leaked Firefox with nothing left to reap it. Same fix and rationale as
+    // `live_90_daemon_lifecycle.rs`'s `live_daemon_stop_after_launch_frees_port`
+    // — `ff_a` now stays a normal binding: `daemon stop`'s own cleanup
+    // (still asserted below) is the belt, this guard's `Drop` at function
+    // end is the suspenders.
     let Some(ff_b) = LiveFirefox::headless_on_random_port() else {
         eprintln!(
             "live_142_daemon_stop_no_false_error: second Firefox not available — skipping \

@@ -59,10 +59,15 @@ fn live_daemon_stop_on_mdn_headless() {
         return;
     };
     let port = ff.port();
-    // Transfer ownership to ManuallyDrop so Drop doesn't kill Firefox before
-    // `daemon stop` does — the test asserts the stop path reaps the process.
-    let _keep = std::mem::ManuallyDrop::new(ff);
-
+    // iter-151 Theme B: `ff` used to be suppressed via `ManuallyDrop` here so
+    // `daemon stop` alone was responsible for killing Firefox — but the
+    // network navigate + multiple assertions between here and the final
+    // `wait_port_free` ran with no guard, so any failure in that window
+    // leaked Firefox with nothing left to reap it. Same fix and rationale as
+    // `live_90_daemon_lifecycle.rs`'s `live_daemon_stop_after_launch_frees_port`
+    // — `ff` now stays a normal binding: `daemon stop`'s own cleanup (still
+    // asserted below) is the belt, this guard's `Drop` at function end is
+    // the suspenders.
     eprintln!("live_daemon_stop_on_mdn_headless: Firefox up on port {port}");
 
     // Navigate to MDN — this causes Firefox to spin up content/GPU/RDD child

@@ -102,6 +102,32 @@ const MANAGED_PROFILE_PREFIX: &str = "ff-rdp-profile-";
 /// no marker (pre-97 dirs, or an owner whose PID has since been reused).
 pub(crate) const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
 
+/// Sibling marker recording *who* asked for the profile (iter-151 Theme A).
+///
+/// Only ever written when [`SPAWNING_TEST_ENV`] is set in `launch`'s own
+/// environment — i.e. only when the live-test harness's `LiveFirefox` spawned
+/// this `launch` (see `tests/common/mod.rs`). A normal interactive `ff-rdp
+/// launch` never sets that env var, so this marker is simply absent for every
+/// real user profile.
+///
+/// Before this, a leaked profile carried only [`OWNER_PID_MARKER`] — a bare
+/// PID with no way to tell which of ~200 live tests spawned it, turning every
+/// occurrence into a bisection hunt (see the iter-146 postmortem this
+/// iteration follows up on). This marker converts that hunt into a lookup:
+/// `cat <profile>/.ff-rdp-owner-test` names the exact test function.
+pub(crate) const OWNER_TEST_MARKER: &str = ".ff-rdp-owner-test";
+
+/// Env var the live-test harness sets on every `ff-rdp launch` spawned via
+/// `LiveFirefox` (see `tests/common/mod.rs`'s identically-named constant —
+/// duplicated rather than imported because this crate ships no `[lib]`
+/// target for an integration-test binary to pull the constant from, the same
+/// reason that file already duplicates [`OWNER_PID_MARKER`] locally).
+///
+/// `launch` reads this (see `commands::launch::run`) and, when present and
+/// non-empty, writes it into [`OWNER_TEST_MARKER`] alongside the owner-PID
+/// marker.
+pub(crate) const SPAWNING_TEST_ENV: &str = "FF_RDP_LIVE_TEST_NAME";
+
 /// Number of random alphanumeric characters `tempfile::Builder::rand_bytes`
 /// appends after [`MANAGED_PROFILE_PREFIX`].
 const MANAGED_PROFILE_SUFFIX_LEN: usize = 16;
@@ -187,6 +213,33 @@ pub(crate) fn write_owner_pid_marker(dir: &Path, pid: u32) {
             marker.display()
         );
     }
+}
+
+/// Write the owner-test marker ([`OWNER_TEST_MARKER`]) holding `test_name`
+/// into the managed profile directory `dir` (iter-151 Theme A).
+///
+/// Warn-not-fail, same rationale as [`write_owner_pid_marker`]: this is a
+/// diagnostic aid layered on top of the owner-PID marker, never load-bearing
+/// for correctness, so a write failure must never fail a launch.
+pub(crate) fn write_owner_test_marker(dir: &Path, test_name: &str) {
+    let marker = dir.join(OWNER_TEST_MARKER);
+    if let Err(e) = std::fs::write(&marker, test_name) {
+        tracing::warn!(
+            "write_owner_test_marker: could not write {}: {e}",
+            marker.display()
+        );
+    }
+}
+
+/// Read back the test name recorded in `dir`'s [`OWNER_TEST_MARKER`], if any.
+///
+/// Returns `None` when the marker is absent (every real user profile, and
+/// any pre-iter-151 profile) — callers must treat that as "unknown spawner",
+/// not as evidence the profile is unmanaged.
+pub(crate) fn read_owner_test_marker(dir: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(dir.join(OWNER_TEST_MARKER)).ok()?;
+    let trimmed = contents.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 /// Returns `true` iff `dir` carries an [`OWNER_PID_MARKER`] whose PID parses
@@ -761,6 +814,26 @@ mod tests {
         // Garbage marker → not owned by a live process.
         std::fs::write(dir.path().join(OWNER_PID_MARKER), b"not-a-pid\n").expect("overwrite");
         assert!(!profile_is_owned_by_live_process(dir.path()));
+    }
+
+    /// AC: `live_151_leaked_profile_names_its_test` (unit half) —
+    /// `write_owner_test_marker` + `read_owner_test_marker` round trip, an
+    /// absent marker reads back `None`, and an all-whitespace marker (a
+    /// degenerate but technically-written env var) also reads back `None`
+    /// rather than an empty-but-`Some` string.
+    #[test]
+    fn unit_owner_test_marker_roundtrip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(read_owner_test_marker(dir.path()), None);
+
+        write_owner_test_marker(dir.path(), "live_151_leaked_profile_names_its_test");
+        assert_eq!(
+            read_owner_test_marker(dir.path()),
+            Some("live_151_leaked_profile_names_its_test".to_owned())
+        );
+
+        std::fs::write(dir.path().join(OWNER_TEST_MARKER), b"   \n").expect("overwrite blank");
+        assert_eq!(read_owner_test_marker(dir.path()), None);
     }
 
     // -----------------------------------------------------------------

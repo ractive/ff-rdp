@@ -27,12 +27,49 @@ fn free_port() -> Option<u16> {
     Some(l.local_addr().ok()?.port())
 }
 
+/// RAII guard that SIGKILLs a Firefox PID on drop — a belt-and-suspenders
+/// safety net for this file's launches (iter-151 Theme B).
+///
+/// This file cannot reuse `common::LiveFirefox` outright:
+/// `live_142_throttle_json_gc` needs a custom `FF_RDP_HOME` env var on its
+/// `launch` invocation, which `LiveFirefox::try_launch` doesn't expose. Both
+/// tests below used to launch via a bare `Command` with no guard at all and
+/// rely entirely on a *manual*, later `kill_pid` call for cleanup — the
+/// exact "no RAII guard across an assertion" shape iter-146 fixed in
+/// `live_96_profile_cleanup.rs`'s `launch_headless` (see that file's doc
+/// comment) but left unfixed here: any assertion between spawn and the
+/// manual `kill_pid` panicking left Firefox alive with nothing left to reap
+/// it — a real, still-open instance of the exact bug class iter-146 was
+/// meant to close suite-wide.
+struct FirefoxGuard(u32);
+
+impl FirefoxGuard {
+    fn pid(&self) -> u32 {
+        self.0
+    }
+}
+
+impl Drop for FirefoxGuard {
+    fn drop(&mut self) {
+        kill_pid(self.0);
+    }
+}
+
 /// Launch Firefox headless via the CLI on a freshly discovered port and
-/// return `(port, results)` — the `results` object of the launch envelope.
-fn launch_headless() -> Option<(u16, serde_json::Value)> {
+/// return `(guard, port, results)` — `results` is the `results` object of
+/// the launch envelope. The guard is constructed immediately once a PID is
+/// confirmed, so every assertion downstream is guard-protected — see
+/// [`FirefoxGuard`]'s doc comment.
+fn launch_headless() -> Option<(FirefoxGuard, u16, serde_json::Value)> {
     let port = free_port()?;
     let out = Command::new(ff_rdp_bin())
         .args(["launch", "--headless", "--debug-port", &port.to_string()])
+        // iter-151 Theme A: identify the spawning test on the owner-test
+        // marker — see `common::SPAWNING_TEST_ENV`'s doc comment.
+        .env(
+            crate::common::SPAWNING_TEST_ENV,
+            std::thread::current().name().unwrap_or("unknown"),
+        )
         .output()
         .ok()?;
     if !out.status.success() {
@@ -44,7 +81,8 @@ fn launch_headless() -> Option<(u16, serde_json::Value)> {
     }
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
     let results = json.get("results")?.clone();
-    Some((port, results))
+    let pid = u32::try_from(results["pid"].as_u64()?).ok()?;
+    Some((FirefoxGuard(pid), port, results))
 }
 
 /// Spawn+reap a trivial child process, returning its now-dead PID.
@@ -84,12 +122,11 @@ fn live_142_profile_growth_bounded() {
         return;
     }
 
-    let Some((_port_a, results_a)) = launch_headless() else {
+    let Some((guard_a, _port_a, results_a)) = launch_headless() else {
         eprintln!("live_142_profile_growth_bounded: Firefox not available — skipping");
         return;
     };
-    let pid_a =
-        u32::try_from(results_a["pid"].as_u64().expect("results.pid")).expect("pid fits u32");
+    let pid_a = guard_a.pid();
     let profile_a = results_a["profile_path"]
         .as_str()
         .expect("results.profile_path")
@@ -114,12 +151,11 @@ fn live_142_profile_growth_bounded() {
     // Immediately launch a second instance — no artificial delay. If growth
     // were still bounded only by the old 7-day age gate, instance A's
     // fresh (seconds-old) profile would still be sitting there.
-    let Some((port_b, results_b)) = launch_headless() else {
+    let Some((guard_b, port_b, _results_b)) = launch_headless() else {
         eprintln!("live_142_profile_growth_bounded: second launch failed — skipping");
         return;
     };
-    let pid_b =
-        u32::try_from(results_b["pid"].as_u64().expect("results.pid")).expect("pid fits u32");
+    let pid_b = guard_b.pid();
 
     assert!(
         !std::path::Path::new(&profile_a).exists(),
@@ -202,6 +238,12 @@ fn live_142_throttle_json_gc() {
     let out = Command::new(ff_rdp_bin())
         .env("FF_RDP_HOME", home.path())
         .args(["launch", "--headless", "--debug-port", &port.to_string()])
+        // iter-151 Theme A: identify the spawning test — see
+        // `common::SPAWNING_TEST_ENV`'s doc comment.
+        .env(
+            crate::common::SPAWNING_TEST_ENV,
+            std::thread::current().name().unwrap_or("unknown"),
+        )
         .output()
         .expect("launch spawn failed");
     if !out.status.success() {
@@ -214,6 +256,11 @@ fn live_142_throttle_json_gc() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("launch JSON parse");
     let pid =
         u32::try_from(json["results"]["pid"].as_u64().expect("results.pid")).expect("pid fits u32");
+    // iter-151 Theme B: construct the guard immediately after the PID is
+    // known, before either assertion below — see `FirefoxGuard`'s doc
+    // comment for why this file can't just use `common::LiveFirefox` here
+    // (the custom `FF_RDP_HOME` env var above).
+    let _guard = FirefoxGuard(pid);
 
     assert!(
         !dead_path.exists(),
