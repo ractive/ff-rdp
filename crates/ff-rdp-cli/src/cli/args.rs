@@ -432,6 +432,11 @@ pub enum Command {
     /// List open browser tabs
     #[command(long_about = "List open browser tabs.
 
+The Consent-O-Matic options tab `launch --auto-consent` leaves open
+(`moz-extension://.../options.html`, title \"Consent-O-Matic Options\" or a
+known localized equivalent) is filtered out of the listing (iter-144) — it
+is never counted in `total` or in `--tab N` indices.
+
 Output: {\"results\": [{\"url\": \"...\", \"title\": \"...\", \"actor\": \"...\", \"selected\": true}], \"total\": N, \"meta\": {...}}")]
     Tabs,
     /// Navigate to a URL
@@ -466,7 +471,7 @@ Examples:
 
 --auto-consent (iter-129): after the document commits, run the same
 CMP-detection-and-accept flow as `ff-rdp consent accept` and add
-`results.consent = {\"cmp\": \"sourcepoint\"|null, \"action\": \"accepted\"|null}`
+`results.consent = {\"cmp\": \"sourcepoint\"|\"bbc\"|null, \"action\": \"accepted\"|null}`
 (both keys always present, never omitted). Best-effort — a detection failure
 prints a warning but does not fail the navigate. Not combinable with
 --with-network. This is the CLI-native complement to `launch --auto-consent`
@@ -1143,12 +1148,24 @@ Examples:
   ff-rdp launch                          # launch with temp profile on port 6000
   ff-rdp launch --headless               # headless mode (no visible window)
   ff-rdp launch --port 9222              # use a different debug port
-  ff-rdp launch --auto-consent           # auto-dismiss cookie banners
+  ff-rdp launch --auto-consent           # install the Consent-O-Matic extension
   ff-rdp launch --profile ~/my-prof      # reuse an existing profile
   ff-rdp launch --headless --window-size 600x800   # true viewport, >= floor
   ff-rdp launch --headless --window-size 390x844   # below floor — clamps to ~500, warns
 
-Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"profile_path\": \"...\", \"temp_profile\": bool, \"auto_consent\": bool, \"window_size\": {\"requested\": {\"width\": N, \"height\": N}, \"below_floor\": bool}|null, \"warnings\"?: [...]}, \"total\": 1, \"meta\": {...}}"
+--auto-consent installs the Consent-O-Matic extension into the profile so it
+CAN dismiss cookie banners it recognizes once a page loads — but `launch`
+returns before any page loads, so its
+`results.auto_consent_extension_installed` field (iter-144) only reports
+that the extension was installed, never that anything was actually
+dismissed (a prior `auto_consent: true` field made that false claim — see
+kb/iterations/iteration-142-session-hygiene.md). For a real dismiss
+attestation after navigating, use `ff-rdp navigate --auto-consent` or
+`ff-rdp consent accept`, both of which report `results.consent = {\"cmp\":
+..., \"action\": ...}` (`action` is `\"accepted\"` only when a control was
+actually clicked).
+
+Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"profile_path\": \"...\", \"temp_profile\": bool, \"auto_consent_extension_installed\": bool, \"window_size\": {\"requested\": {\"width\": N, \"height\": N}, \"below_floor\": bool}|null, \"warnings\"?: [...]}, \"total\": 1, \"meta\": {...}}"
     )]
     Launch(LaunchArgs),
     /// Install Claude Code skill files to the user or project filesystem
@@ -1291,14 +1308,16 @@ Output: writes page-map JSON/YAML to --out (default: .ffrdp/page-map.json)
 Complements `ff-rdp launch --auto-consent` (which installs the Consent-O-Matic
 extension): Consent-O-Matic does not reliably record consent for the
 Sourcepoint CMP in headless mode (dogfooding-session-62 finding 1). This
-command is the CLI-native fallback — it enumerates the tab's frame targets
-(including cross-origin iframes), recognises a known CMP by matching a
-frame's URL, and clicks that frame's \"accept all\" control directly.
+command is the CLI-native fallback — it first tries a table of known
+same-origin (non-iframe) CMPs (e.g. BBC's own `#bbccookies-continue-button`,
+iter-144), then enumerates the tab's frame targets (including cross-origin
+iframes) and recognises a known iframe-hosted CMP by matching a frame's URL,
+clicking that frame's \"accept all\" control directly.
 
 Subcommands:
   consent accept   Detect a known CMP on the current tab and accept it
 
-Output: {\"results\": {\"cmp\": \"sourcepoint\"|null, \"action\": \"accepted\"|null}, \"total\": 1, \"meta\": {...}}
+Output: {\"results\": {\"cmp\": \"sourcepoint\"|\"bbc\"|null, \"action\": \"accepted\"|null}, \"total\": 1, \"meta\": {...}}
 Both keys are always present — null/null when no known CMP was found on the page.
 
 See also: `ff-rdp navigate --auto-consent` to run this automatically after navigating."
@@ -2106,7 +2125,12 @@ pub struct LaunchArgs {
     /// Override the debug server port (defaults to --port value)
     #[arg(long)]
     pub debug_port: Option<u16>,
-    /// Install Consent-O-Matic extension to auto-dismiss cookie consent banners
+    /// Install the Consent-O-Matic extension so it can auto-dismiss cookie
+    /// consent banners once a page loads. Reported back as
+    /// `results.auto_consent_extension_installed` — `launch` returns
+    /// before any page loads, so it cannot itself attest that a banner was
+    /// dismissed; use `navigate --auto-consent` or `consent accept` for
+    /// that (see their `results.consent` field).
     #[arg(long)]
     pub auto_consent: bool,
     /// Set the initial window size as `WxH` pixels (forwarded to Firefox as

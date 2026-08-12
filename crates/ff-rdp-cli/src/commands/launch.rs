@@ -600,7 +600,18 @@ pub fn run(
                 // field name (see live_daemon_stop_profile_path_matches_launch_json).
                 "profile_path": profile_path_str,
                 "temp_profile": effective_temp_profile,
-                "auto_consent": auto_consent,
+                // iter-144 Theme C: renamed from "auto_consent" — `launch`
+                // returns before any page loads, so this field can only
+                // ever attest that the Consent-O-Matic extension was
+                // *installed* into the profile, never that a consent
+                // banner was actually dismissed (kb/iterations/
+                // iteration-142-session-hygiene.md found `auto_consent:
+                // true` reported while a banner still covered the page).
+                // A real dismiss attestation lives in `results.consent`
+                // from `navigate --auto-consent` / `consent accept`
+                // (`{"cmp": ..., "action": ...}`, iter-129) — those run
+                // after a page has loaded and can check the DOM.
+                "auto_consent_extension_installed": auto_consent,
                 "window_size": window_size_json,
             });
             if below_floor && let (Some((w, h)), Some(obj)) = (window_size, result.as_object_mut())

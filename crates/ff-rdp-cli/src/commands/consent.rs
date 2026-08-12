@@ -69,6 +69,41 @@ const CMP_TABLE: &[CmpEntry] = &[CmpEntry {
     frame_url_substrings: &["sourcepoint", "sp-prod.net", "privacy-mgmt.com"],
 }];
 
+/// One entry in the *native* (same-origin, non-iframe) CMP recognition
+/// table — for sites whose consent control lives directly in the top
+/// document rather than behind a recognisable cross-origin iframe (iter-144
+/// Theme C). Matched against the top-level target's own URL, then clicked
+/// via a fixed CSS selector rather than label matching, since a site-owned
+/// control's id/class is more stable across locales than its visible text
+/// (see `accept_all_js`'s label-based table for the iframe-hosted case).
+struct NativeCmpEntry {
+    /// Machine-readable CMP name, reported verbatim as `results.cmp`.
+    name: &'static str,
+    /// Case-insensitive substrings checked against the top-level target's
+    /// URL. Any match makes this entry's `selector` the one tried.
+    host_url_substrings: &'static [&'static str],
+    /// CSS selector for the accept control, evaluated against the top
+    /// document.
+    selector: &'static str,
+}
+
+/// Native CMP table. BBC's own cookie banner (`kb/iterations/
+/// iteration-144-session-hygiene-followup.md` Theme C) sits in the top
+/// document at `#bbccookies-continue-button` rather than in an iframe.
+/// Verified live (2026-08-12) at www.bbc.com/news: BBC also runs a
+/// Sourcepoint iframe CMP (`CMP_TABLE` above) that renders *in front of*
+/// this control on first paint — the element exists but has a zero-size
+/// bounding rect until the Sourcepoint overlay is dismissed, which is why
+/// [`native_accept_js`] requires a non-zero rect rather than just DOM
+/// presence. `detect_and_accept` tries this table before `CMP_TABLE`, so a
+/// second `consent accept` call (after the first dismissed Sourcepoint)
+/// reaches it.
+const NATIVE_CMP_TABLE: &[NativeCmpEntry] = &[NativeCmpEntry {
+    name: "bbc",
+    host_url_substrings: &["bbc.com", "bbc.co.uk"],
+    selector: "#bbccookies-continue-button",
+}];
+
 /// Result of a consent-detection pass. Both fields are always present in the
 /// JSON form (`to_json`) — `null`/`null` when no known CMP was found, never
 /// omitted, so `--jq '.results.action'` never throws regardless of whether a
@@ -99,7 +134,7 @@ impl ConsentResult {
 fn accept_all_js() -> String {
     format!(
         r#"(function() {{
-  var re = /^(accept all|accept all cookies|accept all and continue|accept all and close|accept all and subscribe|i accept|allow all)$/i;
+  var re = /^(accept all|accept all cookies|accept all and continue|accept all and close|accept all and subscribe|i accept|i agree|allow all)$/i;
   var candidates = Array.prototype.slice.call(document.querySelectorAll('button, [role="button"], a'));
   var target = null;
   for (var i = 0; i < candidates.length; i++) {{
@@ -115,11 +150,66 @@ fn accept_all_js() -> String {
     )
 }
 
+/// JS that clicks a fixed CSS selector directly in the top document,
+/// requiring a non-zero bounding rect first — a same-origin control can be
+/// present in the DOM while genuinely inert (e.g. covered/collapsed behind
+/// another overlay, see [`NATIVE_CMP_TABLE`]'s BBC doc comment), and
+/// clicking it in that state would falsely report `action: "accepted"`
+/// without dismissing anything a user would perceive.
+fn native_accept_js(selector: &str) -> String {
+    let escaped = selector.replace('\\', "\\\\").replace('\'', "\\'");
+    format!(
+        r"(function() {{
+  var target = document.querySelector('{escaped}');
+  if (!target) throw new Error('Element not found: no native consent control at the known selector');
+  var r = target.getBoundingClientRect();
+  if (r.width === 0 || r.height === 0) throw new Error('Element not found: native consent control present but not visible (covered or collapsed)');
+  var label = (target.getAttribute('aria-label') || target.textContent || '').trim();
+  target.click();
+  return '{JSON_SENTINEL}' + JSON.stringify({{accepted: true, label: label}});
+}})()"
+    )
+}
+
+/// Try every [`NATIVE_CMP_TABLE`] entry whose host substring matches the
+/// tab's current top-level URL, clicking the first one found visible.
+///
+/// Returns `Ok(None)` when no entry's host matches, or the matching entry's
+/// selector wasn't found/visible — the caller falls through to the
+/// iframe-based [`CMP_TABLE`] path in either case, so a same-origin miss
+/// never masks a real cross-origin CMP.
+fn try_native_cmp(
+    ctx: &mut ConnectedTab,
+    console_actor: &ff_rdp_core::ActorId,
+    top_level_url: &str,
+) -> Result<Option<ConsentResult>, AppError> {
+    let Some(entry) = match_native_cmp(top_level_url) else {
+        return Ok(None);
+    };
+
+    let js = native_accept_js(entry.selector);
+    let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js)
+        .map_err(AppError::from)?;
+
+    if eval_result.exception.is_none() {
+        Ok(Some(ConsentResult {
+            cmp: Some(entry.name),
+            action: Some("accepted"),
+        }))
+    } else {
+        // Present-but-invisible or genuinely absent — either way, not this
+        // call's job to report; let the iframe table take a turn.
+        Ok(None)
+    }
+}
+
 /// Detect a known CMP on the current tab and click its "accept all" control.
 ///
-/// Enumerates frame targets (via the iter-129 Theme A opt-in path), matches
-/// each non-top frame's URL against [`CMP_TABLE`], and evaluates the
-/// accept-click JS on the first match's own console actor.
+/// Enumerates frame targets (via the iter-129 Theme A opt-in path). First
+/// tries [`NATIVE_CMP_TABLE`] (same-origin, top-document controls) via
+/// [`try_native_cmp`]; if that finds nothing actionable, matches each
+/// non-top frame's URL against [`CMP_TABLE`] and evaluates the accept-click
+/// JS on the first match's own console actor.
 ///
 /// Returns `{"cmp": null, "action": null}` when no known CMP frame is found.
 /// Returns `{"cmp": "<name>", "action": null}` when a CMP frame is found but
@@ -134,6 +224,15 @@ pub(crate) fn detect_and_accept(ctx: &mut ConnectedTab) -> Result<Value, AppErro
     // reported `{"cmp":null,"action":null}` on a Sourcepoint site unless the
     // caller passed `--no-daemon`.
     let targets = crate::commands::frame_targets::fetch_frame_targets(ctx)?;
+
+    // iter-144 Theme C: try the same-origin table before the iframe table —
+    // see NATIVE_CMP_TABLE's doc comment for why order matters on BBC.
+    if let Some(top) = targets.iter().find(|t| t.is_top_level)
+        && let (Some(console_actor), Some(url)) = (&top.console_actor, &top.url)
+        && let Some(result) = try_native_cmp(ctx, console_actor, url)?
+    {
+        return Ok(result.to_json());
+    }
 
     let Some((cmp_name, target)) = targets.iter().find_map(|t| {
         if t.is_top_level {
@@ -183,6 +282,17 @@ fn match_cmp(url: &str) -> Option<&'static str> {
         .iter()
         .find(|cmp| cmp.frame_url_substrings.iter().any(|s| lower.contains(s)))
         .map(|cmp| cmp.name)
+}
+
+/// Returns the first [`NativeCmpEntry`] whose `host_url_substrings` matches
+/// `url` (case-insensitive). Pure and side-effect-free, mirroring
+/// [`match_cmp`] — factored out of [`try_native_cmp`] so the host-matching
+/// rule is unit-testable without a live connection.
+fn match_native_cmp(url: &str) -> Option<&'static NativeCmpEntry> {
+    let lower = url.to_ascii_lowercase();
+    NATIVE_CMP_TABLE
+        .iter()
+        .find(|e| e.host_url_substrings.iter().any(|s| lower.contains(s)))
 }
 
 #[cfg(test)]
@@ -271,5 +381,75 @@ mod tests {
         assert!(js.contains("Element not found:"));
         assert!(js.contains(JSON_SENTINEL));
         assert!(js.contains("accept all"));
+    }
+
+    /// iter-144 Theme C: BBC's live Sourcepoint iframe shows an "I agree"
+    /// button, not any of the previous exact-phrase matches — this is the
+    /// regex fix, unit-testable via the label-matching regex embedded in
+    /// the generated JS string (a full DOM match needs a live browser, see
+    /// `live_144_bbc_cmp_dismissed`).
+    #[test]
+    fn accept_all_js_regex_matches_i_agree() {
+        let js = accept_all_js();
+        let re_line = js
+            .lines()
+            .find(|l| l.contains("var re ="))
+            .expect("accept_all_js must declare `var re`");
+        assert!(
+            re_line.to_ascii_lowercase().contains("i agree"),
+            "accept_all_js regex must match the bare \"I agree\" label observed live on BBC: {re_line}"
+        );
+    }
+
+    // ── native CMP matching (iter-144 Theme C) ──────────────────────────
+
+    /// AC: `live_144_bbc_cmp_dismissed` (matching-rule half) — bbc.com and
+    /// bbc.co.uk both resolve to the same native entry.
+    #[test]
+    fn match_native_cmp_matches_bbc_hosts() {
+        assert_eq!(
+            match_native_cmp("https://www.bbc.com/news").map(|e| e.name),
+            Some("bbc")
+        );
+        assert_eq!(
+            match_native_cmp("https://www.bbc.co.uk/news").map(|e| e.name),
+            Some("bbc")
+        );
+    }
+
+    #[test]
+    fn match_native_cmp_is_case_insensitive() {
+        assert_eq!(
+            match_native_cmp("HTTPS://WWW.BBC.COM/NEWS").map(|e| e.name),
+            Some("bbc")
+        );
+    }
+
+    /// AC: `live_144_bbc_cmp_dismissed` (no-match half) — a non-BBC host
+    /// must not match, so the native table can't false-positive on
+    /// unrelated sites and mask a real iframe-based CMP.
+    #[test]
+    fn match_native_cmp_no_match_for_unrelated_url() {
+        assert_eq!(
+            match_native_cmp("https://example.com/").map(|e| e.name),
+            None
+        );
+    }
+
+    #[test]
+    fn native_accept_js_requires_visible_rect_and_carries_selector() {
+        let js = native_accept_js("#bbccookies-continue-button");
+        assert!(js.contains("#bbccookies-continue-button"));
+        assert!(js.contains("Element not found:"));
+        assert!(js.contains("getBoundingClientRect"));
+        assert!(js.contains(JSON_SENTINEL));
+    }
+
+    /// A selector containing a single quote must not break out of the JS
+    /// string literal it's interpolated into.
+    #[test]
+    fn native_accept_js_escapes_single_quotes_in_selector() {
+        let js = native_accept_js("a[data-x='y']");
+        assert!(js.contains(r"a[data-x=\'y\']"));
     }
 }
