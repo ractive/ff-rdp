@@ -1,5 +1,8 @@
+use std::time::Duration;
+
 use ff_rdp_core::{
-    AccessibilityActor, AccessibleNode, ActorId, WebConsoleActor, filter_interactive,
+    AccessibilityActor, AccessibleNode, ActorId, ProtocolError, RootActor, WebConsoleActor,
+    filter_interactive,
 };
 use serde_json::{Value, json};
 
@@ -13,12 +16,69 @@ use crate::output_pipeline::OutputPipeline;
 use super::connect_tab::{ConnectedTab, connect_direct};
 use super::js_helpers::{escape_selector, eval_or_bail, resolve_result};
 
+/// Which tree an `a11y` response came from (iter-143 Theme A).
+///
+/// Reported unconditionally in `meta.source` via
+/// [`crate::connection_meta::merge_source`] — see [DEC-027] and
+/// `kb/iterations/iteration-143-native-a11y-tree.md`.
+///
+/// [DEC-027]: ../../../../kb/decision-log.md
+enum A11ySource {
+    /// The real Firefox platform accessibility tree (roles like `document`,
+    /// `paragraph`, `link`).
+    Native,
+    /// A DOM-derived approximation (roles like `generic`) built by evaluating
+    /// JS in the page — cannot see anything the platform computes but the DOM
+    /// does not expose. `reason` names why this path ran instead of native.
+    JsFallback(&'static str),
+}
+
+impl A11ySource {
+    fn merge_into(&self, meta: &mut Value) {
+        match self {
+            Self::Native => crate::connection_meta::merge_source(meta, "native", None),
+            Self::JsFallback(reason) => {
+                crate::connection_meta::merge_source(meta, "js-fallback", Some(reason));
+            }
+        }
+    }
+}
+
+/// Purpose-specific ceiling for accessibility walker requests (iter-143 Theme
+/// C). The walker's root accessor stalls — it does not error — while the
+/// platform accessibility service is off (iter-136): Firefox's
+/// `document-ready` promise never settles. `run_native_or_js_fallback`
+/// already checks `bootstrap().state.enabled` first, but a race (the service
+/// getting disabled between that check and the walk) or a future call site
+/// that skips the check would otherwise stall for the full `--timeout`
+/// (default 10s, but user-configurable much higher). Bounding walker requests
+/// to this instead means a mistake costs a few seconds, not the caller's
+/// whole configured timeout.
+const A11Y_WALKER_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Run `f` with the transport's read timeout temporarily narrowed to
+/// [`A11Y_WALKER_TIMEOUT`], restoring the previous value afterwards
+/// regardless of whether `f` succeeded.
+fn with_walker_timeout<T>(
+    ctx: &mut ConnectedTab,
+    f: impl FnOnce(&mut ff_rdp_core::RdpTransport) -> Result<T, ProtocolError>,
+) -> Result<T, ProtocolError> {
+    let previous = ctx.transport_mut().read_timeout().unwrap_or(None);
+    let _ = ctx
+        .transport_mut()
+        .set_read_timeout(Some(A11Y_WALKER_TIMEOUT));
+    let result = f(ctx.transport_mut());
+    let _ = ctx.transport_mut().set_read_timeout(previous);
+    result
+}
+
 pub fn run(
     cli: &Cli,
     depth: u32,
     max_chars: u32,
     selector: Option<&str>,
     interactive: bool,
+    native: bool,
 ) -> Result<(), AppError> {
     let mut ctx = connect_direct(cli)?;
 
@@ -30,8 +90,22 @@ pub fn run(
     })?;
 
     // If selector is provided, use JS eval approach (similar to snapshot).
-    let (tree, used_js_fallback) = if let Some(sel) = selector {
-        (run_selector_mode(&mut ctx, sel, depth, max_chars)?, false)
+    // `--native` conflicts with `--selector`/`--ref` at the clap level (both
+    // are inherently JS-derived paths — there is no native "root at
+    // selector" primitive), so at most one of these two branches applies.
+    let (tree, source) = if let Some(sel) = selector {
+        (
+            run_selector_mode(&mut ctx, sel, depth, max_chars)?,
+            A11ySource::JsFallback("selector-mode"),
+        )
+    } else if native {
+        // Theme B: explicit opt-in to the platform tree. Never silently
+        // falls back — any failure (enable failing, bootstrap still
+        // reporting disabled, a stalled/erroring walker request) surfaces as
+        // an explicit error.
+        let (tree, _we_enabled) =
+            run_native_opt_in(&mut ctx, &accessibility_actor, depth, max_chars, cli)?;
+        (tree, A11ySource::Native)
     } else {
         // Use native RDP protocol with JS eval fallback for Firefox 149+ where
         // both `getDocument` and `getRootNode` are unrecognized on the walker.
@@ -76,7 +150,16 @@ pub fn run(
     // agent can tell how this command executed without a
     // separate `daemon status` round-trip.
     crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
-    if used_js_fallback && let Some(m) = meta.as_object_mut() {
+    // iter-143 Theme A: always present — the only way a caller can tell
+    // which tree it is scoring without a separate --verbose round-trip.
+    source.merge_into(&mut meta);
+    // Legacy fields kept for existing consumers: only set for an *automatic*
+    // fallback (the caller asked for the native tree and didn't get it), not
+    // for `--selector`, which is always JS-derived by design.
+    if let A11ySource::JsFallback(reason) = &source
+        && *reason != "selector-mode"
+        && let Some(m) = meta.as_object_mut()
+    {
         m.insert("fallback".to_string(), json!(true));
         m.insert("fallback_method".to_string(), json!("js-eval"));
     }
@@ -159,7 +242,7 @@ fn run_native_or_js_fallback(
     depth: u32,
     max_chars: u32,
     cli: &Cli,
-) -> Result<(AccessibleNode, bool), AppError> {
+) -> Result<(AccessibleNode, A11ySource), AppError> {
     // Step 0: the native walker only answers while the platform accessibility
     // service is running; with it off, the root accessor stalls until the
     // socket read timeout instead of erroring (iter-136). Check first and take
@@ -170,10 +253,12 @@ fn run_native_or_js_fallback(
             if cli.is_verbose() {
                 eprintln!(
                     "debug: platform accessibility service is disabled; falling back to JS eval \
-                     (enable it in Firefox to get the native accessibility tree)"
+                     (enable it in Firefox to get the native accessibility tree, or pass --native \
+                     to opt in for this command)"
                 );
             }
-            return run_selector_mode(ctx, "body", depth, max_chars).map(|t| (t, true));
+            return run_selector_mode(ctx, "body", depth, max_chars)
+                .map(|t| (t, A11ySource::JsFallback("accessibility-service-disabled")));
         }
         // Older Firefox without `bootstrap` on the accessibility actor: try the
         // native path anyway.
@@ -181,8 +266,12 @@ fn run_native_or_js_fallback(
         Err(e) => return Err(map_a11y_error(e, cli)),
     }
 
-    // Step 1: try to get the walker.
-    let walker = match AccessibilityActor::get_walker(ctx.transport_mut(), accessibility_actor) {
+    // Step 1: try to get the walker. Bounded to A11Y_WALKER_TIMEOUT (Theme C)
+    // so a race with the service being disabled after the check above stalls
+    // for seconds, not the full configured --timeout.
+    let walker = match with_walker_timeout(ctx, |t| {
+        AccessibilityActor::get_walker(t, accessibility_actor)
+    }) {
         Ok(w) => w,
         Err(e) if e.is_unrecognized_packet_type() => {
             if cli.is_verbose() {
@@ -191,13 +280,25 @@ fn run_native_or_js_fallback(
                      falling back to JS eval"
                 );
             }
-            return run_selector_mode(ctx, "body", depth, max_chars).map(|t| (t, true));
+            return run_selector_mode(ctx, "body", depth, max_chars)
+                .map(|t| (t, A11ySource::JsFallback("walker-unrecognized")));
+        }
+        Err(ProtocolError::Timeout) => {
+            if cli.is_verbose() {
+                eprintln!(
+                    "debug: accessibility getWalker timed out after {}s (bounded deadline, \
+                     iter-143); falling back to JS eval",
+                    A11Y_WALKER_TIMEOUT.as_secs()
+                );
+            }
+            return run_selector_mode(ctx, "body", depth, max_chars)
+                .map(|t| (t, A11ySource::JsFallback("walker-timeout")));
         }
         Err(e) => return Err(map_a11y_error(e, cli)),
     };
 
     // Step 2: try to get the root node via the walker.
-    let root = match AccessibilityActor::get_root(ctx.transport_mut(), &walker) {
+    let root = match with_walker_timeout(ctx, |t| AccessibilityActor::get_root(t, &walker)) {
         Ok(r) => r,
         Err(e) if e.is_unrecognized_packet_type() => {
             // Both getDocument and getRootNode failed — Firefox 149+ protocol change.
@@ -207,15 +308,145 @@ fn run_native_or_js_fallback(
                      version (tried getDocument and getRootNode); falling back to JS eval"
                 );
             }
-            return run_selector_mode(ctx, "body", depth, max_chars).map(|t| (t, true));
+            return run_selector_mode(ctx, "body", depth, max_chars)
+                .map(|t| (t, A11ySource::JsFallback("root-unrecognized")));
+        }
+        Err(ProtocolError::Timeout) => {
+            if cli.is_verbose() {
+                eprintln!(
+                    "debug: accessibility walker root request timed out after {}s (bounded \
+                     deadline, iter-143); falling back to JS eval",
+                    A11Y_WALKER_TIMEOUT.as_secs()
+                );
+            }
+            return run_selector_mode(ctx, "body", depth, max_chars)
+                .map(|t| (t, A11ySource::JsFallback("root-timeout")));
         }
         Err(e) => return Err(map_a11y_error(e, cli)),
     };
 
     // Step 3: walk the tree with the native protocol.
-    AccessibilityActor::walk_tree(ctx.transport_mut(), &walker, &root, depth, max_chars)
-        .map(|t| (t, false))
-        .map_err(|e| map_a11y_error(e, cli))
+    with_walker_timeout(ctx, |t| {
+        AccessibilityActor::walk_tree(t, &walker, &root, depth, max_chars)
+    })
+    .map(|t| (t, A11ySource::Native))
+    .map_err(|e| map_a11y_error(e, cli))
+}
+
+/// Opt-in native tree walk (iter-143 Theme B): enables the platform
+/// accessibility service via the root actor's `parentAccessibilityActor` when
+/// it is not already running, walks the native tree, then restores the
+/// previous state afterward if — and only if — this call was the one that
+/// turned it on (DEC-027: ff-rdp never leaves behind a browser-global
+/// mutation the caller did not ask for, and never touches state it did not
+/// create).
+///
+/// Unlike [`run_native_or_js_fallback`], this never falls back to the
+/// JS-derived tree: a caller who passed `--native` asked for the platform
+/// tree specifically, so any failure — `enable` failing, `bootstrap` still
+/// reporting disabled after `enable`, or a stalled/erroring walker request —
+/// surfaces as an explicit error instead of a silent substitution.
+///
+/// Returns the tree and whether this call enabled the service (`we_enabled`)
+/// — surfaced so tests and `--verbose` diagnostics can confirm restoration.
+fn run_native_opt_in(
+    ctx: &mut ConnectedTab,
+    accessibility_actor: &ActorId,
+    depth: u32,
+    max_chars: u32,
+    cli: &Cli,
+) -> Result<(AccessibleNode, bool), AppError> {
+    let root_form = RootActor::get_root(ctx.transport_mut()).map_err(|e| map_a11y_error(e, cli))?;
+    let parent_actor: ActorId = root_form
+        .get("parentAccessibilityActor")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            AppError::User(
+                "--native: this Firefox's root actor does not expose \
+                 'parentAccessibilityActor' — cannot enable the platform accessibility \
+                 service remotely. Omit --native to use the JS-derived fallback."
+                    .to_string(),
+            )
+        })?
+        .into();
+
+    let was_enabled =
+        AccessibilityActor::is_service_enabled(ctx.transport_mut(), accessibility_actor)
+            .map_err(|e| map_a11y_error(e, cli))?;
+
+    let we_enabled = if was_enabled {
+        false
+    } else {
+        AccessibilityActor::enable_service(ctx.transport_mut(), &parent_actor).map_err(|e| {
+            AppError::User(format!(
+                "--native: failed to enable the platform accessibility service via \
+                 parentAccessibilityActor.enable(): {e}"
+            ))
+        })?;
+        let now_enabled =
+            AccessibilityActor::is_service_enabled(ctx.transport_mut(), accessibility_actor)
+                .map_err(|e| map_a11y_error(e, cli))?;
+        if !now_enabled {
+            return Err(AppError::User(
+                "--native: called parentAccessibilityActor.enable() but bootstrap() still \
+                 reports the accessibility service as disabled — refusing to walk the native \
+                 tree rather than silently falling back. This may mean another consumer \
+                 immediately disabled it, or this Firefox build doesn't honor a remote enable()."
+                    .to_string(),
+            ));
+        }
+        if cli.is_verbose() {
+            eprintln!(
+                "debug: --native: platform accessibility service was off; enabled it for this \
+                 command and will restore it to disabled afterward"
+            );
+        }
+        true
+    };
+
+    let walk_result = walk_native_tree_bounded(ctx, accessibility_actor, depth, max_chars, cli);
+
+    if we_enabled {
+        // Best-effort restore: report a failure but don't let it mask the
+        // primary result. On Windows an active screen reader can block
+        // `disable` (kb/rdp/actors/accessibility.md) — that's an expected
+        // limitation, not a bug in ff-rdp.
+        if let Err(e) = AccessibilityActor::disable_service(ctx.transport_mut(), &parent_actor) {
+            if cli.is_verbose() {
+                eprintln!(
+                    "debug: --native: failed to restore the accessibility service to disabled \
+                     after this opt-in run: {e}"
+                );
+            }
+        } else if cli.is_verbose() {
+            eprintln!("debug: --native: restored the accessibility service to disabled");
+        }
+    }
+
+    walk_result.map(|tree| (tree, we_enabled))
+}
+
+/// Walk the native accessibility tree (walker → root → recursive children),
+/// with each step bounded by [`A11Y_WALKER_TIMEOUT`] (Theme C). Shared by
+/// [`run_native_opt_in`]; unlike [`run_native_or_js_fallback`] there is no
+/// fallback branch here — every error maps straight to an [`AppError`].
+fn walk_native_tree_bounded(
+    ctx: &mut ConnectedTab,
+    accessibility_actor: &ActorId,
+    depth: u32,
+    max_chars: u32,
+    cli: &Cli,
+) -> Result<AccessibleNode, AppError> {
+    let walker = with_walker_timeout(ctx, |t| {
+        AccessibilityActor::get_walker(t, accessibility_actor)
+    })
+    .map_err(|e| map_a11y_error(e, cli))?;
+    let root = with_walker_timeout(ctx, |t| AccessibilityActor::get_root(t, &walker))
+        .map_err(|e| map_a11y_error(e, cli))?;
+    with_walker_timeout(ctx, |t| {
+        AccessibilityActor::walk_tree(t, &walker, &root, depth, max_chars)
+    })
+    .map_err(|e| map_a11y_error(e, cli))
 }
 
 /// Selector-based subtree extraction via JS eval.
@@ -308,6 +539,13 @@ fn parse_js_a11y_tree(value: &Value) -> Option<AccessibleNode> {
 /// Map protocol errors to user-friendly messages.
 fn map_a11y_error(err: ff_rdp_core::ProtocolError, cli: &Cli) -> AppError {
     match &err {
+        ProtocolError::Timeout => AppError::User(
+            "accessibility request timed out waiting for a reply from Firefox. If this \
+             happened while walking the tree, the platform accessibility service is likely \
+             off — Firefox's walker never replies in that case (iter-136). Check \
+             `a11y --jq '.meta.source'`, or omit --native to use the JS-derived fallback."
+                .to_string(),
+        ),
         ff_rdp_core::ProtocolError::ActorError { error, .. }
             if error == "noSuchActor" || error == "unknownActor" =>
         {
@@ -434,6 +672,11 @@ pub fn run_critical(cli: &Cli, root_selector: Option<&str>) -> Result<(), AppErr
     // agent can tell how this command executed without a
     // separate `daemon status` round-trip.
     crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
+    // iter-143 Theme A: `--critical` has no native-tree equivalent — the
+    // platform accessibility service doesn't expose a WCAG-critical severity
+    // — so this is always JS-derived. Reported for consistency with the
+    // plain `a11y` tree's `meta.source` rather than as an actual fallback.
+    crate::connection_meta::merge_source(&mut meta, "js-fallback", Some("critical-audit-js-only"));
 
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
     let mut items = violations;

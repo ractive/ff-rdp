@@ -71,5 +71,38 @@ Each node in the tree is its own actor.
   Check `bootstrap().state.enabled` on the content accessibility actor first
   (`AccessibilityActor::is_service_enabled`); enabling requires `enable()` on
   the root form's `parentAccessibilityActor`, which is a browser-global change
-  ff-rdp does not make on the user's behalf — `ff-rdp a11y` falls back to its
-  JS-derived tree instead.
+  ff-rdp does not make on the user's behalf by default — `ff-rdp a11y` falls
+  back to its JS-derived tree instead unless the caller opts in with
+  `--native` (iter-143, see below).
+
+## Opt-in native tree (`ff-rdp a11y --native`, iter-143 Theme B)
+
+`AccessibilityActor::enable_service`/`disable_service` (ff-rdp-core) wrap
+`enable()`/`disable()` on `parentAccessibilityActor` (obtained from the root
+form's `getRoot` response — `RootActor::get_root`). The CLI's
+`run_native_opt_in` (`ff-rdp-cli/src/commands/a11y.rs`):
+
+1. Reads `parentAccessibilityActor` off `getRoot`.
+2. Checks `bootstrap().state.enabled` on the content accessibility actor; if
+   already `true`, does nothing further (never touches state it did not
+   create — [[decision-log#DEC-027]]).
+3. Otherwise calls `enable()`, re-checks `bootstrap()`, and errors explicitly
+   (never silently falls back) if it still reports disabled.
+4. Walks the tree, then calls `disable()` — but only when step 2/3 is what
+   turned the service on.
+
+This is opt-in, never the default: `enable()` is browser-global and
+process-wide, and its performance cost persists until the browser shuts down.
+`ff-rdp a11y` (no flag) never calls it.
+
+## Bounded walker deadline (iter-143 Theme C)
+
+Both the auto-detect path (`run_native_or_js_fallback`) and `--native`
+(`run_native_opt_in`/`walk_native_tree_bounded`) narrow the transport's read
+timeout to `A11Y_WALKER_TIMEOUT` (3s) around `getWalker`/the root
+accessor/`children` calls, restoring the previous timeout afterward. This
+bounds the iter-136 stall (walker never replies while the service is off) to
+a few seconds instead of the full `--timeout` (default 10s, but
+user-configurable much higher) — relevant if a race disables the service
+between the `bootstrap()` check and the walk, or a future call site skips the
+check.

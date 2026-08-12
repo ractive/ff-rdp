@@ -59,6 +59,7 @@ COMMAND REFERENCE:
 
   Accessibility:
     ff-rdp a11y [--depth N] [--selector SEL] [--interactive] [--critical]
+    ff-rdp a11y --native  # opt in to Firefox's platform accessibility tree (meta.source tells you which tree you got)
     ff-rdp a11y contrast [--selector SEL] [--fail-only]  # total=results, sampled=elements checked
     ff-rdp a11y summary
 
@@ -153,6 +154,8 @@ COOKBOOK:
   ff-rdp a11y contrast --fail-only    # total = AA failures; sampled = elements checked
   ff-rdp a11y contrast --fail-only --jq '{total, shown: (.results|length), sampled}'
   ff-rdp a11y --interactive --jq '[.. | select(.role? == \"link\") | .name]'
+  ff-rdp a11y --jq '.meta.source'     # \"native\" or \"js-fallback\" — always present
+  ff-rdp a11y --native --jq '.result.role'  # opt in to the real platform tree ([\"document\", ...])
 
   # DOM and CSS inspection
   ff-rdp dom \"a[href]\" --text-attrs
@@ -788,10 +791,11 @@ With --key: {\"results\": {\"key\": \"...\", \"value\": \"...\"}, \"total\": 1, 
     /// Inspect accessibility tree and check WCAG compliance
     #[command(long_about = "Inspect accessibility tree and check WCAG compliance.
 
-Output: {\"results\": {\"role\": \"...\", \"name\": \"...\", \"children\": [...]}, \"total\": 1, \"meta\": {...}}
+Output: {\"results\": {\"role\": \"...\", \"name\": \"...\", \"children\": [...]}, \"total\": 1, \"meta\": {..., \"source\": \"native\"|\"js-fallback\"}}
 With a11y summary: {\"results\": [{\"role\": \"...\", \"name\": \"...\", \"level\": N}], \"total\": N, \"meta\": {...}}
-With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool, ...}], \"total\": N, \"sampled\": M, \"meta\": {...}}
-  a11y contrast `total` = returned results (AA failures under --fail-only, else all checks); `sampled` = elements examined. Pre-iter-127 `total` reported the sample size.")]
+With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool, ...}], \"total\": N, \"sampled\": M, \"meta\": {..., \"source\": \"js-fallback\"}}
+  a11y contrast `total` = returned results (AA failures under --fail-only, else all checks); `sampled` = elements examined. Pre-iter-127 `total` reported the sample size.
+  `meta.source` (iter-143) is always present on a11y/a11y --critical/a11y contrast: \"native\" means the real Firefox platform accessibility tree (roles like \"document\"/\"paragraph\"); \"js-fallback\" means a DOM-derived approximation (roles like \"generic\"), with `meta.source_reason` naming why. `a11y --native` opts in to the native tree (never the default — DEC-027) by enabling Firefox's accessibility service for the duration of the call.")]
     A11y(A11yArgs),
     /// Reload the page
     #[command(long_about = "Reload the page.
@@ -1794,6 +1798,17 @@ pub struct A11yArgs {
     /// instead of the full accessibility tree; empty when nothing critical.
     #[arg(long, conflicts_with = "interactive")]
     pub critical: bool,
+    /// Opt in to the native platform accessibility tree: enables Firefox's
+    /// accessibility service (if not already running), walks the real
+    /// platform tree (roles like "document"/"paragraph" instead of the
+    /// JS-derived "generic"), then restores the service to its previous
+    /// state if this command was the one that turned it on. This is a
+    /// browser-global, process-wide change while it runs — never the
+    /// default (DEC-027) — and cannot be combined with `--selector`/`--ref`,
+    /// which always use the JS-derived path. Failure to enable surfaces as
+    /// an explicit error, never a silent fallback.
+    #[arg(long, conflicts_with_all = ["selector", "ref_id"])]
+    pub native: bool,
 }
 
 #[derive(clap::Args)]

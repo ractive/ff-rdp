@@ -749,6 +749,7 @@ fn dispatch_inner(
             ref_id,
             interactive,
             critical,
+            native,
         }) => {
             let resolved_selector: Option<String> = if let Some(id) = ref_id.as_deref() {
                 Some(resolve_ref_via_daemon(cli, id)?)
@@ -772,6 +773,7 @@ fn dispatch_inner(
                             *max_chars,
                             effective_selector,
                             *interactive,
+                            *native,
                         )
                     }
                 }
