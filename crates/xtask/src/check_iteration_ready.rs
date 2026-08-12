@@ -326,6 +326,11 @@ pub fn run(args: Args) -> Result<()> {
         run_xtask("check-live-test-layout", &[])
     }));
 
+    // --- 11. check-error-envelope-paths (iter-145)
+    results.push(run_or_skip("check-error-envelope-paths", &mut || {
+        run_xtask("check-error-envelope-paths", &[])
+    }));
+
     let total = results.len();
     for (i, result) in results.iter().enumerate() {
         print_result(i + 1, total, result);

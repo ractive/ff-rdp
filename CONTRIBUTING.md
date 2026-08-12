@@ -235,6 +235,10 @@ fi
 7. `check-live-test-layout` — no stray top-level `tests/live_*.rs` binaries
    (iter-100b) **and** every `#[test]` under `tests/live/` is `#[ignore]`-gated
    or `// allow-ungated-live:`-annotated (iter-113 Theme B)
+8. `check-error-envelope-paths` — no `eprintln!` in
+   `crates/ff-rdp-cli/src/commands/` immediately followed by a bare
+   `AppError::Exit(N)` that bypasses the JSON error envelope (iter-145);
+   annotate a deliberate one with `// stderr-ok: <reason>`
 
 Fix every reported failure before pushing. The `/create-pr` skill runs this
 automatically on iter-* branches.

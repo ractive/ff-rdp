@@ -110,3 +110,32 @@ the timeout would paper over a genuine product bug.
   product-side fix filed if one is warranted.
 - Every live test added here must exercise the **default daemon path**. Do not add entries to the
   shrink-only grandfather list in `crates/ff-rdp-cli/tests/no_daemon_live_test_guard.rs`.
+
+### Scope check after iter-145 (2026-08-12)
+
+[[iteration-145-error-envelope-completeness]] merged and added a sixth live test file
+(`live_145_error_envelope_completeness.rs`) with its own local `firefox_with_daemon` wrapper —
+the same thin-duplicate pattern iterations 137–141 already established. The teardown logic itself
+(`LiveFirefox`, its `Drop` impl, `with_daemon`) lives once in `tests/common/mod.rs`, so Theme A's
+fix there covers this new file for free — no separate propagation needed. Two things worth
+carrying into this iteration's execution, not a scope change to the Acceptance Criteria:
+
+- Theme A's "full sequential run" dogfood check now also exercises
+  `live_145_click_js_exception_envelope`, `live_145_click_frame_scan_js_exception_envelope`, and
+  `live_145_click_element_not_found_unchanged` — three more data points for confirming the leak
+  fix, all using the default daemon path per this plan's own rule.
+- The six duplicated `firefox_with_daemon(test: &str) -> Option<LiveFirefox>` copies (137, 138,
+  139, 140, 141, 145) are a candidate for consolidating into `tests/common/mod.rs` once Theme A's
+  root cause is fixed there — not required for this iteration's ACs, but worth a follow-up note if
+  Theme A's fix ends up touching `with_daemon()`'s signature or return type.
+- Separately (unrelated code area, **not** in this iteration's scope): the iter-145 review pass
+  hit a one-off flaky failure in `ff-rdp-core`'s unit suite —
+  `specs::types::tests::resolve_slot_longstring_grip_fetches_full_value` — under
+  `cargo test --workspace`'s default parallelism. Root cause: it depends on
+  `transport::max_frame_bytes()`'s global `MAX_FRAME_BYTES_CELL` but doesn't take the
+  `FRAME_CAP_LOCK` mutex that `transport.rs`'s own cap-mutating tests (e.g.
+  `max_frame_mb_knob_works`) use to serialize access, so it can race against them and observe a
+  stale 1024-byte cap. Reproduced isolated (5/5 pass) and full-workspace (5/5 pass after the first
+  observed failure) — genuinely rare, and CI's three platforms were green on this PR. This is a
+  `ff-rdp-core` unit-test isolation bug, a different class from this plan's live-Firefox-process
+  themes; flagged here only so it isn't lost, not folded into Theme A/B/C.

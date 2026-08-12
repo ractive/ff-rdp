@@ -59,6 +59,7 @@ mod live_142_disk_growth;
 mod live_142_eval_asi_await;
 mod live_143_native_a11y_tree;
 mod live_144_session_hygiene_followup;
+mod live_145_error_envelope_completeness;
 mod live_61l;
 mod live_61q_resource_bus;
 mod live_61r_eval;

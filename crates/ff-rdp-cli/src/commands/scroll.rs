@@ -408,11 +408,15 @@ pub fn run_until(
 
         let elapsed = started.elapsed();
         if elapsed >= timeout {
-            eprintln!(
-                "error: scroll until timed out after {}ms — element '{selector}' not found in viewport; increase with --timeout",
+            // iter-145 Theme B: route through the standard JSON error envelope
+            // (`AppError::Timeout`, matching every other timeout in this
+            // codebase — see `js_helpers.rs`, `navigate.rs`, `click.rs`)
+            // instead of printing bare text to stderr and bypassing `main`'s
+            // envelope emission via `AppError::Exit(1)`.
+            return Err(AppError::Timeout(format!(
+                "scroll until timed out after {}ms — element '{selector}' not found in viewport; increase with --timeout",
                 elapsed.as_millis()
-            );
-            return Err(AppError::Exit(1));
+            )));
         }
 
         // Scroll one step
