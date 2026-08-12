@@ -418,13 +418,29 @@ mod tests {
 
     /// A `longString` grip slot fetches the full value via `substring`.  A mock
     /// server answers the single `substring` request with the full content.
+    ///
+    /// iter-150: this performs a real 20 KB `recv_from` round-trip over the
+    /// wire, which depends on the process-global frame-size cap
+    /// (`transport::max_frame_bytes()`) staying at its default. Some
+    /// `transport::tests` deliberately shrink that cap to 1024 bytes for the
+    /// duration of their own assertions. Without a guard, this test could run
+    /// concurrently with one of those and observe the shrunk cap, failing
+    /// intermittently with `FrameTooLarge` — reproduced twice in review passes
+    /// (iter-141, iter-146) before being root-caused here. Taking a `read`
+    /// guard on `transport::FRAME_CAP_LOCK` makes that interleaving
+    /// impossible: the cap-mutating tests hold the `write` side, which
+    /// excludes every reader for as long as the cap is shrunk.
     #[test]
     fn resolve_slot_longstring_grip_fetches_full_value() {
         use std::io::{BufReader, Write};
         use std::net::TcpListener;
         use std::time::Duration;
 
-        use crate::transport::{encode_frame, recv_from};
+        use crate::transport::{FRAME_CAP_LOCK, encode_frame, recv_from};
+
+        // Must be held for the whole network round-trip below, not just the
+        // `recv_from` call — see the doc comment on `FRAME_CAP_LOCK`.
+        let _cap_guard = FRAME_CAP_LOCK.read().unwrap();
 
         let full = "Z".repeat(20_000);
         let full_for_server = full.clone();

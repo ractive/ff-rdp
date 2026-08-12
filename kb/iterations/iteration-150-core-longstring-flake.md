@@ -9,10 +9,11 @@ dogfood_path: |
   # → 10 consecutive runs must pass; today the test fails intermittently and
   #   passes on rerun, which is how it has survived two separate sightings
 first_call_sites: []
-status: planned
+status: completed
 title: "Iteration 150: resolve_slot_longstring_grip_fetches_full_value is intermittently red"
 type: iteration
-tags: [iteration]
+tags:
+  - iteration
 ---
 
 # Iteration 150: `resolve_slot_longstring_grip_fetches_full_value` is intermittently red
@@ -77,16 +78,61 @@ test's isolation.
 of those converts a visible intermittent into an invisible one — the same trade
 [[iteration-146-live-suite-reliability]] Theme C refused.
 
-## Acceptance Criteria [0/3]
+## Acceptance Criteria [3/3]
 
-- [ ] unit_150_longstring_deterministic_repeat:
+- [x] unit_150_longstring_deterministic_repeat:
       `resolve_slot_longstring_grip_fetches_full_value` passes 50 consecutive runs in isolation
       and 20 consecutive runs of the full `-p ff-rdp-core` suite
-- [ ] unit_150_mechanism_documented: this plan's Resolution section names the confirmed
+- [x] unit_150_mechanism_documented: this plan's Resolution section names the confirmed
       mechanism and the pre-fix failure rate measured in Theme A, not a hypothesis
-- [ ] unit_150_regression_pinned: if the cause was a product bug, a test exercises the specific
+- [x] unit_150_regression_pinned: if the cause was a product bug, a test exercises the specific
       longstring path deterministically; if it was test contamination, a test or harness change
       makes the isolation failure impossible rather than unlikely
+
+## Resolution
+
+**Confirmed mechanism** (test-local contamination, not a product bug — candidate direction #2
+from "What is not yet known" above): `resolve_slot_longstring_grip_fetches_full_value` performs a
+real 20 KB `recv_from` round-trip over a loopback TCP socket, which reads the process-global
+`transport::max_frame_bytes()` cap (backed by the `MAX_FRAME_BYTES_CELL` atomic). Five tests in
+`transport::tests` (`max_frame_mb_knob_works`, `bulk_frame_rejects_oversized_announcement`,
+`bulk_frame_cap_send_side`, `recv_bulk_with_handler_oversized_rejected`,
+`bulk_recv_caps_drain_length`) transiently shrink that cap to 1024 (or 100) bytes to test the
+cap-rejection path, restoring it afterward via a panic-safe RAII guard. The restore is correct —
+this is not the DEC-022 leaked-cap class of bug — but the *five* tests only serialized against
+*each other* via a `Mutex` private to `transport::tests`; the longstring test, in a different
+module, took no guard at all. `cargo test -p ff-rdp-core` runs its ~530 unit tests on a shared
+default-parallelism thread pool (not `--test-threads=1` — that constraint is specific to the live
+suite, see DEC-022), so whenever the longstring test's TCP round-trip happened to overlap with one
+of those five tests' shrink window, `recv_from` observed the shrunk cap and rejected the ~20 KB
+substring response with `ProtocolError::FrameTooLarge`.
+
+**Verified on the wire, not assumed**: per the run guidance, the mechanism was confirmed by forcing
+the interleave deterministically before writing any fix — a throwaway two-thread harness (one
+thread looping the exact `resolve_long_string_slot` round-trip from the failing test, one thread
+hammering `set_max_frame_bytes` between `1024` and the default with no synchronization) reproduced
+`FrameTooLarge { declared: 20043, max: 1024 }` on the very first iteration of 500. Re-running the
+*unmodified* pre-fix code as `cargo test -p ff-rdp-core`'s compiled unit-test binary in a tight
+loop (20 consecutive full-suite runs, default parallelism, no artificial hammering) reproduced the
+same `FrameTooLarge` failure twice — **measured pre-fix failure rate: 2/20 (10%) under real
+`cargo test` parallelism**, consistent with "genuinely rare but not vanishingly rare" — enough to
+explain two independent sightings across the 138–146 batches without appearing on every PR.
+
+**Fix**: `transport::FRAME_CAP_LOCK` (previously a private `Mutex<()>` used only by the five
+cap-mutating tests) is now a crate-visible (`pub(crate)`) `RwLock<()>`. The five cap-mutating tests
+take `.write()` (unchanged exclusivity). The longstring test now takes `.read()` for the duration
+of its network round-trip. This makes the interleaving structurally impossible rather than merely
+serializing this one pairing: a writer excludes every reader for as long as the cap is shrunk, and
+readers don't serialize against each other. See DEC-029 for the full write-up and rationale versus
+DEC-022's related-but-distinct leaked-cap bug.
+
+**Regression proof**: `frame_cap_lock_read_guard_excludes_writers` (new, in `transport::tests`)
+deterministically proves the `RwLock` contract — no timing dependency, since `try_write`/`try_read`
+either succeed or fail immediately based on lock state, not scheduling luck. Post-fix, the same
+20-consecutive-full-suite-run measurement that reproduced 2/20 failures pre-fix now shows 0/20 (and
+a separate 50-consecutive isolated-run check also passed 50/50, though isolation alone can't
+exercise the race since the filtered `cargo test <name>` invocation excludes every other test from
+the binary).
 
 ## Notes
 

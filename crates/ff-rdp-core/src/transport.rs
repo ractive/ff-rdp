@@ -1183,6 +1183,34 @@ fn map_send_io_error(e: std::io::Error) -> ProtocolError {
     }
 }
 
+/// Crate-wide lock guarding `MAX_FRAME_BYTES_CELL`, the process-global cap
+/// read by every [`recv_from`] call and mutated at runtime only by tests (via
+/// [`set_max_frame_bytes`]) and the CLI's one-time `--max-frame-mb` startup
+/// call.
+///
+/// `cargo test` runs every test in the crate's unit-test binary on a shared
+/// thread pool, so the cap is genuinely shared mutable state across
+/// `#[test]` fns in *different* modules, not just within `transport::tests`.
+/// A test that mutates the cap must take a [`write`](std::sync::RwLock::write)
+/// guard (excludes every other holder for the duration the cap is shrunk); a
+/// test that performs a real `recv_from` round-trip whose payload could
+/// exceed a shrunk cap, and therefore depends on the cap staying at its
+/// default, must take a [`read`](std::sync::RwLock::read) guard (many readers
+/// may run concurrently; only a writer excludes them). `RwLock` rather than
+/// `Mutex` so unrelated reader tests don't serialize against each other —
+/// only against the rare writer.
+///
+/// iter-150: `specs::types::tests::resolve_slot_longstring_grip_fetches_full_value`
+/// performed a real 20 KB `recv_from` round-trip without taking any guard, so
+/// it could observe a transiently-shrunk 1024-byte cap set by
+/// `max_frame_mb_knob_works` et al. and fail with `FrameTooLarge` — this was
+/// an intermittent CI failure, reproduced deterministically by forcing the
+/// two to interleave (see the iteration plan). This lock used to be private
+/// to `transport::tests`, which is why the guard-vs-mutate contract could be
+/// silently violated by a test outside this module.
+#[cfg(test)]
+pub(crate) static FRAME_CAP_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1196,11 +1224,6 @@ mod tests {
     /// Serialize access to the `set_trace_raw_for_test` override so that tests
     /// manipulating redaction state don't race with each other.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Module-level lock shared by every test that mutates the global
-    /// `MAX_FRAME_BYTES_CELL` cap.  Combined with [`FrameCapGuard`] this
-    /// guarantees both serialization and panic-safe restoration.
-    static FRAME_CAP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Module-level lock shared by every test that mutates the global
     /// `REDACT_THRESHOLD`.  Combined with [`RedactThresholdGuard`] this
@@ -1378,7 +1401,7 @@ mod tests {
     fn max_frame_mb_knob_works() {
         // Serialise so the tests don't fight over the global cap, and
         // restore it on drop even if an assertion below panics.
-        let _g = FRAME_CAP_LOCK.lock().unwrap();
+        let _g = FRAME_CAP_LOCK.write().unwrap();
         let _restore = FrameCapGuard::new();
 
         // Lower the cap to 1024 bytes — 2000 bytes must be rejected.
@@ -1411,6 +1434,46 @@ mod tests {
         );
 
         // FrameCapGuard restores the previous value on drop.
+    }
+
+    /// AC (iter-150) `unit_150_regression_pinned`: proves the `FRAME_CAP_LOCK`
+    /// read/write contract actually excludes concurrent access, deterministically
+    /// — not "usually excludes", which is what the pre-fix code gave when
+    /// `resolve_slot_longstring_grip_fetches_full_value` read the cap with no
+    /// guard at all.
+    ///
+    /// This does not depend on timing or scheduling luck: `try_write` is
+    /// documented to fail immediately (never block) when a reader holds the
+    /// lock, so holding a `read` guard on this thread and asserting the next
+    /// line either passes or fails is a fact about the `RwLock`, not a
+    /// probabilistic race window.
+    #[test]
+    fn frame_cap_lock_read_guard_excludes_writers() {
+        let read_guard = FRAME_CAP_LOCK.read().unwrap();
+
+        // A cap-mutating test's `.write()` must not be able to proceed while
+        // any reader (like the longstring test) holds the cap at its default.
+        assert!(
+            FRAME_CAP_LOCK.try_write().is_err(),
+            "a reader is held, so a concurrent writer must be excluded"
+        );
+
+        // Other readers (e.g. two future tests both depending on the default
+        // cap) are not excluded by each other — only a writer excludes.
+        let second_read_guard = FRAME_CAP_LOCK.try_read();
+        assert!(
+            second_read_guard.is_ok(),
+            "readers must not exclude other readers"
+        );
+        drop(second_read_guard);
+
+        drop(read_guard);
+
+        // Once every reader has released, a writer can proceed.
+        assert!(
+            FRAME_CAP_LOCK.try_write().is_ok(),
+            "writer must be able to proceed once all readers have dropped"
+        );
     }
 
     /// AC: `redact_threshold_tunable`.  A long non-sensitive string passes
@@ -1642,7 +1705,7 @@ mod tests {
     /// `BulkFrameTooLarge`.
     #[test]
     fn bulk_frame_rejects_oversized_announcement() {
-        let _g = FRAME_CAP_LOCK.lock().unwrap();
+        let _g = FRAME_CAP_LOCK.write().unwrap();
         let _restore = FrameCapGuard::new();
 
         set_max_frame_bytes(1024);
@@ -1670,7 +1733,7 @@ mod tests {
     /// before the wire commits.
     #[test]
     fn bulk_frame_cap_send_side() {
-        let _g = FRAME_CAP_LOCK.lock().unwrap();
+        let _g = FRAME_CAP_LOCK.write().unwrap();
         let _restore = FrameCapGuard::new();
 
         set_max_frame_bytes(1024);
@@ -2150,7 +2213,7 @@ mod tests {
 
     #[test]
     fn recv_bulk_with_handler_oversized_rejected() {
-        let _g = FRAME_CAP_LOCK.lock().unwrap();
+        let _g = FRAME_CAP_LOCK.write().unwrap();
         let _restore = FrameCapGuard::new();
         set_max_frame_bytes(1024);
 
@@ -2232,7 +2295,7 @@ mod tests {
     /// rejected before the discard loop (no body bytes read).
     #[test]
     fn bulk_recv_caps_drain_length() {
-        let _g = FRAME_CAP_LOCK.lock().unwrap();
+        let _g = FRAME_CAP_LOCK.write().unwrap();
         let _restore = FrameCapGuard::new();
 
         // Set a very small cap so we can craft a frame that exceeds it.
