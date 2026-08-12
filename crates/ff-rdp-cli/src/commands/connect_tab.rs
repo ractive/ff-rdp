@@ -62,6 +62,8 @@ pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
         // daemon-side warning alongside the connection error so the user
         // sees the full picture.
         if let Some(w) = &deferred_warning {
+            // stderr-ok: (b) debug/diagnostic — the real connection error
+            // still propagates through the envelope via `?` below.
             eprintln!("{w}");
         }
     })?;
@@ -333,6 +335,8 @@ impl ConnectedTab {
                 self.target = fresh;
             }
             Err(e) => {
+                // stderr-ok: (b) warn-and-continue — non-fatal per the doc
+                // comment above; retried with a fresh target on next eval.
                 eprintln!("warning: navigate: could not refresh target actors: {e:#}");
             }
         }

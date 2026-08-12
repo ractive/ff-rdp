@@ -212,6 +212,8 @@ fn run_reload_wait_idle_daemon(
     ) {
         Ok(frames) => count_network_events_in_frames(&frames),
         Err(e) => {
+            // stderr-ok: (b) warn-and-continue — falls back to 0 in-flight
+            // frames; requests_observed above still carries the real count.
             eprintln!("warning: failed to stop daemon stream: {e:#}");
             0
         }

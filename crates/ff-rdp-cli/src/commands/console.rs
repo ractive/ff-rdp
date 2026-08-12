@@ -37,6 +37,7 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
         Ok(msgs) => msgs,
         Err(e) => {
             if cli.is_verbose() {
+                // stderr-ok: (b) debug/diagnostic, gated on --verbose.
                 eprintln!(
                     "debug: getCachedMessages(PageError+ConsoleAPI) failed ({e}), retrying with ConsoleAPI only"
                 );
@@ -200,6 +201,7 @@ fn prime_console_cache(
         WebConsoleActor::start_listeners(transport, console_actor, &["PageError", "ConsoleAPI"])
         && cli.is_verbose()
     {
+        // stderr-ok: (b) debug/diagnostic, gated on --verbose.
         eprintln!("debug: startListeners(PageError+ConsoleAPI) failed ({e}); reading cache anyway");
     }
 }
@@ -226,6 +228,7 @@ pub fn run_get_errors(cli: &Cli) -> Result<Vec<serde_json::Value>, crate::error:
         Ok(msgs) => msgs,
         Err(e) => {
             if cli.is_verbose() {
+                // stderr-ok: (b) debug/diagnostic, gated on --verbose.
                 eprintln!(
                     "debug: getCachedMessages(PageError+ConsoleAPI) failed ({e}), retrying with ConsoleAPI only"
                 );

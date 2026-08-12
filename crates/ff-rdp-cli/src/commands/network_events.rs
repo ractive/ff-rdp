@@ -339,6 +339,8 @@ pub(crate) fn performance_api_fallback(ctx: &mut super::connect_tab::ConnectedTa
         match WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, SCRIPT) {
             Ok(r) => r,
             Err(e) => {
+                // stderr-ok: (b) best-effort fallback diagnostic — see the
+                // doc comment above; caller gets an empty vec either way.
                 eprintln!("hint: performance-api fallback eval failed: {e:#}");
                 return vec![];
             }
@@ -347,6 +349,8 @@ pub(crate) fn performance_api_fallback(ctx: &mut super::connect_tab::ConnectedTa
     // If the eval threw an exception treat it as an empty result.
     if let Some(ref exc) = eval_result.exception {
         let msg = exc.message.as_deref().unwrap_or("(no message)");
+        // stderr-ok: (b) best-effort fallback diagnostic — see the doc
+        // comment above; caller gets an empty vec either way.
         eprintln!(
             "hint: performance-api fallback JS exception: {}",
             sanitize_for_terminal(msg)
@@ -364,11 +368,15 @@ pub(crate) fn performance_api_fallback(ctx: &mut super::connect_tab::ConnectedTa
         } => match LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), *length) {
             Ok(s) => s,
             Err(e) => {
+                // stderr-ok: (b) best-effort fallback diagnostic — see the
+                // doc comment above; caller gets an empty vec either way.
                 eprintln!("hint: performance-api fallback failed to fetch long string: {e:#}");
                 return vec![];
             }
         },
         other => {
+            // stderr-ok: (b) best-effort fallback diagnostic — see the doc
+            // comment above; caller gets an empty vec either way.
             eprintln!("hint: performance-api fallback returned unexpected grip type: {other:?}");
             return vec![];
         }
@@ -380,6 +388,8 @@ pub(crate) fn performance_api_fallback(ctx: &mut super::connect_tab::ConnectedTa
             .map(map_perf_resource_to_network_entry)
             .collect(),
         Err(e) => {
+            // stderr-ok: (b) best-effort fallback diagnostic — see the doc
+            // comment above; caller gets an empty vec either way.
             eprintln!("hint: performance-api fallback failed to parse JSON result: {e:#}");
             vec![]
         }

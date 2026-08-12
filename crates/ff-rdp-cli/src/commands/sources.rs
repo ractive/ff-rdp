@@ -99,6 +99,7 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
             }
             Err(e) if should_use_js_fallback(&e) => {
                 if cli.is_verbose() {
+                    // stderr-ok: (b) debug/diagnostic, gated on --verbose.
                     eprintln!(
                         "debug: sources thread actor failed ({e}); \
                          trying JS DOM/Performance API fallback"
@@ -111,6 +112,7 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
                 // directly to the walker fallback if eval is blocked.
                 let eval_allowed = probe_eval_allowed(&mut ctx);
                 if cli.is_verbose() && !eval_allowed {
+                    // stderr-ok: (b) debug/diagnostic, gated on --verbose.
                     eprintln!("debug: eval probe blocked by CSP — using walker-actor fallback");
                 }
                 if eval_allowed {

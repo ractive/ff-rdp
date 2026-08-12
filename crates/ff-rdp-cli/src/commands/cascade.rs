@@ -536,6 +536,8 @@ pub fn run(
         // This shows the actual field names Firefox sends, which is the only
         // reliable way to diagnose protocol drift (e.g. when a field is renamed
         // server-side and our parser silently drops it).
+        // stderr-ok: (b) --debug-raw-gated diagnostic dump — see the doc
+        // comment above; stdout still carries the normal JSON result.
         eprintln!(
             "[cascade --debug-raw] raw getApplied reply:\n{}",
             serde_json::to_string_pretty(&raw)

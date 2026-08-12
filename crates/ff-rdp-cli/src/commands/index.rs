@@ -56,6 +56,8 @@ pub fn run(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
 fn run_crawl(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
     // Run login script if requested.
     if let Some(login_path) = opts.login_script {
+        // stderr-ok: (b) progress line — stdout is reserved for the final
+        // JSON report; crawl progress goes to stderr throughout this file.
         eprintln!("[index] running login script: {}", login_path.display());
         let login_opts = crate::commands::run::RunCommandOpts {
             script_path: login_path,
@@ -88,6 +90,7 @@ fn run_crawl(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
             })?,
     };
 
+    // stderr-ok: (b) progress line — see note at the top of this function.
     eprintln!(
         "[index] crawling {} (depth={}, max-pages={})",
         base_url, opts.depth, opts.max_pages
@@ -127,6 +130,8 @@ fn run_crawl(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
 
     while let Some((url, current_depth)) = queue.pop_front() {
         if visited.len() >= opts.max_pages {
+            // stderr-ok: (b) progress line — see note at the top of this
+            // function.
             eprintln!("[index] reached max-pages limit ({})", opts.max_pages);
             break;
         }
@@ -148,11 +153,15 @@ fn run_crawl(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
             .iter()
             .any(|p| url_path.starts_with(p.as_str()))
         {
+            // stderr-ok: (b) progress line — see note at the top of this
+            // function.
             eprintln!("[index] skipped (robots.txt): {url}");
             continue;
         }
 
         visited.insert(url.clone());
+        // stderr-ok: (b) progress line — see note at the top of this
+        // function.
         eprintln!(
             "[index] visited {}/{} pages, queue={}",
             visited.len(),
@@ -164,6 +173,8 @@ fn run_crawl(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
         let page_result = crawl_page(cli, &url, &base_url, opts.cross_origin);
         match page_result {
             Err(e) => {
+                // stderr-ok: (b) warn-and-continue — one page's failure
+                // doesn't abort the run; it's just missing from the report.
                 eprintln!("[index] warning: failed to crawl {url}: {e}");
             }
             Ok(CrawledPage {
@@ -296,6 +307,8 @@ fn run_check(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
             .map_err(|e| AppError::Internal(anyhow::anyhow!("serialising report: {e}")))?;
         crate::util::safe_io::safe_write(report_path, content.as_bytes())
             .map_err(|e| AppError::User(format!("writing report: {e}")))?;
+        // stderr-ok: (b) progress line — stdout carries the JSON report
+        // (below); the report file save confirmation is stderr-only status.
         eprintln!("[index] drift report written to {}", report_path.display());
     }
 

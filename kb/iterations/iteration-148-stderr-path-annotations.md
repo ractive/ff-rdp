@@ -2,7 +2,7 @@
 title: "Iteration 148: annotate the legitimate stderr eprintln! long tail"
 type: iteration
 date: 2026-08-12
-status: planned
+status: done
 branch: iter-148/stderr-path-annotations
 depends_on:
   - kb/iterations/iteration-145-error-envelope-completeness.md
@@ -13,7 +13,8 @@ dogfood_path: |
   # that check does not flag now carries a `// stderr-ok: <reason>` comment
   # explaining why it is legitimately stderr, so a future sweep doesn't have
   # to re-derive the classification from scratch.
-tags: [iteration]
+tags:
+  - iteration
 ---
 
 # Iteration 148: annotate the legitimate stderr eprintln! long tail
@@ -45,20 +46,22 @@ technically broken. Its value is documentation: the next sweep should be able to
 ## Tasks
 
 ### A. Annotate the long tail
-- [ ] Re-run the enumeration from iter-145's Resolution section (or `check-error-envelope-paths`'s
+- [x] Re-run the enumeration from iter-145's Resolution section (or `check-error-envelope-paths`'s
       own scan minus its Exit-bypass filter) to get the current, authoritative site list — file
       contents may have drifted since iter-145 landed.
-- [ ] For each site, add `// stderr-ok: <reason>` and classify (b) or (c) in the comment text.
-- [ ] Spot-check a handful under `--verbose` / with `FF_RDP_TRACE_RAW` etc. to confirm the
+- [x] For each site, add `// stderr-ok: <reason>` and classify (b) or (c) in the comment text.
+- [x] Spot-check a handful under `--verbose` / with `FF_RDP_TRACE_RAW` etc. to confirm the
       stderr output described in each comment still matches reality.
 
-## Acceptance Criteria [0/1]
+## Acceptance Criteria [1/1]
 
-- [ ] unit_148_all_commands_eprintln_annotated: a repo-level check (extend
-      `check-error-envelope-paths` or add a small companion check) confirms every `eprintln!`
+- [x] unit_148_all_commands_eprintln_annotated: new companion check
+      `check-stderr-annotations` (`crates/xtask/src/check_stderr_annotations.rs`,
+      wired into `check-iteration-ready` and CI) confirms every `eprintln!`
       under `crates/ff-rdp-cli/src/commands/` (excluding `#[cfg(test)]` modules) has a
-      `// stderr-ok:` comment on or within two lines above it, OR is one already required to
-      route through the envelope (i.e. already caught by the Exit-bypass check).
+      `// stderr-ok:` comment on or within two lines above it. All 41 pre-existing sites
+      across 15 files were annotated to make it pass; `cargo run -p xtask --
+      check-stderr-annotations` — PASS.
 
 ## Design notes
 
@@ -66,6 +69,42 @@ Not a live-Firefox-behavior change, so no live test is required for Theme A itse
 static/non-live repo check, matching Theme C's own cost profile ("cheap, non-live"). If Theme B's
 scope ends up in play (trimming a genuine duplicate), that specific fix would need its own named
 test per CLAUDE.md's normal convention.
+
+## Resolution
+
+Theme B was not invoked: every site the sweep found was cleanly (b) warn-and-continue /
+debug-diagnostic / progress-line, with exactly one (c) already-enveloped duplicate
+(`a11y.rs`'s unconditional `--native` restore-failure warning, which duplicates
+`meta.service_restore_error` — iter-149 made it unconditional deliberately, so it's a kept
+duplicate, not a bug to trim).
+
+41 `eprintln!` sites across 15 files were annotated:
+
+| File | Sites | Classification |
+|---|---|---|
+| `a11y.rs` | 8 | 7×(b) debug/`--verbose`, 1×(c) enveloped duplicate |
+| `index.rs` | 7 | (b) progress lines / warn-and-continue |
+| `network_events.rs` | 5 | (b) `hint:` best-effort fallback |
+| `console.rs` | 3 | (b) debug/`--verbose` |
+| `connect_tab.rs` | 2 | (b) debug/warn-and-continue |
+| `run.rs` | 2 | (b) progress line + warn-and-continue |
+| `sources.rs` | 2 | (b) debug/`--verbose` |
+| `navigate.rs`, `wait.rs`, `cascade.rs`, `network.rs`, `eval.rs`, `nav_action.rs`, `record.rs`, `launch.rs` | 1 each | (b) warn-and-continue / debug / deprecation / hint / progress |
+
+Spot-checked two sites without a live Firefox connection (none was running in this session):
+`wait.rs`'s `--timeout` deprecation warning fires correctly before the connection attempt, and
+`record.rs`'s "recording started:" message matches the actual `record start`/`record stop`
+output. Both confirm the comment text against the real invocation. The rest were verified by
+reading the surrounding code (guard conditions, doc comments) rather than a live run — no
+`eprintln!` semantics changed, so risk of comment/behavior drift is confined to the two
+`--verbose`-gating patterns already exercised above.
+
+`check-error-envelope-paths` (iter-145) is left unmodified — Theme B found no bug shape to
+harden it against. A new companion check, `check-stderr-annotations`
+(`crates/xtask/src/check_stderr_annotations.rs`), enforces the annotation coverage this
+iteration establishes; both share a new `crates/xtask/src/stderr_scan.rs` helper module for
+the directory walk and `#[cfg(test)]`-module exclusion they have in common. Wired into
+`check-iteration-ready` (step 12) and CI (`.github/workflows/ci.yml`).
 
 ## Out of scope
 

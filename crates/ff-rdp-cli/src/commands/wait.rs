@@ -31,6 +31,7 @@ pub struct WaitOptions<'a> {
 fn warn_if_timeout_alias_used() {
     let used = std::env::args().any(|a| a == "--timeout" || a.starts_with("--timeout="));
     if used {
+        // stderr-ok: (b) deprecation warning — see the doc comment above.
         eprintln!(
             "warning: --timeout is deprecated for `wait`, use --timeout-ms instead \
              (this alias will be removed in a future release)"

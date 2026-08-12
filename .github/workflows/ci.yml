@@ -167,6 +167,11 @@ jobs:
         # followed by AppError::Exit(N), the bare-stderr-then-bypass idiom that let
         # click-time JS exceptions skip the JSON error envelope pre-iter-145.
         run: cargo run -p xtask -- check-error-envelope-paths
+      - name: Check stderr annotations (iter-148)
+        # Fails if an eprintln! in crates/ff-rdp-cli/src/commands/ (outside
+        # #[cfg(test)] modules) lacks a `// stderr-ok: <reason>` comment, so the
+        # iter-148 annotation sweep can't silently rot as new eprintln! sites land.
+        run: cargo run -p xtask -- check-stderr-annotations
 
   # iter-75c: PR-time smoke that proves `gh attestation verify` will succeed
   # against a freshly built artifact. Builds the Linux x86_64 CLI, runs
