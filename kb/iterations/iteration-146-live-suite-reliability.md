@@ -1,17 +1,19 @@
 ---
 branch: iter-146/live-suite-reliability
 date: 2026-08-11
-depends_on: [kb/iterations/iteration-142-session-hygiene.md]
+depends_on:
+  - kb/iterations/iteration-142-session-hygiene.md
 dogfood_path: |
   FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli -- --include-ignored --test-threads=1
   pgrep -fl 'firefox.*ff-rdp-profile'
   # → after the suite exits, zero ff-rdp-owned Firefox processes may remain and
   #   zero ff-rdp-profile-* directories may be left pinned
 first_call_sites: []
-status: in-review
+status: completed
 title: "Iteration 146: live suite reliability — leaked Firefox, order-dependent tests, daemon-parity flake"
 type: iteration
-tags: [iteration]
+tags:
+  - iteration
 ---
 
 # Iteration 146: live suite reliability — leaked Firefox, order-dependent tests, daemon-parity flake
