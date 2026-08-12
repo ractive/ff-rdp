@@ -94,8 +94,7 @@ appears.
 - [x] e2e_145_no_unenveloped_error_paths: a repo-level check enumerates error-path `eprintln!`
       calls under `crates/ff-rdp-cli/src/commands/` and fails on any that is neither enveloped
       nor annotated with a justification comment
-- [x] unit_145_click_exception_maps_to_user_error_type: a thrown JS exception during click maps
-      to `error_type: "User"`, not `Internal`
+- [x] unit_145_click_exception_maps_to_user_error_type: a thrown JS exception during click maps to `error_type: "User"`, not `Internal`
 
 ## Notes
 
