@@ -112,3 +112,19 @@ Same independence rule as iteration-142: these three sub-themes don't depend on 
 Theme F still can't be reproduced in whatever environment implements this plan, split it into its
 own plan again rather than blocking C/D, and say so explicitly rather than silently dropping the
 AC.
+
+- **Precedent from [[iteration-143-native-a11y-tree]]** (merged ahead of this plan landing): two
+  patterns there are directly reusable here.
+  1. *Restore-only-what-you-changed* (DEC-027): `AccessibilityActor::enable_service` is only
+     paired with a matching `disable_service` when the caller's own opt-in call is what turned the
+     state on, never when it was already in that state for another reason. Theme C's
+     `auto_consent` field-honesty redesign is the same shape of problem (a command reporting on
+     browser-global/session state it did not unilaterally create) — worth checking whether the
+     same "did I cause this, or was it already true" check applies before inventing a new
+     contract.
+  2. *Bounded deadlines on RDP calls that can stall instead of error* (`A11Y_WALKER_TIMEOUT`,
+     iter-143 Theme C, working around the iter-136 walker stall): if Theme D's screenshot-stitch
+     investigation or Theme F's locale reproduction turns up an RDP call that blocks instead of
+     failing fast, narrowing the transport's read timeout around just that call (via
+     `RdpTransport::set_read_timeout`/`read_timeout`, restoring the previous value afterward) is
+     the established pattern rather than a bespoke one.
