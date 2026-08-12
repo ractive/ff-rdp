@@ -12,13 +12,17 @@ dogfood_path: |
   # → must return the platform tree (roles like "document"/"paragraph"),
   #   not the DOM-derived one (roles like "generic")
 first_call_sites:
-  - primitive: "AccessibilityActor::enable_service/disable_service (ff-rdp-core) called from commands::a11y::run_native_opt_in for the --native opt-in path"
-    site: "crates/ff-rdp-cli/src/commands/a11y.rs"
-  - primitive: "connection_meta::merge_source — meta.source/source_reason on the a11y tree, --critical, and contrast output"
-    site: "crates/ff-rdp-cli/src/commands/a11y.rs"
-  - primitive: "connection_meta::merge_source on a11y contrast output"
-    site: "crates/ff-rdp-cli/src/commands/a11y_contrast.rs"
-status: in-review
+  - primitive: >-
+      AccessibilityActor::enable_service/disable_service (ff-rdp-core) called from
+      commands::a11y::run_native_opt_in for the --native opt-in path
+    site: crates/ff-rdp-cli/src/commands/a11y.rs
+  - primitive: >-
+      connection_meta::merge_source — meta.source/source_reason on the a11y tree,
+      --critical, and contrast output
+    site: crates/ff-rdp-cli/src/commands/a11y.rs
+  - primitive: connection_meta::merge_source on a11y contrast output
+    site: crates/ff-rdp-cli/src/commands/a11y_contrast.rs
+status: completed
 ---
 
 # Iteration 143: decide and expose how `ff-rdp a11y` gets its tree
