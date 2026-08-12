@@ -107,11 +107,17 @@ browser was left degraded. Keep the success-path notice verbose-gated — that o
 
 - [x] live_149_restore_failure_reported_in_meta: when `disable_service` fails after ff-rdp
       enabled the service, the JSON envelope carries the left-enabled signal and the reason,
-      and the walked tree is still returned in `results`
+      and the walked tree is still returned in `results` — *the restore failure is **induced**
+      via `FF_RDP_A11Y_FORCE_RESTORE_FAILURE` actor-boundary injection (a real `noSuchActor`
+      error from real Firefox, not a mock); real Firefox does not spontaneously fail a restore
+      on macOS/Linux, per this plan's Notes*
 - [x] live_149_successful_restore_reports_clean: a normal `--native` run that restores the
       service reports no left-enabled signal, and the service is observably disabled afterwards
 - [x] live_149_service_already_on_is_not_touched: when the service was already enabled before
-      the command, ff-rdp neither disables it nor claims to have left it enabled
+      the command, ff-rdp neither disables it nor claims to have left it enabled — *the
+      "already enabled" precondition is constructed with a second, independently-held
+      connection (`hold_service_enabled`), because one invocation's own connection does not
+      survive into the next*
 - [x] unit_149_restore_outcome_maps_to_meta: each `RestoreOutcome` variant maps to the intended
       envelope shape, including the not-needed case
 
