@@ -380,6 +380,38 @@ const WATCHER_STARTUP_RETRY: Duration = Duration::from_millis(2500);
 /// later, so we keep trying for the practical lifetime of an idle daemon.
 const WATCHER_BACKGROUND_RETRY: Duration = Duration::from_mins(10);
 
+/// How long to wait for a just-subscribed top-level target to prove itself
+/// stable before trusting it (iter-146 Theme C).
+///
+/// Reproduced live and confirmed on the wire (Firefox 153, headless): a
+/// freshly-launched profile's very first tab starts on a **placeholder**
+/// `about:blank` `WindowGlobalTarget` that Firefox tears down and replaces
+/// within microseconds of being observed — independent of any navigation.
+/// `establish_watcher`'s `watchTargets("frame")` catch-up burst can win the
+/// race against that teardown, subscribing to the placeholder a moment
+/// before Firefox destroys it. When that happens the daemon logs exactly
+/// `target-available-form(about:blank)` immediately followed by
+/// `target-destroyed-form` (171µs apart in the captured repro) and then
+/// **nothing else, ever** — no replacement `target-available-form` for the
+/// real tab arrives on this watcher for the rest of the session, even
+/// though the tab itself keeps working fine (`navigate`/`eval` succeed
+/// normally; only the target-lifecycle subscription is orphaned). This was
+/// the `live_137_frame_targets_via_daemon` / `live_137_click_cross_origin_via_daemon`
+/// flake's remaining cause after the iter-146 `event_sink` fix closed the
+/// separate catch-up-burst-drop race: `target_count` reproducibly got stuck
+/// at exactly `1` (the placeholder's own catch-up) instead of climbing
+/// past it into a stable second, third target once observed.
+///
+/// [`establish_watcher_with_retry`] waits this long, once, before the
+/// *first* subscribe attempt — giving Firefox's placeholder→real promotion
+/// (a startup-only event) time to finish before the daemon ever calls
+/// `getWatcher`/`watchTargets`, so the catch-up burst it eventually
+/// receives describes the settled, stable target instead of a dying one.
+/// Bounded well inside [`WATCHER_STARTUP_RETRY`]'s 2.5 s budget so a normal
+/// daemon spawn still registers comfortably inside the client's 5 s
+/// `wait_for_registry` window.
+const WATCHER_SETTLE_DELAY: Duration = Duration::from_millis(350);
+
 /// A successfully-established resource watcher: the watcher actor ID plus the
 /// `ResourceCommand` bus and typed receiver the dispatcher fans events through
 /// (iter-123 Theme A).
@@ -443,6 +475,11 @@ fn establish_watcher_with_retry(
     transport: &mut RdpTransport,
     budget: Duration,
 ) -> Option<WatcherSetup> {
+    // iter-146 Theme C: see WATCHER_SETTLE_DELAY's doc for the race this
+    // closes. Only worth paying once, before the first attempt — by the
+    // time any retry loop below runs, the settle window has already
+    // elapsed in wall-clock terms.
+    thread::sleep(WATCHER_SETTLE_DELAY);
     let deadline = Instant::now() + budget;
     loop {
         match establish_watcher(transport) {
@@ -510,6 +547,14 @@ fn background_establish_watcher_loop(
         }
     }
 
+    // iter-146 Theme C: same fix as the startup path in `run_daemon` — install
+    // an event sink before the synchronous `establish_watcher` handshake so a
+    // `target-available-form` catch-up event that races ahead of its RPC
+    // reply is buffered instead of silently dropped by `forward_event`. See
+    // the comment at the startup call site for the full mechanism.
+    let (early_tx, early_rx) = mpsc::channel::<Value>();
+    transport.set_event_sink(Some(early_tx));
+
     // Poll for a tab until one appears, the daemon shuts down, or we exhaust the
     // generous background budget.
     let deadline = Instant::now() + WATCHER_BACKGROUND_RETRY;
@@ -534,6 +579,13 @@ fn background_establish_watcher_loop(
             }
         }
     };
+    // Replay whatever the sink captured into the shared event channel, ahead
+    // of the live pump loop started below, in wire order.
+    for early_event in early_rx.try_iter() {
+        if state.event_tx.send(early_event).is_err() {
+            return;
+        }
+    }
 
     // Publish the watcher actor so the dispatcher recognises its events.
     {
@@ -618,6 +670,25 @@ pub(crate) fn run_daemon(
     // *without* a watcher and hand off to a background establisher thread that
     // keeps trying — the registry is written and the daemon reaches
     // `running:true` either way.
+    // iter-146 Theme C: install an event sink on `transport` BEFORE the
+    // synchronous watcher handshake below.  `watchTargets` delivers a
+    // catch-up burst of `target-available-form` events for every
+    // already-existing target, and Firefox is not required to send them
+    // *after* the `watchTargets` reply — on the wire they can arrive
+    // interleaved with (or even before) it.  `recv_reply_from` forwards any
+    // such stray event via `RdpTransport::forward_event`, which silently
+    // drops it when no sink is installed (`event_sink: None` from
+    // `connect_raw`).  With no sink here, that race made `target_count` /
+    // `live_target_count` stay 0 for an entire daemon session whenever the
+    // catch-up burst won the race — reproduced live (~1/3 of runs) as the
+    // `live_137_frame_targets_via_daemon` / `live_137_click_cross_origin_via_daemon`
+    // flake: `wait_for_live_targets` timing out with `target_count: 0` despite
+    // a real navigation having already happened. Buffered here and replayed
+    // into `state.event_tx` (in wire order, ahead of whatever the reader
+    // thread delivers live after the handshake) once that channel exists.
+    let (early_tx, early_rx) = mpsc::channel::<Value>();
+    transport.set_event_sink(Some(early_tx));
+
     let established = establish_watcher_with_retry(&mut transport, WATCHER_STARTUP_RETRY);
     let initial_watcher_actor = established
         .as_ref()
@@ -659,6 +730,16 @@ pub(crate) fn run_daemon(
     // unbounded growth if the dispatcher falls behind; large enough that the
     // reader never blocks in normal SPA traffic (hundreds of events/s).
     let (event_tx, event_rx) = mpsc::sync_channel::<Value>(4096);
+
+    // iter-146 Theme C: replay whatever `establish_watcher_with_retry`'s
+    // sink captured (see the comment at its installation above) into the
+    // real event channel, in the order Firefox sent it, before the
+    // dispatcher thread starts draining `event_rx` below. `try_iter` is
+    // exhaustive-but-nonblocking: `early_tx` was only ever held by the now-
+    // finished synchronous handshake, so there is nothing left to arrive.
+    for early_event in early_rx.try_iter() {
+        let _ = event_tx.send(early_event);
+    }
 
     // Grip release queue (iter-76 Theme B, wired in iter-76b): watcher event
     // parsers wrap grip actor IDs in ResourceGripGuard instances backed by
@@ -2731,6 +2812,23 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// AC `unit_watcher_settle_delay_fits_inside_startup_retry_budget`
+    /// (iter-146 Theme C): the one-time settle delay
+    /// `establish_watcher_with_retry` pays before its first subscribe
+    /// attempt must leave room for at least one real attempt inside
+    /// `WATCHER_STARTUP_RETRY`'s budget — otherwise a daemon spawn against a
+    /// slow-starting Firefox could burn the whole retry window on the delay
+    /// alone and never establish a watcher at all.
+    #[test]
+    fn unit_watcher_settle_delay_fits_inside_startup_retry_budget() {
+        assert!(
+            WATCHER_SETTLE_DELAY < WATCHER_STARTUP_RETRY,
+            "WATCHER_SETTLE_DELAY ({WATCHER_SETTLE_DELAY:?}) must leave room for at least one \
+             establish_watcher attempt inside WATCHER_STARTUP_RETRY's budget \
+             ({WATCHER_STARTUP_RETRY:?})"
+        );
+    }
 
     /// AC `unit_establish_watcher_tabless_is_non_fatal` (iter-123 Theme A):
     /// when `listTabs` returns zero tabs, `establish_watcher` returns `Ok(None)`
