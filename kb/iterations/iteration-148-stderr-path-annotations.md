@@ -55,13 +55,7 @@ technically broken. Its value is documentation: the next sweep should be able to
 
 ## Acceptance Criteria [1/1]
 
-- [x] unit_148_all_commands_eprintln_annotated: new companion check
-      `check-stderr-annotations` (`crates/xtask/src/check_stderr_annotations.rs`,
-      wired into `check-iteration-ready` and CI) confirms every `eprintln!`
-      under `crates/ff-rdp-cli/src/commands/` (excluding `#[cfg(test)]` modules) has a
-      `// stderr-ok:` comment on or within two lines above it. All 41 pre-existing sites
-      across 15 files were annotated to make it pass; `cargo run -p xtask --
-      check-stderr-annotations` — PASS.
+- [x] unit_148_all_commands_eprintln_annotated: `check_stderr_annotations` (new xtask companion check, `crates/xtask/src/check_stderr_annotations.rs`) confirms every `eprintln!` under `crates/ff-rdp-cli/src/commands/` (excluding `#[cfg(test)]` modules) has a `// stderr-ok:` comment on or within two lines above it. All 41 pre-existing sites across 15 files were annotated to make it pass; wired into `check-iteration-ready` and CI. `cargo run -p xtask -- check-stderr-annotations` — PASS.
 
 ## Design notes
 
