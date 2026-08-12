@@ -12,7 +12,7 @@ dogfood_path: |
   ff-rdp screenshot --full-page --port 6100
   # → BBC News full-page capture must not duplicate the sticky header
 first_call_sites: []
-status: planned
+status: completed
 ---
 
 # Iteration 144: session hygiene follow-up — consent honesty, screenshot dedup, locale
