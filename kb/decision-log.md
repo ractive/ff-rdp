@@ -462,3 +462,58 @@ only against the rare writer.
 
 **Applies to**: `crates/ff-rdp-core/src/transport.rs`,
 `crates/ff-rdp-core/src/specs/types.rs`, iter-150.
+
+## DEC-030: a ticked `live_*` AC must carry `[verified: <YYYY-MM-DD>, <measured result>]`; the fidelity gate states its own blindness
+
+**Decision**: `ac-fidelity-check.sh` gains two negative checks and one honest
+success message (iter-154):
+
+1. A **ticked** AC whose full text (bullet line plus its indented continuation
+   lines, whitespace collapsed) contains one of eight literal phrases — `not
+   exercised`, `not run`, `never run`, `not executed`, `implemented and
+   compiled`, `not verified`, `could not run`, `time budget` — fails,
+   case-insensitively, regardless of whether its slug resolves in the diff.
+   A `[deferred — …]` annotation short-circuits first, so the sanctioned way to
+   say "this did not happen" still passes.
+2. A **ticked** AC naming a `live_*` test must carry a
+   `[verified: <YYYY-MM-DD>, <measured result>]` annotation. The gate requires
+   an ISO date and at least one further digit inside the bracket; it does not
+   and cannot validate the number. Non-live tests are exempt — they run in CI,
+   so `cargo test --workspace` is their run evidence.
+3. The PASS line, the script header, `CLAUDE.md` and `CONTRIBUTING.md` now say
+   the gate verifies that ticked ACs *reference* resolvable evidence and that it
+   cannot verify any test was executed.
+
+The evidence heuristics themselves keep reading only the AC's **first** line.
+Widening their input would hand them more tokens to match and could turn a
+should-fail plan green — the pinned `61v=FAIL` replay baseline exists to catch
+exactly that. Only the two new checks, which can only ever add failures, read
+the folded text.
+
+**Why**: on 2026-08-12 PR #188 ([[iteration-151-residual-live-firefox-leak]])
+ticked two ACs whose own continuation text read *"implemented and compiled;
+gated behind `FF_RDP_LIVE_SUITE_CHECK=1` … and not exercised end-to-end in this
+session's time budget"*. `ac-fidelity-check`: PASS. `check-iteration-ready`:
+11/11 PASS. Replaying the plan as it stood at `6d07c8c` through the pre-fix
+script reproduces exit 0. Two mechanisms combined: the per-line loop never saw
+the continuation lines where the confession lived, and the surviving heuristic —
+"the named slug resolves to an `fn` in the diff" — is satisfied by writing the
+function and never calling it.
+
+Theme B (the `[verified: …]` requirement) is friction, and forgeable, which is
+why it was weighed rather than assumed. It ships because Theme A alone **rewards
+silence**: once a denial list exists, the honest-but-ticking case becomes the
+silent-ticking case, and this repo has already watched an iteration plan get
+reworded to route around a gate. Theme A catches a confession; Theme B requires
+an assertion. Restricting it to `live_*` keeps the cost where the risk is —
+live tests are `#[ignore]`-gated, so nothing downstream of this gate will ever
+execute them.
+
+What this does **not** buy: a diff-reading script still cannot verify a test
+ran, and no run log exists for it to read (the loop never invokes
+`cargo test-live`). The ceiling was accepted, not designed away — hence Theme C.
+
+**Applies to**: all four copies of `ac-fidelity-check.sh`
+(`~/.claude/skills/{ralph-loop,new-ralph-loop}/scripts/` and both `tools/`
+mirrors), `tools/tests/ac-fidelity-check/`,
+`crates/xtask/tests/ac_fidelity_check.rs`, iter-154.

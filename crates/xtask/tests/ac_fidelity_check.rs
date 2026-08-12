@@ -143,3 +143,112 @@ title: synthetic
          --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
 }
+
+// --- iter-154: the gate never established that a named test *ran*. ------------
+
+/// Run the gate from the real repo root against a checked-in fixture plan.
+fn run_gate(fixture: &str, range: &str) -> (bool, String) {
+    let root = repo_root();
+    let out = Command::new("bash")
+        .arg(script_path())
+        .arg("--plan")
+        .arg(root.join("tools/tests/ac-fidelity-check").join(fixture))
+        .arg("--range")
+        .arg(range)
+        .current_dir(&root)
+        .output()
+        .expect("run ac-fidelity-check.sh");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), combined)
+}
+
+#[test]
+fn shell_154_unrun_ac_fails() {
+    // The fixture's AC names a test that really exists under crates/, so every
+    // pre-154 heuristic is satisfied; the only defect is that the AC's own
+    // continuation text admits the test was never exercised.
+    let (passed, output) = run_gate("unrun-live-ac.md", "HEAD..HEAD");
+    assert!(
+        !passed,
+        "gate must reject a ticked AC that declares its own non-execution.\n{output}"
+    );
+    assert!(
+        output.contains("declares its own non-execution"),
+        "expected the Theme A diagnostic, not an unrelated failure.\n{output}"
+    );
+    assert!(
+        output.contains("live_110_replace_never_kills_foreign_firefox"),
+        "failure output must name the offending AC.\n{output}"
+    );
+    assert!(
+        output.contains("Untick it") && output.contains("[deferred — new plan:"),
+        "failure output must suggest untick-or-defer.\n{output}"
+    );
+}
+
+#[test]
+fn shell_154_evidenced_ac_passes() {
+    // Same AC plus a `[verified: <date>, <measurement>]` annotation.
+    let (passed, output) = run_gate("evidenced-live-ac.md", "HEAD..HEAD");
+    assert!(
+        passed,
+        "a live AC carrying run evidence must pass.\n{output}"
+    );
+
+    // A legitimate `[deferred — new plan: …]` necessarily carries the same
+    // wording Theme A denies. The deferral must win.
+    let (passed, output) = run_gate("deferred-ac.md", "HEAD..HEAD");
+    assert!(
+        passed,
+        "Theme A's denial list must not swallow a legitimate deferral.\n{output}"
+    );
+}
+
+#[test]
+fn shell_154_iter151_prefix_would_have_failed() {
+    // Replay the real plan text that motivated iter-154, rather than a case
+    // invented to be catchable. Before this iteration the gate exited 0 here.
+    let (passed, output) = run_gate("iter151-prefix-ac.md", "6d07c8c^..6d07c8c");
+    assert!(
+        !passed,
+        "iteration-151's pre-fix AC block must not pass the gate.\n{output}"
+    );
+    assert!(
+        output.contains("declares its own non-execution")
+            && output.contains("live_151_chunk_a_leaves_no_orphans"),
+        "the chunk-A AC must fail on its 'not exercised' text specifically.\n{output}"
+    );
+
+    // Guard the fixture against drift or invention: it must be the Acceptance
+    // Criteria block of iteration-151 exactly as it stood at 6d07c8c.
+    let show = Command::new("git")
+        .args([
+            "show",
+            "6d07c8c:kb/iterations/iteration-151-residual-live-firefox-leak.md",
+        ])
+        .current_dir(repo_root())
+        .output()
+        .expect("git show");
+    if !show.status.success() {
+        eprintln!("6d07c8c unreachable (shallow clone?) — skipping fixture provenance check");
+        return;
+    }
+    let plan = String::from_utf8_lossy(&show.stdout);
+    let expected: String = plan
+        .lines()
+        .skip_while(|l| !l.starts_with("## Acceptance Criteria"))
+        .take_while(|l| !l.starts_with("## ") || l.starts_with("## Acceptance Criteria"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let fixture =
+        fs::read_to_string(repo_root().join("tools/tests/ac-fidelity-check/iter151-prefix-ac.md"))
+            .expect("read fixture");
+    assert!(
+        fixture.contains(expected.trim()),
+        "fixture no longer matches iteration-151's AC block at 6d07c8c — do not edit it"
+    );
+}

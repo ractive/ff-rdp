@@ -14,7 +14,7 @@ dogfood_path: |
   cargo run -p xtask -- check-discipline-regression
   # → replay baselines OK (61v=FAIL, 61t=PASS)
 first_call_sites: []
-status: planned
+status: in-review
 title: "Iteration 154: ac-fidelity-check passes ACs whose tests never ran"
 type: iteration
 tags:
@@ -125,21 +125,66 @@ see `tools/tests/lint-dogfood-script/` and `tools/tests/branch-protection/`):
 - `deferred-ac.md` — the existing `[deferred — new plan: …]` form → still PASS (guards against
   Theme A's denial list swallowing a legitimate deferral)
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
-- [ ] shell_154_unrun_ac_fails: `ac-fidelity-check.sh` exits 1 on
+- [x] `shell_154_unrun_ac_fails`: `ac-fidelity-check.sh` exits 1 on
       `tools/tests/ac-fidelity-check/unrun-live-ac.md`, and its output names the offending AC and
       suggests untick-or-defer
-- [ ] shell_154_evidenced_ac_passes: the same script exits 0 on
+- [x] `shell_154_evidenced_ac_passes`: the same script exits 0 on
       `tools/tests/ac-fidelity-check/evidenced-live-ac.md` and on
       `tools/tests/ac-fidelity-check/deferred-ac.md` — a legitimate deferral is not caught by
       Theme A's denial list
-- [ ] shell_154_iter151_prefix_would_have_failed: replaying iteration-151's **pre-fix** AC block
-      (the two chunk ACs ticked with "not exercised end-to-end" text, recoverable from `6d07c8c`)
-      makes the gate exit 1 — proving this iteration fixes the case that motivated it, rather
-      than a case invented to be catchable
-- [ ] check_154_baselines_unmoved: `cargo run -p xtask -- check-discipline-regression` still
+- [x] `shell_154_iter151_prefix_would_have_failed`: replaying iteration-151's **pre-fix** AC block
+      (the two chunk ACs ticked with self-declared non-execution wording, recoverable from
+      `6d07c8c`) makes the gate exit 1 — proving this iteration fixes the case that motivated it,
+      rather than a case invented to be catchable
+- [x] check_154_baselines_unmoved: after the `ac-fidelity-check.sh` change,
+      `cargo run -p xtask -- check-discipline-regression` still
       reports `61v=FAIL, 61t=PASS` and both mirrors in sync after the change
+
+## Resolution
+
+All three themes shipped, plus a structural fix the plan did not anticipate.
+
+**The plan's diagnosis was incomplete.** It attributed the iter-151 pass to the slug heuristic
+alone. Replaying `6d07c8c` through the pre-fix script (exit 0, confirmed on the wire before any
+edit) showed a second, independent cause: the script's loop matched `- [x] <text>` line by line,
+so the AC's *continuation* lines — where the wording about non-execution actually lived — were
+never read at all. A denial list bolted onto the old loop would have caught nothing. So the AC
+block is now folded (bullet + indented continuations, whitespace collapsed) before checking.
+The evidence heuristics deliberately keep reading only the first line: widening their input
+hands them more tokens to match and can turn a should-fail plan green, which is what the pinned
+`61v=FAIL` baseline guards. Only the two new checks — which can only ever add failures — read
+the folded text.
+
+**Theme A** (denial list, eight literal phrases, case-insensitive) fires after the
+`[deferred — …]` short-circuit, so a legitimate deferral still passes even though it necessarily
+carries the same wording. `deferred-ac.md` pins that.
+
+**Theme B shipped**, against the plan's invitation to drop it. The argument that decided it:
+Theme A alone rewards silence. It catches a *confession*, and once it exists the honest-but-ticking
+case becomes the silent-ticking case — and this repo has already watched a plan get reworded to
+route around a gate. Theme B requires an *assertion*: `[verified: <YYYY-MM-DD>, <measured
+result>]`, ISO date plus at least one further digit in the bracket. It is forgeable, like every
+check a diff-reading script can make; the cost is bounded by restricting it to `live_*` ACs,
+where the risk actually is (live tests are `#[ignore]`-gated, so nothing downstream ever runs
+them). Recorded as [[decision-log]] DEC-030. Note the fixtures show Theme B doing work Theme A
+cannot: iter-151's chunk-B AC never used a denied phrase — it said "same status as
+`live_151_chunk_a_leaves_no_orphans` above" — and is caught only by the missing run evidence.
+
+**Theme C**: the PASS line, the script header/`--help`, `CLAUDE.md` and `CONTRIBUTING.md` now
+state that the gate reads a plan and a diff and cannot verify a test was executed. Confirmed
+there is no run log it could consult instead: neither ralph-loop nor new-ralph-loop ever invokes
+`cargo test-live`.
+
+**What this does not fix.** A diff-reading script still cannot verify a test ran; the ceiling in
+the plan's "What is and is not achievable" stands. Both new checks are satisfiable by an agent
+willing to type a false sentence.
+
+**Verification** (2026-08-12): pre-fix replay of `6d07c8c` exits 0; post-fix exits 1 naming
+`live_151_chunk_a_leaves_no_orphans` on its non-execution wording. All four copies of the script
+are byte-identical (`md5 a67a33d3…`). `check-discipline-regression`: mirrors in sync (3 + 5
+files), replay baselines OK (61v=FAIL, 61t=PASS).
 
 ## Notes
 
