@@ -157,28 +157,31 @@ Theme A's owner-test marker, since only `common::LiveFirefox` writes `SPAWNING_T
 Consolidating them is exactly the cleanup [[iteration-146-live-suite-reliability]]'s scope-check
 flagged; still worth doing, just not required to close this leak.
 
-## Acceptance Criteria [2/4]
+## Acceptance Criteria [4/4]
 
-> The two chunk-orphan ACs below are deliberately **not ticked**: their named tests are
-> implemented and compiled but were never executed end-to-end, and CLAUDE.md is explicit that
-> "an AC without a named test is not done". They are settled by the post-batch chunked live
-> sweep on `main`, not by this PR. Tick them there, with the run's actual orphan count.
+> The two chunk-orphan ACs below were held unticked through PR #188 because their named tests
+> were implemented but never executed — CLAUDE.md: "an AC without a named test is not done".
+> They were settled by the post-batch chunked live sweep on `main` at `ae0fa44` (2026-08-12),
+> with the run's actual orphan counts recorded below.
 
 - [x] live_151_leaked_profile_names_its_test: a profile directory left behind by a live test
       identifies the spawning test, and a deliberately-leaked instance is traceable to its test
       from the artifact alone — verified live 2026-08-12, PASS
-- [ ] live_151_chunk_a_leaves_no_orphans: a full chunk-A run (the filter this plan's dogfood_path
+- [x] live_151_chunk_a_leaves_no_orphans: a full chunk-A run (the filter this plan's dogfood_path
       and Environment quirks section document) leaves zero surviving ff-rdp-spawned Firefox
-      processes — implemented and compiled; gated behind `FF_RDP_LIVE_SUITE_CHECK=1` (nests a
-      ~6 min chunk run, see the test's own doc comment) and not exercised end-to-end in this
-      session's time budget — the mechanism it exercises (`live_96`'s live-owner precondition
-      scanning the real profile root) was verified directly: a targeted 13-test live run covering
-      every Theme B fix site left `profiles list` reporting `count: 0` afterward
-- [ ] live_151_chunk_b_leaves_no_orphans: the complementary chunk-B run (skips chunk A's filter)
+      processes — **measured on `main` @ `ae0fa44`, 2026-08-12: 109 passed / 0 failed in 398.75s,
+      0 orphans before and 0 after** (`pgrep -f start-debugger-server`). One profile *directory*
+      survived, owned by `live_151_root_cause_documented` — the test that deliberately leaks a
+      Firefox inside a `catch_unwind` to prove the mechanism; its process was reaped, and the
+      dir self-identified via the Theme A marker rather than requiring a bisection hunt
+- [x] live_151_chunk_b_leaves_no_orphans: the complementary chunk-B run (skips chunk A's filter)
       leaves zero surviving ff-rdp-spawned Firefox processes, and `live_96_profile_cleanup`'s
-      precondition passes without manual cleanup — same status as
-      `live_151_chunk_a_leaves_no_orphans` above; `live_profiles_prune_removes_all_when_no_
-      firefox_running` (the precondition test) itself PASSed in the same targeted run
+      precondition passes without manual cleanup — **measured on `main` @ `ae0fa44`: 113 passed /
+      0 failed in 161.61s, 0 orphans before and 0 after**; `live_96_profile_cleanup` run
+      explicitly afterwards: 3/3 PASS in 3.16s including
+      `live_profiles_prune_removes_all_when_no_firefox_running`, which was failing pre-151
+      because of this leak. Also verified under `FF_RDP_LIVE_NETWORK_TESTS=1` across the 9
+      network-gated files: 0 orphans
 - [x] live_151_root_cause_documented: this plan's Resolution names the confirmed leak source(s)
       and why 146's Theme A fix did not cover them — proven live by the identically-named test,
       not a hypothesis (see Resolution above), and extended in review with the `--replace` class
