@@ -1,0 +1,845 @@
+//! `xtask live-sweep`
+//!
+//! Filed as iter-155: a skipped live test reports green, so a green live
+//! sweep can mean "did not run".
+//!
+//! ## The defect
+//!
+//! Live tests gate themselves twice: `#[ignore]` (skipped unless
+//! `--include-ignored`), and an early runtime `return` when
+//! `FF_RDP_LIVE_TESTS` / `FF_RDP_LIVE_NETWORK_TESTS` is unset. The second gate
+//! is the problem: libtest counts a test that returns without panicking as
+//! **passed**, not ignored. `FF_RDP_LIVE_TESTS=1 cargo test-live` (which
+//! blanket-passes `--include-ignored`) therefore reports every
+//! network-gated test as `ok` even when `FF_RDP_LIVE_NETWORK_TESTS` is unset
+//! — the summary line `N passed; 0 failed` cannot be told apart from `N`
+//! tests having actually exercised Firefox.
+//!
+//! ## The fix
+//!
+//! This module never touches the ~90 individual `#[ignore]`-gated test
+//! bodies (their internal `if !live_tests_enabled() { return; }` checks stay
+//! exactly as they are — now merely redundant, not load-bearing). Instead it
+//! statically classifies each gated test from its own `#[ignore = "…"]`
+//! reason text (an iter-155 audit found every current reason under
+//! `tests/live/` names at least one of `FF_RDP_LIVE_TESTS` /
+//! `FF_RDP_LIVE_NETWORK_TESTS` — a reliable, low-maintenance signal, cheaper
+//! than re-deriving it from the varying body idioms), then drives `cargo
+//! test` in two phases per target:
+//!
+//! 1. **Qualified** tests (every env var they need is actually set) run for
+//!    real, with `--include-ignored` — libtest reports genuine `ok`/`FAILED`.
+//! 2. **Unqualified** tests are selected by exact name *without*
+//!    `--include-ignored` — since they still carry `#[ignore]` and nothing
+//!    forces them to run, libtest reports them as `ignored`, using stable
+//!    Rust's own vocabulary, not a fabricated status.
+//!
+//! The executed count (Theme B) is therefore not inferred from prose — it is
+//! `qualified.len()`, known before a single `cargo test` process is spawned,
+//! and is `0` whenever the relevant env vars are unset.
+//!
+//! `FF_RDP_LIVE_TESTS_RECORD`-driven fixture recording
+//! (`ff-rdp-core/tests/live_record_fixtures.rs`) is out of scope: it has its
+//! own documented one-off workflow and a third env var this classifier does
+//! not model.
+
+use anyhow::{Context, Result, anyhow};
+use clap::Args as ClapArgs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+// ---------------------------------------------------------------------------
+// Args
+// ---------------------------------------------------------------------------
+
+#[derive(ClapArgs)]
+pub struct Args {
+    /// Workspace root. xtask subcommands are invoked via `cargo run -p xtask`
+    /// from the repo root, matching every other `check-*` subcommand's
+    /// default-relative-path convention.
+    #[arg(long, default_value = ".")]
+    pub workspace_root: PathBuf,
+
+    /// Print the qualified/unqualified plan and the resulting executed count
+    /// without invoking `cargo test`.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Classification
+// ---------------------------------------------------------------------------
+
+/// A single `#[ignore]`-gated live test, classified by which env var(s) its
+/// own ignore-reason text names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatedTest {
+    /// Fully-qualified libtest name (`module::fn` for the consolidated
+    /// `ff-rdp-cli` target, bare `fn` for `ff-rdp-core`'s per-file targets).
+    pub full_name: String,
+    pub needs_live: bool,
+    pub needs_network: bool,
+}
+
+/// Scan one file's source for `#[ignore = "REASON"]`-gated `#[test]`
+/// functions whose reason mentions `FF_RDP_LIVE_TESTS` and/or
+/// `FF_RDP_LIVE_NETWORK_TESTS`.
+///
+/// `module_prefix` is prepended as `"{prefix}::{fn}"` when the file is a
+/// `mod` of a consolidated target (`ff-rdp-cli`'s `tests/live/*.rs`); pass
+/// `None` for a file that is itself a standalone integration-test binary
+/// (`ff-rdp-core`'s `tests/live_*.rs`).
+///
+/// The ignore attribute may span multiple lines (a reason string can use `\`
+/// line continuation — see `live_daemon_watch_targets.rs`), and a `#[cfg(…)]`
+/// may sit between the `#[ignore]` and the `fn`. Both are handled by scanning
+/// the whole file as one string rather than line-by-line.
+pub fn scan_source(src: &str, module_prefix: Option<&str>) -> Vec<GatedTest> {
+    let mut out = Vec::new();
+    let bytes = src.as_bytes();
+    let mut pos = 0usize;
+
+    while let Some(rel) = src[pos..].find("#[ignore") {
+        let ignore_start = pos + rel;
+        let mut cursor = ignore_start + "#[ignore".len();
+
+        // Optional `= "REASON"` (REASON may contain escaped quotes/backslashes
+        // and, via `\`-continuation, literal newlines).
+        let mut reason = String::new();
+        let after_ignore = skip_ws(src, cursor);
+        if bytes.get(after_ignore) == Some(&b'=') {
+            let after_eq = skip_ws(src, after_ignore + 1);
+            if bytes.get(after_eq) == Some(&b'"') {
+                let (parsed_reason, end) = parse_quoted_string(src, after_eq + 1);
+                reason = parsed_reason;
+                cursor = end;
+            } else {
+                cursor = after_eq;
+            }
+        }
+
+        // Close the `#[ignore...]` attribute itself.
+        let Some(close_rel) = src[cursor..].find(']') else {
+            pos = ignore_start + 1;
+            continue;
+        };
+        cursor += close_rel + 1;
+
+        // Skip any intervening attributes (e.g. `#[cfg(unix)]`) and
+        // whitespace, then require `fn <name>`.
+        let mut scan = cursor;
+        loop {
+            scan = skip_ws(src, scan);
+            if bytes.get(scan) == Some(&b'#') {
+                if let Some(end_rel) = src[scan..].find(']') {
+                    scan += end_rel + 1;
+                    continue;
+                }
+                break;
+            }
+            break;
+        }
+
+        if reason.contains("FF_RDP_LIVE")
+            && let Some(name) = parse_fn_name(src, scan)
+        {
+            let needs_network = reason.contains("FF_RDP_LIVE_NETWORK_TESTS");
+            let mut needs_live = reason.contains("FF_RDP_LIVE_TESTS");
+            if !needs_live && !needs_network {
+                // Neither literal present despite matching "FF_RDP_LIVE" —
+                // shouldn't happen per the iter-155 audit, but default to
+                // the more conservative requirement rather than silently
+                // treating the test as gate-free.
+                needs_live = true;
+            }
+            let full_name = match module_prefix {
+                Some(m) => format!("{m}::{name}"),
+                None => name,
+            };
+            out.push(GatedTest {
+                full_name,
+                needs_live,
+                needs_network,
+            });
+        }
+
+        pos = ignore_start + 1;
+    }
+
+    out
+}
+
+fn skip_ws(src: &str, mut i: usize) -> usize {
+    let bytes = src.as_bytes();
+    while let Some(&b) = bytes.get(i) {
+        if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    i
+}
+
+/// Parse a `"…"` string literal (with `\`-escapes, including `\`-newline
+/// continuation) starting right after the opening quote. Returns the decoded
+/// reason text and the index right after the closing quote.
+fn parse_quoted_string(src: &str, start: usize) -> (String, usize) {
+    let bytes = src.as_bytes();
+    let mut out = String::new();
+    let mut i = start;
+    while let Some(&b) = bytes.get(i) {
+        match b {
+            b'"' => {
+                return (out, i + 1);
+            }
+            b'\\' => {
+                // Escaped char (or line-continuation newline) — keep the
+                // literal text minus the backslash itself; good enough for
+                // substring matching on env var names.
+                if let Some(&next) = bytes.get(i + 1) {
+                    if next != b'\n' {
+                        out.push(next as char);
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            _ => {
+                out.push(b as char);
+                i += 1;
+            }
+        }
+    }
+    (out, i)
+}
+
+/// Parse `fn <name>` starting at `start` (after skipping whitespace already
+/// done by the caller). Returns `None` if `start` is not `fn `.
+fn parse_fn_name(src: &str, start: usize) -> Option<String> {
+    let rest = &src[start..];
+    let rest = rest.strip_prefix("fn ")?;
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// Scan every `.rs` file directly inside `dir` (non-recursive, matching
+/// `tests/live/`'s flat layout), module-prefixing each by its file stem
+/// except for `main.rs` / `mod.rs` (which only declare `mod` lines).
+pub fn scan_modules_dir(dir: &Path) -> Result<Vec<GatedTest>> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .with_context(|| format!("reading directory {}", dir.display()))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("rs"))
+        .collect();
+    files.sort();
+
+    let mut out = Vec::new();
+    for path in files {
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        let module_prefix = if stem == "main" || stem == "mod" {
+            None
+        } else {
+            Some(stem)
+        };
+        let src = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?
+            .replace("\r\n", "\n");
+        out.extend(scan_source(&src, module_prefix.as_deref()));
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Targets — one per (package, `--test` binary) pair.
+// ---------------------------------------------------------------------------
+
+pub struct SweepTarget {
+    pub package: String,
+    pub test_name: String,
+    pub gated: Vec<GatedTest>,
+}
+
+/// Resolve the fixed set of live-test targets under `workspace_root`:
+/// `ff-rdp-cli`'s consolidated `tests/live/` tree (one binary, many modules),
+/// plus each of `ff-rdp-core`'s standalone `tests/live_*.rs` binaries other
+/// than the fixture-recording tool (see module doc comment).
+pub fn default_targets(workspace_root: &Path) -> Result<Vec<SweepTarget>> {
+    let mut targets = Vec::new();
+
+    let cli_live_dir = workspace_root.join("crates/ff-rdp-cli/tests/live");
+    let cli_gated = scan_modules_dir(&cli_live_dir)
+        .with_context(|| format!("scanning {}", cli_live_dir.display()))?;
+    targets.push(SweepTarget {
+        package: "ff-rdp-cli".to_owned(),
+        test_name: "live".to_owned(),
+        gated: cli_gated,
+    });
+
+    let core_tests_dir = workspace_root.join("crates/ff-rdp-core/tests");
+    let mut core_files: Vec<PathBuf> = std::fs::read_dir(&core_tests_dir)
+        .with_context(|| format!("reading directory {}", core_tests_dir.display()))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("rs"))
+        .collect();
+    core_files.sort();
+
+    for path in core_files {
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        if stem == "live_record_fixtures" {
+            continue;
+        }
+        if !stem.starts_with("live_") {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?
+            .replace("\r\n", "\n");
+        let gated = scan_source(&src, None);
+        if gated.is_empty() {
+            continue;
+        }
+        targets.push(SweepTarget {
+            package: "ff-rdp-core".to_owned(),
+            test_name: stem,
+            gated,
+        });
+    }
+
+    Ok(targets)
+}
+
+// ---------------------------------------------------------------------------
+// Env gates + partitioning
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy)]
+pub struct EnvGates {
+    pub live: bool,
+    pub network: bool,
+}
+
+impl EnvGates {
+    pub fn from_process_env() -> Self {
+        EnvGates {
+            live: std::env::var("FF_RDP_LIVE_TESTS").as_deref() == Ok("1"),
+            network: std::env::var("FF_RDP_LIVE_NETWORK_TESTS").as_deref() == Ok("1"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Partition {
+    /// Every env var the test needs is set — it will run for real.
+    pub qualified: Vec<String>,
+    /// At least one required env var is unset — it will report `ignored`.
+    pub unqualified: Vec<String>,
+}
+
+pub fn partition(tests: &[GatedTest], gates: &EnvGates) -> Partition {
+    let mut p = Partition::default();
+    for t in tests {
+        let ok_live = !t.needs_live || gates.live;
+        let ok_network = !t.needs_network || gates.network;
+        if ok_live && ok_network {
+            p.qualified.push(t.full_name.clone());
+        } else {
+            p.unqualified.push(t.full_name.clone());
+        }
+    }
+    p.qualified.sort();
+    p.unqualified.sort();
+    p
+}
+
+/// Theme B: the machine-readable count of tests that actually reached
+/// Firefox (`executed`) versus those that were gate-skipped (`skipped`) —
+/// known before `cargo test` runs, never inferred from its prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SweepSummary {
+    pub executed: usize,
+    pub skipped: usize,
+}
+
+impl SweepSummary {
+    pub fn total(&self) -> usize {
+        self.executed + self.skipped
+    }
+}
+
+pub fn summarize(part: &Partition) -> SweepSummary {
+    SweepSummary {
+        executed: part.qualified.len(),
+        skipped: part.unqualified.len(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Command building
+// ---------------------------------------------------------------------------
+
+/// Build the `cargo test -p <package> --test <test_name> -- [--include-ignored
+/// --test-threads=1] --exact <names…>` command for one phase, or `None` when
+/// `names` is empty (nothing to run for this phase).
+pub fn phase_command(
+    package: &str,
+    test_name: &str,
+    names: &[String],
+    include_ignored: bool,
+) -> Option<Command> {
+    if names.is_empty() {
+        return None;
+    }
+    let mut cmd = Command::new("cargo");
+    cmd.arg("test");
+    cmd.args(["-p", package, "--test", test_name]);
+    cmd.arg("--");
+    if include_ignored {
+        cmd.args(["--include-ignored", "--test-threads=1"]);
+    }
+    cmd.arg("--exact");
+    cmd.args(names);
+    Some(cmd)
+}
+
+// ---------------------------------------------------------------------------
+// run()
+// ---------------------------------------------------------------------------
+
+pub fn run(args: Args) -> Result<()> {
+    let targets = default_targets(&args.workspace_root)?;
+    let gates = EnvGates::from_process_env();
+
+    let total_gated: usize = targets.iter().map(|t| t.gated.len()).sum();
+    if total_gated == 0 {
+        return Err(anyhow!(
+            "live-sweep: found 0 gated live tests under {} — the scanner or \
+             workspace-root configuration is almost certainly broken (there \
+             are normally several dozen); refusing to report a false-empty \
+             sweep rather than silently doing nothing, which is exactly the \
+             failure class this tool exists to prevent",
+            args.workspace_root.display()
+        ));
+    }
+
+    let mut total_executed = 0usize;
+    let mut total_skipped = 0usize;
+    let mut overall_ok = true;
+
+    for target in &targets {
+        let part = partition(&target.gated, &gates);
+        let summary = summarize(&part);
+        total_executed += summary.executed;
+        total_skipped += summary.skipped;
+
+        eprintln!(
+            "live-sweep: -p {} --test {}: {} qualified (will run for real), {} will report `ignored`",
+            target.package, target.test_name, summary.executed, summary.skipped
+        );
+
+        if args.dry_run {
+            continue;
+        }
+
+        if let Some(mut cmd) =
+            phase_command(&target.package, &target.test_name, &part.qualified, true)
+        {
+            let status = cmd.status().with_context(|| {
+                format!(
+                    "failed to spawn `cargo test -p {} --test {}` (phase 1: real run)",
+                    target.package, target.test_name
+                )
+            })?;
+            overall_ok &= status.success();
+        }
+
+        if let Some(mut cmd) =
+            phase_command(&target.package, &target.test_name, &part.unqualified, false)
+        {
+            let status = cmd.status().with_context(|| {
+                format!(
+                    "failed to spawn `cargo test -p {} --test {}` (phase 2: report ignored)",
+                    target.package, target.test_name
+                )
+            })?;
+            overall_ok &= status.success();
+        }
+    }
+
+    let grand_total = SweepSummary {
+        executed: total_executed,
+        skipped: total_skipped,
+    }
+    .total();
+    println!(
+        "LIVE_SWEEP_SUMMARY executed={total_executed} skipped={total_skipped} total={grand_total}"
+    );
+
+    if overall_ok {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "live-sweep: one or more qualified live tests failed — see cargo test output above"
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // scan_source
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn scan_source_classifies_live_only_reason() {
+        let src = r#"
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_dom_text_longstring_roundtrip() {
+    if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
+        return;
+    }
+}
+"#;
+        let got = scan_source(src, Some("live_102_longstring_and_reload"));
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].full_name,
+            "live_102_longstring_and_reload::live_dom_text_longstring_roundtrip"
+        );
+        assert!(got[0].needs_live);
+        assert!(!got[0].needs_network);
+    }
+
+    #[test]
+    fn scan_source_classifies_network_only_reason() {
+        let src = r#"
+#[test]
+#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
+fn live_network_security_info_https() {
+    if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
+        return;
+    }
+}
+"#;
+        let got = scan_source(src, Some("live_104_security_pwa"));
+        assert_eq!(got.len(), 1);
+        assert!(!got[0].needs_live);
+        assert!(got[0].needs_network);
+    }
+
+    #[test]
+    fn scan_source_classifies_both_required() {
+        let src = r#"
+#[test]
+#[ignore = "requires Firefox + network access — set FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1"]
+fn live_throttle_slow3g_slows_fetch() {
+    if !live_tests_enabled() || !live_network_tests_enabled() {
+        return;
+    }
+}
+"#;
+        let got = scan_source(src, Some("live_109_throttle_block"));
+        assert_eq!(got.len(), 1);
+        assert!(got[0].needs_live);
+        assert!(got[0].needs_network);
+        assert_eq!(
+            got[0].full_name,
+            "live_109_throttle_block::live_throttle_slow3g_slows_fetch"
+        );
+    }
+
+    /// Regression fixture: mirrors `live_daemon_watch_targets.rs`'s real
+    /// multi-line `#[ignore = "…\` reason (backslash line-continuation).
+    #[test]
+    fn scan_source_handles_multiline_reason() {
+        let src = "#[test]\n#[ignore = \"requires Firefox and FF_RDP_LIVE_TESTS=1; KNOWN FAILING pending \\\n            iteration-101 Theme A (watchTargets re-engagement) — see doc comment\"]\nfn live_daemon_watch_targets() {}\n";
+        let got = scan_source(src, Some("live_daemon_watch_targets"));
+        assert_eq!(
+            got.len(),
+            1,
+            "expected exactly one gated test, got: {got:?}"
+        );
+        assert!(got[0].needs_live);
+        assert!(!got[0].needs_network);
+        assert_eq!(
+            got[0].full_name,
+            "live_daemon_watch_targets::live_daemon_watch_targets"
+        );
+    }
+
+    #[test]
+    fn scan_source_handles_intervening_cfg_attribute() {
+        let src =
+            "#[test]\n#[ignore = \"requires FF_RDP_LIVE_TESTS=1\"]\n#[cfg(unix)]\nfn t() {}\n";
+        let got = scan_source(src, None);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].full_name, "t");
+    }
+
+    #[test]
+    fn scan_source_ignores_unrelated_ignore_attrs() {
+        let src = r#"
+#[test]
+#[ignore = "may perform a real network download depending on cache state"]
+fn unrelated() {}
+"#;
+        let got = scan_source(src, None);
+        assert!(
+            got.is_empty(),
+            "an #[ignore] reason with no FF_RDP_LIVE mention must not be classified as a gated live test"
+        );
+    }
+
+    #[test]
+    fn scan_source_no_module_prefix_when_none() {
+        let src = "#[test]\n#[ignore = \"FF_RDP_LIVE_TESTS=1\"]\nfn live_handshake() {}\n";
+        let got = scan_source(src, None);
+        assert_eq!(got[0].full_name, "live_handshake");
+    }
+
+    // -----------------------------------------------------------------------
+    // partition / summarize — AC2 (executed count)
+    // -----------------------------------------------------------------------
+
+    fn gated(name: &str, needs_live: bool, needs_network: bool) -> GatedTest {
+        GatedTest {
+            full_name: name.to_owned(),
+            needs_live,
+            needs_network,
+        }
+    }
+
+    /// `test_155_executed_count_is_reported`: the executed count is `0` when
+    /// the relevant env gates are unset, and rises deterministically as gates
+    /// are set — computed from classification alone, before any `cargo test`
+    /// process runs.
+    #[test]
+    fn test_155_executed_count_is_reported() {
+        let tests = vec![
+            gated("a::t1", true, false),
+            gated("a::t2", true, true),
+            gated("a::t3", false, true),
+        ];
+
+        let none_set = EnvGates {
+            live: false,
+            network: false,
+        };
+        let summary = summarize(&partition(&tests, &none_set));
+        assert_eq!(
+            summary.executed, 0,
+            "with both env gates unset, executed must be 0"
+        );
+        assert_eq!(summary.skipped, 3);
+        assert_eq!(summary.total(), 3);
+
+        let live_only = EnvGates {
+            live: true,
+            network: false,
+        };
+        let summary = summarize(&partition(&tests, &live_only));
+        assert_eq!(
+            summary.executed, 1,
+            "only the live-only test qualifies with FF_RDP_LIVE_TESTS=1 alone"
+        );
+        assert_eq!(summary.skipped, 2);
+
+        let both_set = EnvGates {
+            live: true,
+            network: true,
+        };
+        let summary = summarize(&partition(&tests, &both_set));
+        assert_eq!(summary.executed, 3);
+        assert_eq!(summary.skipped, 0);
+    }
+
+    #[test]
+    fn partition_sorts_names_deterministically() {
+        let tests = vec![gated("z", false, false), gated("a", false, false)];
+        let gates = EnvGates {
+            live: true,
+            network: true,
+        };
+        let part = partition(&tests, &gates);
+        assert_eq!(part.qualified, vec!["a".to_owned(), "z".to_owned()]);
+    }
+
+    // -----------------------------------------------------------------------
+    // phase_command
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn phase_command_none_when_names_empty() {
+        assert!(phase_command("ff-rdp-cli", "live", &[], true).is_none());
+        assert!(phase_command("ff-rdp-cli", "live", &[], false).is_none());
+    }
+
+    #[test]
+    fn phase_command_omits_include_ignored_when_false() {
+        let cmd = phase_command("ff-rdp-cli", "live", &["a::b".to_owned()], false).unwrap();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(!args.iter().any(|a| a == "--include-ignored"));
+        assert!(args.iter().any(|a| a == "--exact"));
+        assert!(args.iter().any(|a| a == "a::b"));
+    }
+
+    #[test]
+    fn phase_command_includes_include_ignored_when_true() {
+        let cmd = phase_command("ff-rdp-cli", "live", &["a::b".to_owned()], true).unwrap();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.iter().any(|a| a == "--include-ignored"));
+    }
+
+    // -----------------------------------------------------------------------
+    // default_targets — real tree regression fence
+    // -----------------------------------------------------------------------
+
+    /// The real tree must yield a healthy population of gated tests — a
+    /// regression fence against exactly the failure this tool exists to
+    /// prevent (a scanner that silently finds nothing and reports a
+    /// false-empty, all-green sweep).
+    #[test]
+    fn real_tree_yields_many_gated_tests() {
+        let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..");
+        if !workspace_root.join("crates/ff-rdp-cli/tests/live").is_dir() {
+            eprintln!("real_tree_yields_many_gated_tests: tests/live not found — skipping");
+            return;
+        }
+        let targets = default_targets(&workspace_root).expect("default_targets");
+        let total: usize = targets.iter().map(|t| t.gated.len()).sum();
+        assert!(
+            total > 50,
+            "expected several dozen gated live tests across all targets, got {total}"
+        );
+
+        // The exact test named in the plan's own dogfood_path must be found
+        // and correctly classified as network-gated.
+        let cli_target = targets
+            .iter()
+            .find(|t| t.package == "ff-rdp-cli")
+            .expect("ff-rdp-cli target must exist");
+        let live_109 = cli_target
+            .gated
+            .iter()
+            .find(|t| t.full_name == "live_109_throttle_block::live_block_url_pattern")
+            .expect("live_109_throttle_block::live_block_url_pattern must be discovered");
+        assert!(live_109.needs_network);
+    }
+
+    #[test]
+    fn run_errors_on_empty_scan_rather_than_reporting_false_empty_sweep() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Empty crates/ layout: no ff-rdp-cli/tests/live, no ff-rdp-core/tests.
+        std::fs::create_dir_all(tmp.path().join("crates/ff-rdp-cli/tests/live")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("crates/ff-rdp-core/tests")).unwrap();
+        let args = Args {
+            workspace_root: tmp.path().to_path_buf(),
+            dry_run: true,
+        };
+        let err = run(args).unwrap_err();
+        assert!(
+            err.to_string().contains("found 0 gated live tests"),
+            "expected the empty-scan guard to fire, got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // test_155_skipped_live_test_is_not_counted_passed (AC1) — integration
+    // -----------------------------------------------------------------------
+
+    /// `test_155_skipped_live_test_is_not_counted_passed`: classify the real
+    /// `live_109_throttle_block::live_block_url_pattern` test (named in the
+    /// plan's own dogfood_path), partition it as unqualified (network gate
+    /// unset), build the resulting phase-2 command (no `--include-ignored`),
+    /// and actually run it — asserting from libtest's own summary output
+    /// that the test is reported `ignored`, never `ok`. This proves the fix
+    /// at the mechanism the defect lives in, not by reading the source.
+    #[test]
+    fn test_155_skipped_live_test_is_not_counted_passed() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir.join("..").join("..");
+        let cli_live_dir = workspace_root.join("crates/ff-rdp-cli/tests/live");
+        if !cli_live_dir.is_dir() {
+            eprintln!(
+                "test_155_skipped_live_test_is_not_counted_passed: tests/live not found — skipping"
+            );
+            return;
+        }
+
+        let gated = scan_modules_dir(&cli_live_dir).expect("scan_modules_dir");
+        let target_name = "live_109_throttle_block::live_block_url_pattern";
+        let target = gated
+            .iter()
+            .find(|t| t.full_name == target_name)
+            .unwrap_or_else(|| panic!("{target_name} must be discovered by the scanner"));
+        assert!(
+            target.needs_network,
+            "{target_name} must be classified as network-gated"
+        );
+
+        let gates = EnvGates {
+            live: true,
+            network: false,
+        };
+        let part = partition(&gated, &gates);
+        assert!(
+            part.unqualified.contains(&target.full_name),
+            "with FF_RDP_LIVE_NETWORK_TESTS unset, {target_name} must be unqualified"
+        );
+
+        let mut cmd = phase_command(
+            "ff-rdp-cli",
+            "live",
+            std::slice::from_ref(&target.full_name),
+            false,
+        )
+        .expect("phase command for a non-empty name list");
+        cmd.env_remove("FF_RDP_LIVE_TESTS");
+        cmd.env_remove("FF_RDP_LIVE_NETWORK_TESTS");
+        cmd.current_dir(&workspace_root);
+        let output = cmd
+            .output()
+            .expect("failed to run `cargo test -p ff-rdp-cli --test live` subprocess");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(
+            stdout.contains(&format!("test {target_name} ... ignored")),
+            "expected libtest to report {target_name} as `ignored` \
+             (env gate unset, --include-ignored absent); stdout:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains(&format!("test {target_name} ... ok")),
+            "the unqualified test must never be reported `ok` — that is exactly \
+             the iter-155 defect (a skipped live test reporting green); stdout:\n{stdout}"
+        );
+    }
+}

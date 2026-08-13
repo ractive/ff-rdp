@@ -58,6 +58,18 @@ which dominates the iteration loop's wall-clock cost.
   `FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live <module> -- --include-ignored`.
   Enumerate every live test name (no Firefox needed):
   `cargo test -p ff-rdp-cli --test live -- --list`.
+- **Do not run the full live suite with `FF_RDP_LIVE_TESTS=1 cargo test-live` and trust the
+  `N passed; 0 failed` summary line.** Every live test additionally checks its own env gate at
+  runtime and `return`s early when unset; libtest counts an early `return` as `ok`, not
+  `ignored`, so that summary line cannot tell "N tests exercised Firefox" apart from "N tests
+  no-op'd because `FF_RDP_LIVE_NETWORK_TESTS` was never set" (iter-155). Use
+  `cargo run -p xtask -- live-sweep` instead: it classifies every `#[ignore]`-gated live test from
+  its own ignore-reason text, runs only the tests whose required env var(s) are actually set (with
+  `--include-ignored`, so libtest reports genuine `ok`/`FAILED`), and runs the rest *without*
+  `--include-ignored` so libtest reports them `ignored` using its own vocabulary. It ends with a
+  machine-readable `LIVE_SWEEP_SUMMARY executed=N skipped=M total=T` line — quote `executed=N` in
+  a `[verified: <date>, …]` AC annotation instead of the `cargo test` summary line. Add
+  `--dry-run` to see the qualified/unqualified split without invoking `cargo test`.
 
 ## Iteration discipline tooling
 

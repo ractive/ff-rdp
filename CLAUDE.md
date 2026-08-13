@@ -53,6 +53,16 @@ Run them with: `FF_RDP_LIVE_TESTS=1 cargo test-live`
 
 The `cargo test-live` alias (defined in `.cargo/config.toml`) expands to `cargo test --workspace -- --include-ignored`, which includes all `#[ignore]`-gated live tests.
 
+**`cargo test-live`'s `N passed; 0 failed` summary line does not mean N tests reached Firefox**
+(iter-155). Every live test also checks its env gate at runtime and `return`s early when unset;
+libtest counts that as `ok`, not `ignored`, so a test whose `FF_RDP_LIVE_NETWORK_TESTS` gate is
+unset reports exactly the same as one that actually ran. Use `cargo run -p xtask -- live-sweep`
+for a real sweep: it classifies each gated test from its own `#[ignore = "…"]` reason, runs only
+the ones whose env var(s) are set (with `--include-ignored`), and runs the rest without
+`--include-ignored` so libtest reports them `ignored`. It prints a machine-readable
+`LIVE_SWEEP_SUMMARY executed=N skipped=M total=T` line — that `executed=N`, not a `cargo
+test-live` pass count, is what a `[verified: <date>, …]` AC annotation should quote.
+
 **AC checkbox convention**: every AC checkbox in an iteration plan MUST name the live test and the asserted post-condition, e.g.:
 ```
 - [ ] live_screenshot_full_page: PNG height ≥ scrollHeight × DPR
