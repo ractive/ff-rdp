@@ -91,7 +91,18 @@ fn is_iter_branch(branch: &str) -> bool {
 /// `FF_RDP_LIVE_TESTS`, which is the whole point of hosting it here: it is the
 /// one gate in the repo with a track record of stopping a real false-green
 /// (iter-86's `grep -qi 'headless'`).
+///
+/// Non-unix skips, matching `run_script` below. `bash` is not guaranteed on
+/// Windows: `Command::new("bash")` there resolves to `C:\Windows\System32\bash.exe`,
+/// the WSL shim, which exits non-zero with *"Windows Subsystem for Linux has no
+/// installed distributions"* — a hard FAIL for every plan on the Windows runner.
+/// `cfg!` rather than `#[cfg]` so every `LintOutcome` variant stays constructible
+/// on all platforms.
 fn lint_dogfood_script(plan: &Path, repo_root: &Path) -> LintOutcome {
+    if !cfg!(unix) {
+        return LintOutcome::Skip("bash invocation not supported on this platform".to_owned());
+    }
+
     let content = match std::fs::read_to_string(plan) {
         Ok(c) => c,
         Err(e) => return LintOutcome::Fail(format!("could not read plan: {e}")),
