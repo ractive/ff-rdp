@@ -190,45 +190,19 @@ impl ResourceBuffer {
         }
     }
 
-    /// Insert a raw JSON value (for `store-events` IPC back-compat).
+    /// Insert a raw JSON value under `resource_type`.
+    ///
+    /// Test-only since iter-159: the production caller was the `store-events`
+    /// RPC, deleted with the workaround it served.  Kept because the daemon's
+    /// unit tests seed buffers with raw wire items and doing so through the
+    /// typed `ResourceCommand` bus would couple them to the parser.
+    #[cfg(test)]
     pub(crate) fn insert_raw(&mut self, resource_type: &str, data: Value) {
         let resource_id = data.get("resourceId").map(|v| match v {
             Value::String(s) => s.clone(),
             other => other.to_string(),
         });
         self.push(resource_type, resource_id, data);
-    }
-
-    /// Record a navigation boundary and insert a batch of raw events under a
-    /// single mutable borrow so no interleaving `tabNavigated` boundary can be
-    /// recorded *between* the boundary and its events (iter-106 Theme D).
-    ///
-    /// `navigate --with-network` calls this from the daemon's `store-events`
-    /// handler after streaming completes.  The navigation has already committed
-    /// by then, so the reader loop's async `tabNavigated` handler may record its
-    /// own boundary for the *same* URL either just before or just after the CLI
-    /// sends `store-events` — a nondeterministic thread interleaving.  If that
-    /// boundary landed *after* the events were inserted, its `store_start`
-    /// would sit past every stored event and `--since -1` (the default nav
-    /// scope) would resolve to an empty window, dropping the whole capture (the
-    /// "cross-invocation daemon buffer empty" bug).
-    ///
-    /// Recording the boundary here, in the same critical section that inserts
-    /// the events, guarantees the events are `seq >= store_start` for a boundary
-    /// that is the most-recent one *at insertion time*.  A duplicate
-    /// `tabNavigated` boundary for the same URL is harmless: it either precedes
-    /// this one (older, so `--since -1` still lands on this boundary) or, if a
-    /// genuinely *new* navigation follows, it correctly starts a fresh epoch.
-    pub(crate) fn record_boundary_and_insert(
-        &mut self,
-        resource_type: &str,
-        nav_url: String,
-        events: &[Value],
-    ) {
-        self.record_nav_boundary(nav_url);
-        for ev in events {
-            self.insert_raw(resource_type, ev.clone());
-        }
     }
 
     /// URL of the most recent recorded navigation boundary, if any.
@@ -492,49 +466,59 @@ mod tests {
         assert!(boundary.is_none());
     }
 
-    /// iter-106 Theme D: `record_boundary_and_insert` scopes the whole batch to
-    /// a boundary that is the most-recent at insertion time, so `--since -1`
-    /// returns every stored event even if a *prior* `tabNavigated` boundary for
-    /// the same URL was already recorded.
+    /// iter-159: a buffered `network-event` update must round-trip losslessly
+    /// through [`ff_rdp_core::parse_network_resource_updates`], which is what
+    /// `drain_network_from_daemon_since` re-parses the buffer with.
+    ///
+    /// `update_to_val` used to emit `{"resourceUpdates": [{"resourceId": …}]}`
+    /// — the id nested inside a one-element *array*.  The parser reads a
+    /// top-level `resourceId` and treats `resourceUpdates` as an *object*, so
+    /// every buffered update was dropped (`resourceId` missing → `continue`)
+    /// and daemon-mode `network` reported `status`, `content_type` and
+    /// `transfer_size` as null on every row.  iter-106 Theme D fixed the same
+    /// shape in the `store-events` serialiser and missed this copy, which went
+    /// unnoticed because `store-events` was the only thing filling the buffer.
     #[test]
-    fn record_boundary_and_insert_visible_under_since_minus_one() {
-        let mut buf = ResourceBuffer::new();
-        // Simulate the reader-loop recording a boundary for the same nav first…
-        buf.record_nav_boundary("https://example.com/".into());
-        // …then the CLI's atomic store: boundary + three events under one borrow.
-        let events = vec![
-            json!({"resourceId": 1, "method": "GET", "url": "https://example.com/"}),
-            json!({"resourceId": 1, "resourceUpdates": {"status": "200"}}),
-            json!({"resourceId": 2, "method": "GET", "url": "https://example.com/a.css"}),
-        ];
-        buf.record_boundary_and_insert("network-event", "https://example.com/".into(), &events);
+    fn buffered_update_round_trips_through_the_wire_parser() {
+        use ff_rdp_core::parse_network_resource_updates;
 
-        // Default nav scope must see all three stored items, not zero.
-        let (drained, boundary) = buf.drain_since("network-event", -1);
-        assert_eq!(
-            drained.len(),
-            3,
-            "all stored events must be visible under --since -1"
-        );
-        assert!(boundary.is_some());
-        assert_eq!(boundary.unwrap().url, "https://example.com/");
-    }
+        let update = NetworkResourceUpdate {
+            resource_id: 42,
+            status: Some("200".to_owned()),
+            http_version: Some("HTTP/2".to_owned()),
+            mime_type: Some("text/html".to_owned()),
+            total_time: Some(45),
+            content_size: Some(528),
+            transferred_size: Some(371),
+            from_cache: Some(false),
+            remote_address: Some("93.184.215.14".to_owned()),
+            security_state: Some("secure".to_owned()),
+        };
 
-    /// A later boundary for a *new* navigation still starts a fresh epoch, so a
-    /// stored batch is not leaked into the next navigation's `--since -1`.
-    #[test]
-    fn record_boundary_and_insert_scoped_out_by_next_nav() {
         let mut buf = ResourceBuffer::new();
-        let events = vec![json!({"resourceId": 1, "url": "https://old.example/"})];
-        buf.record_boundary_and_insert("network-event", "https://old.example/".into(), &events);
-        // A subsequent real navigation.
-        buf.record_nav_boundary("https://new.example/".into());
-        let (drained, _) = buf.drain_since("network-event", -1);
-        assert_eq!(
-            drained.len(),
-            0,
-            "the prior navigation's stored events must not appear in the new nav's scope"
+        buf.on_resource(&Resource::NetworkUpdate(update));
+        let (drained, _) = buf.drain_since("network-event", 0);
+        assert_eq!(drained.len(), 1, "the update must be buffered");
+
+        // The buffered item must expose a top-level resourceId and an
+        // object-valued resourceUpdates — exactly what the wire parser reads.
+        assert_eq!(drained[0]["resourceId"], 42);
+        assert!(
+            drained[0]["resourceUpdates"].is_object(),
+            "resourceUpdates must be an object, got: {}",
+            drained[0]
         );
+
+        let wrapper = json!({"array": [["network-event", drained]]});
+        let parsed = parse_network_resource_updates(&wrapper);
+        assert_eq!(parsed.len(), 1, "update must survive the round-trip");
+        assert_eq!(parsed[0].resource_id, 42);
+        assert_eq!(parsed[0].status.as_deref(), Some("200"));
+        assert_eq!(parsed[0].transferred_size, Some(371));
+        assert_eq!(parsed[0].content_size, Some(528));
+        assert_eq!(parsed[0].from_cache, Some(false));
+        assert_eq!(parsed[0].mime_type.as_deref(), Some("text/html"));
+        assert_eq!(parsed[0].remote_address.as_deref(), Some("93.184.215.14"));
     }
 
     #[test]
