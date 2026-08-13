@@ -247,7 +247,9 @@ OK (61v=FAIL, 61t=PASS). 11/11 tests in `ac_fidelity_check.rs` pass.
   including the known-red `live_109_throttle_block::live_block_url_pattern`. So a "green live
   sweep" can mean "did not run". That is the same *green-means-nothing* family as this plan but a
   different mechanism in different code (test harness, not the gate), and folding it in here would
-  make a hand-driven skill-edit iteration into a test-harness refactor. File separately.
+  make a hand-driven skill-edit iteration into a test-harness refactor. Filed as
+  [[iteration-155-live-skip-reports-green]] (2026-08-13), before this PR merged, per
+  CLAUDE.md's carry-over rule.
 - Verify on the wire before fixing: across 135–151 the stated root cause diverged from reality at
   least eight times. Here that means replaying the actual iter-151 plan text through the actual
   script, not reasoning about what the regex ought to do.
