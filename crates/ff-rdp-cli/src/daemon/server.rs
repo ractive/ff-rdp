@@ -1230,6 +1230,17 @@ fn dispatch_firefox_message(
     resources: Option<(&mut ResourceCommand, &ResourceReceiver)>,
 ) {
     let watcher_actor = lock_or_recover!(state.watcher_actor).clone();
+    if std::env::var("FF_RDP_DAEMON_WIRE_TRACE").is_ok() {
+        let t = msg.get("type").and_then(Value::as_str).unwrap_or("<none>");
+        let f = msg.get("from").and_then(Value::as_str).unwrap_or("<none>");
+        if t.starts_with("resources-") || t.contains("target") {
+            eprintln!(
+                "WIRETRACE type={t} from={f} daemon_watcher={watcher_actor} match={} res_active={}",
+                is_watcher_event(msg, &watcher_actor),
+                resources.is_some()
+            );
+        }
+    }
     if let Some((resource_bus, resource_rx)) = resources
         && is_watcher_event(msg, &watcher_actor)
     {
@@ -1259,11 +1270,25 @@ fn dispatch_firefox_message(
         // indefinitely.
         resource_bus.dispatch_event(msg);
         let mut buf = lock_or_recover!(state.buffer);
+        let trace = std::env::var("FF_RDP_DAEMON_WIRE_TRACE").is_ok();
+        if trace {
+            eprintln!(
+                "WIRETRACE2 matched payload={} streamed={:?}",
+                serde_json::to_string(msg).unwrap_or_default(),
+                streamed_types
+            );
+        }
         for resource in resource_rx.try_iter() {
             let is_destroyed = matches!(resource.as_ref(), ff_rdp_core::Resource::Destroyed { .. });
-            if is_destroyed || !streamed_types.contains(resource.type_name().as_ref()) {
-                buf.on_resource(resource.as_ref());
+            if trace {
+                eprintln!(
+                    "WIRETRACE3 parsed type={} destroyed={is_destroyed} buffered={}",
+                    resource.type_name(),
+                    is_destroyed || !streamed_types.contains(resource.type_name().as_ref())
+                );
             }
+            let _ = is_destroyed;
+            buf.on_resource(resource.as_ref());
         }
     } else if is_target_event(msg) {
         // Log target lifecycle events and track the count.
