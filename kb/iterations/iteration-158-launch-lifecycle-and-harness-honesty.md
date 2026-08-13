@@ -59,7 +59,7 @@ first_call_sites:
     site: 'crates/ff-rdp-cli/src/commands/launch.rs — error construction in the Ok(None) arm, ~:541-545'
   - primitive: 'daemon::client::stop_pid_with_full_escalation'
     site: 'crates/ff-rdp-cli/src/daemon/client.rs — stop_daemon_and_build_result (:961) and stop_prior_instance (:1150)'
-status: planned
+status: in-review
 title: "Iteration 158: launch's 5s port wait fails under load, and the live suite converts that into a silent pass"
 type: iteration
 tags:
