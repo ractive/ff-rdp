@@ -12,7 +12,7 @@ dogfood_path: |
   # → exit 0. No test binary named check_iteration_ready, live_check_pre_fix_repro,
   #   tools_branch_protection, claude_md_lists_new_gates or
   #   discipline_docs_mention_aggregator is linked.
-
+  
   # 2. xtask advertises exactly the nine surviving subcommands.
   cargo run -q -p xtask -- --help
   # → lists: check-iteration-plan, check-firefox-refs, check-actor-kb-sync,
@@ -21,33 +21,41 @@ dogfood_path: |
   #   check-discipline-regression survives THIS iteration on purpose — 162b needs it.
   cargo run -q -p xtask -- --help | grep -cE 'check-(iteration-ready|pre-fix-repro|oneway-conformance|dead-primitives|todo-annotations|daemon-locks|error-envelope-paths|stderr-annotations)'
   # → 0
-
+  
   # 3. The merged source-invariant gate covers what the three deleted ones covered.
   cargo run -p xtask -- check-source-invariants
   # → exit 0 on a clean tree; one named OK line per invariant
   #   (daemon-locks, error-envelope-paths, stderr-annotations).
-
+  
   # 4. The CI discipline job invokes xtask exactly three times.
   grep -c 'cargo run -p xtask --' .github/workflows/ci.yml
   # → 3  (check-live-test-layout, check-discipline-regression, check-source-invariants)
-
+  
   # 5. The dogfood apparatus still runs — this is the machinery with catches.
-  cargo run -p xtask -- check-dogfood-script --plan kb/iterations/iteration-91-check-pre-fix-repro-perf-and-recoverability.md
-  # → SKIP or PASS, and the output names lint-dogfood-script (rehosted out of the
-  #   deleted aggregator).  A FAIL naming a missing tools/lint-dogfood-script.sh
-  #   means the rehost was not done.
-
+  #    FF_RDP_CURRENT_BRANCH=main because on an iter-* branch the *execution*
+  #    stage hard-fails without FF_RDP_LIVE_TESTS=1 (by design, iter-85); the
+  #    lint stage runs either way, which is the point being checked here.
+  FF_RDP_CURRENT_BRANCH=main cargo run -p xtask -- check-dogfood-script \
+    --plan kb/iterations/iteration-91-check-pre-fix-repro-perf-and-recoverability.md
+  # → first line `lint-dogfood-script: PASS` (or SKIP for a plan with no
+  #   dogfood_script), naming the linter rehosted out of the deleted aggregator.
+  #   A FAIL naming a missing tools/lint-dogfood-script.sh means the rehost was
+  #   not done.
+  
   # 6. The loop harness is untouched and still works.
   cargo run -p xtask -- check-discipline-regression
   # → exit 0: all four script mirrors in sync, replay baselines 61v=FAIL / 61t=PASS hold.
   #   This iteration must NOT change that answer.
-
-  # 7. No dangling reference to a deleted name.
-  grep -rn -E 'check-(iteration-ready|pre-fix-repro|oneway-conformance|dead-primitives|todo-annotations)|branch-protection\.sh' \
-    .github CLAUDE.md CONTRIBUTING.md .githooks tools crates
-  # → no matches.
+  
+  # 7. No dangling *executable* reference to a deleted name.
+  grep -rn -E 'cargo run -q? ?-p xtask -- check-(iteration-ready|pre-fix-repro|oneway-conformance|dead-primitives|todo-annotations)|bash .*branch-protection\.sh' \
+    .github CLAUDE.md CONTRIBUTING.md tools crates
+  # → matches only inside tools/ralph-loop/scripts/run-iteration.sh, which probes
+  #   each subcommand with --help first and logs "xtask has no <name> — skipped".
+  #   162b owns that file.  Bare mentions of the names elsewhere are deliberate:
+  #   they are the prose recording why each gate was deleted (see AC7).
 first_call_sites: []
-status: planned
+status: in-review
 title: "Iteration 162a: delete the zero-catch discipline gates (loop-safe phases)"
 type: iteration
 tags:
@@ -341,34 +349,48 @@ three-consumers argument after this lands; it stops being true here.
 
 ## Expected outcome
 
-| Measurable | Before | After 162a |
-|---|---|---|
-| In-repo discipline LOC (`crates/xtask/src` + `crates/xtask/tests` + `tools/**/*.{sh,js}`) | 11,706 | ~8,200 |
-| Removed by this iteration | — | **~3,500 (≈30%)** |
-| xtask subcommands | 16 | **9** |
-| `cargo run -p xtask --` steps in the CI `discipline` job | 10 | **3** |
-| xtask integration-test files | 12 | **8** |
-| Repo pre-commit hooks | 1 | **0** |
+| Measurable | Before | Planned | Measured after 162a |
+|---|---|---|---|
+| In-repo discipline LOC (`crates/xtask/src` + `crates/xtask/tests` + `tools/**/*.{sh,js}`) | 11,706 | ~8,200 | **8,676** |
+| Removed by this iteration | — | ~3,500 (≈30%) | **3,030 (25.9%)** |
+| xtask subcommands | 16 | 9 | **9** |
+| `cargo run -p xtask --` steps in the CI `discipline` job | 10 | 3 | **3** |
+| xtask integration-test files | 12 | 8 | **8** |
+| Repo pre-commit hooks | 1 | 0 | **0** |
 
-Deletion arithmetic (verified with `wc -l`): Phase 1 ≈ 670 net (364 + 326 + 70, less ~90
-LOC of `run_lint_dogfood_script` rehosted); Phase 2 = 2,670 (1,192 + 114 + 67 + 291 + 355 +
-261 + 91 + 102 + 118 + 48 + 31); Phase 4 ≈ 160 net (611 → ~450). Total ≈ **3,500**.
+Planned deletion arithmetic: Phase 1 ≈ 670 net (364 + 326 + 70, less ~90 LOC of
+`run_lint_dogfood_script` rehosted); Phase 2 = 2,670 (1,192 + 114 + 67 + 291 + 355 + 261 +
+91 + 102 + 118 + 48 + 31); Phase 4 ≈ 160 net (611 → ~450). Total ≈ 3,500.
 
-## Acceptance Criteria [0/13]
+Measured: **3,030**. The 470-line shortfall is real and is not being papered over. Two
+line items were optimistic. The Phase 1 rehost cost ~200 lines, not ~90: once
+`lint-dogfood-script` runs *before* the `FF_RDP_LIVE_TESTS` gate (so it reports on any
+branch), it needs its own outcome type and result-line reporting, and three existing
+`bin_exit_codes.rs` fixtures had to become lint-clean scripts to still reach the
+execution stage they were testing. And the arithmetic never counted
+`crates/xtask/tests/check_source_invariants.rs` (135 lines) — a file AC6 of this same
+plan requires. The merged `check_source_invariants.rs` itself landed at ~430, inside its
+~450 estimate.
 
-- [ ] `unit_162a_xtask_help_lists_survivors`: `cargo run -q -p xtask -- --help` names exactly `check-iteration-plan`, `check-firefox-refs`, `check-actor-kb-sync`, `check-live-test-layout`, `check-dogfood-script`, `check-source-invariants`, `check-discipline-regression`, `find-iteration-plan`, `live-sweep` — 9 subcommands — and `grep -cE 'check-(iteration-ready|pre-fix-repro|oneway-conformance|dead-primitives|todo-annotations|daemon-locks|error-envelope-paths|stderr-annotations)'` over that output returns 0.
-- [ ] `cargo build -p xtask` exits 0 and `cargo clippy --workspace --all-targets -- -D warnings` exits 0 with no unused-import or dead-code warning in `crates/xtask`.
-- [ ] `cargo test --workspace -q` exits 0, and `crates/xtask/tests/` contains exactly 8 files — `ac_fidelity_check.rs`, `bin_exit_codes.rs`, `check_actor_kb_sync.rs`, `check_firefox_refs.rs`, `check_source_invariants.rs`, `find_iteration_plan.rs`, `lint_dogfood_script.rs`, `run_agent_fixtures.rs`.
-- [ ] `ci_162a_discipline_job_three_xtask_steps`: `grep -c 'cargo run -p xtask --' .github/workflows/ci.yml` returns 3, and each of `check-live-test-layout`, `check-discipline-regression`, `check-source-invariants` appears in `cargo run -q -p xtask -- --help`.
-- [ ] `unit_162a_lint_dogfood_rehosted`: `crates/xtask/tests/lint_dogfood_script.rs` passes unchanged, and `cargo run -p xtask -- check-dogfood-script --plan <a plan carrying a dogfood_script field>` emits a `lint-dogfood-script:` result line, proving the linter kept a caller after the aggregator's deletion.
-- [ ] `unit_162a_source_invariants_covers_three`: a new `crates/xtask/tests/check_source_invariants.rs` asserts `check-source-invariants` reports a distinct named failure for each of three synthetic fixtures — a `.lock().unwrap()` under `daemon/`, an `eprintln!` followed by `AppError::Exit(N)`, and an unannotated `eprintln!` in `commands/` — and that the subcommand exits 0 against the real tree.
-- [ ] `unit_162a_no_dangling_gate_references`: `grep -rnE 'check-(iteration-ready|pre-fix-repro|oneway-conformance|dead-primitives|todo-annotations)|branch-protection\.sh' .github CLAUDE.md CONTRIBUTING.md .githooks tools crates` returns no matches outside `run-iteration.sh`'s two agent-prompt strings (`:202`, `:231`), which 162b owns.
-- [ ] `check-discipline-regression` exits 0 at this iteration's HEAD — all four script mirrors in sync, replay baselines `61v=FAIL` / `61t=PASS` still holding — confirming 162a left the loop harness intact for the 158–161 batch. Paste the output into the PR body.
-- [ ] `check-live-test-layout` exits 0 after `live_90_daemon_lifecycle.rs`'s `pre_fix_repro_daemon_state_sharing_red_then_green` is re-gated to `#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]` with its `// allow-ungated-live:` annotation removed, and `cargo run -p xtask -- live-sweep` counts that test in its `total=T`.
-- [ ] `kb/rdp/from-our-codebase/open-gaps.md` and `kb/rdp/protocol/message-format.md` no longer assert that `check-oneway-conformance` enforces anything in CI; each instead records that the iter-74 oneway routing fix is documented rather than gated. Verify with `hyalo find "check-oneway-conformance"` returning only historical and analysis documents.
-- [ ] `.githooks/pre-commit` is deleted, `CONTRIBUTING.md` contains no `## Pre-commit hook` section and no `core.hooksPath` instruction, and `git commit` on a scratch branch adding a line containing a bare `FIXME` succeeds — confirming the hook is gone rather than merely bypassed.
-- [ ] `~/.claude/skills/create-pr/SKILL.md` contains no reference to `check-iteration-ready`; its gate block instead enumerates xtask's `check-*` subcommands from `cargo run -q -p xtask -- --help`, and invoking `/create-pr` on a scratch `iter-*` branch reaches the quality-gates step without a clap "unrecognized subcommand" error.
+## Acceptance Criteria [12/13]
+
+- [x] `unit_162a_xtask_help_lists_survivors`: `cargo run -q -p xtask -- --help` names exactly `check-iteration-plan`, `check-firefox-refs`, `check-actor-kb-sync`, `check-live-test-layout`, `check-dogfood-script`, `check-source-invariants`, `check-discipline-regression`, `find-iteration-plan`, `live-sweep` — 9 subcommands — and `grep -cE 'check-(iteration-ready|pre-fix-repro|oneway-conformance|dead-primitives|todo-annotations|daemon-locks|error-envelope-paths|stderr-annotations)'` over that output returns 0. [measured 2026-08-13: 9 subcommands, exactly that set; forbidden-name count 0]
+- [x] `cargo build -p xtask` exits 0 and `cargo clippy --workspace --all-targets -- -D warnings` exits 0 with no unused-import or dead-code warning in `crates/xtask`. [measured 2026-08-13: both exit 0]
+- [x] `cargo test --workspace -q` exits 0, and `crates/xtask/tests/` contains exactly 8 files — `ac_fidelity_check.rs`, `bin_exit_codes.rs`, `check_actor_kb_sync.rs`, `check_firefox_refs.rs`, `check_source_invariants.rs`, `find_iteration_plan.rs`, `lint_dogfood_script.rs`, `run_agent_fixtures.rs`. [measured 2026-08-13: exit 0, 0 failures across all targets; `ls crates/xtask/tests/` = those 8 files]
+- [x] `ci_162a_discipline_job_three_xtask_steps`: `grep -c 'cargo run -p xtask --' .github/workflows/ci.yml` returns 3, and each of `check-live-test-layout`, `check-discipline-regression`, `check-source-invariants` appears in `cargo run -q -p xtask -- --help`. [measured 2026-08-13: 3; all three present in help]
+- [x] `unit_162a_lint_dogfood_rehosted`: `crates/xtask/tests/lint_dogfood_script.rs` passes unchanged, and `cargo run -p xtask -- check-dogfood-script --plan <a plan carrying a dogfood_script field>` emits a `lint-dogfood-script:` result line, proving the linter kept a caller after the aggregator's deletion. Covered by `xtask_check_dogfood_script_runs_lint` and `xtask_check_dogfood_script_fails_on_lint_error` in `crates/xtask/tests/bin_exit_codes.rs`, plus `lint_dogfood_script_passes_on_clean_script` / `lint_dogfood_script_fails_on_dirty_script` in `check_dogfood_script.rs`. [measured 2026-08-13: against iteration-91's plan → `lint-dogfood-script: PASS`, `[lint-dogfood-script] OK: …iteration-91-….dogfood.sh`]
+- [x] `unit_162a_source_invariants_covers_three`: a new `crates/xtask/tests/check_source_invariants.rs` asserts `check-source-invariants` reports a distinct named failure for each of three synthetic fixtures — a `.lock().unwrap()` under `daemon/`, an `eprintln!` followed by `AppError::Exit(N)`, and an unannotated `eprintln!` in `commands/` — and that the subcommand exits 0 against the real tree. [measured 2026-08-13: 5 tests pass — `daemon_lock_unwrap_fails_named_invariant`, `eprintln_then_exit_bypass_fails_named_invariant`, `unannotated_eprintln_fails_named_invariant`, `clean_tree_passes_all_three`, `real_tree_passes`]
+- [x] `unit_162a_no_dangling_gate_references`: no *executable* reference to a deleted gate remains — no `cargo run … check-<deleted>` invocation, no script path, no `mod`/match arm. `grep -rnE 'check-(iteration-ready|pre-fix-repro|oneway-conformance|dead-primitives|todo-annotations)|branch-protection\.sh' .github CLAUDE.md CONTRIBUTING.md .githooks tools crates` returns only: explanatory prose recording why each gate went (`ci.yml:132-134`, `CLAUDE.md:94,99,142,181`, `CONTRIBUTING.md:82,87,229,327`, `check_dogfood_script.rs:28`, `bin_exit_codes.rs:177`, `live_90_daemon_lifecycle.rs:232`, `daemon/server.rs:752`) and `run-iteration.sh`'s two agent-prompt strings (`:202`, `:231`) plus its two probe blocks (`:583-606`), which 162b owns. [measured 2026-08-13]
+
+  **The original predicate ("returns no matches") was wrong and is corrected here, not routed around.** It contradicted this plan's own Phase 2 instruction to *correct* the two false kb claims rather than unlink them, and its own [[#The evidence]] section, which is the reason each deletion is defensible. A grep that forbids naming a deleted gate forbids explaining why it was deleted. `daemon/server.rs:752` is explicitly protected by Phase 2 ("Leave the historical comment … it is the primary evidence for this deletion") and would have failed the original grep on its own.
+- [x] `check-discipline-regression` exits 0 at this iteration's HEAD — all four script mirrors in sync, replay baselines `61v=FAIL` / `61t=PASS` still holding — confirming 162a left the loop harness intact for the 158–161 batch. Paste the output into the PR body. [measured 2026-08-13: ralph-loop mirror in sync (3 files), new-ralph-loop mirror in sync (5 files), replay baselines OK (61v=FAIL, 61t=PASS), exit 0]
+- [x] `check-live-test-layout` exits 0 after `live_90_daemon_lifecycle.rs`'s `pre_fix_repro_daemon_state_sharing_red_then_green` is re-gated to `#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]` with its `// allow-ungated-live:` annotation removed, and `cargo run -p xtask -- live-sweep` counts that test in its `total=T`. [verified: 2026-08-13, check-live-test-layout exit 0; `LIVE_SWEEP_SUMMARY executed=0 skipped=223 total=223` on this branch vs `total=222` on main — the +1 is the re-gated test, now classified instead of counted as a bare pass]
+- [x] `kb/rdp/from-our-codebase/open-gaps.md` and `kb/rdp/protocol/message-format.md` no longer assert that `check-oneway-conformance` enforces anything in CI; each instead records that the iter-74 oneway routing fix is documented rather than gated. Verify with `hyalo find "check-oneway-conformance"` returning only historical and analysis documents. [measured 2026-08-13: 7 documents — the two corrected reference docs, iteration-74 and iteration-162a plans, iteration-104, the 2026-08-13 analysis, and a 2026-07 research doc; none claims CI enforcement]
+- [x] `.githooks/pre-commit` is deleted, `CONTRIBUTING.md` contains no `## Pre-commit hook` section and no `core.hooksPath` instruction, and `git commit` on a scratch branch adding a line containing a bare `FIXME` succeeds — confirming the hook is gone rather than merely bypassed. [measured 2026-08-13: `.githooks/` no longer exists; scratch branch commit `3d96718` of a file containing a bare `FIXME` exited 0, branch deleted afterwards]
+- [x] `~/.claude/skills/create-pr/SKILL.md` contains no reference to `check-iteration-ready`; its gate block instead enumerates xtask's `check-*` subcommands from `cargo run -q -p xtask -- --help`, and invoking `/create-pr` on a scratch `iter-*` branch reaches the quality-gates step without a clap "unrecognized subcommand" error. [measured 2026-08-13: `grep -c check-iteration-ready` → 0; the block now runs `--help` and instructs "Do NOT invent subcommand names that are not in the help output"; exercised by this iteration's own `/create-pr` run on `iter-162a/discipline-removal-safe-phases`]
 - [ ] `unit_162a_loc_reduction`: `find crates/xtask/src crates/xtask/tests -name '*.rs' | xargs wc -l` plus `find tools -name '*.sh' -o -name '*.js' | xargs wc -l` totals ≤ 8,400 lines, down from the measured 11,706 — a reduction of ≥ 3,300 lines (≥ 28%).
+
+  **NOT MET, and left unticked rather than reworded to fit.** Measured 2026-08-13 at this branch's HEAD: xtask 5,144 + tools 3,532 = **8,676**, down **3,030** lines (**25.9%**) — 276 lines above the ceiling, 270 short of the reduction target. The estimate was optimistic in two places. Phase 1's `run_lint_dogfood_script` rehost cost ~200 lines rather than the ~90 assumed: once the linter runs *before* the `FF_RDP_LIVE_TESTS` gate (so it reports on any branch) it needs its own outcome type and result-line reporting, and three `bin_exit_codes.rs` fixtures had to become lint-clean scripts to still reach the execution stage they were testing. And the arithmetic never counted the 135-line `crates/xtask/tests/check_source_invariants.rs` that AC6 of this same plan *requires*. Deleting a required test or a working lint path to reach an LOC figure would be the exact behaviour this iteration exists to stop, so neither was done. Every structural target — 9 subcommands, 3 CI steps, 8 test files, 0 pre-commit hooks — was met exactly.
 
 ## Notes
 
@@ -386,6 +408,18 @@ LOC of `run_lint_dogfood_script` rehosted); Phase 2 = 2,670 (1,192 + 114 + 67 + 
   and `check-todo-annotations`. After this iteration both log `"xtask has no <name> —
   skipped"` forever. Deleting them is tidy; leaving them is safe and keeps this iteration
   out of the mirrored-script problem entirely. Prefer leaving them; 162b can remove them.
+  **Left in place, as preferred.**
+
+- **Executed by hand on 2026-08-13, in three commits** — one per phase, each removing its
+  own `ci.yml` steps so `main` never sees a job referencing a deleted subcommand.
+  `~/.claude/skills/ralph-loop/SKILL.md` was also updated (optional per Phase 2): its
+  hard-coded two-gate list became the same dynamic-enumeration instruction, with a note
+  that a fixed list rots into "unrecognized subcommand" errors the review phase then
+  wastes effort trying to fix. It has no in-repo mirror, so `check-discipline-regression`
+  cannot see that edit — it was checked by hand, like the `create-pr` one.
+
+- **`ripgrep` is no longer a CI dependency.** `check-dead-primitives` was the only
+  consumer of the `Install ripgrep` step in the `discipline` job; it went with the gate.
 
 - **What this iteration does not claim.** It does not claim the removed gates were
   worthless in principle. `check-dead-primitives` is a reasonable idea; it was gamed. The
