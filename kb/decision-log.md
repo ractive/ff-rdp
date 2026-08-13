@@ -543,3 +543,74 @@ ran, and no run log exists for it to read (the loop never invokes
 (`~/.claude/skills/{ralph-loop,new-ralph-loop}/scripts/` and both `tools/`
 mirrors), `tools/tests/ac-fidelity-check/`,
 `crates/xtask/tests/ac_fidelity_check.rs`, iter-154.
+
+## DEC-031: a live sweep runs qualified tests for real and unqualified tests un-`--include-ignored`, instead of teaching each test body to self-report
+
+**Decision** (iter-155): don't touch the ~90 individual `#[ignore]`-gated live
+test bodies. Their internal `if !live_tests_enabled() { return; }` checks
+(and the `FF_RDP_LIVE_NETWORK_TESTS` equivalent) stay exactly as written —
+now redundant, not load-bearing. Instead, `cargo run -p xtask -- live-sweep`
+(`crates/xtask/src/live_sweep.rs`) statically classifies every gated test
+from its own `#[ignore = "…"]` reason text (an iter-155 audit found every
+current reason under `tests/live/` names at least one of
+`FF_RDP_LIVE_TESTS` / `FF_RDP_LIVE_NETWORK_TESTS`), then drives `cargo test`
+in two phases per target:
+
+1. **Qualified** tests (every env var they need is actually set) run for
+   real with `--include-ignored` — libtest reports genuine `ok`/`FAILED`.
+2. **Unqualified** tests are selected by exact name *without*
+   `--include-ignored`. They still carry `#[ignore]` and nothing forces them
+   to run, so libtest reports them `ignored` — its own vocabulary, not a
+   fabricated status the runtime check invents.
+
+The executed count is therefore known from classification alone, before a
+single `cargo test` process spawns — `qualified.len()`, printed as
+`LIVE_SWEEP_SUMMARY executed=N skipped=M total=T` — and is `0` whenever the
+relevant env vars are unset, never inferred from parsing `cargo test`'s
+prose output.
+
+**Why this option over the plan's four**: the plan's own options 1–4 all
+modify test bodies. Option 1 (`eprintln!` + `return`) was rejected in the
+plan itself — still green. Option 2 (drop the runtime check, rely on
+`#[ignore]` alone) answers the plan's own gating question wrong: a
+network-less `FF_RDP_LIVE_TESTS=1` run legitimately wants the
+network-gated tests to *skip*, not fail — failing them would make ordinary
+partial live runs (the common case; most contributors don't have
+network-dependent fixtures wired) red for no defect. Option 3 (a panicking
+`skip_unless_live!()` macro) turns a skip into a libtest `FAILED`, which is
+the same wrong answer as option 2 by a different mechanism — and would
+require rewriting ~94 call sites across 45 files for a behaviour libtest
+already has a real primitive for (`ignored`). Option 4 (a custom test
+harness) is the correct primitive but nightly-only.
+
+The sweep tool sidesteps all four: it never runs an unqualified test's body
+at all, so the internal early-`return` a test would have hit is never
+reached — the ~94 call sites become inert documentation rather than the
+mechanism, and the one-liner-per-file rewrite the plan's Notes warned about
+never happens. The cost is that a contributor who runs a single suite by
+hand (`cargo test -p ff-rdp-cli --test live <module> -- --include-ignored`)
+still sees the old, misleading `ok`-for-unset-gate behavior — the fix lives
+in the sweep orchestration, not the test binary. `CONTRIBUTING.md` and
+`CLAUDE.md` now say so explicitly and point at `live-sweep` instead.
+
+**Answer to the plan's gating question** ("is a network-less live run
+supposed to be green?"): yes for tests that don't need the network — no for
+the summary line's implicit claim that all of them ran. `live-sweep`'s two
+counts (`executed` / `skipped`) make both true at once instead of forcing a
+single misleading number to answer both questions.
+
+**Theme C — not implemented, and this is the considered answer, not an
+omission.** `ac-fidelity-check.sh` reads only an iteration plan's checked-in
+AC text; it has no run log to check the printed `LIVE_SWEEP_SUMMARY` line
+against, because the loop that invokes it never runs `live-sweep` (or
+`cargo test-live`) itself — same ceiling DEC-030 already named. Requiring
+the `[verified: …]` annotation to quote the exact `executed=N` token would
+add a second brittle string format for the gate to parse without adding any
+verification power: an agent can paste a fabricated `executed=17` exactly as
+easily as a fabricated `109 passed / 0 failed`. Coupling the shell gate to a
+test-output format is only worth it once there is a persisted run artifact
+the gate can independently open and check the annotation against — that is
+a different, larger iteration (a run-log store), not a format tweak here.
+
+**Applies to**: `crates/xtask/src/live_sweep.rs`, `crates/xtask/src/main.rs`,
+`CONTRIBUTING.md`, `CLAUDE.md`, iter-155.

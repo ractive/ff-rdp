@@ -10,7 +10,7 @@ dogfood_path: |
   # After: reports `ignored` (or fails loudly), and the count of executed tests
   # is visible in the summary rather than inferred.
 first_call_sites: []
-status: planned
+status: in-review
 title: "Iteration 155: a skipped live test reports green, so a green live sweep can mean 'did not run'"
 type: iteration
 tags:
@@ -84,15 +84,55 @@ a machine-readable executed-count, the gate could require the annotation to quot
 Weigh honestly: this couples a shell gate to a test-output format and may not be worth it. Say so
 in the Resolution if the conclusion is no.
 
-## Acceptance Criteria [0/3]
+## Resolution
 
-- [ ] test_155_skipped_live_test_is_not_counted_passed: a live test whose env gate is unset is
+**Is a network-less live run supposed to be green?** Yes for the tests that don't need the
+network — no for the summary line's implicit claim that *all* of them ran. Neither of the plan's
+four Theme A options answers both halves at once: options 1 and 4 don't change the outcome or
+aren't available on stable, and options 2/3 turn "skip" into "fail" for a case (a contributor
+running `FF_RDP_LIVE_TESTS=1` without network fixtures wired) that is not a defect.
+
+**Theme A + B, implemented together**: `cargo run -p xtask -- live-sweep`
+(`crates/xtask/src/live_sweep.rs`) — a new tool, not a change to the ~90 test bodies. It
+classifies every `#[ignore]`-gated live test from its own ignore-reason text, then runs `cargo
+test` in two phases: tests whose required env var(s) are set run for real with
+`--include-ignored` (libtest reports genuine `ok`/`FAILED`); the rest are named explicitly
+*without* `--include-ignored`, so `#[ignore]` alone keeps them from running and libtest reports
+them `ignored` — its own vocabulary. The unqualified test's body, and the early-`return` inside
+it, is never reached at all. It prints `LIVE_SWEEP_SUMMARY executed=N skipped=M total=T`, with
+`executed` known from classification before any subprocess spawns. Full write-up:
+[[decision-log#DEC-031]].
+
+**Theme C: no.** `ac-fidelity-check.sh` reads a plan and a diff — it has no persisted run log to
+check a `[verified: …, executed=N]` annotation against, because nothing in the current pipeline
+invokes `live-sweep` (or `cargo test-live`) and keeps the output. Requiring the annotation to
+quote `executed=N` would add a second string format to parse without adding verification power —
+an agent can fabricate `executed=17` exactly as easily as `109 passed / 0 failed`. Worth
+revisiting once a persisted run-artifact store exists for the gate to check against; that is a
+different iteration. See [[decision-log#DEC-031]].
+
+## Acceptance Criteria [3/3]
+
+- [x] test_155_skipped_live_test_is_not_counted_passed: a live test whose env gate is unset is
       reported as ignored/skipped rather than `ok`, asserted by parsing libtest's own summary
-      output in a unit or integration test — not by reading the code
-- [ ] test_155_executed_count_is_reported: a live sweep emits a machine-readable count of tests
-      that actually reached Firefox, and a test asserts the count is 0 when the env gates are unset
-- [ ] check_155_baselines_unmoved: `cargo run -p xtask -- check-discipline-regression` still
-      reports `61v=FAIL, 61t=PASS` and all mirrors in sync
+      output in a unit or integration test — not by reading the code. Implemented as an
+      integration test in `crates/xtask/src/live_sweep.rs` that classifies the real
+      `live_109_throttle_block::live_block_url_pattern` test (the one named in this plan's own
+      `dogfood_path`), partitions it as unqualified with the network gate unset, spawns
+      `cargo test -p ff-rdp-cli --test live` for real without `--include-ignored`, and asserts
+      libtest's stdout contains `test live_109_throttle_block::live_block_url_pattern ...
+      ignored` and never `... ok`.
+- [x] test_155_executed_count_is_reported: a live sweep emits a machine-readable count of tests
+      that actually reached Firefox, and a test asserts the count is 0 when the env gates are unset.
+      `live_sweep::run` prints `LIVE_SWEEP_SUMMARY executed=N skipped=M total=T`; the
+      `test_155_executed_count_is_reported` unit test asserts `executed == 0` with both env gates
+      unset and rises deterministically as gates are set, computed from static classification
+      alone before any `cargo test` process spawns.
+- [x] check_155_baselines_unmoved: `cargo run -p xtask -- check-discipline-regression` still
+      reports `61v=FAIL, 61t=PASS` and all mirrors in sync. Re-run after this change:
+      `check-discipline-regression: ralph-loop mirror in sync (3 files); new-ralph-loop mirror in
+      sync (5 files); replay baselines OK (61v=FAIL, 61t=PASS)` — unchanged, since this iteration
+      never touches `ac-fidelity-check.sh` or its mirrors (see [[decision-log#DEC-031]] Theme C).
 
 ## Notes
 
