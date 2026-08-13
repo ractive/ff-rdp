@@ -1145,10 +1145,22 @@ has no floor. There is no RDP actor that sizes a viewport (RDM does it via
 parent-chrome CSS, unreachable over the wire) — `--window-size` is a real
 Firefox window-feature flag, not protocol-level emulation.
 
+--launch-timeout SECS (iter-158) bounds how long `launch` waits for Firefox to
+open its debug port after spawning. Default 30 s; `FF_RDP_LAUNCH_TIMEOUT_SECS`
+overrides the default, and the flag overrides the env var. A malformed env
+value falls back to 30 s rather than failing the launch. This is deliberately
+NOT the global --timeout (a 10 s per-socket-operation deadline): Firefox was
+measured binding its debug port at 7 s under load, and the previous hardcoded
+5 s bound failed 5/5 contended launches. The effective bound is reported as
+`meta.launch_wait_secs`. If the port is occupied by another process before the
+spawn, `launch` fails immediately naming that process and PID instead of
+waiting out the bound.
+
 Examples:
   ff-rdp launch                          # launch with temp profile on port 6000
   ff-rdp launch --headless               # headless mode (no visible window)
   ff-rdp launch --port 9222              # use a different debug port
+  ff-rdp launch --launch-timeout 45      # allow 45 s for the debug port to open
   ff-rdp launch --auto-consent           # install the Consent-O-Matic extension
   ff-rdp launch --profile ~/my-prof      # reuse an existing profile
   ff-rdp launch --headless --window-size 600x800   # true viewport, >= floor
@@ -1166,7 +1178,7 @@ attestation after navigating, use `ff-rdp navigate --auto-consent` or
 ..., \"action\": ...}` (`action` is `\"accepted\"` only when a control was
 actually clicked).
 
-Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"profile_path\": \"...\", \"temp_profile\": bool, \"auto_consent_extension_installed\": bool, \"window_size\": {\"requested\": {\"width\": N, \"height\": N}, \"below_floor\": bool}|null, \"warnings\"?: [...]}, \"total\": 1, \"meta\": {...}}"
+Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"profile_path\": \"...\", \"temp_profile\": bool, \"auto_consent_extension_installed\": bool, \"window_size\": {\"requested\": {\"width\": N, \"height\": N}, \"below_floor\": bool}|null, \"warnings\"?: [...]}, \"total\": 1, \"meta\": {\"firefox\": \"...\", \"launch_wait_secs\": N, \"replaced\"?: {\"stopped\": bool, \"pid\": N}}}"
     )]
     Launch(LaunchArgs),
     /// Install Claude Code skill files to the user or project filesystem
@@ -2149,6 +2161,12 @@ pub struct LaunchArgs {
     /// Alias for --replace (stop the prior instance and relaunch).
     #[arg(long, hide = true)]
     pub force: bool,
+    /// Seconds to wait for Firefox to open its debug port after spawning
+    /// (default 30, or `FF_RDP_LAUNCH_TIMEOUT_SECS`). This is NOT the global
+    /// `--timeout`, which is a per-socket-operation deadline. Reported back as
+    /// `meta.launch_wait_secs`.
+    #[arg(long, value_name = "SECS")]
+    pub launch_timeout: Option<u64>,
 }
 
 #[derive(clap::Args)]

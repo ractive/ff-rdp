@@ -96,6 +96,53 @@ const DEVTOOLS_PREFS: &[(&str, &str)] = &[
     ("devtools.chrome.enabled", "true"),
 ];
 
+/// Open `<profile>/user.js` for appending, creating `profile` first if it does
+/// not exist yet (iter-158 Theme E).
+///
+/// Pre-iter-158 both `user.js` writers opened the file without ever creating
+/// its parent, so `launch --profile /does/not/exist/prof` failed with
+/// `failed to write devtools prefs to …/user.js: No such file or directory`
+/// before Firefox was ever spawned — a user pointing `--profile` at a path they
+/// intend ff-rdp to populate got a filesystem errno instead of a profile.
+///
+/// Security: a user-supplied `--profile` directory is the user's own choice and
+/// gets no owner-PID marker (see [`should_write_owner_marker`]), so creating it
+/// is fine. The *leaf* is different: appending through a symlinked `user.js`
+/// would let a same-UID process redirect our write to an arbitrary file, which
+/// is the same-UID plant the managed temp-profile path defeats with
+/// unpredictable directory names (see `build_command`). Refuse a symlinked leaf
+/// rather than following it.
+fn open_user_js_append(profile: &Path, what: &str) -> Result<std::fs::File, AppError> {
+    std::fs::create_dir_all(profile).map_err(|e| {
+        AppError::User(format!(
+            "failed to create profile directory {}: {e}",
+            profile.display()
+        ))
+    })?;
+
+    let user_js = profile.join("user.js");
+    if let Ok(meta) = std::fs::symlink_metadata(&user_js)
+        && meta.file_type().is_symlink()
+    {
+        return Err(AppError::User(format!(
+            "refusing to write {what} through a symlinked {} — \
+             remove the symlink or point --profile at a real directory",
+            user_js.display()
+        )));
+    }
+
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&user_js)
+        .map_err(|e| {
+            AppError::User(format!(
+                "failed to write {what} to {}: {e}",
+                user_js.display()
+            ))
+        })
+}
+
 /// Ensure the devtools prefs are present in the profile's `user.js`.
 /// Appends only missing prefs to avoid overwriting user customisations.
 fn ensure_devtools_prefs(profile: &Path) -> Result<(), AppError> {
@@ -111,16 +158,7 @@ fn ensure_devtools_prefs(profile: &Path) -> Result<(), AppError> {
         }
     }
     if !additions.is_empty() {
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&user_js)
-            .map_err(|e| {
-                AppError::User(format!(
-                    "failed to write devtools prefs to {}: {e}",
-                    user_js.display()
-                ))
-            })?;
+        let mut f = open_user_js_append(profile, "devtools prefs")?;
         f.write_all(additions.as_bytes()).map_err(|e| {
             AppError::User(format!(
                 "failed to write devtools prefs to {}: {e}",
@@ -140,16 +178,7 @@ fn ensure_extension_autoinstall(profile: &Path) -> Result<(), AppError> {
     let user_js = profile.join("user.js");
     let existing = std::fs::read_to_string(&user_js).unwrap_or_default();
     if !existing.contains("extensions.autoDisableScopes") {
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&user_js)
-            .map_err(|e| {
-                AppError::User(format!(
-                    "failed to write extension prefs to {}: {e}",
-                    user_js.display()
-                ))
-            })?;
+        let mut f = open_user_js_append(profile, "extension prefs")?;
         f.write_all(b"user_pref(\"extensions.autoDisableScopes\", 0);\n")
             .map_err(|e| {
                 AppError::User(format!(
@@ -360,20 +389,164 @@ pub(crate) fn build_command(
     Ok((cmd, profile_path))
 }
 
+// ---------------------------------------------------------------------------
+// iter-158 Theme A: the launch port-wait bound
+// ---------------------------------------------------------------------------
+
+/// Environment variable overriding the post-spawn debug-port wait bound.
+/// Value is whole seconds; a malformed or empty value falls back to
+/// [`DEFAULT_PORT_WAIT`].
+pub(crate) const LAUNCH_TIMEOUT_ENV: &str = "FF_RDP_LAUNCH_TIMEOUT_SECS";
+
+/// Default bound `launch` waits for Firefox to open its debug port.
+///
+/// Pre-iter-158 this was a hardcoded `Duration::from_secs(5)`. Firefox was
+/// measured binding its debug port at **7 s** under load on 2026-08-13
+/// (`ff-rdp launch` failed 5/5 attempts at load average 6.8), so the 5 s bound
+/// turned every contended launch into a failure — including inside the live
+/// suite, where it surfaced as `live_153_replace_emits_single_envelope`
+/// failing on a defect that had nothing to do with `--replace`.
+///
+/// 30 s mirrors the bound the *test harness* already used
+/// (`tests/common/mod.rs::launch_wait_timeout`), which had this right since
+/// iter-113. The global `--timeout` is deliberately **not** the source here:
+/// it is a socket-operation deadline (`DEFAULT_TIMEOUT_MS = 10_000`) and at
+/// 10 s would still be too small.
+const DEFAULT_PORT_WAIT: Duration = Duration::from_secs(30);
+
+/// Resolve the effective debug-port wait bound from the `--launch-timeout`
+/// flag and the [`LAUNCH_TIMEOUT_ENV`] environment variable.
+///
+/// Precedence: flag → env → [`DEFAULT_PORT_WAIT`]. A malformed or empty env
+/// value falls back to the default rather than erroring — a bad env var must
+/// never break a launch.
+///
+/// Pure (both inputs are parameters) so the precedence rules are unit-testable
+/// without mutating process-wide env, exactly as the harness's
+/// `parse_launch_timeout` already is.
+pub(crate) fn resolve_port_wait_bound(flag: Option<u64>, env: Option<&str>) -> Duration {
+    if let Some(secs) = flag {
+        return Duration::from_secs(secs);
+    }
+    match env.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) => v
+            .parse::<u64>()
+            .map_or(DEFAULT_PORT_WAIT, Duration::from_secs),
+        None => DEFAULT_PORT_WAIT,
+    }
+}
+
+/// The result of waiting for Firefox to open its remote-debugging port.
+///
+/// Exists so the *deadline* failure and the *port already occupied* failure
+/// can no longer share one message. Pre-iter-158 both collapsed into
+/// `"debug port {port} is not reachable after 5s — is the port already in
+/// use?"`, which blamed a port conflict for what is almost always the
+/// opposite condition: the port is unbound and Firefox has not reached it yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PortWaitOutcome {
+    /// The port accepted a connection within the bound.
+    Opened,
+    /// The bound elapsed with the port still refusing connections.
+    TimedOut,
+    /// `host:port` could not be resolved at all — a configuration error, not a
+    /// timing one.
+    Unresolvable(String),
+}
+
+impl PortWaitOutcome {
+    /// Map a non-[`Opened`](PortWaitOutcome::Opened) outcome onto the
+    /// user-facing error. Returns `None` when the port opened.
+    ///
+    /// The deadline message names Firefox's own failure to bind and the knobs
+    /// that raise the bound. It deliberately mentions neither "already in use"
+    /// nor a hardcoded "5s" — an occupied port is rejected *before* the spawn
+    /// by [`reject_if_port_occupied`], with its own message.
+    pub(crate) fn into_error(self, pid: u32, port: u16, bound: Duration) -> Option<AppError> {
+        match self {
+            Self::Opened => None,
+            Self::TimedOut => Some(AppError::User(format!(
+                "Firefox (pid {pid}) did not open debug port {port} within {}s — \
+                 raise --launch-timeout or set {LAUNCH_TIMEOUT_ENV}",
+                bound.as_secs()
+            ))),
+            Self::Unresolvable(msg) => Some(AppError::User(msg)),
+        }
+    }
+}
+
+/// The injectable operations `launch` performs against the outside world.
+///
+/// Mirrors the `EscalationHooks` fn-pointer pattern in
+/// `daemon::client` (`client.rs:63-96`): a struct of plain function pointers,
+/// no dynamic dispatch, real implementations in [`LaunchHooks::real`] and
+/// stubs in tests. It exists so the two failure branches Theme A splits apart
+/// — port occupied before the spawn, and Firefox never binding after it — are
+/// testable without a real Firefox.
+pub(crate) struct LaunchHooks {
+    /// Fast probe: does *anything* accept TCP on `port` right now?
+    pub(crate) is_port_in_use: fn(u16) -> bool,
+    /// Identify the process listening on `port`, if the OS query succeeds.
+    pub(crate) find_listener: fn(u16) -> Option<port_owner::PortOwner>,
+    /// Poll `host:port` until it accepts a connection or the bound elapses.
+    pub(crate) probe_port: fn(&str, u16, Duration) -> PortWaitOutcome,
+    /// Spawn the prepared Firefox command.
+    pub(crate) spawn: fn(&mut std::process::Command) -> std::io::Result<std::process::Child>,
+}
+
+impl LaunchHooks {
+    /// Production hooks that call the real helpers.
+    pub(crate) fn real() -> Self {
+        Self {
+            is_port_in_use: port_owner::is_port_in_use,
+            find_listener: |port| port_owner::find_listener(port).ok().flatten(),
+            probe_port: wait_for_port,
+            spawn: std::process::Command::spawn,
+        }
+    }
+}
+
+/// Reject a launch whose debug port is already held by another process,
+/// **before** Firefox is spawned (iter-158 Theme A).
+///
+/// The message names the occupying process and PID so the user can act on it.
+/// Contrast the post-spawn deadline path, which must never suggest a port
+/// conflict — see [`PortWaitOutcome::into_error`].
+fn reject_if_port_occupied(port: u16, hooks: &LaunchHooks) -> Result<(), AppError> {
+    let owner = (hooks.find_listener)(port);
+    // Suggest a nearby port that always differs from the conflicting one,
+    // even at the u16 upper bound where +10 would overflow.
+    let suggested = port
+        .checked_add(10)
+        .unwrap_or_else(|| port.saturating_sub(10));
+    let detail = match &owner {
+        Some(o) if !o.process_name.is_empty() => {
+            format!("by {} (PID {})", o.process_name, o.pid)
+        }
+        Some(o) => format!("by PID {}", o.pid),
+        None => "by another process".to_owned(),
+    };
+    Err(AppError::User(format!(
+        "port {port} is already in use {detail} — pass --debug-port {suggested} to pick another, \
+         pass --replace to stop the existing instance, \
+         or run `ff-rdp doctor` for a full report."
+    )))
+}
+
 /// Poll until the TCP port at `host:port` accepts a connection or `timeout`
 /// elapses. Tries all resolved addresses (IPv4 + IPv6) each iteration so
 /// Firefox is found regardless of which address family it binds.
-/// Retries every 200 ms. Returns `Ok(())` on success.
-fn wait_for_port(host: &str, port: u16, timeout: Duration) -> Result<(), AppError> {
+/// Retries every 200 ms.
+fn wait_for_port(host: &str, port: u16, timeout: Duration) -> PortWaitOutcome {
     let addr_str = format!("{host}:{port}");
-    let addrs: Vec<std::net::SocketAddr> = addr_str
-        .to_socket_addrs()
-        .map_err(|e| AppError::User(format!("invalid host/port {addr_str}: {e}")))?
-        .collect();
+    let addrs: Vec<std::net::SocketAddr> = match addr_str.to_socket_addrs() {
+        Ok(a) => a.collect(),
+        Err(e) => {
+            return PortWaitOutcome::Unresolvable(format!("invalid host/port {addr_str}: {e}"));
+        }
+    };
     if addrs.is_empty() {
-        return Err(AppError::User(format!(
-            "could not resolve address {addr_str}"
-        )));
+        return PortWaitOutcome::Unresolvable(format!("could not resolve address {addr_str}"));
     }
 
     let poll_interval = Duration::from_millis(200);
@@ -392,7 +565,7 @@ fn wait_for_port(host: &str, port: u16, timeout: Duration) -> Result<(), AppErro
             .unwrap_or(Duration::from_millis(50));
         for addr in &addrs {
             if std::net::TcpStream::connect_timeout(addr, per_addr).is_ok() {
-                return Ok(());
+                return PortWaitOutcome::Opened;
             }
         }
         // Sleep only the remainder of the poll interval so we don't
@@ -405,10 +578,7 @@ fn wait_for_port(host: &str, port: u16, timeout: Duration) -> Result<(), AppErro
         }
     }
 
-    Err(AppError::User(format!(
-        "debug port {port} is not reachable after {}s — is the port already in use?",
-        timeout.as_secs()
-    )))
+    PortWaitOutcome::TimedOut
 }
 
 /// Whether `launch` should drop an [`OWNER_PID_MARKER`](crate::util::profile_dir::OWNER_PID_MARKER)
@@ -423,23 +593,56 @@ fn should_write_owner_marker(profile: Option<&str>) -> bool {
     profile.is_none()
 }
 
+/// Everything `launch` needs from the command line, bundled so the
+/// hook-injected entry point ([`run_with_hooks`]) does not carry a nine-argument
+/// signature.
+pub(crate) struct LaunchOpts<'a> {
+    pub(crate) headless: bool,
+    pub(crate) profile: Option<&'a str>,
+    pub(crate) temp_profile: bool,
+    pub(crate) debug_port: Option<u16>,
+    pub(crate) auto_consent: bool,
+    pub(crate) replace: bool,
+    pub(crate) window_size: Option<&'a str>,
+    /// `--launch-timeout <secs>`: how long to wait for Firefox to open its
+    /// debug port. See [`resolve_port_wait_bound`].
+    pub(crate) launch_timeout: Option<u64>,
+}
+
 /// Launch Firefox with remote debugging.
 ///
-/// `replace` — if `true` and the port is already in use, stop the prior instance
-/// before launching (implements `--replace` / `--force`).
-#[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)]
-pub fn run(
+/// `opts.replace` — if `true` and the port is already in use, stop the prior
+/// instance before launching (implements `--replace` / `--force`).
+pub(crate) fn run(cli: &Cli, opts: &LaunchOpts<'_>) -> Result<(), AppError> {
+    run_with_hooks(cli, opts, &LaunchHooks::real())
+}
+
+/// [`run`] with the outside world injected — see [`LaunchHooks`].
+pub(crate) fn run_with_hooks(
     cli: &Cli,
-    headless: bool,
-    profile: Option<&str>,
-    temp_profile: bool,
-    debug_port: Option<u16>,
-    auto_consent: bool,
-    replace: bool,
-    window_size: Option<&str>,
+    opts: &LaunchOpts<'_>,
+    hooks: &LaunchHooks,
 ) -> Result<(), AppError> {
+    let &LaunchOpts {
+        headless,
+        profile,
+        temp_profile,
+        debug_port,
+        auto_consent,
+        replace,
+        window_size,
+        launch_timeout,
+    } = opts;
     let port = debug_port.unwrap_or(cli.port);
     let host = &cli.host;
+
+    // iter-158 Theme A: resolve the post-spawn debug-port wait bound up front
+    // so it can be reported in the envelope (`meta.launch_wait_secs`) whether
+    // or not the wait is ever reached.
+    let port_wait_bound = resolve_port_wait_bound(
+        launch_timeout,
+        std::env::var(LAUNCH_TIMEOUT_ENV).ok().as_deref(),
+    );
 
     // iter-142 Theme B: opportunistically sweep `~/.ff-rdp/` housekeeping
     // files on every `launch`, not just the rare daemon-autostart path
@@ -473,29 +676,15 @@ pub fn run(
     // instead, so `launch --replace` always emits exactly one document and
     // `results.pid` always means the process THIS command started.
     let mut replaced: Option<crate::daemon::client::StopOutcome> = None;
-    if port_owner::is_port_in_use(port) {
+    if (hooks.is_port_in_use)(port) {
         if replace {
             // --replace / --force: stop the prior instance gracefully, then proceed.
             replaced = Some(crate::daemon::client::stop_prior_instance(cli, port)?);
         } else {
-            let owner = port_owner::find_listener(port).ok().flatten();
-            // Suggest a nearby port that always differs from the conflicting one,
-            // even at the u16 upper bound where +10 would overflow.
-            let suggested = port
-                .checked_add(10)
-                .unwrap_or_else(|| port.saturating_sub(10));
-            let detail = match &owner {
-                Some(o) if !o.process_name.is_empty() => {
-                    format!("by {} (PID {})", o.process_name, o.pid)
-                }
-                Some(o) => format!("by PID {}", o.pid),
-                None => "by another process".to_owned(),
-            };
-            return Err(AppError::User(format!(
-                "port {port} is already in use {detail}. \
-                 hint: pass --replace to stop the existing instance, pass --port {suggested} to use a different port, \
-                 or run `ff-rdp doctor` for a full report."
-            )));
+            // iter-158 Theme A: the *pre-spawn* occupancy failure. This is the
+            // only branch allowed to say "already in use", and it names the
+            // occupying process so the user can act on it.
+            reject_if_port_occupied(port, hooks)?;
         }
     }
 
@@ -504,7 +693,7 @@ pub fn run(
     let (mut cmd, profile_path) =
         build_command(&firefox, port, headless, profile, auto_consent, window_size)?;
 
-    let mut child = cmd.spawn().map_err(|e| {
+    let mut child = (hooks.spawn)(&mut cmd).map_err(|e| {
         AppError::User(format!(
             "failed to start Firefox at {}: {e}",
             firefox.display()
@@ -537,11 +726,10 @@ pub fn run(
             // before reporting success. Always probe localhost since we
             // just spawned a local Firefox, regardless of --host.
             let pid = child.id();
-            if let Err(e) = wait_for_port("localhost", port, Duration::from_secs(5)) {
+            let outcome = (hooks.probe_port)("localhost", port, port_wait_bound);
+            if let Some(e) = outcome.into_error(pid, port, port_wait_bound) {
                 let _ = child.kill();
-                return Err(AppError::User(format!(
-                    "Firefox started (pid {pid}) but {e}"
-                )));
+                return Err(e);
             }
 
             // iter-97 Theme A: drop an owner-PID marker into the managed temp
@@ -653,6 +841,12 @@ pub fn run(
             }
             let mut meta = json!({
                 "firefox": firefox.to_string_lossy().as_ref().to_owned(),
+                // iter-158 Theme A: the effective debug-port wait bound, so a
+                // caller can see which of --launch-timeout /
+                // FF_RDP_LAUNCH_TIMEOUT_SECS / the 30 s default actually
+                // applied. Reporting it makes the bound a real knob rather
+                // than an invisible constant.
+                "launch_wait_secs": port_wait_bound.as_secs(),
             });
             // iter-153: fold the --replace stop outcome into this envelope's
             // meta instead of `stop_prior_instance` printing a second
