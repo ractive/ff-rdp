@@ -13,7 +13,7 @@ dogfood_path: |
   # → 45   (the bound is a real, reportable knob, not a hardcoded constant)
   FF_RDP_LAUNCH_TIMEOUT_SECS=40 ff-rdp launch --headless --debug-port 7106 --jq '.meta.launch_wait_secs'
   # → 40   (env override; default with neither flag nor env is 30)
-
+  
   # ── 1b. The error text must name the real cause ─────────────────────────────
   nc -l 7107 &                       # a non-Firefox listener squats the port
   ff-rdp launch --headless --debug-port 7107; echo "exit=$?"
@@ -21,7 +21,7 @@ dogfood_path: |
   #   "port 7107 is already in use by nc (PID 51234) — pass --debug-port to pick another".
   #   It must NOT say "Firefox started ... is the port already in use?", which
   #   today is printed for the opposite cause (Firefox simply had not bound yet).
-
+  
   # ── 2 + 3. --replace repeatability (Themes B and C) ─────────────────────────
   ff-rdp launch --headless --debug-port 7108
   for i in 1 2 3; do ff-rdp launch --headless --debug-port 7108 --replace --jq '.meta.replaced'; done
@@ -29,7 +29,7 @@ dogfood_path: |
   #   None prints "no owner-PID marker" (the DaemonRecord must survive a failed
   #   stop) and none prints "port still listening after 8s" (the escalation
   #   ladder must actually reach orphaned children).
-
+  
   # ── 3b. The escalation ladder on the primary path ───────────────────────────
   ff-rdp launch --headless --debug-port 7109 --jq '.results.pid'   # note the pid
   kill -9 <that pid>                 # orphan the children; they keep port 7109
@@ -37,7 +37,7 @@ dogfood_path: |
   # → exit=0. On main this reports "port still listening after 8s" because
   #   run_escalation bails on its "pid already dead" guard.
   lsof -i :7109                      # → no output; the port is genuinely free
-
+  
   # ── 4. Harness honesty (Theme D) ────────────────────────────────────────────
   PATH=/nonexistent cargo test -p ff-rdp-cli --test live live_158 -- --include-ignored
   # → FAILS with a panic naming the launch exit status and captured stderr.
@@ -45,7 +45,7 @@ dogfood_path: |
   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
   # → 0 failed, and the summary line separates the three tiers, e.g.
   #   LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K total=T
-
+  
   # ── 5. --profile into a missing directory (Theme E) ─────────────────────────
   rm -rf /tmp/ff-rdp-dogfood-158 && ff-rdp launch --headless --debug-port 7110 \
     --profile /tmp/ff-rdp-dogfood-158/prof --jq '.results.profile_path'
@@ -53,13 +53,19 @@ dogfood_path: |
   #   On main this fails: ensure_devtools_prefs opens user.js without creating
   #   the parent directory first.
 first_call_sites:
-  - primitive: 'launch::resolve_port_wait_bound'
-    site: 'crates/ff-rdp-cli/src/commands/launch.rs — the wait_for_port call currently at :540'
-  - primitive: 'launch::PortWaitOutcome'
-    site: 'crates/ff-rdp-cli/src/commands/launch.rs — error construction in the Ok(None) arm, ~:541-545'
-  - primitive: 'daemon::client::stop_pid_with_full_escalation'
-    site: 'crates/ff-rdp-cli/src/daemon/client.rs — stop_daemon_and_build_result (:961) and stop_prior_instance (:1150)'
-status: in-review
+  - primitive: launch::resolve_port_wait_bound
+    site: >-
+      crates/ff-rdp-cli/src/commands/launch.rs — the wait_for_port call currently at
+      :540
+  - primitive: launch::PortWaitOutcome
+    site: >-
+      crates/ff-rdp-cli/src/commands/launch.rs — error construction in the Ok(None)
+      arm, ~:541-545
+  - primitive: daemon::client::stop_pid_with_full_escalation
+    site: >-
+      crates/ff-rdp-cli/src/daemon/client.rs — stop_daemon_and_build_result (:961)
+      and stop_prior_instance (:1150)
+status: done
 title: "Iteration 158: launch's 5s port wait fails under load, and the live suite converts that into a silent pass"
 type: iteration
 tags:
