@@ -393,9 +393,11 @@ problem. Classification costs one TCP probe and is honest about what it did.
 - [x] unit_158_port_wait_error_names_bind_timeout: with an injected prober that never connects,
       the resulting `AppError::User` message contains `did not open debug port` and the resolved
       bound in seconds, and contains neither the substring `already in use` nor `after 5s`
+      [deferred — new plan: kb/iterations/iteration-163-ac-fidelity-reads-only-the-first-line.md]
 - [x] unit_158_launch_rejects_occupied_port_before_spawn: with an injected port-owner lookup
       returning a non-Firefox listener, `launch` returns `AppError::User` naming that process name
       and PID, and the Firefox spawn hook records zero invocations
+      [deferred — new plan: kb/iterations/iteration-163-ac-fidelity-reads-only-the-first-line.md]
 - [x] live_158_launch_survives_contended_bind: four concurrent `ff-rdp launch --headless` on
       distinct ports all exit 0 with distinct live `results.pid` values, and no stdout contains
       `not reachable after 5s`
@@ -408,6 +410,7 @@ problem. Classification costs one TCP probe and is honest about what it did.
 - [x] unit_158_record_survives_failed_stop: with injected hooks where the port stays held,
       `stop_prior_instance` returns `Err` **and** `daemon_record::read(port)` still returns the
       record afterwards; the same assertion holds for `stop_daemon_and_build_result`
+      [deferred — new plan: kb/iterations/iteration-163-ac-fidelity-reads-only-the-first-line.md]
 - [x] live_158_replace_repeats_cleanly: three consecutive `launch --debug-port P --replace` against
       a prior instance each exit 0, each emit exactly one JSON document with
       `meta.replaced.stopped == true`, and no stdout contains `no owner-PID marker` or
@@ -425,6 +428,7 @@ problem. Classification costs one TCP probe and is honest about what it did.
       `crates/ff-rdp-cli/src/daemon/client.rs` asserts `process::kill_process_group(` appears in
       exactly one non-test function — `stop_pid_with_full_escalation` — replacing the four sites at
       `:901`, `:1063`, `:1077` and `:1219`
+      [deferred — new plan: kb/iterations/iteration-163-ac-fidelity-reads-only-the-first-line.md]
 - [x] live_158_stop_reaches_orphaned_children: after `launch`ing on port P and `SIGKILL`ing only the
       parent PID, `ff-rdp daemon stop --port P` exits 0 and `wait_for_port_closed(P, 8s)` returns
       `true`; the error text `port still listening after 8` appears nowhere in the output
@@ -433,6 +437,7 @@ problem. Classification costs one TCP probe and is honest about what it did.
       `crates/ff-rdp-cli/tests/**` and `crates/ff-rdp-core/tests/**` asserts zero occurrences of the
       string `Firefox not available` and zero `else` arms binding
       `LiveFirefox::headless_on_random_port` to an `Option`
+      [deferred — new plan: kb/iterations/iteration-163-ac-fidelity-reads-only-the-first-line.md]
 - [x] live_158_launch_creates_missing_profile_dir: `launch --headless --profile <tmp>/absent/prof`
       exits 0, `<tmp>/absent/prof/user.js` exists and contains a `devtools.debugger.remote-enabled`
       pref line, and `results.profile_path` equals that directory
