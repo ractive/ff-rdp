@@ -24,9 +24,8 @@ which dominates the iteration loop's wall-clock cost.
   `crates/ff-rdp-cli/tests/live/main.rs`**. They compile into the single
   `live` test target. A new top-level `crates/ff-rdp-cli/tests/live_*.rs` file
   is a **review defect** — it re-introduces the ~45-binary linking cost
-  iter-100b removed. The `check-live-test-layout` xtask gate (wired into
-  `check-iteration-ready` and the CI `discipline` job) fails the build if one
-  reappears.
+  iter-100b removed. The `check-live-test-layout` xtask gate (run in the CI
+  `discipline` job) fails the build if one reappears.
 - **Every `#[test]` under `tests/live/` must carry `#[ignore]`** (iter-113
   Theme B). A plain `cargo test` must stay Firefox-free and fast; a bare
   (ungated) live test hangs a Firefox-less CI job for the whole job budget
@@ -166,9 +165,11 @@ Requirements:
 - `dogfood_path` and `dogfood_script` may coexist; a warning is emitted but it is not
   a hard failure.
 
-`check-dogfood-script` is the 7th sub-check run by `check-iteration-ready`. It is also
-a required CI step on `iter-*` branches in the Live Tests workflow (`live.yml`) when
-`FF_RDP_LIVE_TESTS=1`.
+`check-dogfood-script` also runs the `lint-dogfood-script` sub-check — a static lint of
+the referenced `.dogfood.sh` (`tools/lint-dogfood-script.sh`) that runs regardless of
+`FF_RDP_LIVE_TESTS` and fails the subcommand on any rule violation. It has no CI step:
+the Live Tests workflow's dogfood step was removed in iter-117 (see the comment at the
+end of `live.yml`), so this gate is local-only and runs pre-PR.
 
 Windows: the bash invocation is skipped on non-unix platforms (CI runs on ubuntu-latest).
 
@@ -223,43 +224,42 @@ Then edit the frontmatter:
 
 The plan linter (`cargo xtask check-iteration-plan`) enforces these fields.
 
-### One-shot pre-PR discipline gate
+### Pre-PR discipline gates
 
-Before calling `/create-pr` on any `iter-*` branch, run the aggregator that
-wraps every discipline gate into a single command:
+There is no aggregator subcommand. iter-162a deleted `check-iteration-ready`: it
+hard-coded its own sub-check count in four places, so every gate added or removed cost
+a count bump plus assertion-text edits, and a test asserted that three documentation
+files still named it — which made editing prose a build failure.
+
+Before calling `/create-pr` on any `iter-*` branch, enumerate the gates xtask actually
+ships and run each one:
 
 ```sh
 # Resolve the plan automatically from the current branch:
 BRANCH=$(git branch --show-current)
 PLAN=$(cargo run -q -p xtask -- find-iteration-plan --branch "$BRANCH" 2>/dev/null || true)
-if [ -n "$PLAN" ]; then
-  cargo run -p xtask -- check-iteration-ready --plan "$PLAN" --base origin/main
-fi
+
+# List the check-* subcommands this xtask offers — do not invent names.
+cargo run -q -p xtask -- --help
+
+cargo run -p xtask -- check-live-test-layout
+cargo run -p xtask -- check-source-invariants
+cargo run -p xtask -- check-discipline-regression
+cargo run -p xtask -- check-actor-kb-sync --since origin/main
+[ -n "$PLAN" ] && cargo run -p xtask -- check-iteration-plan "$PLAN"
+[ -n "$PLAN" ] && cargo run -p xtask -- check-firefox-refs "$PLAN"
+[ -n "$PLAN" ] && cargo run -p xtask -- check-dogfood-script "$PLAN"
+[ -n "$PLAN" ] && bash tools/ralph-loop/scripts/ac-fidelity-check.sh \
+  --plan "$PLAN" --base origin/main
 ```
 
-`check-iteration-ready` runs:
-1. `check-dead-primitives --since <base>` — no unwired new pub items
-2. `check-todo-annotations --since <base>` — no bare TODO/FIXME/XXX <!-- allow-todo: documents the check itself -->
-3. `check-actor-kb-sync --since <base>` — actor `.rs` changes paired with kb updates
-4. `check-firefox-refs <plan>` — `firefox_refs:` line ranges valid
-5. `check-discipline-regression` — mirror sync + replay baselines
-6. `ac-fidelity-check.sh` — ticked ACs *reference* evidence that resolves in the diff,
-   declare no non-execution, and carry `[verified: <YYYY-MM-DD>, <measured result>]` where
-   they name a `live_*` test. It reads a plan and a diff only: it cannot verify a test ran
-   (iter-154)
-7. `check-live-test-layout` — no stray top-level `tests/live_*.rs` binaries
-   (iter-100b) **and** every `#[test]` under `tests/live/` is `#[ignore]`-gated
-   or `// allow-ungated-live:`-annotated (iter-113 Theme B)
-8. `check-error-envelope-paths` — no `eprintln!` in
-   `crates/ff-rdp-cli/src/commands/` immediately followed by a bare
-   `AppError::Exit(N)` that bypasses the JSON error envelope (iter-145);
-   annotate a deliberate one with `// stderr-ok: <reason>`
+`ac-fidelity-check.sh` checks that ticked ACs *reference* evidence that resolves in the
+diff, declare no non-execution, and carry `[verified: <YYYY-MM-DD>, <measured result>]`
+where they name a `live_*` test. It reads a plan and a diff only: it cannot verify a
+test ran (iter-154).
 
-Fix every reported failure before pushing. The `/create-pr` skill runs this
+Fix every reported failure before pushing. The `/create-pr` skill runs these
 automatically on iter-* branches.
-
-Note: CI still runs each gate individually as separate required checks for
-clearer per-check GitHub status attribution.
 
 ## PR discipline
 

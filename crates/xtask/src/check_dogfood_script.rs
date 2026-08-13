@@ -1,11 +1,38 @@
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(ClapArgs)]
 pub struct Args {
     /// Path to the iteration plan markdown file.
-    pub plan: PathBuf,
+    pub plan: Option<PathBuf>,
+
+    /// Path to the iteration plan markdown file (named form of the positional
+    /// argument, so `--plan <path>` and `<path>` are interchangeable).
+    #[arg(long = "plan", value_name = "PATH", conflicts_with = "plan")]
+    pub plan_flag: Option<PathBuf>,
+}
+
+impl Args {
+    /// Resolve the plan path from either the positional or the `--plan` form.
+    fn plan_path(&self) -> Result<&Path> {
+        self.plan_flag
+            .as_deref()
+            .or(self.plan.as_deref())
+            .context("a plan path is required (positional or --plan <PATH>)")
+    }
+}
+
+/// The ff-rdp-specific `.dogfood.sh` linter, rehosted here in iter-162a when
+/// `check-iteration-ready` — its only non-test caller — was deleted.
+const LINT_DOGFOOD_SCRIPT_PATH: &str = "tools/lint-dogfood-script.sh";
+
+/// Result of the `lint-dogfood-script` sub-check.
+enum LintOutcome {
+    Pass(String),
+    Skip(String),
+    Fail(String),
 }
 
 /// Extract the iteration number from a plan filename like `iteration-85-slug.md`.
@@ -57,13 +84,97 @@ fn is_iter_branch(branch: &str) -> bool {
     branch.starts_with("iter-")
 }
 
+/// Run `tools/lint-dogfood-script.sh` against the plan's dogfood script.
+///
+/// Skips cheaply when the plan carries no `dogfood_script` field. This is a
+/// static lint — it never executes the script — so it runs regardless of
+/// `FF_RDP_LIVE_TESTS`, which is the whole point of hosting it here: it is the
+/// one gate in the repo with a track record of stopping a real false-green
+/// (iter-86's `grep -qi 'headless'`).
+fn lint_dogfood_script(plan: &Path, repo_root: &Path) -> LintOutcome {
+    let content = match std::fs::read_to_string(plan) {
+        Ok(c) => c,
+        Err(e) => return LintOutcome::Fail(format!("could not read plan: {e}")),
+    };
+    let parsed = match crate::check_iteration_plan::parse_plan(&content) {
+        Ok(p) => p,
+        Err(e) => return LintOutcome::Fail(format!("could not parse plan: {e}")),
+    };
+
+    let script_name = match parsed.frontmatter.dogfood_script.as_deref() {
+        None | Some("") => {
+            return LintOutcome::Skip("no dogfood_script field in plan".to_owned());
+        }
+        Some(s) => s,
+    };
+
+    let linter = repo_root.join(LINT_DOGFOOD_SCRIPT_PATH);
+    if !linter.exists() {
+        return LintOutcome::Fail(format!("linter not found: {}", linter.display()));
+    }
+
+    let Some(plan_dir) = plan.parent() else {
+        return LintOutcome::Fail("plan path has no parent dir".to_owned());
+    };
+    let script_path = plan_dir.join(script_name);
+    if !script_path.exists() {
+        return LintOutcome::Fail(format!("script does not exist: {}", script_path.display()));
+    }
+
+    match Command::new("bash")
+        .arg(&linter)
+        .arg(&script_path)
+        .current_dir(repo_root)
+        .output()
+    {
+        Ok(o) => {
+            let mut combined = String::from_utf8_lossy(&o.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if !stderr.is_empty() {
+                if !combined.is_empty() {
+                    combined.push('\n');
+                }
+                combined.push_str(&stderr);
+            }
+            let combined = combined.trim_end().to_owned();
+            if o.status.success() {
+                LintOutcome::Pass(combined)
+            } else {
+                LintOutcome::Fail(combined)
+            }
+        }
+        Err(e) => LintOutcome::Fail(format!("bash invocation error: {e}")),
+    }
+}
+
+/// Print the lint result and turn a failure into an error.
+fn report_lint(outcome: LintOutcome) -> Result<()> {
+    let (label, detail, ok) = match outcome {
+        LintOutcome::Pass(d) => ("PASS", d, true),
+        LintOutcome::Skip(d) => ("SKIP", d, true),
+        LintOutcome::Fail(d) => ("FAIL", d, false),
+    };
+    println!("lint-dogfood-script: {label}");
+    for line in detail.lines() {
+        println!("    {line}");
+    }
+    if ok {
+        Ok(())
+    } else {
+        anyhow::bail!("lint-dogfood-script: FAIL");
+    }
+}
+
 pub fn run(args: Args) -> Result<()> {
-    run_inner(args, false)
+    let plan = args.plan_path()?;
+    let repo_root = crate::stderr_scan::locate_repo_root()?;
+    report_lint(lint_dogfood_script(plan, &repo_root))?;
+    run_inner(plan, false)
 }
 
 /// Inner implementation. When `force` is true the `FF_RDP_LIVE_TESTS` guard is
 /// bypassed — used by unit tests to avoid depending on the environment.
-pub fn run_inner(args: Args, force: bool) -> Result<()> {
+pub fn run_inner(plan: &Path, force: bool) -> Result<()> {
     if !force && std::env::var("FF_RDP_LIVE_TESTS").as_deref() != Ok("1") {
         // On iter-* branches the skip is replaced by a hard FAIL so the gate
         // cannot be silently bypassed. On other branches (main, release, etc.)
@@ -82,13 +193,13 @@ pub fn run_inner(args: Args, force: bool) -> Result<()> {
     }
 
     // Parse frontmatter to find dogfood_script.
-    let content = std::fs::read_to_string(&args.plan)
-        .with_context(|| format!("failed to read {:?}", args.plan))?;
+    let content =
+        std::fs::read_to_string(plan).with_context(|| format!("failed to read {:?}", plan))?;
 
-    let plan = crate::check_iteration_plan::parse_plan(&content)
-        .with_context(|| format!("failed to parse plan {:?}", args.plan))?;
+    let parsed = crate::check_iteration_plan::parse_plan(&content)
+        .with_context(|| format!("failed to parse plan {:?}", plan))?;
 
-    let script_name = match plan.frontmatter.dogfood_script.as_deref() {
+    let script_name = match parsed.frontmatter.dogfood_script.as_deref() {
         None | Some("") => {
             println!("check-dogfood-script: SKIP (no dogfood_script field in plan)");
             return Ok(());
@@ -97,10 +208,9 @@ pub fn run_inner(args: Args, force: bool) -> Result<()> {
     };
 
     // Resolve the script path relative to the plan's parent directory.
-    let plan_dir = args
-        .plan
+    let plan_dir = plan
         .parent()
-        .with_context(|| format!("plan path has no parent dir: {:?}", args.plan))?;
+        .with_context(|| format!("plan path has no parent dir: {:?}", plan))?;
     let script_path = plan_dir.join(script_name);
 
     if !script_path.exists() {
@@ -111,11 +221,8 @@ pub fn run_inner(args: Args, force: bool) -> Result<()> {
     }
 
     // Extract iteration number to determine the sentinel path.
-    let iter_num = extract_iteration_number(&args.plan).with_context(|| {
-        format!(
-            "could not extract iteration number from plan filename: {:?}",
-            args.plan
-        )
+    let iter_num = extract_iteration_number(plan).with_context(|| {
+        format!("could not extract iteration number from plan filename: {plan:?}")
     })?;
 
     run_script(&script_path, iter_num)
@@ -213,7 +320,7 @@ mod tests {
         // Pre-clean sentinel in case a prior run left it.
         let _ = std::fs::remove_file("/tmp/ff-rdp-iter-99-dogfood-ok");
 
-        let result = run_inner(Args { plan: plan_path }, true);
+        let result = run_inner(&plan_path, true);
         assert!(result.is_ok(), "expected success, got: {result:?}");
         assert!(
             std::path::Path::new("/tmp/ff-rdp-iter-99-dogfood-ok").exists(),
@@ -233,8 +340,74 @@ mod tests {
             "dogfood_path: \"ff-rdp --help\"\n",
         );
 
-        let result = run_inner(Args { plan: plan_path }, true);
+        let result = run_inner(&plan_path, true);
         assert!(result.is_ok(), "expected SKIP success: {result:?}");
+    }
+
+    /// Copy an in-repo lint fixture next to a synthetic plan in `dir`.
+    fn stage_fixture(dir: &TempDir, fixture: &str) -> PathBuf {
+        let repo_root = crate::stderr_scan::locate_repo_root().unwrap();
+        let src = repo_root
+            .join("tools/tests/lint-dogfood-script")
+            .join(fixture);
+        let dst = dir.path().join(fixture);
+        std::fs::copy(&src, &dst).unwrap();
+        dst
+    }
+
+    #[test]
+    fn lint_dogfood_script_skips_without_field() {
+        let dir = TempDir::new().unwrap();
+        let plan_path = write_plan(&dir, "iteration-93-no-script.md", "");
+        let repo_root = crate::stderr_scan::locate_repo_root().unwrap();
+        assert!(matches!(
+            lint_dogfood_script(&plan_path, &repo_root),
+            LintOutcome::Skip(_)
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn lint_dogfood_script_passes_on_clean_script() {
+        // The rehosted linter must still be reachable and still pass a script
+        // that satisfies every rule.
+        let dir = TempDir::new().unwrap();
+        stage_fixture(&dir, "all-rules-good.sh");
+        let plan_path = write_plan(
+            &dir,
+            "iteration-92-clean.md",
+            "dogfood_script: all-rules-good.sh\n",
+        );
+        let repo_root = crate::stderr_scan::locate_repo_root().unwrap();
+        let outcome = lint_dogfood_script(&plan_path, &repo_root);
+        assert!(
+            matches!(outcome, LintOutcome::Pass(_)),
+            "clean fixture must lint clean"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn lint_dogfood_script_fails_on_dirty_script() {
+        // The catch that justified keeping this gate: a rule violation must
+        // reach the caller as a hard failure, not a silent pass.
+        let dir = TempDir::new().unwrap();
+        stage_fixture(&dir, "missing-set-euo-bad.sh");
+        let plan_path = write_plan(
+            &dir,
+            "iteration-91-dirty.md",
+            "dogfood_script: missing-set-euo-bad.sh\n",
+        );
+        let repo_root = crate::stderr_scan::locate_repo_root().unwrap();
+        let outcome = lint_dogfood_script(&plan_path, &repo_root);
+        let LintOutcome::Fail(detail) = outcome else {
+            panic!("dirty fixture must fail the lint");
+        };
+        assert!(
+            detail.contains("missing-set-euo-pipefail"),
+            "failure must name the rule that fired:\n{detail}"
+        );
+        assert!(report_lint(LintOutcome::Fail(detail)).is_err());
     }
 
     #[test]

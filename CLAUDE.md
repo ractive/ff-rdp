@@ -133,20 +133,20 @@ An AC without a named test is not done. **Ticking** a `live_*` AC additionally r
   legitimately untestable.
 - Iteration plans must include `dogfood_path` and `first_call_sites` (if new pub items).
   Validate with: `cargo run -p xtask -- check-iteration-plan kb/iterations/iteration-NN-slug.md`
-- **Before `/create-pr` on an iter-* branch, run the one-shot pre-PR gate:**
+- **Before `/create-pr` on an iter-* branch, run the discipline gates.** There is no
+  aggregator subcommand — iter-162a deleted `check-iteration-ready` because it hard-coded
+  its own sub-check list, so every gate change cost a count bump and an assertion edit.
+  Enumerate what xtask actually ships and run each gate:
   ```bash
-  cargo run -p xtask -- check-iteration-ready --plan <plan-path> --base origin/main
+  cargo run -q -p xtask -- --help          # list the check-* subcommands
+  cargo run -p xtask -- check-<name> ...   # run each one
+  bash tools/ralph-loop/scripts/ac-fidelity-check.sh --plan <plan> --base origin/main
   ```
-  This aggregates all discipline sub-checks in one command:
-  1. `check-dead-primitives --since <base>` — no unwired new pub items
-  2. `check-todo-annotations --since <base>` — no bare TODO/FIXME/XXX <!-- allow-todo: documents the check itself -->
-  3. `check-actor-kb-sync --since <base>` — actor `.rs` changes paired with kb updates
-  4. `check-firefox-refs <plan>` — `firefox_refs:` line ranges valid
-  5. `check-discipline-regression` — mirror sync + replay baselines
-  6. `ac-fidelity-check.sh --plan <plan> --base <base>` — ticked ACs *reference*
-     resolvable evidence, declare no non-execution, and carry `[verified: …]` where
-     they name a `live_*` test (it cannot verify a test ran)
-  Fix every reported failure before pushing. CI still runs each gate individually as required checks.
+  Do not invent subcommand names that are not in the help output. `ac-fidelity-check.sh`
+  checks that ticked ACs *reference* resolvable evidence, declare no non-execution, and
+  carry `[verified: …]` where they name a `live_*` test — it cannot verify a test ran.
+  Fix every reported failure before pushing. CI runs the gates it can run without a
+  Firefox checkout as required checks.
 - `cargo xtask check-dead-primitives`, `check-todo-annotations`,
   `check-discipline-regression`, `check-firefox-refs`, and `check-actor-kb-sync`
   run in CI as required checks. The latter two were added in iter-73 (spec-fidelity-gates):
