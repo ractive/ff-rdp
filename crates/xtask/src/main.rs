@@ -13,6 +13,7 @@ mod check_pre_fix_repro;
 mod check_stderr_annotations;
 mod check_todo_annotations;
 mod find_iteration_plan;
+mod live_sweep;
 mod stderr_scan;
 
 use anyhow::Result;
@@ -65,6 +66,10 @@ enum Commands {
     /// Fail if any `eprintln!` in crates/ff-rdp-cli/src/commands/ (outside
     /// #[cfg(test)] modules) lacks a `// stderr-ok: <reason>` justification comment.
     CheckStderrAnnotations(check_stderr_annotations::Args),
+    /// Run the live-Firefox test suite so an unmet env gate reports `ignored`
+    /// (libtest's own vocabulary) instead of a fake `ok` (iter-155). Prints a
+    /// machine-readable `LIVE_SWEEP_SUMMARY executed=N skipped=M total=T` line.
+    LiveSweep(live_sweep::Args),
 }
 
 fn main() -> Result<()> {
@@ -85,5 +90,6 @@ fn main() -> Result<()> {
         Commands::CheckPreFixRepro(args) => check_pre_fix_repro::run(args),
         Commands::CheckErrorEnvelopePaths(args) => check_error_envelope_paths::run(args),
         Commands::CheckStderrAnnotations(args) => check_stderr_annotations::run(args),
+        Commands::LiveSweep(args) => live_sweep::run(args),
     }
 }
