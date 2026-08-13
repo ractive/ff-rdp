@@ -3713,25 +3713,29 @@ fn live_159_record_resources_available_with_server_target_switching() {
         .iter()
         .find(|m| {
             m.get("type").and_then(Value::as_str) == Some("resources-available-array")
-                && m.get("array")
-                    .and_then(Value::as_array)
-                    .is_some_and(|a| {
-                        a.iter().any(|sub| {
-                            sub.as_array()
-                                .and_then(|s| s.first())
-                                .and_then(Value::as_str)
-                                == Some("network-event")
-                        })
+                && m.get("array").and_then(Value::as_array).is_some_and(|a| {
+                    a.iter().any(|sub| {
+                        sub.as_array()
+                            .and_then(|s| s.first())
+                            .and_then(Value::as_str)
+                            == Some("network-event")
                     })
+                })
         })
         .expect("a network-event resources-available-array frame must arrive");
 
     // The whole point of the recording: which actor sent it.
-    let from = frame.get("from").and_then(Value::as_str).unwrap_or_default();
+    let from = frame
+        .get("from")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     assert!(
         !from.is_empty(),
         "the recorded frame must carry a `from` actor id"
     );
 
-    save_cli_fixture("resources_available_network_server_target_switching.json", frame);
+    save_cli_fixture(
+        "resources_available_network_server_target_switching.json",
+        frame,
+    );
 }

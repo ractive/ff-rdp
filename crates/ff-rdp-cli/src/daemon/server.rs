@@ -3819,8 +3819,11 @@ mod tests {
         let network_events_src = include_str!("../commands/network_events.rs");
         let navigate_src = include_str!("../commands/navigate.rs");
 
+        // Assembled at runtime: a literal here would match itself when this
+        // very file is read back by `include_str!`.
+        let arm = format!("{}{}{} =>", '"', "store-events", '"');
         assert!(
-            !server_src.contains(r#""store-events" =>"#),
+            !server_src.contains(&arm),
             "daemon/server.rs must not carry a `store-events` RPC arm"
         );
         assert!(
