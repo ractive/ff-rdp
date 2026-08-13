@@ -228,22 +228,17 @@ fn live_launch_replace_handles_prior_instance() {
 /// `ff-rdp daemon stop` after `ff-rdp launch` frees the port within 3 s
 /// AND a follow-up `launch` succeeds on the same port.
 ///
-/// `xtask check-pre-fix-repro` runs this test on both revisions and expects
-/// FAIL on main, PASS on HEAD.
-///
-/// Gated on `FF_RDP_LIVE_TESTS=1` (not `#[ignore]`) so that
-/// `xtask check-pre-fix-repro` — which invokes `cargo test … --exact` without
-/// `--include-ignored` — can run this test on both revisions. When the env
-/// var is unset, the body returns immediately as a no-op pass.
+/// This test was left ungated (runtime `FF_RDP_LIVE_TESTS` check, no
+/// `#[ignore]`) purely so `xtask check-pre-fix-repro` — which invoked
+/// `cargo test … --exact` *without* `--include-ignored` — could see it.
+/// iter-162a deleted that gate, so the test is now `#[ignore]`-gated like
+/// every other live test and `live-sweep` classifies it instead of counting
+/// its no-op early return as a pass.
 ///
 /// Uses a fixed port (6090) to keep the test deterministic; if that port is
 /// in use the test skips gracefully.
-///
-// allow-ungated-live: intentionally NOT #[ignore] — `xtask check-pre-fix-repro`
-// runs this via `cargo test --exact` WITHOUT `--include-ignored`, so #[ignore]
-// would make the pre-fix-repro gate unable to see it. Gated at runtime on
-// FF_RDP_LIVE_TESTS=1 (no-op pass when unset). See iter-90 / iter-113 Theme B.
 #[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn pre_fix_repro_daemon_state_sharing_red_then_green() {
     if !live_tests_enabled() {
         return;

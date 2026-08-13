@@ -91,9 +91,14 @@ An AC without a named test is not done. **Ticking** a `live_*` AC additionally r
 
 ## Iteration discipline
 - Every new `pub` item must have at least one non-test consumer in the same PR.
-  Run `cargo run -p xtask -- check-dead-primitives --since origin/main` to verify.
+  This is a review rule, not a gate: iter-162a deleted `check-dead-primitives` after it
+  induced a decoy (`DemuxReader::new()` constructed in `daemon/server.rs` purely to
+  satisfy it — see the comment at `daemon/server.rs:750-756`) while 425 lines of dead
+  public API shipped past it and survived every CI run until a human found them.
 - Every `TODO`/`FIXME`/`XXX` must include a GitHub issue link, Jira ticket, or `// allow-todo: <reason>`.
-  Run `cargo run -p xtask -- check-todo-annotations --since origin/main` to verify.
+  Also a review rule: `check-todo-annotations` and the pre-commit hook that duplicated it
+  were deleted in iter-162a, having guarded an empty set (0 hits in
+  `crates/ff-rdp-{core,cli}/src`) for their whole lifetime.
 - Every spec method change must have a live Firefox test, not just a unit test.
 - Carry-over work must be filed as a new iteration plan BEFORE the current PR merges.
 - AC checkboxes must be paired with test evidence or a `[deferred — new plan: …]` annotation.
@@ -133,27 +138,30 @@ An AC without a named test is not done. **Ticking** a `live_*` AC additionally r
   legitimately untestable.
 - Iteration plans must include `dogfood_path` and `first_call_sites` (if new pub items).
   Validate with: `cargo run -p xtask -- check-iteration-plan kb/iterations/iteration-NN-slug.md`
-- **Before `/create-pr` on an iter-* branch, run the one-shot pre-PR gate:**
+- **Before `/create-pr` on an iter-* branch, run the discipline gates.** There is no
+  aggregator subcommand — iter-162a deleted `check-iteration-ready` because it hard-coded
+  its own sub-check list, so every gate change cost a count bump and an assertion edit.
+  Enumerate what xtask actually ships and run each gate:
   ```bash
-  cargo run -p xtask -- check-iteration-ready --plan <plan-path> --base origin/main
+  cargo run -q -p xtask -- --help          # list the check-* subcommands
+  cargo run -p xtask -- check-<name> ...   # run each one
+  bash tools/ralph-loop/scripts/ac-fidelity-check.sh --plan <plan> --base origin/main
   ```
-  This aggregates all discipline sub-checks in one command:
-  1. `check-dead-primitives --since <base>` — no unwired new pub items
-  2. `check-todo-annotations --since <base>` — no bare TODO/FIXME/XXX <!-- allow-todo: documents the check itself -->
-  3. `check-actor-kb-sync --since <base>` — actor `.rs` changes paired with kb updates
-  4. `check-firefox-refs <plan>` — `firefox_refs:` line ranges valid
-  5. `check-discipline-regression` — mirror sync + replay baselines
-  6. `ac-fidelity-check.sh --plan <plan> --base <base>` — ticked ACs *reference*
-     resolvable evidence, declare no non-execution, and carry `[verified: …]` where
-     they name a `live_*` test (it cannot verify a test ran)
-  Fix every reported failure before pushing. CI still runs each gate individually as required checks.
-- `cargo xtask check-dead-primitives`, `check-todo-annotations`,
-  `check-discipline-regression`, `check-firefox-refs`, and `check-actor-kb-sync`
-  run in CI as required checks. The latter two were added in iter-73 (spec-fidelity-gates):
+  Do not invent subcommand names that are not in the help output. `ac-fidelity-check.sh`
+  checks that ticked ACs *reference* resolvable evidence, declare no non-execution, and
+  carry `[verified: …]` where they name a `live_*` test — it cannot verify a test ran.
+  Fix every reported failure before pushing. Most gates are local-only — do not assume
+  CI will catch what you skip.
+- The CI `discipline` job runs three: `check-live-test-layout`,
+  `check-discipline-regression` and `check-source-invariants` (the merged
+  daemon-locks / error-envelope-paths / stderr-annotations scans).
+  Two more are useful but local-only:
   - `check-firefox-refs <plan>` — validates `firefox_refs:` line ranges in an iteration plan
-    against the local Firefox checkout (`FF_RDP_FIREFOX_PATH`).
+    against the local Firefox checkout (`FF_RDP_FIREFOX_PATH`). The only gate that checks a
+    claim against ground truth *outside* the repository; both of its catches were false
+    Firefox spec citations stopped before merge.
   - `check-actor-kb-sync --since origin/main` — fails if an actor `.rs` file was changed
-    without a corresponding `kb/rdp/actors/*.md` update.
+    without a corresponding `kb/rdp/actors/*.md` update. A docs-sync reminder, not a defect gate.
   `check-discipline-regression` pins the iter-61v (FAIL) and iter-61t (PASS) replay baselines
   so the heuristics in `claims-vs-code.sh` / `ac-fidelity-check.sh` don't silently regress.
 - The ralph-loop skill scripts live in `~/.claude/skills/ralph-loop/scripts/`;
@@ -169,4 +177,5 @@ An AC without a named test is not done. **Ticking** a `live_*` AC additionally r
   got reworded to route around the resulting false failure.
 - Skill-edit iterations (those that modify `~/.claude/skills/`) cannot run
   through ralph-loop itself — drive them by hand in a regular Claude session.
-- See `CONTRIBUTING.md` for full details and install instructions for the pre-commit hook.
+- See `CONTRIBUTING.md` for full details. The repo has no pre-commit hook: `.githooks/`
+  held exactly one, a duplicate of `check-todo-annotations`, and both went in iter-162a.

@@ -210,7 +210,14 @@ until the socket read timeout (≥10s). Fixed by routing all oneway
 calls through `actor_send`. Full list: `watcher.unwatchTargets`,
 `watcher.unwatchResources`, `watcher.clearResources`, `root.unwatchResources`,
 `root.clearResources`, `reflow.start`, `reflow.stop`, `walker.clearPicker`.
-The xtask `check-oneway-conformance` CI gate prevents regression.
+The invariant is **documented, not enforced**. An xtask
+`check-oneway-conformance` subcommand existed from iter-74 until iter-162a,
+but it never executed a real check: it needed a local Firefox checkout
+(`FF_RDP_FIREFOX_PATH` or `~/devel/firefox`) and skipped gracefully when
+neither was present, which on a GitHub runner is always — its own CI step
+name said `(no-op in CI — no Firefox checkout)`. It was deleted rather than
+left standing as false assurance. Regressions are caught by review against
+the list above.
 See [[rdp/protocol/message-format]] §"Oneway methods".
 
 ### sibling-packet-loss

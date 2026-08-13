@@ -166,9 +166,13 @@ spec annotation determines oneway status. `walker.releaseNode`
 (`specs/walker.js:127-133`) is response-less in practice but is NOT
 declared `oneway: true`, so it correctly remains an `actor_request`.
 
-The xtask `check-oneway-conformance` gates CI: it greps Firefox specs
-for `oneway: true` method names and fails if any Rust call site still
-uses `actor_request` for those names.
+This table is the enforcement mechanism — there is no gate. The xtask
+`check-oneway-conformance` subcommand (iter-74 to iter-162a) greped the
+Firefox specs for `oneway: true` method names and failed if a Rust call
+site still used `actor_request`, but it required a local Firefox checkout
+and skipped when one was absent, so it never ran in CI even though it was
+wired in as a step. Adding a oneway method means adding a row here and
+using `actor_send` at the call site; a reviewer checks both.
 
 ## Transport invariant — no packet is ever discarded (iter-74)
 

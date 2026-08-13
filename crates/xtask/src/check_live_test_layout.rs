@@ -14,9 +14,8 @@ pub struct Args {
 /// `tests/live/` from the `#[ignore]` requirement (iter-113 Theme B).
 ///
 /// Reserved for the handful of runtime-gated fast probes that must run by
-/// default — e.g. the `check-pre-fix-repro` target (which invokes
-/// `cargo test --exact` *without* `--include-ignored`), and Firefox-free mock
-/// probes. Must appear on a comment line within the attribute block directly
+/// default — Firefox-free mock probes that carry their own runtime guard.
+/// Must appear on a comment line within the attribute block directly
 /// above the `#[test]`.
 const ALLOW_UNGATED_MARKER: &str = "// allow-ungated-live:";
 
@@ -29,7 +28,7 @@ const ALLOW_UNGATED_MARKER: &str = "// allow-ungated-live:";
 /// instead of ~45. A new top-level `tests/live_*.rs` file re-introduces the
 /// per-binary linking cost this iteration removed, so it is a review defect.
 ///
-/// This guard is wired into `check-iteration-ready` and the CI discipline job
+/// This guard runs in the CI discipline job
 /// so ralph-loop agents can't regress the layout silently. New live tests go
 /// in `tests/live/<slug>.rs` plus a `mod` line in `tests/live/main.rs`.
 ///

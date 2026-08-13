@@ -24,9 +24,8 @@ which dominates the iteration loop's wall-clock cost.
   `crates/ff-rdp-cli/tests/live/main.rs`**. They compile into the single
   `live` test target. A new top-level `crates/ff-rdp-cli/tests/live_*.rs` file
   is a **review defect** — it re-introduces the ~45-binary linking cost
-  iter-100b removed. The `check-live-test-layout` xtask gate (wired into
-  `check-iteration-ready` and the CI `discipline` job) fails the build if one
-  reappears.
+  iter-100b removed. The `check-live-test-layout` xtask gate (run in the CI
+  `discipline` job) fails the build if one reappears.
 - **Every `#[test]` under `tests/live/` must carry `#[ignore]`** (iter-113
   Theme B). A plain `cargo test` must stay Firefox-free and fast; a bare
   (ungated) live test hangs a Firefox-less CI job for the whole job budget
@@ -36,10 +35,11 @@ which dominates the iteration loop's wall-clock cost.
   `#[test]` immediately followed by `#[ignore = "requires a live Firefox
   instance — set FF_RDP_LIVE_TESTS=1"]` (an intervening `#[cfg(unix)]` between
   the two is fine). For the rare runtime-gated fast probe that *must* run by
-  default — e.g. a `check-pre-fix-repro` target (run via `cargo test --exact`
-  without `--include-ignored`) or a Firefox-free mock probe — add an
-  `// allow-ungated-live: <reason>` comment in the attribute block above the
-  `#[test]` instead.
+  default — a Firefox-free mock probe that carries its own runtime guard — add
+  an `// allow-ungated-live: <reason>` comment in the attribute block above the
+  `#[test]` instead. Reach for it sparingly: an ungated live test's early
+  return is counted by libtest as a pass, which is exactly the false-green
+  `live-sweep` exists to eliminate (iter-155).
 - **Launch waits are bounded and env-overridable** (iter-113 Theme A). The
   live launchers wait for Firefox's remote-debugging port via a bound that
   defaults to 30 s and is overridable with `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`
@@ -73,36 +73,20 @@ which dominates the iteration loop's wall-clock cost.
 
 ## Iteration discipline tooling
 
-### Check for dead primitives
+### Review rules that are no longer gates
 
-Every new `pub` item introduced in a PR must have at least one non-test consumer in the
-same PR. The `check-dead-primitives` command enforces this:
+Two long-standing rules survive as **review** rules. iter-162a deleted the xtask
+subcommands that enforced them, for reasons worth keeping on the record:
 
-```sh
-cargo run -p xtask -- check-dead-primitives --since origin/main
-```
-
-This diffs against `origin/main` (fallback: `main`), finds new `pub fn/struct/enum/trait/mod`
-declarations, and uses ripgrep to confirm at least one non-test caller exists. Exit 1 if any
-new pub items are unwired.
-
-Ripgrep (`rg`) must be on your PATH. Install via your package manager:
-- macOS: `brew install ripgrep`
-- Ubuntu: `sudo apt-get install ripgrep`
-- Windows: `winget install BurntSushi.ripgrep.MSVC`
-
-### Check TODO annotations
-
-Every `TODO`, `FIXME`, or `XXX` comment in new code must be accompanied by either:
-- A GitHub issue link: `https://github.com/ractive/ff-rdp/issues/N`
-- A Jira-style ticket: `WORD-123`
-- An explicit allow annotation: `// allow-todo: <reason>`
-
-```sh
-cargo run -p xtask -- check-todo-annotations --since origin/main
-```
-
-Exit 1 if any unannotated TODOs are found in the diff.
+- **Every new `pub` item needs a non-test consumer in the same PR.**
+  `check-dead-primitives` enforced this and was gamed: a `DemuxReader::new()` was
+  constructed in `daemon/server.rs` for no reason other than to satisfy it, while 425
+  lines of genuinely dead public API shipped and survived every CI run until a human
+  review found them. See the comment at `crates/ff-rdp-cli/src/daemon/server.rs:750-756`.
+- **Every `TODO`/`FIXME`/`XXX` needs a GitHub issue link, a `WORD-123` ticket, or an
+  explicit `// allow-todo: <reason>`.** `check-todo-annotations` (plus a 91-line
+  pre-commit hook duplicating it, plus a CI step) guarded a set that was empty for its
+  entire lifetime: zero hits in `crates/ff-rdp-{core,cli}/src`.
 
 ### Validate an iteration plan
 
@@ -129,6 +113,11 @@ FF_RDP_FIREFOX_PATH=/Users/james/devel/firefox \
 Set `FF_RDP_FIREFOX_PATH` to your Firefox source tree. The default is `/Users/james/devel/firefox`.
 Plans with no `firefox_refs:` key are accepted silently. Added in iter-73.
 
+Local-only since iter-162a: CI runners have no Firefox checkout, so the CI step's own
+name said `(no-op in CI)` and it ran against a plan with no `firefox_refs`. Run it by
+hand — it is the only gate that checks a claim against ground truth outside this
+repository, and both of its catches were false Firefox citations stopped before merge.
+
 ### Check actor ↔ kb sync
 
 If any `crates/ff-rdp-core/src/actors/<X>.rs` was changed, the corresponding
@@ -141,6 +130,36 @@ cargo run -p xtask -- check-actor-kb-sync --since origin/main
 
 Added in iter-73. See the ACTOR_KB_MAP constant in `crates/xtask/src/check_actor_kb_sync.rs`
 for the full actor → kb path mapping.
+
+Local-only since iter-162a. It fired three times (`18146ff`, `e5e58e3`, `36f1c63`) and
+every response was "write the missing doc" — a working docs-sync reminder, not a defect
+gate, and it already carries 8 `// allow-actor-kb-skip:` escape hatches.
+
+### Check source invariants
+
+Three regex scans of product source under one subcommand, each reporting its own named
+result line (merged from `check-daemon-locks`, `check-error-envelope-paths` and
+`check-stderr-annotations` in iter-162a):
+
+```sh
+cargo run -p xtask -- check-source-invariants
+```
+
+- **daemon-locks** (iter-63) — no `.lock().unwrap()` under
+  `crates/ff-rdp-cli/src/daemon/`; use `lock_or_recover!` so a poisoned mutex doesn't
+  take the whole daemon process down. Rustfmt-split chains are caught too.
+  `.lock().expect(...)` is deliberately out of scope: `#[cfg(test)]` modules use it
+  where panic-on-poison is the desired behaviour.
+- **error-envelope-paths** (iter-145 Theme C) — no `eprintln!` in
+  `crates/ff-rdp-cli/src/commands/` immediately followed by a bare `AppError::Exit(N)`,
+  the print-then-bypass idiom that let click-time JS exceptions skip the JSON error
+  envelope.
+- **stderr-annotations** (iter-148) — every `eprintln!` under `commands/` (outside
+  `#[cfg(test)]`) carries a `// stderr-ok: <reason>` justification comment.
+
+The `// stderr-ok:` comment must be on the `eprintln!` line or within the two lines
+above it; it exempts a site from both `eprintln!` invariants. This runs in the CI
+`discipline` job.
 
 ### Runnable dogfood script (Theme M, iter-85)
 
@@ -166,9 +185,11 @@ Requirements:
 - `dogfood_path` and `dogfood_script` may coexist; a warning is emitted but it is not
   a hard failure.
 
-`check-dogfood-script` is the 7th sub-check run by `check-iteration-ready`. It is also
-a required CI step on `iter-*` branches in the Live Tests workflow (`live.yml`) when
-`FF_RDP_LIVE_TESTS=1`.
+`check-dogfood-script` also runs the `lint-dogfood-script` sub-check — a static lint of
+the referenced `.dogfood.sh` (`tools/lint-dogfood-script.sh`) that runs regardless of
+`FF_RDP_LIVE_TESTS` and fails the subcommand on any rule violation. It has no CI step:
+the Live Tests workflow's dogfood step was removed in iter-117 (see the comment at the
+end of `live.yml`), so this gate is local-only and runs pre-PR.
 
 Windows: the bash invocation is skipped on non-unix platforms (CI runs on ubuntu-latest).
 
@@ -185,26 +206,6 @@ claude --agent rdp-spec-reviewer --input tools/agents/fixtures/synthetic-watcher
 
 The agent mirror follows the same pattern as the ralph-loop scripts mirror: edit both
 `~/.claude/agents/rdp-spec-reviewer.md` and `tools/agents/rdp-spec-reviewer.md` in sync.
-
-## Pre-commit hook
-
-A pre-commit hook that enforces the TODO annotation rules is included in `.githooks/`.
-To install it:
-
-```sh
-git config core.hooksPath .githooks
-```
-
-The hook scans the staged diff for unannotated `TODO`/`FIXME`/`XXX` and exits non-zero
-with the offending file:line if any are found.
-
-**Bypass (emergencies only):**
-```sh
-git commit --no-verify
-```
-
-Note: the CI `discipline` job is the load-bearing gate. The pre-commit hook is a
-developer convenience — bypassing it locally doesn't skip CI.
 
 ## Iteration plan template
 
@@ -223,51 +224,49 @@ Then edit the frontmatter:
 
 The plan linter (`cargo xtask check-iteration-plan`) enforces these fields.
 
-### One-shot pre-PR discipline gate
+### Pre-PR discipline gates
 
-Before calling `/create-pr` on any `iter-*` branch, run the aggregator that
-wraps every discipline gate into a single command:
+There is no aggregator subcommand. iter-162a deleted `check-iteration-ready`: it
+hard-coded its own sub-check count in four places, so every gate added or removed cost
+a count bump plus assertion-text edits, and a test asserted that three documentation
+files still named it — which made editing prose a build failure.
+
+Before calling `/create-pr` on any `iter-*` branch, enumerate the gates xtask actually
+ships and run each one:
 
 ```sh
 # Resolve the plan automatically from the current branch:
 BRANCH=$(git branch --show-current)
 PLAN=$(cargo run -q -p xtask -- find-iteration-plan --branch "$BRANCH" 2>/dev/null || true)
-if [ -n "$PLAN" ]; then
-  cargo run -p xtask -- check-iteration-ready --plan "$PLAN" --base origin/main
-fi
+
+# List the check-* subcommands this xtask offers — do not invent names.
+cargo run -q -p xtask -- --help
+
+cargo run -p xtask -- check-live-test-layout
+cargo run -p xtask -- check-source-invariants
+cargo run -p xtask -- check-discipline-regression
+cargo run -p xtask -- check-actor-kb-sync --since origin/main
+[ -n "$PLAN" ] && cargo run -p xtask -- check-iteration-plan "$PLAN"
+[ -n "$PLAN" ] && cargo run -p xtask -- check-firefox-refs "$PLAN"
+[ -n "$PLAN" ] && cargo run -p xtask -- check-dogfood-script "$PLAN"
+[ -n "$PLAN" ] && bash tools/ralph-loop/scripts/ac-fidelity-check.sh \
+  --plan "$PLAN" --base origin/main
 ```
 
-`check-iteration-ready` runs:
-1. `check-dead-primitives --since <base>` — no unwired new pub items
-2. `check-todo-annotations --since <base>` — no bare TODO/FIXME/XXX <!-- allow-todo: documents the check itself -->
-3. `check-actor-kb-sync --since <base>` — actor `.rs` changes paired with kb updates
-4. `check-firefox-refs <plan>` — `firefox_refs:` line ranges valid
-5. `check-discipline-regression` — mirror sync + replay baselines
-6. `ac-fidelity-check.sh` — ticked ACs *reference* evidence that resolves in the diff,
-   declare no non-execution, and carry `[verified: <YYYY-MM-DD>, <measured result>]` where
-   they name a `live_*` test. It reads a plan and a diff only: it cannot verify a test ran
-   (iter-154)
-7. `check-live-test-layout` — no stray top-level `tests/live_*.rs` binaries
-   (iter-100b) **and** every `#[test]` under `tests/live/` is `#[ignore]`-gated
-   or `// allow-ungated-live:`-annotated (iter-113 Theme B)
-8. `check-error-envelope-paths` — no `eprintln!` in
-   `crates/ff-rdp-cli/src/commands/` immediately followed by a bare
-   `AppError::Exit(N)` that bypasses the JSON error envelope (iter-145);
-   annotate a deliberate one with `// stderr-ok: <reason>`
+`ac-fidelity-check.sh` checks that ticked ACs *reference* evidence that resolves in the
+diff, declare no non-execution, and carry `[verified: <YYYY-MM-DD>, <measured result>]`
+where they name a `live_*` test. It reads a plan and a diff only: it cannot verify a
+test ran (iter-154).
 
-Fix every reported failure before pushing. The `/create-pr` skill runs this
+Fix every reported failure before pushing. The `/create-pr` skill runs these
 automatically on iter-* branches.
-
-Note: CI still runs each gate individually as separate required checks for
-clearer per-check GitHub status attribution.
 
 ## PR discipline
 
 - One iteration = one branch = one PR
 - Branch naming: `iter-N/short-description`
 - Self-review the diff before requesting review — catch fmt, clippy, dead code yourself
-- The `discipline` CI job runs `check-dead-primitives` and `check-todo-annotations` on
-  every PR
+- The `discipline` CI job runs the xtask gates that work without a Firefox checkout
 
 ## Supply-chain checks
 
@@ -323,36 +322,15 @@ See `fuzz/README.md` for the full target list.
 When running iterations via the ralph-loop skill, each agent also runs the xtask discipline
 checks before invoking `/create-pr`. See the ralph-loop `SKILL.md` for details.
 
-## Branch protection — `live-tests` required check
+## Branch protection
 
-The `live-tests` GitHub Actions job must be a **required** status check on `main` so that
-a red live-tests run blocks merging (iter-87).
+`main` is not currently protected. The former `tools/branch-protection.sh` checker and
+this section's instructions were deleted in iter-162a: the script required `live-tests`
+as a status context, but `live.yml` stopped running per-PR in iter-117, so applying the
+rule it verified would have made *every* PR unmergeable — the required context can never
+report. It also shelled out to `python3` in a Rust-only repo, and `d6f31c4` records that
+`main` was unprotected the whole time it was supposedly being checked.
 
-**Verify current state:**
-
-```sh
-bash tools/branch-protection.sh ractive/ff-rdp
-```
-
-**Apply the protection rule (requires admin access):**
-
-> ⚠️ The `--field required_status_checks=...` PUT *replaces* the entire `contexts`
-> array. Before running, GET the current protection and include every existing
-> required check in the new array, otherwise you will drop them.
->
-> ```sh
-> gh api repos/ractive/ff-rdp/branches/main/protection \
->   --jq '.required_status_checks.contexts'
-> ```
-
-```sh
-# Example only — replace the contexts array with the merged set from the GET above.
-gh api repos/ractive/ff-rdp/branches/main/protection \
-  --method PUT \
-  --field required_status_checks='{"strict":false,"contexts":["live-tests","fmt","clippy"]}' \
-  --field enforce_admins=false \
-  --field required_pull_request_reviews=null \
-  --field restrictions=null
-```
-
-After applying, re-run `bash tools/branch-protection.sh` to confirm it exits 0.
+If protection is reintroduced, pick contexts from the jobs in `.github/workflows/ci.yml`
+that actually run on `pull_request` — `fmt`, `clippy`, `test`, `discipline` — and verify
+with `gh api repos/ractive/ff-rdp/branches/main/protection`.

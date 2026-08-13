@@ -3,8 +3,8 @@
 //! These tests invoke the prebuilt `xtask` binary directly via
 //! `CARGO_BIN_EXE_xtask` (an env var Cargo sets only for integration tests
 //! and benches, not unit tests). That is why these live here rather than in
-//! `check_dogfood_script`'s or `check_iteration_ready`'s `#[cfg(test)]`
-//! modules: a unit test has no `current_exe` pointing at `xtask` (it points
+//! `check_dogfood_script`'s `#[cfg(test)]`
+//! module: a unit test has no `current_exe` pointing at `xtask` (it points
 //! at the test runner itself), so the only way to observe the binary's real
 //! exit code/stdout from a unit test is to spawn `cargo run -p xtask -- ...`
 //! as a child process — and that nested `cargo run` contends with the outer
@@ -42,6 +42,26 @@ fn write_script(dir: &TempDir, name: &str, body: &str) -> PathBuf {
     path
 }
 
+/// Write a dogfood script that satisfies every `tools/lint-dogfood-script.sh`
+/// rule, writing the sentinel for `sentinel_iter`.
+///
+/// Since iter-162a `check-dogfood-script` lints the script before running it,
+/// so any fixture that is meant to reach the execution stage has to lint clean.
+/// Pointing `sentinel_iter` at an iteration number other than the plan's is how
+/// a fixture stays lint-clean while still leaving the expected sentinel absent.
+fn write_clean_dogfood_script(dir: &TempDir, name: &str, sentinel_iter: u32) -> PathBuf {
+    write_script(
+        dir,
+        name,
+        &format!(
+            "set -euo pipefail\n\
+             SENTINEL=/tmp/ff-rdp-iter-{sentinel_iter}-dogfood-ok\n\
+             rm -f \"$SENTINEL\"\n\
+             date -u > \"$SENTINEL\"\n"
+        ),
+    )
+}
+
 #[test]
 #[cfg(unix)]
 fn xtask_check_dogfood_script_missing_sentinel() {
@@ -55,11 +75,9 @@ fn xtask_check_dogfood_script_missing_sentinel() {
         "iteration-98-no-sentinel.md",
         "dogfood_script: no-sentinel.dogfood.sh\n",
     );
-    write_script(
-        &dir,
-        "no-sentinel.dogfood.sh",
-        "# intentionally no sentinel",
-    );
+    // Lints clean, but writes a *different* iteration's sentinel, so the
+    // sentinel check-dogfood-script looks for (iter 98) is never created.
+    write_clean_dogfood_script(&dir, "no-sentinel.dogfood.sh", 9998);
 
     // Pre-clean sentinel.
     let _ = std::fs::remove_file("/tmp/ff-rdp-iter-98-dogfood-ok");
@@ -86,7 +104,9 @@ fn xtask_check_dogfood_script_missing_sentinel() {
 #[test]
 fn live_check_dogfood_script_fails_without_ff_rdp_live_tests_on_iter_branch() {
     let dir = TempDir::new().unwrap();
-    // Needs a dogfood_script field so we reach the gate logic.
+    // Needs a dogfood_script field (and a lint-clean script) so we reach the
+    // gate logic rather than tripping the lint sub-check first.
+    write_clean_dogfood_script(&dir, "fake.dogfood.sh", 95);
     let plan_path = write_plan(
         &dir,
         "iteration-95-branch-test.md",
@@ -121,6 +141,7 @@ fn live_check_dogfood_script_fails_without_ff_rdp_live_tests_on_iter_branch() {
 #[test]
 fn live_check_dogfood_script_skips_on_main_without_ff_rdp_live_tests() {
     let dir = TempDir::new().unwrap();
+    write_clean_dogfood_script(&dir, "fake.dogfood.sh", 94);
     let plan_path = write_plan(
         &dir,
         "iteration-94-main-test.md",
@@ -150,15 +171,21 @@ fn live_check_dogfood_script_skips_on_main_without_ff_rdp_live_tests() {
     );
 }
 
-/// Verify that the check-dogfood-script sub-check is included in the results
-/// produced by `check-iteration-ready`. We use `--skip` for all other gates
-/// and a synthetic plan so this test doesn't require a full repo checkout or
-/// Firefox binary.
+/// `unit_162a_lint_dogfood_rehosted`: `check-dogfood-script` runs the
+/// `lint-dogfood-script` sub-check itself.
+///
+/// Until iter-162a this lived in the `check-iteration-ready` aggregator, which
+/// was the linter's only non-test caller. This test is what proves the linter
+/// kept a caller after that deletion — it drives the binary end-to-end and
+/// asserts the named result line appears.
+///
+/// Also covers the `--plan` spelling of the plan argument (the positional form
+/// is covered by the tests above).
 #[test]
-fn xtask_check_iteration_ready_calls_dogfood_script() {
+fn xtask_check_dogfood_script_runs_lint() {
     let dir = TempDir::new().unwrap();
-    // Write a minimal plan with dogfood_path (no dogfood_script) so the
-    // check-dogfood-script sub-check skips cleanly (SKIP = pass).
+    // No dogfood_script field → the lint sub-check SKIPs (still a result line)
+    // and the dogfood gate itself skips on a non-iter branch.
     let plan_path = write_plan(
         &dir,
         "iteration-96-test.md",
@@ -167,26 +194,12 @@ fn xtask_check_iteration_ready_calls_dogfood_script() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
         .args([
-            "check-iteration-ready",
+            "check-dogfood-script",
             "--plan",
             plan_path.to_str().unwrap(),
-            "--base",
-            "HEAD",
-            "--skip",
-            "check-dead-primitives",
-            "--skip",
-            "check-todo-annotations",
-            "--skip",
-            "check-actor-kb-sync",
-            "--skip",
-            "check-firefox-refs",
-            "--skip",
-            "check-discipline-regression",
-            "--skip",
-            "ac-fidelity-check",
-            "--skip",
-            "check-live-test-layout",
         ])
+        .env("FF_RDP_CURRENT_BRANCH", "main")
+        .env_remove("FF_RDP_LIVE_TESTS")
         .output()
         .unwrap();
 
@@ -196,9 +209,48 @@ fn xtask_check_iteration_ready_calls_dogfood_script() {
         s
     };
 
-    // The sub-check name must appear in output.
     assert!(
-        combined.contains("check-dogfood-script"),
-        "check-dogfood-script sub-check name missing from output:\n{combined}"
+        output.status.success(),
+        "expected exit 0 for a plan with no dogfood_script:\n{combined}"
+    );
+    assert!(
+        combined.contains("lint-dogfood-script:"),
+        "lint-dogfood-script result line missing from output:\n{combined}"
+    );
+}
+
+/// A plan whose dogfood script violates a lint rule must fail
+/// `check-dogfood-script` — the linter's verdict is load-bearing, not advisory.
+#[test]
+#[cfg(unix)]
+fn xtask_check_dogfood_script_fails_on_lint_error() {
+    let dir = TempDir::new().unwrap();
+    write_script(&dir, "dirty.dogfood.sh", "echo no set -euo pipefail here");
+    let plan_path = write_plan(
+        &dir,
+        "iteration-89-dirty.md",
+        "dogfood_script: dirty.dogfood.sh\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .args(["check-dogfood-script", plan_path.to_str().unwrap()])
+        .env("FF_RDP_CURRENT_BRANCH", "main")
+        .env_remove("FF_RDP_LIVE_TESTS")
+        .output()
+        .unwrap();
+
+    let combined = {
+        let mut s = String::from_utf8_lossy(&output.stdout).into_owned();
+        s.push_str(&String::from_utf8_lossy(&output.stderr));
+        s
+    };
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit when the dogfood script fails lint:\n{combined}"
+    );
+    assert!(
+        combined.contains("lint-dogfood-script: FAIL"),
+        "expected a FAIL result line:\n{combined}"
     );
 }

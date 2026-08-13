@@ -126,16 +126,17 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - name: Install ripgrep
-        run: sudo apt-get install -y ripgrep
       - name: Build xtask
         run: cargo build -p xtask
-      - name: Check dead primitives
-        run: cargo run -p xtask -- check-dead-primitives --since origin/main
-      - name: Check TODO annotations
-        run: cargo run -p xtask -- check-todo-annotations --since origin/main
-      - name: Check daemon lock recovery
-        run: cargo run -p xtask -- check-daemon-locks
+      # iter-162a cut this job from 10 xtask invocations to 3. What went, and why:
+      # check-dead-primitives (induced a decoy, missed 425 lines of dead API),
+      # check-todo-annotations (guarded an empty set; its pre-commit-hook twin
+      # went too), check-oneway-conformance (its own step name said "no-op in CI"),
+      # check-firefox-refs (same — it needs a Firefox checkout no runner has; kept
+      # as a local gate, it is the best one in the repo), and check-actor-kb-sync
+      # (a docs-sync reminder, now local-only). check-daemon-locks,
+      # check-error-envelope-paths and check-stderr-annotations were merged into
+      # check-source-invariants — same three scans, one step, named results.
       - name: Check live-test layout (single consolidated target)
         # iter-100b: fails if any top-level crates/ff-rdp-cli/tests/live_*.rs
         # binary reappears. Live suites must be modules of tests/live/main.rs so
@@ -147,31 +148,18 @@ jobs:
         # replay baselines run against the in-repo tools/ralph-loop/scripts
         # copy and validate that iter-61v fails / iter-61t passes.
         run: cargo run -p xtask -- check-discipline-regression
-      - name: Check actor ↔ kb sync
-        # Fails if an actor .rs file under crates/ff-rdp-core/src/actors/ was
-        # changed without a matching kb/rdp/actors/*.md update in the same diff.
-        run: cargo run -p xtask -- check-actor-kb-sync --since origin/main
-      - name: Check firefox_refs (no-op in CI — no Firefox checkout)
-        # check-firefox-refs validates line ranges against the local Firefox checkout.
-        # CI runners don't have the checkout, so we run only against a plan that has
-        # no firefox_refs (iter-73 itself), which is accepted silently.
-        run: >
-          cargo run -p xtask -- check-firefox-refs
-          kb/iterations/iteration-73-spec-fidelity-gates.md
-      - name: Check oneway conformance (no-op in CI — no Firefox checkout)
-        # check-oneway-conformance requires FF_RDP_FIREFOX_PATH; it skips gracefully
-        # when neither the env var nor ~/devel/firefox are present.
-        run: cargo run -p xtask -- check-oneway-conformance
-      - name: Check error envelope paths (iter-145)
-        # Fails if an eprintln! in crates/ff-rdp-cli/src/commands/ is immediately
-        # followed by AppError::Exit(N), the bare-stderr-then-bypass idiom that let
-        # click-time JS exceptions skip the JSON error envelope pre-iter-145.
-        run: cargo run -p xtask -- check-error-envelope-paths
-      - name: Check stderr annotations (iter-148)
-        # Fails if an eprintln! in crates/ff-rdp-cli/src/commands/ (outside
-        # #[cfg(test)] modules) lacks a `// stderr-ok: <reason>` comment, so the
-        # iter-148 annotation sweep can't silently rot as new eprintln! sites land.
-        run: cargo run -p xtask -- check-stderr-annotations
+      - name: Check source invariants (daemon locks, error envelope, stderr annotations)
+        # Three regex scans of product source, each with its own named result line:
+        #   daemon-locks (iter-63)          — no `.lock().unwrap()` under daemon/;
+        #                                     use lock_or_recover! so a poisoned
+        #                                     mutex doesn't kill the process.
+        #   error-envelope-paths (iter-145) — no eprintln! immediately followed by
+        #                                     AppError::Exit(N), the bypass that let
+        #                                     click-time JS exceptions skip the JSON
+        #                                     error envelope.
+        #   stderr-annotations (iter-148)   — every eprintln! under commands/ carries
+        #                                     a `// stderr-ok: <reason>` comment.
+        run: cargo run -p xtask -- check-source-invariants
 
   # iter-75c: PR-time smoke that proves `gh attestation verify` will succeed
   # against a freshly built artifact. Builds the Linux x86_64 CLI, runs
