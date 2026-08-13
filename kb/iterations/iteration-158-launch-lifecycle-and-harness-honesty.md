@@ -384,7 +384,7 @@ port a human is most likely to already be using by hand. The fails-closed owners
 A sweep that binds 6000 itself either collides with the user or inherits that whole ownership
 problem. Classification costs one TCP probe and is honest about what it did.
 
-## Acceptance Criteria [0/14]
+## Acceptance Criteria [13/14]
 
 - [x] unit_158_resolve_port_wait_bound: `resolve_port_wait_bound(None, None)` returns
       `Duration::from_secs(30)`; `(Some(45), _)` returns 45 s; `(None, Some("7"))` returns 7 s;
@@ -396,19 +396,25 @@ problem. Classification costs one TCP probe and is honest about what it did.
 - [x] unit_158_launch_rejects_occupied_port_before_spawn: with an injected port-owner lookup
       returning a non-Firefox listener, `launch` returns `AppError::User` naming that process name
       and PID, and the Firefox spawn hook records zero invocations
-- [ ] live_158_launch_survives_contended_bind: four concurrent `ff-rdp launch --headless` on
+- [x] live_158_launch_survives_contended_bind: four concurrent `ff-rdp launch --headless` on
       distinct ports all exit 0 with distinct live `results.pid` values, and no stdout contains
       `not reachable after 5s`
-- [ ] live_158_launch_reports_effective_wait_bound: `ff-rdp launch --headless --launch-timeout 45`
+      [verified: 2026-08-14, ok inside the full sweep at load average 18.6 —
+      LIVE_SWEEP_SUMMARY executed=221 skipped=0 preexisting=9 total=230, 219 passed / 2 failed]
+- [x] live_158_launch_reports_effective_wait_bound: `ff-rdp launch --headless --launch-timeout 45`
       emits `meta.launch_wait_secs == 45`, and the same command with `FF_RDP_LAUNCH_TIMEOUT_SECS=40`
       and no flag emits `meta.launch_wait_secs == 40`
+      [verified: 2026-08-14, ok inside the full sweep — LIVE_SWEEP_SUMMARY executed=221 skipped=0 preexisting=9 total=230, 219 passed / 2 failed]
 - [x] unit_158_record_survives_failed_stop: with injected hooks where the port stays held,
       `stop_prior_instance` returns `Err` **and** `daemon_record::read(port)` still returns the
       record afterwards; the same assertion holds for `stop_daemon_and_build_result`
-- [ ] live_158_replace_repeats_cleanly: three consecutive `launch --debug-port P --replace` against
+- [x] live_158_replace_repeats_cleanly: three consecutive `launch --debug-port P --replace` against
       a prior instance each exit 0, each emit exactly one JSON document with
       `meta.replaced.stopped == true`, and no stdout contains `no owner-PID marker` or
       `still in use after stopping the prior instance`
+      [verified: 2026-08-14, ok inside the full sweep; the baseline's one real defect
+      live_153_replace_emits_single_envelope also went from FAILED to ok in the same run —
+      LIVE_SWEEP_SUMMARY executed=221 skipped=0 preexisting=9 total=230, 219 passed / 2 failed]
 - [x] unit_158_stop_ladder_captures_pgid_before_any_kill: a recording `EscalationHooks` stub asserts
       `stop_pid_with_full_escalation` calls `get_pgid` strictly before the first of
       `kill_group_term` / `kill_group_kill` / `kill_process_tree`
@@ -419,20 +425,39 @@ problem. Classification costs one TCP probe and is honest about what it did.
       `crates/ff-rdp-cli/src/daemon/client.rs` asserts `process::kill_process_group(` appears in
       exactly one non-test function — `stop_pid_with_full_escalation` — replacing the four sites at
       `:901`, `:1063`, `:1077` and `:1219`
-- [ ] live_158_stop_reaches_orphaned_children: after `launch`ing on port P and `SIGKILL`ing only the
+- [x] live_158_stop_reaches_orphaned_children: after `launch`ing on port P and `SIGKILL`ing only the
       parent PID, `ff-rdp daemon stop --port P` exits 0 and `wait_for_port_closed(P, 8s)` returns
       `true`; the error text `port still listening after 8` appears nowhere in the output
+      [verified: 2026-08-14, ok inside the full sweep — LIVE_SWEEP_SUMMARY executed=221 skipped=0 preexisting=9 total=230, 219 passed / 2 failed]
 - [x] unit_158_no_live_test_skips_on_missing_firefox: a source-scan test over
       `crates/ff-rdp-cli/tests/**` and `crates/ff-rdp-core/tests/**` asserts zero occurrences of the
       string `Firefox not available` and zero `else` arms binding
       `LiveFirefox::headless_on_random_port` to an `Option`
-- [ ] live_158_launch_creates_missing_profile_dir: `launch --headless --profile <tmp>/absent/prof`
+- [x] live_158_launch_creates_missing_profile_dir: `launch --headless --profile <tmp>/absent/prof`
       exits 0, `<tmp>/absent/prof/user.js` exists and contains a `devtools.debugger.remote-enabled`
       pref line, and `results.profile_path` equals that directory
+      [verified: 2026-08-14, ok inside the full sweep — LIVE_SWEEP_SUMMARY executed=221 skipped=0 preexisting=9 total=230, 219 passed / 2 failed]
 - [ ] live_158_sweep_reports_three_tiers: `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run
       -p xtask -- live-sweep` exits 0 with 0 failed, and its `LIVE_SWEEP_SUMMARY` line carries a
       `preexisting=K` field with `K == 6` when nothing is listening on `127.0.0.1:6000`, those six
       targets reported `ignored` by libtest and excluded from `executed`
+      NOT MET — left unticked, wording unchanged. Measured 2026-08-14:
+      `LIVE_SWEEP_SUMMARY executed=221 skipped=0 preexisting=9 total=230`, exit 1,
+      219 passed / 2 failed, 32.7 min wall at load average 18.6.
+      The tier mechanism works exactly as specified — all 9 preexisting tests were reported
+      `ignored` by libtest (1 + 3 + 3 + 2 across `live_129_frame_targets`, `live_61p_registry`,
+      `live_61u`, `live_firefox_test`) and excluded from `executed`. Two stated conditions fail:
+      (a) `K == 9`, not 6 — 6 was the count of ConnectionRefused *failures* in the 2026-08-13
+      baseline, not the number of tests a classifier identifies; every `ff-rdp-core` live test
+      resolves its port through `firefox_port()` and none launches a browser.
+      (b) `0 failed` — 2 failed, neither caused by this iteration (its product diff touches only
+      `commands/launch.rs` and `daemon/client.rs`):
+      `live_109_throttle_block::live_block_url_pattern` is network-gated and therefore never ran
+      in the baseline sweep at all, and asserts a real product defect (a blocked URL's fetch
+      resolved); `live_141_output_hygiene::live_141_text_empty_result_keeps_metadata` failed
+      because the proxy daemon did not start under load — a condition that pre-158 returned
+      `None` and reported `ok`, i.e. Theme D finding a real hidden skip on its first run.
+      Both are filed as [[iteration-164-two-failures-the-158-sweep-uncovered]].
 
 ## Implementation deviations from the plan
 
