@@ -562,7 +562,8 @@ a documentation/code divergence rather than a logic bug, and the early returns
 are the last line of defence when it happens. They stay for that reason, not
 merely as inert documentation. A `live-sweep` check that cross-references each
 test's ignore reason against the env vars its body reads, failing loudly on
-disagreement, would close this and is worth a follow-up.
+disagreement, would close this and is worth a follow-up — filed as
+[[iteration-157-live-sweep-classifier-drift]].
 
 Instead, `cargo run -p xtask -- live-sweep`
 (`crates/xtask/src/live_sweep.rs`) statically classifies every gated test
