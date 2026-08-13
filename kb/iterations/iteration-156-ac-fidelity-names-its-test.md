@@ -16,7 +16,7 @@ dogfood_path: |
   cargo run -p xtask -- check-discipline-regression
   # → replay baselines OK (61v=FAIL, 61t=PASS)
 first_call_sites: []
-status: planned
+status: obsolete
 title: "Iteration 156: ac-fidelity Theme B fires on any live_* token, not the test the AC names"
 type: iteration
 tags:
@@ -25,6 +25,13 @@ tags:
 ---
 
 # Iteration 156: Theme B fires on prose, not on the AC's own test
+
+> **CLOSED OBSOLETE 2026-08-13.** This fixes friction in `ac-fidelity-check.sh`, a gate that
+> [[analysis-2026-08-13-what-ff-rdp-became]] §5 recommends shrinking to a single rule and
+> eventually replacing outright — see [[iteration-162-discipline-machinery-removal]] Phase 3.
+> Refining a heuristic that is scheduled for deletion is the exact spiral the step-back was
+> commissioned to stop. The underlying observation stands and is recorded in the analysis;
+> the fix is subsumed by the shrink.
 
 **This is a skill-edit iteration.** `ac-fidelity-check.sh` has four copies
 (`~/.claude/skills/{ralph-loop,new-ralph-loop}/scripts/` and both `tools/` mirrors). Per

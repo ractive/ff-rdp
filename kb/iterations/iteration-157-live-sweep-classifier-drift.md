@@ -12,7 +12,7 @@ dogfood_path: |
   cargo run -p xtask -- live-sweep | grep LIVE_SWEEP_SUMMARY
   # → LIVE_SWEEP_SUMMARY executed=0 skipped=219 total=219
 first_call_sites: []
-status: planned
+status: obsolete
 title: "Iteration 157: live-sweep's classifier trusts ignore-reason prose that nothing keeps in sync with the test body"
 type: iteration
 tags:
@@ -21,6 +21,16 @@ tags:
 ---
 
 # Iteration 157: close DEC-031's named residual
+
+> **CLOSED OBSOLETE 2026-08-13.** Its own AC said "measure first" — so it was measured. The
+> first full qualified `live-sweep` run in the project's history
+> ([[analysis-2026-08-13-what-ff-rdp-became]] §6: `executed=197 skipped=25 total=222`, 49.5 min,
+> 190 passed / 7 failed) shows **classifier drift is not what is wrong with the sweep**. The two
+> real ways a test is counted `executed` without testing anything are (a) Firefox failed to
+> launch, which returns a silent `ok` from 167 harness call sites, and (b) the `ff-rdp-core`
+> live tests needing a hand-started Firefox on port 6000. Both live in the test harness, not in
+> the `#[ignore]`-reason classifier. (a) is addressed by
+> [[iteration-158-launch-lifecycle-and-harness-honesty]]; (b) is an in-scope decision there too.
 
 Filed out of [[iteration-155-live-skip-reports-green]] / [[decision-log#DEC-031]], which names
 this gap explicitly rather than leaving it implicit.
