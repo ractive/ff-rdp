@@ -468,13 +468,29 @@ only against the rare writer.
 **Decision**: `ac-fidelity-check.sh` gains two negative checks and one honest
 success message (iter-154):
 
-1. A **ticked** AC whose full text (bullet line plus its indented continuation
-   lines, whitespace collapsed) contains one of eight literal phrases — `not
-   exercised`, `not run`, `never run`, `not executed`, `implemented and
-   compiled`, `not verified`, `could not run`, `time budget` — fails,
-   case-insensitively, regardless of whether its slug resolves in the diff.
-   A `[deferred — …]` annotation short-circuits first, so the sanctioned way to
-   say "this did not happen" still passes.
+1. A **ticked** AC whose full text (bullet line plus its continuation lines,
+   whitespace collapsed) matches one of six literal phrases as whole words —
+   `not exercised`, `not run`, `never run`, `not executed`, `implemented and
+   compiled`, `not verified` — fails case-insensitively, regardless of whether
+   its slug resolves in the diff. A `[deferred — …]` annotation short-circuits
+   first, so the sanctioned way to say "this did not happen" still passes.
+
+   Word boundaries and the shorter list came out of PR #193 review, which
+   demonstrated false positives on ordinary AC wording: the phrases were plain
+   substrings, so `not run` fired inside "not run*ning*" and "can*not run*", and
+   `time budget` fired on any latency AC ("completes within the 200 ms time
+   budget"). `time budget` is dropped outright — it earns nothing, since the
+   iteration-151 AC that motivated the list is caught by `not exercised` in the
+   same sentence. `could not run` is subsumed by `not run`.
+
+   The residual false-positive class — an AC that legitimately *describes*
+   behaviour ("`--dry-run` does not run the command") — gets an explicit escape
+   hatch, `[allow-ac-wording: <reason ≥10 chars>]`, mirroring the repo's
+   `// allow-spec-drift:` / `// allow-todo:` pattern. Without it the only remedy
+   for a false positive is to reword the AC, which is precisely the behaviour
+   this gate exists to stop; a check that punishes honest wording teaches
+   agents to launder wording. The review found this PR had already reworded its
+   own AC 3 to get past its own gate.
 2. A **ticked** AC naming a `live_*` test must carry a
    `[verified: <YYYY-MM-DD>, <measured result>]` annotation. The gate requires
    an ISO date and at least one further digit inside the bracket; it does not
@@ -487,8 +503,18 @@ success message (iter-154):
 The evidence heuristics themselves keep reading only the AC's **first** line.
 Widening their input would hand them more tokens to match and could turn a
 should-fail plan green — the pinned `61v=FAIL` replay baseline exists to catch
-exactly that. Only the two new checks, which can only ever add failures, read
-the folded text.
+exactly that.
+
+Three consumers read the folded text: the two new checks, which can only ever
+add failures, and the `[deferred — …]` accept, which can only ever remove them.
+That last one is why the deferral annotation must be **anchored** to the end of
+the AC (trailing whitespace and a period tolerated; a closing `)` is not). PR
+#193 review caught the unanchored version laundering any AC that merely
+mentioned `[deferred` in passing — a plan that failed *before* iter-154 passed
+after it. A deferral nested in a parenthetical is textually indistinguishable
+from a passing mention, so the stricter reading wins and the author moves the
+annotation; `iteration-114` line 124 is the only plan in the repo written the
+looser way, and merged plans are never re-gated.
 
 **Why**: on 2026-08-12 PR #188 ([[iteration-151-residual-live-firefox-leak]])
 ticked two ACs whose own continuation text read *"implemented and compiled;

@@ -185,8 +185,15 @@ fn shell_154_unrun_ac_fails() {
         "failure output must name the offending AC.\n{output}"
     );
     assert!(
-        output.contains("Untick it") && output.contains("[deferred — new plan:"),
+        output.contains("untick the AC") && output.contains("[deferred — new plan:"),
         "failure output must suggest untick-or-defer.\n{output}"
+    );
+    // PR #193 finding 6: for a false positive neither untick nor defer is
+    // correct, so the message must also name the escape hatch and say plainly
+    // that rewording is not the remedy.
+    assert!(
+        output.contains("[allow-ac-wording:") && output.contains("Do not reword"),
+        "failure output must name the escape hatch and forbid rewording.\n{output}"
     );
 }
 
@@ -217,9 +224,15 @@ fn shell_154_iter151_prefix_would_have_failed() {
         !passed,
         "iteration-151's pre-fix AC block must not pass the gate.\n{output}"
     );
+    // Assert on a SINGLE line: the chunk-B AC's own failure line also contains
+    // the chunk-A slug (its text reads "same status as `live_151_chunk_a…`"), so
+    // two independent substring checks could be satisfied by two different
+    // failures while the chunk-A Theme A check was broken (PR #193 finding 10).
     assert!(
-        output.contains("declares its own non-execution")
-            && output.contains("live_151_chunk_a_leaves_no_orphans"),
+        output
+            .lines()
+            .any(|l| l.contains("declares its own non-execution")
+                && l.contains("live_151_chunk_a_leaves_no_orphans")),
         "the chunk-A AC must fail on its 'not exercised' text specifically.\n{output}"
     );
 
@@ -251,4 +264,150 @@ fn shell_154_iter151_prefix_would_have_failed() {
         fixture.contains(expected.trim()),
         "fixture no longer matches iteration-151's AC block at 6d07c8c — do not edit it"
     );
+}
+
+// --- PR #193 review findings: each of these failed against the first cut. -----
+
+#[test]
+fn shell_154_missing_run_evidence_fails() {
+    // Theme B in isolation: real live test, no denied wording, no annotation.
+    // Nothing else in the suite pins this diagnostic (finding 9).
+    let (passed, output) = run_gate("unevidenced-live-ac.md", "HEAD..HEAD");
+    assert!(
+        !passed,
+        "a ticked live_* AC with no run evidence must be rejected.\n{output}"
+    );
+    assert!(
+        output.lines().any(|l| l.contains("carries no run evidence")
+            && l.contains("live_110_replace_never_kills_foreign_firefox")),
+        "expected the Theme B diagnostic naming the AC.\n{output}"
+    );
+}
+
+#[test]
+fn shell_154_blank_line_continuation_is_read() {
+    // A blank line then an indented block is the same Markdown list item, so the
+    // `[verified: …]` there counts (finding 4).
+    let (passed, output) = run_gate("blank-line-continuation-ac.md", "HEAD..HEAD");
+    assert!(
+        passed,
+        "evidence in a second paragraph of the list item must be read.\n{output}"
+    );
+}
+
+#[test]
+fn shell_154_deferral_mention_does_not_launder() {
+    // The deferral accept skips every later check, so it must require an
+    // annotation that closes the AC — not a passing mention (finding 1).
+    let (passed, output) = run_gate("deferral-mention-ac.md", "HEAD..HEAD");
+    assert!(
+        !passed,
+        "a parenthetical mention of [deferred …] must not launder an AC.\n{output}"
+    );
+    assert!(
+        output.contains("live_154_totally_nonexistent_test"),
+        "failure must name the AC whose test does not exist.\n{output}"
+    );
+}
+
+#[test]
+fn shell_154_allow_wording_escape_hatch() {
+    // Theme A matches literal phrases, not meaning; an AC that describes
+    // behaviour needs an escape that is not "reword it" (findings 2 and 6).
+    let (passed, output) = run_gate("allowed-wording-ac.md", "HEAD..HEAD");
+    assert!(
+        passed,
+        "[allow-ac-wording: …] must suppress a Theme A false positive.\n{output}"
+    );
+
+    // And the hatch must not be a bare marker: the same AC without a reason
+    // long enough to be substantive is still rejected.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let plan = tmp.path().join("plan.md");
+    fs::write(
+        &plan,
+        "## Acceptance Criteria\n\n- [x] `test_token_comparison_constant_time`: \
+         `--dry-run` does not run the command [allow-ac-wording: x]\n",
+    )
+    .unwrap();
+    let out = Command::new("bash")
+        .arg(script_path())
+        .arg("--plan")
+        .arg(&plan)
+        .arg("--range")
+        .arg("HEAD..HEAD")
+        .current_dir(repo_root())
+        .output()
+        .expect("run ac-fidelity-check.sh");
+    assert!(
+        !out.status.success(),
+        "a bare [allow-ac-wording: x] must not satisfy the escape hatch"
+    );
+}
+
+#[test]
+fn shell_154_future_verified_date_rejected() {
+    // `[verified: 9999-99-99, 0]` satisfied the first cut (finding 13).
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let plan = tmp.path().join("plan.md");
+    fs::write(
+        &plan,
+        "## Acceptance Criteria\n\n- [x] live_110_replace_never_kills_foreign_firefox: ok \
+         [verified: 9999-12-31, 3 passed]\n",
+    )
+    .unwrap();
+    let out = Command::new("bash")
+        .arg(script_path())
+        .arg("--plan")
+        .arg(&plan)
+        .arg("--range")
+        .arg("HEAD..HEAD")
+        .current_dir(repo_root())
+        .output()
+        .expect("run ac-fidelity-check.sh");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success() && combined.contains("date in the future"),
+        "a future [verified: …] date must be rejected.\n{combined}"
+    );
+}
+
+#[test]
+fn shell_154_theme_a_sees_nested_and_lazy_continuations() {
+    // Two accidental bypasses (finding 5): a column-0 lazy continuation, and a
+    // confession parked under an unticked sub-checkbox. Both render to a human
+    // as part of the ticked AC.
+    for (name, body) in [
+        (
+            "lazy",
+            "- [x] `test_token_comparison_constant_time`: parent AC does the thing\n\
+             not exercised end-to-end in this session\n",
+        ),
+        (
+            "nested",
+            "- [x] `test_token_comparison_constant_time`: parent AC does the thing\n\
+             \x20 - [ ] note: implemented and compiled, not exercised end-to-end\n",
+        ),
+    ] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let plan = tmp.path().join("plan.md");
+        fs::write(&plan, format!("## Acceptance Criteria\n\n{body}")).unwrap();
+        let out = Command::new("bash")
+            .arg(script_path())
+            .arg("--plan")
+            .arg(&plan)
+            .arg("--range")
+            .arg("HEAD..HEAD")
+            .current_dir(repo_root())
+            .output()
+            .expect("run ac-fidelity-check.sh");
+        assert!(
+            !out.status.success(),
+            "{name} continuation must not hide a confession from Theme A"
+        );
+    }
 }

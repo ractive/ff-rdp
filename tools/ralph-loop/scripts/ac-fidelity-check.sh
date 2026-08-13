@@ -93,38 +93,86 @@ fi
 # this session's time budget" (verified by replaying 6d07c8c).
 #
 # Fold each checkbox into ONE record: `<first line>\x1f<whole AC, whitespace
-# collapsed>`. The existing evidence heuristics keep reading only the first
-# line — widening their input would hand them more tokens to match and could
-# turn a should-fail plan green, which is exactly what the pinned 61v=FAIL
-# replay baseline exists to prevent. Only the two new negative checks (which can
-# only ever add failures) read the folded text.
-AC_FOLDED=$(printf '%s\n' "$AC_BLOCK" | awk '
-  BEGIN { SEP = sprintf("%c", 31) }
-  function flush() { if (first != "") print first SEP full; first = ""; full = "" }
-  /^[[:space:]]*-[[:space:]]*\[[ xX]\]/ { flush(); first = $0; full = $0; next }
-  # A continuation line is indented and non-blank; anything else ends the AC.
-  {
-    if (first == "") next
-    if ($0 !~ /^[[:space:]]/ || $0 ~ /^[[:space:]]*$/) { flush(); next }
-    line = $0; sub(/^[[:space:]]+/, "", line); full = full " " line
-  }
-  END { flush() }
-')
+# collapsed>`. The evidence heuristics keep reading only the FIRST line —
+# widening their input would hand them more tokens to match and could turn a
+# should-fail plan green, which is exactly what the pinned 61v=FAIL replay
+# baseline exists to prevent. Three consumers read the folded text: the two new
+# negative checks (which can only ever add failures) and the `[deferred — …]`
+# accept, which can only ever remove them — see the anchoring note there.
+#
+# Continuation rules, which follow Markdown's own list-item semantics:
+#   * an indented non-blank line continues the AC, even across a blank line
+#     (a second paragraph of the same list item, PR #193 finding 4);
+#   * an unindented non-blank line continues it only as a LAZY continuation,
+#     i.e. when no blank line intervened (PR #193 finding 5a) — after a blank
+#     line, column-0 prose is a new block and belongs to no AC;
+#   * a nested `- [ ]` sub-checkbox continues its parent AND opens its own
+#     record, so a confession parked under an unticked sub-bullet is seen by
+#     the parent instead of vanishing (PR #193 finding 5b).
+#
+# Pass 1 emits top-level records (nested checkboxes fold into the parent); pass
+# 2 emits the nested ones. Two passes rather than one nested state machine —
+# `fold_records` is identical in both, differing only in what starts a record.
+fold_records() {
+  # $1: awk regex matching a line that STARTS a record. Passed through the
+  # environment, NOT `-v`: awk applies escape processing to a `-v` value, which
+  # silently rewrites `\[` to `[` and turns the pattern into a bracket
+  # expression that matches nothing.
+  AC_START_RE="$1" awk '
+    BEGIN { SEP = sprintf("%c", 31); start_re = ENVIRON["AC_START_RE"] }
+    function flush() { if (first != "") print first SEP full; first = ""; full = "" }
+    # A top-level checkbox always terminates the record in progress, in both
+    # passes: it is never a continuation of anything.
+    /^-[[:space:]]*\[[ xX]\]/ && $0 !~ start_re { flush(); pending_blank = 0; next }
+    $0 ~ start_re { flush(); first = $0; full = $0; pending_blank = 0; next }
+    {
+      if (first == "") next
+      if ($0 ~ /^[[:space:]]*$/) { pending_blank = 1; next }
+      if ($0 !~ /^[[:space:]]/ && pending_blank) { flush(); pending_blank = 0; next }
+      pending_blank = 0
+      line = $0; sub(/^[[:space:]]+/, "", line); full = full " " line
+    }
+    END { flush() }
+  '
+}
 
-# Phrases that make a ticked AC self-incriminating: the AC text itself says the
-# work was not carried out. Matched case-insensitively against the folded text.
-# Deliberately short and literal — no sentiment analysis. Every entry was
-# observed in a real plan that the gate passed.
-NON_EXECUTION_PHRASES=(
-  "not exercised"
-  "not run"
-  "never run"
-  "not executed"
-  "implemented and compiled"
-  "not verified"
-  "could not run"
-  "time budget"
+# Strip CR so CRLF plans fold (and match) identically, and drop any literal
+# 0x1f from the source text so it cannot truncate a record at the separator.
+AC_CLEAN=$(printf '%s\n' "$AC_BLOCK" | tr -d '\r\037')
+AC_FOLDED=$(
+  printf '%s\n' "$AC_CLEAN" | fold_records '^-[[:space:]]*\[[ xX]\]'
+  printf '%s\n' "$AC_CLEAN" | fold_records '^[[:space:]]+-[[:space:]]*\[[ xX]\]'
 )
+
+# Wording that makes a ticked AC self-incriminating: the AC text itself says the
+# work was not carried out. Matched case-insensitively against the folded text
+# as ERE, with word boundaries. Deliberately short and literal — no sentiment
+# analysis.
+#
+# PR #193 finding 2: these were plain substrings, which fired on ordinary AC
+# wording — `not run` inside "not run*ning*" and "can*not run*", and `time
+# budget` on any latency AC ("completes within the 200 ms time budget"). Word
+# boundaries fix the first two. `time budget` is dropped outright: it earns
+# nothing, since the iteration-151 AC that motivated the list is caught by `not
+# exercised` in the same sentence (pinned by iter151-prefix-ac.md).
+#
+# Word boundaries cannot fix the residual class where an AC legitimately
+# *describes* product behaviour — "`--dry-run` does not run the command". That
+# is what ALLOW_WORDING_RE exists for; rewording until the grep stops firing is
+# the one remedy this gate must not encourage.
+NON_EXECUTION_REGEXES=(
+  '\bnot exercised\b'
+  '\bnot run\b'
+  '\bnever run\b'
+  '\bnot executed\b'
+  '\bimplemented and compiled\b'
+  '\bnot verified\b'
+)
+
+# Escape hatch for an AC whose wording describes behaviour rather than its own
+# status. Mirrors the repo's `// allow-spec-drift:` / `// allow-todo:` pattern;
+# the reason must be substantive (≥10 chars) so it cannot be a bare marker.
+ALLOW_WORDING_RE='\[allow-ac-wording:[[:space:]]*[^]]{10,}\]'
 
 # For each ticked checkbox, look for evidence.
 TOTAL=0
@@ -154,7 +202,30 @@ while IFS= read -r record; do
   # deferral annotation is usually the last thing on a wrapped AC. This also
   # keeps a legitimate deferral out of the non-execution check below, which
   # would otherwise fire on the very wording a deferral is meant to carry.
-  if [[ "$full_text" == *"[deferred"* ]]; then
+  #
+  # PR #193 finding 1: the annotation must CLOSE the AC, not merely appear
+  # somewhere in it. This accept `continue`s past every later check, so an
+  # unanchored substring match let any AC that so much as mentioned `[deferred`
+  # in passing launder itself — a plan that failed before iter-154 passed after
+  # it, the exact regression the folded-text note above warns about.
+  #
+  # The annotation must be the LAST thing on the AC — trailing whitespace and a
+  # period are tolerated, a closing `)` is NOT. A deferral nested inside a
+  # parenthetical is indistinguishable from one that merely mentions a deferral
+  # in passing (both read `… [deferred — new plan: x])`), and only one of those
+  # may be allowed to skip every remaining check. `iteration-114` line 124 is the
+  # sole plan in the repo that closes a parenthetical this way; merged plans are
+  # never re-gated, so tightening costs nothing today and the failure message
+  # tells a future author exactly where to move the annotation.
+  #
+  # The mention must also not be inside backticks, so prose *about* deferrals —
+  # including this repo's own docs and fixtures — cannot serve as one.
+  deferred_anchored=0
+  if printf '%s' "$full_text" \
+     | grep -qE '\[deferred[^]`]*\][[:space:]]*\.?[[:space:]]*$'; then
+    deferred_anchored=1
+  fi
+  if [[ $deferred_anchored -eq 1 ]]; then
     plan_ref=$(printf '%s' "$full_text" | grep -oE 'new plan:[[:space:]]*[^]]+' \
       | sed -E 's/new plan:[[:space:]]*//' | head -1 || true)
     if [[ -n "$plan_ref" ]]; then
@@ -189,17 +260,26 @@ while IFS= read -r record; do
   # not exercised end-to-end in this session's time budget") and this gate
   # passed them, because the slugs they named resolved in the diff. Evidence
   # heuristics cannot outvote a confession — check this before any of them.
-  full_lower=$(printf '%s' "$full_text" | tr '[:upper:]' '[:lower:]')
+  #
+  # PR #193 finding 11: report the matched wording in its folded context rather
+  # than the truncated first line, so the author can see what tripped it.
   matched_phrase=""
-  for phrase in "${NON_EXECUTION_PHRASES[@]}"; do
-    if [[ "$full_lower" == *"$phrase"* ]]; then
-      matched_phrase="$phrase"
-      break
-    fi
-  done
+  if ! printf '%s' "$full_text" | grep -qiE "$ALLOW_WORDING_RE"; then
+    for re in "${NON_EXECUTION_REGEXES[@]}"; do
+      hit=$(printf '%s' "$full_text" | grep -oiE "$re" | head -1 || true)
+      if [[ -n "$hit" ]]; then
+        matched_phrase="$hit"
+        break
+      fi
+    done
+  fi
   if [[ -n "$matched_phrase" ]]; then
-    echo "❌ ticked AC declares its own non-execution (\"$matched_phrase\"): ${text}"
-    echo "   Untick it, or annotate the line \`[deferred — new plan: <path>]\` and file the plan."
+    echo "❌ ticked AC declares its own non-execution (\"$matched_phrase\"): ${full_text:0:200}"
+    echo "   If the work really did not happen: untick the AC, or annotate it"
+    echo "   \`[deferred — new plan: <path>]\` (the annotation must close the AC) and file the plan."
+    echo "   If the AC merely *describes* behaviour with those words, this check matched a literal"
+    echo "   phrase and not your meaning: annotate \`[allow-ac-wording: <reason ≥10 chars>]\`."
+    echo "   Do not reword the AC to get past this check."
     FAILED=$((FAILED + 1))
     FAILED_LINES+=("$line")
     continue
@@ -215,6 +295,11 @@ while IFS= read -r record; do
   # The date and the trailing measurement are both required; the script does not
   # (and cannot) validate the number. The point is that a human or agent had to
   # paste a real result rather than merely name a function.
+  #
+  # PR #193 finding 13: the date must be a real calendar-shaped date and must
+  # not be in the future, so `[verified: 9999-99-99, 0]` no longer satisfies it.
+  # This does not make the annotation unforgeable — DEC-030 accepts that — it
+  # just stops the laziest forgery.
   live_slugs=$(printf '%s' "$full_text" | grep -oE '\blive_[a-z0-9_]+' || true)
   needs_run_evidence=0
   for slug in $live_slugs; do
@@ -226,13 +311,27 @@ while IFS= read -r record; do
     needs_run_evidence=1
     break
   done
-  if [[ $needs_run_evidence -eq 1 ]] \
-     && ! printf '%s' "$full_text" \
-        | grep -qE '\[verified:[[:space:]]*[0-9]{4}-[0-9]{2}-[0-9]{2}[^]]*[0-9][^]]*\]'; then
-    echo "❌ ticked AC names a live_* test but carries no run evidence: ${text}"
-    echo "   Live tests never run in CI. Add \`[verified: <YYYY-MM-DD>, <measured result>]\`"
+  verified_date=""
+  if [[ $needs_run_evidence -eq 1 ]]; then
+    verified_date=$(printf '%s' "$full_text" \
+      | grep -oE '\[verified:[[:space:]]*[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])[^]]*[0-9][^]]*\]' \
+      | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || true)
+    # A future date cannot be a record of a run that happened. String compare is
+    # correct for zero-padded ISO dates and needs no date-math portability.
+    if [[ -n "$verified_date" ]] && [[ "$verified_date" > "$(date +%F)" ]]; then
+      echo "❌ ticked AC carries a [verified: …] date in the future ($verified_date): ${text}"
+      echo "   Record the date the run actually happened."
+      FAILED=$((FAILED + 1))
+      FAILED_LINES+=("$line")
+      continue
+    fi
+  fi
+  if [[ $needs_run_evidence -eq 1 ]] && [[ -z "$verified_date" ]]; then
+    echo "❌ ticked AC names a live_* test but carries no run evidence: ${full_text:0:200}"
+    echo "   Live tests are #[ignore]-gated and never run in CI, so nothing downstream of this"
+    echo "   check will execute them. Run it, then add \`[verified: <YYYY-MM-DD>, <measured result>]\`"
     echo "   (e.g. \`[verified: 2026-08-12, 109 passed / 0 failed, 0 orphans]\`), untick it,"
-    echo "   or annotate \`[deferred — new plan: <path>]\`."
+    echo "   or annotate \`[deferred — new plan: <path>]\` at the end of the AC."
     FAILED=$((FAILED + 1))
     FAILED_LINES+=("$line")
     continue

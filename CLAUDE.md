@@ -57,7 +57,13 @@ The `cargo test-live` alias (defined in `.cargo/config.toml`) expands to `cargo 
 ```
 - [ ] live_screenshot_full_page: PNG height ≥ scrollHeight × DPR
 ```
-An AC without a named test is not done.
+An AC without a named test is not done. **Ticking** a `live_*` AC additionally requires a
+`[verified: <YYYY-MM-DD>, <measured result>]` annotation recording the run — prose such as
+"verified live, PASS" is not accepted, the bracket form is:
+```
+- [x] live_screenshot_full_page: PNG height ≥ scrollHeight × DPR [verified: 2026-08-12, 2400 px ≥ 1200 × 2]
+```
+`ac-fidelity-check.sh` enforces this (iter-154); see the Iteration discipline section for why.
 
 ## Code Patterns
 - No `.unwrap()` / `.expect()` outside of tests — use `anyhow::Context` with `?`
@@ -89,11 +95,16 @@ An AC without a named test is not done.
   `ac-fidelity-check` means the ticked ACs *reference* evidence that resolves,
   nothing more; running the tests is still on you. iter-154 narrowed the gap at
   two points: a ticked AC whose text admits non-execution ("not exercised", "not
-  run", "implemented and compiled", "time budget", …) fails outright, and a ticked
+  run", "never run", "not executed", "implemented and compiled", "not verified" —
+  matched as whole words) fails outright, and a ticked
   AC naming a `live_*` test must carry `[verified: <YYYY-MM-DD>, <measured result>]`
   — live tests are `#[ignore]`-gated and never run in CI, so nothing downstream
   will ever execute them. Both read the AC's full wrapped text, not just its first
-  line. Untick or defer rather than routing around the wording.
+  line. Untick or defer rather than routing around the wording — the deferral
+  annotation must be the **last** thing on the AC. If an AC legitimately *describes*
+  behaviour using those words ("`--dry-run` does not run the command"), annotate it
+  `[allow-ac-wording: <reason ≥10 chars>]`; that escape hatch exists so the remedy
+  for a false positive is never "reword until the grep stops firing".
 - Spec drift: when ff-rdp must send a field or call a method that is NOT
   declared in the published Firefox spec dict (but the server *reads* it
   anyway), annotate the call site with `// allow-spec-drift: bug NNNN`,
