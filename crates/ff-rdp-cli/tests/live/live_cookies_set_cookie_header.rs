@@ -47,12 +47,7 @@ fn live_cookies_set_cookie_header_visible_after_navigate() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_cookies_set_cookie_header_visible_after_navigate: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let Some(server) = spawn_fixture_server() else {
         eprintln!(

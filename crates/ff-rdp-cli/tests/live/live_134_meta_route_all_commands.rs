@@ -91,10 +91,7 @@ fn live_134_meta_route_all_commands() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_134_meta_route_all_commands: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // Each (command, args, default_mode_route) triple targets `body`, which

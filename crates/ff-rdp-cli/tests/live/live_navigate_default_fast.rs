@@ -44,12 +44,7 @@ fn live_navigate_default_fast_no_budget_exhaustion() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_navigate_default_fast_no_budget_exhaustion: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let Some(server) = spawn_html_server() else {
         eprintln!(
@@ -96,10 +91,7 @@ fn live_navigate_global_timeout_flag_accepted() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_navigate_global_timeout_flag_accepted: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let Some(server) = spawn_html_server() else {
         eprintln!(
@@ -144,10 +136,7 @@ fn live_navigate_default_fast() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_navigate_default_fast: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let Some(server) = spawn_html_server() else {
         eprintln!("live_navigate_default_fast: could not bind HTTP server — skipping");
         return;
@@ -190,10 +179,7 @@ fn live_navigate_elapsed_matches_wall() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_navigate_elapsed_matches_wall: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let Some(server) = spawn_html_server() else {
         eprintln!("live_navigate_elapsed_matches_wall: could not bind HTTP server — skipping");
         return;
@@ -254,10 +240,7 @@ fn live_navigate_spa_committed_url() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_navigate_spa_committed_url: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let Some(server) = spawn_html_server() else {
         eprintln!("live_navigate_spa_committed_url: could not bind HTTP server — skipping");
         return;

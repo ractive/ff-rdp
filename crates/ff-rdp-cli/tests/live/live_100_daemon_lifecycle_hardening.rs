@@ -99,10 +99,7 @@ fn e2e_sigterm_removes_registry() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("e2e_sigterm_removes_registry: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let home = tempfile::tempdir().expect("tempdir for FF_RDP_HOME");
 

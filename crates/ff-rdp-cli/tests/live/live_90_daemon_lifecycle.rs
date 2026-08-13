@@ -90,10 +90,7 @@ fn live_daemon_stop_after_launch_frees_port() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_daemon_stop_after_launch_frees_port: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     // iter-151 Theme B: `ff` used to be suppressed via `ManuallyDrop` here so
     // `daemon stop` alone was responsible for killing Firefox — but every
@@ -156,10 +153,7 @@ fn live_launch_replace_handles_prior_instance() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_launch_replace_handles_prior_instance: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let prior_pid = ff.pid();
     // iter-151 Theme B: `ff` used to be suppressed via `ManuallyDrop` here,

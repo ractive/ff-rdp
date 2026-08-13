@@ -29,12 +29,7 @@ fn live_110_replace_never_kills_foreign_firefox() {
         return;
     }
 
-    let Some(raw) = RawFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_110_replace_never_kills_foreign_firefox: skipped — could not launch a raw Firefox"
-        );
-        return;
-    };
+    let raw = RawFirefox::headless_on_random_port();
     let foreign_pid = raw.pid();
     let port = raw.port();
 

@@ -76,14 +76,18 @@ fn stop_daemon(port: u16) {
         .output();
 }
 
-/// Bring up Firefox with a running daemon, or `None` with a printed reason.
-fn firefox_with_daemon(test: &str) -> Option<LiveFirefox> {
-    let ff = LiveFirefox::headless_on_random_port()?;
-    if ff.with_daemon().is_none() {
-        eprintln!("{test}: daemon did not start — skipping");
-        return None;
-    }
-    Some(ff)
+/// Bring up Firefox with a running daemon.
+///
+/// Panics on either failure (iter-158 Theme D) — the `Option` this used to
+/// return made every caller `return` early, which libtest reports as `ok`.
+fn firefox_with_daemon(test: &str) -> LiveFirefox {
+    let ff = LiveFirefox::headless_on_random_port();
+    assert!(
+        ff.with_daemon().is_some(),
+        "{test}: the proxy daemon did not start for Firefox on port {}",
+        ff.port()
+    );
+    ff
 }
 
 fn navigate(port: u16, url: &str) {
@@ -148,9 +152,7 @@ fn live_140_ref_click_resolves() {
         eprintln!("live_140_ref_click_resolves: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_140_ref_click_resolves") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_140_ref_click_resolves");
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -207,9 +209,7 @@ fn live_140_ref_reusable() {
         eprintln!("live_140_ref_reusable: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_140_ref_reusable") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_140_ref_reusable");
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -255,9 +255,7 @@ fn live_140_ref_expiry_message() {
         eprintln!("live_140_ref_expiry_message: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_140_ref_expiry_message") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_140_ref_expiry_message");
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -326,9 +324,7 @@ fn live_140_ambiguous_selector_reports_count() {
         eprintln!("live_140_ambiguous_selector_reports_count: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_140_ambiguous_selector_reports_count") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_140_ambiguous_selector_reports_count");
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -384,9 +380,7 @@ fn live_140_visible_flag_targets_visible() {
         eprintln!("live_140_visible_flag_targets_visible: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_140_visible_flag_targets_visible") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_140_visible_flag_targets_visible");
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -491,9 +485,7 @@ fn live_140_frame_error_bounded() {
         eprintln!("live_140_frame_error_bounded: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_140_frame_error_bounded") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_140_frame_error_bounded");
     let port = ff.port();
 
     let Some(server) = FixtureServer::start(many_iframes_routes(MANY_IFRAMES_N)) else {
@@ -543,9 +535,7 @@ fn live_140_frame_filter_count_accurate() {
         eprintln!("live_140_frame_filter_count_accurate: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_140_frame_filter_count_accurate") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_140_frame_filter_count_accurate");
     let port = ff.port();
 
     // leaf1, leaf10, leaf11, leaf12, leaf13 all contain the substring "leaf1"
@@ -606,9 +596,7 @@ fn live_140_page_map_selectors_unique() {
         eprintln!("live_140_page_map_selectors_unique: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_140_page_map_selectors_unique") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_140_page_map_selectors_unique");
     let port = ff.port();
 
     let mut routes = HashMap::new();

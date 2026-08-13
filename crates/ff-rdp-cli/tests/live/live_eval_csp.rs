@@ -96,10 +96,7 @@ fn pre_fix_repro_eval_works_on_strict_csp_site() {
     };
     let fixture_url = format!("http://127.0.0.1:{port}/");
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("pre_fix_repro_eval_works_on_strict_csp_site: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let ff_args = || base_args(ff.port());
 
@@ -157,12 +154,7 @@ fn live_eval_returns_window_scroll_y_on_csp_site() {
     };
     let fixture_url = format!("http://127.0.0.1:{port}/");
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_eval_returns_window_scroll_y_on_csp_site: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let ff_args = || base_args(ff.port());
 
@@ -213,10 +205,7 @@ fn live_eval_script_error_still_surfaces() {
     };
     let fixture_url = format!("http://127.0.0.1:{port}/");
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_eval_script_error_still_surfaces: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let ff_args = || base_args(ff.port());
 
@@ -275,10 +264,7 @@ fn live_eval_works_on_real_mdn() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_eval_works_on_real_mdn: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let ff_args = || base_args(ff.port());
 

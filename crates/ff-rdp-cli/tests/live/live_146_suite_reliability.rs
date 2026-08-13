@@ -68,10 +68,7 @@ fn live_146_no_orphan_firefox_after_suite() {
 
     let mut pids = Vec::with_capacity(INSTANCES);
     for i in 0..INSTANCES {
-        let Some(ff) = LiveFirefox::headless_on_random_port() else {
-            eprintln!("live_146_no_orphan_firefox_after_suite: Firefox not available — skipping");
-            return;
-        };
+        let ff = LiveFirefox::headless_on_random_port();
         pids.push(ff.pid());
         if i == 1 {
             // Exercise the daemon-spawning path too — the shape every
@@ -112,9 +109,12 @@ fn live_146_harness_teardown_kills_daemon_spawned_firefox() {
 
     let pid_cell = std::cell::Cell::new(None::<u32>);
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        let Some(ff) = LiveFirefox::headless_on_random_port() else {
-            return false;
-        };
+        // iter-158 Theme D: `headless_on_random_port` panics rather than
+        // returning `None`. That panic is caught here just like the
+        // intentional one below, so the `pid_cell`-is-empty arm underneath
+        // now means "Firefox never launched" and is reported as a failure
+        // instead of a skip.
+        let ff = LiveFirefox::headless_on_random_port();
         pid_cell.set(Some(ff.pid()));
         if ff.with_daemon().is_none() {
             return false;
@@ -125,21 +125,16 @@ fn live_146_harness_teardown_kills_daemon_spawned_firefox() {
         panic!("iter-146 probe: intentional panic with a daemon running");
     }));
 
-    let Some(pid) = pid_cell.get() else {
-        eprintln!(
-            "live_146_harness_teardown_kills_daemon_spawned_firefox: Firefox not available — \
-             skipping"
-        );
-        return;
-    };
+    let pid = pid_cell.get().expect(
+        "live_146_harness_teardown_kills_daemon_spawned_firefox: Firefox never launched, so \
+         the teardown guarantee under test was never exercised",
+    );
     match outcome {
         Ok(true) => unreachable!("the probe closure always panics once the daemon starts"),
-        Ok(false) => {
-            eprintln!(
-                "live_146_harness_teardown_kills_daemon_spawned_firefox: daemon did not start \
-                 for pid {pid} — skipping"
-            );
-        }
+        Ok(false) => panic!(
+            "live_146_harness_teardown_kills_daemon_spawned_firefox: the daemon did not start \
+             for pid {pid}, so the teardown guarantee under test was never exercised"
+        ),
         Err(_) => {
             assert!(
                 wait_until_dead(pid, std::time::Duration::from_secs(2)),
@@ -231,10 +226,7 @@ fn live_146_daemon_parity_stable_repeat() {
     }
 
     for i in 1..=ITERATIONS {
-        let Some(ff) = LiveFirefox::headless_on_random_port() else {
-            eprintln!("live_146_daemon_parity_stable_repeat: Firefox not available — skipping");
-            return;
-        };
+        let ff = LiveFirefox::headless_on_random_port();
         if ff.with_daemon().is_none() {
             eprintln!(
                 "live_146_daemon_parity_stable_repeat: daemon did not start on iteration \

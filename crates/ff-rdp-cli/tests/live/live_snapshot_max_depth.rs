@@ -49,10 +49,7 @@ fn live_snapshot_max_depth_truncates_tree() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("snapshot_max_depth_truncates_tree: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // Navigate to fixture.
     let nav = Command::new(ff_rdp_bin())

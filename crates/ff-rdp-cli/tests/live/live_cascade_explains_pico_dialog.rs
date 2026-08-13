@@ -36,10 +36,7 @@ fn live_cascade_explains_pico_dialog() {
         eprintln!("live_cascade_explains_pico_dialog: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_cascade_explains_pico_dialog: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let mut args = base_args(ff.port());
     // iter-110 Theme B(a): data: URLs require --allow-unsafe-urls.

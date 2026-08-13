@@ -51,10 +51,7 @@ fn a11y_critical_filters_to_violations() {
         eprintln!("a11y_critical_filters_to_violations: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("a11y_critical_filters_to_violations: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // Page with a known WCAG violation: <img> with no alt attribute.
     let bad = "data:text/html,<title>bad</title><img id=\"hero\" src=\"x.png\">";

@@ -97,12 +97,8 @@ fn live_133_launch_window_size_above_floor() {
         eprintln!("live_133_launch_window_size_above_floor: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some((ff, launch_json)) =
-        LiveFirefox::headless_on_random_port_with_args(&["--window-size", "600x800"])
-    else {
-        eprintln!("live_133_launch_window_size_above_floor: Firefox not available — skipping");
-        return;
-    };
+    let (ff, launch_json) =
+        LiveFirefox::headless_on_random_port_with_args(&["--window-size", "600x800"]);
     let port = ff.port();
 
     assert_eq!(
@@ -149,12 +145,8 @@ fn live_133_launch_window_size_floor_warning() {
         eprintln!("live_133_launch_window_size_floor_warning: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some((ff, launch_json)) =
-        LiveFirefox::headless_on_random_port_with_args(&["--window-size", "390x844"])
-    else {
-        eprintln!("live_133_launch_window_size_floor_warning: Firefox not available — skipping");
-        return;
-    };
+    let (ff, launch_json) =
+        LiveFirefox::headless_on_random_port_with_args(&["--window-size", "390x844"]);
     let port = ff.port();
 
     assert_eq!(
@@ -215,10 +207,7 @@ fn live_133_screenshot_batch_mobile() {
         );
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_133_screenshot_batch_mobile: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     navigate(port, "https://example.com");
 

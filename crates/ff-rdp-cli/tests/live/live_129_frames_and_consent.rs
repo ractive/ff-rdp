@@ -18,9 +18,11 @@
 //!
 //! Under heavy machine load a fresh Firefox launch can occasionally miss the
 //! default wait even though the same command succeeds in isolation — see the
-//! iteration-129 plan's "Live-test environment note". If these report
-//! "Firefox not available", retry once with `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS=90`
-//! before treating it as a real failure.
+//! iteration-129 plan's "Live-test environment note". Since iter-158 that is a
+//! test FAILURE, not a skip, and the panic names the launch exit status and
+//! captured stderr; retry once with `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS=90`
+//! (harness bound) and/or `FF_RDP_LAUNCH_TIMEOUT_SECS=90` (the product's own
+//! `launch` bound) before treating it as a real failure.
 
 use std::process::{Command, Output};
 
@@ -74,10 +76,7 @@ fn live_129_click_cross_origin_frame() {
         eprintln!("live_129_click_cross_origin_frame: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_129_click_cross_origin_frame: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let nav = navigate_to_fixture(port);
@@ -131,10 +130,7 @@ fn live_129_click_zero_match_error() {
         eprintln!("live_129_click_zero_match_error: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_129_click_zero_match_error: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let nav = navigate_to_fixture(port);
@@ -190,10 +186,7 @@ fn live_129_consent_envelope_no_cmp() {
         eprintln!("live_129_consent_envelope_no_cmp: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_129_consent_envelope_no_cmp: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let nav = Command::new(ff_rdp_bin())
@@ -253,10 +246,7 @@ fn live_129_sourcepoint_consent() {
         eprintln!("live_129_sourcepoint_consent: set FF_RDP_LIVE_NETWORK_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_129_sourcepoint_consent: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let nav = Command::new(ff_rdp_bin())
@@ -349,10 +339,7 @@ fn live_129_scroll_lock_warning() {
         eprintln!("live_129_scroll_lock_warning: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_129_scroll_lock_warning: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let fixture = r#"data:text/html,<html style="overflow:hidden" class="sp-message-open"><body><h1>locked</h1></body></html>"#;
@@ -408,10 +395,7 @@ fn live_129_scroll_no_lock_warning_is_null() {
         eprintln!("live_129_scroll_no_lock_warning_is_null: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_129_scroll_no_lock_warning_is_null: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let nav = Command::new(ff_rdp_bin())

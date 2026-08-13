@@ -57,10 +57,7 @@ fn live_a11y_source_meta() {
         eprintln!("live_a11y_source_meta: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_a11y_source_meta: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let json = run_a11y(ff.port(), &[]);
     assert_eq!(
@@ -84,10 +81,7 @@ fn live_a11y_native_opt_in() {
         eprintln!("live_a11y_native_opt_in: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_a11y_native_opt_in: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let json = run_a11y(ff.port(), &["--native"]);
     assert_eq!(
@@ -119,10 +113,7 @@ fn live_a11y_service_restored() {
         eprintln!("live_a11y_service_restored: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_a11y_service_restored: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // Pre-run: service is off by default on a fresh headless launch.
     let before = run_a11y(ff.port(), &[]);

@@ -42,10 +42,7 @@ fn live_daemon_auth_completes_during_burst() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_daemon_auth_completes_during_burst: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let daemon_args = |timeout_ms: u64| {
         vec![

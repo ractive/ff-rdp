@@ -27,10 +27,7 @@ fn live_grip_release_no_leak() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_grip_release_no_leak: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // Start the daemon.
     let daemon = std::process::Command::new(ff_rdp_bin())
@@ -107,10 +104,7 @@ fn live_grip_release_actually_releases() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_grip_release_actually_releases: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // Start the daemon, capturing its stderr so we can inspect trace output.
     let rdp_port = ff.port();

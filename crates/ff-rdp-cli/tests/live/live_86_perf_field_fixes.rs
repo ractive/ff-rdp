@@ -36,10 +36,7 @@ fn live_daemon_stop_frees_port() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_daemon_stop_frees_port: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // Start the daemon.
@@ -108,10 +105,7 @@ fn live_launch_replace_handles_stuck_prior() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_launch_replace_handles_stuck_prior: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // Confirm the port is occupied.
@@ -186,10 +180,7 @@ fn live_lcp_note_no_headless_text_in_vitals() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_lcp_note_no_headless_text_in_vitals: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
@@ -246,12 +237,7 @@ fn live_lcp_note_mentions_firefox_limitation_in_audit() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_lcp_note_mentions_firefox_limitation_in_audit: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
@@ -320,10 +306,7 @@ fn live_render_blocking_excludes_favicon() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_render_blocking_excludes_favicon: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
@@ -394,10 +377,7 @@ fn live_jq_missing_path_silent_default() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_jq_missing_path_silent_default: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
@@ -462,10 +442,7 @@ fn live_jq_missing_path_strict_exits_nonzero() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_jq_missing_path_strict_exits_nonzero: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))

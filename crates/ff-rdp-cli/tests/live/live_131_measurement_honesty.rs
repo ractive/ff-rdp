@@ -196,10 +196,7 @@ fn live_131_perf_opaque_transfer() {
     // both are 127.0.0.1 — this is what makes the images cross-origin.
     assert_ne!(image_origin.port(), page_origin.port());
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_131_perf_opaque_transfer: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     navigate(port, &page_origin.base_url());
     assert!(
@@ -302,10 +299,7 @@ fn live_131_perf_transparent_transfer() {
         return;
     };
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_131_perf_transparent_transfer: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     navigate(port, &server.base_url());
     assert!(
@@ -378,10 +372,7 @@ fn live_131_responsive_simulation_fields() {
         eprintln!("live_131_responsive_simulation_fields: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_131_responsive_simulation_fields: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     navigate(ff.port(), "https://example.com");
 
     let json = run_json(ff.port(), &["responsive", "body", "--widths", "320"]);
@@ -437,10 +428,7 @@ fn live_131_snapshot_max_chars_bounds() {
         return;
     };
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_131_snapshot_max_chars_bounds: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     navigate(port, &server.base_url());
 
@@ -497,10 +485,7 @@ fn live_131_throttle_status() {
         eprintln!("live_131_throttle_status: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_131_throttle_status: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     if ff.with_daemon().is_none() {
         eprintln!("live_131_throttle_status: daemon did not start — skipping");
         return;

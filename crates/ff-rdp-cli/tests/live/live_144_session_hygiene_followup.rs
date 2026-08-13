@@ -77,11 +77,7 @@ fn live_144_auto_consent_field_honest() {
         eprintln!("{TEST}: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some((ff, json)) = LiveFirefox::headless_on_random_port_with_args(&["--auto-consent"])
-    else {
-        eprintln!("{TEST}: Firefox not available — skipping");
-        return;
-    };
+    let (ff, json) = LiveFirefox::headless_on_random_port_with_args(&["--auto-consent"]);
     let _ = &ff; // keep the guard alive for the duration of the test
 
     let results = &json["results"];
@@ -110,10 +106,7 @@ fn live_144_no_consent_o_matic_tab_leak() {
         eprintln!("{TEST}: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some((ff, _)) = LiveFirefox::headless_on_random_port_with_args(&["--auto-consent"]) else {
-        eprintln!("{TEST}: Firefox not available — skipping");
-        return;
-    };
+    let (ff, _) = LiveFirefox::headless_on_random_port_with_args(&["--auto-consent"]);
 
     let out = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
@@ -157,10 +150,7 @@ fn live_144_bbc_cmp_dismissed() {
         eprintln!("{TEST}: set FF_RDP_LIVE_NETWORK_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("{TEST}: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
@@ -247,10 +237,7 @@ fn live_144_full_page_no_duplicate_header() {
         eprintln!("{TEST}: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("{TEST}: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))

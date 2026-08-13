@@ -104,10 +104,7 @@ fn live_emulate_color_scheme_dark() {
         eprintln!("live_emulate_color_scheme_dark: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     if ff.with_daemon().is_none() {
         eprintln!("daemon did not start — skipping");
         return;
@@ -163,10 +160,7 @@ fn live_emulate_user_agent() {
         eprintln!("live_emulate_user_agent: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     if ff.with_daemon().is_none() {
         eprintln!("daemon did not start — skipping");
         return;
@@ -195,10 +189,7 @@ fn live_emulate_dppx() {
         eprintln!("live_emulate_dppx: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     if ff.with_daemon().is_none() {
         eprintln!("daemon did not start — skipping");
         return;
@@ -233,10 +224,7 @@ fn live_emulate_js_disabled() {
         eprintln!("live_emulate_js_disabled: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     if ff.with_daemon().is_none() {
         eprintln!("daemon did not start — skipping");
         return;
@@ -290,10 +278,7 @@ fn live_emulate_offline() {
         eprintln!("live_emulate_offline: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     if ff.with_daemon().is_none() {
         eprintln!("daemon did not start — skipping");
         return;
@@ -336,10 +321,7 @@ fn e2e_emulate_one_shot_lifetime_warning() {
         eprintln!("e2e_emulate_one_shot_lifetime_warning: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // One-shot path (--no-daemon): the envelope MUST carry the lifetime warning.

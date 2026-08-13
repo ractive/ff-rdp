@@ -60,10 +60,7 @@ fn live_screenshot_ff151_produces_valid_png() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_screenshot_ff151_produces_valid_png: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     navigate(ff.port());
 
@@ -119,10 +116,7 @@ fn live_screenshot_ff151_cli() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_screenshot_ff151_cli: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     navigate(ff.port());
 

@@ -58,10 +58,7 @@ fn live_network_security_info_https() {
         eprintln!("live_network_security_info_https: set FF_RDP_LIVE_NETWORK_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_network_security_info_https: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let daemon_args = || {
         vec![
@@ -150,10 +147,7 @@ fn live_manifest_fetch_canonical() {
         eprintln!("live_manifest_fetch_canonical: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_manifest_fetch_canonical: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     if ff.with_daemon().is_none() {
         eprintln!("live_manifest_fetch_canonical: daemon did not start — skipping");
         return;

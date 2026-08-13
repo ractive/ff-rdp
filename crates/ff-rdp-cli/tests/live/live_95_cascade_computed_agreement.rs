@@ -51,13 +51,7 @@ fn live_cascade_inherited_or_default_note_fires_on_h1_color() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_cascade_inherited_or_default_note_fires_on_h1_color: \
-             Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // Navigate to fixture.
     let nav = Command::new(ff_rdp_bin())
@@ -178,13 +172,7 @@ fn pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does()
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does: \
-             Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // Navigate to fixture.
     let nav = Command::new(ff_rdp_bin())

@@ -98,10 +98,7 @@ fn live_index_local_fixture() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_index_local_fixture: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let Some(site) = start_fixture_site() else {
         eprintln!("live_index_local_fixture: could not bind fixture HTTP server — skipping");
@@ -180,10 +177,7 @@ fn live_runner_page_map_resolution() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_runner_page_map_resolution: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let Some(site) = start_fixture_site() else {
         eprintln!("live_runner_page_map_resolution: could not bind fixture HTTP server — skipping");
@@ -281,10 +275,7 @@ fn live_index_check_detects_drift() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_index_check_detects_drift: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // Write a stale page-map with a wrong selector.
     let stale_map = serde_json::json!({

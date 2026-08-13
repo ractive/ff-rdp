@@ -32,10 +32,7 @@ fn live_wait_timeout_ms_canonical_flag() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_wait_timeout_ms_canonical_flag: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))

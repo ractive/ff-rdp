@@ -46,8 +46,10 @@ fn free_port() -> Option<u16> {
 /// the launch envelope. The guard is constructed immediately once a PID is
 /// confirmed, so every assertion downstream is guard-protected — see
 /// [`FirefoxGuard`]'s doc comment.
-fn launch_headless() -> Option<(FirefoxGuard, u16, serde_json::Value)> {
-    let port = free_port()?;
+/// Panics on any launch failure (iter-158 Theme D) — see
+/// `common::LiveFirefox::headless_on_random_port`.
+fn launch_headless() -> (FirefoxGuard, u16, serde_json::Value) {
+    let port = free_port().expect("bind 127.0.0.1:0 to discover a free port");
     let out = Command::new(ff_rdp_bin())
         .args(["launch", "--headless", "--debug-port", &port.to_string()])
         // iter-151 Theme A: identify the spawning test on the owner-test
@@ -57,18 +59,23 @@ fn launch_headless() -> Option<(FirefoxGuard, u16, serde_json::Value)> {
             std::thread::current().name().unwrap_or("unknown"),
         )
         .output()
-        .ok()?;
-    if !out.status.success() {
-        eprintln!(
-            "launch_headless: launch failed — stderr={}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        return None;
-    }
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    let results = json.get("results")?.clone();
-    let pid = u32::try_from(results["pid"].as_u64()?).ok()?;
-    Some((FirefoxGuard::new(pid), port, results))
+        .expect("spawn `ff-rdp launch`");
+    assert!(
+        out.status.success(),
+        "launch_headless: `ff-rdp launch --headless --debug-port {port}` exited {}\n  stdout: {}\n  stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout).trim(),
+        String::from_utf8_lossy(&out.stderr).trim(),
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("launch stdout is JSON");
+    let results = json
+        .get("results")
+        .expect("launch envelope has a `results` object")
+        .clone();
+    let pid =
+        u32::try_from(results["pid"].as_u64().expect("results.pid")).expect("results.pid fits u32");
+    (FirefoxGuard::new(pid), port, results)
 }
 
 /// Spawn+reap a trivial child process, returning its now-dead PID.
@@ -108,10 +115,7 @@ fn live_142_profile_growth_bounded() {
         return;
     }
 
-    let Some((guard_a, _port_a, results_a)) = launch_headless() else {
-        eprintln!("live_142_profile_growth_bounded: Firefox not available — skipping");
-        return;
-    };
+    let (guard_a, _port_a, results_a) = launch_headless();
     let pid_a = guard_a.pid();
     let profile_a = results_a["profile_path"]
         .as_str()
@@ -137,10 +141,7 @@ fn live_142_profile_growth_bounded() {
     // Immediately launch a second instance — no artificial delay. If growth
     // were still bounded only by the old 7-day age gate, instance A's
     // fresh (seconds-old) profile would still be sitting there.
-    let Some((guard_b, port_b, _results_b)) = launch_headless() else {
-        eprintln!("live_142_profile_growth_bounded: second launch failed — skipping");
-        return;
-    };
+    let (guard_b, port_b, _results_b) = launch_headless();
     let pid_b = guard_b.pid();
 
     assert!(
@@ -232,13 +233,13 @@ fn live_142_throttle_json_gc() {
         )
         .output()
         .expect("launch spawn failed");
-    if !out.status.success() {
-        eprintln!(
-            "live_142_throttle_json_gc: Firefox not available — skipping (stderr={})",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        return;
-    }
+    assert!(
+        out.status.success(),
+        "live_142_throttle_json_gc: `ff-rdp launch --headless --debug-port {port}` exited {}\n  stdout: {}\n  stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout).trim(),
+        String::from_utf8_lossy(&out.stderr).trim(),
+    );
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("launch JSON parse");
     let pid =
         u32::try_from(json["results"]["pid"].as_u64().expect("results.pid")).expect("pid fits u32");

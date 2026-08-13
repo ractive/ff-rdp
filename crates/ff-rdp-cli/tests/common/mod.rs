@@ -271,6 +271,60 @@ pub fn kill_pid(pid: u32) {
     }
 }
 
+/// Env var overriding where [`record_live_launch`] appends its line.
+pub const LIVE_LAUNCH_LOG_ENV: &str = "FF_RDP_LIVE_LAUNCH_LOG";
+
+/// Append one line per successful live Firefox launch to a file that outlives
+/// the test process (iter-158 Theme D).
+///
+/// This replaces `eprintln!("LiveFirefox: pid=… port=…")`, which was a
+/// diagnostic only the *failing* path could ever show: libtest captures test
+/// stderr and discards it for passing tests, so the line claiming to document
+/// the passing path was invisible on exactly that path — zero occurrences in a
+/// log of 170 passing tests.
+///
+/// Defaults to `target/live-launches.log` (next to the test binaries) so it
+/// works with no configuration; [`LIVE_LAUNCH_LOG_ENV`] overrides the path.
+/// Best-effort: a failure to write must never fail a test.
+fn record_live_launch(pid: u32, port: u16) {
+    let path = match std::env::var_os(LIVE_LAUNCH_LOG_ENV) {
+        Some(p) => PathBuf::from(p),
+        None => {
+            // CARGO_BIN_EXE_ff-rdp is `<target>/<profile>/ff-rdp`.
+            let Some(profile_dir) = ff_rdp_bin().parent().map(PathBuf::from) else {
+                return;
+            };
+            let Some(target_dir) = profile_dir.parent().map(PathBuf::from) else {
+                return;
+            };
+            target_dir.join("live-launches.log")
+        }
+    };
+    // One `write_all` of a short line: concurrent appenders from separate test
+    // binaries interleave whole lines rather than fragments.
+    let line = format!(
+        "{}\t{}\tpid={pid}\tport={port}\n",
+        chrono_now_rfc3339(),
+        current_test_name(),
+    );
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// RFC-3339-ish timestamp without pulling `chrono` into the test binaries.
+fn chrono_now_rfc3339() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    format!("epoch={secs}")
+}
+
 /// A live Firefox instance launched via `ff-rdp launch --headless`.
 ///
 /// Holds the Firefox PID and the RDP debug port.  `Drop` kills Firefox; the
@@ -292,48 +346,100 @@ impl LiveFirefox {
         self.firefox_pid
     }
 
-    /// Launch Firefox headless on a random port.
+    /// Launch Firefox headless on a random port, **panicking** with a full
+    /// diagnostic if it cannot be launched (iter-158 Theme D).
     ///
-    /// Tries up to 3 ports to handle rare port-allocation collisions (common in
-    /// CI with parallel test jobs).  Returns `None` if Firefox is unavailable or
-    /// fails to become ready within 30 s.
-    pub fn headless_on_random_port() -> Option<Self> {
-        for attempt in 0..3u8 {
-            match Self::try_launch(&[]) {
-                Some((ff, _)) => return Some(ff),
-                None => {
-                    if attempt < 2 {
-                        std::thread::sleep(Duration::from_millis(200));
-                    }
-                }
-            }
-        }
-        None
+    /// Pre-iter-158 this returned `Option<Self>` and every one of the ~150 call
+    /// sites did:
+    ///
+    /// ```ignore
+    /// let Some(ff) = LiveFirefox::headless_on_random_port() else {
+    ///     eprintln!("…: Firefox not available — skipping");
+    ///     return;                                  // ← libtest reports `ok`
+    /// };
+    /// ```
+    ///
+    /// libtest captures test stderr and discards it for passing tests, so a
+    /// green run carried no evidence of how many of its `ok` results had
+    /// reached Firefox at all — verified: **zero** `LiveFirefox: pid=` lines in
+    /// a log containing 170 passing tests. That is
+    /// `iteration-155-live-skip-reports-green`'s defect surviving through a
+    /// second door: iter-155 made unmet *env gates* report `ignored`, while the
+    /// larger fake-`ok` source (Firefox failed to launch) was untouched and
+    /// still counted as `executed` by `live-sweep`.
+    ///
+    /// A test that genuinely tolerates an absent Firefox belongs behind an
+    /// `#[ignore]` gate `live-sweep` already understands, not behind a runtime
+    /// early return.
+    pub fn headless_on_random_port() -> Self {
+        Self::headless_on_random_port_with_args(&[]).0
     }
 
-    /// Like [`headless_on_random_port`], but forwards `extra_args` to
-    /// `ff-rdp launch` (e.g. `["--window-size", "390x844"]`) and also returns
+    /// Like [`LiveFirefox::headless_on_random_port`], but forwards `extra_args`
+    /// to `ff-rdp launch` (e.g. `["--window-size", "390x844"]`) and also returns
     /// the parsed `launch` JSON envelope so the caller can inspect fields
     /// `ff-rdp launch` reports (e.g. `results.window_size`, `results.warnings`)
     /// that a later `eval` call can't recover after the fact.
-    pub fn headless_on_random_port_with_args(
+    ///
+    /// Panics on failure — see [`LiveFirefox::headless_on_random_port`].
+    pub fn headless_on_random_port_with_args(extra_args: &[&str]) -> (Self, serde_json::Value) {
+        match Self::try_headless_on_random_port_with_args(extra_args) {
+            Ok(result) => result,
+            Err(attempts) => panic!(
+                "LiveFirefox: could not launch Firefox after {} attempt(s) \
+                 (test: {}, launcher: {}, extra args: {:?}).\n{}",
+                attempts.len(),
+                current_test_name(),
+                ff_rdp_bin().display(),
+                extra_args,
+                attempts.join("\n"),
+            ),
+        }
+    }
+
+    /// Fallible variant kept for the harness's own negative tests and used by
+    /// the panicking wrappers above. `Err` carries one diagnostic string per
+    /// attempt.
+    pub fn try_headless_on_random_port() -> Option<Self> {
+        Self::try_headless_on_random_port_with_args(&[])
+            .ok()
+            .map(|(ff, _)| ff)
+    }
+
+    /// Retry loop shared by the panicking and fallible entry points. Tries up
+    /// to 3 ports to handle rare port-allocation collisions (common in CI with
+    /// parallel test jobs).
+    fn try_headless_on_random_port_with_args(
         extra_args: &[&str],
-    ) -> Option<(Self, serde_json::Value)> {
+    ) -> Result<(Self, serde_json::Value), Vec<String>> {
+        let mut failures = Vec::new();
         for attempt in 0..3u8 {
-            match Self::try_launch(extra_args) {
-                Some(result) => return Some(result),
-                None => {
+            match Self::try_launch(extra_args, attempt) {
+                Ok(result) => return Ok(result),
+                Err(diagnostic) => {
+                    failures.push(diagnostic);
                     if attempt < 2 {
                         std::thread::sleep(Duration::from_millis(200));
                     }
                 }
             }
         }
-        None
+        Err(failures)
     }
 
-    fn try_launch(extra_args: &[&str]) -> Option<(Self, serde_json::Value)> {
-        let port = free_port()?;
+    /// One launch attempt. `Err` carries everything the failure path knows:
+    /// the attempt number, the port, the `ff-rdp launch` exit status, and its
+    /// captured stdout **and** stderr.
+    ///
+    /// `stderr` used to be `Stdio::null()`, which discarded the product's own
+    /// diagnostic before anything could read it — so even a caller that wanted
+    /// to report the failure had nothing to report.
+    fn try_launch(extra_args: &[&str], attempt: u8) -> Result<(Self, serde_json::Value), String> {
+        let Some(port) = free_port() else {
+            return Err(format!(
+                "attempt {attempt}: could not bind 127.0.0.1:0 to discover a free port"
+            ));
+        };
 
         let output = Command::new(ff_rdp_bin())
             .args(["launch", "--headless", "--debug-port", &port.to_string()])
@@ -342,51 +448,80 @@ impl LiveFirefox {
             // profile is traceable from the artifact alone — see
             // `SPAWNING_TEST_ENV`'s doc comment.
             .env(SPAWNING_TEST_ENV, current_test_name())
-            .stderr(std::process::Stdio::null())
             .output()
-            .ok()?;
+            .map_err(|e| {
+                format!(
+                    "attempt {attempt} (port {port}): could not spawn `{} launch`: {e}",
+                    ff_rdp_bin().display()
+                )
+            })?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let context = format!("attempt {attempt} (port {port}): exit {}", output.status)
+            + &format!("\n  stdout: {stdout}\n  stderr: {stderr}");
 
         if !output.status.success() {
-            return None;
+            return Err(format!("{context}\n  → `ff-rdp launch` returned non-zero"));
         }
 
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-        let firefox_pid = u32::try_from(json["results"]["pid"].as_u64()?).ok()?;
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|e| format!("{context}\n  → launch stdout is not JSON: {e}"))?;
+        let firefox_pid = json["results"]["pid"]
+            .as_u64()
+            .and_then(|p| u32::try_from(p).ok())
+            .ok_or_else(|| format!("{context}\n  → launch JSON has no numeric results.pid"))?;
 
-        eprintln!("LiveFirefox: pid={firefox_pid} port={port}");
+        record_live_launch(firefox_pid, port);
 
-        // Bounded, env-overridable wait (iter-113 Theme A). Retried up to 3× by
-        // `headless_on_random_port`, so a single miss stays a `None` skip rather
-        // than a panic — but the bound is now `launch_wait_timeout()` so a wedged
-        // runner gives up within the (overridable) budget instead of a fixed 30 s.
+        // Bounded, env-overridable wait (iter-113 Theme A) on top of the
+        // product's own `--launch-timeout` bound (iter-158 Theme A).
         if !wait_for_tcp(port, launch_wait_timeout()) {
             kill_pid(firefox_pid);
-            return None;
+            return Err(format!(
+                "{context}\n  → launch reported pid {firefox_pid} but port {port} never \
+                 accepted a connection within {}s ({LAUNCH_TIMEOUT_ENV})",
+                launch_wait_timeout().as_secs()
+            ));
         }
 
         let ff = Self { firefox_pid, port };
 
         // Wait until at least one tab is available.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut last_tabs_error;
         loop {
             let out = Command::new(ff_rdp_bin())
                 .args(base_args(ff.port))
                 .arg("tabs")
                 .output();
-            if let Ok(o) = out
-                && o.status.success()
-            {
-                let tab_count = serde_json::from_slice::<serde_json::Value>(&o.stdout)
-                    .ok()
-                    .and_then(|j| j["total"].as_u64())
-                    .unwrap_or(0);
-                if tab_count >= 1 {
-                    return Some((ff, json));
+            match &out {
+                Ok(o) if o.status.success() => {
+                    let tab_count = serde_json::from_slice::<serde_json::Value>(&o.stdout)
+                        .ok()
+                        .and_then(|j| j["total"].as_u64())
+                        .unwrap_or(0);
+                    if tab_count >= 1 {
+                        return Ok((ff, json));
+                    }
+                    last_tabs_error = format!("`tabs` reported total={tab_count}");
                 }
+                Ok(o) => {
+                    last_tabs_error = format!(
+                        "`tabs` exit {}: {}",
+                        o.status,
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    );
+                }
+                Err(e) => last_tabs_error = format!("`tabs` could not be spawned: {e}"),
             }
             if std::time::Instant::now() >= deadline {
-                kill_pid(ff.firefox_pid);
-                return None;
+                let pid = ff.firefox_pid;
+                drop(ff);
+                return Err(format!(
+                    "{context}\n  → Firefox (pid {pid}) opened port {port} but exposed no tab \
+                     within 10s: {last_tabs_error}"
+                ));
             }
             std::thread::sleep(Duration::from_millis(200));
         }
@@ -533,15 +668,30 @@ impl RawFirefox {
     }
 
     /// Launch a headless Firefox directly on a free port with a throwaway
-    /// profile. Returns `None` if Firefox is unavailable or the debug port
-    /// never comes up.
-    pub fn headless_on_random_port() -> Option<Self> {
-        let firefox = find_firefox_binary()?;
-        let port = free_port()?;
+    /// profile.
+    ///
+    /// Panics if Firefox is unavailable or the debug port never comes up —
+    /// same rationale as [`LiveFirefox::headless_on_random_port`] (iter-158
+    /// Theme D): a silent `None` here turned an unrunnable kill-scoping test
+    /// into a green one.
+    pub fn headless_on_random_port() -> Self {
+        match Self::try_headless_on_random_port() {
+            Ok(ff) => ff,
+            Err(diagnostic) => panic!("RawFirefox: {diagnostic}"),
+        }
+    }
+
+    fn try_headless_on_random_port() -> Result<Self, String> {
+        let firefox = find_firefox_binary().ok_or_else(|| {
+            "Firefox binary not found on PATH or in a well-known location".to_owned()
+        })?;
+        let port = free_port()
+            .ok_or_else(|| "could not bind 127.0.0.1:0 to discover a free port".to_owned())?;
         // A profile dir that is NOT under ff-rdp's managed root and does NOT
         // match the `ff-rdp-profile-*` convention.
         let profile = std::env::temp_dir().join(format!("raw-ff-{}-{port}", std::process::id()));
-        std::fs::create_dir_all(&profile).ok()?;
+        std::fs::create_dir_all(&profile)
+            .map_err(|e| format!("could not create profile {}: {e}", profile.display()))?;
 
         // Firefox reads prefs at startup, so the debugger prefs MUST be on disk
         // before spawn — otherwise the --start-debugger-server port never opens
@@ -553,7 +703,7 @@ impl RawFirefox {
              user_pref(\"devtools.debugger.prompt-connection\", false);\n\
              user_pref(\"remote.prefs.recommended\", true);\n",
         )
-        .ok()?;
+        .map_err(|e| format!("could not write {}/user.js: {e}", profile.display()))?;
 
         let child = Command::new(&firefox)
             .args([
@@ -567,7 +717,7 @@ impl RawFirefox {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .ok()?;
+            .map_err(|e| format!("could not spawn {}: {e}", firefox.display()))?;
         let pid = child.id();
 
         let ff = Self {
@@ -578,9 +728,15 @@ impl RawFirefox {
         };
         // Bounded, env-overridable wait (iter-113 Theme A).
         if wait_for_tcp(port, launch_wait_timeout()) {
-            Some(ff)
+            Ok(ff)
         } else {
-            None // Drop cleans up
+            let bound = launch_wait_timeout().as_secs();
+            // `ff` drops here, killing the process and removing the profile.
+            Err(format!(
+                "{} (pid {pid}) never opened debug port {port} within {bound}s \
+                 (raise {LAUNCH_TIMEOUT_ENV})",
+                firefox.display()
+            ))
         }
     }
 }

@@ -82,13 +82,18 @@ fn stop_daemon(port: u16) {
 
 /// Bring up Firefox with a running daemon, or return `None` with a printed
 /// reason (Firefox unavailable / daemon refused to start).
-fn firefox_with_daemon(test: &str) -> Option<LiveFirefox> {
-    let ff = LiveFirefox::headless_on_random_port()?;
-    if ff.with_daemon().is_none() {
-        eprintln!("{test}: daemon did not start — skipping");
-        return None;
-    }
-    Some(ff)
+/// Launch Firefox and bring up its proxy daemon.
+///
+/// Panics on either failure (iter-158 Theme D) — the `Option` this used to
+/// return made every caller `return` early, which libtest reports as `ok`.
+fn firefox_with_daemon(test: &str) -> LiveFirefox {
+    let ff = LiveFirefox::headless_on_random_port();
+    assert!(
+        ff.with_daemon().is_some(),
+        "{test}: the proxy daemon did not start for Firefox on port {}",
+        ff.port()
+    );
+    ff
 }
 
 /// `ff-rdp daemon status` output as raw JSON text, for assertion messages.
@@ -153,10 +158,7 @@ fn live_137_frame_targets_via_daemon() {
         eprintln!("live_137_frame_targets_via_daemon: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_137_frame_targets_via_daemon") else {
-        eprintln!("live_137_frame_targets_via_daemon: Firefox not available — skipping");
-        return;
-    };
+    let ff = firefox_with_daemon("live_137_frame_targets_via_daemon");
     let port = ff.port();
 
     let nav = Command::new(ff_rdp_bin())
@@ -214,10 +216,7 @@ fn live_137_click_cross_origin_via_daemon() {
         eprintln!("live_137_click_cross_origin_via_daemon: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_137_click_cross_origin_via_daemon") else {
-        eprintln!("live_137_click_cross_origin_via_daemon: Firefox not available — skipping");
-        return;
-    };
+    let ff = firefox_with_daemon("live_137_click_cross_origin_via_daemon");
     let port = ff.port();
 
     let nav = Command::new(ff_rdp_bin())
@@ -277,10 +276,7 @@ fn live_137_consent_accept_via_daemon() {
         eprintln!("live_137_consent_accept_via_daemon: set FF_RDP_LIVE_NETWORK_TESTS=1 to run");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_137_consent_accept_via_daemon") else {
-        eprintln!("live_137_consent_accept_via_daemon: Firefox not available — skipping");
-        return;
-    };
+    let ff = firefox_with_daemon("live_137_consent_accept_via_daemon");
     let port = ff.port();
 
     let nav = Command::new(ff_rdp_bin())
@@ -348,10 +344,7 @@ fn live_137_concurrent_commands() {
         eprintln!("live_137_concurrent_commands: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_137_concurrent_commands") else {
-        eprintln!("live_137_concurrent_commands: Firefox not available — skipping");
-        return;
-    };
+    let ff = firefox_with_daemon("live_137_concurrent_commands");
     let port = ff.port();
 
     let nav = Command::new(ff_rdp_bin())
@@ -455,10 +448,7 @@ fn live_137_network_source_parity() {
     };
     let url = format!("{}/", server.base_url());
 
-    let Some(ff) = firefox_with_daemon("live_137_network_source_parity") else {
-        eprintln!("live_137_network_source_parity: Firefox not available — skipping");
-        return;
-    };
+    let ff = firefox_with_daemon("live_137_network_source_parity");
     let port = ff.port();
 
     let nav = Command::new(ff_rdp_bin())

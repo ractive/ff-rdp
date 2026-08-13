@@ -35,7 +35,7 @@
 use std::process::Command;
 use std::time::Duration;
 
-use crate::common::{LiveFirefox, ff_rdp_bin, kill_pid, live_tests_enabled};
+use crate::common::{LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
 /// Poll until `127.0.0.1:port` refuses connections (port is free) or timeout.
 fn wait_port_free(port: u16, timeout: Duration) -> bool {
@@ -58,10 +58,7 @@ fn live_142_daemon_stop_no_false_error() {
         return;
     }
 
-    let Some(ff_a) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_142_daemon_stop_no_false_error: Firefox not available — skipping");
-        return;
-    };
+    let ff_a = LiveFirefox::headless_on_random_port();
     let port_a = ff_a.port();
     let pid_a = ff_a.pid();
     // iter-151 Theme B: `ff_a` used to be suppressed via `ManuallyDrop` here
@@ -73,14 +70,11 @@ fn live_142_daemon_stop_no_false_error() {
     // — `ff_a` now stays a normal binding: `daemon stop`'s own cleanup
     // (still asserted below) is the belt, this guard's `Drop` at function
     // end is the suspenders.
-    let Some(ff_b) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_142_daemon_stop_no_false_error: second Firefox not available — skipping \
-             (cleaning up instance A manually)"
-        );
-        kill_pid(pid_a);
-        return;
-    };
+    // iter-158 Theme D: a second Firefox that fails to launch used to skip
+    // this test (reported `ok` by libtest). It now panics inside
+    // `headless_on_random_port` — `ff_a`'s own `Drop` reaps instance A during
+    // the unwind, so the manual `kill_pid(pid_a)` this arm needed is gone.
+    let ff_b = LiveFirefox::headless_on_random_port();
     let port_b = ff_b.port();
     // ff_b's normal Drop kills it at the end of this function — it must
     // survive everything before that point, so no ManuallyDrop here.

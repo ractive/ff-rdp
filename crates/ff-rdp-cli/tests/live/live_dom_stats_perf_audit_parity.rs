@@ -68,12 +68,7 @@ fn live_dom_stats_perf_audit_parity_images_without_lazy() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_dom_stats_perf_audit_parity_images_without_lazy: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let Some(server) = spawn_html_server(fixture_body()) else {
         eprintln!(

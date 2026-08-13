@@ -86,10 +86,7 @@ fn live_dom_text_longstring_roundtrip() {
         eprintln!("live_dom_text_longstring_roundtrip: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_dom_text_longstring_roundtrip: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // A single <p> whose text content is BIG_LEN 'A's.
     let big = "A".repeat(BIG_LEN);
@@ -139,10 +136,7 @@ fn live_cookie_longstring_value() {
         eprintln!("live_cookie_longstring_value: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_cookie_longstring_value: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     // Cookies require a real http origin (data: URLs are cookie-averse).
     let body = b"<!DOCTYPE html><html><head></head><body></body></html>".to_vec();
     let Some((http_port, _server)) = spawn_html_server(body) else {
@@ -228,10 +222,7 @@ fn live_computed_longstring_value() {
         eprintln!("live_computed_longstring_value: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_computed_longstring_value: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // A big CSS custom property set on #target via an inline style attribute.
     // Custom properties are surfaced by getComputed, and a > 10 KB value arrives
@@ -289,10 +280,7 @@ fn live_reload_force_with_watched_resources() {
         eprintln!("live_reload_force_with_watched_resources: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_reload_force_with_watched_resources: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // A page that logs to the console on load and on each navigation, so the
     // reload produces console resource activity + a tabNavigated push that can

@@ -77,10 +77,7 @@ fn live_daemon_watch_targets() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_daemon_watch_targets: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // Trigger daemon startup.
     if start_daemon_for(&ff).is_none() {

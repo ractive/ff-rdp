@@ -50,14 +50,18 @@ fn stop_daemon(port: u16) {
         .output();
 }
 
-/// Bring up Firefox with a running daemon, or `None` with a printed reason.
-fn firefox_with_daemon(test: &str) -> Option<LiveFirefox> {
-    let ff = LiveFirefox::headless_on_random_port()?;
-    if ff.with_daemon().is_none() {
-        eprintln!("{test}: daemon did not start — skipping");
-        return None;
-    }
-    Some(ff)
+/// Bring up Firefox with a running daemon.
+///
+/// Panics on either failure (iter-158 Theme D) — the `Option` this used to
+/// return made every caller `return` early, which libtest reports as `ok`.
+fn firefox_with_daemon(test: &str) -> LiveFirefox {
+    let ff = LiveFirefox::headless_on_random_port();
+    assert!(
+        ff.with_daemon().is_some(),
+        "{test}: the proxy daemon did not start for Firefox on port {}",
+        ff.port()
+    );
+    ff
 }
 
 fn navigate(port: u16, url: &str) {
@@ -116,9 +120,7 @@ fn live_141_console_text_bounded() {
         eprintln!("live_141_console_text_bounded: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_141_console_text_bounded") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_141_console_text_bounded");
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -192,9 +194,7 @@ fn live_141_index_single_json_document() {
         eprintln!("live_141_index_single_json_document: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_141_index_single_json_document") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_141_index_single_json_document");
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -276,9 +276,7 @@ fn live_141_index_robots_user_agent_groups() {
         eprintln!("live_141_index_robots_user_agent_groups: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_141_index_robots_user_agent_groups") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_141_index_robots_user_agent_groups");
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -354,9 +352,7 @@ fn live_141_snapshot_truncation_in_meta() {
         eprintln!("live_141_snapshot_truncation_in_meta: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_141_snapshot_truncation_in_meta") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_141_snapshot_truncation_in_meta");
     let port = ff.port();
 
     // Enough markup that a tiny --max-chars budget cannot possibly fit it
@@ -416,9 +412,7 @@ fn live_141_text_empty_result_keeps_metadata() {
         eprintln!("live_141_text_empty_result_keeps_metadata: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_141_text_empty_result_keeps_metadata") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_141_text_empty_result_keeps_metadata");
     let port = ff.port();
 
     // Plain black-on-white text — every element should pass WCAG AA, so

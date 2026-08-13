@@ -52,15 +52,18 @@ fn wait_path_gone(path: &str, timeout: Duration) -> bool {
 /// produces. Returning a `LiveFirefox` here makes `daemon stop`'s own
 /// cleanup (still asserted below) belt, and the guard's `Drop` suspenders —
 /// on any panic after this call, Firefox dies anyway.
-fn launch_headless() -> Option<(LiveFirefox, serde_json::Value)> {
-    let (ff, envelope) = LiveFirefox::headless_on_random_port_with_args(&[])?;
+fn launch_headless() -> (LiveFirefox, serde_json::Value) {
+    let (ff, envelope) = LiveFirefox::headless_on_random_port_with_args(&[]);
     // `headless_on_random_port_with_args` returns the *whole* launch JSON
     // envelope (`{"results": {...}, "total": 1, "meta": {...}}`); callers
     // here want just the `results` object, matching this helper's
     // pre-iter-146 return shape so the test bodies below didn't need to
     // change their `launch_results["profile_path"]`-style indexing.
-    let results = envelope.get("results")?.clone();
-    Some((ff, results))
+    let results = envelope
+        .get("results")
+        .expect("launch envelope has a `results` object")
+        .clone();
+    (ff, results)
 }
 
 /// AC: `pre_fix_repro_daemon_stop_removes_active_profile`
@@ -77,12 +80,7 @@ fn pre_fix_repro_daemon_stop_removes_active_profile() {
         return;
     }
 
-    let Some((ff, launch_results)) = launch_headless() else {
-        eprintln!(
-            "pre_fix_repro_daemon_stop_removes_active_profile: Firefox not available — skipping"
-        );
-        return;
-    };
+    let (ff, launch_results) = launch_headless();
     // iter-146 Theme A: `ff` stays in scope for the rest of the test as a
     // Drop-based safety net — see `launch_headless`'s doc comment. On the
     // happy path below, `daemon stop` already kills Firefox and this
@@ -146,12 +144,7 @@ fn live_daemon_stop_profile_path_matches_launch_json() {
         return;
     }
 
-    let Some((ff, launch_results)) = launch_headless() else {
-        eprintln!(
-            "live_daemon_stop_profile_path_matches_launch_json: Firefox not available — skipping"
-        );
-        return;
-    };
+    let (ff, launch_results) = launch_headless();
     // iter-146 Theme A: safety net — see `launch_headless`'s doc comment.
     let port = ff.port();
 

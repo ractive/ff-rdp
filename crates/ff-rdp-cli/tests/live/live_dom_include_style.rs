@@ -18,10 +18,7 @@ fn dom_include_style_attaches_computed_values() {
         eprintln!("dom_include_style_attaches_computed_values: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("dom_include_style_attaches_computed_values: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let url = "data:text/html,<title>include-style</title><p style=\"color:red\">a</p><p style=\"color:red\">b</p>";
 

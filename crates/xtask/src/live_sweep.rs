@@ -79,6 +79,56 @@ pub struct GatedTest {
     pub full_name: String,
     pub needs_live: bool,
     pub needs_network: bool,
+    /// The test connects to a Firefox somebody else started on the fixed
+    /// default port; it never launches one itself (iter-158 Theme F).
+    pub needs_preexisting: bool,
+}
+
+/// Default Firefox debug port. A test file that talks to this port without
+/// launching anything needs an instance a human (or another tool) started.
+pub const PREEXISTING_PORT: u16 = 6000;
+
+/// Markers that identify a source file whose live tests connect to a
+/// pre-existing Firefox on [`PREEXISTING_PORT`] rather than launching one.
+///
+/// Theme F's evidence: on 2026-08-13 six of the sweep's seven failures were
+/// `ConnectionRefused` from `ff-rdp-core` live tests, all of which resolve
+/// their port through `support::recording::firefox_port()` (default 6000) and
+/// none of which spawns a browser — their own `#[ignore]` reasons and module
+/// docs say so (`live_firefox_test.rs:26`, `live_61p_registry.rs:3`,
+/// `live_129_frame_targets.rs:12`). `live-sweep` neither provided that
+/// instance nor checked for it, and counted all of them as `executed`. That is
+/// a **third** way `executed=N` overstated reality.
+///
+/// The markers are matched against the whole file, not just the `#[ignore]`
+/// reason: the reasons are inconsistent across those files (only
+/// `live_firefox_test.rs` spells out `--start-debugger-server 6000`), while
+/// `firefox_port(` is a reliable signal in every one of them.
+const PREEXISTING_MARKERS: &[&str] = &[
+    "--start-debugger-server 6000",
+    "firefox_port(",
+    "remote debugger enabled on port 6000",
+];
+
+/// Does this source file's live tests require a Firefox somebody else started?
+pub fn source_needs_preexisting_instance(src: &str) -> bool {
+    PREEXISTING_MARKERS.iter().any(|m| src.contains(m))
+}
+
+/// Is something accepting TCP on `127.0.0.1:6000` right now?
+///
+/// Theme F decision: **classify, do not launch.** Port 6000 is ff-rdp's
+/// documented default and the port a human is most likely to already be using
+/// by hand; the fails-closed ownership guard in `daemon/client.rs` exists
+/// precisely because ff-rdp once killed a hand-started Firefox on it. A sweep
+/// that binds 6000 itself either collides with the user or inherits that whole
+/// ownership problem. One TCP probe is honest about what it did.
+pub fn preexisting_instance_available() -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], PREEXISTING_PORT)),
+        std::time::Duration::from_millis(500),
+    )
+    .is_ok()
 }
 
 /// Scan one file's source for `#[ignore = "REASON"]`-gated `#[test]`
@@ -96,6 +146,7 @@ pub struct GatedTest {
 /// the whole file as one string rather than line-by-line.
 pub fn scan_source(src: &str, module_prefix: Option<&str>) -> Vec<GatedTest> {
     let mut out = Vec::new();
+    let needs_preexisting = source_needs_preexisting_instance(src);
     let bytes = src.as_bytes();
     let mut pos = 0usize;
 
@@ -160,6 +211,7 @@ pub fn scan_source(src: &str, module_prefix: Option<&str>) -> Vec<GatedTest> {
                 full_name,
                 needs_live,
                 needs_network,
+                needs_preexisting,
             });
         }
 
@@ -331,6 +383,8 @@ pub fn default_targets(workspace_root: &Path) -> Result<Vec<SweepTarget>> {
 pub struct EnvGates {
     pub live: bool,
     pub network: bool,
+    /// Something is listening on [`PREEXISTING_PORT`] (iter-158 Theme F).
+    pub preexisting_available: bool,
 }
 
 impl EnvGates {
@@ -338,16 +392,35 @@ impl EnvGates {
         EnvGates {
             live: std::env::var("FF_RDP_LIVE_TESTS").as_deref() == Ok("1"),
             network: std::env::var("FF_RDP_LIVE_NETWORK_TESTS").as_deref() == Ok("1"),
+            preexisting_available: preexisting_instance_available(),
         }
     }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Partition {
-    /// Every env var the test needs is set — it will run for real.
+    /// Every env var the test needs is set (and, if it needs a pre-existing
+    /// Firefox, one is listening) — it will run for real.
     pub qualified: Vec<String>,
     /// At least one required env var is unset — it will report `ignored`.
     pub unqualified: Vec<String>,
+    /// Env-qualified, but the test needs a Firefox on [`PREEXISTING_PORT`]
+    /// that nobody started. Run without `--include-ignored` so libtest reports
+    /// it `ignored` instead of letting it fail on `ConnectionRefused` — and
+    /// counted separately from `executed`, which it never was (iter-158
+    /// Theme F).
+    pub preexisting: Vec<String>,
+}
+
+impl Partition {
+    /// The names that must NOT get `--include-ignored`, so libtest reports
+    /// them `ignored`.
+    pub fn not_running(&self) -> Vec<String> {
+        let mut v = self.unqualified.clone();
+        v.extend(self.preexisting.iter().cloned());
+        v.sort();
+        v
+    }
 }
 
 pub fn partition(tests: &[GatedTest], gates: &EnvGates) -> Partition {
@@ -355,29 +428,41 @@ pub fn partition(tests: &[GatedTest], gates: &EnvGates) -> Partition {
     for t in tests {
         let ok_live = !t.needs_live || gates.live;
         let ok_network = !t.needs_network || gates.network;
-        if ok_live && ok_network {
-            p.qualified.push(t.full_name.clone());
-        } else {
+        if !(ok_live && ok_network) {
+            // An unmet env gate is reported first: it is the reason the user
+            // can fix by exporting a variable, and it keeps `skipped` meaning
+            // exactly what iter-155 made it mean.
             p.unqualified.push(t.full_name.clone());
+        } else if t.needs_preexisting && !gates.preexisting_available {
+            p.preexisting.push(t.full_name.clone());
+        } else {
+            p.qualified.push(t.full_name.clone());
         }
     }
     p.qualified.sort();
     p.unqualified.sort();
+    p.preexisting.sort();
     p
 }
 
 /// Theme B: the machine-readable count of tests that actually reached
 /// Firefox (`executed`) versus those that were gate-skipped (`skipped`) —
 /// known before `cargo test` runs, never inferred from its prose.
+///
+/// iter-158 Theme F adds the third tier: `preexisting` counts tests whose env
+/// gates are met but which need a Firefox on port 6000 that nobody started.
+/// Folding those into `executed` (the pre-158 behaviour) overstated what the
+/// sweep had actually exercised.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SweepSummary {
     pub executed: usize,
     pub skipped: usize,
+    pub preexisting: usize,
 }
 
 impl SweepSummary {
     pub fn total(&self) -> usize {
-        self.executed + self.skipped
+        self.executed + self.skipped + self.preexisting
     }
 }
 
@@ -385,6 +470,7 @@ pub fn summarize(part: &Partition) -> SweepSummary {
     SweepSummary {
         executed: part.qualified.len(),
         skipped: part.unqualified.len(),
+        preexisting: part.preexisting.len(),
     }
 }
 
@@ -436,8 +522,18 @@ pub fn run(args: Args) -> Result<()> {
         ));
     }
 
+    if !gates.preexisting_available {
+        eprintln!(
+            "live-sweep: nothing is listening on 127.0.0.1:{PREEXISTING_PORT} — tests that \
+             connect to a Firefox they did not launch will be reported `preexisting` and run \
+             WITHOUT --include-ignored (start one with \
+             `firefox --start-debugger-server {PREEXISTING_PORT} --headless` to execute them)"
+        );
+    }
+
     let mut total_executed = 0usize;
     let mut total_skipped = 0usize;
+    let mut total_preexisting = 0usize;
     let mut overall_ok = true;
 
     for target in &targets {
@@ -445,10 +541,16 @@ pub fn run(args: Args) -> Result<()> {
         let summary = summarize(&part);
         total_executed += summary.executed;
         total_skipped += summary.skipped;
+        total_preexisting += summary.preexisting;
 
         eprintln!(
-            "live-sweep: -p {} --test {}: {} qualified (will run for real), {} will report `ignored`",
-            target.package, target.test_name, summary.executed, summary.skipped
+            "live-sweep: -p {} --test {}: {} qualified (will run for real), {} will report \
+             `ignored` (env gate), {} will report `ignored` (no Firefox on {PREEXISTING_PORT})",
+            target.package,
+            target.test_name,
+            summary.executed,
+            summary.skipped,
+            summary.preexisting
         );
 
         if args.dry_run {
@@ -467,9 +569,12 @@ pub fn run(args: Args) -> Result<()> {
             overall_ok &= status.success();
         }
 
-        if let Some(mut cmd) =
-            phase_command(&target.package, &target.test_name, &part.unqualified, false)
-        {
+        if let Some(mut cmd) = phase_command(
+            &target.package,
+            &target.test_name,
+            &part.not_running(),
+            false,
+        ) {
             let status = cmd.status().with_context(|| {
                 format!(
                     "failed to spawn `cargo test -p {} --test {}` (phase 2: report ignored)",
@@ -483,10 +588,12 @@ pub fn run(args: Args) -> Result<()> {
     let grand_total = SweepSummary {
         executed: total_executed,
         skipped: total_skipped,
+        preexisting: total_preexisting,
     }
     .total();
     println!(
-        "LIVE_SWEEP_SUMMARY executed={total_executed} skipped={total_skipped} total={grand_total}"
+        "LIVE_SWEEP_SUMMARY executed={total_executed} skipped={total_skipped} \
+         preexisting={total_preexisting} total={grand_total}"
     );
 
     if overall_ok {
@@ -627,6 +734,7 @@ fn unrelated() {}
             full_name: name.to_owned(),
             needs_live,
             needs_network,
+            needs_preexisting: false,
         }
     }
 
@@ -645,6 +753,7 @@ fn unrelated() {}
         let none_set = EnvGates {
             live: false,
             network: false,
+            preexisting_available: true,
         };
         let summary = summarize(&partition(&tests, &none_set));
         assert_eq!(
@@ -657,6 +766,7 @@ fn unrelated() {}
         let live_only = EnvGates {
             live: true,
             network: false,
+            preexisting_available: true,
         };
         let summary = summarize(&partition(&tests, &live_only));
         assert_eq!(
@@ -668,6 +778,7 @@ fn unrelated() {}
         let both_set = EnvGates {
             live: true,
             network: true,
+            preexisting_available: true,
         };
         let summary = summarize(&partition(&tests, &both_set));
         assert_eq!(summary.executed, 3);
@@ -680,6 +791,7 @@ fn unrelated() {}
         let gates = EnvGates {
             live: true,
             network: true,
+            preexisting_available: true,
         };
         let part = partition(&tests, &gates);
         assert_eq!(part.qualified, vec!["a".to_owned(), "z".to_owned()]);
@@ -809,6 +921,7 @@ fn unrelated() {}
         let gates = EnvGates {
             live: true,
             network: false,
+            preexisting_available: true,
         };
         let part = partition(&gated, &gates);
         assert!(
