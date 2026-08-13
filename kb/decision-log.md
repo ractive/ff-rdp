@@ -549,7 +549,22 @@ mirrors), `tools/tests/ac-fidelity-check/`,
 **Decision** (iter-155): don't touch the ~90 individual `#[ignore]`-gated live
 test bodies. Their internal `if !live_tests_enabled() { return; }` checks
 (and the `FF_RDP_LIVE_NETWORK_TESTS` equivalent) stay exactly as written —
-now redundant, not load-bearing. Instead, `cargo run -p xtask -- live-sweep`
+redundant for any test the sweep classifies **unqualified**, since that test's
+body never runs at all.
+
+They are **not** redundant in one reachable case, and calling them
+unconditionally "not load-bearing" would overstate this decision (raised in PR
+#194 review): a test *misclassified as qualified* — because its
+`#[ignore = "…"]` reason text drifted from the env vars its body actually reads
+— does run, hits the bare `return`, and reports `ok`. That is the original
+iter-155 defect, intact. The classifier is text-derived, so the failure mode is
+a documentation/code divergence rather than a logic bug, and the early returns
+are the last line of defence when it happens. They stay for that reason, not
+merely as inert documentation. A `live-sweep` check that cross-references each
+test's ignore reason against the env vars its body reads, failing loudly on
+disagreement, would close this and is worth a follow-up.
+
+Instead, `cargo run -p xtask -- live-sweep`
 (`crates/xtask/src/live_sweep.rs`) statically classifies every gated test
 from its own `#[ignore = "…"]` reason text (an iter-155 audit found every
 current reason under `tests/live/` names at least one of

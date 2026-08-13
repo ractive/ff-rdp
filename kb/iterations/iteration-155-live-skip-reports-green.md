@@ -10,7 +10,7 @@ dogfood_path: |
   # After: reports `ignored` (or fails loudly), and the count of executed tests
   # is visible in the summary rather than inferred.
 first_call_sites: []
-status: in-review
+status: done
 title: "Iteration 155: a skipped live test reports green, so a green live sweep can mean 'did not run'"
 type: iteration
 tags:
@@ -117,7 +117,7 @@ different iteration. See [[decision-log#DEC-031]].
       gate is unset is reported as ignored/skipped rather than `ok`, asserted by parsing
       libtest's own summary output in a unit or integration test — not by reading the code.
       Implemented as an integration test in `crates/xtask/src/live_sweep.rs` that classifies the
-      real live_109_throttle_block ⋅ live_block_url_pattern test (the one named in this plan's
+      real `live_109_throttle_block::live_block_url_pattern` test (the one named in this plan's
       own `dogfood_path`), partitions it as unqualified with the network gate unset, spawns
       `cargo test -p ff-rdp-cli --test live` for real without `--include-ignored`, and asserts
       libtest's stdout contains the `... ignored` line and never `... ok`. This meta-test is
