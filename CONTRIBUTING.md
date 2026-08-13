@@ -231,7 +231,10 @@ fi
 3. `check-actor-kb-sync --since <base>` — actor `.rs` changes paired with kb updates
 4. `check-firefox-refs <plan>` — `firefox_refs:` line ranges valid
 5. `check-discipline-regression` — mirror sync + replay baselines
-6. `ac-fidelity-check.sh` — ticked ACs backed by diff evidence
+6. `ac-fidelity-check.sh` — ticked ACs *reference* evidence that resolves in the diff,
+   declare no non-execution, and carry `[verified: <YYYY-MM-DD>, <measured result>]` where
+   they name a `live_*` test. It reads a plan and a diff only: it cannot verify a test ran
+   (iter-154)
 7. `check-live-test-layout` — no stray top-level `tests/live_*.rs` binaries
    (iter-100b) **and** every `#[test]` under `tests/live/` is `#[ignore]`-gated
    or `// allow-ungated-live:`-annotated (iter-113 Theme B)

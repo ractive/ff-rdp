@@ -57,7 +57,13 @@ The `cargo test-live` alias (defined in `.cargo/config.toml`) expands to `cargo 
 ```
 - [ ] live_screenshot_full_page: PNG height ≥ scrollHeight × DPR
 ```
-An AC without a named test is not done.
+An AC without a named test is not done. **Ticking** a `live_*` AC additionally requires a
+`[verified: <YYYY-MM-DD>, <measured result>]` annotation recording the run — prose such as
+"verified live, PASS" is not accepted, the bracket form is:
+```
+- [x] live_screenshot_full_page: PNG height ≥ scrollHeight × DPR [verified: 2026-08-12, 2400 px ≥ 1200 × 2]
+```
+`ac-fidelity-check.sh` enforces this (iter-154); see the Iteration discipline section for why.
 
 ## Code Patterns
 - No `.unwrap()` / `.expect()` outside of tests — use `anyhow::Context` with `?`
@@ -85,6 +91,20 @@ An AC without a named test is not done.
   The ralph-loop skill enforces this at merge time via `ac-fidelity-check.sh`:
   every ticked AC must reference a test slug, a code symbol that appears in the
   diff, or the `[deferred — new plan: <path>]` form. See iter-61z.
+  **The gate reads a plan and a diff — it cannot tell you a test ran.** A green
+  `ac-fidelity-check` means the ticked ACs *reference* evidence that resolves,
+  nothing more; running the tests is still on you. iter-154 narrowed the gap at
+  two points: a ticked AC whose text admits non-execution ("not exercised", "not
+  run", "never run", "not executed", "implemented and compiled", "not verified" —
+  matched as whole words) fails outright, and a ticked
+  AC naming a `live_*` test must carry `[verified: <YYYY-MM-DD>, <measured result>]`
+  — live tests are `#[ignore]`-gated and never run in CI, so nothing downstream
+  will ever execute them. Both read the AC's full wrapped text, not just its first
+  line. Untick or defer rather than routing around the wording — the deferral
+  annotation must be the **last** thing on the AC. If an AC legitimately *describes*
+  behaviour using those words ("`--dry-run` does not run the command"), annotate it
+  `[allow-ac-wording: <reason ≥10 chars>]`; that escape hatch exists so the remedy
+  for a false positive is never "reword until the grep stops firing".
 - Spec drift: when ff-rdp must send a field or call a method that is NOT
   declared in the published Firefox spec dict (but the server *reads* it
   anyway), annotate the call site with `// allow-spec-drift: bug NNNN`,
@@ -113,7 +133,9 @@ An AC without a named test is not done.
   3. `check-actor-kb-sync --since <base>` — actor `.rs` changes paired with kb updates
   4. `check-firefox-refs <plan>` — `firefox_refs:` line ranges valid
   5. `check-discipline-regression` — mirror sync + replay baselines
-  6. `ac-fidelity-check.sh --plan <plan> --base <base>` — ticked ACs backed by diff
+  6. `ac-fidelity-check.sh --plan <plan> --base <base>` — ticked ACs *reference*
+     resolvable evidence, declare no non-execution, and carry `[verified: …]` where
+     they name a `live_*` test (it cannot verify a test ran)
   Fix every reported failure before pushing. CI still runs each gate individually as required checks.
 - `cargo xtask check-dead-primitives`, `check-todo-annotations`,
   `check-discipline-regression`, `check-firefox-refs`, and `check-actor-kb-sync`

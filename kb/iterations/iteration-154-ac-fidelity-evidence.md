@@ -14,7 +14,7 @@ dogfood_path: |
   cargo run -p xtask -- check-discipline-regression
   # → replay baselines OK (61v=FAIL, 61t=PASS)
 first_call_sites: []
-status: planned
+status: done
 title: "Iteration 154: ac-fidelity-check passes ACs whose tests never ran"
 type: iteration
 tags:
@@ -125,21 +125,111 @@ see `tools/tests/lint-dogfood-script/` and `tools/tests/branch-protection/`):
 - `deferred-ac.md` — the existing `[deferred — new plan: …]` form → still PASS (guards against
   Theme A's denial list swallowing a legitimate deferral)
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [5/5]
 
-- [ ] shell_154_unrun_ac_fails: `ac-fidelity-check.sh` exits 1 on
+- [x] `shell_154_unrun_ac_fails`: `ac-fidelity-check.sh` exits 1 on
       `tools/tests/ac-fidelity-check/unrun-live-ac.md`, and its output names the offending AC and
       suggests untick-or-defer
-- [ ] shell_154_evidenced_ac_passes: the same script exits 0 on
+- [x] `shell_154_evidenced_ac_passes`: the same script exits 0 on
       `tools/tests/ac-fidelity-check/evidenced-live-ac.md` and on
       `tools/tests/ac-fidelity-check/deferred-ac.md` — a legitimate deferral is not caught by
       Theme A's denial list
-- [ ] shell_154_iter151_prefix_would_have_failed: replaying iteration-151's **pre-fix** AC block
-      (the two chunk ACs ticked with "not exercised end-to-end" text, recoverable from `6d07c8c`)
-      makes the gate exit 1 — proving this iteration fixes the case that motivated it, rather
-      than a case invented to be catchable
-- [ ] check_154_baselines_unmoved: `cargo run -p xtask -- check-discipline-regression` still
+- [x] `shell_154_missing_run_evidence_fails`, `shell_154_blank_line_continuation_is_read`,
+      `shell_154_deferral_mention_does_not_launder`, `shell_154_allow_wording_escape_hatch`,
+      `shell_154_future_verified_date_rejected`,
+      `shell_154_theme_a_sees_nested_and_lazy_continuations`: the six defects PR #193's review
+      found in the first cut each have a fixture or sandbox plan pinning them, and all 11 tests
+      in `crates/xtask/tests/ac_fidelity_check.rs` pass
+- [x] `shell_154_iter151_prefix_would_have_failed`: replaying iteration-151's **pre-fix** AC block
+      (the two chunk ACs ticked with self-declared non-execution wording, recoverable from
+      `6d07c8c`) makes the gate exit 1 — proving this iteration fixes the case that motivated it,
+      rather than a case invented to be catchable
+- [x] check_154_baselines_unmoved: after the `ac-fidelity-check.sh` change,
+      `cargo run -p xtask -- check-discipline-regression` still
       reports `61v=FAIL, 61t=PASS` and both mirrors in sync after the change
+
+## Resolution
+
+All three themes shipped, plus a structural fix the plan did not anticipate.
+
+**The plan's diagnosis was incomplete.** It attributed the iter-151 pass to the slug heuristic
+alone. Replaying `6d07c8c` through the pre-fix script (exit 0, confirmed on the wire before any
+edit) showed a second, independent cause: the script's loop matched `- [x] <text>` line by line,
+so the AC's *continuation* lines — where the wording about non-execution actually lived — were
+never read at all. A denial list bolted onto the old loop would have caught nothing. So the AC
+block is now folded (bullet + indented continuations, whitespace collapsed) before checking.
+The evidence heuristics deliberately keep reading only the first line: widening their input
+hands them more tokens to match and can turn a should-fail plan green, which is what the pinned
+`61v=FAIL` baseline guards. Only the two new checks — which can only ever add failures — read
+the folded text.
+
+**Theme A** (denial list, eight literal phrases, case-insensitive) fires after the
+`[deferred — …]` short-circuit, so a legitimate deferral still passes even though it necessarily
+carries the same wording. `deferred-ac.md` pins that.
+
+**Theme B shipped**, against the plan's invitation to drop it. The argument that decided it:
+Theme A alone rewards silence. It catches a *confession*, and once it exists the honest-but-ticking
+case becomes the silent-ticking case — and this repo has already watched a plan get reworded to
+route around a gate. Theme B requires an *assertion*: `[verified: <YYYY-MM-DD>, <measured
+result>]`, ISO date plus at least one further digit in the bracket. It is forgeable, like every
+check a diff-reading script can make; the cost is bounded by restricting it to `live_*` ACs,
+where the risk actually is (live tests are `#[ignore]`-gated, so nothing downstream ever runs
+them). Recorded as [[decision-log]] DEC-030. Note the fixtures show Theme B doing work Theme A
+cannot: iter-151's chunk-B AC never used a denied phrase — it said "same status as
+`live_151_chunk_a_leaves_no_orphans` above" — and is caught only by the missing run evidence.
+
+**Theme C**: the PASS line, the script header/`--help`, `CLAUDE.md` and `CONTRIBUTING.md` now
+state that the gate reads a plan and a diff and cannot verify a test was executed. Confirmed
+there is no run log it could consult instead: neither ralph-loop nor new-ralph-loop ever invokes
+`cargo test-live`.
+
+**What this does not fix.** A diff-reading script still cannot verify a test ran; the ceiling in
+the plan's "What is and is not achievable" stands. Both new checks are satisfiable by an agent
+willing to type a false sentence.
+
+### Review round (PR #193, 2026-08-13)
+
+An independent review of the first cut found six real defects, all reproduced before fixing.
+Two were worse than the bug being fixed:
+
+1. **The widened `[deferred` accept was a strictness regression.** It reads the folded text and
+   `continue`s past every later check, so an unanchored substring match let any AC that merely
+   *mentioned* `[deferred` launder itself — a plan that failed *before* iter-154 passed after it.
+   Now anchored to the end of the AC (trailing period tolerated, closing `)` not), and mentions
+   inside backticks are excluded. This also falsified the script comment and DEC-030's claim that
+   "only the two new checks read the folded text"; both corrected to name three consumers.
+2. **The denial list was plain substrings**, so it fired on ordinary wording: `not run` inside
+   "not run*ning*" / "can*not run*", and `time budget` on any latency AC. Now whole-word ERE;
+   `time budget` dropped (it earned nothing — iteration-151's AC is caught by `not exercised` in
+   the same sentence); `could not run` folded into `not run`. The residual class — an AC that
+   legitimately *describes* behaviour — gets `[allow-ac-wording: <reason ≥10 chars>]`. **The
+   review's sharpest point: this PR had already reworded its own AC 3 to get past its own gate.**
+   A check that punishes honest wording teaches agents to launder wording, so the escape hatch is
+   load-bearing, not a convenience.
+3. **A blank line before a continuation dropped it**, rejecting an AC that *did* carry
+   `[verified: …]` in a second paragraph of the same list item.
+4. **Two Theme A bypasses**: a column-0 lazy continuation, and a confession parked under an
+   unticked sub-checkbox. Folding now follows Markdown's own list-item semantics, in two passes.
+5. **The remedy message omitted the only correct fix for a false positive**, so an agent
+   following it literally would untick or defer a completed AC.
+6. **The loop's own driver prompts still said "soften the AC text"** — the exact behaviour this
+   gate forbids — and never mentioned `[verified: …]`. Fixed in all four mirrored locations
+   (`run-iteration.sh`, `ralph.workflow.js`), so future iterations do not meet Theme B blind.
+
+Also: `[verified: 9999-99-99, 0]` was accepted (now calendar-shaped and not in the future);
+`CLAUDE.md`'s canonical AC example failed the gate once ticked (now shows the annotation); and
+`awk -v` escape-processing silently rewrote `\[` to `[`, so the first folding regex matched
+nothing and every check was skipped — caught only because the fixtures were re-run rather than
+assumed. Regexes are now passed via `ENVIRON`.
+
+Copilot raised `\b` portability in `grep -oE`; **not reproduced** — stock `/usr/bin/grep` on
+macOS and GNU grep both honour it, and it matches the pre-existing heuristic-1 pattern. Its other
+finding (no test for the Theme B diagnostic) duplicated the local review's.
+
+**Verification** (2026-08-13): pre-fix replay of `6d07c8c` exits 0; post-fix exits 1 naming
+`live_151_chunk_a_leaves_no_orphans` on its non-execution wording. All four copies of the script
+are byte-identical. `check-discipline-regression`: mirrors in sync (3 + 5 files), replay baselines
+OK (61v=FAIL, 61t=PASS). 11/11 tests in `ac_fidelity_check.rs` pass.
 
 ## Notes
 
@@ -157,7 +247,9 @@ see `tools/tests/lint-dogfood-script/` and `tools/tests/branch-protection/`):
   including the known-red `live_109_throttle_block::live_block_url_pattern`. So a "green live
   sweep" can mean "did not run". That is the same *green-means-nothing* family as this plan but a
   different mechanism in different code (test harness, not the gate), and folding it in here would
-  make a hand-driven skill-edit iteration into a test-harness refactor. File separately.
+  make a hand-driven skill-edit iteration into a test-harness refactor. Filed as
+  [[iteration-155-live-skip-reports-green]] (2026-08-13), before this PR merged, per
+  CLAUDE.md's carry-over rule.
 - Verify on the wire before fixing: across 135–151 the stated root cause diverged from reality at
   least eight times. Here that means replaying the actual iter-151 plan text through the actual
   script, not reasoning about what the regex ought to do.
