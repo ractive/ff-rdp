@@ -110,10 +110,7 @@ fn live_151_leaked_profile_names_its_test() {
         return;
     }
 
-    let Some((ff, envelope)) = LiveFirefox::headless_on_random_port_with_args(&[]) else {
-        eprintln!("live_151_leaked_profile_names_its_test: Firefox not available — skipping");
-        return;
-    };
+    let (ff, envelope) = LiveFirefox::headless_on_random_port_with_args(&[]);
 
     let profile_path = envelope["results"]["profile_path"]
         .as_str()
@@ -182,10 +179,7 @@ fn live_151_root_cause_documented() {
     }
 
     // --- Pre-fix shape: guard suppressed via ManuallyDrop before a panic ---
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_151_root_cause_documented: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let leaked_pid = ff.pid();
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
         // The exact pre-fix idiom: suppress Drop, then panic before any
@@ -215,10 +209,7 @@ fn live_151_root_cause_documented() {
     );
 
     // --- Fixed shape: guard stays a normal binding across the same panic ---
-    let Some(ff2) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_151_root_cause_documented: second Firefox not available — skipping");
-        return;
-    };
+    let ff2 = LiveFirefox::headless_on_random_port();
     let protected_pid = ff2.pid();
     let outcome2 = std::panic::catch_unwind(AssertUnwindSafe(|| {
         // `ff2` is moved into the closure as a normal binding — the fixed

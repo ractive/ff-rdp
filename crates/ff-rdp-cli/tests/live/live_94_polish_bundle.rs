@@ -32,10 +32,7 @@ fn live_daemon_stop_no_residual_process() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_daemon_stop_no_residual_process: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let firefox_pid = ff.pid();
 
@@ -131,10 +128,7 @@ fn live_render_blocking_parity_on_mdn() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_render_blocking_parity_on_mdn: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let args = base_args(port);
 
@@ -207,12 +201,7 @@ fn pre_fix_repro_cascade_empty_rules_includes_inherited_note() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "pre_fix_repro_cascade_empty_rules_includes_inherited_note: Firefox not available"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let args = base_args(port);
 
@@ -281,10 +270,7 @@ fn live_cascade_note_disambiguates_iter82_regression_shape() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_cascade_note_disambiguates_iter82_regression_shape: Firefox not available");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let args = base_args(port);
 
@@ -346,10 +332,7 @@ fn live_network_text_post_nav_renders_cleanly() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_network_text_post_nav_renders_cleanly: Firefox not available");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let args = base_args(port);
 

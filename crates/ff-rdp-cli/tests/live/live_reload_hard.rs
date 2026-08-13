@@ -69,10 +69,7 @@ fn live_reload_hard_bypasses_cache() {
         eprintln!("live_reload_hard_bypasses_cache: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_reload_hard_bypasses_cache: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let Some((port, counter, _server)) = spawn_counting_server() else {
         eprintln!("live_reload_hard_bypasses_cache: could not bind local HTTP — skipping");
         return;

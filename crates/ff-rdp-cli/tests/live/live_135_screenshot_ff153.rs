@@ -101,10 +101,7 @@ fn live_135_screenshot_ff153_capture() {
     if skip(TEST) {
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("{TEST}: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     navigate(ff.port(), SHORT_PAGE_URL, TEST);
 
@@ -159,10 +156,7 @@ fn live_135_screenshot_full_page_taller() {
     if skip(TEST) {
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("{TEST}: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     navigate(ff.port(), TALL_PAGE_URL, TEST);
 
@@ -206,10 +200,7 @@ fn live_135_screenshot_error_not_misleading() {
     if skip(TEST) {
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("{TEST}: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     navigate(ff.port(), ABSURD_PAGE_URL, TEST);
 

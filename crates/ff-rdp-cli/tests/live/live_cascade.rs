@@ -37,10 +37,7 @@ fn live_cascade_returns_matched_rules() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_cascade_returns_matched_rules: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // Navigate to fixture.
     let nav = Command::new(ff_rdp_bin())
@@ -133,12 +130,7 @@ fn live_cascade_returns_matched_rules_external_css() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_cascade_returns_matched_rules_external_css: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // `h1{color:red}` base64-encoded to `aDF7Y29sb3I6cmVkfQ==`
     // data:text/css;base64,<base64(h1{color:red})>

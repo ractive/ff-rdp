@@ -110,10 +110,7 @@ fn live_cookies_surfaces_js_readable_cookie() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_cookies_surfaces_js_readable_cookie: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let Some((http_port, _server)) = spawn_fixture_server() else {
         eprintln!(
@@ -217,12 +214,7 @@ fn live_cookies_default_surfaces_js_readable_cookie() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_cookies_default_surfaces_js_readable_cookie: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let Some((http_port, _server)) = spawn_fixture_server() else {
         eprintln!(
@@ -348,10 +340,7 @@ fn live_cookies_httponly_enumerated() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_cookies_httponly_enumerated: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let Some((http_port, _server)) = spawn_httponly_fixture_server() else {
         eprintln!("live_cookies_httponly_enumerated: could not bind HTTP server — skipping");
@@ -448,10 +437,7 @@ fn live_cookies_storage_only_nonempty() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_cookies_storage_only_nonempty: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let Some((http_port, _server)) = spawn_httponly_fixture_server() else {
         eprintln!("live_cookies_storage_only_nonempty: could not bind HTTP server — skipping");

@@ -64,14 +64,18 @@ fn stop_daemon(port: u16) {
         .output();
 }
 
-/// Bring up Firefox with a running daemon, or `None` with a printed reason.
-fn firefox_with_daemon(test: &str) -> Option<LiveFirefox> {
-    let ff = LiveFirefox::headless_on_random_port()?;
-    if ff.with_daemon().is_none() {
-        eprintln!("{test}: daemon did not start — skipping");
-        return None;
-    }
-    Some(ff)
+/// Bring up Firefox with a running daemon.
+///
+/// Panics on either failure (iter-158 Theme D) — the `Option` this used to
+/// return made every caller `return` early, which libtest reports as `ok`.
+fn firefox_with_daemon(test: &str) -> LiveFirefox {
+    let ff = LiveFirefox::headless_on_random_port();
+    assert!(
+        ff.with_daemon().is_some(),
+        "{test}: the proxy daemon did not start for Firefox on port {}",
+        ff.port()
+    );
+    ff
 }
 
 fn navigate(port: u16, url: &str) {
@@ -164,9 +168,7 @@ fn live_139_cls_unavailable() {
         eprintln!("live_139_cls_unavailable: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_139_cls_unavailable") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_139_cls_unavailable");
     let port = ff.port();
     navigate(port, "https://example.com");
 
@@ -204,9 +206,7 @@ fn live_139_tbt_unavailable() {
         eprintln!("live_139_tbt_unavailable: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_139_tbt_unavailable") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_139_tbt_unavailable");
     let port = ff.port();
     navigate(port, "https://example.com");
 
@@ -251,9 +251,7 @@ fn live_139_audit_document_bytes_agree() {
         eprintln!("live_139_audit_document_bytes_agree: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_139_audit_document_bytes_agree") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_139_audit_document_bytes_agree");
     let port = ff.port();
 
     let Some(server) = FixtureServer::start(HashMap::from([(
@@ -310,9 +308,7 @@ fn live_139_audit_opaque_flagged_per_type() {
         eprintln!("live_139_audit_opaque_flagged_per_type: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_139_audit_opaque_flagged_per_type") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_139_audit_opaque_flagged_per_type");
     let port = ff.port();
 
     let Some(image_origin) = FixtureServer::start(HashMap::from([(
@@ -394,9 +390,7 @@ fn live_139_third_party_excludes_first_party() {
         eprintln!("live_139_third_party_excludes_first_party: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_139_third_party_excludes_first_party") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_139_third_party_excludes_first_party");
     let port = ff.port();
 
     // Single-origin fixture: the page and its only sub-resource share a
@@ -460,9 +454,7 @@ fn live_139_vitals_page_identity() {
         eprintln!("live_139_vitals_page_identity: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_139_vitals_page_identity") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_139_vitals_page_identity");
     let port = ff.port();
 
     let Some(server) = FixtureServer::start(HashMap::from([(
@@ -522,9 +514,7 @@ fn live_139_perf_summary_text_bounded() {
         eprintln!("live_139_perf_summary_text_bounded: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_139_perf_summary_text_bounded") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_139_perf_summary_text_bounded");
     let port = ff.port();
 
     // The server matches routes on path only (query string stripped), so the

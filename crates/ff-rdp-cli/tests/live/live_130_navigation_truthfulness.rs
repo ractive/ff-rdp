@@ -48,10 +48,7 @@ fn live_130_spa_committed_url() {
         eprintln!("live_130_spa_committed_url: set FF_RDP_LIVE_NETWORK_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_130_spa_committed_url: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
@@ -115,10 +112,7 @@ fn live_130_back_forward_envelope() {
         eprintln!("live_130_back_forward_envelope: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_130_back_forward_envelope: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let mut routes = HashMap::new();
     routes.insert(
@@ -229,10 +223,7 @@ fn live_130_reload_envelope() {
         eprintln!("live_130_reload_envelope: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_130_reload_envelope: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let mut routes = HashMap::new();
     routes.insert(
@@ -295,10 +286,7 @@ fn live_130_perf_no_silent_zero() {
         eprintln!("live_130_perf_no_silent_zero: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_130_perf_no_silent_zero: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let mut routes = HashMap::new();
     routes.insert(

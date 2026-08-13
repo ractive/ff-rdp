@@ -60,8 +60,12 @@ unset reports exactly the same as one that actually ran. Use `cargo run -p xtask
 for a real sweep: it classifies each gated test from its own `#[ignore = "…"]` reason, runs only
 the ones whose env var(s) are set (with `--include-ignored`), and runs the rest without
 `--include-ignored` so libtest reports them `ignored`. It prints a machine-readable
-`LIVE_SWEEP_SUMMARY executed=N skipped=M total=T` line — that `executed=N`, not a `cargo
-test-live` pass count, is what a `[verified: <date>, …]` AC annotation should quote.
+`LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K total=T` line — that `executed=N`, not a
+`cargo test-live` pass count, is what a `[verified: <date>, …]` AC annotation should quote.
+`preexisting=K` (iter-158 Theme F) counts env-qualified tests that need a Firefox somebody else
+started on port 6000; the sweep probes that port once and, finding nothing, reports them
+`ignored` rather than folding them into `executed`. Start one with
+`firefox -no-remote --start-debugger-server 6000 --headless` to execute them.
 
 **AC checkbox convention**: every AC checkbox in an iteration plan MUST name the live test and the asserted post-condition, e.g.:
 ```

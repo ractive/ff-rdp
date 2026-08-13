@@ -115,12 +115,7 @@ fn live_navigate_with_network_shape_quiet_and_busy() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_navigate_with_network_shape_quiet_and_busy: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // --- Quiet page: example.com, ≤20 requests. ---
@@ -217,10 +212,7 @@ fn live_navigate_with_network_all_keeps_summary() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_navigate_with_network_all_keeps_summary: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let out = Command::new(ff_rdp_bin())
@@ -274,10 +266,7 @@ fn live_network_detail_carries_summary() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_network_detail_carries_summary: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // Capture traffic first.

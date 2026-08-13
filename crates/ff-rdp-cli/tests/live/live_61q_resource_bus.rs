@@ -68,10 +68,7 @@ fn live_network_default_watcher() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_network_default_watcher: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let base = || {
         vec![
@@ -154,10 +151,7 @@ fn live_network_detail_headers() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_network_detail_headers: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let base = || {
         vec![
@@ -237,10 +231,7 @@ fn live_resource_dedupe() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_resource_dedupe: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // Connect to Firefox and create two in-process subscribers via ResourceCommand.
     let mut transport =
@@ -295,10 +286,7 @@ fn live_console_tail() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_console_tail: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let base = || {
         vec![

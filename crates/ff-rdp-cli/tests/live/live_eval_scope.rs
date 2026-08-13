@@ -45,10 +45,7 @@ fn live_eval_in_frame() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_eval_in_frame: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let ff_args = || base_args(ff.port());
 

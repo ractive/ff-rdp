@@ -95,94 +95,126 @@ impl EscalationHooks {
     }
 }
 
-/// Core escalation logic, injectable for testing.
+/// An optional ownership re-verification performed *between* signals.
 ///
-/// Escalation sequence:
-/// 1. Capture the PGID **before** the escalation starts so it survives the
-///    parent's death.
-/// 2. Wait up to `PORT_FREE_WAIT_BOUND` for the port to free.
-/// 3. On timeout: SIGTERM the process group, wait 1 s grace.
-/// 4. SIGKILL the process group (pid-level).
-/// 5. Re-poll for ~500 ms.
-/// 6. If still held: SIGKILL the **captured** PGID (kills every child even if
-///    the parent has already exited and the PGID assumption on step 4 broke).
-/// 7. Re-poll for ~500 ms.
+/// Given `(port, pid)`, returns `true` when `pid` still owns `port`. Only the
+/// port-owner stop path needs this: it resolves a PID from a live `lsof` query,
+/// and between that query and the signal the process may exit and the OS may
+/// recycle the PID onto something unrelated (iter-100 Theme D). The
+/// `DaemonRecord` paths do not need it — their PID came from a file ff-rdp
+/// itself wrote.
+pub(crate) type OwnershipCheck = fn(u16, u32) -> bool;
+
+/// The single stop-escalation ladder (iter-158 Theme C).
 ///
-/// Returns `(port_free, error_message)`.
-pub(crate) fn run_escalation(pid: u32, port: u16, h: &EscalationHooks) -> (bool, String) {
-    // Capture PGID up-front. This is intentionally done before any kill so
-    // the value is reliable even when the parent exits mid-escalation.
+/// Before iter-158 this sequence — SIGTERM group → grace → SIGKILL group →
+/// poll → tree-kill the captured pgid → poll — was written out **four** times
+/// (`kill_pid_and_wait_port`, the two kills inside
+/// `stop_daemon_and_build_result`, and `stop_prior_instance`'s port-owner
+/// branch), and the only copy that reached the tree-kill step could never run
+/// it: its caller killed the PID *first*, so the `is_alive` guard at the head
+/// of the escalation returned immediately. Steps 3–7 — the entire mechanism
+/// designed to reach orphaned children still holding the port — were dead code
+/// in production, and `"port still listening after 8s"` was the symptom.
+///
+/// Two things changed:
+/// * the pgid is captured **before any signal is sent**, not merely first
+///   within the escalation helper (by then the parent was already dead), and
+/// * there is no `is_alive` gate on escalation. A dead parent is precisely the
+///   case the tree kill exists for.
+///
+/// `port` is the port this stop must free, or `None` when the target holds no
+/// port (the proxy daemon: it connects to Firefox as a client and never binds
+/// the debug port). With `None` the ladder stops after the pid-level signals
+/// and reports the port free, since there is nothing to wait on.
+///
+/// Returns `(stopped, port_free, escalation_msg)`. `escalation_msg` is
+/// non-empty only when `port_free` is false.
+pub(crate) fn stop_pid_with_full_escalation(
+    pid: u32,
+    port: Option<u16>,
+    h: &EscalationHooks,
+    reverify: Option<OwnershipCheck>,
+) -> (bool, bool, String) {
+    // Capture the PGID FIRST — before any signal. This is the whole point of
+    // the unification: `kill_pid_and_wait_port` used to SIGTERM the parent and
+    // only then call into an escalation helper that captured the pgid, by
+    // which time `getpgid` on a dead parent returns ESRCH.
     let captured_pgid = (h.get_pgid)(pid);
 
+    // Ownership still holds? Absent a checker, always yes.
+    let still_owns = |target_port: Option<u16>| match (reverify, target_port) {
+        (Some(check), Some(p)) => check(p, pid),
+        _ => true,
+    };
+
+    // Step 1: SIGTERM the process group, then a bounded grace period.
+    if (h.is_alive)(pid) && still_owns(port) {
+        (h.kill_group_term)(pid);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while (h.is_alive)(pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    // Step 2: SIGKILL the process group (assumes pid == pgid, which `launch`
+    // guarantees via `process_group(0)`).
+    if (h.is_alive)(pid) && still_owns(port) {
+        (h.kill_group_kill)(pid);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+
+    let Some(port) = port else {
+        // No port to free — the pid-level signals are the whole job.
+        return (!(h.is_alive)(pid), true, String::new());
+    };
+
+    // Step 3: wait for the OS to reclaim the socket.
     if (h.wait_port_closed)(port, PORT_FREE_WAIT_BOUND) {
-        return (true, String::new());
+        return (!(h.is_alive)(pid), true, String::new());
     }
 
-    // Bound elapsed — escalate, but only if the original PID is still alive.
-    // PIDs can be recycled by the OS; signaling a stale PGID risks killing an
-    // unrelated process group.
-    if !(h.is_alive)(pid) {
-        return (false, port_still_listening_msg(pid, port));
-    }
-
-    // Step 3: SIGTERM the process group.
-    (h.kill_group_term)(pid);
-    std::thread::sleep(Duration::from_secs(1));
-
-    // Step 4: SIGKILL the process group (assumes pid==pgid).
-    (h.kill_group_kill)(pid);
-    if (h.wait_port_closed)(port, Duration::from_millis(500)) {
-        return (true, String::new());
-    }
-
-    // Step 6: The pid-level kill wasn't sufficient — use the pre-captured
-    // PGID to reach any child processes that may have survived (e.g. because
-    // the parent exited before the kill was delivered, breaking the pid==pgid
-    // assumption). On Windows this sends `taskkill /F /T /PID <pid>`.
+    // Step 4: the pid-level kills were not sufficient — reach the children
+    // that outlived the parent via the pre-captured PGID. On Windows this
+    // sends `taskkill /F /T /PID <pid>`.
     //
-    // Safety guard: only fire the pgid kill when the captured pgid is the
-    // SAME as the target pid. If Firefox wasn't spawned in its own process
-    // group (older `launch` builds, or a user-supplied wrapper), pgid will
-    // point at whatever group launched ff-rdp — usually the caller's
-    // interactive shell. Killing that group would blast back up the chain
-    // and is never what the user wants. Newer `launch` puts Firefox into a
-    // pgid==pid group, so this guard passes on the happy path. On Windows
-    // `captured_pgid` is `None` and `kill_process_tree` falls through to
-    // `taskkill /F /T /PID`, which is already scoped to the pid subtree.
-    let pgid_safe_to_kill = match captured_pgid {
+    // `getpgid` on an already-dead parent returns `None`, and that is exactly
+    // the orphaned-children case this step exists for — so on Unix fall back
+    // to `pid` as the group id. `launch` puts Firefox into its own group
+    // (pgid == pid, see `commands::launch::build_command`'s
+    // `process_group(0)`), and a process group outlives its leader as long as
+    // any member is alive, so `killpg(pid)` targets exactly that surviving
+    // group. Without this fallback the tree kill is a no-op precisely when it
+    // is needed (`process::kill_process_tree` ignores a `None` pgid on Unix).
+    #[cfg(unix)]
+    let effective_pgid = captured_pgid.or_else(|| Pgid::try_from(pid).ok());
+    #[cfg(not(unix))]
+    let effective_pgid = captured_pgid;
+
+    // Safety guard (unchanged from iter-95): only fire the pgid kill when the
+    // pgid is the SAME as the target pid. If Firefox wasn't spawned in its own
+    // process group (older `launch` builds, or a user-supplied wrapper), pgid
+    // points at whatever group launched ff-rdp — usually the caller's
+    // interactive shell. Killing that group would blast back up the chain and
+    // is never what the user wants. On Windows `effective_pgid` is `None` and
+    // `kill_process_tree` falls through to `taskkill /F /T /PID`, which is
+    // already scoped to the pid subtree.
+    let pgid_safe_to_kill = match effective_pgid {
         Some(group_id) => i64::from(group_id) == i64::from(pid),
         None => true, // Windows path is pid-scoped, no group risk.
     };
     if pgid_safe_to_kill {
-        (h.kill_process_tree)(pid, captured_pgid);
+        (h.kill_process_tree)(pid, effective_pgid);
     }
     if (h.wait_port_closed)(port, Duration::from_millis(500)) {
-        return (true, String::new());
+        return (!(h.is_alive)(pid), true, String::new());
     }
 
     (
+        !(h.is_alive)(pid),
         false,
         port_still_listening_after_escalation_msg(pid, port, pgid_safe_to_kill),
     )
-}
-
-/// Wait for `port` to become free, with SIGTERM+SIGKILL escalation on timeout.
-///
-/// Returns `true` if the port is free; `false` (with an error message) if it
-/// remains in use after the full escalation sequence.
-///
-/// Escalation:
-/// 1. Capture PGID up-front (before the parent can die).
-/// 2. Wait up to `PORT_FREE_WAIT_BOUND` for the port to free.
-/// 3. On timeout: SIGTERM the process group, wait 1 s grace.
-/// 4. SIGKILL the process group (pid-level).
-/// 5. Re-poll for ~500 ms.
-/// 6. SIGKILL the captured PGID (kill_process_tree — reaches surviving children).
-/// 7. Re-poll for ~500 ms.
-///
-/// Returns `(port_free, error_message)`.
-fn wait_port_free_with_escalation(pid: u32, port: u16) -> (bool, String) {
-    run_escalation(pid, port, &EscalationHooks::real())
 }
 
 // ---------------------------------------------------------------------------
@@ -882,37 +914,41 @@ pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
     OutputPipeline::from_cli(cli)?.finalize(&envelope)
 }
 
-/// Stop a Firefox instance identified by PID and port.
+/// Injected dependencies for the stop paths (iter-158 Themes B and C).
 ///
-/// Shared logic used by both `run_daemon_stop` (when a [`DaemonRecord`] is
-/// present) and the legacy daemon-registry stop path.
-///
-/// Stop sequence:
-/// 1. SIGTERM the Firefox process group.
-/// 2. Wait up to 2 s for graceful exit.
-/// 3. SIGKILL if still alive.
-/// 4. Poll the port until free (max 3 s).
-///
-/// Returns `(stopped, port_free, escalation_msg)`. `escalation_msg` is non-empty
-/// only when `port_free` is false — it explains the SIGTERM+SIGKILL escalation
-/// path the wait took before giving up, and should be surfaced in the user-facing
-/// error rather than a generic "port still listening" message.
-fn kill_pid_and_wait_port(pid: u32, port: u16) -> (bool, bool, String) {
-    process::kill_process_group(pid);
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while process::is_process_alive(pid) && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
+/// Bundles the escalation hooks with a launch-record directory override so the
+/// ordering invariant Theme B restores — *the record survives a failed stop* —
+/// is unit-testable without spawning a real Firefox or touching the user's
+/// `~/.ff-rdp`.
+pub(crate) struct StopDeps {
+    pub(crate) hooks: EscalationHooks,
+    /// Directory holding the per-port launch records. `None` means the real
+    /// `daemon_record::record_base_dir()` (`~/.ff-rdp`).
+    pub(crate) record_dir: Option<std::path::PathBuf>,
+}
+
+impl StopDeps {
+    /// Production dependencies.
+    pub(crate) fn real() -> Self {
+        Self {
+            hooks: EscalationHooks::real(),
+            record_dir: None,
+        }
     }
-    if process::is_process_alive(pid) {
-        process::kill_process_group_force(pid);
-        std::thread::sleep(Duration::from_millis(300));
+
+    fn read_record(&self, port: u16) -> Result<Option<crate::daemon_record::DaemonRecord>> {
+        match &self.record_dir {
+            Some(dir) => crate::daemon_record::read_in(dir, port),
+            None => crate::daemon_record::read(port),
+        }
     }
-    let (port_free, escalation_msg) = wait_port_free_with_escalation(pid, port);
-    // Recompute `stopped` AFTER the escalation step — `wait_port_free_with_escalation`
-    // may send SIGTERM/SIGKILL on bound timeout, so the process can transition
-    // from alive to dead inside that call.
-    let stopped = !process::is_process_alive(pid);
-    (stopped, port_free, escalation_msg)
+
+    fn remove_record(&self, port: u16) {
+        let _ = match &self.record_dir {
+            Some(dir) => crate::daemon_record::remove_in(dir, port),
+            None => crate::daemon_record::remove(port),
+        };
+    }
 }
 
 /// `ff-rdp daemon stop` — gracefully stop the running daemon and free the Firefox port.
@@ -947,6 +983,16 @@ pub(crate) fn run_daemon_stop(cli: &Cli, port: u16) -> Result<(), AppError> {
 /// it wrap it in an envelope themselves; callers that fold it into another
 /// command's output read the fields they need straight from the `Value`.
 fn stop_daemon_and_build_result(cli: &Cli, port: u16) -> Result<Value, AppError> {
+    stop_daemon_and_build_result_with(cli, port, &StopDeps::real())
+}
+
+/// [`stop_daemon_and_build_result`] with its process/record dependencies
+/// injected — see [`StopDeps`].
+fn stop_daemon_and_build_result_with(
+    cli: &Cli,
+    port: u16,
+    deps: &StopDeps,
+) -> Result<Value, AppError> {
     // ----------------------------------------------------------------
     // 1. Check the shared DaemonRecord (written by `launch`).
     //    Only act on records whose `port` matches the target `port` so a
@@ -954,15 +1000,25 @@ fn stop_daemon_and_build_result(cli: &Cli, port: u16) -> Result<Value, AppError>
     //    not address. `read()` already filters out stale (dead-PID)
     //    records, so we don't need to recheck liveness here.
     // ----------------------------------------------------------------
-    match crate::daemon_record::read(port)
+    match deps
+        .read_record(port)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon record: {e}")))?
     {
         Some(rec) if rec.port == port => {
             // Live instance found via DaemonRecord and matches --port — kill it.
-            let (stopped, port_free, escalation_msg) = kill_pid_and_wait_port(rec.pid, rec.port);
-            crate::daemon_record::remove(rec.port).ok();
+            let (stopped, port_free, escalation_msg) =
+                stop_pid_with_full_escalation(rec.pid, Some(rec.port), &deps.hooks, None);
 
             if !port_free {
+                // iter-158 Theme B: the record is the ownership proof, and it
+                // must OUTLIVE a failed stop. Removing it here (as this path
+                // did unconditionally, `client.rs:963`) meant the next
+                // `launch --replace` found no DaemonRecord, fell through to
+                // the raw port-owner lookup, and was refused by the
+                // fails-closed guard — "no owner-PID marker" fired against an
+                // instance ff-rdp launched itself. Keep the record so the
+                // retry re-enters the DaemonRecord branch, which is permitted
+                // to kill.
                 let msg = if escalation_msg.is_empty() {
                     port_still_listening_msg(rec.pid, rec.port)
                 } else {
@@ -970,6 +1026,7 @@ fn stop_daemon_and_build_result(cli: &Cli, port: u16) -> Result<Value, AppError>
                 };
                 return Err(AppError::User(msg));
             }
+            deps.remove_record(rec.port);
 
             // iter-96 Theme A: the escalation ladder reported success (port
             // freed AND process gone) — safe to reclaim the temp profile dir
@@ -1062,47 +1119,25 @@ fn stop_daemon_and_build_result(cli: &Cli, port: u16) -> Result<Value, AppError>
     }
 
     // 2. If the proxy daemon is still alive, SIGTERM then SIGKILL it directly
-    //    — this only stops the proxy, not Firefox (see note above).
+    //    — this only stops the proxy, not Firefox (see note above). `None` for
+    //    the port: the proxy never binds the Firefox debug port, so there is
+    //    nothing for the ladder to wait on here (iter-158 Theme C).
     if process::is_process_alive(info.pid) {
-        process::kill_process_group(info.pid);
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while process::is_process_alive(info.pid) && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
-    if process::is_process_alive(info.pid) {
-        process::kill_process_group_force(info.pid);
-        std::thread::sleep(Duration::from_millis(300));
+        let _ = stop_pid_with_full_escalation(info.pid, None, &deps.hooks, None);
     }
 
-    // 3. Independently stop the actual Firefox process (if one was found and
-    //    verified as ff-rdp-owned) — this is the process actually holding
-    //    `firefox_port` open. Mirrors the SIGTERM→wait→SIGKILL ladder above.
-    if let Some(pid) = firefox_pid {
-        process::kill_process_group(pid);
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while process::is_process_alive(pid) && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        if process::is_process_alive(pid) {
-            process::kill_process_group_force(pid);
-            std::thread::sleep(Duration::from_millis(300));
-        }
-    }
+    // 3. Stop the actual Firefox process (if one was found and verified as
+    //    ff-rdp-owned) — this is the process actually holding `firefox_port`
+    //    open, so this call runs the full ladder including the port wait and
+    //    the tree kill. Escalate against the real Firefox PID when known;
+    //    escalating against the daemon PID (the pre-iter-142 behaviour) can
+    //    never free the port, since the daemon never held it.
+    let escalation_target = firefox_pid.unwrap_or(info.pid);
+    let (_, port_free, escalation_msg) =
+        stop_pid_with_full_escalation(escalation_target, Some(firefox_port), &deps.hooks, None);
 
     // 4. Clean up the daemon registry regardless of process state.
     registry::remove_registry(firefox_port).ok();
-
-    // 5. Poll the Firefox debug port until it stops accepting connections
-    //    (max PORT_FREE_WAIT_BOUND with SIGTERM+SIGKILL escalation on timeout).
-    //    This confirms that the OS has reclaimed the socket, so a subsequent
-    //    `launch` on the same port will succeed immediately without a "port in use" error.
-    //    Escalate against the real Firefox PID when known — escalating
-    //    against the daemon PID (the pre-iter-142 behaviour) can never free
-    //    the port, since the daemon never held it.
-    let escalation_target = firefox_pid.unwrap_or(info.pid);
-    let (port_free, escalation_msg) =
-        wait_port_free_with_escalation(escalation_target, firefox_port);
 
     if !port_free {
         return Err(AppError::User(escalation_msg));
@@ -1142,28 +1177,49 @@ pub(crate) struct StopOutcome {
 /// 2. Proxy-daemon registry matching the port → graceful `daemon stop` RPC path.
 /// 3. Fall back to port-owner lookup.
 pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<StopOutcome, AppError> {
+    stop_prior_instance_with(cli, port, &StopDeps::real())
+}
+
+/// [`stop_prior_instance`] with its process/record dependencies injected — see
+/// [`StopDeps`].
+pub(crate) fn stop_prior_instance_with(
+    cli: &Cli,
+    port: u16,
+    deps: &StopDeps,
+) -> Result<StopOutcome, AppError> {
     // 1. Check shared DaemonRecord first (covers instances started via `launch`).
-    match crate::daemon_record::read(port)
+    match deps
+        .read_record(port)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon record: {e}")))?
     {
-        Some(rec) if rec.port == port && process::is_process_alive(rec.pid) => {
-            let (stopped, port_free, _escalation_msg) = kill_pid_and_wait_port(rec.pid, rec.port);
-            crate::daemon_record::remove(rec.port).ok();
+        Some(rec) if rec.port == port && (deps.hooks.is_alive)(rec.pid) => {
+            let (stopped, port_free, _escalation_msg) =
+                stop_pid_with_full_escalation(rec.pid, Some(rec.port), &deps.hooks, None);
             if !port_free {
+                // iter-158 Theme B: keep the record. A failed stop must not
+                // destroy its own ownership proof — see the matching comment
+                // in `stop_daemon_and_build_result_with`. A dogfood lane
+                // observed three `launch --replace` attempts produce three
+                // errors, twice "no owner-PID marker", because this removal
+                // ran before the port check.
                 return Err(AppError::User(format!(
                     "port {port} is still in use after stopping the prior instance (pid {}). \
                      Run `ff-rdp doctor` or `lsof -i :{port}` to investigate.",
                     rec.pid
                 )));
             }
+            deps.remove_record(rec.port);
             return Ok(StopOutcome {
                 stopped,
                 pid: Some(rec.pid),
             });
         }
         Some(rec) if rec.port == port => {
-            // Record exists but PID is dead — clean up and proceed (port may already be free).
-            crate::daemon_record::remove(rec.port).ok();
+            // Record exists but PID is dead — clean up and proceed (port may
+            // already be free). Distinct from the `!port_free` case above:
+            // here the process is genuinely gone and the record is stale, so
+            // there is no ownership trail left to preserve.
+            deps.remove_record(rec.port);
         }
         _ => {}
     }
@@ -1211,38 +1267,30 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<StopOutcome, A
             )));
         }
         owner_pid = Some(owner.pid);
-        // iter-100 Theme D: re-verify port ownership immediately before the
-        // kill.  `find_listener` resolves a PID at time T; between T and the
+        // iter-100 Theme D: re-verify port ownership immediately before each
+        // signal. `find_listener` resolves a PID at time T; between T and the
         // signal the original process may have exited and the OS may have
-        // recycled that PID onto an unrelated process.  Re-query the port
-        // owner right before signalling and only proceed if the SAME pid still
-        // owns the port — otherwise we would blindly SIGKILL a recycled PID.
-        let still_owner = matches!(
-            crate::port_owner::find_listener(port),
-            Ok(Some(ref current)) if current.pid == owner.pid
+        // recycled that PID onto an unrelated process. Only this branch needs
+        // the check — the DaemonRecord paths above got their PID from a file
+        // ff-rdp wrote — so it is passed as the ladder's optional
+        // `reverify` parameter rather than being baked into the ladder
+        // (iter-158 Theme C).
+        let (_, port_free, escalation_msg) = stop_pid_with_full_escalation(
+            owner.pid,
+            Some(port),
+            &deps.hooks,
+            Some(port_still_owned_by),
         );
-        if still_owner {
-            process::kill_process_group(owner.pid);
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while process::is_process_alive(owner.pid) && std::time::Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            // Re-verify ownership once more before escalating to SIGKILL — the
-            // SIGTERM grace may have freed the port (and the PID could now be
-            // recycled), in which case a force-kill would target the wrong
-            // process.
-            let still_owner_after_term = matches!(
-                crate::port_owner::find_listener(port),
-                Ok(Some(ref current)) if current.pid == owner.pid
-            );
-            if still_owner_after_term && process::is_process_alive(owner.pid) {
-                process::kill_process_group_force(owner.pid);
-                std::thread::sleep(Duration::from_millis(300));
-            }
+        if !port_free {
+            return Err(AppError::User(escalation_msg));
         }
+        return Ok(StopOutcome {
+            stopped: true,
+            pid: owner_pid,
+        });
     }
 
-    // Poll until free — signals were already sent above, so just wait.
+    // Nothing is listening we could identify — the port may already be free.
     if !process::wait_for_port_closed(port, PORT_FREE_WAIT_BOUND) {
         return Err(AppError::User(format!(
             "port {port} is still in use after stopping the prior instance. \
@@ -1255,6 +1303,16 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<StopOutcome, A
     })
 }
 
+/// [`OwnershipCheck`] for the port-owner stop path: does `pid` still own
+/// `port`? Used as the `reverify` argument to
+/// [`stop_pid_with_full_escalation`] so a recycled PID is never signalled.
+fn port_still_owned_by(port: u16, pid: u32) -> bool {
+    matches!(
+        crate::port_owner::find_listener(port),
+        Ok(Some(ref current)) if current.pid == pid
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1262,6 +1320,346 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<StopOutcome, A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // iter-158 Themes B and C — the ownership trail and the single ladder
+    // -----------------------------------------------------------------------
+
+    /// A recording [`EscalationHooks`] stub: appends each hook's name to a
+    /// shared log so a test can assert on the exact call ORDER, which is what
+    /// Theme C's fix is about (pgid captured before the first kill).
+    ///
+    /// `fn` pointers cannot capture, so the log lives in a `static`. Each test
+    /// using it clears the log first and runs single-threaded within itself.
+    static CALL_LOG: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+
+    /// Serializes the tests that share [`CALL_LOG`] — `cargo test` runs them
+    /// on separate threads by default, and a shared static log without this
+    /// would interleave one test's calls into another's assertions.
+    static CALL_LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn log_call(name: &'static str) {
+        if let Ok(mut v) = CALL_LOG.lock() {
+            v.push(name);
+        }
+    }
+
+    /// Acquire the serialization lock and start a fresh log. The returned
+    /// guard must stay alive for the whole test.
+    fn begin_call_log() -> std::sync::MutexGuard<'static, ()> {
+        let guard = CALL_LOG_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Ok(mut v) = CALL_LOG.lock() {
+            v.clear();
+        }
+        guard
+    }
+
+    fn take_call_log() -> Vec<&'static str> {
+        CALL_LOG.lock().map(|v| v.clone()).unwrap_or_default()
+    }
+
+    /// Hooks where the process is already dead and the port never frees — the
+    /// orphaned-children scenario the tree kill exists for.
+    fn recording_hooks_dead_parent() -> EscalationHooks {
+        EscalationHooks {
+            is_alive: |_pid| {
+                log_call("is_alive");
+                false
+            },
+            kill_group_term: |_pid| log_call("kill_group_term"),
+            kill_group_kill: |_pid| log_call("kill_group_kill"),
+            kill_process_tree: |_pid, _pgid| log_call("kill_process_tree"),
+            get_pgid: |pid| {
+                log_call("get_pgid");
+                Pgid::try_from(pid).ok()
+            },
+            wait_port_closed: |_port, _timeout| {
+                log_call("wait_port_closed");
+                false
+            },
+        }
+    }
+
+    /// AC `unit_158_stop_ladder_captures_pgid_before_any_kill`: `get_pgid` is
+    /// called strictly before the first of `kill_group_term` /
+    /// `kill_group_kill` / `kill_process_tree`.
+    ///
+    /// Pre-158 the pgid was captured "first" only *within* `run_escalation` —
+    /// by which time `kill_pid_and_wait_port` had already SIGTERMed the
+    /// parent, so `getpgid` on a dying/dead pid could return `None` and the
+    /// tree kill became a no-op.
+    #[test]
+    fn unit_158_stop_ladder_captures_pgid_before_any_kill() {
+        let _serialized = begin_call_log();
+        let hooks = recording_hooks_dead_parent();
+        let _ = stop_pid_with_full_escalation(4242, Some(65000), &hooks, None);
+
+        let log = take_call_log();
+        let pgid_at = log
+            .iter()
+            .position(|c| *c == "get_pgid")
+            .expect("get_pgid must be called");
+        let first_kill_at = log
+            .iter()
+            .position(|c| {
+                matches!(
+                    *c,
+                    "kill_group_term" | "kill_group_kill" | "kill_process_tree"
+                )
+            })
+            .expect("at least one kill hook must be called");
+        assert!(
+            pgid_at < first_kill_at,
+            "get_pgid must precede every kill; log was {log:?}"
+        );
+    }
+
+    /// AC `unit_158_stop_ladder_reaches_tree_kill_when_parent_is_dead`: with
+    /// `is_alive` false and the port never closing, the ladder still reaches
+    /// `kill_process_tree`.
+    ///
+    /// Pre-158 `run_escalation` returned at its `if !(h.is_alive)(pid)` guard,
+    /// which its only production caller had already made true by killing the
+    /// pid first — so steps 3-7 were dead code and `"port still listening
+    /// after 8s"` was the visible symptom.
+    #[test]
+    fn unit_158_stop_ladder_reaches_tree_kill_when_parent_is_dead() {
+        let _serialized = begin_call_log();
+        let hooks = recording_hooks_dead_parent();
+        let (stopped, port_free, msg) =
+            stop_pid_with_full_escalation(4242, Some(65001), &hooks, None);
+
+        let log = take_call_log();
+        assert!(
+            log.contains(&"kill_process_tree"),
+            "the tree kill must run even when the parent is already dead; log was {log:?}"
+        );
+        assert!(stopped, "a dead parent counts as stopped");
+        assert!(!port_free, "the stub never frees the port");
+        assert!(
+            !msg.is_empty(),
+            "a failed stop must carry an escalation message"
+        );
+    }
+
+    /// On Unix, a dead parent yields `None` from `getpgid` — yet that is
+    /// exactly the case the tree kill exists for. The ladder falls back to
+    /// `pid` as the group id (`launch` guarantees pgid == pid), so
+    /// `kill_process_tree` receives a usable value instead of the `None` that
+    /// `process::kill_process_tree` silently ignores.
+    #[cfg(unix)]
+    #[test]
+    fn unit_158_tree_kill_falls_back_to_pid_when_pgid_lookup_fails() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        static SEEN_PGID: AtomicI64 = AtomicI64::new(-1);
+        SEEN_PGID.store(-1, Ordering::SeqCst);
+
+        let hooks = EscalationHooks {
+            is_alive: |_pid| false,
+            kill_group_term: |_pid| {},
+            kill_group_kill: |_pid| {},
+            kill_process_tree: |_pid, pgid| {
+                SEEN_PGID.store(pgid.map_or(-1, i64::from), Ordering::SeqCst);
+            },
+            // The dead-parent case: getpgid fails.
+            get_pgid: |_pid| None,
+            wait_port_closed: |_port, _timeout| false,
+        };
+        let _ = stop_pid_with_full_escalation(4242, Some(65002), &hooks, None);
+        assert_eq!(
+            SEEN_PGID.load(Ordering::SeqCst),
+            4242,
+            "the tree kill must fall back to the pid as the group id"
+        );
+    }
+
+    /// With no port to free (the proxy daemon, which never binds Firefox's
+    /// debug port) the ladder stops after the pid-level signals and reports
+    /// the port free — it must not wait out `PORT_FREE_WAIT_BOUND` on a port
+    /// the target never held.
+    #[test]
+    fn unit_158_stop_ladder_without_port_skips_the_port_wait() {
+        let _serialized = begin_call_log();
+        let hooks = recording_hooks_dead_parent();
+        let (stopped, port_free, msg) = stop_pid_with_full_escalation(4242, None, &hooks, None);
+        let log = take_call_log();
+        assert!(stopped);
+        assert!(port_free, "no port to free ⇒ nothing can be blocking");
+        assert!(msg.is_empty());
+        assert!(
+            !log.contains(&"wait_port_closed"),
+            "no port wait may run when there is no port; log was {log:?}"
+        );
+    }
+
+    /// AC `unit_158_record_survives_failed_stop`: a stop that leaves the port
+    /// held must NOT delete the `DaemonRecord`. The record is the ownership
+    /// proof; deleting it drops the next `launch --replace` into the raw
+    /// port-owner branch, whose fails-closed guard then refuses with "no
+    /// owner-PID marker" against an instance ff-rdp launched itself.
+    ///
+    /// Asserted for both stop entry points that had the ordering wrong
+    /// (`client.rs:1151` and `client.rs:963` pre-158).
+    #[test]
+    fn unit_158_record_survives_failed_stop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let port = 64_321u16;
+        // The record's PID must be genuinely alive — `daemon_record::read_in`
+        // performs its own liveness check and treats a dead PID as absent.
+        // This test process is the most convenient live PID; the injected
+        // hooks are all no-ops, so nothing ever signals it.
+        let rec = crate::daemon_record::DaemonRecord {
+            pid: std::process::id(),
+            port,
+            headless: true,
+            launched_at: chrono::Utc::now(),
+            profile_dir: dir.path().join("profile"),
+        };
+
+        let deps = StopDeps {
+            hooks: EscalationHooks {
+                is_alive: |_pid| true,
+                kill_group_term: |_pid| {},
+                kill_group_kill: |_pid| {},
+                kill_process_tree: |_pid, _pgid| {},
+                get_pgid: |pid| Pgid::try_from(pid).ok(),
+                // The port stays held no matter what we do.
+                wait_port_closed: |_port, _timeout| false,
+            },
+            record_dir: Some(dir.path().to_path_buf()),
+        };
+        let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"]).expect("parse cli");
+
+        // --- stop_prior_instance (launch --replace's path) ---
+        crate::daemon_record::write_in(dir.path(), &rec).expect("write record");
+        let err = stop_prior_instance_with(&cli, port, &deps)
+            .expect_err("a port that stays held must fail the stop");
+        assert!(matches!(err, AppError::User(_)), "expected a user error");
+        assert!(
+            crate::daemon_record::read_in(dir.path(), port)
+                .expect("read record")
+                .is_some(),
+            "stop_prior_instance must keep the DaemonRecord when the stop failed"
+        );
+
+        // --- stop_daemon_and_build_result (daemon stop's path) ---
+        crate::daemon_record::write_in(dir.path(), &rec).expect("rewrite record");
+        let err = stop_daemon_and_build_result_with(&cli, port, &deps)
+            .expect_err("a port that stays held must fail the stop");
+        assert!(matches!(err, AppError::User(_)), "expected a user error");
+        assert!(
+            crate::daemon_record::read_in(dir.path(), port)
+                .expect("read record")
+                .is_some(),
+            "stop_daemon_and_build_result must keep the DaemonRecord when the stop failed"
+        );
+    }
+
+    /// A *successful* stop still removes the record — the ordering fix must
+    /// not turn into a leak.
+    #[test]
+    fn unit_158_record_removed_after_successful_stop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let port = 64_322u16;
+        let rec = crate::daemon_record::DaemonRecord {
+            pid: std::process::id(),
+            port,
+            headless: true,
+            launched_at: chrono::Utc::now(),
+            profile_dir: dir.path().join("profile"),
+        };
+        crate::daemon_record::write_in(dir.path(), &rec).expect("write record");
+
+        let deps = StopDeps {
+            hooks: EscalationHooks {
+                is_alive: |_pid| true,
+                kill_group_term: |_pid| {},
+                kill_group_kill: |_pid| {},
+                kill_process_tree: |_pid, _pgid| {},
+                get_pgid: |pid| Pgid::try_from(pid).ok(),
+                wait_port_closed: |_port, _timeout| true,
+            },
+            record_dir: Some(dir.path().to_path_buf()),
+        };
+        let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"]).expect("parse cli");
+
+        let outcome = stop_prior_instance_with(&cli, port, &deps).expect("a freed port succeeds");
+        assert_eq!(outcome.pid, Some(std::process::id()));
+        assert!(
+            crate::daemon_record::read_in(dir.path(), port)
+                .expect("read record")
+                .is_none(),
+            "a successful stop must remove the DaemonRecord"
+        );
+    }
+
+    /// AC `unit_158_single_stop_ladder_implementation`: the
+    /// SIGTERM→wait→SIGKILL→poll sequence exists once, not four times.
+    ///
+    /// Pre-158 it was written out at `:901` (`kill_pid_and_wait_port`), `:1063`
+    /// and `:1077` (both inside `stop_daemon_and_build_result`) and `:1219`
+    /// (`stop_prior_instance`'s port-owner branch) — and only one of those
+    /// could reach the tree-kill step at all, because its caller had already
+    /// killed the pid.
+    ///
+    /// The plan's AC phrases this as "`process::kill_process_group(` appears in
+    /// exactly one non-test function". The implemented ladder is stronger:
+    /// there are **zero** open-coded calls, because every signal now goes
+    /// through an [`EscalationHooks`] fn pointer, and `process::kill_process_group`
+    /// is *named* exactly once — in `EscalationHooks::real`, the single feed
+    /// into [`stop_pid_with_full_escalation`]. Both properties are asserted.
+    #[test]
+    fn unit_158_single_stop_ladder_implementation() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/client.rs");
+        let src = std::fs::read_to_string(&path).expect("read client.rs");
+
+        // Everything before the first `#[cfg(test)]` is the non-test source.
+        let non_test = src
+            .split_once("#[cfg(test)]")
+            .map_or(src.as_str(), |(before, _)| before);
+
+        let code_lines = || {
+            non_test.lines().filter(|line| {
+                let t = line.trim_start();
+                !t.starts_with("//")
+            })
+        };
+
+        let open_coded: Vec<&str> = code_lines()
+            .filter(|line| line.contains("kill_process_group("))
+            .collect();
+        assert!(
+            open_coded.is_empty(),
+            "no non-test code may call `process::kill_process_group(` directly — every signal \
+             goes through `stop_pid_with_full_escalation`'s hooks; found: {open_coded:?}"
+        );
+
+        // `process::kill_process_group_force` is a different helper (SIGKILL);
+        // match the SIGTERM one exactly.
+        let mentions: Vec<&str> = code_lines()
+            .filter(|line| line.contains("process::kill_process_group,"))
+            .collect();
+        assert_eq!(
+            mentions.len(),
+            1,
+            "`process::kill_process_group` must be named exactly once outside tests (the \
+             `EscalationHooks::real()` wiring feeding `stop_pid_with_full_escalation`); \
+             found: {mentions:?}"
+        );
+        assert!(
+            mentions[0].contains("kill_group_term: process::kill_process_group"),
+            "the single occurrence must be the hook wiring: {:?}",
+            mentions[0]
+        );
+
+        // And the ladder itself exists exactly once.
+        let ladder_defs = code_lines()
+            .filter(|line| line.contains("fn stop_pid_with_full_escalation"))
+            .count();
+        assert_eq!(ladder_defs, 1, "there must be exactly one stop ladder");
+    }
 
     /// AC `unit_153_no_nested_envelope_prints`: `run_daemon_stop` prints its
     /// own top-level JSON envelope (`OutputPipeline::finalize`) — so calling
@@ -1531,10 +1929,12 @@ mod tests {
             // in prod. For the test we accepted the 1 s sleep — see comment below.)
         };
 
-        // NOTE: `run_escalation` has a hardcoded `sleep(1)` between SIGTERM and
-        // SIGKILL. This test still sleeps for that 1 s. The port_closed hook is
-        // capped at 10 ms per call to avoid the 8 s and 500 ms waits on top of it.
-        let (port_free, msg) = run_escalation(99999, port, &hooks);
+        // NOTE: `stop_pid_with_full_escalation` polls `is_alive` for up to 2 s
+        // between SIGTERM and SIGKILL. With `is_alive` pinned to `true` this
+        // test pays that 2 s. The port_closed hook is capped at 10 ms per call
+        // to avoid the 8 s and 500 ms waits on top of it.
+        let (_stopped, port_free, msg) =
+            stop_pid_with_full_escalation(99999, Some(port), &hooks, None);
 
         // Port stays held (listener is still open) — escalation reports failure.
         assert!(!port_free, "port should still be held (listener is open)");

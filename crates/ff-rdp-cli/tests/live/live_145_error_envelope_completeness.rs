@@ -46,14 +46,18 @@ fn stop_daemon(port: u16) {
         .output();
 }
 
-/// Bring up Firefox with a running daemon, or `None` with a printed reason.
-fn firefox_with_daemon(test: &str) -> Option<LiveFirefox> {
-    let ff = LiveFirefox::headless_on_random_port()?;
-    if ff.with_daemon().is_none() {
-        eprintln!("{test}: daemon did not start — skipping");
-        return None;
-    }
-    Some(ff)
+/// Bring up Firefox with a running daemon.
+///
+/// Panics on either failure (iter-158 Theme D) — the `Option` this used to
+/// return made every caller `return` early, which libtest reports as `ok`.
+fn firefox_with_daemon(test: &str) -> LiveFirefox {
+    let ff = LiveFirefox::headless_on_random_port();
+    assert!(
+        ff.with_daemon().is_some(),
+        "{test}: the proxy daemon did not start for Firefox on port {}",
+        ff.port()
+    );
+    ff
 }
 
 fn navigate(port: u16, url: &str) -> Output {
@@ -163,9 +167,7 @@ fn live_145_click_js_exception_envelope() {
         eprintln!("live_145_click_js_exception_envelope: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_145_click_js_exception_envelope") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_145_click_js_exception_envelope");
     let port = ff.port();
 
     let Some(server) = start_iframe_fixture() else {
@@ -228,9 +230,7 @@ fn live_145_click_frame_scan_js_exception_envelope() {
         );
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_145_click_frame_scan_js_exception_envelope") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_145_click_frame_scan_js_exception_envelope");
     let port = ff.port();
 
     let Some(server) = start_iframe_fixture() else {
@@ -298,9 +298,7 @@ fn live_145_click_element_not_found_unchanged() {
         eprintln!("live_145_click_element_not_found_unchanged: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_145_click_element_not_found_unchanged") else {
-        return;
-    };
+    let ff = firefox_with_daemon("live_145_click_element_not_found_unchanged");
     let port = ff.port();
 
     let Some(server) = start_iframe_fixture() else {

@@ -60,12 +60,7 @@ fn live_a11y_contrast_low_contrast_fixture_detects_failures() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_a11y_contrast_low_contrast_fixture_detects_failures: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
@@ -157,10 +152,7 @@ fn live_a11y_contrast_fail_only_total_zero() {
         eprintln!("live_a11y_contrast_fail_only_total_zero: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_a11y_contrast_fail_only_total_zero: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let json = contrast_json(ff.port(), FIXTURE_HTML_ALL_PASS, &["--fail-only", "--all"]);
 
@@ -196,12 +188,7 @@ fn live_a11y_contrast_fail_only_total_counts_failures() {
         );
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_a11y_contrast_fail_only_total_counts_failures: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let json = contrast_json(ff.port(), FIXTURE_HTML, &["--fail-only", "--all"]);
 
@@ -240,10 +227,7 @@ fn live_a11y_contrast_limit_keeps_total() {
         eprintln!("live_a11y_contrast_limit_keeps_total: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_a11y_contrast_limit_keeps_total: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // First learn the full failure count with --all.
     let full = contrast_json(ff.port(), FIXTURE_HTML, &["--fail-only", "--all"]);

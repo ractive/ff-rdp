@@ -65,28 +65,37 @@ struct LiveFirefox {
 
 impl LiveFirefox {
     /// Launch headless Firefox on an ephemeral port.
-    /// Returns `None` when Firefox is not available (skips the test).
-    fn launch() -> Option<Self> {
+    ///
+    /// Panics when Firefox cannot be launched (iter-158 Theme D): returning
+    /// `None` here made every caller `return` early, which libtest reports as
+    /// `ok` — a test that never reached Firefox was indistinguishable from one
+    /// that passed.
+    fn launch() -> Self {
         Self::launch_with_env(&[])
     }
 
     /// Launch headless Firefox with additional parent-environment overrides.
-    fn launch_with_env(env_pairs: &[(&str, &str)]) -> Option<Self> {
+    fn launch_with_env(env_pairs: &[(&str, &str)]) -> Self {
         let port = free_port();
         let mut cmd = Command::new(ff_rdp_bin());
-        cmd.args(["launch", "--headless", "--debug-port", &port.to_string()])
-            .stderr(std::process::Stdio::null());
+        cmd.args(["launch", "--headless", "--debug-port", &port.to_string()]);
         for (k, v) in env_pairs {
             cmd.env(k, v);
         }
 
         // Capture stdout to extract the Firefox PID from the JSON response.
-        let output = cmd.output().ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-        let firefox_pid = u32::try_from(json["results"]["pid"].as_u64()?).ok()?;
+        let output = cmd.output().expect("spawn `ff-rdp launch`");
+        assert!(
+            output.status.success(),
+            "live_61l: `ff-rdp launch --headless --debug-port {port}` exited {}\n  stdout: {}\n  stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+        let json: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("launch stdout is JSON");
+        let firefox_pid = u32::try_from(json["results"]["pid"].as_u64().expect("results.pid"))
+            .expect("results.pid fits u32");
 
         // Wait for the RDP port to become available.  The bound defaults to 30 s
         // (multiple parallel live tests each spawn Firefox and contention can
@@ -94,9 +103,11 @@ impl LiveFirefox {
         // `crate::common::launch_wait_timeout()` (iter-113 Theme A) so a wedged
         // runner gives up within the budget instead of a fixed 30 s.
         if !wait_for_tcp(port, crate::common::launch_wait_timeout()) {
-            // Firefox failed to start — kill it and skip.
             kill_pid(firefox_pid);
-            return None;
+            panic!(
+                "live_61l: Firefox (pid {firefox_pid}) never opened debug port {port} within {}s",
+                crate::common::launch_wait_timeout().as_secs()
+            );
         }
 
         // Poll until Firefox has at least one debuggable tab (up to 10 s).
@@ -115,15 +126,15 @@ impl LiveFirefox {
                     if let Ok(j) = serde_json::from_slice::<serde_json::Value>(&o.stdout)
                         && j["total"].as_u64().unwrap_or(0) >= 1
                     {
-                        return Some(ff);
+                        return ff;
                     }
                 }
                 _ => {}
             }
             if std::time::Instant::now() >= deadline {
-                // Firefox didn't expose a tab in time — skip.
-                kill_pid(ff.firefox_pid);
-                return None;
+                let pid = ff.firefox_pid;
+                kill_pid(pid);
+                panic!("live_61l: Firefox (pid {pid}) exposed no debuggable tab within 10s");
             }
             std::thread::sleep(Duration::from_millis(200));
         }
@@ -208,10 +219,7 @@ fn parse_json(output: &Output) -> serde_json::Value {
 #[test]
 #[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_screenshot_full_page() {
-    let Some(ff) = LiveFirefox::launch() else {
-        eprintln!("live_screenshot_full_page: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::launch();
 
     // Navigate to a synthetic tall page (5000 px).
     let tall_html = r#"data:text/html,<html><body style="margin:0;height:5000px;background:linear-gradient(red,blue)"><p id=top>top</p><p style="position:absolute;top:4990px">bottom</p></body></html>"#;
@@ -269,12 +277,7 @@ fn live_screenshot_full_page() {
 #[test]
 #[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_screenshot_viewport_height_is_not_full_page() {
-    let Some(ff) = LiveFirefox::launch() else {
-        eprintln!(
-            "live_screenshot_viewport_height_is_not_full_page: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::launch();
 
     let tall_html =
         r#"data:text/html,<html><body style="margin:0;height:5000px">tall</body></html>"#;
@@ -344,12 +347,7 @@ fn live_locale_pin_launch_sets_lang_env() {
     // We use `launch_with_env` which captures the Firefox PID from the JSON
     // output so the process is properly killed on drop (the launcher process
     // itself exits immediately after starting Firefox).
-    let Some(_ff) =
-        LiveFirefox::launch_with_env(&[("LANG", "de_DE.UTF-8"), ("LC_ALL", "de_DE.UTF-8")])
-    else {
-        eprintln!("live_locale_pin_launch_sets_lang_env: Firefox not available — skipping");
-        return;
-    };
+    let _ff = LiveFirefox::launch_with_env(&[("LANG", "de_DE.UTF-8"), ("LC_ALL", "de_DE.UTF-8")]);
     // `_ff` is dropped here, killing the Firefox process.
 }
 
@@ -383,10 +381,7 @@ fn live_navigate_dnsfail() {
         );
         return;
     }
-    let Some(ff) = LiveFirefox::launch() else {
-        eprintln!("live_navigate_dnsfail: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::launch();
 
     // DNS failures can take up to ~15 s on some systems — give 20 s.
     let output = ff.run_args(
@@ -448,10 +443,7 @@ fn live_navigate_cross_origin_url_match() {
         );
         return;
     }
-    let Some(ff) = LiveFirefox::launch() else {
-        eprintln!("live_navigate_cross_origin_url_match: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::launch();
 
     // First navigate to example.com with a generous timeout.
     let output = ff.run_args(
@@ -494,10 +486,7 @@ fn live_navigate_cross_origin_url_match() {
 #[test]
 #[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_eval_csp() {
-    let Some(ff) = LiveFirefox::launch() else {
-        eprintln!("live_eval_csp: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::launch();
 
     // A page with an HTTP-equiv CSP that blocks eval().
     // The title is "CSP Test" so we can assert the value.
@@ -547,10 +536,7 @@ fn live_eval_csp() {
 #[test]
 #[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_eval_basic() {
-    let Some(ff) = LiveFirefox::launch() else {
-        eprintln!("live_eval_basic: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::launch();
 
     let html =
         r"data:text/html,<html><head><title>Basic Test</title></head><body>hello</body></html>";
@@ -589,10 +575,7 @@ fn live_eval_basic() {
 #[test]
 #[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_navigate_invalidates_console_actor() {
-    let Some(ff) = LiveFirefox::launch() else {
-        eprintln!("live_navigate_invalidates_console_actor: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::launch();
 
     // First page.
     let html1 = r"data:text/html,<html><head><title>Page One</title></head><body>one</body></html>";
@@ -691,10 +674,7 @@ fn live_eval_chrome_csp_bypass() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::launch() else {
-        eprintln!("live_eval_chrome_csp_bypass: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::launch();
 
     // A page with HTTP-equiv CSP that blocks eval().
     let csp_html = r#"data:text/html,<html><head><title>CSP Test</title><meta http-equiv="Content-Security-Policy" content="script-src 'none'"></head><body>CSP page</body></html>"#;

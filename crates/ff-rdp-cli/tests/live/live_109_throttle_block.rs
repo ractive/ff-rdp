@@ -112,10 +112,7 @@ fn live_throttle_slow3g_slows_fetch() {
         );
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     if ff.with_daemon().is_none() {
         eprintln!("daemon did not start — skipping");
         return;
@@ -185,10 +182,7 @@ fn live_block_url_pattern() {
         );
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     if ff.with_daemon().is_none() {
         eprintln!("daemon did not start — skipping");
         return;

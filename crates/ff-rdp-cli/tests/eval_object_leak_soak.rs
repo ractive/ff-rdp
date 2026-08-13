@@ -92,10 +92,7 @@ fn live_eval_object_leak_soak() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_eval_object_leak_soak: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // Build the common CLI args that route through the daemon (no --no-daemon).
     let daemon_args = || {

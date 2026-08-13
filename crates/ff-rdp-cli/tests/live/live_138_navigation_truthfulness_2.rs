@@ -72,13 +72,18 @@ fn stop_daemon(port: u16) {
         .output();
 }
 
-fn firefox_with_daemon(test: &str) -> Option<LiveFirefox> {
-    let ff = LiveFirefox::headless_on_random_port()?;
-    if ff.with_daemon().is_none() {
-        eprintln!("{test}: daemon did not start — skipping");
-        return None;
-    }
-    Some(ff)
+/// Launch Firefox and bring up its proxy daemon.
+///
+/// Panics on either failure (iter-158 Theme D) — the `Option` this used to
+/// return made every caller `return` early, which libtest reports as `ok`.
+fn firefox_with_daemon(test: &str) -> LiveFirefox {
+    let ff = LiveFirefox::headless_on_random_port();
+    assert!(
+        ff.with_daemon().is_some(),
+        "{test}: the proxy daemon did not start for Firefox on port {}",
+        ff.port()
+    );
+    ff
 }
 
 /// AC: `live_138_navigate_reports_404` — `navigate` to a known 404 reports
@@ -90,10 +95,7 @@ fn live_138_navigate_reports_404() {
         eprintln!("live_138_navigate_reports_404: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_138_navigate_reports_404") else {
-        eprintln!("live_138_navigate_reports_404: Firefox not available — skipping");
-        return;
-    };
+    let ff = firefox_with_daemon("live_138_navigate_reports_404");
     let port = ff.port();
 
     // No routes registered — FixtureServer answers every path with a real
@@ -134,10 +136,7 @@ fn live_138_navigate_reports_200() {
         eprintln!("live_138_navigate_reports_200: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_138_navigate_reports_200") else {
-        eprintln!("live_138_navigate_reports_200: Firefox not available — skipping");
-        return;
-    };
+    let ff = firefox_with_daemon("live_138_navigate_reports_200");
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -181,10 +180,7 @@ fn live_138_pushstate_back_succeeds() {
         eprintln!("live_138_pushstate_back_succeeds: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_138_pushstate_back_succeeds") else {
-        eprintln!("live_138_pushstate_back_succeeds: Firefox not available — skipping");
-        return;
-    };
+    let ff = firefox_with_daemon("live_138_pushstate_back_succeeds");
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -267,10 +263,7 @@ fn live_138_fragment_navigate_succeeds() {
         eprintln!("live_138_fragment_navigate_succeeds: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_138_fragment_navigate_succeeds") else {
-        eprintln!("live_138_fragment_navigate_succeeds: Firefox not available — skipping");
-        return;
-    };
+    let ff = firefox_with_daemon("live_138_fragment_navigate_succeeds");
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -346,10 +339,7 @@ fn live_138_timeout_message_matches_wall_clock() {
         eprintln!("live_138_timeout_message_matches_wall_clock: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_138_timeout_message_matches_wall_clock") else {
-        eprintln!("live_138_timeout_message_matches_wall_clock: Firefox not available — skipping");
-        return;
-    };
+    let ff = firefox_with_daemon("live_138_timeout_message_matches_wall_clock");
     let port = ff.port();
 
     let timeout_ms: u64 = 3000;
@@ -425,12 +415,7 @@ fn live_138_back_forward_committed_url_is_top_frame() {
         );
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_138_back_forward_committed_url_is_top_frame") else {
-        eprintln!(
-            "live_138_back_forward_committed_url_is_top_frame: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = firefox_with_daemon("live_138_back_forward_committed_url_is_top_frame");
     let port = ff.port();
 
     let mut iframe_routes = HashMap::new();
@@ -535,10 +520,7 @@ fn live_138_with_network_keeps_envelope() {
         eprintln!("live_138_with_network_keeps_envelope: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = firefox_with_daemon("live_138_with_network_keeps_envelope") else {
-        eprintln!("live_138_with_network_keeps_envelope: Firefox not available — skipping");
-        return;
-    };
+    let ff = firefox_with_daemon("live_138_with_network_keeps_envelope");
     let port = ff.port();
 
     let mut routes = HashMap::new();

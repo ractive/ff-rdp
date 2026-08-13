@@ -77,10 +77,7 @@ fn live_daemon_autostart_tabless() {
     // RawFirefox launches Firefox directly and only waits for the debug PORT —
     // NOT for a tab — so it reproduces the session-61 "tabless at daemon start"
     // condition that used to kill autostart.
-    let Some(ff) = RawFirefox::headless_on_random_port() else {
-        eprintln!("live_daemon_autostart_tabless: Firefox not available — skipping");
-        return;
-    };
+    let ff = RawFirefox::headless_on_random_port();
     let home = tempfile::tempdir().expect("tempdir for FF_RDP_HOME");
 
     // First autostart-triggering command: `eval` routes through
@@ -127,14 +124,8 @@ fn live_daemon_two_ports_no_clobber() {
         return;
     }
 
-    let Some(ff1) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_daemon_two_ports_no_clobber: Firefox #1 unavailable — skipping");
-        return;
-    };
-    let Some(ff2) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_daemon_two_ports_no_clobber: Firefox #2 unavailable — skipping");
-        return;
-    };
+    let ff1 = LiveFirefox::headless_on_random_port();
+    let ff2 = LiveFirefox::headless_on_random_port();
     // Share one FF_RDP_HOME so both daemons write into the same registry
     // directory — this is exactly where the old single-slot `daemon.json` let
     // the second daemon clobber the first.
@@ -313,20 +304,8 @@ fn live_daemon_stop_prior_instance_targets_debug_port_not_cli_port() {
         return;
     }
 
-    let Some(ff_decoy) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_daemon_stop_prior_instance_targets_debug_port_not_cli_port: \
-             decoy Firefox unavailable — skipping"
-        );
-        return;
-    };
-    let Some(ff_target) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_daemon_stop_prior_instance_targets_debug_port_not_cli_port: \
-             target Firefox unavailable — skipping"
-        );
-        return;
-    };
+    let ff_decoy = LiveFirefox::headless_on_random_port();
+    let ff_target = LiveFirefox::headless_on_random_port();
     let home = tempfile::tempdir().expect("tempdir for FF_RDP_HOME");
 
     // Auto-start a proxy daemon for each port inside the isolated `home`

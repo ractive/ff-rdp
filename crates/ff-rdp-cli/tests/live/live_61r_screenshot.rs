@@ -50,10 +50,7 @@ fn live_screenshot_full_page() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_screenshot_full_page: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let ff_args = || base_args(ff.port());
 
@@ -152,10 +149,7 @@ fn live_screenshot_dpr_string_accepted() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_screenshot_dpr_string_accepted: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let ff_args = || base_args(ff.port());
 
@@ -224,10 +218,7 @@ fn live_screenshot_full_page_dpr2() {
 
     // Launch Firefox; then set DPR=2 via the chrome-privileged Services.prefs API.
     // This requires the parent-process console actor (available after getProcess(0)).
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_screenshot_full_page_dpr2: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let ff_args = || base_args(ff.port());
 

@@ -83,10 +83,7 @@ fn pre_fix_repro_responsive_media_queries_do_not_flip() {
         eprintln!("pre_fix_repro_responsive_media_queries_do_not_flip: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     navigate(ff.port(), FIXTURE_HTML);
 
     let out = Command::new(ff_rdp_bin())
@@ -140,10 +137,7 @@ fn live_responsive_self_check_reports_mismatch() {
         eprintln!("live_responsive_self_check_reports_mismatch: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     navigate(ff.port(), FIXTURE_HTML);
 
     let out = Command::new(ff_rdp_bin())
@@ -188,10 +182,7 @@ fn pre_fix_repro_cascade_winner_ignores_media_context() {
         eprintln!("pre_fix_repro_cascade_winner_ignores_media_context: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     navigate(ff.port(), FIXTURE_HTML_ENCODED);
 
     let out = Command::new(ff_rdp_bin())

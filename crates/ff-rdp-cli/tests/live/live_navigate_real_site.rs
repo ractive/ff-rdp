@@ -37,12 +37,7 @@ fn live_navigate_dom_complete_within_default_timeout() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_navigate_dom_complete_within_default_timeout: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let mut args = base_args(ff.port());
     // Explicitly pass --wait-strategy both for backward compat of this test name.
@@ -119,12 +114,7 @@ fn live_navigate_default_completes_within_timeout() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_navigate_default_completes_within_timeout: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // NO --wait-strategy flag — uses the default (both).
     let mut args = base_args(ff.port());

@@ -50,10 +50,7 @@ fn live_console_no_double_delivery() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("Skipping: could not launch headless Firefox");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let port = ff.port();
 

@@ -30,10 +30,7 @@ fn live_navigate_default_wait_reaches_complete() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_navigate_default_wait_reaches_complete: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let url = "https://tennis-sepp.ch";
 

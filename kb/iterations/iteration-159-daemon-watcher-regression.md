@@ -346,6 +346,23 @@ Once the ACs in Themes B and C are ticked with measured evidence:
 
 ## Notes
 
+- **iter-158 landed the reliable `launch`/`--replace` this plan's dogfood_path depends on.**
+  Before iter-158, `launch` had a hardcoded 5 s port-wait bound (Firefox measured binding at 7 s
+  under load) and a failed stop deleted its own `DaemonRecord`, so `launch --replace` under any
+  contention could fail with "no owner-PID marker" against an instance ff-rdp itself started.
+  Both are fixed on `main` as of this plan's `depends_on` merge — `launch --headless --debug-port
+  6100 --replace` in this plan's dogfood_path should now be reliable at normal load. If it still
+  fails intermittently, that is new evidence, not the pre-158 defect recurring.
+- **A live daemon-proxy-startup flake is now tracked separately — do not misattribute it here.**
+  iter-158's own qualified `live-sweep` (load average 18.6) hit
+  `live_141_output_hygiene::live_141_text_empty_result_keeps_metadata` failing with *"the proxy
+  daemon did not start for Firefox on port …"* — filed as
+  [[iteration-164-two-failures-the-158-sweep-uncovered]]. This iteration's live ACs
+  (`live_159_daemon_watcher_captures_plain_navigate` etc.) all run through daemon mode and will
+  hit the same proxy-startup path under a contended sweep. If a `live_159_*` test fails on a
+  proxy-startup message rather than an empty/malformed watcher result, treat it as iter-164's
+  defect, not a regression in this iteration's fix — do not spend time debugging the watcher
+  routing for a failure that never reached it.
 - **Sequencing is load-bearing.** Theme D's deletions are gated on Themes B and C being
   ticked with measured evidence. If Theme A's spec read lands but Theme B slips, file the
   cleanup as a follow-up plan before this PR merges rather than deleting the workaround on a

@@ -43,12 +43,7 @@ fn live_stale_tab_race_no_such_actor_after_navigate() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_stale_tab_race_no_such_actor_after_navigate: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let Some(server_a) =
         spawn_html_server("<!DOCTYPE html><html><body><p id=\"a\">site A</p></body></html>")

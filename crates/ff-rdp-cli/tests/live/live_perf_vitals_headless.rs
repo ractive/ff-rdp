@@ -27,12 +27,7 @@ fn live_perf_vitals_lcp_unavailable_when_lcp_missing() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "perf_vitals_emits_unavailable_when_lcp_missing: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // Navigate to a simple page so perf vitals has something to measure.
     let nav = Command::new(ff_rdp_bin())

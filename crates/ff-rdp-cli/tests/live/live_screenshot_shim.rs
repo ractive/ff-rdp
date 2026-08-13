@@ -66,10 +66,7 @@ fn live_screenshot_unchanged_after_shim() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_screenshot_unchanged_after_shim: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let ff_args = || base_args(ff.port());
 
@@ -190,10 +187,7 @@ fn live_screenshot_no_args_on_firefox_151() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_screenshot_no_args_on_firefox_151: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // Navigate to a simple page so there is content to capture.
     // Use --wait-strategy readystate so the navigate step itself doesn't panic

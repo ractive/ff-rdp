@@ -42,10 +42,7 @@ fn live_screenshot_bulk_fallback_then_eval() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_screenshot_bulk_fallback_then_eval: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     // Navigate to a simple, deterministic local page (no real network access
     // required — this file has no `live_network_tests_enabled()` gate to drop).

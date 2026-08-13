@@ -43,7 +43,9 @@ which dominates the iteration loop's wall-clock cost.
 - **Launch waits are bounded and env-overridable** (iter-113 Theme A). The
   live launchers wait for Firefox's remote-debugging port via a bound that
   defaults to 30 s and is overridable with `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`
-  (whole seconds). `common::wait_for_debugger_port_within` panics with a
+  (whole seconds). Since iter-158 the *product* has the same knob —
+  `launch --launch-timeout <secs>` / `FF_RDP_LAUNCH_TIMEOUT_SECS`, also 30 s by
+  default — so a contended run needs both raised, not just the harness one. `common::wait_for_debugger_port_within` panics with a
   message naming the launcher binary and port when the port never opens, so a
   wedged or absent Firefox fails fast and self-describingly instead of
   hanging.
@@ -67,9 +69,30 @@ which dominates the iteration loop's wall-clock cost.
   its own ignore-reason text, runs only the tests whose required env var(s) are actually set (with
   `--include-ignored`, so libtest reports genuine `ok`/`FAILED`), and runs the rest *without*
   `--include-ignored` so libtest reports them `ignored` using its own vocabulary. It ends with a
-  machine-readable `LIVE_SWEEP_SUMMARY executed=N skipped=M total=T` line — quote `executed=N` in
-  a `[verified: <date>, …]` AC annotation instead of the `cargo test` summary line. Add
-  `--dry-run` to see the qualified/unqualified split without invoking `cargo test`.
+  machine-readable `LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K total=T` line — quote
+  `executed=N` in a `[verified: <date>, …]` AC annotation instead of the `cargo test` summary
+  line. Add `--dry-run` to see the split without invoking `cargo test`.
+- **`preexisting=K` is the third tier** (iter-158 Theme F). The `ff-rdp-core` live tests never
+  launch Firefox — they connect to one somebody else started on the fixed default port 6000
+  (`support::recording::firefox_port()`). Pre-158 `live-sweep` neither provided that instance nor
+  checked for it and counted all of them as `executed`, which is how six `ConnectionRefused`
+  failures reached a sweep report. The sweep now probes `127.0.0.1:6000` once at start; when
+  nothing answers, those targets run *without* `--include-ignored` (libtest reports them
+  `ignored`) and are counted under `preexisting=K` instead of `executed`. To actually execute
+  them, start an instance first:
+  `firefox -no-remote --start-debugger-server 6000 --headless`. The sweep deliberately does not
+  start one itself — port 6000 is the port a human is most likely to already be using by hand,
+  and the fails-closed ownership guard in `daemon/client.rs` exists because ff-rdp once killed
+  exactly such an instance.
+- **A live test that cannot launch Firefox FAILS** (iter-158 Theme D). `LiveFirefox::
+  headless_on_random_port` returns the launcher directly and panics with the launch exit status
+  and its captured stdout *and* stderr; there is no `Option` to `else { return; }` on, and the
+  `tests/iter_158_harness_honesty.rs` source scan fails the build if that pattern comes back.
+  A test that genuinely tolerates an absent Firefox belongs behind an `#[ignore]` gate
+  `live-sweep` already understands, not behind a runtime early return. Successful launches are
+  appended to `target/live-launches.log` (override with `FF_RDP_LIVE_LAUNCH_LOG`), because
+  libtest discards a passing test's stderr — the old `eprintln!("LiveFirefox: pid=…")` was
+  invisible on exactly the path it claimed to document.
 
 ## Iteration discipline tooling
 

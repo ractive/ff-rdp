@@ -105,12 +105,7 @@ fn live_daemon_follow_survives_cross_process_nav() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_daemon_follow_survives_cross_process_nav: Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // Auto-start the daemon for this Firefox instance.  `with_daemon` triggers

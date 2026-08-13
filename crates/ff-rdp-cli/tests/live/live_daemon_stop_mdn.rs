@@ -54,10 +54,7 @@ fn live_daemon_stop_on_mdn_headless() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_daemon_stop_on_mdn_headless: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     // iter-151 Theme B: `ff` used to be suppressed via `ManuallyDrop` here so
     // `daemon stop` alone was responsible for killing Firefox — but the

@@ -57,13 +57,7 @@ fn pre_fix_repro_screenshot_full_page_taller_than_viewport() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "pre_fix_repro_screenshot_full_page_taller_than_viewport: \
-             Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let ff_args = || base_args(ff.port());
 
@@ -182,13 +176,7 @@ fn live_screenshot_full_page_md5_differs_from_viewport() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "live_screenshot_full_page_md5_differs_from_viewport: \
-             Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let ff_args = || base_args(ff.port());
 

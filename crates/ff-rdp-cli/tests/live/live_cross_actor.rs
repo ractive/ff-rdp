@@ -39,22 +39,38 @@ struct LiveFirefox {
 }
 
 impl LiveFirefox {
-    fn launch() -> Option<Self> {
+    /// Launch headless Firefox on an ephemeral port.
+    ///
+    /// Panics on any failure (iter-158 Theme D): the previous `Option<Self>`
+    /// return made every caller `return` early, which libtest reports as `ok`,
+    /// so a test that never reached Firefox looked exactly like one that
+    /// passed. `stderr` is captured rather than discarded so the panic can
+    /// name what `ff-rdp launch` actually said.
+    fn launch() -> Self {
         let port = free_port();
         let output = Command::new(ff_rdp_bin())
             .args(["launch", "--headless", "--debug-port", &port.to_string()])
-            .stderr(std::process::Stdio::null())
             .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-        let firefox_pid = u32::try_from(json["results"]["pid"].as_u64()?).ok()?;
+            .expect("spawn `ff-rdp launch`");
+        assert!(
+            output.status.success(),
+            "`ff-rdp launch --headless --debug-port {port}` exited {}\n  stdout: {}\n  stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+        let json: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("launch stdout is JSON");
+        let firefox_pid = u32::try_from(json["results"]["pid"].as_u64().expect("results.pid"))
+            .expect("results.pid fits u32");
 
-        if !wait_for_tcp(port, Duration::from_secs(30)) {
+        if !wait_for_tcp(port, crate::common::launch_wait_timeout()) {
+            // Reap before unwinding — a panic here must not leak Firefox.
             kill_pid(firefox_pid);
-            return None;
+            panic!(
+                "Firefox (pid {firefox_pid}) never opened debug port {port} within {}s",
+                crate::common::launch_wait_timeout().as_secs()
+            );
         }
 
         let ff = Self { firefox_pid, port };
@@ -72,11 +88,12 @@ impl LiveFirefox {
                     .unwrap_or(0)
                     >= 1
             {
-                return Some(ff);
+                return ff;
             }
             if std::time::Instant::now() >= deadline {
-                kill_pid(ff.firefox_pid);
-                return None;
+                let pid = ff.firefox_pid;
+                kill_pid(pid);
+                panic!("Firefox (pid {pid}) exposed no debuggable tab within 10s");
             }
             std::thread::sleep(Duration::from_millis(200));
         }
@@ -137,10 +154,7 @@ fn live_cross_actor_packet_not_lost() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::launch() else {
-        eprintln!("live_cross_actor_packet_not_lost: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::launch();
 
     // Evaluate JS that both logs (triggering a potential consoleAPICall) and
     // returns a value.

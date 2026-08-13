@@ -31,10 +31,7 @@ fn live_142_eval_asi_await_script() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_142_eval_asi_await_script: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let out = Command::new(ff_rdp_bin())
         .args([

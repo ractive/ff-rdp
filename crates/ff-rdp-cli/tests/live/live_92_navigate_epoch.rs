@@ -50,13 +50,7 @@ fn pre_fix_repro_navigate_second_call_waits_for_new_commit() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!(
-            "pre_fix_repro_navigate_second_call_waits_for_new_commit: \
-             Firefox not available — skipping"
-        );
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let ff_args = || base_args(ff.port());
 
@@ -130,10 +124,7 @@ fn live_run_navigate_parity() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_run_navigate_parity: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let ff_args = || base_args(ff.port());
     let url = PAGE_A;
@@ -183,10 +174,7 @@ fn live_index_navigate_parity() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_index_navigate_parity: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let ff_args = || base_args(ff.port());
     let url = PAGE_A;

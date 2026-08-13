@@ -58,24 +58,25 @@ fn run_raw(home: &std::path::Path, port: u16, args: &[&str]) -> (bool, Vec<u8>) 
 /// daemon autostarted inside that `home` — forcing `stop_prior_instance`
 /// into the registry fallback path where the double-envelope defect lived.
 ///
-/// Returns `None` (never panics) when Firefox or the autostart is
-/// unavailable, so these tests degrade to a skip rather than a hard failure
-/// in constrained CI environments — consistent with every other live suite.
-fn setup_registry_topology() -> Option<(LiveFirefox, tempfile::TempDir)> {
-    let ff = LiveFirefox::headless_on_random_port()?;
+/// Panics (never returns a skip) when Firefox or the autostart is
+/// unavailable — iter-158 Theme D. This suite is the reason: on 2026-08-13
+/// `live_153_replace_emits_single_envelope` was the one real product defect a
+/// full sweep found, and it only surfaced because it happened to fail loudly.
+/// Every sibling that skipped instead reported `ok`.
+fn setup_registry_topology() -> (LiveFirefox, tempfile::TempDir) {
+    let ff = LiveFirefox::headless_on_random_port();
     let home = tempfile::tempdir().expect("live_153: tempdir for FF_RDP_HOME");
     // `eval` routes through `resolve_connection_target`, which auto-starts a
     // registry-tracked proxy daemon inside `home` for `ff.port()` when none
     // is already running there.
     let (ok, stdout) = run_raw(home.path(), ff.port(), &["eval", "1"]);
-    if !ok {
-        eprintln!(
-            "setup_registry_topology: eval autostart failed — skipping\nstdout={}",
-            String::from_utf8_lossy(&stdout)
-        );
-        return None;
-    }
-    Some((ff, home))
+    assert!(
+        ok,
+        "setup_registry_topology: the `eval` daemon autostart failed for port {}\nstdout={}",
+        ff.port(),
+        String::from_utf8_lossy(&stdout)
+    );
+    (ff, home)
 }
 
 /// AC `live_153_replace_emits_single_envelope`: stdout of `launch --replace`
@@ -89,12 +90,7 @@ fn live_153_replace_emits_single_envelope() {
         eprintln!("live_153_replace_emits_single_envelope: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some((ff, home)) = setup_registry_topology() else {
-        eprintln!(
-            "live_153_replace_emits_single_envelope: Firefox/topology unavailable — skipping"
-        );
-        return;
-    };
+    let (ff, home) = setup_registry_topology();
     let port = ff.port();
 
     let (ok, stdout) = run_raw(
@@ -163,10 +159,7 @@ fn live_153_replace_reports_launched_pid() {
         eprintln!("live_153_replace_reports_launched_pid: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some((ff, home)) = setup_registry_topology() else {
-        eprintln!("live_153_replace_reports_launched_pid: Firefox/topology unavailable — skipping");
-        return;
-    };
+    let (ff, home) = setup_registry_topology();
     let port = ff.port();
     let prior_pid = ff.pid();
 
@@ -233,12 +226,7 @@ fn live_153_replace_reports_stopped_instance() {
         eprintln!("live_153_replace_reports_stopped_instance: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some((ff, home)) = setup_registry_topology() else {
-        eprintln!(
-            "live_153_replace_reports_stopped_instance: Firefox/topology unavailable — skipping"
-        );
-        return;
-    };
+    let (ff, home) = setup_registry_topology();
     let port = ff.port();
     let prior_pid = ff.pid();
 

@@ -76,10 +76,7 @@ fn live_perf_audit_lcp_unavailable() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_perf_audit_lcp_unavailable: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let Some(server) = spawn_html_server(text_only_body()) else {
         eprintln!("live_perf_audit_lcp_unavailable: could not bind HTTP server — skipping");
@@ -157,10 +154,7 @@ fn live_perf_audit_vitals_lcp_parity() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_perf_audit_vitals_lcp_parity: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let Some(server) = spawn_html_server(text_only_body()) else {
         eprintln!("live_perf_audit_vitals_lcp_parity: could not bind HTTP server — skipping");

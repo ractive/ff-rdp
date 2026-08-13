@@ -62,10 +62,7 @@ fn live_132_dom_live_value() {
         eprintln!("live_132_dom_live_value: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_132_dom_live_value: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let url = "data:text/html,<title>live-value</title><input id=\"el\" value=\"0\">";
     navigate(ff.port(), url);
@@ -114,10 +111,7 @@ fn live_132_eval_top_level_await() {
         eprintln!("live_132_eval_top_level_await: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_132_eval_top_level_await: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     navigate(ff.port(), "data:text/html,<title>top-level-await</title>");
 
     // Positional arg.

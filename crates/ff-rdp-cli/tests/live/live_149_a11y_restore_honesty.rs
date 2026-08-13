@@ -100,10 +100,7 @@ fn live_149_restore_failure_reported_in_meta() {
         eprintln!("live_149_restore_failure_reported_in_meta: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_149_restore_failure_reported_in_meta: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let json = run_a11y_json(ff.port(), &["--native"], true);
 
@@ -138,10 +135,7 @@ fn live_149_successful_restore_reports_clean() {
         eprintln!("live_149_successful_restore_reports_clean: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_149_successful_restore_reports_clean: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
 
     let opted_in = run_a11y_json(ff.port(), &["--native"], false);
     assert_eq!(
@@ -202,10 +196,7 @@ fn live_149_service_already_on_is_not_touched() {
         eprintln!("live_149_service_already_on_is_not_touched: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_149_service_already_on_is_not_touched: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // Hold a second, independent connection that enables the service and

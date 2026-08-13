@@ -63,10 +63,7 @@ fn live_128_network_detail_uses_watcher() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_128_network_detail_uses_watcher: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let nav = Command::new(ff_rdp_bin())
@@ -146,10 +143,7 @@ fn live_128_network_text_width() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_128_network_text_width: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // theguardian.com's Sourcepoint CMP fires ~900-char tracking URLs
@@ -240,10 +234,7 @@ fn live_128_meta_route() {
         return;
     }
 
-    let Some(ff) = LiveFirefox::headless_on_random_port() else {
-        eprintln!("live_128_meta_route: Firefox not available — skipping");
-        return;
-    };
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // Direct FIRST: --no-daemon bypasses the daemon proxy entirely, and
