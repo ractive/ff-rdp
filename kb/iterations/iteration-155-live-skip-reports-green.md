@@ -113,22 +113,30 @@ different iteration. See [[decision-log#DEC-031]].
 
 ## Acceptance Criteria [3/3]
 
-- [x] test_155_skipped_live_test_is_not_counted_passed: a live test whose env gate is unset is
-      reported as ignored/skipped rather than `ok`, asserted by parsing libtest's own summary
-      output in a unit or integration test — not by reading the code. Implemented as an
-      integration test in `crates/xtask/src/live_sweep.rs` that classifies the real
-      `live_109_throttle_block::live_block_url_pattern` test (the one named in this plan's own
-      `dogfood_path`), partitions it as unqualified with the network gate unset, spawns
+- [x] `live_sweep.rs`'s test_155_skipped_live_test_is_not_counted_passed: a live test whose env
+      gate is unset is reported as ignored/skipped rather than `ok`, asserted by parsing
+      libtest's own summary output in a unit or integration test — not by reading the code.
+      Implemented as an integration test in `crates/xtask/src/live_sweep.rs` that classifies the
+      real live_109_throttle_block ⋅ live_block_url_pattern test (the one named in this plan's
+      own `dogfood_path`), partitions it as unqualified with the network gate unset, spawns
       `cargo test -p ff-rdp-cli --test live` for real without `--include-ignored`, and asserts
-      libtest's stdout contains `test live_109_throttle_block::live_block_url_pattern ...
-      ignored` and never `... ok`.
-- [x] test_155_executed_count_is_reported: a live sweep emits a machine-readable count of tests
-      that actually reached Firefox, and a test asserts the count is 0 when the env gates are unset.
-      `live_sweep::run` prints `LIVE_SWEEP_SUMMARY executed=N skipped=M total=T`; the
-      `test_155_executed_count_is_reported` unit test asserts `executed == 0` with both env gates
-      unset and rises deterministically as gates are set, computed from static classification
-      alone before any `cargo test` process spawns.
-- [x] check_155_baselines_unmoved: `cargo run -p xtask -- check-discipline-regression` still
+      libtest's stdout contains the `... ignored` line and never `... ok`. This meta-test is
+      itself an ordinary CI-run unit test, not `#[ignore]`-gated — it runs on every
+      `cargo test --workspace`.
+      [verified: 2026-08-13, `cargo test -p xtask test_155` → 2 passed; 0 failed; stdout of the
+      spawned `cargo test -p ff-rdp-cli --test live` subprocess contained the target test's
+      `... ignored` line and no `... ok` line]
+- [x] `live_sweep.rs`'s test_155_executed_count_is_reported: a live sweep emits a
+      machine-readable count of tests that actually reached Firefox, and a test asserts the count
+      is 0 when the env gates are unset. `live_sweep::run` prints `LIVE_SWEEP_SUMMARY
+      executed=N skipped=M total=T`; the test asserts `executed == 0` with both env gates unset
+      and rises deterministically as gates are set, computed from static classification alone
+      before any `cargo test` process spawns. Also an ordinary CI-run unit test.
+      [verified: 2026-08-13, `cargo test -p xtask test_155` → 2 passed; 0 failed; executed=0 with
+      both gates unset, executed=1 with FF_RDP_LIVE_TESTS-only, executed=3 with both set, all
+      asserted directly]
+- [x] check_155_baselines_unmoved: adding `live-sweep` must not disturb
+      `cargo run -p xtask -- check-discipline-regression`, which still
       reports `61v=FAIL, 61t=PASS` and all mirrors in sync. Re-run after this change:
       `check-discipline-regression: ralph-loop mirror in sync (3 files); new-ralph-loop mirror in
       sync (5 files); replay baselines OK (61v=FAIL, 61t=PASS)` — unchanged, since this iteration
