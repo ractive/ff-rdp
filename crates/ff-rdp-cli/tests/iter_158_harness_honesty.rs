@@ -114,6 +114,18 @@ fn unit_158_no_live_test_skips_on_missing_firefox() {
     );
 }
 
+/// Does `path` sit under a `tests/live/` directory? Checked by path
+/// *component*, not by substring — `path.to_string_lossy().contains("tests/live")`
+/// looks for a literal forward slash, which never appears in a Windows path
+/// (`tests\live\...`), silently zeroing this count on that platform.
+fn is_under_tests_live(path: &Path) -> bool {
+    let comps: Vec<_> = path
+        .components()
+        .map(std::path::Component::as_os_str)
+        .collect();
+    comps.windows(2).any(|w| w[0] == "tests" && w[1] == "live")
+}
+
 /// The scan is only meaningful if it is actually looking at the live suites —
 /// a mis-resolved root would make the assertions above vacuously true.
 #[test]
@@ -125,7 +137,7 @@ fn unit_158_source_scan_covers_the_live_suites() {
             let Ok(src) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            if path.to_string_lossy().contains("tests/live") {
+            if is_under_tests_live(&path) {
                 live_files += 1;
             }
             launcher_calls += src.matches("headless_on_random_port").count();
