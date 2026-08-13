@@ -956,6 +956,197 @@ mod tests {
         let _ = std::fs::remove_dir_all(&user_profile);
     }
 
+    // -----------------------------------------------------------------------
+    // iter-158 Theme A — the launch port-wait bound and its error text
+    // -----------------------------------------------------------------------
+
+    /// AC `unit_158_resolve_port_wait_bound`: the precedence rules for the
+    /// debug-port wait bound. Flag beats env, env beats the 30 s default, and
+    /// a malformed or empty env value falls back to the default rather than
+    /// erroring — a bad env var must never break a launch.
+    #[test]
+    fn unit_158_resolve_port_wait_bound() {
+        assert_eq!(
+            resolve_port_wait_bound(None, None),
+            Duration::from_secs(30),
+            "neither flag nor env ⇒ the 30 s default (NOT the pre-158 hardcoded 5 s)"
+        );
+        assert_eq!(
+            resolve_port_wait_bound(Some(45), None),
+            Duration::from_secs(45)
+        );
+        assert_eq!(
+            resolve_port_wait_bound(None, Some("7")),
+            Duration::from_secs(7)
+        );
+        assert_eq!(
+            resolve_port_wait_bound(Some(45), Some("7")),
+            Duration::from_secs(45),
+            "the --launch-timeout flag must beat FF_RDP_LAUNCH_TIMEOUT_SECS"
+        );
+        assert_eq!(
+            resolve_port_wait_bound(None, Some("abc")),
+            Duration::from_secs(30),
+            "a non-numeric env value falls back to the default"
+        );
+        assert_eq!(
+            resolve_port_wait_bound(None, Some("")),
+            Duration::from_secs(30),
+            "an empty env value falls back to the default"
+        );
+    }
+
+    /// AC `unit_158_port_wait_error_names_bind_timeout`: with a prober that
+    /// never connects, the resulting error blames Firefox's failure to bind —
+    /// not a port conflict, and never the pre-158 hardcoded "5s".
+    #[test]
+    fn unit_158_port_wait_error_names_bind_timeout() {
+        let hooks = LaunchHooks {
+            probe_port: |_host, _port, _timeout| PortWaitOutcome::TimedOut,
+            ..LaunchHooks::real()
+        };
+        let bound = resolve_port_wait_bound(Some(30), None);
+        let outcome = (hooks.probe_port)("localhost", 6123, bound);
+        let err = outcome
+            .into_error(4242, 6123, bound)
+            .expect("a TimedOut outcome must produce an error");
+        let AppError::User(msg) = err else {
+            panic!("expected AppError::User, got {err:?}");
+        };
+        assert!(
+            msg.contains("did not open debug port"),
+            "message must name the bind timeout: {msg:?}"
+        );
+        assert!(
+            msg.contains("30s"),
+            "message must carry the resolved bound in seconds: {msg:?}"
+        );
+        assert!(
+            !msg.contains("already in use"),
+            "the deadline path must NOT blame a port conflict: {msg:?}"
+        );
+        assert!(
+            !msg.contains("after 5s"),
+            "the 5 s bound is gone; no message may still quote it: {msg:?}"
+        );
+    }
+
+    /// AC `unit_158_launch_rejects_occupied_port_before_spawn`: an occupied
+    /// port fails immediately, naming the occupying process and PID, and
+    /// Firefox is never spawned.
+    #[test]
+    fn unit_158_launch_rejects_occupied_port_before_spawn() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static SPAWNS: AtomicUsize = AtomicUsize::new(0);
+        SPAWNS.store(0, Ordering::SeqCst);
+
+        let hooks = LaunchHooks {
+            is_port_in_use: |_port| true,
+            find_listener: |_port| {
+                Some(port_owner::PortOwner {
+                    pid: 51234,
+                    process_name: "nc".to_owned(),
+                    uptime_s: None,
+                })
+            },
+            probe_port: |_host, _port, _timeout| PortWaitOutcome::Opened,
+            spawn: |_cmd| {
+                SPAWNS.fetch_add(1, Ordering::SeqCst);
+                Err(std::io::Error::other(
+                    "the spawn hook must never be reached",
+                ))
+            },
+        };
+
+        let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"])
+            .expect("parse a bare `launch`");
+        let opts = LaunchOpts {
+            headless: true,
+            profile: None,
+            temp_profile: false,
+            debug_port: Some(7107),
+            auto_consent: false,
+            replace: false,
+            window_size: None,
+            launch_timeout: None,
+        };
+
+        let err = run_with_hooks(&cli, &opts, &hooks).expect_err("an occupied port must fail");
+        let AppError::User(msg) = err else {
+            panic!("expected AppError::User, got {err:?}");
+        };
+        assert!(
+            msg.contains("port 7107 is already in use by nc (PID 51234)"),
+            "message must name the occupying process and PID: {msg:?}"
+        );
+        assert_eq!(
+            SPAWNS.load(Ordering::SeqCst),
+            0,
+            "Firefox must not be spawned when the port is already occupied"
+        );
+    }
+
+    /// AC `live_158_launch_creates_missing_profile_dir` (unit half): the
+    /// `--profile` path is created rather than erroring with ENOENT, and the
+    /// devtools prefs land in it. Theme E.
+    #[test]
+    fn unit_158_profile_dir_created_when_absent() {
+        let root = std::env::temp_dir().join(format!(
+            "ff-rdp-158-absent-{:?}",
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let nested = root.join("absent").join("prof");
+        assert!(
+            !nested.exists(),
+            "precondition: the profile dir must not exist"
+        );
+
+        ensure_devtools_prefs(&nested).expect("a missing --profile directory must be created");
+
+        let user_js = nested.join("user.js");
+        assert!(user_js.exists(), "user.js should have been written");
+        let contents = std::fs::read_to_string(&user_js).unwrap();
+        assert!(
+            contents.contains("devtools.debugger.remote-enabled"),
+            "devtools prefs must be present: {contents:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The `user.js` leaf must not be followed when it is a symlink — a
+    /// same-UID process could otherwise redirect our append to any file the
+    /// user can write (Theme E's security note).
+    #[cfg(unix)]
+    #[test]
+    fn unit_158_profile_user_js_symlink_is_refused() {
+        let root = std::env::temp_dir().join(format!(
+            "ff-rdp-158-symlink-{:?}",
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let victim = root.join("victim.txt");
+        std::fs::write(&victim, "untouched").unwrap();
+        std::os::unix::fs::symlink(&victim, root.join("user.js")).unwrap();
+
+        let err = ensure_devtools_prefs(&root).expect_err("a symlinked user.js must be refused");
+        let AppError::User(msg) = err else {
+            panic!("expected AppError::User, got {err:?}");
+        };
+        assert!(
+            msg.contains("symlinked"),
+            "the refusal must say why: {msg:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "untouched",
+            "the symlink target must not have been written through"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn build_command_always_includes_no_remote() {
         let tmp = fake_firefox();

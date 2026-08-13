@@ -64,6 +64,7 @@ mod live_146_suite_reliability;
 mod live_149_a11y_restore_honesty;
 mod live_151_residual_leak;
 mod live_153_replace_double_envelope;
+mod live_158_launch_lifecycle;
 mod live_61l;
 mod live_61q_resource_bus;
 mod live_61r_eval;

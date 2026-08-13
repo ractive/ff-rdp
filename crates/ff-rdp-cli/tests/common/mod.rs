@@ -287,18 +287,16 @@ pub const LIVE_LAUNCH_LOG_ENV: &str = "FF_RDP_LIVE_LAUNCH_LOG";
 /// works with no configuration; [`LIVE_LAUNCH_LOG_ENV`] overrides the path.
 /// Best-effort: a failure to write must never fail a test.
 fn record_live_launch(pid: u32, port: u16) {
-    let path = match std::env::var_os(LIVE_LAUNCH_LOG_ENV) {
-        Some(p) => PathBuf::from(p),
-        None => {
-            // CARGO_BIN_EXE_ff-rdp is `<target>/<profile>/ff-rdp`.
-            let Some(profile_dir) = ff_rdp_bin().parent().map(PathBuf::from) else {
-                return;
-            };
-            let Some(target_dir) = profile_dir.parent().map(PathBuf::from) else {
-                return;
-            };
-            target_dir.join("live-launches.log")
-        }
+    let path = if let Some(p) = std::env::var_os(LIVE_LAUNCH_LOG_ENV) {
+        PathBuf::from(p)
+    } else {
+        // CARGO_BIN_EXE_ff-rdp is `<target>/<profile>/ff-rdp`, so two levels
+        // up is the target directory.
+        let bin = ff_rdp_bin();
+        let Some(target_dir) = bin.parent().and_then(std::path::Path::parent) else {
+            return;
+        };
+        target_dir.join("live-launches.log")
     };
     // One `write_all` of a short line: concurrent appenders from separate test
     // binaries interleave whole lines rather than fragments.
@@ -354,7 +352,7 @@ impl LiveFirefox {
     ///
     /// ```ignore
     /// let Some(ff) = LiveFirefox::headless_on_random_port() else {
-    ///     eprintln!("…: Firefox not available — skipping");
+    ///     eprintln!("…: <the skip notice>");
     ///     return;                                  // ← libtest reports `ok`
     /// };
     /// ```

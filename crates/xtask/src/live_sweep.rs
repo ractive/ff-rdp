@@ -106,7 +106,10 @@ pub const PREEXISTING_PORT: u16 = 6000;
 /// `firefox_port(` is a reliable signal in every one of them.
 const PREEXISTING_MARKERS: &[&str] = &[
     "--start-debugger-server 6000",
-    "firefox_port(",
+    // `support::recording::firefox_port()` — defaults to 6000, overridable
+    // via `FF_RDP_PORT`. Matched bare so both the `use` line and the call
+    // site count.
+    "firefox_port",
     "remote debugger enabled on port 6000",
 ];
 
@@ -795,6 +798,137 @@ fn unrelated() {}
         };
         let part = partition(&tests, &gates);
         assert_eq!(part.qualified, vec!["a".to_owned(), "z".to_owned()]);
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-158 Theme F — the `preexisting` tier
+    // -----------------------------------------------------------------------
+
+    fn gated_preexisting(name: &str) -> GatedTest {
+        GatedTest {
+            full_name: name.to_owned(),
+            needs_live: true,
+            needs_network: false,
+            needs_preexisting: true,
+        }
+    }
+
+    /// A file whose live tests resolve their port through `firefox_port()` (or
+    /// spell out `--start-debugger-server 6000`) needs an instance somebody
+    /// else started.
+    #[test]
+    fn test_158_source_markers_identify_preexisting_suites() {
+        assert!(source_needs_preexisting_instance(
+            "use support::recording::{firefox_port, should_run_live};"
+        ));
+        assert!(source_needs_preexisting_instance(
+            "#[ignore = \"… start Firefox with --start-debugger-server 6000\"]"
+        ));
+        assert!(source_needs_preexisting_instance(
+            "//! requires a running headless Firefox with the remote debugger enabled on port 6000"
+        ));
+        assert!(
+            !source_needs_preexisting_instance("let ff = LiveFirefox::headless_on_random_port();"),
+            "a suite that launches its own Firefox is not `preexisting`"
+        );
+    }
+
+    /// AC `live_158_sweep_reports_three_tiers` (classification half): with
+    /// nothing on 127.0.0.1:6000 the preexisting tests leave `executed` and
+    /// land in their own bucket; with an instance available they are executed
+    /// like any other qualified test.
+    #[test]
+    fn test_158_preexisting_tier_is_split_out_of_executed() {
+        let tests = vec![
+            gated("cli::t1", true, false),
+            gated_preexisting("core_a"),
+            gated_preexisting("core_b"),
+        ];
+
+        let no_instance = EnvGates {
+            live: true,
+            network: true,
+            preexisting_available: false,
+        };
+        let part = partition(&tests, &no_instance);
+        let summary = summarize(&part);
+        assert_eq!(summary.executed, 1, "only the self-launching test executes");
+        assert_eq!(summary.preexisting, 2);
+        assert_eq!(summary.skipped, 0);
+        assert_eq!(summary.total(), 3);
+        assert_eq!(
+            part.not_running(),
+            vec!["core_a".to_owned(), "core_b".to_owned()],
+            "preexisting tests must run WITHOUT --include-ignored so libtest reports \
+             them `ignored` instead of failing on ConnectionRefused"
+        );
+
+        let with_instance = EnvGates {
+            preexisting_available: true,
+            ..no_instance
+        };
+        let summary = summarize(&partition(&tests, &with_instance));
+        assert_eq!(summary.executed, 3);
+        assert_eq!(summary.preexisting, 0);
+    }
+
+    /// An unmet env gate is reported as `skipped`, not `preexisting` — a user
+    /// can fix the former by exporting a variable, and `skipped` keeps the
+    /// meaning iter-155 gave it.
+    #[test]
+    fn test_158_env_gate_takes_precedence_over_preexisting() {
+        let tests = vec![gated_preexisting("core_a")];
+        let gates = EnvGates {
+            live: false,
+            network: false,
+            preexisting_available: false,
+        };
+        let summary = summarize(&partition(&tests, &gates));
+        assert_eq!(summary.skipped, 1);
+        assert_eq!(summary.preexisting, 0);
+    }
+
+    /// The real `ff-rdp-core` live targets must classify as `preexisting` —
+    /// they connect to a Firefox they never launch. Six of the seven failures
+    /// in the 2026-08-13 sweep were exactly this.
+    #[test]
+    fn test_158_real_core_targets_are_preexisting() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("workspace root")
+            .to_path_buf();
+        let Ok(targets) = default_targets(&root) else {
+            eprintln!("test_158_real_core_targets_are_preexisting: workspace not readable");
+            return;
+        };
+        let core_preexisting: usize = targets
+            .iter()
+            .filter(|t| t.package == "ff-rdp-core")
+            .flat_map(|t| &t.gated)
+            .filter(|g| g.needs_preexisting)
+            .count();
+        let core_total: usize = targets
+            .iter()
+            .filter(|t| t.package == "ff-rdp-core")
+            .map(|t| t.gated.len())
+            .sum();
+        assert!(core_total > 0, "expected some ff-rdp-core live targets");
+        assert_eq!(
+            core_preexisting, core_total,
+            "every ff-rdp-core live test connects to a pre-existing Firefox on port 6000"
+        );
+
+        let cli_preexisting: usize = targets
+            .iter()
+            .filter(|t| t.package == "ff-rdp-cli")
+            .flat_map(|t| &t.gated)
+            .filter(|g| g.needs_preexisting)
+            .count();
+        assert_eq!(
+            cli_preexisting, 0,
+            "the ff-rdp-cli live suites launch their own Firefox"
+        );
     }
 
     // -----------------------------------------------------------------------
