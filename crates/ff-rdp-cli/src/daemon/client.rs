@@ -1263,6 +1263,81 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<StopOutcome, A
 mod tests {
     use super::*;
 
+    /// AC `unit_153_no_nested_envelope_prints`: `run_daemon_stop` prints its
+    /// own top-level JSON envelope (`OutputPipeline::finalize`) — so calling
+    /// it from *inside* another command's run corrupts that command's stdout
+    /// with a second document back to back. That is exactly what happened
+    /// pre-iter-153: `stop_prior_instance` (part of `launch`'s own run) called
+    /// `run_daemon_stop` from its registry-path branch.
+    ///
+    /// Guard the fix by asserting `run_daemon_stop(` is invoked from exactly
+    /// one call site anywhere in the crate's source — the standalone
+    /// `DaemonCommand::Stop` dispatch arm, which IS the top-level `daemon
+    /// stop` command and is therefore allowed to print. Any other call site
+    /// (in `stop_prior_instance` or a future helper) would reintroduce the
+    /// double-envelope defect.
+    #[test]
+    fn unit_153_no_nested_envelope_prints() {
+        let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let allowed_file = src_dir.join("dispatch.rs");
+
+        let mut offending_call_sites: Vec<String> = Vec::new();
+        for entry in walkdir::WalkDir::new(&src_dir)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "rs"))
+        {
+            let path = entry.path();
+            let Ok(contents) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            for (line_no, line) in contents.lines().enumerate() {
+                let trimmed = line.trim_start();
+                // Skip the function's own definition and doc/comment lines
+                // that merely mention the name.
+                if trimmed.starts_with("//") || trimmed.starts_with("///") {
+                    continue;
+                }
+                if line.contains("fn run_daemon_stop") {
+                    continue;
+                }
+                // Match the actual call shape (`run_daemon_stop(cli, …)`),
+                // and require it NOT be immediately preceded by `"` — that
+                // excludes this test's own source, which necessarily
+                // mentions the string `"run_daemon_stop(cli"` in its
+                // pattern-matching logic and doc comment, from flagging
+                // itself as an offending call site.
+                let Some(idx) = line.find("run_daemon_stop(cli") else {
+                    continue;
+                };
+                if line[..idx].ends_with('"') {
+                    continue;
+                }
+                if path == allowed_file {
+                    // The one legitimate top-level caller: `daemon stop`'s
+                    // own CLI dispatch arm.
+                    continue;
+                }
+                offending_call_sites.push(format!(
+                    "{}:{}: {}",
+                    path.display(),
+                    line_no + 1,
+                    line.trim()
+                ));
+            }
+        }
+
+        assert!(
+            offending_call_sites.is_empty(),
+            "unit_153_no_nested_envelope_prints: FAIL — run_daemon_stop (which prints its own \
+             top-level JSON envelope) is called from somewhere other than dispatch.rs's \
+             top-level `daemon stop` handler. Any such call happens from inside another \
+             command's run and corrupts its stdout with a second envelope (the iter-153 \
+             defect). Offending call site(s):\n{}",
+            offending_call_sites.join("\n")
+        );
+    }
+
     #[test]
     fn no_daemon_flag_always_returns_direct() {
         let target = resolve_connection_target("localhost", 6000, 300, true);
