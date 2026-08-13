@@ -324,11 +324,20 @@ fn resolve_boundary(boundaries: &[NavBoundary], since_nav_index: i64) -> Option<
     boundaries.get(idx).cloned()
 }
 
+/// Serialise a buffered `network-event` back into the **wire** shape that
+/// `parse_single_network_resource` (ff-rdp-core) reads.
+///
+/// iter-159: the cause used to be stored as a flat `"causeType"` key, but the
+/// parser reads `cause.type` (a nested object, as Firefox sends it), so every
+/// daemon-buffered row came back with `cause_type: ""` and `by_cause_type`
+/// degenerated to a single `""` bucket.  Like `update_to_val`'s shape bug this
+/// was invisible while the `store-events` workaround — which used the correct
+/// shape — was the only thing filling the buffer.
 fn net_to_val(n: &NetworkResource) -> Value {
     json!({
         "actor": n.actor.as_ref(), "resourceId": n.resource_id,
         "method": n.method, "url": n.url, "isXHR": n.is_xhr,
-        "causeType": n.cause_type, "startedDateTime": n.started_date_time,
+        "cause": {"type": n.cause_type}, "startedDateTime": n.started_date_time,
         "timeStamp": n.timestamp,
     })
 }

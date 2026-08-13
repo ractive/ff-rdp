@@ -1994,6 +1994,17 @@ pub fn run_with_network(
             }
         }
 
+        // iter-159: the daemon now buffers **every** watcher resource, streamed
+        // or not, so the residual drain above returns the events this client
+        // already received over the stream as well as any that landed after the
+        // cutoff.  Collapse by `resource_id`, keeping the first occurrence, or
+        // every request would be reported twice.  Updates need no dedupe —
+        // `merge_updates` folds them by `resource_id` with last-write-wins.
+        {
+            let mut seen = std::collections::HashSet::new();
+            all_resources.retain(|r| seen.insert(r.resource_id));
+        }
+
         // iter-159 Theme D: the `store-events` push-back is gone.  It existed
         // (iter-61j G) so that a later `ff-rdp network` could read this
         // invocation's capture instead of falling back to the Performance API

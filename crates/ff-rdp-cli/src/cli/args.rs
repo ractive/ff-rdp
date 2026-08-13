@@ -1556,28 +1556,32 @@ pub struct NetworkArgs {
     /// `--since -1` or `--since=-1` without clap mistaking `-1` for a flag.
     #[arg(long, value_name = "NAV_INDEX_OR_ALL", allow_hyphen_values = true)]
     pub since: Option<String>,
-    /// Pin which capture source produces the rows, instead of letting the
-    /// connection mode decide (iter-137 Theme C).
+    /// Which capture source produces the rows.
     ///
-    /// `auto` (default) prefers the watcher and falls back to the Performance
-    /// API when the watcher buffer is empty — which is why the same page
-    /// reported 77 watcher rows through the daemon and 137 performance-api
-    /// rows with `--no-daemon`: the daemon has been buffering since it
-    /// started, a direct connection has not. `watcher` and `performance-api`
-    /// force one source, so both connection modes return the same rows from
-    /// the same place. `meta.source_reason` always states which rule applied.
-    #[arg(long, value_enum, default_value_t = NetworkSource::Auto)]
+    /// `watcher` (the default) reads the RDP resource watcher, the only source
+    /// that carries `method`, `status`, `content_type` and `transfer_size`.
+    /// `performance-api` evaluates `performance.getEntriesByType('resource')`
+    /// in the page instead — fewer fields, but it can see requests that
+    /// finished before ff-rdp connected.
+    ///
+    /// There is no automatic substitution: an empty watcher buffer is reported
+    /// as zero watcher rows, never silently swapped for a different dataset
+    /// with different fields (iter-159). `auto` is accepted as a deprecated
+    /// alias of `watcher`.
+    #[arg(long, value_enum, default_value_t = NetworkSource::Watcher)]
     pub source: NetworkSource,
 }
 
-/// Capture source for `ff-rdp network` (iter-137 Theme C).
+/// Capture source for `ff-rdp network` (iter-137 Theme C, narrowed in iter-159).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum NetworkSource {
-    /// Watcher buffer if non-empty, else the Performance API. Connection-mode
-    /// dependent by construction.
-    Auto,
-    /// Only the watcher/daemon resource buffer. Reports zero rows rather than
+    /// The watcher/daemon resource buffer. Reports zero rows rather than
     /// silently substituting a different dataset.
+    ///
+    /// `auto` is a deprecated alias: until iter-159 it meant "watcher if
+    /// non-empty, else performance-api", and that silent substitution is what
+    /// hid a daemon watcher that had been delivering nothing since iter-137.
+    #[value(alias = "auto")]
     Watcher,
     /// Only `performance.getEntriesByType('resource')`, evaluated in the page.
     /// Identical in daemon and direct mode; no headers or security detail.
