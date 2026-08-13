@@ -1230,23 +1230,13 @@ fn dispatch_firefox_message(
     resources: Option<(&mut ResourceCommand, &ResourceReceiver)>,
 ) {
     let watcher_actor = lock_or_recover!(state.watcher_actor).clone();
-    if std::env::var("FF_RDP_DAEMON_WIRE_TRACE").is_ok() {
-        let t = msg.get("type").and_then(Value::as_str).unwrap_or("<none>");
-        let f = msg.get("from").and_then(Value::as_str).unwrap_or("<none>");
-        if t.starts_with("resources-") || t.contains("target") {
-            eprintln!(
-                "WIRETRACE type={t} from={f} daemon_watcher={watcher_actor} match={} res_active={}",
-                is_watcher_event(msg, &watcher_actor),
-                resources.is_some()
-            );
-        }
-    }
     if let Some((resource_bus, resource_rx)) = resources
         && is_watcher_event(msg, &watcher_actor)
     {
-        // Forward raw events to stream subscribers first, noting which resource
-        // types were claimed by at least one subscriber.
-        let streamed_types = dispatch_watcher_event_to_stream_subs(state, msg);
+        // Forward raw events to stream subscribers.  The set of types that were
+        // claimed by a subscriber is deliberately *not* used to gate buffering
+        // any more — see the comment on the buffering loop below.
+        let _streamed_types = dispatch_watcher_event_to_stream_subs(state, msg);
 
         // Wrap any grip actor IDs embedded in the watcher event in a
         // ResourceGripGuard backed by the daemon's release queue.  When the
@@ -1258,36 +1248,29 @@ fn dispatch_firefox_message(
             grip_guard.add_grip(grip);
         }
 
-        // Parse into typed Resources via the bus, then route to the buffer.
+        // Parse into typed Resources via the bus, then route **every** resource
+        // to the buffer — streamed or not.
         //
-        // For non-Destroyed resources: buffer only if the type had no active
-        // stream subscriber.  This avoids double-counting when the CLI stores
-        // events back via `store-events` after a `navigate --with-network` stream.
+        // iter-159: this loop used to skip non-Destroyed resources whose type
+        // had an active stream subscriber, to avoid double-counting when the
+        // CLI pushed its own capture back via the `store-events` RPC after a
+        // `navigate --with-network` stream.  That RPC is gone (Theme D), and
+        // the suppression it justified was the whole reason daemon-mode
+        // `network --source watcher` returned nothing: since iter-138 a
+        // **plain** `navigate` also opens a `network-event` stream (to read the
+        // main document's HTTP status in `wait_for_doc_complete`), so every
+        // navigation's resources were routed to that transient subscriber,
+        // dropped on the floor when it went away, and never buffered.  Measured
+        // on the wire: `resources-available-array` arriving `from` the daemon's
+        // own watcher actor, `is_watcher_event` → true, parsed as
+        // `network-event`, and then discarded with `buffered=false`.
         //
-        // For Destroyed resources: ALWAYS call buf.on_resource so stale entries
-        // are pruned regardless of whether the type has a stream subscriber.
-        // Skipping the buffer prune would leave stale entries in the buffer
-        // indefinitely.
+        // Buffering unconditionally is safe: a stream subscriber consumes a
+        // *copy* of the raw frame, and `--follow` readers clear the buffer for
+        // their type when they subscribe (`"stream"` RPC → `buffer.drain`).
         resource_bus.dispatch_event(msg);
         let mut buf = lock_or_recover!(state.buffer);
-        let trace = std::env::var("FF_RDP_DAEMON_WIRE_TRACE").is_ok();
-        if trace {
-            eprintln!(
-                "WIRETRACE2 matched payload={} streamed={:?}",
-                serde_json::to_string(msg).unwrap_or_default(),
-                streamed_types
-            );
-        }
         for resource in resource_rx.try_iter() {
-            let is_destroyed = matches!(resource.as_ref(), ff_rdp_core::Resource::Destroyed { .. });
-            if trace {
-                eprintln!(
-                    "WIRETRACE3 parsed type={} destroyed={is_destroyed} buffered={}",
-                    resource.type_name(),
-                    is_destroyed || !streamed_types.contains(resource.type_name().as_ref())
-                );
-            }
-            let _ = is_destroyed;
             buf.on_resource(resource.as_ref());
         }
     } else if is_target_event(msg) {

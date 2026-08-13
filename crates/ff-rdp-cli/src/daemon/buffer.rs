@@ -359,10 +359,22 @@ fn net_to_val(n: &NetworkResource) -> Value {
     })
 }
 
+/// Serialise a `network-event` update into the **wire** shape that
+/// [`ff_rdp_core::actors::watcher::parse_network_resource_updates`] reads back:
+/// a top-level `resourceId` alongside a `resourceUpdates` **object**.
+///
+/// iter-159: this used to emit `{"resourceUpdates": [{"resourceId": …, …}]}` —
+/// the pre-iter-106 shape, with the id nested inside a one-element array.  The
+/// reader requires `item.resourceId` and treats `resourceUpdates` as an object,
+/// so every buffered update was silently dropped on drain and `status`,
+/// `content_type` and `transfer_size` came back null on every daemon-mode row.
+/// iter-106 Theme D fixed exactly this shape in
+/// `serialize_network_resources_for_buffer` (the `store-events` workaround) and
+/// missed this copy, because the `store-events` path was the only one actually
+/// filling the buffer at the time.
 fn update_to_val(u: &NetworkResourceUpdate) -> Value {
     // Build the update object inline using Value::Object insertions.
     let mut m = serde_json::Map::new();
-    m.insert("resourceId".into(), json!(u.resource_id));
     let opt_str = [
         ("status", u.status.as_deref()),
         ("httpVersion", u.http_version.as_deref()),
@@ -388,7 +400,7 @@ fn update_to_val(u: &NetworkResourceUpdate) -> Value {
     if let Some(v) = u.from_cache {
         m.insert("fromCache".into(), json!(v));
     }
-    json!({ "resourceUpdates": [Value::Object(m)] })
+    json!({ "resourceId": u.resource_id, "resourceUpdates": Value::Object(m) })
 }
 
 fn console_to_val(c: &ConsoleResource) -> Value {
