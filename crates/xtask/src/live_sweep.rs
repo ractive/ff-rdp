@@ -140,27 +140,27 @@ pub fn scan_source(src: &str, module_prefix: Option<&str>) -> Vec<GatedTest> {
             break;
         }
 
-        if reason.contains("FF_RDP_LIVE") {
-            if let Some(name) = parse_fn_name(src, scan) {
-                let needs_network = reason.contains("FF_RDP_LIVE_NETWORK_TESTS");
-                let mut needs_live = reason.contains("FF_RDP_LIVE_TESTS");
-                if !needs_live && !needs_network {
-                    // Neither literal present despite matching "FF_RDP_LIVE" —
-                    // shouldn't happen per the iter-155 audit, but default to
-                    // the more conservative requirement rather than silently
-                    // treating the test as gate-free.
-                    needs_live = true;
-                }
-                let full_name = match module_prefix {
-                    Some(m) => format!("{m}::{name}"),
-                    None => name,
-                };
-                out.push(GatedTest {
-                    full_name,
-                    needs_live,
-                    needs_network,
-                });
+        if reason.contains("FF_RDP_LIVE")
+            && let Some(name) = parse_fn_name(src, scan)
+        {
+            let needs_network = reason.contains("FF_RDP_LIVE_NETWORK_TESTS");
+            let mut needs_live = reason.contains("FF_RDP_LIVE_TESTS");
+            if !needs_live && !needs_network {
+                // Neither literal present despite matching "FF_RDP_LIVE" —
+                // shouldn't happen per the iter-155 audit, but default to
+                // the more conservative requirement rather than silently
+                // treating the test as gate-free.
+                needs_live = true;
             }
+            let full_name = match module_prefix {
+                Some(m) => format!("{m}::{name}"),
+                None => name,
+            };
+            out.push(GatedTest {
+                full_name,
+                needs_live,
+                needs_network,
+            });
         }
 
         pos = ignore_start + 1;
@@ -448,10 +448,7 @@ pub fn run(args: Args) -> Result<()> {
 
         eprintln!(
             "live-sweep: -p {} --test {}: {} qualified (will run for real), {} will report `ignored`",
-            target.package,
-            target.test_name,
-            summary.executed,
-            summary.skipped
+            target.package, target.test_name, summary.executed, summary.skipped
         );
 
         if args.dry_run {
@@ -488,7 +485,9 @@ pub fn run(args: Args) -> Result<()> {
         skipped: total_skipped,
     }
     .total();
-    println!("LIVE_SWEEP_SUMMARY executed={total_executed} skipped={total_skipped} total={grand_total}");
+    println!(
+        "LIVE_SWEEP_SUMMARY executed={total_executed} skipped={total_skipped} total={grand_total}"
+    );
 
     if overall_ok {
         Ok(())
@@ -576,7 +575,11 @@ fn live_throttle_slow3g_slows_fetch() {
     fn scan_source_handles_multiline_reason() {
         let src = "#[test]\n#[ignore = \"requires Firefox and FF_RDP_LIVE_TESTS=1; KNOWN FAILING pending \\\n            iteration-101 Theme A (watchTargets re-engagement) — see doc comment\"]\nfn live_daemon_watch_targets() {}\n";
         let got = scan_source(src, Some("live_daemon_watch_targets"));
-        assert_eq!(got.len(), 1, "expected exactly one gated test, got: {got:?}");
+        assert_eq!(
+            got.len(),
+            1,
+            "expected exactly one gated test, got: {got:?}"
+        );
         assert!(got[0].needs_live);
         assert!(!got[0].needs_network);
         assert_eq!(
@@ -587,7 +590,8 @@ fn live_throttle_slow3g_slows_fetch() {
 
     #[test]
     fn scan_source_handles_intervening_cfg_attribute() {
-        let src = "#[test]\n#[ignore = \"requires FF_RDP_LIVE_TESTS=1\"]\n#[cfg(unix)]\nfn t() {}\n";
+        let src =
+            "#[test]\n#[ignore = \"requires FF_RDP_LIVE_TESTS=1\"]\n#[cfg(unix)]\nfn t() {}\n";
         let got = scan_source(src, None);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].full_name, "t");
@@ -812,8 +816,13 @@ fn unrelated() {}
             "with FF_RDP_LIVE_NETWORK_TESTS unset, {target_name} must be unqualified"
         );
 
-        let mut cmd = phase_command("ff-rdp-cli", "live", &[target.full_name.clone()], false)
-            .expect("phase command for a non-empty name list");
+        let mut cmd = phase_command(
+            "ff-rdp-cli",
+            "live",
+            std::slice::from_ref(&target.full_name),
+            false,
+        )
+        .expect("phase command for a non-empty name list");
         cmd.env_remove("FF_RDP_LIVE_TESTS");
         cmd.env_remove("FF_RDP_LIVE_NETWORK_TESTS");
         cmd.current_dir(&workspace_root);

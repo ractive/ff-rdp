@@ -150,3 +150,8 @@ different iteration. See [[decision-log#DEC-031]].
   one-liner.
 - Not a skill-edit iteration — this one *can* run through the loop, unlike
   [[iteration-154-ac-fidelity-evidence]].
+- **Update**: the chosen fix (see Resolution) does not touch the ~45 files or the ~94 call sites
+  at all — it never runs an unqualified test's body, so the early `return` inside it is never
+  reached, regardless of what re-measuring its exact count would show. The wide-mechanical-diff
+  expectation above did not materialize; the real diff is two files
+  (`crates/xtask/src/live_sweep.rs`, `crates/xtask/src/main.rs`).
