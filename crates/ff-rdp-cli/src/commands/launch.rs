@@ -466,10 +466,17 @@ pub fn run(
     // <port> Firefox silently no-ops when the port is already held by another
     // listener, so we surface the conflict ourselves with a hint that points
     // at `doctor` for follow-up diagnosis.
+    // iter-153: captured (not printed) here — `stop_prior_instance` no
+    // longer prints its own envelope, since doing so wrote a second
+    // top-level JSON document to `launch --replace`'s stdout ahead of the
+    // launch envelope below. Folded into this command's own `meta.replaced`
+    // instead, so `launch --replace` always emits exactly one document and
+    // `results.pid` always means the process THIS command started.
+    let mut replaced: Option<crate::daemon::client::StopOutcome> = None;
     if port_owner::is_port_in_use(port) {
         if replace {
             // --replace / --force: stop the prior instance gracefully, then proceed.
-            crate::daemon::client::stop_prior_instance(cli, port)?;
+            replaced = Some(crate::daemon::client::stop_prior_instance(cli, port)?);
         } else {
             let owner = port_owner::find_listener(port).ok().flatten();
             // Suggest a nearby port that always differs from the conflicting one,
@@ -647,6 +654,17 @@ pub fn run(
             let mut meta = json!({
                 "firefox": firefox.to_string_lossy().as_ref().to_owned(),
             });
+            // iter-153: fold the --replace stop outcome into this envelope's
+            // meta instead of `stop_prior_instance` printing a second
+            // top-level JSON document. `replaced.pid` is the STOPPED
+            // instance's PID — never to be confused with `results.pid`
+            // above, which is always the instance THIS command launched.
+            if let (Some(r), Some(obj)) = (replaced, meta.as_object_mut()) {
+                obj.insert(
+                    "replaced".to_owned(),
+                    json!({"stopped": r.stopped, "pid": r.pid}),
+                );
+            }
             crate::connection_meta::merge_into_if_verbose(
                 &mut meta,
                 host,

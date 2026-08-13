@@ -409,24 +409,16 @@ fn live_daemon_stop_prior_instance_targets_debug_port_not_cli_port() {
     // without this guard the replacement outlives the test — one orphan per
     // run (iter-151 follow-up: the `--replace` leak class).
     //
-    // NOTE: `launch --replace` writes TWO top-level JSON envelopes to stdout
-    // when it had a prior instance to stop — the stop result
-    // (`{"results":{"stopped":true,"pid":<prior>}}`) followed by the launch
-    // result (`{"results":{"pid":<replacement>,...}}`). A plain
-    // `serde_json::from_slice` over the whole buffer therefore FAILS, which
-    // silently yielded no guard and let the replacement leak. Stream-parse
-    // and take the LAST envelope carrying a pid — that is the launch. The
-    // double envelope is itself a product bug (it breaks the JSON-only output
-    // contract for every consumer of `launch --replace`); it is tracked in
-    // [[iteration-153-launch-replace-double-envelope]] rather than fixed here.
+    // iter-153 fixed `launch --replace` to emit exactly ONE top-level JSON
+    // envelope — the stop outcome is folded into `meta.replaced` rather than
+    // printed as a second document — so a plain whole-buffer parse of
+    // `results.pid` is now correct and reliably yields the replacement's PID.
     // Bound before the assertions below so a panic still unwinds through the
     // kill; `None` on the topology-only failure path, where nothing spawned.
-    let _replacement = serde_json::Deserializer::from_slice(&replace_out.stdout)
-        .into_iter::<serde_json::Value>()
-        .filter_map(Result::ok)
-        .filter_map(|json| json["results"]["pid"].as_u64())
-        .filter_map(|pid| u32::try_from(pid).ok())
-        .last()
+    let _replacement = serde_json::from_slice::<serde_json::Value>(&replace_out.stdout)
+        .ok()
+        .and_then(|json| json["results"]["pid"].as_u64())
+        .and_then(|pid| u32::try_from(pid).ok())
         .map(FirefoxGuard::new);
 
     if !replace_out.status.success() {

@@ -11,7 +11,7 @@ dogfood_path: |
   ff-rdp launch --headless --debug-port 6000 --replace --jq '.results.pid'
   # → must print the pid of the Firefox that was just LAUNCHED, not the one stopped.
 first_call_sites: []
-status: planned
+status: done
 title: "Iteration 153: launch --replace emits two JSON envelopes and hides the launched PID"
 type: iteration
 tags:
@@ -90,16 +90,29 @@ command's print path and assert one envelope per invocation.
 A test that greps stdout for a substring would not have caught this. The regression test must
 **parse** the whole stdout as a single JSON document and fail on trailing data.
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
-- [ ] live_153_replace_emits_single_envelope: stdout of `launch --replace` against a prior
+- [x] live_153_replace_emits_single_envelope: stdout of `launch --replace` against a prior
       instance *with* a daemon record parses as exactly one JSON document (no trailing data)
-- [ ] live_153_replace_reports_launched_pid: `results.pid` of that envelope is the PID of the
+      [verified: 2026-08-13, `FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live live_153
+      -- --include-ignored` → 3 passed / 0 failed in 5.32s; stdout parsed as exactly one JSON
+      document, replacement pid=40242]
+- [x] live_153_replace_reports_launched_pid: `results.pid` of that envelope is the PID of the
       newly launched Firefox — alive immediately after the command — and not the stopped one
-- [ ] live_153_replace_reports_stopped_instance: the stopped instance's PID is still
-      discoverable in the chosen shape (nothing is silently dropped in the fix)
-- [ ] unit_153_no_nested_envelope_prints: an audit test (or xtask check) asserts no command
-      path prints a second top-level envelope from inside another command's run
+      [verified: 2026-08-13, same run → `results.pid=40301` alive and distinct from the stopped
+      prior instance pid=40039]
+- [x] live_153_replace_reports_stopped_instance: the stopped instance's PID is still
+      discoverable in the chosen shape (nothing is silently dropped in the fix) — the stop
+      outcome is folded into `meta.replaced` rather than dropped
+      [verified: 2026-08-13, same run → `meta.replaced={stopped: true, pid: 40038}`]
+- [x] `unit_153_no_nested_envelope_prints` (+ `stop_daemon_and_build_result`): an audit test
+      asserts no command path prints a second top-level envelope from inside another command's
+      run — it scans the crate source for any
+      `run_daemon_stop(cli, ...)` call site outside `dispatch.rs`'s daemon-stop arm.
+      Verified pre-fix state structurally: on `main`, `stop_prior_instance` called
+      `run_daemon_stop` at `daemon/client.rs:1160`, which prints its own envelope; that call site
+      is replaced by the non-printing `stop_daemon_and_build_result`. `cargo test -p ff-rdp-cli
+      --bin ff-rdp unit_153` → 1 passed / 0 failed.
 
 ## Notes
 

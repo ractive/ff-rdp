@@ -932,6 +932,21 @@ fn kill_pid_and_wait_port(pid: u32, port: u16) -> (bool, bool, String) {
 ///    (for instances started via `daemon start`).
 /// 3. Registry path: send graceful shutdown RPC → SIGTERM → SIGKILL → poll port.
 pub(crate) fn run_daemon_stop(cli: &Cli, port: u16) -> Result<(), AppError> {
+    let result = stop_daemon_and_build_result(cli, port)?;
+    let meta = json!({});
+    let envelope = output::envelope(&result, 1, &meta);
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)
+}
+
+/// Core stop logic shared by [`run_daemon_stop`] (the standalone `daemon
+/// stop` CLI command, which prints this as its own top-level envelope) and
+/// [`stop_prior_instance`] (`launch --replace`'s internal stop-before-relaunch
+/// step, which must NOT print anything — see iter-153).
+///
+/// Returns the `results` JSON object for the stop outcome. Callers that print
+/// it wrap it in an envelope themselves; callers that fold it into another
+/// command's output read the fields they need straight from the `Value`.
+fn stop_daemon_and_build_result(cli: &Cli, port: u16) -> Result<Value, AppError> {
     // ----------------------------------------------------------------
     // 1. Check the shared DaemonRecord (written by `launch`).
     //    Only act on records whose `port` matches the target `port` so a
@@ -969,21 +984,15 @@ pub(crate) fn run_daemon_stop(cli: &Cli, port: u16) -> Result<(), AppError> {
                 None
             };
 
-            let meta = json!({});
-            let envelope = output::envelope(
-                &json!({
-                    "stopped": stopped,
-                    "pid": rec.pid,
-                    "port": rec.port,
-                    "profile_removed": profile_removed_path.is_some(),
-                    "profile_removed_path": profile_removed_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned()),
-                }),
-                1,
-                &meta,
-            );
-            return OutputPipeline::from_cli(cli)?.finalize(&envelope);
+            return Ok(json!({
+                "stopped": stopped,
+                "pid": rec.pid,
+                "port": rec.port,
+                "profile_removed": profile_removed_path.is_some(),
+                "profile_removed_path": profile_removed_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+            }));
         }
         _ => {
             // No record, or record is for a different port — fall through
@@ -1003,26 +1012,14 @@ pub(crate) fn run_daemon_stop(cli: &Cli, port: u16) -> Result<(), AppError> {
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
     else {
         // No daemon running — report success (idempotent).
-        let meta = json!({});
-        let envelope = output::envelope(
-            &json!({"stopped": false, "reason": "not running"}),
-            1,
-            &meta,
-        );
-        return OutputPipeline::from_cli(cli)?.finalize(&envelope);
+        return Ok(json!({"stopped": false, "reason": "not running"}));
     };
 
     let firefox_port = info.firefox_port;
 
     if !process::is_process_alive(info.pid) {
         registry::remove_registry(firefox_port).ok();
-        let meta = json!({});
-        let envelope = output::envelope(
-            &json!({"stopped": true, "reason": "already dead"}),
-            1,
-            &meta,
-        );
-        return OutputPipeline::from_cli(cli)?.finalize(&envelope);
+        return Ok(json!({"stopped": true, "reason": "already dead"}));
     }
 
     // iter-142 Theme A: `info.pid` is the *proxy daemon's own* PID
@@ -1114,27 +1111,43 @@ pub(crate) fn run_daemon_stop(cli: &Cli, port: u16) -> Result<(), AppError> {
     let daemon_stopped = !process::is_process_alive(info.pid);
     let firefox_stopped = firefox_pid.is_none_or(|pid| !process::is_process_alive(pid));
     let stopped = daemon_stopped && firefox_stopped;
-    let meta = json!({});
-    let envelope = output::envelope(&json!({"stopped": stopped, "pid": firefox_pid}), 1, &meta);
-    OutputPipeline::from_cli(cli)?.finalize(&envelope)
+    Ok(json!({"stopped": stopped, "pid": firefox_pid}))
+}
+
+/// Outcome of [`stop_prior_instance`], threaded back to the caller instead of
+/// being printed. `launch --replace` folds this into its own envelope's
+/// `meta.replaced` field so the command emits exactly one top-level JSON
+/// document (iter-153) — `pid` is the PID of the instance that was stopped,
+/// never confused with `results.pid` (the newly launched instance).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StopOutcome {
+    pub(crate) stopped: bool,
+    pub(crate) pid: Option<u32>,
 }
 
 /// Stop an existing Firefox instance on `port` to make way for a fresh launch.
 ///
 /// Used by `launch --replace` / `launch --force` (iter-86 Theme A / iter-90).
-/// Returns `Ok(())` if the port is free afterwards, `Err` if it is still in use.
+/// Returns the [`StopOutcome`] describing what was stopped if the port is
+/// free afterwards, `Err` if it is still in use.
+///
+/// This function must never print a JSON envelope of its own — it runs
+/// *inside* `launch`'s command handler, and a second top-level `println!`
+/// here would corrupt `launch --replace`'s stdout with two documents back to
+/// back (iter-153). Every path below returns a [`StopOutcome`] value instead
+/// of calling `OutputPipeline::finalize`.
 ///
 /// Stop priority (iter-90):
 /// 1. DaemonRecord matching the requested port → kill, wait, remove record.
 /// 2. Proxy-daemon registry matching the port → graceful `daemon stop` RPC path.
 /// 3. Fall back to port-owner lookup.
-pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> {
+pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<StopOutcome, AppError> {
     // 1. Check shared DaemonRecord first (covers instances started via `launch`).
     match crate::daemon_record::read(port)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon record: {e}")))?
     {
         Some(rec) if rec.port == port && process::is_process_alive(rec.pid) => {
-            let (_stopped, port_free, _escalation_msg) = kill_pid_and_wait_port(rec.pid, rec.port);
+            let (stopped, port_free, _escalation_msg) = kill_pid_and_wait_port(rec.pid, rec.port);
             crate::daemon_record::remove(rec.port).ok();
             if !port_free {
                 return Err(AppError::User(format!(
@@ -1143,7 +1156,10 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> 
                     rec.pid
                 )));
             }
-            return Ok(());
+            return Ok(StopOutcome {
+                stopped,
+                pid: Some(rec.pid),
+            });
         }
         Some(rec) if rec.port == port => {
             // Record exists but PID is dead — clean up and proceed (port may already be free).
@@ -1152,19 +1168,32 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> 
         _ => {}
     }
 
-    // 2. Proxy-daemon registry — use the graceful stop path.
+    // 2. Proxy-daemon registry — use the graceful stop path. Calls the same
+    //    core logic `run_daemon_stop` uses (`stop_daemon_and_build_result`)
+    //    directly, WITHOUT going through `run_daemon_stop` itself — that
+    //    function prints its own top-level envelope, which is exactly the
+    //    iter-153 double-envelope defect this refactor removes.
     //    Keyed by the target `port` (iter-123 Theme B) so we only take the
     //    graceful path when a daemon record actually exists for this port.
     match registry::read_registry(port) {
         Ok(Some(ref info)) if info.firefox_port == port => {
-            run_daemon_stop(cli, port)?;
-            return Ok(());
+            let result = stop_daemon_and_build_result(cli, port)?;
+            let stopped = result
+                .get("stopped")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let pid = result
+                .get("pid")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|p| u32::try_from(p).ok());
+            return Ok(StopOutcome { stopped, pid });
         }
         _ => {}
     }
 
     // 3. No registry — try to kill whatever is on the port by PID from
     //    the port-owner helper, then wait for the port to free.
+    let mut owner_pid: Option<u32> = None;
     if let Ok(Some(owner)) = crate::port_owner::find_listener(port) {
         // iter-110 Theme A0: never signal a process we did not spawn. The
         // port-owner lookup finds whatever is *listening on the RDP port* —
@@ -1181,6 +1210,7 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> 
                 owner.process_name, owner.pid
             )));
         }
+        owner_pid = Some(owner.pid);
         // iter-100 Theme D: re-verify port ownership immediately before the
         // kill.  `find_listener` resolves a PID at time T; between T and the
         // signal the original process may have exited and the OS may have
@@ -1219,7 +1249,10 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> 
              Run `ff-rdp doctor` or `lsof -i :{port}` to investigate."
         )));
     }
-    Ok(())
+    Ok(StopOutcome {
+        stopped: true,
+        pid: owner_pid,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1229,6 +1262,81 @@ pub(crate) fn stop_prior_instance(cli: &Cli, port: u16) -> Result<(), AppError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AC `unit_153_no_nested_envelope_prints`: `run_daemon_stop` prints its
+    /// own top-level JSON envelope (`OutputPipeline::finalize`) — so calling
+    /// it from *inside* another command's run corrupts that command's stdout
+    /// with a second document back to back. That is exactly what happened
+    /// pre-iter-153: `stop_prior_instance` (part of `launch`'s own run) called
+    /// `run_daemon_stop` from its registry-path branch.
+    ///
+    /// Guard the fix by asserting `run_daemon_stop(` is invoked from exactly
+    /// one call site anywhere in the crate's source — the standalone
+    /// `DaemonCommand::Stop` dispatch arm, which IS the top-level `daemon
+    /// stop` command and is therefore allowed to print. Any other call site
+    /// (in `stop_prior_instance` or a future helper) would reintroduce the
+    /// double-envelope defect.
+    #[test]
+    fn unit_153_no_nested_envelope_prints() {
+        let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let allowed_file = src_dir.join("dispatch.rs");
+
+        let mut offending_call_sites: Vec<String> = Vec::new();
+        for entry in walkdir::WalkDir::new(&src_dir)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "rs"))
+        {
+            let path = entry.path();
+            let Ok(contents) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            for (line_no, line) in contents.lines().enumerate() {
+                let trimmed = line.trim_start();
+                // Skip the function's own definition and doc/comment lines
+                // that merely mention the name.
+                if trimmed.starts_with("//") || trimmed.starts_with("///") {
+                    continue;
+                }
+                if line.contains("fn run_daemon_stop") {
+                    continue;
+                }
+                // Match the actual call shape (`run_daemon_stop(cli, …)`),
+                // and require it NOT be immediately preceded by `"` — that
+                // excludes this test's own source, which necessarily
+                // mentions the string `"run_daemon_stop(cli"` in its
+                // pattern-matching logic and doc comment, from flagging
+                // itself as an offending call site.
+                let Some(idx) = line.find("run_daemon_stop(cli") else {
+                    continue;
+                };
+                if line[..idx].ends_with('"') {
+                    continue;
+                }
+                if path == allowed_file {
+                    // The one legitimate top-level caller: `daemon stop`'s
+                    // own CLI dispatch arm.
+                    continue;
+                }
+                offending_call_sites.push(format!(
+                    "{}:{}: {}",
+                    path.display(),
+                    line_no + 1,
+                    line.trim()
+                ));
+            }
+        }
+
+        assert!(
+            offending_call_sites.is_empty(),
+            "unit_153_no_nested_envelope_prints: FAIL — run_daemon_stop (which prints its own \
+             top-level JSON envelope) is called from somewhere other than dispatch.rs's \
+             top-level `daemon stop` handler. Any such call happens from inside another \
+             command's run and corrupts its stdout with a second envelope (the iter-153 \
+             defect). Offending call site(s):\n{}",
+            offending_call_sites.join("\n")
+        );
+    }
 
     #[test]
     fn no_daemon_flag_always_returns_direct() {

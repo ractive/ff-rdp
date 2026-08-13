@@ -139,20 +139,14 @@ fn live_launch_replace_handles_stuck_prior() {
     // original Theme B audit missed). Bind the guard from `results.pid` before
     // the success assertion so a panic still unwinds through the kill.
     //
-    // Stream-parse and take the LAST envelope carrying a pid: when the prior
-    // instance has a daemon record, `launch --replace` emits TWO top-level
-    // JSON envelopes (stop, then launch) and a whole-buffer parse fails. That
-    // does not happen on this test's topology today, but relying on it would
-    // make the guard silently vanish the moment it did — the exact failure
-    // that let `live_123_daemon_autostart_and_registry.rs` leak. The double
-    // envelope is a product bug tracked in
-    // [[iteration-153-launch-replace-double-envelope]].
-    let replacement = serde_json::Deserializer::from_slice(&out.stdout)
-        .into_iter::<serde_json::Value>()
-        .filter_map(Result::ok)
-        .filter_map(|json| json["results"]["pid"].as_u64())
-        .filter_map(|pid| u32::try_from(pid).ok())
-        .last()
+    // iter-153 fixed `launch --replace` to emit exactly ONE top-level JSON
+    // envelope (the stop outcome is folded into `meta.replaced` instead of
+    // being printed as its own document), so a plain whole-buffer parse is
+    // now correct — no more stream-parse-and-take-last workaround.
+    let replacement = serde_json::from_slice::<serde_json::Value>(&out.stdout)
+        .ok()
+        .and_then(|json| json["results"]["pid"].as_u64())
+        .and_then(|pid| u32::try_from(pid).ok())
         .map(FirefoxGuard::new);
 
     assert!(
