@@ -55,7 +55,7 @@ dogfood_path: |
   #   162b owns that file.  Bare mentions of the names elsewhere are deliberate:
   #   they are the prose recording why each gate was deleted (see AC7).
 first_call_sites: []
-status: in-review
+status: done
 title: "Iteration 162a: delete the zero-catch discipline gates (loop-safe phases)"
 type: iteration
 tags:
