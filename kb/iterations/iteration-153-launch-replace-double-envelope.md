@@ -11,7 +11,7 @@ dogfood_path: |
   ff-rdp launch --headless --debug-port 6000 --replace --jq '.results.pid'
   # → must print the pid of the Firefox that was just LAUNCHED, not the one stopped.
 first_call_sites: []
-status: planned
+status: done
 title: "Iteration 153: launch --replace emits two JSON envelopes and hides the launched PID"
 type: iteration
 tags:
