@@ -1,11 +1,12 @@
-//! Shared scanning helpers for the `eprintln!`-under-`commands/` checks.
+//! Shared source-scanning helpers.
 //!
-//! Both `check-error-envelope-paths` (iter-145 Theme C: catches the
-//! print-then-bypass bug shape) and `check-stderr-annotations` (iter-148:
-//! requires every other `eprintln!` to carry a `// stderr-ok:` justification)
-//! walk the same directory tree with the same test-module exclusion rule.
-//! This module holds that common walk so the two checks only differ in what
-//! they look for at each `eprintln!` site.
+//! The three invariants in [`crate::check_source_invariants`] walk directory
+//! trees the same way and (for the two `eprintln!` ones) apply the same
+//! test-module exclusion rule. This module holds that common walk so each
+//! invariant only differs in what it looks for at each site.
+//!
+//! [`locate_repo_root`] is also used by `check-dogfood-script` to find
+//! `tools/lint-dogfood-script.sh`.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};

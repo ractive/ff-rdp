@@ -150,10 +150,12 @@ An AC without a named test is not done. **Ticking** a `live_*` AC additionally r
   Do not invent subcommand names that are not in the help output. `ac-fidelity-check.sh`
   checks that ticked ACs *reference* resolvable evidence, declare no non-execution, and
   carry `[verified: …]` where they name a `live_*` test — it cannot verify a test ran.
-  Fix every reported failure before pushing. CI runs the gates it can run without a
-  Firefox checkout as required checks.
-- The CI `discipline` job runs the gates that work without a Firefox checkout.
-  Two gates are useful but local-only:
+  Fix every reported failure before pushing. Most gates are local-only — do not assume
+  CI will catch what you skip.
+- The CI `discipline` job runs three: `check-live-test-layout`,
+  `check-discipline-regression` and `check-source-invariants` (the merged
+  daemon-locks / error-envelope-paths / stderr-annotations scans).
+  Two more are useful but local-only:
   - `check-firefox-refs <plan>` — validates `firefox_refs:` line ranges in an iteration plan
     against the local Firefox checkout (`FF_RDP_FIREFOX_PATH`). The only gate that checks a
     claim against ground truth *outside* the repository; both of its catches were false

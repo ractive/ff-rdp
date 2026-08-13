@@ -1,12 +1,10 @@
 mod check_actor_kb_sync;
-mod check_daemon_locks;
 mod check_discipline_regression;
 mod check_dogfood_script;
-mod check_error_envelope_paths;
 mod check_firefox_refs;
 mod check_iteration_plan;
 mod check_live_test_layout;
-mod check_stderr_annotations;
+mod check_source_invariants;
 mod find_iteration_plan;
 mod live_sweep;
 mod stderr_scan;
@@ -29,8 +27,10 @@ enum Commands {
     /// Verify the ralph-loop skill scripts mirror is in sync and replay
     /// baselines (iter-61v fails, iter-61t passes) still hold.
     CheckDisciplineRegression(check_discipline_regression::Args),
-    /// Fail if `.lock().unwrap()` remains in the daemon (must use `lock_or_recover!`).
-    CheckDaemonLocks(check_daemon_locks::Args),
+    /// Scan product source for three defect shapes: `.lock().unwrap()` in the daemon,
+    /// `eprintln!` + `AppError::Exit(N)` that bypasses the JSON envelope, and any
+    /// `eprintln!` under commands/ without a `// stderr-ok: <reason>` justification.
+    CheckSourceInvariants(check_source_invariants::Args),
     /// Validate firefox_refs line ranges in an iteration plan against the local Firefox checkout.
     CheckFirefoxRefs(check_firefox_refs::Args),
     /// Fail if an actor source file was changed without a corresponding kb/rdp/actors/*.md update.
@@ -43,12 +43,6 @@ enum Commands {
     CheckDogfoodScript(check_dogfood_script::Args),
     /// Resolve a branch name (iter-N/slug) to the absolute path of its iteration plan.
     FindIterationPlan(find_iteration_plan::Args),
-    /// Fail if any `eprintln!` in crates/ff-rdp-cli/src/commands/ is immediately
-    /// followed by a bare `AppError::Exit(N)` that bypasses the JSON error envelope.
-    CheckErrorEnvelopePaths(check_error_envelope_paths::Args),
-    /// Fail if any `eprintln!` in crates/ff-rdp-cli/src/commands/ (outside
-    /// #[cfg(test)] modules) lacks a `// stderr-ok: <reason>` justification comment.
-    CheckStderrAnnotations(check_stderr_annotations::Args),
     /// Run the live-Firefox test suite so an unmet env gate reports `ignored`
     /// (libtest's own vocabulary) instead of a fake `ok` (iter-155). Prints a
     /// machine-readable `LIVE_SWEEP_SUMMARY executed=N skipped=M total=T` line.
@@ -60,14 +54,12 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::CheckIterationPlan(args) => check_iteration_plan::run(args),
         Commands::CheckDisciplineRegression(args) => check_discipline_regression::run(args),
-        Commands::CheckDaemonLocks(args) => check_daemon_locks::run(args),
+        Commands::CheckSourceInvariants(args) => check_source_invariants::run(args),
         Commands::CheckFirefoxRefs(args) => check_firefox_refs::run(args),
         Commands::CheckActorKbSync(args) => check_actor_kb_sync::run(args),
         Commands::CheckLiveTestLayout(args) => check_live_test_layout::run(args),
         Commands::FindIterationPlan(args) => find_iteration_plan::run(args),
         Commands::CheckDogfoodScript(args) => check_dogfood_script::run(args),
-        Commands::CheckErrorEnvelopePaths(args) => check_error_envelope_paths::run(args),
-        Commands::CheckStderrAnnotations(args) => check_stderr_annotations::run(args),
         Commands::LiveSweep(args) => live_sweep::run(args),
     }
 }

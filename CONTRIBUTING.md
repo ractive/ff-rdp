@@ -113,6 +113,11 @@ FF_RDP_FIREFOX_PATH=/Users/james/devel/firefox \
 Set `FF_RDP_FIREFOX_PATH` to your Firefox source tree. The default is `/Users/james/devel/firefox`.
 Plans with no `firefox_refs:` key are accepted silently. Added in iter-73.
 
+Local-only since iter-162a: CI runners have no Firefox checkout, so the CI step's own
+name said `(no-op in CI)` and it ran against a plan with no `firefox_refs`. Run it by
+hand — it is the only gate that checks a claim against ground truth outside this
+repository, and both of its catches were false Firefox citations stopped before merge.
+
 ### Check actor ↔ kb sync
 
 If any `crates/ff-rdp-core/src/actors/<X>.rs` was changed, the corresponding
@@ -125,6 +130,36 @@ cargo run -p xtask -- check-actor-kb-sync --since origin/main
 
 Added in iter-73. See the ACTOR_KB_MAP constant in `crates/xtask/src/check_actor_kb_sync.rs`
 for the full actor → kb path mapping.
+
+Local-only since iter-162a. It fired three times (`18146ff`, `e5e58e3`, `36f1c63`) and
+every response was "write the missing doc" — a working docs-sync reminder, not a defect
+gate, and it already carries 8 `// allow-actor-kb-skip:` escape hatches.
+
+### Check source invariants
+
+Three regex scans of product source under one subcommand, each reporting its own named
+result line (merged from `check-daemon-locks`, `check-error-envelope-paths` and
+`check-stderr-annotations` in iter-162a):
+
+```sh
+cargo run -p xtask -- check-source-invariants
+```
+
+- **daemon-locks** (iter-63) — no `.lock().unwrap()` under
+  `crates/ff-rdp-cli/src/daemon/`; use `lock_or_recover!` so a poisoned mutex doesn't
+  take the whole daemon process down. Rustfmt-split chains are caught too.
+  `.lock().expect(...)` is deliberately out of scope: `#[cfg(test)]` modules use it
+  where panic-on-poison is the desired behaviour.
+- **error-envelope-paths** (iter-145 Theme C) — no `eprintln!` in
+  `crates/ff-rdp-cli/src/commands/` immediately followed by a bare `AppError::Exit(N)`,
+  the print-then-bypass idiom that let click-time JS exceptions skip the JSON error
+  envelope.
+- **stderr-annotations** (iter-148) — every `eprintln!` under `commands/` (outside
+  `#[cfg(test)]`) carries a `// stderr-ok: <reason>` justification comment.
+
+The `// stderr-ok:` comment must be on the `eprintln!` line or within the two lines
+above it; it exempts a site from both `eprintln!` invariants. This runs in the CI
+`discipline` job.
 
 ### Runnable dogfood script (Theme M, iter-85)
 
