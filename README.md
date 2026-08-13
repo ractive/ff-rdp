@@ -85,10 +85,25 @@ ff-rdp doctor                             # confirm everything is healthy
 ff-rdp navigate https://example.com       # do work
 ```
 
-When `ff-rdp launch` finds the requested port already in use it now fails
-loudly with the listener's PID and a hint pointing at `doctor`. Every
-known-failure-mode error in ff-rdp ends with a `hint:` line that names the
-next concrete command to run — connection-related ones name `doctor` first.
+When `ff-rdp launch` finds the requested port already in use it fails
+immediately — before spawning Firefox — naming the occupying process and its
+PID, and hinting at `--debug-port`, `--replace` and `doctor`. That is a
+*different* failure from Firefox spawning fine but not opening its debug port
+in time, which reports `Firefox (pid N) did not open debug port P within Ss`.
+Keeping the two apart matters: pre-iter-158 both printed "is the port already
+in use?", which sent users hunting for a process that did not exist.
+
+`launch` waits **30 s** by default for that port to open. Raise it with
+`--launch-timeout <secs>` or `FF_RDP_LAUNCH_TIMEOUT_SECS` (the flag wins; a
+malformed env value falls back to 30 s rather than failing the launch). The
+effective bound is reported as `meta.launch_wait_secs`. This is deliberately
+not the global `--timeout`, which is a per-socket-operation deadline. The
+previous hardcoded 5 s bound failed 5/5 launches at load average 6.8 —
+Firefox was measured binding its debug port at 7 s under contention.
+
+Every known-failure-mode error in ff-rdp ends with a `hint:` line that names
+the next concrete command to run — connection-related ones name `doctor`
+first.
 
 ## Requirements
 
@@ -264,7 +279,11 @@ ff-rdp launch
 ff-rdp launch --headless --temp-profile
 
 # Launch with a specific profile and debug port
+# (a --profile directory that does not exist yet is created)
 ff-rdp launch --profile /path/to/profile --debug-port 9222
+
+# Allow longer for the debug port to open on a heavily loaded machine
+ff-rdp launch --headless --launch-timeout 60
 
 # List temporary profiles managed by ff-rdp (path, count, total size)
 ff-rdp profiles list
