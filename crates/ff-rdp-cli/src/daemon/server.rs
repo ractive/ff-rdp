@@ -3699,6 +3699,145 @@ mod tests {
         );
     }
 
+    /// Fixture recorded from a live Firefox session by
+    /// `live_159_record_resources_available_with_server_target_switching`
+    /// (`ff-rdp-core/tests/live_record_fixtures.rs`) against a watcher created
+    /// the way `establish_watcher` creates it: `getWatcher` with
+    /// `isServerTargetSwitchingEnabled: true`.
+    const RESOURCES_AVAILABLE_STS_FIXTURE: &str = include_str!(
+        "../../tests/fixtures/resources_available_network_server_target_switching.json"
+    );
+
+    /// iter-159, Theme A: pin **where** network resources are addressed from
+    /// when server-side target switching is on.
+    ///
+    /// The hypothesis going in was that enabling the flag moves resource
+    /// emission onto the per-document target actor (`…//windowGlobalTarget2`),
+    /// which `is_watcher_event`'s `from == daemon_watcher` equality test would
+    /// reject — silently discarding data the daemon successfully asked for.
+    /// The recording says otherwise: `network-event` is a **parent-process**
+    /// resource (`devtools/server/actors/resources/index.js`, the
+    /// `ParentProcessResources` dictionary), watched by the WatcherActor
+    /// itself, and emitted by `WatcherActor.emitResources`
+    /// (`devtools/server/actors/watcher.js`) — so `from` is the watcher's own
+    /// actor id regardless of the flag.  `is_watcher_event` was never the
+    /// defect and must not be widened to accept target actors, which would
+    /// make the daemon steal a proxied command's own watcher events.
+    ///
+    /// The test asserts the recorded `from` verbatim.  If a future Firefox
+    /// does move emission onto the target actor, this fails on the literal —
+    /// which is the signal to revisit the predicate, not to loosen it blindly.
+    #[test]
+    fn unit_159_daemon_resource_routing_pinned() {
+        let frame: Value = serde_json::from_str(RESOURCES_AVAILABLE_STS_FIXTURE)
+            .expect("recorded fixture must be valid JSON");
+
+        assert_eq!(
+            frame["type"], "resources-available-array",
+            "fixture must be a resource-array frame"
+        );
+        let from = frame["from"].as_str().expect("fixture must carry `from`");
+
+        // Verbatim: the recorded emitter is the watcher actor, not a target
+        // actor.  A target-actor id contains "//windowGlobalTarget".
+        assert_eq!(
+            from, "server1.conn0.watcher3",
+            "recorded emitter must be the watcher actor; got {from}"
+        );
+        assert!(
+            !from.contains("//windowGlobalTarget"),
+            "network-event must not be emitted by a target actor under \
+             isServerTargetSwitchingEnabled: true; got {from}"
+        );
+
+        // The daemon accepts it when the recorded emitter is its own watcher…
+        assert!(
+            is_watcher_event(&frame, from),
+            "the daemon must buffer resource frames from its own watcher"
+        );
+        // …and still refuses frames belonging to some other watcher, so a
+        // proxied command's `watchResources` handshake is never stolen.
+        assert!(
+            !is_watcher_event(&frame, "server1.conn0.watcher99"),
+            "frames from another watcher must reach the RPC client untouched"
+        );
+
+        // Guard the payload shape the buffer round-trips through: `cause` is a
+        // nested object (`cause.type`), which is what
+        // `parse_single_network_resource` reads and what `net_to_val` must
+        // reproduce.  Storing it as a flat `causeType` key lost it silently.
+        let item = &frame["array"][0][1][0];
+        assert!(
+            item["cause"]["type"].is_string(),
+            "cause must be a nested object with a `type`, got: {}",
+            item["cause"]
+        );
+        assert!(item["method"].is_string(), "method must be present");
+    }
+
+    /// iter-159: pin `establish_watcher`'s `getWatcher` arguments.
+    ///
+    /// Theme A chose neither of the plan's two options: the wire evidence
+    /// (`unit_159_daemon_resource_routing_pinned`) shows the flag does not
+    /// affect where `network-event` resources are addressed, so splitting the
+    /// connection (option a) would buy nothing and widening the acceptance
+    /// predicate (option b) would break the `watchResources` handshake
+    /// forwarding for proxied commands.  The daemon's core watcher therefore
+    /// keeps `isServerTargetSwitchingEnabled: true`, which is what iter-137's
+    /// frame-target enumeration through the daemon depends on.
+    ///
+    /// This test fails if someone "reverts the flag" as a speculative fix —
+    /// the exact trade iter-137 made in the other direction.
+    #[test]
+    fn unit_159_establish_watcher_acquisition_path() {
+        let src = include_str!("server.rs");
+        let call = "TabActor::get_watcher_with_options(transport, &tab_actor, Some(true))";
+        assert!(
+            src.contains(call),
+            "establish_watcher must keep isServerTargetSwitchingEnabled: true — \
+             iter-137's frame-target enumeration through the daemon depends on it, \
+             and iter-159 proved on the wire that the flag is not what broke \
+             network-event delivery (see unit_159_daemon_resource_routing_pinned)"
+        );
+    }
+
+    /// iter-159 Theme D: the `store-events` workaround must stay deleted.
+    ///
+    /// It let `navigate --with-network` push its own direct capture into the
+    /// daemon buffer, so a session that touched the working path even once
+    /// left data behind that made the broken daemon watcher look healthy — a
+    /// reviewer hit exactly that mid-investigation and briefly concluded the
+    /// regression was not real.  Re-adding it would restore the mask, so the
+    /// deletion is pinned by a source audit rather than left to review.
+    ///
+    /// Historical *mentions* in comments are fine and deliberate; what must
+    /// not come back is the RPC arm, its client, and its serialiser.
+    #[test]
+    fn unit_159_store_events_workaround_deleted() {
+        let server_src = include_str!("server.rs");
+        let client_src = include_str!("client.rs");
+        let network_events_src = include_str!("../commands/network_events.rs");
+        let navigate_src = include_str!("../commands/navigate.rs");
+
+        assert!(
+            !server_src.contains(r#""store-events" =>"#),
+            "daemon/server.rs must not carry a `store-events` RPC arm"
+        );
+        assert!(
+            !client_src.contains("fn store_network_events"),
+            "daemon/client.rs must not carry the `store-events` client"
+        );
+        assert!(
+            !network_events_src.contains("fn serialize_network_resources_for_buffer"),
+            "commands/network_events.rs must not carry \
+             `serialize_network_resources_for_buffer`"
+        );
+        assert!(
+            !navigate_src.contains("store_network_events("),
+            "navigate --with-network must not push its capture back into the buffer"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // handle_daemon_message — stream / stop-stream
     // -----------------------------------------------------------------------

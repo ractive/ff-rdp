@@ -1,0 +1,38 @@
+{
+  "type": "resources-available-array",
+  "array": [
+    [
+      "network-event",
+      [
+        {
+          "actor": "server1.conn0.netEvent6",
+          "resourceId": 8589934593,
+          "resourceType": "network-event",
+          "browsingContextID": 11,
+          "cause": {
+            "loadingDocumentUri": null,
+            "type": "document"
+          },
+          "chromeContext": false,
+          "innerWindowId": 8589934593,
+          "isNavigationRequest": true,
+          "isThirdPartyTrackingResource": false,
+          "isXHR": false,
+          "method": "GET",
+          "priority": -20,
+          "private": false,
+          "referrerPolicy": "",
+          "stacktraceResourceId": 8589934593,
+          "startedDateTime": "2026-08-13T23:42:16.495Z",
+          "securityFlags": 8,
+          "timeStamp": 1786664536495,
+          "timings": {},
+          "url": "https://example.com/",
+          "requestCookiesAvailable": true,
+          "requestHeadersAvailable": true
+        }
+      ]
+    ]
+  ],
+  "from": "server1.conn0.watcher3"
+}

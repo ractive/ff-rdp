@@ -3613,3 +3613,125 @@ fn unit_send_raw_rejects_oneway() {
         reject_oneway_request(&json!({"to": "root", "type": two_way}));
     }
 }
+
+// ===========================================================================
+// iter-159: resource routing under server-side target switching
+// ===========================================================================
+
+/// Record a `resources-available-array` frame produced by a watcher created
+/// **exactly the way the daemon creates it** — `getWatcher` with
+/// `isServerTargetSwitchingEnabled: true`.
+///
+/// iter-159 needed to know whether that flag moves `network-event` delivery off
+/// the watcher actor and onto the per-document target actor, which would make
+/// the daemon's `is_watcher_event` predicate (a `from == watcher` equality
+/// test) silently discard every network event.  The recorded frame answers it
+/// on the wire instead of by reading the spec twice; the unit test that pins
+/// the answer is `daemon::server::tests::unit_159_daemon_resource_routing_pinned`.
+///
+/// Fixture: `ff-rdp-cli/tests/fixtures/resources_available_network_server_target_switching.json`
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_159_record_resources_available_with_server_target_switching() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    transport
+        .send(&json!({"to": "root", "type": "listTabs"}))
+        .expect("send listTabs");
+    let tabs = recv_from_actor(transport, "root");
+    let tab_actor = tabs["tabs"][0]["actor"]
+        .as_str()
+        .expect("tab actor")
+        .to_owned();
+
+    // The daemon's exact call (daemon/server.rs `establish_watcher`).
+    transport
+        .send(&json!({
+            "to": &tab_actor,
+            "type": "getWatcher",
+            "isServerTargetSwitchingEnabled": true,
+        }))
+        .expect("send getWatcher");
+    let watcher_reply = recv_from_actor(transport, &tab_actor);
+    let watcher_actor = watcher_reply["actor"]
+        .as_str()
+        .expect("watcher actor")
+        .to_owned();
+
+    // watchTargets before watchResources, as the protocol requires.
+    transport
+        .send(&json!({
+            "to": &watcher_actor,
+            "type": "watchTargets",
+            "targetType": "frame",
+        }))
+        .expect("send watchTargets");
+    drain_messages(transport, Duration::from_secs(2));
+
+    transport
+        .send(&json!({
+            "to": &watcher_actor,
+            "type": "watchResources",
+            "resourceTypes": ["network-event"],
+        }))
+        .expect("send watchResources");
+    drain_messages(transport, Duration::from_secs(2));
+
+    let target_actor = watcher_reply["traits"]
+        .get("frame")
+        .and(None::<&str>)
+        .unwrap_or_default();
+    let _ = target_actor;
+
+    // Navigate through the tab descriptor's own target so the page reloads and
+    // emits fresh network events.
+    transport
+        .send(&json!({"to": &tab_actor, "type": "getTarget"}))
+        .expect("send getTarget");
+    let target = recv_from_actor(transport, &tab_actor);
+    let target_actor = target["frame"]["actor"]
+        .as_str()
+        .expect("target actor")
+        .to_owned();
+
+    transport
+        .send(&json!({
+            "to": &target_actor,
+            "type": "navigateTo",
+            "url": "https://example.com/",
+        }))
+        .expect("send navigateTo");
+
+    std::thread::sleep(Duration::from_secs(2));
+    let events = drain_messages(transport, Duration::from_secs(5));
+
+    let frame = events
+        .iter()
+        .find(|m| {
+            m.get("type").and_then(Value::as_str) == Some("resources-available-array")
+                && m.get("array")
+                    .and_then(Value::as_array)
+                    .is_some_and(|a| {
+                        a.iter().any(|sub| {
+                            sub.as_array()
+                                .and_then(|s| s.first())
+                                .and_then(Value::as_str)
+                                == Some("network-event")
+                        })
+                    })
+        })
+        .expect("a network-event resources-available-array frame must arrive");
+
+    // The whole point of the recording: which actor sent it.
+    let from = frame.get("from").and_then(Value::as_str).unwrap_or_default();
+    assert!(
+        !from.is_empty(),
+        "the recorded frame must carry a `from` actor id"
+    );
+
+    save_cli_fixture("resources_available_network_server_target_switching.json", frame);
+}
