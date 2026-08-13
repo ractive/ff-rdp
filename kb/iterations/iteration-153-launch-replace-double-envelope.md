@@ -105,8 +105,9 @@ A test that greps stdout for a substring would not have caught this. The regress
       discoverable in the chosen shape (nothing is silently dropped in the fix) — the stop
       outcome is folded into `meta.replaced` rather than dropped
       [verified: 2026-08-13, same run → `meta.replaced={stopped: true, pid: 40038}`]
-- [x] unit_153_no_nested_envelope_prints: an audit test asserts no command path prints a second
-      top-level envelope from inside another command's run — it scans the crate source for any
+- [x] `unit_153_no_nested_envelope_prints` (+ `stop_daemon_and_build_result`): an audit test
+      asserts no command path prints a second top-level envelope from inside another command's
+      run — it scans the crate source for any
       `run_daemon_stop(cli, ...)` call site outside `dispatch.rs`'s daemon-stop arm.
       Verified pre-fix state structurally: on `main`, `stop_prior_instance` called
       `run_daemon_stop` at `daemon/client.rs:1160`, which prints its own envelope; that call site
