@@ -14,7 +14,7 @@ dogfood_path: |
   cargo run -p xtask -- check-discipline-regression
   # → replay baselines OK (61v=FAIL, 61t=PASS)
 first_call_sites: []
-status: in-review
+status: done
 title: "Iteration 154: ac-fidelity-check passes ACs whose tests never ran"
 type: iteration
 tags:
