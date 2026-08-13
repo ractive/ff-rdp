@@ -544,7 +544,10 @@ fn network_source_performance_api_returns_perf_rows() {
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
     // The explicit opt-out still returns Performance-API rows.
-    assert_eq!(json["total"], 2, "expected 2 entries from --source performance-api");
+    assert_eq!(
+        json["total"], 2,
+        "expected 2 entries from --source performance-api"
+    );
     let results = json["results"].as_array().expect("results is array");
     // All entries should have source = "performance-api".
     for entry in results {

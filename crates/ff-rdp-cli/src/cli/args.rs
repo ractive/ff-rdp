@@ -1408,8 +1408,14 @@ pub struct NavigateArgs {
     /// overlay (see `ff-rdp consent accept`). Best-effort: a detection
     /// failure is reported as a warning, not a navigate failure. Adds
     /// `results.consent = {"cmp": ..., "action": ...}` (both keys always
-    /// present). Not supported together with --with-network.
-    #[arg(long, conflicts_with = "with_network")]
+    /// present).
+    ///
+    /// Combines with --with-network (iter-159): the consent click happens while
+    /// the network capture is still open, and a short follow-up drain collects
+    /// the requests the dismissal unblocks. Before iter-159 the two flags were
+    /// mutually exclusive, so a consent-walled site — the only kind where you
+    /// need both — forced a choice between them.
+    #[arg(long)]
     pub auto_consent: bool,
 }
 

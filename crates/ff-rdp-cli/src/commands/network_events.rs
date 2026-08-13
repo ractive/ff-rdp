@@ -46,24 +46,40 @@ pub(crate) fn drain_network_events(
     Ok((all_resources, all_updates))
 }
 
-/// Drain network events with a total time limit instead of an idle timeout.
+/// How long the resource stream must stay silent before
+/// [`drain_network_events_timed`] concludes the page has finished loading.
 ///
-/// Unlike [`drain_network_events`] which stops after a single idle timeout,
-/// this function collects events for up to `total_timeout` of wall-clock time,
-/// using a short per-read poll interval.  This is better for navigation where
-/// events arrive in bursts with gaps between them (e.g. the initial navigation
-/// request takes 1-2 seconds before any network events start flowing).
+/// Long enough to bridge the gaps inside a normal page load — the document
+/// request lands 1-2 s before its subresources, and lazily-triggered requests
+/// (fonts, XHR fired from `DOMContentLoaded`) follow the same pattern — and
+/// short enough that a quiet page returns in a couple of seconds rather than
+/// burning the whole `--timeout`.
+const NETWORK_IDLE_QUIET_PERIOD: Duration = Duration::from_secs(2);
+
+/// Drain network events until the stream goes idle, bounded by `total_timeout`.
 ///
-/// The third element of the returned tuple is `timeout_reached`: `true` when
-/// the wall-clock deadline fired while events were still arriving (i.e. the
-/// last `recv()` before the deadline check returned an event, not an idle
-/// timeout), `false` when collection stopped because the connection went idle.
+/// Collection stops at the **first** of:
+///  - `NETWORK_IDLE_QUIET_PERIOD` elapsing with no
+///    `resources-available-array` / `resources-updated-array` frame, once at
+///    least one event has been seen; or
+///  - `total_timeout` of wall-clock time (the hard ceiling).
+///
+/// iter-159: this used to run the wall clock out unconditionally — the loop's
+/// only exit was `start.elapsed() >= total_timeout` — so `navigate
+/// --with-network --timeout 30000` sat for the full 30 s on a page that had
+/// finished in 800 ms. The idle cutoff only applies after the first event, so
+/// a slow first byte still gets the whole budget.
+///
+/// The third element of the returned tuple keeps its meaning: `timeout_reached`
+/// is `true` only when the wall-clock ceiling fired while events were still
+/// arriving, `false` when collection stopped because the stream went quiet.
 pub(crate) fn drain_network_events_timed(
     transport: &mut RdpTransport,
     total_timeout: Duration,
 ) -> Result<(Vec<NetworkResource>, Vec<NetworkResourceUpdate>, bool), ProtocolError> {
     let start = Instant::now();
-    let poll_interval = Duration::from_millis(500);
+    // Poll faster than the quiet period so the idle cutoff has resolution.
+    let poll_interval = Duration::from_millis(250);
 
     // Set a short read timeout for responsive polling.
     transport.set_read_timeout(Some(poll_interval))?;
@@ -73,11 +89,23 @@ pub(crate) fn drain_network_events_timed(
     // True after a recv that returned actual data; reset to false on idle timeout.
     // When the deadline fires, this tells us whether events were still arriving.
     let mut last_recv_was_event = false;
+    // Instant of the most recent resource frame, or `None` before the first.
+    let mut last_event_at: Option<Instant> = None;
 
     loop {
         // Check wall-clock deadline before each read so we stop even when
         // messages arrive faster than the poll interval (continuous traffic).
         if start.elapsed() >= total_timeout {
+            break;
+        }
+
+        // Idle cutoff: once events have started, a quiet stream means the page
+        // is done.  Before the first event there is nothing to be idle about —
+        // a slow-to-respond origin must keep the full budget.
+        if let Some(last) = last_event_at
+            && last.elapsed() >= NETWORK_IDLE_QUIET_PERIOD
+        {
+            last_recv_was_event = false;
             break;
         }
 
@@ -88,18 +116,20 @@ pub(crate) fn drain_network_events_timed(
                 match msg_type {
                     "resources-available-array" => {
                         last_recv_was_event = true;
+                        last_event_at = Some(Instant::now());
                         all_resources.extend(parse_network_resources(&msg));
                     }
                     "resources-updated-array" => {
                         last_recv_was_event = true;
+                        last_event_at = Some(Instant::now());
                         all_updates.extend(parse_network_resource_updates(&msg));
                     }
                     _ => {}
                 }
             }
             Err(ProtocolError::Timeout) => {
-                // Per-read timeout with no message — the top-of-loop check
-                // will enforce the total deadline on the next iteration.
+                // Per-read timeout with no message — the top-of-loop checks
+                // enforce both the idle cutoff and the total deadline.
             }
             Err(e) => return Err(e),
         }

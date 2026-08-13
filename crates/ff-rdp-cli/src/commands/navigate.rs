@@ -1809,7 +1809,29 @@ pub fn run_core(
 /// navigate itself. The keys are always present either way, matching
 /// `consent accept`'s always-present-key discipline.
 fn merge_auto_consent(cli: &Cli, result: &mut Value) {
-    let consent = match connect_and_get_target(cli)
+    let consent = detect_and_accept_best_effort(cli);
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("consent".to_owned(), consent);
+    }
+}
+
+/// How long `--with-network --auto-consent` keeps draining after the consent
+/// click, so requests unblocked by the dismissal are part of the same capture.
+///
+/// Short by design: [`drain_network_events_timed`] returns as soon as the
+/// stream goes quiet, so this is a ceiling for a page that keeps loading, not a
+/// fixed wait.
+const CONSENT_POST_DRAIN_MS: u64 = 8_000;
+
+/// Run the CMP-detection-and-accept flow on its own connection and return the
+/// `{cmp, action}` object, never failing the caller.
+///
+/// Both keys are always present, matching `consent accept`'s discipline; a
+/// connection or protocol failure becomes a stderr warning plus two nulls.
+/// Using a separate connection is what lets `--with-network` keep its resource
+/// subscription live across the consent interaction (iter-159).
+fn detect_and_accept_best_effort(cli: &Cli) -> Value {
+    match connect_and_get_target(cli)
         .and_then(|mut ctx| super::consent::detect_and_accept(&mut ctx))
     {
         Ok(v) => v,
@@ -1817,9 +1839,6 @@ fn merge_auto_consent(cli: &Cli, result: &mut Value) {
             eprintln!("warning: --auto-consent: consent detection failed: {e}");
             json!({"cmp": null, "action": null})
         }
-    };
-    if let Some(obj) = result.as_object_mut() {
-        obj.insert("consent".to_owned(), consent);
     }
 }
 
@@ -1897,11 +1916,20 @@ fn extract_document_status(
 /// 7. Unwatch resources to clean up server-side state.
 /// 8. Optionally wait for a condition (--wait-text / --wait-selector).
 /// 9. Emit combined JSON output.
+///
+/// iter-159: `auto_consent` is honoured here too.  `--with-network` and
+/// `--auto-consent` used to be mutually exclusive at the clap level, so on any
+/// consent-walled site — the exact case where you want both — you had to choose
+/// between dismissing the banner and capturing the network.  The consent step
+/// now runs **inside** the capture window: the resource subscription is still
+/// live when the banner is clicked, and a short follow-up drain collects the
+/// requests the click triggers.
 pub fn run_with_network(
     cli: &Cli,
     url: &str,
     wait_opts: &WaitAfterNav<'_>,
     network_timeout_ms: u64,
+    auto_consent: bool,
 ) -> Result<(), AppError> {
     validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
@@ -1979,6 +2007,15 @@ pub fn run_with_network(
                 _ => {}
             }
         }
+
+        // iter-159: run the consent step *before* draining the residual daemon
+        // buffer, so any requests the banner dismissal triggers are still
+        // captured by this invocation.  The daemon keeps buffering throughout.
+        let consent = if auto_consent {
+            Some(detect_and_accept_best_effort(cli))
+        } else {
+            None
+        };
 
         // After stop-stream the daemon reverts to buffering.  Any events that
         // arrived at Firefox between the idle-timeout firing and the daemon
@@ -2083,6 +2120,11 @@ pub fn run_with_network(
         {
             obj.insert("wait_for".to_string(), wf);
         }
+        if let Some(c) = consent
+            && let Some(obj) = result.as_object_mut()
+        {
+            obj.insert("consent".to_string(), c);
+        }
         let mut meta = json!({});
         crate::connection_meta::merge_into_if_verbose(
             &mut meta,
@@ -2146,7 +2188,36 @@ pub fn run_with_network(
     // Restore original timeout before any further RDP round-trips (unwatch).
     restore_timeout(ctx.transport_mut(), cli.timeout);
 
-    let (all_resources, all_updates, timeout_reached) = drain_result.map_err(AppError::from)?;
+    let (mut all_resources, mut all_updates, mut timeout_reached) =
+        drain_result.map_err(AppError::from)?;
+
+    // iter-159: dismiss the consent overlay while the resource subscription is
+    // still live, then drain again briefly so the requests the click triggers
+    // land in this invocation's capture.  `detect_and_accept_best_effort` uses
+    // its own connection, so our watcher keeps receiving throughout.
+    let consent = if auto_consent {
+        let c = detect_and_accept_best_effort(cli);
+        let post = drain_network_events_timed(
+            ctx.transport_mut(),
+            Duration::from_millis(CONSENT_POST_DRAIN_MS),
+        );
+        restore_timeout(ctx.transport_mut(), cli.timeout);
+        match post {
+            Ok((r, u, t)) => {
+                all_resources.extend(r);
+                all_updates.extend(u);
+                timeout_reached = timeout_reached || t;
+            }
+            Err(e) => {
+                eprintln!("warning: --auto-consent: post-consent network drain failed: {e}");
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        all_resources.retain(|r| seen.insert(r.resource_id));
+        Some(c)
+    } else {
+        None
+    };
 
     // iter-138 Theme G/A: extract the main document's status before
     // `merge_updates` consumes `all_updates` by value below.
@@ -2229,6 +2300,11 @@ pub fn run_with_network(
         && let Some(obj) = result.as_object_mut()
     {
         obj.insert("wait_for".to_string(), wf);
+    }
+    if let Some(c) = consent
+        && let Some(obj) = result.as_object_mut()
+    {
+        obj.insert("consent".to_string(), c);
     }
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(
