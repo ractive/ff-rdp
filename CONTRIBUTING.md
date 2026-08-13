@@ -35,10 +35,11 @@ which dominates the iteration loop's wall-clock cost.
   `#[test]` immediately followed by `#[ignore = "requires a live Firefox
   instance — set FF_RDP_LIVE_TESTS=1"]` (an intervening `#[cfg(unix)]` between
   the two is fine). For the rare runtime-gated fast probe that *must* run by
-  default — e.g. a `check-pre-fix-repro` target (run via `cargo test --exact`
-  without `--include-ignored`) or a Firefox-free mock probe — add an
-  `// allow-ungated-live: <reason>` comment in the attribute block above the
-  `#[test]` instead.
+  default — a Firefox-free mock probe that carries its own runtime guard — add
+  an `// allow-ungated-live: <reason>` comment in the attribute block above the
+  `#[test]` instead. Reach for it sparingly: an ungated live test's early
+  return is counted by libtest as a pass, which is exactly the false-green
+  `live-sweep` exists to eliminate (iter-155).
 - **Launch waits are bounded and env-overridable** (iter-113 Theme A). The
   live launchers wait for Firefox's remote-debugging port via a bound that
   defaults to 30 s and is overridable with `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`
@@ -72,36 +73,20 @@ which dominates the iteration loop's wall-clock cost.
 
 ## Iteration discipline tooling
 
-### Check for dead primitives
+### Review rules that are no longer gates
 
-Every new `pub` item introduced in a PR must have at least one non-test consumer in the
-same PR. The `check-dead-primitives` command enforces this:
+Two long-standing rules survive as **review** rules. iter-162a deleted the xtask
+subcommands that enforced them, for reasons worth keeping on the record:
 
-```sh
-cargo run -p xtask -- check-dead-primitives --since origin/main
-```
-
-This diffs against `origin/main` (fallback: `main`), finds new `pub fn/struct/enum/trait/mod`
-declarations, and uses ripgrep to confirm at least one non-test caller exists. Exit 1 if any
-new pub items are unwired.
-
-Ripgrep (`rg`) must be on your PATH. Install via your package manager:
-- macOS: `brew install ripgrep`
-- Ubuntu: `sudo apt-get install ripgrep`
-- Windows: `winget install BurntSushi.ripgrep.MSVC`
-
-### Check TODO annotations
-
-Every `TODO`, `FIXME`, or `XXX` comment in new code must be accompanied by either:
-- A GitHub issue link: `https://github.com/ractive/ff-rdp/issues/N`
-- A Jira-style ticket: `WORD-123`
-- An explicit allow annotation: `// allow-todo: <reason>`
-
-```sh
-cargo run -p xtask -- check-todo-annotations --since origin/main
-```
-
-Exit 1 if any unannotated TODOs are found in the diff.
+- **Every new `pub` item needs a non-test consumer in the same PR.**
+  `check-dead-primitives` enforced this and was gamed: a `DemuxReader::new()` was
+  constructed in `daemon/server.rs` for no reason other than to satisfy it, while 425
+  lines of genuinely dead public API shipped and survived every CI run until a human
+  review found them. See the comment at `crates/ff-rdp-cli/src/daemon/server.rs:750-756`.
+- **Every `TODO`/`FIXME`/`XXX` needs a GitHub issue link, a `WORD-123` ticket, or an
+  explicit `// allow-todo: <reason>`.** `check-todo-annotations` (plus a 91-line
+  pre-commit hook duplicating it, plus a CI step) guarded a set that was empty for its
+  entire lifetime: zero hits in `crates/ff-rdp-{core,cli}/src`.
 
 ### Validate an iteration plan
 
@@ -187,26 +172,6 @@ claude --agent rdp-spec-reviewer --input tools/agents/fixtures/synthetic-watcher
 The agent mirror follows the same pattern as the ralph-loop scripts mirror: edit both
 `~/.claude/agents/rdp-spec-reviewer.md` and `tools/agents/rdp-spec-reviewer.md` in sync.
 
-## Pre-commit hook
-
-A pre-commit hook that enforces the TODO annotation rules is included in `.githooks/`.
-To install it:
-
-```sh
-git config core.hooksPath .githooks
-```
-
-The hook scans the staged diff for unannotated `TODO`/`FIXME`/`XXX` and exits non-zero
-with the offending file:line if any are found.
-
-**Bypass (emergencies only):**
-```sh
-git commit --no-verify
-```
-
-Note: the CI `discipline` job is the load-bearing gate. The pre-commit hook is a
-developer convenience — bypassing it locally doesn't skip CI.
-
 ## Iteration plan template
 
 New iteration plans live in `kb/iterations/`. Use the template:
@@ -266,8 +231,7 @@ automatically on iter-* branches.
 - One iteration = one branch = one PR
 - Branch naming: `iter-N/short-description`
 - Self-review the diff before requesting review — catch fmt, clippy, dead code yourself
-- The `discipline` CI job runs `check-dead-primitives` and `check-todo-annotations` on
-  every PR
+- The `discipline` CI job runs the xtask gates that work without a Firefox checkout
 
 ## Supply-chain checks
 
@@ -323,36 +287,15 @@ See `fuzz/README.md` for the full target list.
 When running iterations via the ralph-loop skill, each agent also runs the xtask discipline
 checks before invoking `/create-pr`. See the ralph-loop `SKILL.md` for details.
 
-## Branch protection — `live-tests` required check
+## Branch protection
 
-The `live-tests` GitHub Actions job must be a **required** status check on `main` so that
-a red live-tests run blocks merging (iter-87).
+`main` is not currently protected. The former `tools/branch-protection.sh` checker and
+this section's instructions were deleted in iter-162a: the script required `live-tests`
+as a status context, but `live.yml` stopped running per-PR in iter-117, so applying the
+rule it verified would have made *every* PR unmergeable — the required context can never
+report. It also shelled out to `python3` in a Rust-only repo, and `d6f31c4` records that
+`main` was unprotected the whole time it was supposedly being checked.
 
-**Verify current state:**
-
-```sh
-bash tools/branch-protection.sh ractive/ff-rdp
-```
-
-**Apply the protection rule (requires admin access):**
-
-> ⚠️ The `--field required_status_checks=...` PUT *replaces* the entire `contexts`
-> array. Before running, GET the current protection and include every existing
-> required check in the new array, otherwise you will drop them.
->
-> ```sh
-> gh api repos/ractive/ff-rdp/branches/main/protection \
->   --jq '.required_status_checks.contexts'
-> ```
-
-```sh
-# Example only — replace the contexts array with the merged set from the GET above.
-gh api repos/ractive/ff-rdp/branches/main/protection \
-  --method PUT \
-  --field required_status_checks='{"strict":false,"contexts":["live-tests","fmt","clippy"]}' \
-  --field enforce_admins=false \
-  --field required_pull_request_reviews=null \
-  --field restrictions=null
-```
-
-After applying, re-run `bash tools/branch-protection.sh` to confirm it exits 0.
+If protection is reintroduced, pick contexts from the jobs in `.github/workflows/ci.yml`
+that actually run on `pull_request` — `fmt`, `clippy`, `test`, `discipline` — and verify
+with `gh api repos/ractive/ff-rdp/branches/main/protection`.

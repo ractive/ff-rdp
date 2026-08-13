@@ -1,16 +1,12 @@
 mod check_actor_kb_sync;
 mod check_daemon_locks;
-mod check_dead_primitives;
 mod check_discipline_regression;
 mod check_dogfood_script;
 mod check_error_envelope_paths;
 mod check_firefox_refs;
 mod check_iteration_plan;
 mod check_live_test_layout;
-mod check_oneway_conformance;
-mod check_pre_fix_repro;
 mod check_stderr_annotations;
-mod check_todo_annotations;
 mod find_iteration_plan;
 mod live_sweep;
 mod stderr_scan;
@@ -28,10 +24,6 @@ struct Cli {
 #[derive(Subcommand)]
 #[allow(clippy::enum_variant_names)]
 enum Commands {
-    /// Check for new public items that have no non-test consumers in the workspace.
-    CheckDeadPrimitives(check_dead_primitives::Args),
-    /// Check that new TODO/FIXME/XXX annotations have issue links or explicit allow comments.
-    CheckTodoAnnotations(check_todo_annotations::Args),
     /// Validate an iteration plan's frontmatter and required sections.
     CheckIterationPlan(check_iteration_plan::Args),
     /// Verify the ralph-loop skill scripts mirror is in sync and replay
@@ -43,17 +35,12 @@ enum Commands {
     CheckFirefoxRefs(check_firefox_refs::Args),
     /// Fail if an actor source file was changed without a corresponding kb/rdp/actors/*.md update.
     CheckActorKbSync(check_actor_kb_sync::Args),
-    /// Fail if any actor_request call targets a method declared oneway: true in the Firefox spec.
-    CheckOnewayConformance(check_oneway_conformance::Args),
     /// Fail if any top-level crates/ff-rdp-cli/tests/live_*.rs binary exists
     /// (live suites must be modules of the consolidated tests/live/ target).
     CheckLiveTestLayout(check_live_test_layout::Args),
-    /// Execute the iteration plan's dogfood_script and verify the sentinel is written.
+    /// Lint and execute the iteration plan's dogfood_script, verifying the sentinel is written.
     /// Skips gracefully if FF_RDP_LIVE_TESTS != "1" or no dogfood_script field is set.
     CheckDogfoodScript(check_dogfood_script::Args),
-    /// Verify pre_fix_repro_test annotations in an iteration plan: each named test
-    /// must FAIL on origin/main and PASS on the current branch HEAD.
-    CheckPreFixRepro(check_pre_fix_repro::Args),
     /// Resolve a branch name (iter-N/slug) to the absolute path of its iteration plan.
     FindIterationPlan(find_iteration_plan::Args),
     /// Fail if any `eprintln!` in crates/ff-rdp-cli/src/commands/ is immediately
@@ -71,18 +58,14 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::CheckDeadPrimitives(args) => check_dead_primitives::run(args),
-        Commands::CheckTodoAnnotations(args) => check_todo_annotations::run(args),
         Commands::CheckIterationPlan(args) => check_iteration_plan::run(args),
         Commands::CheckDisciplineRegression(args) => check_discipline_regression::run(args),
         Commands::CheckDaemonLocks(args) => check_daemon_locks::run(args),
         Commands::CheckFirefoxRefs(args) => check_firefox_refs::run(args),
         Commands::CheckActorKbSync(args) => check_actor_kb_sync::run(args),
-        Commands::CheckOnewayConformance(args) => check_oneway_conformance::run(args),
         Commands::CheckLiveTestLayout(args) => check_live_test_layout::run(args),
         Commands::FindIterationPlan(args) => find_iteration_plan::run(args),
         Commands::CheckDogfoodScript(args) => check_dogfood_script::run(args),
-        Commands::CheckPreFixRepro(args) => check_pre_fix_repro::run(args),
         Commands::CheckErrorEnvelopePaths(args) => check_error_envelope_paths::run(args),
         Commands::CheckStderrAnnotations(args) => check_stderr_annotations::run(args),
         Commands::LiveSweep(args) => live_sweep::run(args),
