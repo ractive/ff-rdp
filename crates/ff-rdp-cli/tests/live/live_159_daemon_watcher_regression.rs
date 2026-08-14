@@ -221,6 +221,59 @@ fn live_159_daemon_watcher_captures_plain_navigate() {
     );
 }
 
+/// `live_159_watcher_result_is_uncontaminated`: the buffer-empty precondition,
+/// asserted on its own so the property has a test of its own name.
+///
+/// `store-events` used to let a `--no-daemon --with-network` call push its
+/// direct capture into the daemon buffer, so any daemon-mode assertion made
+/// after one was measuring the workaround rather than the watcher. There is no
+/// `--no-daemon` and no `--with-network` anywhere in this test body: the buffer
+/// is asserted **== 0** before the navigate and **> 0** after, so the events can
+/// only have come from the daemon's own watcher.
+#[test]
+#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
+fn live_159_watcher_result_is_uncontaminated() {
+    if !network_tests_enabled("live_159_watcher_result_is_uncontaminated") {
+        return;
+    }
+    let ff = LiveFirefox::headless_on_random_port();
+    let port = ff.port();
+
+    let before = buffered_network_events(port);
+    assert_eq!(
+        before, 0,
+        "nothing may have fed the buffer before the navigate; got {before}"
+    );
+
+    let mut nav = daemon_args(port);
+    nav.extend(["navigate".to_owned(), BUSY_PAGE.to_owned()]);
+    let nav_out = run(nav);
+    if !nav_out.status.success() {
+        stop_daemon(port);
+        if is_proxy_startup_flake(&nav_out) {
+            eprintln!("live_159_watcher_result_is_uncontaminated: skipped — iter-164 flake");
+            return;
+        }
+        panic!(
+            "plain daemon navigate must succeed: {}",
+            String::from_utf8_lossy(&nav_out.stderr)
+        );
+    }
+
+    let after = buffered_network_events(port);
+    stop_daemon(port);
+    assert!(
+        after > 0,
+        "the daemon's own watcher must be the thing that filled the buffer; \
+         went {before} -> {after}"
+    );
+
+    eprintln!(
+        "live_159_watcher_result_is_uncontaminated: PASSED — buffer {before} -> {after}, \
+         no direct call in this test body"
+    );
+}
+
 /// `live_159_network_default_source_is_watcher`: with the auto-fallback
 /// deleted, daemon-mode `network` with **no** `--source` reports
 /// `meta.source == "watcher"` and returns entries with a non-null `method`,
