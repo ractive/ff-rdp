@@ -33,46 +33,43 @@ dogfood_path: |
   ff-rdp daemon stop --port 6100
 first_call_sites: []
 firefox_refs:
-  - path: devtools/shared/specs/descriptors/tab.js
-    lines: "24-35"
+  - lines: 24-35
+    path: devtools/shared/specs/descriptors/tab.js
     why: >-
       Declares getWatcher's isServerTargetSwitchingEnabled as Option(0, "boolean").
       This is the flag establish_watcher passes as Some(true).
-  - path: devtools/server/actors/watcher/session-context.js
-    lines: "60-125"
+  - lines: 60-125
+    path: devtools/server/actors/watcher/session-context.js
     why: >-
       Where the flag lands in the session context (default false at :70, threaded
-      from the descriptor config at :94 and :119). Establishes what the server
-      actually branches on.
-  - path: devtools/server/actors/watcher.js
-    lines: "500-560"
+      from the descriptor config at :94 and :119). Establishes what the server actually
+      branches on.
+  - lines: 500-560
+    path: devtools/server/actors/watcher.js
     why: >-
       notifyResources + emitResources — the throttled queue that produces
       resources-available-array. Shows which actor `this.emit` fires from.
-  - path: devtools/server/actors/watcher.js
-    lines: "610-660"
+  - lines: 610-660
+    path: devtools/server/actors/watcher.js
     why: >-
-      watchResources. Its own doc comment says existing resources are notified
-      "via resources-available-array event on related target actors", not on the
-      watcher — the sentence that makes the `from`-routing hypothesis plausible.
-  - path: devtools/server/actors/resources/index.js
-    lines: "330-395"
+      watchResources. Its own doc comment says existing resources are notified "via
+      resources-available-array event on related target actors", not on the watcher —
+      the sentence that makes the `from`-routing hypothesis plausible.
+  - lines: 330-395
+    path: devtools/server/actors/resources/index.js
     why: >-
       The onAvailable/onUpdated/onDestroyed callbacks bind
-      `rootOrWatcherOrTargetActor.notifyResources` — a three-way emitter choice.
-      Which of the three is selected is the crux of Theme A.
-  - path: devtools/shared/specs/targets/window-global.js
-    lines: "140-155"
-    why: >-
-      The window-global TARGET actor also declares resources-available-array /
-      resources-destroyed-array. A resource event can therefore legitimately
-      carry `from: <target actor>`, which is_watcher_event rejects.
-  - path: devtools/shared/specs/watcher.js
-    lines: "100-123"
+      `rootOrWatcherOrTargetActor.notifyResources` — a three-way emitter choice. Which of the three is selected
+      is the crux of Theme A.
+  - lines: 140-155
+    path: devtools/shared/specs/targets/window-global.js
+    why: "The window-global TARGET actor also declares resources-available-array / resources-destroyed-array. A resource event can therefore legitimately carry `from: <target actor>`, which is_watcher_event rejects."
+  - lines: 100-123
+    path: devtools/shared/specs/watcher.js
     why: >-
       The watcher's own declaration of the same three events, for the side-by-side
       comparison with the target-actor declaration above.
-status: in-review
+status: done
 title: "Iteration 159: the daemon's network watcher has delivered nothing since iter-137, and a workaround masks it"
 type: iteration
 tags:
