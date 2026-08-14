@@ -403,7 +403,9 @@ fn hints_a11y_contrast(ctx: &HintContext) -> Vec<Hint> {
     if let Some((true, sampled, returned)) = ctx.capped_sample {
         let mut hints = vec![Hint::new(
             format!(
-                "Sample was truncated at the 1000-element ceiling — {sampled} element(s)                  examined, {returned} reported. Narrow the scope with a selector to check                  the rest of the page"
+                "Sample was truncated at the 1000-element ceiling — {sampled} element(s) \
+                 examined, {returned} reported. Narrow the scope with a selector to check \
+                 the rest of the page"
             ),
             "ff-rdp a11y contrast 'main' --fail-only",
         )];
