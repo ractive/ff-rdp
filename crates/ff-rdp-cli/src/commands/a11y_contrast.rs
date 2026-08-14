@@ -77,7 +77,11 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
     // iter-143 Theme A: contrast checking is always DOM/computed-style based
     // — there is no native-actor equivalent — so this is always
     // "js-fallback". Reported for consistency with `a11y`'s `meta.source`.
-    crate::connection_meta::merge_source(&mut meta, CONTRAST_SOURCE, Some("contrast-audit-js-only"));
+    crate::connection_meta::merge_source(
+        &mut meta,
+        CONTRAST_SOURCE,
+        Some("contrast-audit-js-only"),
+    );
 
     // Apply output controls (sort, limit, fields).
     let controls = OutputControls::from_cli(cli, SortDir::Desc);
@@ -92,7 +96,7 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
     // The separate `sampled` field (below) carries the "elements examined"
     // signal that `summary.total` used to smuggle into `total` (iter-127).
     let envelope = build_contrast_envelope(
-        Value::Array(limited),
+        &Value::Array(limited),
         shown,
         total,
         truncated,
@@ -114,7 +118,7 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
 /// `meta` keeps its own `summary.capped` and `source` copies untouched: the
 /// promotion is additive, so nothing that already reads them breaks.
 fn build_contrast_envelope(
-    results: Value,
+    results: &Value,
     shown: usize,
     total: usize,
     truncated: bool,
@@ -122,7 +126,7 @@ fn build_contrast_envelope(
     sampled: usize,
     capped: bool,
 ) -> Value {
-    let mut envelope = output::envelope_with_truncation(&results, shown, total, truncated, meta);
+    let mut envelope = output::envelope_with_truncation(results, shown, total, truncated, meta);
     if let Some(obj) = envelope.as_object_mut() {
         obj.insert("sampled".to_string(), json!(sampled));
         // `source` is a constant here (there is no native-actor contrast audit
@@ -480,12 +484,16 @@ mod tests {
             "summary": {"total": 1000, "aa_pass": 1000, "aa_fail": 0, "capped": true},
             "source": "js-fallback",
         });
-        let envelope = build_contrast_envelope(json!([]), 0, 0, false, &meta, 1000, true);
+        let envelope = build_contrast_envelope(&json!([]), 0, 0, false, &meta, 1000, true);
         let obj = envelope.as_object().expect("envelope is an object");
 
         // The three qualifiers sit together at the top level.
         assert_eq!(obj["sampled"], json!(1000));
-        assert_eq!(obj["capped"], json!(true), "capped not promoted: {envelope}");
+        assert_eq!(
+            obj["capped"],
+            json!(true),
+            "capped not promoted: {envelope}"
+        );
         assert_eq!(
             obj["source"],
             json!("js-fallback"),
@@ -500,7 +508,7 @@ mod tests {
     #[test]
     fn unit_160_contrast_envelope_reports_capped_false_when_not_truncated() {
         let meta = json!({"summary": {"total": 12, "capped": false}});
-        let envelope = build_contrast_envelope(json!([]), 0, 0, false, &meta, 12, false);
+        let envelope = build_contrast_envelope(&json!([]), 0, 0, false, &meta, 12, false);
         // Present and false, never omitted — `--jq '.capped'` must not throw
         // just because the page was small.
         assert_eq!(envelope["capped"], json!(false));
@@ -518,7 +526,10 @@ mod tests {
         );
         let joined = format!("{hints:?}");
         assert!(joined.contains("truncated"), "no cap qualifier: {joined}");
-        assert!(joined.contains("1000"), "hint must name the count: {joined}");
+        assert!(
+            joined.contains("1000"),
+            "hint must name the count: {joined}"
+        );
 
         let uncapped = crate::hints::generate_hints(
             &HintContext::new(HintSource::A11yContrast)

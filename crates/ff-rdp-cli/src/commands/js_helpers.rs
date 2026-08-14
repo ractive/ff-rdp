@@ -282,8 +282,7 @@ pub(crate) fn autowait_element(
             // arrive here — its text is the better message.
             let (diag, finding) = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
             let elapsed_ms = started.elapsed().as_millis();
-            let message =
-                compose_readiness_error(selector, exc.message.as_deref(), diag, &finding);
+            let message = compose_readiness_error(selector, exc.message.as_deref(), diag, &finding);
             return Err(AppError::Timeout(format!(
                 "{message} (after {elapsed_ms}ms, timeout {timeout_ms}ms)"
             )));

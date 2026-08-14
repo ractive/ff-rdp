@@ -359,17 +359,23 @@ fn network_filter_by_method() {
 }
 
 // ---------------------------------------------------------------------------
-// --jq filter activates detail mode
+// --jq filters the envelope; --detail reaches the entry list (iter-160 Theme F)
 // ---------------------------------------------------------------------------
 
+/// `--jq` used to be in `use_detail_mode`'s disjunction, so passing a filter
+/// silently switched `results` from a summary object to an entries array — the
+/// view changed the document it was viewing. iter-160 took it back out; the
+/// entry list is reached with `--detail`, which iter-126 already made a strict
+/// superset of the summary envelope.
 #[test]
-fn network_with_jq_filter() {
+fn network_with_detail_jq_filter() {
     let server = network_server();
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
 
     let mut args = base_args(port);
     args.extend([
+        "--detail".to_owned(),
         "--jq".to_owned(),
         ".results[] | select(.status >= 400)".to_owned(),
         "network".to_owned(),
@@ -388,6 +394,40 @@ fn network_with_jq_filter() {
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json["status"], 404);
     assert_eq!(json["url"], "https://example.com/favicon.ico");
+}
+
+/// iter-160 Theme F: `--jq` alone leaves the shape alone — `.results` is the
+/// same summary object plain `ff-rdp network` returns.
+#[test]
+fn network_jq_does_not_switch_results_to_an_array() {
+    let server = network_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "--jq".to_owned(),
+        ".results | type".to_owned(),
+        "network".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("object"),
+        "--jq must not force detail mode; expected \"object\", got: {stdout}"
+    );
 }
 
 // ---------------------------------------------------------------------------

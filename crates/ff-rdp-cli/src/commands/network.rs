@@ -1238,9 +1238,9 @@ mod tests {
 
     fn cli_with(args: &[&str]) -> Cli {
         use clap::Parser as _;
-        let mut argv = vec!["ff-rdp", "network"];
-        argv.extend_from_slice(args);
-        Cli::try_parse_from(argv).expect("args must parse")
+        let mut full = vec!["ff-rdp", "network"];
+        full.extend_from_slice(args);
+        Cli::try_parse_from(full).expect("args must parse")
     }
 
     /// AC `unit_160_use_detail_excludes_jq`.

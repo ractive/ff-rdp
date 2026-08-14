@@ -239,10 +239,7 @@ mod tests {
             .get_subcommands()
             .find(|c| c.get_name() == "type")
             .expect("`type` subcommand must exist");
-        let help = type_cmd
-            .clone()
-            .render_long_help()
-            .to_string();
+        let help = type_cmd.clone().render_long_help().to_string();
         assert!(
             help.contains("isTrusted: false"),
             "type --help must state the isTrusted ceiling; got:\n{help}"
@@ -274,7 +271,10 @@ mod tests {
     #[test]
     fn unit_160_type_js_clear_applies_empty_value_first() {
         let cleared = build_type_js("input", "\"hi\"", true);
-        assert!(cleared.contains("if (true) { applyValue(''); }"), "{cleared}");
+        assert!(
+            cleared.contains("if (true) { applyValue(''); }"),
+            "{cleared}"
+        );
         let kept = build_type_js("input", "\"hi\"", false);
         assert!(kept.contains("if (false) { applyValue(''); }"), "{kept}");
     }
