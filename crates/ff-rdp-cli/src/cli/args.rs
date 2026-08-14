@@ -747,8 +747,20 @@ Auto-waits for the element to be focusable (exists, visible, not disabled, is an
 input/textarea/contenteditable) before typing. Use --no-wait to skip this.
 
 The value is set via the native HTMLInputElement/HTMLTextAreaElement/HTMLSelectElement
-prototype setter so React/Vue/Svelte value trackers are invalidated, and `input`
-and `change` events are dispatched after the assignment.
+prototype setter so React/Vue/Svelte value trackers are invalidated. Each character
+is typed as a keydown -> keypress -> keyup sequence with the value applied
+incrementally (iter-160), so a combobox that opens on keydown or a search box that
+debounces keyup responds as it would to a typist; `input` and `change` are dispatched
+once at the end, as before.
+
+Synthetic-input ceiling (reported as \"synthetic\": true in the output):
+  Firefox exposes no trusted-input surface over the devtools RDP — Marionette and
+  WebDriver BiDi are peer protocols, not layers reachable through it — so every
+  event `type` dispatches carries isTrusted: false. A page that filters on
+  e.isTrusted will ignore them, and a handler that calls preventDefault() on
+  keydown will NOT suppress the character: ff-rdp assigns the value directly, and
+  a synthetic preventDefault cannot cancel that assignment. This makes key-driven
+  UIs respond; it does not make `type` indistinguishable from a user.
 
 When a selector matches more than one element (e.g. two `input[name=keywords]`
 on the same page, one hidden), the default (flag-less) behaviour types into
@@ -756,7 +768,7 @@ DOM-order index 0. Use --visible to target the first non-hidden match instead,
 or --index N for a specific match (0-based). Mutually exclusive with each
 other. On success, the output gains {\"match_count\": N, \"chosen_index\": N}.
 
-Output: {\"results\": {\"typed\": true, \"tag\": \"INPUT\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
+Output: {\"results\": {\"typed\": true, \"synthetic\": true, \"tag\": \"INPUT\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
     Type(TypeArgs),
     /// Wait for a condition to become true (polls every 100ms), or sleep for a fixed duration.
     /// Exactly one of --selector, --text, --eval, --ref, or --sleep-ms must be specified.

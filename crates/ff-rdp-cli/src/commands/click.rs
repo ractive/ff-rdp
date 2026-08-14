@@ -20,9 +20,8 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::js_helpers::{
-    DispatchMode, JSON_SENTINEL, MatchPolicy, WaitForPredicate, autowait_element, build_click_js,
-    escape_selector, resolve_disambiguated_target, resolve_result, settle_page,
-    wait_for_predicates,
+    DispatchMode, MatchPolicy, WaitForPredicate, autowait_element, build_click_js, escape_selector,
+    resolve_disambiguated_target, resolve_result, settle_page, wait_for_predicates,
 };
 use super::network_events::build_network_entries;
 
@@ -718,7 +717,10 @@ mod tests {
         // Must use PointerEvent constructor.
         assert!(js.contains("PointerEvent"), "missing PointerEvent: {js}");
         // Must include the sentinel so the result can be decoded.
-        assert!(js.contains(JSON_SENTINEL), "missing JSON_SENTINEL: {js}");
+        assert!(
+            js.contains(crate::commands::js_helpers::JSON_SENTINEL),
+            "missing JSON_SENTINEL: {js}"
+        );
     }
 
     #[test]
@@ -747,19 +749,12 @@ mod tests {
 
     #[test]
     fn click_only_dispatch_js_uses_dot_click() {
-        // ClickOnly is handled separately in do_click, but we can test that
-        // the legacy simple JS is well-formed.
-        let escaped = escape_selector("button.submit");
-        let js = format!(
-            r"(function() {{
-  var el = document.querySelector('{escaped}');
-  if (!el) throw new Error('Element not found: {escaped}');
-  el.click();
-  return '{JSON_SENTINEL}' + JSON.stringify({{clicked: true}});
-}})()"
-        );
-        assert!(js.contains("el.click()"));
-        assert!(js.contains(JSON_SENTINEL));
+        // iter-160: ClickOnly is no longer a hand-written copy in `do_click`;
+        // it is a `build_click_js` mode like the other two, so assert against
+        // the JS the command actually sends rather than a re-typed lookalike.
+        let js = build_click_js(&escape_selector("button.submit"), DispatchMode::ClickOnly);
+        assert!(js.contains("el.click()"), "missing el.click(): {js}");
+        assert!(js.contains(crate::commands::js_helpers::JSON_SENTINEL));
     }
 
     // ── iter-129 Theme B: frame-aware click ─────────────────────────────────
@@ -794,6 +789,113 @@ mod tests {
                 "mode {mode:?} JS missing the not-found marker: {js}"
             );
         }
+    }
+
+    // ── iter-160 Theme A/B: the click envelope says what it knows ──────────
+
+    /// AC `unit_160_click_js_hit_tests_centre_point`: the dispatched JS
+    /// consults the page's hit-test tree, and does so *before* it dispatches
+    /// anything — a hit test that ran afterwards would tell the caller the
+    /// truth about a click it had already fired blind.
+    #[test]
+    fn unit_160_click_js_hit_tests_centre_point() {
+        for mode in [
+            DispatchMode::Pointer,
+            DispatchMode::Legacy,
+            DispatchMode::ClickOnly,
+        ] {
+            let js = build_click_js_for_mode("button", mode);
+            assert!(
+                js.contains("getBoundingClientRect"),
+                "mode {mode:?}: no rect read: {js}"
+            );
+            assert!(
+                js.contains("elementFromPoint"),
+                "mode {mode:?}: no hit test: {js}"
+            );
+            assert!(
+                js.contains("el.contains("),
+                "mode {mode:?}: no descendant check — a <span> inside a <button> \
+                 must count as reachable: {js}"
+            );
+            let hit_at = js.find("elementFromPoint").expect("hit test present");
+            if let Some(dispatch_at) = js.find("dispatchEvent") {
+                assert!(
+                    hit_at < dispatch_at,
+                    "mode {mode:?}: hit test must precede the first dispatchEvent: {js}"
+                );
+            }
+        }
+    }
+
+    /// AC `unit_160_click_result_reports_matched_and_reachable`: the result
+    /// JSON names the two separate claims, and the old `entered` — which meant
+    /// "querySelector was non-null" while its name said "the pointer could
+    /// enter" — is gone from every dispatch mode.
+    #[test]
+    fn unit_160_click_result_reports_matched_and_reachable() {
+        for mode in [
+            DispatchMode::Pointer,
+            DispatchMode::Legacy,
+            DispatchMode::ClickOnly,
+        ] {
+            for js in [
+                build_click_js("button", mode),
+                build_click_js_for_mode("button", mode),
+            ] {
+                assert!(js.contains("matched:"), "mode {mode:?}: no matched: {js}");
+                assert!(
+                    js.contains("reachable:"),
+                    "mode {mode:?}: no reachable: {js}"
+                );
+                assert!(
+                    js.contains("obscured_by:"),
+                    "mode {mode:?}: no obscured_by: {js}"
+                );
+                assert!(
+                    !js.contains("entered"),
+                    "mode {mode:?}: `entered` survived: {js}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unit_160_unreachable_click_error_names_the_covering_element() {
+        let result = json!({
+            "clicked": false, "matched": true, "reachable": false,
+            "obscured_by": "div#veil", "offscreen": false,
+        });
+        let err = unreachable_click_error("#t", &result).expect("must be an error");
+        assert_eq!(err.error_type(), "click_obscured");
+        assert_eq!(err.exit_code(), 1);
+        let json = err.to_error_json();
+        assert_eq!(json["obscured_by"], json!("div#veil"));
+        assert_eq!(json["matched"], json!(true));
+        assert_eq!(json["reachable"], json!(false));
+        assert!(
+            err.to_string().contains("div#veil"),
+            "human message must name the overlay: {err}"
+        );
+    }
+
+    #[test]
+    fn unit_160_offscreen_click_is_a_distinct_error_type() {
+        // `elementFromPoint` returns null outside the viewport — that is not
+        // an overlay and must not be reported as one.
+        let result = json!({
+            "clicked": false, "matched": true, "reachable": false,
+            "obscured_by": Value::Null, "offscreen": true,
+        });
+        let err = unreachable_click_error("#t", &result).expect("must be an error");
+        assert_eq!(err.error_type(), "click_offscreen");
+        assert_eq!(err.to_error_json()["obscured_by"], Value::Null);
+    }
+
+    #[test]
+    fn unit_160_reachable_click_produces_no_error() {
+        let result = json!({"clicked": true, "matched": true, "reachable": true});
+        assert!(unreachable_click_error("#t", &result).is_none());
     }
 
     #[test]
