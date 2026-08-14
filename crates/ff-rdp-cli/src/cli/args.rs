@@ -2339,8 +2339,11 @@ still swallowing clicks was indistinguishable from a dismissed one.
   status \"detected_not_actioned\"  exit 1, error_type \"consent_not_actioned\"
   status \"no_cmp_detected\"        exit 1, error_type \"consent_no_cmp\"
 
-The envelope is printed in all three cases — the exit code changes, the output
-does not shrink.
+One JSON document either way. On exit 0 that is the usual results envelope; on
+exit 1 it is the error envelope, which carries `cmp`, `action` and `status`
+alongside `error`/`error_type` so nothing is lost. The command deliberately does
+NOT print a results envelope and then fail — two JSON documents on stdout is the
+double-envelope bug iter-153 removed from `launch --replace`.
 
 Output: {\"results\": {\"cmp\": \"sourcepoint\"|null, \"action\": \"accepted\"|null, \"status\": \"accepted\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, \"total\": 1, \"meta\": {...}}"
     )]
