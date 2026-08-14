@@ -398,13 +398,9 @@ problem. Classification costs one TCP probe and is honest about what it did.
       `(None, Some(""))` both return the 30 s default
 - [x] unit_158_port_wait_error_names_bind_timeout: with an injected prober that never connects,
       the resulting `AppError::User` message contains `did not open debug port` and the resolved
-      bound in seconds, and contains neither the substring `already in use` nor `after 5s`
-      [deferred — new plan: kb/iterations/iteration-163-ac-fidelity-reads-only-the-first-line.md]
-- [x] unit_158_launch_rejects_occupied_port_before_spawn: with an injected port-owner lookup
+      bound in seconds, and contains neither the substring `already in use` nor `after 5s`- [x] unit_158_launch_rejects_occupied_port_before_spawn: with an injected port-owner lookup
       returning a non-Firefox listener, `launch` returns `AppError::User` naming that process name
-      and PID, and the Firefox spawn hook records zero invocations
-      [deferred — new plan: kb/iterations/iteration-163-ac-fidelity-reads-only-the-first-line.md]
-- [x] live_158_launch_survives_contended_bind: four concurrent `ff-rdp launch --headless` on
+      and PID, and the Firefox spawn hook records zero invocations- [x] live_158_launch_survives_contended_bind: four concurrent `ff-rdp launch --headless` on
       distinct ports all exit 0 with distinct live `results.pid` values, and no stdout contains
       `not reachable after 5s`
       [verified: 2026-08-14, ok inside the full sweep at load average 18.6 —
@@ -415,9 +411,7 @@ problem. Classification costs one TCP probe and is honest about what it did.
       [verified: 2026-08-14, ok inside the full sweep — LIVE_SWEEP_SUMMARY executed=221 skipped=0 preexisting=9 total=230, 219 passed / 2 failed]
 - [x] unit_158_record_survives_failed_stop: with injected hooks where the port stays held,
       `stop_prior_instance` returns `Err` **and** `daemon_record::read(port)` still returns the
-      record afterwards; the same assertion holds for `stop_daemon_and_build_result`
-      [deferred — new plan: kb/iterations/iteration-163-ac-fidelity-reads-only-the-first-line.md]
-- [x] live_158_replace_repeats_cleanly: three consecutive `launch --debug-port P --replace` against
+      record afterwards; the same assertion holds for `stop_daemon_and_build_result`- [x] live_158_replace_repeats_cleanly: three consecutive `launch --debug-port P --replace` against
       a prior instance each exit 0, each emit exactly one JSON document with
       `meta.replaced.stopped == true`, and no stdout contains `no owner-PID marker` or
       `still in use after stopping the prior instance`
@@ -433,18 +427,14 @@ problem. Classification costs one TCP probe and is honest about what it did.
 - [x] unit_158_single_stop_ladder_implementation: a source-scan test over
       `crates/ff-rdp-cli/src/daemon/client.rs` asserts `process::kill_process_group(` appears in
       exactly one non-test function — `stop_pid_with_full_escalation` — replacing the four sites at
-      `:901`, `:1063`, `:1077` and `:1219`
-      [deferred — new plan: kb/iterations/iteration-163-ac-fidelity-reads-only-the-first-line.md]
-- [x] live_158_stop_reaches_orphaned_children: after `launch`ing on port P and `SIGKILL`ing only the
+      `:901`, `:1063`, `:1077` and `:1219`- [x] live_158_stop_reaches_orphaned_children: after `launch`ing on port P and `SIGKILL`ing only the
       parent PID, `ff-rdp daemon stop --port P` exits 0 and `wait_for_port_closed(P, 8s)` returns
       `true`; the error text `port still listening after 8` appears nowhere in the output
       [verified: 2026-08-14, ok inside the full sweep — LIVE_SWEEP_SUMMARY executed=221 skipped=0 preexisting=9 total=230, 219 passed / 2 failed]
 - [x] unit_158_no_live_test_skips_on_missing_firefox: a source-scan test over
       `crates/ff-rdp-cli/tests/**` and `crates/ff-rdp-core/tests/**` asserts zero occurrences of the
       string `Firefox not available` and zero `else` arms binding
-      `LiveFirefox::headless_on_random_port` to an `Option`
-      [deferred — new plan: kb/iterations/iteration-163-ac-fidelity-reads-only-the-first-line.md]
-- [x] live_158_launch_creates_missing_profile_dir: `launch --headless --profile <tmp>/absent/prof`
+      `LiveFirefox::headless_on_random_port` to an `Option`- [x] live_158_launch_creates_missing_profile_dir: `launch --headless --profile <tmp>/absent/prof`
       exits 0, `<tmp>/absent/prof/user.js` exists and contains a `devtools.debugger.remote-enabled`
       pref line, and `results.profile_path` equals that directory
       [verified: 2026-08-14, ok inside the full sweep — LIVE_SWEEP_SUMMARY executed=221 skipped=0 preexisting=9 total=230, 219 passed / 2 failed]
@@ -535,6 +525,17 @@ Recorded rather than reworded — the AC text above is left exactly as planned.
   `captured_pgid == None` (`client.rs:155-157`). The unified ladder must preserve that path —
   `pgid_safe_to_kill` is `true` on Windows by design because the taskkill call is already
   pid-scoped.
+- **Post-merge correction (2026-08-14).** Five ACs above
+  (`unit_158_port_wait_error_names_bind_timeout`,
+  `unit_158_launch_rejects_occupied_port_before_spawn`, `unit_158_record_survives_failed_stop`,
+  `unit_158_single_stop_ladder_implementation`, `unit_158_no_live_test_skips_on_missing_firefox`)
+  merged carrying both a `[x]` tick **and** a `[deferred — new plan: …]` annotation, which is
+  self-contradictory: the tick says the work landed, the annotation says it was postponed. The
+  work did land — that is precisely why [[iteration-163-ac-fidelity-reads-only-the-first-line]]'s
+  false positive fires on them. The annotations were added during review to turn the gate green
+  and have been removed; the ACs stand ticked on their evidence, and the gate stays red on this
+  plan until 163 lands. Removing them also restores iter-163's own `dogfood_path`, which expects
+  this plan to reproduce 5 ❌ against pre-fix `ac-fidelity-check.sh`.
 - Related: [[iteration-155-live-skip-reports-green]] (the env-gate half of Theme D),
   [[iteration-153-launch-replace-double-envelope]] (the `--replace` envelope, whose test this
   iteration finally makes meaningful), [[analysis-2026-08-13-what-ff-rdp-became]] (all evidence).

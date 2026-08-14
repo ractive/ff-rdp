@@ -492,7 +492,10 @@ phantom. Two findings the plan did not anticipate:
   the non-stringify path sends the script to `Debugger.evalInGlobal` verbatim.
   The live matrix test works around it with a fresh global per combination.
   Out of scope here (it is a `--help` accuracy / scoping question, not one of
-  this plan's five defects) and **not fixed** — worth a follow-up plan.
+  this plan's five defects) and **not fixed**. Filed 2026-08-14 as
+  [[iteration-165-eval-scope-leak-contradicts-help]] — late, after this PR
+  merged, contrary to CLAUDE.md's rule that carry-over is filed *before* the
+  merge.
 
 Scope note: `apply_sort`/`apply_fields`/`apply_fields_object` had 29 non-test
 call sites, not the 43 the plan estimated (43 counts test call sites too).
