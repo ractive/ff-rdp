@@ -292,6 +292,14 @@ fn live_161_build_script_matrix_evaluates() {
     for script in scripts {
         for stringify in [false, true] {
             for isolate in [false, true] {
+                // A fresh global per combination. `const x = 1; x` on the
+                // non-stringify path is sent to Firefox verbatim, so its
+                // declaration persists in the page's global and the *second*
+                // run of the same combination fails with "redeclaration of
+                // const x" — a real property of `eval` (measured here), not
+                // of the wrap under test. Reloading isolates each run so the
+                // assertion below stays about parsing.
+                navigate(port, "about:blank");
                 let mut args = vec!["eval", script];
                 if stringify {
                     args.push("--stringify");
@@ -438,30 +446,50 @@ fn live_161_fields_and_sort_reject_unknown_names() {
             "{flag} {name} must exit 1; got: {text}"
         );
         let json = parse_json(&out, &["dom", "a", "--limit", "2", flag, name]);
-        let msg = json["error"]["message"]
+        let msg = json["error"]
             .as_str()
             .unwrap_or_else(|| panic!("expected a JSON error envelope; got {json}"));
+        assert_eq!(json["error_type"], "User", "got {json}");
         assert!(msg.contains(flag), "message must name the flag: {msg}");
         assert!(msg.contains(name), "message must name the offender: {msg}");
         assert!(
-            msg.contains("tag") || msg.contains("role"),
+            msg.contains("tag"),
             "message must list at least one available key: {msg}"
         );
     }
 
-    // The working forms are unchanged.
-    let json = run_json(port, &["dom", "a", "--limit", "2", "--fields", "tag,text"]);
+    // The working form is unchanged.
+    //
+    // The plan's AC named `--fields tag,text` as the control case, but `dom`
+    // emits no `text` key at all — its entries are `attrs`, `name`, `ref`,
+    // `tag` (the accessible name, not the text content; `--text-attrs` adds
+    // `textContent`). On main `--fields tag,text` therefore returned only
+    // `tag` and silently dropped `text`, which is a milder instance of the
+    // very defect Theme D fixes; under DEC-035 it is now an error. `tag,name`
+    // is the equivalent two-key control that actually exercises the pass path.
+    let json = run_json(port, &["dom", "a", "--limit", "2", "--fields", "tag,name"]);
     let arr = json["results"]
         .as_array()
         .unwrap_or_else(|| panic!("expected an array; got {json}"));
     assert_eq!(arr.len(), 2, "expected 2 entries; got {json}");
     for entry in arr {
         assert!(entry.get("tag").is_some(), "tag must survive: {entry}");
+        assert!(entry.get("name").is_some(), "name must survive: {entry}");
         assert!(
-            entry.get("role").is_none(),
-            "role must be filtered: {entry}"
+            entry.get("attrs").is_none(),
+            "attrs must be filtered: {entry}"
         );
     }
+
+    // And the plan's original control case, recorded as measured: `text` is
+    // not a key `dom` ever emits, so it is rejected like any other typo.
+    let out = run(port, &["dom", "a", "--limit", "2", "--fields", "tag,text"]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "`text` is not a dom key — it must be rejected: {}",
+        combined(&out)
+    );
 
     let out = run(
         port,
