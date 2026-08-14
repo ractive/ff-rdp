@@ -13,9 +13,13 @@ The canonical copies of these scripts live in
 
 | File | Purpose |
 |------|---------|
-| `scripts/claims-vs-code.sh` | Extract verb-symbol claims from iteration commit messages, grep the branch diff for evidence, emit a markdown "Claims vs code" section. Exit 1 if any ❌ remain unannotated. |
-| `scripts/ac-fidelity-check.sh` | Parse the iteration plan's `## Acceptance Criteria` block; for each ticked checkbox, verify the diff contains a matching test function, symbol, or `[deferred — new plan: …]` annotation. Exit 1 otherwise. |
-| `scripts/run-iteration.sh` | Drives a single iteration through cmux. Supports a `--replay <iter-id>` mode that re-runs the two checks above against an already-merged branch — used by `cargo xtask check-discipline-regression`. |
+| `scripts/run-iteration.sh` | Drives a single iteration through cmux. |
+
+iter-162b deleted `ac-fidelity-check.sh` and `claims-vs-code.sh` from this
+directory, from `tools/new-ralph-loop/scripts/` and from both canonical skill
+directories, along with `run-iteration.sh`'s `--replay` mode, which existed only
+to re-run them against an already-merged branch. `crates/xtask/tests/iter_162b_scripts_deleted.rs`
+asserts they stay gone.
 
 ## Editing workflow
 
@@ -34,9 +38,10 @@ cargo run -p xtask -- check-discipline-regression
 
 The xtask diffs the mirror against the live skill and fails if they drift, so
 CI catches the case where the skill was edited but the mirror wasn't (or vice
-versa). It also runs `run-iteration.sh --replay iter-61v` (expected: fails)
-and `--replay iter-61t` (expected: passes) as a behavioural regression check
-against the live scripts.
+versa). It used to also replay iter-61v (expected: fails) and iter-61t
+(expected: passes) against the live scripts; that behavioural baseline pinned
+the heuristics in `ac-fidelity-check.sh` and `claims-vs-code.sh` and went with
+them in iter-162b.
 
 ## Why a mirror and not a symlink?
 

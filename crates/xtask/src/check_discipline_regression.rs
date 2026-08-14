@@ -6,8 +6,8 @@ use std::process::Command;
 #[derive(ClapArgs)]
 pub struct Args {
     /// Path to the canonical ralph-loop scripts (defaults to
-    /// $HOME/.claude/skills/ralph-loop/scripts). If absent, only the mirror's
-    /// replay-baseline behaviour is verified.
+    /// $HOME/.claude/skills/ralph-loop/scripts). If absent, that mirror is
+    /// not checked.
     #[arg(long)]
     skill_dir: Option<PathBuf>,
 
@@ -16,20 +16,11 @@ pub struct Args {
     /// not checked.
     #[arg(long)]
     new_skill_dir: Option<PathBuf>,
-
-    /// Skip the replay baselines (mirror-sync check only). Useful for CI runs
-    /// that don't have access to the merged iter-61t / iter-61v history.
-    #[arg(long)]
-    skip_replay: bool,
 }
 
 /// The scripts that must be mirrored 1-to-1 between the canonical skill
 /// directory and the in-repo copy under `tools/ralph-loop/scripts/`.
-const MIRROR_FILES: &[&str] = &[
-    "claims-vs-code.sh",
-    "ac-fidelity-check.sh",
-    "run-iteration.sh",
-];
+const MIRROR_FILES: &[&str] = &["run-iteration.sh"];
 
 /// The same contract for the `new-ralph-loop` skill, mirrored under
 /// `tools/new-ralph-loop/scripts/`.
@@ -41,13 +32,11 @@ const MIRROR_FILES: &[&str] = &[
 /// unmirrored `new-ralph-loop` one. The workflow script is mirrored too: it
 /// carries the orchestration logic, so an unreviewable change there is at
 /// least as costly as one to the shell scripts.
-const NEW_MIRROR_FILES: &[&str] = &[
-    "claims-vs-code.sh",
-    "ac-fidelity-check.sh",
-    "preflight.sh",
-    "ralph.workflow.js",
-    "smoke.workflow.js",
-];
+///
+/// iter-162b deleted `ac-fidelity-check.sh` and `claims-vs-code.sh` from all
+/// four copies. Absence is asserted by `tests/iter_162b_scripts_deleted.rs`,
+/// not here — this list only covers files that must stay in sync.
+const NEW_MIRROR_FILES: &[&str] = &["preflight.sh", "ralph.workflow.js", "smoke.workflow.js"];
 
 pub fn run(args: Args) -> Result<()> {
     let repo_root = locate_repo_root()?;
@@ -87,52 +76,6 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
 
-    if args.skip_replay {
-        return Ok(());
-    }
-
-    // --- 2. Replay baselines: iter-61v must FAIL, iter-61t must PASS.
-    // Use whichever copy of run-iteration.sh is present: canonical if available,
-    // otherwise the mirror (so this still works in fresh checkouts without the
-    // skill installed).
-    let run_script = skill_dir
-        .as_ref()
-        .map(|sd| sd.join("run-iteration.sh"))
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| mirror_dir.join("run-iteration.sh"));
-
-    if !run_script.exists() {
-        bail!("run-iteration.sh not found at {}", run_script.display());
-    }
-
-    check_replay(&run_script, "61v", false /* expect FAIL */, &repo_root)?;
-    check_replay(&run_script, "61t", true /* expect PASS */, &repo_root)?;
-
-    eprintln!("check-discipline-regression: replay baselines OK (61v=FAIL, 61t=PASS)");
-    Ok(())
-}
-
-fn check_replay(run_script: &Path, iter: &str, expect_pass: bool, repo_root: &Path) -> Result<()> {
-    let output = Command::new("bash")
-        .arg(run_script)
-        .arg("--replay")
-        .arg(iter)
-        .current_dir(repo_root)
-        .output()
-        .with_context(|| format!("running replay for iter-{iter}"))?;
-
-    let passed = output.status.success();
-    if passed != expect_pass {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "replay iter-{iter}: expected {} but got {}\n--- stdout ---\n{}\n--- stderr ---\n{}",
-            if expect_pass { "PASS" } else { "FAIL" },
-            if passed { "PASS" } else { "FAIL" },
-            stdout,
-            stderr,
-        );
-    }
     Ok(())
 }
 
