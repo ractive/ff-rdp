@@ -35,6 +35,14 @@ pub(crate) struct NavBoundary {
     /// Insertion sequence number of the first store entry belonging to this
     /// navigation.  Entries with `seq >= store_start` belong to this epoch.
     pub store_start: u64,
+    /// Same, for `network-event` entries only (iter-159).
+    ///
+    /// Firefox emits `tabNavigated` at load *stop*, so `store_start` sits past
+    /// the whole page load.  Network events are the one resource type the
+    /// server prunes on `will-navigate`, which makes "the oldest surviving
+    /// network entry" a sound epoch start for them.  See
+    /// [`ResourceBuffer::record_nav_boundary`].
+    pub network_store_start: u64,
 }
 
 struct Entry {
@@ -237,10 +245,36 @@ impl ResourceBuffer {
         // `store_start` is the insertion sequence number of the *next* entry
         // to be pushed.  Entries with `seq >= store_start` belong to this
         // navigation epoch or later.
+        //
+        // iter-159: `network_store_start` is deliberately different.  Firefox
+        // 153 emits `tabNavigated` on load **stop**, not on commit — measured:
+        // the wiki article's boundary landed after 257 buffered entries, i.e.
+        // after the entire page load — so scoping network rows from
+        // `total_inserted` clipped `--since -1` down to whatever trickled in
+        // after the load event (2-3 beacon-ish rows, no `status` yet) and
+        // dropped the document request and every subresource.
+        //
+        // The server itself already scopes the network buffer: at
+        // `will-navigate` it destroys the previous document's request actors
+        // (`devtools/server/actors/resources/network-events.js`
+        // `#onTopBrowsingContextWillNavigate`), and the daemon prunes those
+        // entries on the matching `resources-destroyed-array`.  So every
+        // `network-event` entry still in the store at `tabNavigated` time
+        // belongs to the navigation that just finished, and the oldest
+        // surviving one is where this epoch really starts.  Other resource
+        // types are not pruned that way and keep the commit-time semantics.
+        let network_store_start = self
+            .store
+            .iter()
+            .filter(|e| e.resource_type == "network-event")
+            .map(|e| e.seq)
+            .min()
+            .unwrap_or(self.total_inserted);
         self.boundaries.push(NavBoundary {
             sequence,
             url,
             store_start: self.total_inserted,
+            network_store_start,
         });
         sequence
     }
@@ -258,7 +292,13 @@ impl ResourceBuffer {
         since_nav_index: i64,
     ) -> (Vec<Value>, Option<NavBoundary>) {
         let boundary = resolve_boundary(&self.boundaries, since_nav_index);
-        let min_seq: u64 = boundary.as_ref().map_or(0, |b| b.store_start);
+        let min_seq: u64 = boundary.as_ref().map_or(0, |b| {
+            if resource_type == "network-event" {
+                b.network_store_start
+            } else {
+                b.store_start
+            }
+        });
 
         let mut results = Vec::new();
         let mut remaining = VecDeque::new();
@@ -456,12 +496,50 @@ mod tests {
     fn drain_since_filters_by_nav_boundary() {
         let mut buf = ResourceBuffer::new();
         buf.on_resource(&net(1, "https://before.com"));
+        // Firefox destroys the previous document's request actors at
+        // will-navigate, and the daemon prunes them on the matching
+        // `resources-destroyed-array`. Model that, because iter-159 scopes the
+        // network epoch to the oldest *surviving* network entry.
+        buf.on_resource(&Resource::Destroyed {
+            resource_type: "network-event".into(),
+            resource_id: "1".into(),
+        });
         buf.record_nav_boundary("https://after.com".into());
         buf.on_resource(&net(2, "https://after.com/page"));
         let (events, boundary) = buf.drain_since("network-event", -1);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["url"], "https://after.com/page");
         assert!(boundary.is_some());
+    }
+
+    /// iter-159: `tabNavigated` arrives at load **stop**, so a network epoch
+    /// scoped from the boundary's own insertion point excludes the navigation
+    /// it is supposed to describe.
+    ///
+    /// Measured before the fix: a plain daemon navigate to a wikipedia article
+    /// buffered 168-257 network entries and `--since -1` returned 2-3 of them,
+    /// all with `status: null`. After: 20 of 20, every one carrying method and
+    /// status.
+    #[test]
+    fn network_epoch_covers_the_load_that_precedes_its_boundary() {
+        let mut buf = ResourceBuffer::new();
+        // The page load: document + subresources, all before `tabNavigated`.
+        buf.on_resource(&net(1, "https://site.example/"));
+        buf.on_resource(&net(2, "https://site.example/a.css"));
+        buf.on_resource(&net(3, "https://site.example/b.js"));
+        // A console message from the same page — NOT pruned by the server, so
+        // it keeps the commit-time epoch semantics.
+        buf.record_nav_boundary("https://site.example/".into());
+        // A straggler after load-stop.
+        buf.on_resource(&net(4, "https://site.example/beacon"));
+
+        let (events, boundary) = buf.drain_since("network-event", -1);
+        assert!(boundary.is_some());
+        assert_eq!(
+            events.len(),
+            4,
+            "the navigation's own requests must be inside its epoch, not before it"
+        );
     }
 
     #[test]
@@ -537,6 +615,12 @@ mod tests {
         // surviving entry (id=3) should be returned.
         let mut buf = ResourceBuffer::new();
         buf.on_resource(&net(1, "https://before.com"));
+        // Pruned by the server at will-navigate (see
+        // `drain_since_filters_by_nav_boundary`).
+        buf.on_resource(&Resource::Destroyed {
+            resource_type: "network-event".into(),
+            resource_id: "1".into(),
+        });
         buf.record_nav_boundary("https://nav.com".into());
         buf.on_resource(&net(2, "https://nav.com/a"));
         buf.on_resource(&net(3, "https://nav.com/b"));
