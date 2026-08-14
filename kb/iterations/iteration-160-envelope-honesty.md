@@ -6,7 +6,7 @@ depends_on:
 dogfood_path: |
   ff-rdp launch --headless --debug-port 6000
   ff-rdp navigate https://example.com
-
+  
   # --- A/B: click on an element covered by a full-screen overlay ---------------
   ff-rdp eval 'document.body.innerHTML = "<button id=t style=\"position:fixed;left:100px;top:100px;width:120px;height:40px\">Hit</button>"; window.__hits = 0; document.getElementById("t").addEventListener("click", function(){ window.__hits++; }); var v = document.createElement("div"); v.id = "veil"; v.setAttribute("style", "position:fixed;inset:0;z-index:9"); document.body.appendChild(v); document.elementFromPoint(160,120).id'
   # → "veil" — the overlay owns the centre point; no user could reach the button
@@ -21,7 +21,7 @@ dogfood_path: |
   # → {"clicked":true,"matched":true,"reachable":true,...} exit 0
   ff-rdp eval 'window.__hits'
   # → 1 — the click landed, proven outside the command's own self-report
-
+  
   # --- C: type must emit key events -------------------------------------------
   ff-rdp eval 'document.body.innerHTML = "<input id=q>"; window.__keys = []; document.getElementById("q").addEventListener("keydown", function(e){ window.__keys.push("keydown:" + e.key); }); document.getElementById("q").addEventListener("keyup", function(e){ window.__keys.push("keyup:" + e.key); }); "armed"'
   ff-rdp type '#q' hi
@@ -29,19 +29,19 @@ dogfood_path: |
   ff-rdp eval 'JSON.stringify(window.__keys)'
   # → today: "[]" — no key events at all
   # → after: ["keydown:h","keyup:h","keydown:i","keyup:i"]
-
+  
   # --- D: consent must not report a clean success when nothing was dismissed ---
   ff-rdp consent accept
   # → today: {"cmp":null,"action":null} exit 0 with the banner still on screen
   # → after: exit 1, error_type "consent_no_cmp"; `--allow-no-cmp` restores exit 0
   ff-rdp consent accept --allow-no-cmp --jq '.results.status'
   # → "no_cmp_detected" — one of accepted | detected_not_actioned | no_cmp_detected
-
+  
   # --- E: a capped contrast sample must say so at the top level ----------------
   ff-rdp navigate https://news.ycombinator.com
   ff-rdp a11y contrast --fail-only --jq '{total: .total, sampled: .sampled, capped: .capped, source: .source}'
   # → capped/source live next to `sampled` at the top level, not buried in meta
-
+  
   # --- F: --jq must not change the shape it filters ----------------------------
   ff-rdp navigate https://example.com --with-network
   ff-rdp network --jq '.results | type'
@@ -49,7 +49,7 @@ dogfood_path: |
   # → after: "object" — same as `ff-rdp network`; use --detail for the entry list
   ff-rdp network --detail --jq '.results | type'
   # → "array"
-
+  
   # --- G: the real exception must survive the diagnostic ----------------------
   ff-rdp type body hello
   # → today: "selector 'body' not ready — matched 1 element (layout did not stabilise)"
@@ -58,7 +58,7 @@ dogfood_path: |
   ff-rdp type '#nosuch' hello
   # → unchanged: "selector '#nosuch' not ready — 0 elements matched (not found)"
 first_call_sites: []
-status: in-review
+status: done
 title: "Iteration 160: the JSON envelope asserts more than the command knows"
 type: iteration
 tags:
