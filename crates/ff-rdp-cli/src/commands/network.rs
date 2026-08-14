@@ -332,8 +332,9 @@ pub fn run(
                 }
             });
         } else {
-            controls.apply_sort(&mut detail);
+            controls.apply_sort(&mut detail)?;
         }
+        controls.validate_fields(&detail)?;
         let (limited, total, truncated) = controls.apply_limit(detail, Some(20));
         let shown = limited.len();
 

@@ -74,7 +74,8 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     // before sort/limit/total are computed (kb/iterations/
     // iteration-142-session-hygiene.md Theme C).
     items.retain(|item| !is_consent_o_matic_options_tab(item));
-    controls.apply_sort(&mut items);
+    controls.apply_sort(&mut items)?;
+    controls.validate_fields(&items)?;
     let (limited, total, truncated) = controls.apply_limit(items, None);
     let shown = limited.len();
     let limited = controls.apply_fields(limited);

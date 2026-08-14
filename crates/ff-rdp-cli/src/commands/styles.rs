@@ -88,9 +88,10 @@ pub fn run(cli: &Cli, selector: &str, properties: Option<&[String]>) -> Result<(
     // Apply user sort override only when an explicit --sort flag is given;
     // the core already returns properties sorted alphabetically by name.
     if cli.sort.is_some() {
-        controls.apply_sort(&mut items);
+        controls.apply_sort(&mut items)?;
     }
 
+    controls.validate_fields(&items)?;
     let items = controls.apply_fields(items);
     let (items, total, truncated) = controls.apply_limit(items, None);
     let shown = items.len();
@@ -163,9 +164,10 @@ pub fn run_applied(cli: &Cli, selector: &str) -> Result<(), AppError> {
             sa.cmp(sb)
         });
     } else {
-        controls.apply_sort(&mut items);
+        controls.apply_sort(&mut items)?;
     }
 
+    controls.validate_fields(&items)?;
     let items = controls.apply_fields(items);
     let (items, total, truncated) = controls.apply_limit(items, None);
     let shown = items.len();

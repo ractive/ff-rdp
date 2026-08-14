@@ -8,7 +8,7 @@ dogfood_path: |
   # main and the `# →` comment records what main ACTUALLY printed.
   ff-rdp launch --headless --auto-consent
   ff-rdp navigate https://news.ycombinator.com
-
+  
   # --- Theme A: --stringify must accept what bare eval accepts ---
   ff-rdp eval 'const x = 5; x'
   # → {"results": 5, "total": 1}                                  (works today)
@@ -24,7 +24,7 @@ dogfood_path: |
   # → after: {"results": {"a":1,"b":[2,3]}, "total": 1}  — structured, not a grip
   ff-rdp eval --stringify 'const r = await Promise.resolve({n:7}); r'
   # → after: {"results": {"n":7}, "total": 1}  — stringify + await + multi-statement
-
+  
   # --- Theme C: eval must return the whole string ---
   ff-rdp eval '"x".repeat(5000)' --jq '.results | length'
   # → main: 1000-ish (the preview grip); after: 5000
@@ -33,7 +33,7 @@ dogfood_path: |
   # → after: {"results": "xxxx…"} with all 5000 chars, no longString grip anywhere
   ff-rdp eval --stringify 'Array.from({length:400},(_,i)=>({i}))'
   # → after: a 400-element array in results (JSON well over 1000 chars)
-
+  
   # --- Theme D: --fields / --sort must fail loud ---
   ff-rdp dom 'a' --limit 2 --fields bogusfield
   # → main: {"results": [{},{}], "total": 2}, exit 0            (data destroyed)
@@ -47,12 +47,12 @@ dogfood_path: |
   # → unchanged: sorted ascending by tag, exit 0
   ff-rdp dom '.no-such-class-anywhere' --fields tag
   # → after: {"results": [], "total": 0}, exit 0 — an empty result set is not an error
-
+  
   # --- Theme E: meta.eval_path is gone ---
   ff-rdp eval 'document.title' --jq '.meta'
   # → main: {"eval_path": "page-await"}; after: no eval_path key
 first_call_sites: []
-status: planned
+status: done
 title: "Iteration 161: --stringify cannot take a script, eval truncates long strings, and two flags fail silently"
 type: iteration
 tags:
@@ -352,52 +352,52 @@ Also out of scope, deliberately:
   problem belonging with [[iteration-160-envelope-honesty]].
 - Any change to `click`/`type` hit testing (§3.1).
 
-## Acceptance Criteria [0/12]
+## Acceptance Criteria [11/12]
 
-- [ ] `unit_161_stringify_wraps_multi_statement_in_iife`: `build_script("const x = 5; x",
+- [x] `unit_161_stringify_wraps_multi_statement_in_iife`: `build_script("const x = 5; x",
       true, false)` places the user's statements inside a zero-argument IIFE whose last
       statement is a synthesized `return (x)`, and the helper's argument list contains
       that call expression rather than the raw text `const x = 5; x`
-- [ ] `unit_161_stringify_single_expression_shape_unchanged`: `build_script("document.title",
+- [x] `unit_161_stringify_single_expression_shape_unchanged`: `build_script("document.title",
       true, false)` is byte-identical to what `main` produces today (no extra IIFE for the
       common single-expression case)
-- [ ] `live_161_stringify_multi_statement_positional`: `ff-rdp eval --stringify
+- [x] `live_161_stringify_multi_statement_positional`: `ff-rdp eval --stringify
       'const x = 5; x'` exits 0 with `results == 5`, and stdout contains no
-      `expected expression` text
-- [ ] `live_161_stringify_multi_statement_stdin`: `printf 'const a=1;\nconst b=2;\na+b\n' |
+      `expected expression` text [verified: 2026-08-14, exit 0, results=5, no `expected expression` in stdout; `--stringify 'const o = {a:1, b:[2,3]}; o'` → {"a":1,"b":[2,3]}; live-sweep executed=225 skipped=32 total=257, 225 passed / 0 failed]
+- [x] `live_161_stringify_multi_statement_stdin`: `printf 'const a=1;\nconst b=2;\na+b\n' |
       ff-rdp eval --stdin --stringify` exits 0 with `results == 3` — the ASI-separated
-      form, matching what bare `--stdin` already returns
-- [ ] `live_161_stringify_await_multi_statement`: `ff-rdp eval --stringify
+      form, matching what bare `--stdin` already returns [verified: 2026-08-14, exit 0, results=3; live-sweep executed=225 skipped=32 total=257, 225 passed / 0 failed]
+- [x] `live_161_stringify_await_multi_statement`: `ff-rdp eval --stringify
       'const r = await Promise.resolve({n:7}); r'` exits 0 with `results == {"n": 7}` —
-      the stringify wrap and the await wrap compose with `async` on the outer function
-- [ ] `live_161_build_script_matrix_evaluates`: every script the old matrix covered
+      the stringify wrap and the await wrap compose with `async` on the outer function [verified: 2026-08-14, exit 0, results={"n":7}, no SyntaxError; live-sweep executed=225 skipped=32 total=257, 225 passed / 0 failed]
+- [x] `live_161_build_script_matrix_evaluates`: every script the old matrix covered
       (`document.title`, `1 + 1`, `const x = 1; x`, `throw new Error('boom')`) ×
       `stringify ∈ {false,true}` × `isolate ∈ {false,true}` is handed to live Firefox and
       evaluates without a `SyntaxError`; the `throw` case surfaces its own `Error: boom`,
-      which counts as a pass
-- [ ] `unit_161_build_script_emits_no_bare_eval`: the iter-93 CSP invariant survives —
+      which counts as a pass [verified: 2026-08-14, 16/16 combinations, no SyntaxError and no `expected expression`; the 4 throw combinations exit 1 with `boom`; live-sweep executed=225 skipped=32 total=257, 225 passed / 0 failed]
+- [x] `unit_161_build_script_emits_no_bare_eval`: the iter-93 CSP invariant survives —
       no output of `build_script` over that matrix contains `eval(`; the old
       `build_script_never_emits_eval_for_any_combination` (`eval.rs:884`) is gone from the
       file
-- [ ] `live_161_eval_returns_full_long_string`: `ff-rdp eval '"x".repeat(5000)'` returns
+- [x] `live_161_eval_returns_full_long_string`: `ff-rdp eval '"x".repeat(5000)'` returns
       `results` as a 5000-character string with `results.length == 5000`, and the envelope
-      contains no `"type":"longString"` substring anywhere
-- [ ] `live_161_eval_stringify_long_payload_parses`: `ff-rdp eval --stringify
+      contains no `"type":"longString"` substring anywhere [verified: 2026-08-14, results.length=5000, 0 occurrences of \"type\":\"longString\" in the envelope; live-sweep executed=225 skipped=32 total=257, 225 passed / 0 failed]
+- [x] `live_161_eval_stringify_long_payload_parses`: `ff-rdp eval --stringify
       'Array.from({length:400},(_,i)=>({i}))'` (JSON well over the ~1000-char inline
       limit) returns a 400-element array in `results` with no `meta.stringify_parsed`
-      key — the parse at `eval.rs:616-630` succeeds because the full string was fetched
+      key — the parse at `eval.rs:616-630` succeeds because the full string was fetched [verified: 2026-08-14, 400 elements, results[399]={"i":399}, no meta.stringify_parsed; live-sweep executed=225 skipped=32 total=257, 225 passed / 0 failed]
 - [ ] `live_161_fields_and_sort_reject_unknown_names`: `ff-rdp dom 'a' --limit 2 --fields
       bogusfield` and `--sort nosuchfield` each exit 1 with a JSON error envelope whose
       message names the flag, the offending name, and at least one available key; the
       same command with `--fields tag,text` and with `--sort tag --asc` still exits 0 with
       the current output
-- [ ] `unit_161_field_validation_union_and_empty_set`: a field present on only one entry
+- [x] `unit_161_field_validation_union_and_empty_set`: a field present on only one entry
       of a two-entry result set validates successfully; an empty result set and a result
       set of non-object values both validate successfully (no error, nothing filtered);
       `apply_fields_object` rejects an unknown name on a single-record result
-- [ ] `live_161_eval_meta_has_no_eval_path`: `ff-rdp eval 'document.title' --jq '.meta'`
+- [x] `live_161_eval_meta_has_no_eval_path`: `ff-rdp eval 'document.title' --jq '.meta'`
       returns an object with no `eval_path` key, and `live_61r_eval.rs:90-94` asserts the
-      absence rather than the constant
+      absence rather than the constant [verified: 2026-08-14, meta={"route":"direct"}, no eval_path key; live-sweep executed=225 skipped=32 total=257, 225 passed / 0 failed]
 
 ## Notes
 
@@ -450,3 +450,68 @@ Also out of scope, deliberately:
   available keys) is prose, not structured data a caller would parse out separately. Do
   not switch variants or add a details field to `AppError::User` just for symmetry with
   iter-160; do it only if a real caller-facing need for structured fields shows up.
+
+## Live sweep (2026-08-14)
+
+    FF_RDP_LIVE_TESTS=1 cargo run -p xtask -- live-sweep
+    LIVE_SWEEP_SUMMARY executed=225 skipped=32 preexisting=0 total=257
+
+225 executed, **225 passed / 0 failed** (main target: 217 passed in 642.8 s;
+`ff-rdp-core`'s four live targets: 8 passed, all qualified because a Firefox
+was listening on 6000). Compare the 2026-08-13 baseline:
+`executed=197 skipped=25 total=222` with 190 passed / 7 failed — one real
+defect (`live_153_replace_emits_single_envelope`, iter-158's launch bug) and
+six `ConnectionRefused` failures from `ff-rdp-core` tests that need a
+hand-started Firefox on port 6000. Both classes are gone: iter-158 fixed the
+first, and this run had the Firefox on 6000 the second needed.
+
+## Measured on the branch (2026-08-14)
+
+Every command/output pair in `dogfood_path` and in `## The defects` was
+re-captured against the branch point before a line was changed. All five
+defects reproduced exactly as written — nothing here was implemented against a
+phantom. Two findings the plan did not anticipate:
+
+- **`dom` has no `text` key.** AC `live_161_fields_and_sort_reject_unknown_names`
+  names `--fields tag,text` as the control that must still exit 0. Measured:
+  `ff-rdp dom 'a' --limit 2 --jq '.results[0]|keys'` → `["attrs","name","tag"]`
+  (plus `ref`; `--text-attrs` adds `textContent`). There is no `text`. On main
+  `--fields tag,text` therefore returned only `tag` and dropped `text`
+  silently — a milder instance of the very defect Theme D fixes — and under
+  DEC-035 it now exits 1. The AC's *substance* (unknown names rejected with
+  flag, offender and available keys; `--sort tag --asc` and an empty result set
+  unaffected) is implemented and verified live; only its control case rests on
+  a false premise, so **the AC is left unticked rather than reworded**. The
+  live test covers `--fields tag,name` as the equivalent two-key pass case and
+  additionally pins `--fields tag,text` → exit 1 as measured.
+- **`const` declarations DO leak between `eval` calls.** `eval --help`
+  (`args.rs`) claims "each call already has its own scope and `const`/`let`
+  declarations never leak across calls". Measured while building
+  `live_161_build_script_matrix_evaluates`: running `const x = 1; x` twice in
+  the same tab fails the second time with `redeclaration of const x`, because
+  the non-stringify path sends the script to `Debugger.evalInGlobal` verbatim.
+  The live matrix test works around it with a fresh global per combination.
+  Out of scope here (it is a `--help` accuracy / scoping question, not one of
+  this plan's five defects) and **not fixed** — worth a follow-up plan.
+
+Scope note: `apply_sort`/`apply_fields`/`apply_fields_object` had 29 non-test
+call sites, not the 43 the plan estimated (43 counts test call sites too).
+`navigate.rs`'s `apply_network_controls` had to change return type as well,
+since it wraps two of them.
+
+## Review fix (PR #200)
+
+Local review found that `apply_fields`'s `--fields` validation ran on the
+*post*-`apply_limit` page at all 12 call sites, not the full result set — a
+field genuinely present in the data but absent from the truncated `--limit`
+window was rejected as unknown. `dom`, `console`, `geometry` and `network`
+default `--limit` even when the caller never passes the flag, so this was
+reachable without `--limit` in the command line at all (e.g. `dom 'a' --fields
+text` on a page where the first 20 anchors happen to have no text but the
+21st does). Fixed by splitting validation into `OutputControls::validate_fields`,
+called before `apply_limit` alongside `apply_sort`'s existing pre-limit
+validation; `apply_fields` is now a non-validating projection. Regression test:
+`unit_161_fields_validated_before_limit_not_after`. DEC-035 updated to record
+the fix. `cargo fmt` / `cargo clippy --workspace --all-targets -D warnings` /
+`cargo test --workspace -q` all clean after the fix; xtask discipline gates
+and `ac-fidelity-check.sh` re-run green.

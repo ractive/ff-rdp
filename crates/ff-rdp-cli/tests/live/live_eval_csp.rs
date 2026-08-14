@@ -130,11 +130,13 @@ fn pre_fix_repro_eval_works_on_strict_csp_site() {
         "results must equal the fixture title; got: {}",
         json["results"]
     );
-    // The eval_path must be "page-await" (Debugger.evalInGlobal path, not chrome fallback).
-    assert_eq!(
-        json["meta"]["eval_path"].as_str().unwrap_or(""),
-        "page-await",
-        "eval_path must be page-await"
+    // iter-161 Theme E: `meta.eval_path` is gone. That the eval succeeded at
+    // all on a `script-src 'none'` page IS the Debugger.evalInGlobal path —
+    // the constant field never added information beyond this assertion.
+    assert!(
+        json["meta"].get("eval_path").is_none(),
+        "meta.eval_path was removed in iter-161; got: {}",
+        json["meta"]
     );
 }
 

@@ -263,7 +263,8 @@ pub fn run(
     // Apply output controls (sort/limit/fields) uniformly on the array.
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
     let mut items = items_array;
-    controls.apply_sort(&mut items);
+    controls.apply_sort(&mut items)?;
+    controls.validate_fields(&items)?;
     let (limited, total, truncated) = controls.apply_limit(items, Some(20));
     let shown = limited.len();
     let limited = controls.apply_fields(limited);

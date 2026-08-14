@@ -3,7 +3,8 @@
 //! Verifies that:
 //! 1. `ff-rdp eval 'document.title'` returns the correct string on a page
 //!    that has a strict Content Security Policy (Hacker News).
-//! 2. The output includes `meta.eval_path: "page-await"` (standard path).
+//! 2. The envelope carries no `meta.eval_path` key — iter-161 Theme E removed
+//!    it (it had been the constant `"page-await"` since iter-93).
 //!
 //! # Running
 //!
@@ -32,7 +33,7 @@ fn parse_json(output: &Output) -> serde_json::Value {
 /// Asserts:
 /// - Exit code 0.
 /// - `results` equals `"Hacker News"`.
-/// - `meta.eval_path` equals `"page-await"` (standard path, not CSP fallback).
+/// - `meta` has no `eval_path` key (removed in iter-161 Theme E).
 #[test]
 #[ignore = "requires Firefox, network access (news.ycombinator.com), and FF_RDP_LIVE_NETWORK_TESTS=1"]
 fn live_eval_on_hn() {
@@ -83,10 +84,13 @@ fn live_eval_on_hn() {
         json["results"]
     );
 
-    // Standard page-await path must be reported.
-    assert_eq!(
-        json["meta"]["eval_path"], "page-await",
-        "live_eval_on_hn: meta.eval_path must be 'page-await'; got: {}",
-        json["meta"]["eval_path"]
+    // iter-161 Theme E: `meta.eval_path` was a constant and is gone. The
+    // page-await path itself is unchanged — what this test proves is that
+    // `eval` works on a strict-CSP page, which is the guarantee DEC-020
+    // actually cares about; the envelope no longer restates it as a field.
+    assert!(
+        json["meta"].get("eval_path").is_none(),
+        "live_eval_on_hn: meta.eval_path was removed in iter-161; got: {}",
+        json["meta"]
     );
 }

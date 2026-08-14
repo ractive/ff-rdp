@@ -2128,7 +2128,7 @@ pub fn run_with_network(
         let update_map = merge_updates(all_updates);
         let network_entries = build_network_entries(&all_resources, &update_map);
 
-        let network_entries = apply_network_controls(cli, &network_entries, timeout_reached);
+        let network_entries = apply_network_controls(cli, &network_entries, timeout_reached)?;
 
         let mut result = json!({
             "navigated": url,
@@ -2308,7 +2308,7 @@ pub fn run_with_network(
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
     let wait_for_result = run_wait_for_predicates(&mut ctx, wait_opts)?;
 
-    let network_entries = apply_network_controls(cli, &network_entries, timeout_reached);
+    let network_entries = apply_network_controls(cli, &network_entries, timeout_reached)?;
 
     let mut result = json!({
         "navigated": url,
@@ -2376,7 +2376,7 @@ fn apply_network_controls(
     cli: &Cli,
     network_entries: &[serde_json::Value],
     timeout_reached: bool,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, AppError> {
     let use_detail = cli.detail
         || cli.jq.is_some()
         || cli.sort.is_some()
@@ -2399,33 +2399,34 @@ fn apply_network_controls(
                 }
             });
         } else {
-            controls.apply_sort(&mut detail);
+            controls.apply_sort(&mut detail)?;
         }
+        controls.validate_fields(&detail)?;
         let (limited, total, truncated) = controls.apply_limit(detail, Some(20));
         let limited = controls.apply_fields(limited);
         let shown = limited.len();
         // Summary fields are computed from the FULL capture (`network_entries`),
         // never the truncated/field-projected `limited` view.
-        super::network::build_canonical_network(
+        Ok(super::network::build_canonical_network(
             limited,
             shown,
             total,
             truncated,
             network_entries,
             timeout_reached,
-        )
+        ))
     } else {
         // Summary mode: `entries` carries the full unsorted capture so consumers
         // can still reach `.entries` without flipping to detail mode.
         let total = network_entries.len();
-        super::network::build_canonical_network(
+        Ok(super::network::build_canonical_network(
             network_entries.to_vec(),
             total,
             total,
             false,
             network_entries,
             timeout_reached,
-        )
+        ))
     }
 }
 

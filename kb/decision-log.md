@@ -798,3 +798,83 @@ which is shape-agnostic by construction, comes out.
 
 **Applies to**: `crates/ff-rdp-cli/src/commands/network.rs`,
 `crates/ff-rdp-cli/src/cli/args.rs`, iter-126, iter-159.
+
+## DEC-035: `--fields`/`--sort` validate against the union of keys present, strictly and with no opt-out
+
+**Decision** (iter-161, Theme D): a `--fields` or `--sort` name that appears on
+*no* entry of the result set is an `AppError::User` (exit 1, JSON error
+envelope) naming the flag, the offending name, and the keys that are available.
+The schema is the data — the union of keys across the object entries in hand —
+so no static per-command schema is introduced. Three sub-decisions:
+
+- **Union, not intersection.** A key present on some entries and absent on
+  others is legitimate (`dom` emits `text` only for elements that have it);
+  intersection would break working commands.
+- **Skip when there is nothing to validate against.** An empty result set, and
+  a result set holding no object entries (a list of strings), both yield an
+  empty union. Erroring there would turn a legitimate empty query into a
+  failure, so validation is skipped and the command exits 0.
+- **Strict by default, no `--fields-lax`.** A `--jq` filter resolving to
+  nothing is often deliberate — jq is a query language and `.results[].maybe`
+  is a legitimate probe, which is why `--jq-strict` is opt-in. A
+  `--fields`/`--sort` name matching nothing never is. Callers who want
+  tolerance already have `--jq`.
+
+**Why**: measured on 2026-08-13, `ff-rdp dom 'a' --limit 2 --fields bogusfield`
+printed `{"results": [{}, {}], "total": 2}` at exit 0 — the data destroyed, the
+count intact — and `--sort nosuchfield` was a silent no-op (both sides of
+`compare_values` are `None`, the comparison is `Equal`, the sort is stable). An
+LLM agent cannot tell `[{},{}]` from a page with two empty links.
+
+**How it is enforced**: `apply_sort`, `validate_fields` and `apply_fields_object`
+return `Result`, so the compiler forces all ~29 call sites across ~12 command
+modules to handle the error. An opt-in validation helper would have been
+forgotten by the next command added; this is more churn but it is fail-closed
+and adds no new public surface.
+
+**Fixed in review (iter-161 PR #200)**: `validate_fields` MUST run against the
+full, pre-`apply_limit` result set. `apply_fields` originally validated
+internally, and every call site invoked it *after* `apply_limit` — so a field
+name genuinely present in the data, but absent from the truncated `--limit`
+page, was wrongly rejected as unknown. `dom`, `console`, `geometry` and
+`network` default to a non-`None` `--limit` even when the caller never passes
+the flag, so this was reachable in ordinary usage. Fixed by splitting
+`apply_fields` into `validate_fields` (called pre-limit, alongside
+`apply_sort`) and a non-validating `apply_fields` (called post-limit, as
+before, projection only) — see `unit_161_fields_validated_before_limit_not_after`.
+
+**Applies to**: `crates/ff-rdp-cli/src/output_controls.rs`, every command
+module using `OutputControls`.
+
+## DEC-036: `eval` returns the whole string and stops reporting `meta.eval_path`
+
+**Decision** (iter-161, Themes C and E): `eval::run` resolves a
+`Grip::LongString` through `LongStringActor::full_string()` before building
+`results` — matching what `js_helpers::resolve_result` has done for ~18 other
+commands since iter-102 — and the `meta.eval_path` field is removed from the
+envelope.
+
+**Why (Theme C)**: Firefox inlines only ~1000 characters and returns a
+`longString` grip for the rest. `eval` printed that preview as if it were the
+value, with no `meta.truncated` and no hint, and then released the grip — the
+one handle by which the rest could have been fetched. No CLI command speaks
+`substring`, so the truncated remainder was unreachable. `eval` is the command
+whose entire job is handing back a raw value; `"x".repeat(5000)` returning 1000
+characters is the worst possible place for a silent truncation. A
+`meta.truncated` flag was rejected as the fix: the point is that nothing is
+truncated. `full_string` keeps its 16 MiB `MAX_FETCH` bound, and the error
+surfaces through the normal JSON error envelope.
+
+**Why (Theme E)**: `meta.eval_path` was hard-set to `"page-await"` on every
+call. Its only other value, `"chrome"`, was deleted in iter-93 and DEC-020
+confirmed the deletion stands, so the field has discriminated nothing for ~70
+iterations while reading like a strategy selector. The page-await guarantee it
+appeared to carry is asserted properly by `live_61l`/`live_eval_csp` — `eval`
+succeeding on a `script-src 'none'` page IS the Debugger.evalInGlobal path.
+The `--help` prose describing that path is accurate and stays.
+
+**Applies to**: `crates/ff-rdp-cli/src/commands/eval.rs`,
+`crates/ff-rdp-cli/tests/live/live_61l.rs`,
+`crates/ff-rdp-cli/tests/live/live_61r_eval.rs`,
+`crates/ff-rdp-cli/tests/live/live_eval_csp.rs`,
+`crates/ff-rdp-cli/tests/e2e/eval.rs`, DEC-015, DEC-020.

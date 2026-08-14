@@ -96,7 +96,8 @@ COMMAND REFERENCE:
 
 AI AGENT TIPS:
   - Use --format text instead of JSON for 3-10x fewer tokens
-  - Use eval --stringify '<expr>' to get actual values instead of actor grip metadata
+  - Use eval --stringify '<script>' to get actual values instead of actor grip
+    metadata; it accepts multi-statement scripts, exactly like bare eval (iter-161)
   - Use styles --properties color,display,font-size (bare styles dumps ~500 properties)
   - Use a11y summary for a flat list instead of the full tree (can be 400+ lines)
   - Use snapshot --depth 3 for a quick page overview
@@ -347,7 +348,8 @@ pub struct Cli {
     #[arg(long, global = true, conflicts_with = "limit")]
     pub all: bool,
 
-    /// Sort results by field name
+    /// Sort results by field name (a name present on no result entry is an
+    /// error, not a silent no-op)
     #[arg(long, global = true)]
     pub sort: Option<String>,
 
@@ -359,7 +361,8 @@ pub struct Cli {
     #[arg(long, global = true, conflicts_with = "asc")]
     pub desc: bool,
 
-    /// Comma-separated list of fields to include in each result entry
+    /// Comma-separated list of fields to include in each result entry (a name
+    /// present on no result entry is an error, not silently dropped)
     #[arg(long, global = true, value_delimiter = ',')]
     pub fields: Option<Vec<String>>,
 
@@ -525,9 +528,20 @@ SyntaxError).
 
 Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}
 
+A string result is always returned in full. Firefox inlines only the first
+~1000 characters of a long string and hands back a `longString` grip for the
+rest; ff-rdp fetches the remainder before printing (iter-161), so
+`eval '\"x\".repeat(5000)'` yields all 5000 characters and never a truncated
+preview.
+
 When the result is a non-primitive (object, array), Firefox returns actor grip
 metadata (actor IDs, class names) instead of the actual values. Use --stringify
-to wrap the expression in JSON.stringify() and get the real data back.
+to wrap the value in JSON.stringify() and get the real data back.
+
+--stringify accepts exactly what bare eval accepts, including multi-statement
+scripts and top-level `await`: `eval --stringify 'const o = {a:1}; o'` returns
+{\"a\":1} (iter-161 — this used to fail with \"expected expression, got keyword
+'const'\"). The same last-statement rule as above decides what is returned.
 
 Pass --unwrap when the expression itself already returns a JSON-encoded string
 (e.g. `localStorage.getItem('user')` or a server endpoint that returns text):
@@ -1477,7 +1491,8 @@ pub struct EvalArgs {
     /// Read JavaScript source from stdin until EOF
     #[arg(long)]
     pub stdin: bool,
-    /// Wrap expression in JSON.stringify() to get actual values instead of actor grips
+    /// JSON.stringify() the result to get actual values instead of actor grips
+    /// (accepts multi-statement scripts, same as bare eval)
     #[arg(long)]
     pub stringify: bool,
     /// No-op since iter-93. Kept for backwards compatibility — isolation

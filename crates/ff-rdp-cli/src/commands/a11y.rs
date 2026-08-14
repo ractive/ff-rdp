@@ -242,7 +242,8 @@ pub fn run(
         let early_stop = if controls.all { None } else { controls.limit };
         let mut flat = Vec::new();
         flatten_tree(&tree_value, &mut flat, early_stop);
-        controls.apply_sort(&mut flat);
+        controls.apply_sort(&mut flat)?;
+        controls.validate_fields(&flat)?;
         let (limited, total, truncated) = controls.apply_limit(flat, None);
         let limited = controls.apply_fields(limited);
         let shown = limited.len();
@@ -795,7 +796,8 @@ pub fn run_critical(cli: &Cli, root_selector: Option<&str>) -> Result<(), AppErr
 
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
     let mut items = violations;
-    controls.apply_sort(&mut items);
+    controls.apply_sort(&mut items)?;
+    controls.validate_fields(&items)?;
     let (limited, total, truncated) = controls.apply_limit(items, None);
     let limited = controls.apply_fields(limited);
     let shown = limited.len();
