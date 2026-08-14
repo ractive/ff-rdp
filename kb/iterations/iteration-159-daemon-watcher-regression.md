@@ -432,6 +432,20 @@ because the only thing filling the buffer used a different one.
   proxy-startup message rather than an empty/malformed watcher result, treat it as iter-164's
   defect, not a regression in this iteration's fix — do not spend time debugging the watcher
   routing for a failure that never reached it.
+- **`live_109_throttle_block::live_block_url_pattern` fails on `origin/main` too.** Verified by
+  running it in a clean `origin/main` worktree: `a fetch of a blocked URL (matching 'favicon')
+  must reject: "resolved"`, the identical assertion and the identical value. Pre-existing, not
+  a regression from this iteration, and out of scope here.
+- **Two `--with-network` behaviours changed as a consequence of unconditional buffering.**
+  (1) The post-stream residual `drain_network_from_daemon` is gone: it now consumes the buffer
+  this navigation just filled, which left a following `ff-rdp network` with zero rows —
+  measured, `navigate --with-network` then `network --security` returned `results: []` and
+  broke `live_network_security_info_https`. Events after the idle cutoff are no longer in the
+  `--with-network` envelope; they are in the daemon buffer, where `network` reads them.
+  (2) `purge_destroyed_target` no longer purges `network-event` entries. With server-side
+  target switching the top-level target is destroyed on every cross-process navigation, so the
+  purge fired *during* the load it was meant to follow — on `https://example.com` it wiped the
+  document request's available-entry and left 2 buffered updates that rendered as 0 rows.
 - **Sequencing is load-bearing.** Theme D's deletions are gated on Themes B and C being
   ticked with measured evidence. If Theme A's spec read lands but Theme B slips, file the
   cleanup as a follow-up plan before this PR merges rather than deleting the workaround on a
