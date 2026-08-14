@@ -91,7 +91,8 @@ pub fn run(cli: &Cli, selector: &str, properties: Option<&[String]>) -> Result<(
         controls.apply_sort(&mut items)?;
     }
 
-    let items = controls.apply_fields(items)?;
+    controls.validate_fields(&items)?;
+    let items = controls.apply_fields(items);
     let (items, total, truncated) = controls.apply_limit(items, None);
     let shown = items.len();
     let results = Value::Array(items);
@@ -166,7 +167,8 @@ pub fn run_applied(cli: &Cli, selector: &str) -> Result<(), AppError> {
         controls.apply_sort(&mut items)?;
     }
 
-    let items = controls.apply_fields(items)?;
+    controls.validate_fields(&items)?;
+    let items = controls.apply_fields(items);
     let (items, total, truncated) = controls.apply_limit(items, None);
     let shown = items.len();
     let results = Value::Array(items);

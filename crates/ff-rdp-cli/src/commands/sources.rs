@@ -170,8 +170,9 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
     let mut results = results;
     controls.apply_sort(&mut results)?;
+    controls.validate_fields(&results)?;
     let (limited, total, truncated) = controls.apply_limit(results, None);
-    let limited = controls.apply_fields(limited)?;
+    let limited = controls.apply_fields(limited);
     let shown = limited.len();
     let result_json = json!(limited);
     let mut meta = json!({});

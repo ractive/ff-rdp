@@ -81,18 +81,37 @@ impl OutputControls {
         }
     }
 
+    /// Validate that every `--fields` name appears on at least one entry of
+    /// `results` (iter-161 Theme D).
+    ///
+    /// Callers MUST invoke this against the full, pre-[`Self::apply_limit`]
+    /// result set — never the already-truncated page. `apply_fields` itself
+    /// only projects and does not re-validate, because doing the validation
+    /// after truncation would make a legitimate field name fail purely
+    /// because of `--limit`'s cutoff: e.g. `dom` defaults to `--limit 20`,
+    /// so `dom 'a' --fields text` on a page where anchors 1-20 happen to
+    /// have no text but anchor 21 does would otherwise reject `text` even
+    /// though it is a real key elsewhere in the same result set.
+    pub fn validate_fields(&self, results: &[Value]) -> Result<(), AppError> {
+        let Some(ref fields) = self.fields else {
+            return Ok(());
+        };
+        validate_names("--fields", fields, results)
+    }
+
     /// Filter to only the requested fields on each result entry.
     ///
-    /// Errors (iter-161 Theme D) when `--fields` names a key that appears on
-    /// no entry: the old behaviour silently destroyed the data —
-    /// `ff-rdp dom 'a' --limit 2 --fields bogusfield` printed
+    /// Does NOT validate `--fields` names — call [`Self::validate_fields`]
+    /// against the pre-limit result set first (iter-161 Theme D; see that
+    /// method's doc comment for why this must run before truncation, not
+    /// here). The old behaviour, before either existed, silently destroyed
+    /// the data: `ff-rdp dom 'a' --limit 2 --fields bogusfield` printed
     /// `{"results": [{}, {}], "total": 2}` and exited 0.
-    pub fn apply_fields(&self, results: Vec<Value>) -> Result<Vec<Value>, AppError> {
+    pub fn apply_fields(&self, results: Vec<Value>) -> Vec<Value> {
         let Some(ref fields) = self.fields else {
-            return Ok(results);
+            return results;
         };
-        validate_names("--fields", fields, &results)?;
-        Ok(results
+        results
             .into_iter()
             .map(|entry| {
                 if let Value::Object(map) = entry {
@@ -105,7 +124,7 @@ impl OutputControls {
                     entry
                 }
             })
-            .collect())
+            .collect()
     }
 
     /// Filter to only the requested fields on a single object value.
@@ -353,7 +372,7 @@ mod tests {
     fn fields_filters_object_keys() {
         let items = vec![json!({"a": 1, "b": 2, "c": 3})];
         let c = make_controls(None, false, None, SortDir::Asc, Some(vec!["a", "c"]));
-        let out = c.apply_fields(items).expect("fields are present");
+        let out = c.apply_fields(items);
         assert_eq!(out[0]["a"], 1);
         assert_eq!(out[0]["c"], 3);
         assert!(out[0].get("b").is_none());
@@ -363,7 +382,7 @@ mod tests {
     fn fields_noop_when_not_set() {
         let items = vec![json!({"a": 1, "b": 2})];
         let c = make_controls(None, false, None, SortDir::Asc, None);
-        let out = c.apply_fields(items).expect("fields are present");
+        let out = c.apply_fields(items);
         assert_eq!(out[0]["a"], 1);
         assert_eq!(out[0]["b"], 2);
     }
@@ -372,13 +391,48 @@ mod tests {
     fn fields_passthrough_non_object() {
         let items = vec![json!("a string"), json!(42)];
         let c = make_controls(None, false, None, SortDir::Asc, Some(vec!["x"]));
-        let out = c.apply_fields(items).expect("fields are present");
+        let out = c.apply_fields(items);
         // Non-object entries pass through unchanged
         assert_eq!(out[0], json!("a string"));
         assert_eq!(out[1], json!(42));
     }
 
     // ── iter-161 Theme D: unknown --fields/--sort names fail loud ────────────
+
+    /// `--fields` validation must run against the full, pre-`apply_limit`
+    /// result set, not the truncated page — otherwise a real field name that
+    /// simply doesn't appear within the `--limit` window would be rejected
+    /// as unknown. `dom` alone defaults `--limit` to 20, so this is reachable
+    /// without the caller ever passing `--limit` explicitly. Regression test
+    /// for a bug found in review: [`OutputControls::apply_fields`] used to
+    /// validate internally, and every call site invoked it *after*
+    /// [`OutputControls::apply_limit`].
+    #[test]
+    fn unit_161_fields_validated_before_limit_not_after() {
+        // `text` is absent from the first two entries and present only on the
+        // third — the exact shape `dom` produces for elements without text.
+        let items = vec![
+            json!({"tag": "a"}),
+            json!({"tag": "img"}),
+            json!({"tag": "a", "text": "hi"}),
+        ];
+        let c = make_controls(Some(2), false, None, SortDir::Asc, Some(vec!["text"]));
+
+        // Validating against the full set (correct order): `text` is a real
+        // field somewhere in `items`, so this must succeed.
+        c.validate_fields(&items)
+            .expect("text is present on the third entry of the full result set");
+
+        // Confirm the bug this guards against: validating against the
+        // already-limited page (the wrong order) does reject `text`, which is
+        // exactly why callers must call `validate_fields` before
+        // `apply_limit`, never after.
+        let (limited, _, truncated) = c.apply_limit(items, Some(2));
+        assert!(truncated);
+        assert_eq!(limited.len(), 2);
+        c.validate_fields(&limited)
+            .expect_err("text is genuinely absent from the truncated page");
+    }
 
     /// AC `unit_161_field_validation_union_and_empty_set`: the union of keys
     /// present is the schema, and there is nothing to validate against when
@@ -392,30 +446,27 @@ mod tests {
         let mut sortable = items.clone();
         c.apply_sort(&mut sortable)
             .expect("a key on only one entry is still in the union");
-        let out = c
-            .apply_fields(items)
+        c.validate_fields(&items)
             .expect("a key on only one entry is still in the union");
+        let out = c.apply_fields(items);
         assert_eq!(out.len(), 2);
 
         // Empty result set: no union to check, so no error and nothing filtered.
         let c = make_controls(None, false, Some("nope"), SortDir::Asc, Some(vec!["nope"]));
         let mut empty: Vec<Value> = vec![];
         c.apply_sort(&mut empty).expect("empty set is not an error");
-        assert_eq!(
-            c.apply_fields(vec![]).expect("empty set is not an error"),
-            Vec::<Value>::new()
-        );
+        c.validate_fields(&empty)
+            .expect("empty set is not an error");
+        assert_eq!(c.apply_fields(vec![]), Vec::<Value>::new());
 
         // A result set of non-object values: same reasoning, empty union.
         let strings = vec![json!("a"), json!("b")];
         let mut sortable = strings.clone();
         c.apply_sort(&mut sortable)
             .expect("a list of strings has no keys to validate against");
-        assert_eq!(
-            c.apply_fields(strings.clone())
-                .expect("a list of strings has no keys to validate against"),
-            strings
-        );
+        c.validate_fields(&strings)
+            .expect("a list of strings has no keys to validate against");
+        assert_eq!(c.apply_fields(strings.clone()), strings);
 
         // Single-record counterpart rejects an unknown name.
         let err = c
@@ -436,7 +487,7 @@ mod tests {
 
         let c = make_controls(None, false, None, SortDir::Asc, Some(vec!["bogusfield"]));
         let err = c
-            .apply_fields(items.clone())
+            .validate_fields(&items)
             .expect_err("--fields bogusfield must be an error, not [{}, {}]");
         let msg = err.to_string();
         assert!(msg.contains("--fields"), "must name the flag: {msg}");
@@ -463,7 +514,7 @@ mod tests {
         // Every name is reported, not just the first.
         let c = make_controls(None, false, None, SortDir::Asc, Some(vec!["tag", "x", "y"]));
         let msg = c
-            .apply_fields(items)
+            .validate_fields(&items)
             .expect_err("two unknown names must still be an error")
             .to_string();
         assert!(msg.contains("'x'") && msg.contains("'y'"), "got: {msg}");

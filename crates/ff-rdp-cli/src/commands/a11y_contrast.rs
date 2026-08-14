@@ -86,9 +86,10 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
     // Apply output controls (sort, limit, fields).
     let controls = OutputControls::from_cli(cli, SortDir::Desc);
     controls.apply_sort(&mut filtered)?;
+    controls.validate_fields(&filtered)?;
     let (limited, total, truncated) = controls.apply_limit(filtered, None);
     let shown = limited.len();
-    let limited = controls.apply_fields(limited)?;
+    let limited = controls.apply_fields(limited);
 
     // `total` counts what this command returns: the post-filter, pre-limit
     // population (failures under `--fail-only`, all checks otherwise). A

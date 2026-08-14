@@ -264,9 +264,10 @@ pub fn run(
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
     let mut items = items_array;
     controls.apply_sort(&mut items)?;
+    controls.validate_fields(&items)?;
     let (limited, total, truncated) = controls.apply_limit(items, Some(20));
     let shown = limited.len();
-    let limited = controls.apply_fields(limited)?;
+    let limited = controls.apply_fields(limited);
 
     let hint_ctx = HintContext::new(HintSource::Dom).with_selector(selector);
 

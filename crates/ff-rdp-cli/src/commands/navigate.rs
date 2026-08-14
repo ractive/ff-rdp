@@ -2401,8 +2401,9 @@ fn apply_network_controls(
         } else {
             controls.apply_sort(&mut detail)?;
         }
+        controls.validate_fields(&detail)?;
         let (limited, total, truncated) = controls.apply_limit(detail, Some(20));
-        let limited = controls.apply_fields(limited)?;
+        let limited = controls.apply_fields(limited);
         let shown = limited.len();
         // Summary fields are computed from the FULL capture (`network_entries`),
         // never the truncated/field-projected `limited` view.

@@ -826,11 +826,22 @@ count intact — and `--sort nosuchfield` was a silent no-op (both sides of
 `compare_values` are `None`, the comparison is `Equal`, the sort is stable). An
 LLM agent cannot tell `[{},{}]` from a page with two empty links.
 
-**How it is enforced**: `apply_sort`, `apply_fields` and `apply_fields_object`
+**How it is enforced**: `apply_sort`, `validate_fields` and `apply_fields_object`
 return `Result`, so the compiler forces all ~29 call sites across ~12 command
 modules to handle the error. An opt-in validation helper would have been
 forgotten by the next command added; this is more churn but it is fail-closed
 and adds no new public surface.
+
+**Fixed in review (iter-161 PR #200)**: `validate_fields` MUST run against the
+full, pre-`apply_limit` result set. `apply_fields` originally validated
+internally, and every call site invoked it *after* `apply_limit` — so a field
+name genuinely present in the data, but absent from the truncated `--limit`
+page, was wrongly rejected as unknown. `dom`, `console`, `geometry` and
+`network` default to a non-`None` `--limit` even when the caller never passes
+the flag, so this was reachable in ordinary usage. Fixed by splitting
+`apply_fields` into `validate_fields` (called pre-limit, alongside
+`apply_sort`) and a non-validating `apply_fields` (called post-limit, as
+before, projection only) — see `unit_161_fields_validated_before_limit_not_after`.
 
 **Applies to**: `crates/ff-rdp-cli/src/output_controls.rs`, every command
 module using `OutputControls`.

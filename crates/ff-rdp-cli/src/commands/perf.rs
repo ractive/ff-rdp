@@ -470,9 +470,10 @@ pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppE
     } else {
         controls.apply_sort(&mut results)?;
     }
+    controls.validate_fields(&results)?;
     let (limited, total, truncated) = controls.apply_limit(results, default_limit);
     let shown = limited.len();
-    let limited = controls.apply_fields(limited)?;
+    let limited = controls.apply_fields(limited);
 
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(

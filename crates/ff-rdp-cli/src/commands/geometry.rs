@@ -129,6 +129,7 @@ pub fn run(cli: &Cli, selectors: &[String], include_hidden: bool) -> Result<(), 
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
     let mut items = elements_array;
     controls.apply_sort(&mut items)?;
+    controls.validate_fields(&items)?;
     let (limited, total, truncated) = controls.apply_limit(items, Some(20));
     let shown = limited.len();
 
@@ -161,7 +162,7 @@ pub fn run(cli: &Cli, selectors: &[String], include_hidden: bool) -> Result<(), 
         })
         .unwrap_or_default();
 
-    let limited = controls.apply_fields(limited)?;
+    let limited = controls.apply_fields(limited);
 
     let results = json!({
         "elements": limited,
