@@ -245,7 +245,9 @@ pub(crate) fn autowait_element(
             // many elements matched and distinguishes "hidden" from
             // "not found" instead of the old undifferentiated
             // "not found / hidden / unstable" for every cause.
-            let diag = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
+            // Theme G note: the timeout branch has no exception to thread,
+            // so it keeps using the diagnostic verbatim, unchanged.
+            let (diag, _) = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
             return Err(AppError::Timeout(format!("{diag} after {timeout_ms}ms")));
         }
 
@@ -253,7 +255,7 @@ pub(crate) fn autowait_element(
             WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &readiness_js)
                 .map_err(AppError::from)?;
 
-        if eval.exception.is_some() {
+        if let Some(ref exc) = eval.exception {
             // iter-140 Theme B (on-the-wire correction): `display:none` /
             // `visibility:hidden` on the DOM-order-0 match throws
             // immediately here — this branch returns on the *first* eval,
@@ -266,10 +268,24 @@ pub(crate) fn autowait_element(
             // close, just reached from a different code path than the
             // timeout branch. Route through the same diagnostic so both
             // paths report match count / chosen index identically.
-            let diag = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
+            //
+            // iter-160 Theme G: …but not at the cost of the exception itself.
+            // `build_autowait_js(for_input: true)` throws the *accurate*
+            // reason ("element exists but is not an input, textarea, select,
+            // or contenteditable"), and this branch used to drop it on the
+            // floor and print only the re-probe, which for `type body hello`
+            // fell through to its hardcoded "layout did not stabilise" — the
+            // last thing left in the tree, not a finding. Prefer the thrown
+            // message whenever the diagnostic has nothing of its own to add;
+            // keep the diagnostic when it does (hidden-ness / not-found),
+            // since for `display:none` and `visibility:hidden` — which also
+            // arrive here — its text is the better message.
+            let (diag, finding) = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
             let elapsed_ms = started.elapsed().as_millis();
+            let message =
+                compose_readiness_error(selector, exc.message.as_deref(), diag, &finding);
             return Err(AppError::Timeout(format!(
-                "{diag} (after {elapsed_ms}ms, timeout {timeout_ms}ms)"
+                "{message} (after {elapsed_ms}ms, timeout {timeout_ms}ms)"
             )));
         }
 
@@ -292,7 +308,9 @@ pub(crate) fn autowait_element(
             )));
         }
         if started.elapsed() >= timeout {
-            let diag = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
+            // Theme G note: the timeout branch has no exception to thread,
+            // so it keeps using the diagnostic verbatim, unchanged.
+            let (diag, _) = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
             return Err(AppError::Timeout(format!("{diag} after {timeout_ms}ms")));
         }
 
@@ -340,12 +358,65 @@ pub(crate) fn autowait_element(
 /// Best-effort: if the diagnostic eval itself throws or the transport drops,
 /// falls back to the original undifferentiated message rather than masking
 /// the real timeout with a second error.
+/// Decide what a readiness *exception* should report, given the blind re-probe
+/// [`diagnose_selector_failure`] ran afterwards (iter-160 Theme G).
+///
+/// The rule, in one line: **prefer the thrown message, unless the diagnostic
+/// established something the exception does not say.**
+///
+/// - `Substantive` (0 matches, or the chosen match is hidden) → keep the
+///   diagnostic. `display:none` and `visibility:hidden` both reach this branch
+///   through the exception, and for those the diagnostic's hidden-aware text —
+///   which also names the match count and points at `--visible`/`--index` — is
+///   the better message.
+/// - `MatchCountOnly` → the diagnostic's own text ends in the hardcoded
+///   "layout did not stabilise" fallback, which is the last branch left in the
+///   tree rather than a finding. Use the thrown reason and keep only the
+///   match-count phrase as trailing context.
+/// - `Unavailable` → the diagnostic eval itself failed; the exception is all
+///   there is.
+///
+/// An exception with no message at all falls back to the diagnostic, which is
+/// still better than an empty reason.
+fn compose_readiness_error(
+    selector: &str,
+    thrown: Option<&str>,
+    diag: String,
+    finding: &SelectorFinding,
+) -> String {
+    let thrown = thrown.map(str::trim).filter(|m| !m.is_empty());
+    match (thrown, finding) {
+        (Some(thrown), SelectorFinding::MatchCountOnly { context }) => {
+            format!("selector '{selector}' not ready — {thrown} ({context})")
+        }
+        (Some(thrown), SelectorFinding::Unavailable) => {
+            format!("selector '{selector}' not ready — {thrown}")
+        }
+        _ => diag,
+    }
+}
+
+/// What [`diagnose_selector_failure`] actually established, so a caller holding
+/// a real thrown exception can tell "the diagnostic knows something you don't"
+/// from "the diagnostic ran out of branches" (iter-160 Theme G).
+enum SelectorFinding {
+    /// The diagnostic found 0 matches, or found the chosen match hidden — a
+    /// conclusion of its own that the readiness exception does not carry.
+    Substantive,
+    /// The diagnostic only counted matches; its message ends in the hardcoded
+    /// "layout did not stabilise" guess. `context` is the match-count phrase
+    /// worth keeping as trailing context for a better message.
+    MatchCountOnly { context: String },
+    /// The diagnostic eval itself threw or the transport dropped.
+    Unavailable,
+}
+
 fn diagnose_selector_failure(
     ctx: &mut ConnectedTab,
     console_actor: &ActorId,
     selector: &str,
     escaped_selector: &str,
-) -> String {
+) -> (String, SelectorFinding) {
     let js = format!(
         r"(function() {{
   var matches = document.querySelectorAll('{escaped_selector}');
@@ -370,33 +441,60 @@ fn diagnose_selector_failure(
         });
 
     let Some(diag) = diag else {
-        return format!("selector '{selector}' not ready (not found / hidden / unstable)");
+        return (
+            format!("selector '{selector}' not ready (not found / hidden / unstable)"),
+            SelectorFinding::Unavailable,
+        );
     };
 
     let match_count = diag.get("matchCount").and_then(Value::as_u64).unwrap_or(0);
     if match_count == 0 {
-        return format!("selector '{selector}' not ready — 0 elements matched (not found)");
+        return (
+            format!("selector '{selector}' not ready — 0 elements matched (not found)"),
+            SelectorFinding::Substantive,
+        );
     }
     let hidden = diag.get("hidden").and_then(Value::as_bool).unwrap_or(false);
     if match_count == 1 {
         return if hidden {
-            format!("selector '{selector}' not ready — the 1 matching element is hidden")
+            (
+                format!("selector '{selector}' not ready — the 1 matching element is hidden"),
+                SelectorFinding::Substantive,
+            )
         } else {
-            format!(
-                "selector '{selector}' not ready — matched 1 element (layout did not stabilise)"
+            (
+                format!(
+                    "selector '{selector}' not ready — matched 1 element (layout did not stabilise)"
+                ),
+                SelectorFinding::MatchCountOnly {
+                    context: "matched 1 element".to_owned(),
+                },
             )
         };
     }
     let last_index = match_count - 1;
     if hidden {
-        format!(
-            "selector '{selector}' not ready — matched {match_count} elements, chose index 0 \
-             which is hidden; pass --visible or --index 0..{last_index} to target a different match"
+        (
+            format!(
+                "selector '{selector}' not ready — matched {match_count} elements, chose index 0 \
+                 which is hidden; pass --visible or --index 0..{last_index} to target a different \
+                 match"
+            ),
+            SelectorFinding::Substantive,
         )
     } else {
-        format!(
-            "selector '{selector}' not ready — matched {match_count} elements, chose index 0 \
-             (layout did not stabilise); pass --index 0..{last_index} to target a different match"
+        (
+            format!(
+                "selector '{selector}' not ready — matched {match_count} elements, chose index 0 \
+                 (layout did not stabilise); pass --index 0..{last_index} to target a different \
+                 match"
+            ),
+            SelectorFinding::MatchCountOnly {
+                context: format!(
+                    "matched {match_count} elements, chose index 0; pass --index \
+                     0..{last_index} to target a different match"
+                ),
+            },
         )
     }
 }
@@ -1023,6 +1121,102 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    // ── iter-160 Theme G: the real exception survives the diagnostic ───────
+
+    /// AC `live_160_type_non_input_reports_thrown_reason` (unit half): the
+    /// accurate thrown reason wins over the diagnostic's hardcoded
+    /// "layout did not stabilise" fallback, and the match count survives as
+    /// trailing context.
+    #[test]
+    fn unit_160_thrown_reason_replaces_the_match_count_only_guess() {
+        let diag = "selector 'body' not ready — matched 1 element (layout did not stabilise)";
+        let msg = compose_readiness_error(
+            "body",
+            Some("element exists but is not an input, textarea, select, or contenteditable"),
+            diag.to_owned(),
+            &SelectorFinding::MatchCountOnly {
+                context: "matched 1 element".to_owned(),
+            },
+        );
+        assert_eq!(
+            msg,
+            "selector 'body' not ready — element exists but is not an input, textarea, \
+             select, or contenteditable (matched 1 element)"
+        );
+        assert!(!msg.contains("layout did not stabilise"), "{msg}");
+        assert!(!msg.contains("rect did not stabilise"), "{msg}");
+    }
+
+    /// AC `live_160_selector_diagnostics_survive` (unit half): the sibling
+    /// messages on this path are the best error text in the repo and must not
+    /// regress. When the diagnostic has a finding of its own — 0 matches, or a
+    /// hidden chosen match — it keeps winning, byte for byte.
+    #[test]
+    fn unit_160_substantive_diagnostic_survives_an_exception() {
+        for diag in [
+            "selector '#nosuch' not ready — 0 elements matched (not found)",
+            "selector '#hidden_input' not ready — the 1 matching element is hidden",
+            "selector 'input' not ready — matched 2 elements, chose index 0 which is hidden; \
+             pass --visible or --index 0..1 to target a different match",
+        ] {
+            let msg = compose_readiness_error(
+                "x",
+                Some("element exists but has display:none"),
+                diag.to_owned(),
+                &SelectorFinding::Substantive,
+            );
+            assert_eq!(msg, diag, "diagnostic finding must win");
+        }
+    }
+
+    #[test]
+    fn unit_160_multi_match_context_keeps_the_index_advice() {
+        let msg = compose_readiness_error(
+            "input",
+            Some("element exists but is disabled"),
+            "unused".to_owned(),
+            &SelectorFinding::MatchCountOnly {
+                context: "matched 3 elements, chose index 0; pass --index 0..2 to target a \
+                          different match"
+                    .to_owned(),
+            },
+        );
+        assert!(msg.contains("element exists but is disabled"), "{msg}");
+        assert!(msg.contains("--index 0..2"), "{msg}");
+    }
+
+    #[test]
+    fn unit_160_missing_exception_message_falls_back_to_the_diagnostic() {
+        let diag = "selector 'x' not ready — matched 1 element (layout did not stabilise)";
+        for thrown in [None, Some(""), Some("   ")] {
+            assert_eq!(
+                compose_readiness_error(
+                    "x",
+                    thrown,
+                    diag.to_owned(),
+                    &SelectorFinding::MatchCountOnly {
+                        context: "matched 1 element".to_owned()
+                    },
+                ),
+                diag
+            );
+        }
+    }
+
+    #[test]
+    fn unit_160_unavailable_diagnostic_yields_the_thrown_reason_alone() {
+        let msg = compose_readiness_error(
+            "body",
+            Some("element exists but is disabled"),
+            "selector 'body' not ready (not found / hidden / unstable)".to_owned(),
+            &SelectorFinding::Unavailable,
+        );
+        assert_eq!(
+            msg,
+            "selector 'body' not ready — element exists but is disabled"
+        );
+    }
 
     #[test]
     fn escape_selector_handles_special_chars() {
