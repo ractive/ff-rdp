@@ -612,25 +612,22 @@ Navigation scoping (daemon mode only):
   reached) an explicit --since fails with error_type \"since_requires_daemon\"
   rather than silently returning the unfiltered buffer.
 
-Source precedence (--source auto, the default):
-  1. Daemon watcher buffer (source=watcher): used when the daemon has buffered
-     network events for the current navigation. This is the default path when
-     the daemon is running and `navigate --with-network` was used previously.
-  2. Performance API fallback (source=performance-api): used only when the
-     watcher buffer is empty (no events captured for the current navigation).
+Source (--source watcher, the default):
+  --source watcher          the RDP resource watcher — the only source with
+                            method/status/content_type/transfer_size. An empty
+                            buffer reports 0 watcher rows; it is never swapped
+                            for a different dataset. (`auto` is a deprecated
+                            alias of `watcher`.)
+  --source performance-api  only Resource Timing; identical in both connection
+                            modes, no headers/security detail, and incompatible
+                            with --since (error_type
+                            \"since_requires_watcher_source\")
 
-`auto` therefore resolves differently per connection mode: the daemon has been
-buffering since it started, while a fresh --no-daemon connection subscribes
-after the page has already loaded and almost always falls through to the
-Performance API. Same page, same instant, different row counts and different
-available fields. Pin the source to make both modes agree:
-  --source watcher          only the watcher/daemon buffer; 0 rows stays 0 rows
-  --source performance-api  only Resource Timing; identical in both modes,
-                            no headers/security detail, and incompatible with
-                            --since (error_type \"since_requires_watcher_source\")
-`meta.source_reason` always states which rule applied: \"requested\",
-\"auto: watcher buffer non-empty\", or
-\"auto: watcher buffer empty, fell back to performance-api\".
+iter-159 removed the implicit fallback. `auto` used to mean \"watcher if it
+produced anything, else the Performance API\", which made the same page report
+different row counts in the two connection modes — and, worse, made a daemon
+whose watcher had stopped delivering anything at all look like a page with no
+HTTP metadata. `meta.source` names the source that was actually read.
 
 Field fidelity by source:
   watcher:         method, status, content_type, duration_ms, size_bytes, transfer_size all available.

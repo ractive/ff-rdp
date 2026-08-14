@@ -406,10 +406,12 @@ fn live_137_concurrent_commands() {
 /// reports the same `meta.source` and the same row count through the daemon
 /// and with `--no-daemon` on a settled page.
 ///
-/// The default (`--source auto`) deliberately still differs between modes —
-/// the daemon has been buffering since it started, a direct connection has
-/// not — which is why `--source` exists and why `meta.source_reason` is
-/// asserted here too.
+/// iter-159 note: the `auto` source this test was written around is gone. There
+/// is no implicit substitution left, `network` no longer emits
+/// `meta.source_reason`, and the default is `watcher`. The parity property the
+/// test exists for — an explicitly pinned source returns the same rows in both
+/// connection modes — is unchanged, and the absence of `source_reason` is now
+/// asserted so the deletion cannot silently regrow.
 #[test]
 #[ignore = "requires Firefox — FF_RDP_LIVE_TESTS=1"]
 fn live_137_network_source_parity() {
@@ -491,13 +493,15 @@ fn live_137_network_source_parity() {
         direct["meta"]["source"], "performance-api",
         "pinned source must be honoured on a direct connection: {direct}"
     );
-    assert_eq!(
-        via_daemon["meta"]["source_reason"], "requested",
-        "an explicitly pinned source must say so: {via_daemon}"
+    // iter-159 deleted `meta.source_reason` from `network`: it existed only to
+    // explain how `auto` resolved, and `auto`'s implicit substitution is gone.
+    assert!(
+        via_daemon["meta"].get("source_reason").is_none(),
+        "network no longer emits source_reason (iter-159): {via_daemon}"
     );
-    assert_eq!(
-        direct["meta"]["source_reason"], "requested",
-        "an explicitly pinned source must say so: {direct}"
+    assert!(
+        direct["meta"].get("source_reason").is_none(),
+        "network no longer emits source_reason (iter-159): {direct}"
     );
     assert_eq!(
         via_daemon["meta"]["route"], "daemon",
