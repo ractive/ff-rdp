@@ -423,3 +423,30 @@ Also out of scope, deliberately:
   or refused to — and reported a shape the caller could not act on. Here the caller is an
   LLM agent, which cannot tell a 1000-char preview from a 1000-char answer, and cannot
   tell `[{},{}]` from a page with two empty links.
+
+- **Adaptation from iter-160 (confirmed, not a scope change).** iter-160's PR shipped
+  two `unit_160_*` ACs unticked despite the work being done, because
+  `ac-fidelity-check.sh`'s heuristic 1 recognises only `live_`/`test_`/`bench_` slug
+  prefixes and heuristics 2–3 read only the AC's first *physical* markdown line for a
+  backticked symbol — those two ACs' first lines carried no backticks, only the wrapped
+  continuation lines did. Checked against this plan's four `unit_161_*` ACs (lines
+  357, 361, 378, 394): each already backticks its own slug name on the first physical
+  line (e.g. `` `unit_161_stringify_wraps_multi_statement_in_iife`: `build_script(...)` ``),
+  which is a symbol the diff will contain verbatim as `fn unit_161_…` — so heuristic 3
+  should find it without relying on heuristic 1's prefix list. Not re-verified against a
+  real diff (there isn't one yet), so re-check with `ac-fidelity-check.sh` once ACs are
+  ticked, but no rewording is anticipated to be needed. This is the same gate;
+  [[project_discipline_gate_gaps]] still tracks fixing the heuristics themselves (read
+  `full_text`, learn the `unit_` prefix) so future plans don't have to hand-verify this.
+- **Confirmed still accurate**: this plan's "out of scope" note that `network`'s `--jq`
+  shape divergence belongs to iter-160 is correct as landed — iter-160 Theme F removed
+  `cli.jq.is_some()` from `network`'s `use_detail_mode` and merged to main. Nothing in
+  this plan needs to touch `network.rs` because of it.
+- **Available but not required**: iter-160 added an optional `details: Option<Value>`
+  field to `AppError::Unsupported`, merged flat into the error envelope
+  (`error.rs`). Theme D's field/sort validation errors are specified as `AppError::User`,
+  a different variant with no such field — that is fine, `AppError::User`'s existing
+  shape already carries a message, and Theme D's error text (flag, offending name,
+  available keys) is prose, not structured data a caller would parse out separately. Do
+  not switch variants or add a details field to `AppError::User` just for symmetry with
+  iter-160; do it only if a real caller-facing need for structured fields shows up.
