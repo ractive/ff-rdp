@@ -138,7 +138,7 @@ impl OutputControls {
 /// (iter-161 Theme D).
 ///
 /// The schema is the data: the union of keys present across the object
-/// entries in hand. Design decisions, recorded in DEC-041:
+/// entries in hand. Design decisions, recorded in DEC-035:
 ///
 /// - **Union, not intersection.** A key present on some entries and absent on
 ///   others is legitimate — `dom` emits `text` only for elements that have
