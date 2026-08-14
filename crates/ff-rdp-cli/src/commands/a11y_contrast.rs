@@ -49,6 +49,17 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
 
     let summary = result.get("summary").cloned().unwrap_or(json!({}));
 
+    // iter-160 Theme E: `capped` decides whether "0 failures" means "this page
+    // is clean" or "the first 1000 elements were clean", and it was reachable
+    // only as `meta.summary.capped` — two levels down, in a block `--format
+    // text` does not print. Read it out here so it can sit next to `sampled` at
+    // the top level, where iter-127 already put the other qualifier for exactly
+    // this reason. The `meta` copy stays for compatibility.
+    let capped = summary
+        .get("capped")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
     let mut meta = json!({
         "summary": summary,
     });
@@ -66,7 +77,11 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
     // iter-143 Theme A: contrast checking is always DOM/computed-style based
     // — there is no native-actor equivalent — so this is always
     // "js-fallback". Reported for consistency with `a11y`'s `meta.source`.
-    crate::connection_meta::merge_source(&mut meta, "js-fallback", Some("contrast-audit-js-only"));
+    crate::connection_meta::merge_source(
+        &mut meta,
+        CONTRAST_SOURCE,
+        Some("contrast-audit-js-only"),
+    );
 
     // Apply output controls (sort, limit, fields).
     let controls = OutputControls::from_cli(cli, SortDir::Desc);
@@ -80,15 +95,57 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
     // `--limit` truncates `results` but `total` still reports the full count.
     // The separate `sampled` field (below) carries the "elements examined"
     // signal that `summary.total` used to smuggle into `total` (iter-127).
-    let mut envelope =
-        output::envelope_with_truncation(&Value::Array(limited), shown, total, truncated, &meta);
-    if let Some(obj) = envelope.as_object_mut() {
-        obj.insert("sampled".to_string(), json!(sampled));
-    }
+    let envelope = build_contrast_envelope(
+        &Value::Array(limited),
+        shown,
+        total,
+        truncated,
+        &meta,
+        sampled,
+        capped,
+    );
 
-    let hint_ctx = HintContext::new(HintSource::A11yContrast).with_fail_only(fail_only);
+    let hint_ctx = HintContext::new(HintSource::A11yContrast)
+        .with_fail_only(fail_only)
+        .with_capped_sample(capped, sampled, total);
     OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
+
+/// Assemble the contrast envelope, promoting the three qualifiers of the
+/// headline count — `sampled` (iter-127), plus `capped` and `source`
+/// (iter-160 Theme E) — to the top level.
+///
+/// `meta` keeps its own `summary.capped` and `source` copies untouched: the
+/// promotion is additive, so nothing that already reads them breaks.
+fn build_contrast_envelope(
+    results: &Value,
+    shown: usize,
+    total: usize,
+    truncated: bool,
+    meta: &Value,
+    sampled: usize,
+    capped: bool,
+) -> Value {
+    let mut envelope = output::envelope_with_truncation(results, shown, total, truncated, meta);
+    if let Some(obj) = envelope.as_object_mut() {
+        obj.insert("sampled".to_string(), json!(sampled));
+        // `source` is a constant here (there is no native-actor contrast audit
+        // to fall back from) but a caller cannot know that from the envelope,
+        // and the whole point is that the envelope says so.
+        obj.insert("capped".to_string(), json!(capped));
+        obj.insert("source".to_string(), json!(CONTRAST_SOURCE));
+    }
+    envelope
+}
+
+/// The only value `a11y contrast`'s `source` ever takes.
+///
+/// Contrast checking is always DOM/computed-style based — there is no native
+/// actor equivalent to fall back *from* — but "always true" is not the same as
+/// "need not be reported": a caller reading `total: 0` has no way to tell which
+/// path produced it without the field. Named once so the top-level copy and the
+/// `meta` copy cannot drift.
+const CONTRAST_SOURCE: &str = "js-fallback";
 
 /// Keep only checks that fail WCAG AA when `fail_only` is set, otherwise return
 /// the checks unchanged.
@@ -415,6 +472,73 @@ mod tests {
         assert!(
             filtered.is_empty(),
             "large text passing aa_large is not an AA failure"
+        );
+    }
+
+    // ── iter-160 Theme E: the qualifiers travel with the headline number ───
+
+    /// AC `unit_160_contrast_envelope_promotes_capped_and_source`.
+    #[test]
+    fn unit_160_contrast_envelope_promotes_capped_and_source() {
+        let meta = json!({
+            "summary": {"total": 1000, "aa_pass": 1000, "aa_fail": 0, "capped": true},
+            "source": "js-fallback",
+        });
+        let envelope = build_contrast_envelope(&json!([]), 0, 0, false, &meta, 1000, true);
+        let obj = envelope.as_object().expect("envelope is an object");
+
+        // The three qualifiers sit together at the top level.
+        assert_eq!(obj["sampled"], json!(1000));
+        assert_eq!(
+            obj["capped"],
+            json!(true),
+            "capped not promoted: {envelope}"
+        );
+        assert_eq!(
+            obj["source"],
+            json!("js-fallback"),
+            "source not promoted: {envelope}"
+        );
+
+        // The meta copy is retained — the promotion is additive.
+        assert_eq!(envelope["meta"]["summary"]["capped"], json!(true));
+        assert_eq!(envelope["meta"]["source"], json!("js-fallback"));
+    }
+
+    #[test]
+    fn unit_160_contrast_envelope_reports_capped_false_when_not_truncated() {
+        let meta = json!({"summary": {"total": 12, "capped": false}});
+        let envelope = build_contrast_envelope(&json!([]), 0, 0, false, &meta, 12, false);
+        // Present and false, never omitted — `--jq '.capped'` must not throw
+        // just because the page was small.
+        assert_eq!(envelope["capped"], json!(false));
+        assert_eq!(envelope["source"], json!(CONTRAST_SOURCE));
+    }
+
+    /// A capped sample that found nothing must not be printable as a clean
+    /// pass — the hint carries the qualifier and names the element count.
+    #[test]
+    fn unit_160_capped_zero_result_emits_a_qualifying_hint() {
+        let hints = crate::hints::generate_hints(
+            &HintContext::new(HintSource::A11yContrast)
+                .with_fail_only(true)
+                .with_capped_sample(true, 1000, 0),
+        );
+        let joined = format!("{hints:?}");
+        assert!(joined.contains("truncated"), "no cap qualifier: {joined}");
+        assert!(
+            joined.contains("1000"),
+            "hint must name the count: {joined}"
+        );
+
+        let uncapped = crate::hints::generate_hints(
+            &HintContext::new(HintSource::A11yContrast)
+                .with_fail_only(true)
+                .with_capped_sample(false, 12, 0),
+        );
+        assert!(
+            !format!("{uncapped:?}").contains("truncated"),
+            "uncapped run must not claim truncation: {uncapped:?}"
         );
     }
 }

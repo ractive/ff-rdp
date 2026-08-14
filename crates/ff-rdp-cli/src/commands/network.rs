@@ -38,6 +38,7 @@ fn since_requires_daemon_error() -> AppError {
                   hint: drop --no-daemon so the command routes through the \
                   daemon, or omit --since for a one-shot capture."
             .to_owned(),
+        details: None,
     }
 }
 
@@ -75,6 +76,7 @@ pub fn run(
                       hint: use --source watcher (or drop --source) to keep --since, \
                       or drop --since for a full performance-api capture."
                 .to_owned(),
+            details: None,
         });
     }
 
@@ -286,19 +288,7 @@ pub fn run(
     // command executed without a separate `daemon status` round-trip.
     crate::connection_meta::merge_route(&mut meta, via_daemon);
 
-    // Decide whether to show summary or detail mode.
-    // Detail mode is used when:
-    //   - --detail flag is set
-    //   - --jq is set (user wants raw data to process)
-    //   - --sort, --limit, --fields are explicitly set (user wants detail controls)
-    let use_detail = cli.detail
-        || cli.jq.is_some()
-        || cli.sort.is_some()
-        || cli.limit.is_some()
-        || cli.all
-        || cli.fields.is_some()
-        || headers
-        || security;
+    let use_detail = use_detail_mode(cli, headers, security);
 
     let empty_hint = if results.is_empty() && filter.is_none() && method.is_none() {
         let hint = if via_daemon {
@@ -319,8 +309,11 @@ pub fn run(
         let controls = OutputControls::from_cli(cli, SortDir::Desc);
         // Iteration 126: keep the FULL entry list so the detail envelope can
         // carry the same summary fields (total_requests, total_transfer_bytes,
-        // slowest, …) as summary mode — otherwise `--jq` users, who are forced
-        // into detail mode by the trigger list above, can never reach them.
+        // slowest, …) as summary mode. iter-160 Theme F removed `--jq` from
+        // `use_detail_mode`, so `--jq` users are no longer forced in here — but
+        // this stays, and is now what makes the migration free: a caller who
+        // used to reach detail implicitly and now passes `--detail` gets a
+        // strict superset of the old envelope, not a trade.
         // build_network_summary only reads url/status/duration_ms/transfer_size/
         // cause_type, so the internal `_resource_id` marker on these entries is
         // harmless here.
@@ -512,6 +505,33 @@ pub fn run(
 /// everything else (`https://`, `data:`, `blob:`, `about:`, …) is not counted.
 /// This mirrors what a mixed-content audit cares about — HTTP subresources on
 /// an HTTPS page — without needing a per-request RPC.
+/// Whether `network` returns the entries **array** (detail mode) rather than
+/// the summary **object**.
+///
+/// iter-160 Theme F: `cli.jq.is_some()` used to be in this disjunction, so
+/// `ff-rdp network --jq '.results | type'` answered `"array"` while plain
+/// `ff-rdp network` produced an object — the filter changed the document it was
+/// filtering, on the one command in the tree where that happened (`console`,
+/// `a11y`, `perf`, `sources` and `cookies` are single-shape). The global help
+/// at `args.rs` already promises "use --jq to filter the envelope", so the doc
+/// was right and the code was wrong; changing the doc instead would have
+/// ratified the exception.
+///
+/// `--sort` / `--limit` / `--fields` deliberately stay: they are list-shaped
+/// controls whose meaning on a summary object is undefined. Only `--jq`, which
+/// is shape-agnostic by construction, comes out. `--detail` is the explicit way
+/// in, and iter-126 already made detail mode carry the full summary fields, so
+/// callers migrating off the old implicit switch get a strict superset.
+fn use_detail_mode(cli: &Cli, headers: bool, security: bool) -> bool {
+    cli.detail
+        || cli.sort.is_some()
+        || cli.limit.is_some()
+        || cli.all
+        || cli.fields.is_some()
+        || headers
+        || security
+}
+
 fn count_insecure_requests(entries: &[Value]) -> usize {
     entries
         .iter()
@@ -1213,6 +1233,56 @@ fn network_follow_loop(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ── iter-160 Theme F: --jq is a view, not a shape switch ───────────────
+
+    fn cli_with(args: &[&str]) -> Cli {
+        use clap::Parser as _;
+        let mut full = vec!["ff-rdp", "network"];
+        full.extend_from_slice(args);
+        Cli::try_parse_from(full).expect("args must parse")
+    }
+
+    /// AC `unit_160_use_detail_excludes_jq`.
+    #[test]
+    fn unit_160_use_detail_excludes_jq() {
+        // `--jq` alone must leave the shape alone: a filter that changes the
+        // document it filters makes every jq expression conditional on which
+        // command it is aimed at.
+        assert!(
+            !use_detail_mode(&cli_with(&["--jq", ".results"]), false, false),
+            "--jq must not force detail mode"
+        );
+        // Plain `network` is unchanged too.
+        assert!(!use_detail_mode(&cli_with(&[]), false, false));
+
+        // Every explicit way in still works.
+        for args in [
+            vec!["--detail"],
+            vec!["--all"],
+            vec!["--sort", "duration_ms"],
+            vec!["--limit", "5"],
+            vec!["--fields", "url"],
+        ] {
+            assert!(
+                use_detail_mode(&cli_with(&args), false, false),
+                "{args:?} must still reach detail mode"
+            );
+        }
+        // --headers / --security are command-local flags, not global Cli ones.
+        assert!(use_detail_mode(&cli_with(&[]), true, false), "--headers");
+        assert!(use_detail_mode(&cli_with(&[]), false, true), "--security");
+    }
+
+    /// `--detail --jq` is the migration path and must still be detail.
+    #[test]
+    fn unit_160_detail_plus_jq_is_still_detail() {
+        assert!(use_detail_mode(
+            &cli_with(&["--detail", "--jq", ".results"]),
+            false,
+            false
+        ));
+    }
 
     #[test]
     fn content_type_from_headers_finds_case_insensitively_and_strips_params() {

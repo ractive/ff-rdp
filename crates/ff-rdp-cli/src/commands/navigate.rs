@@ -1837,9 +1837,22 @@ fn detect_and_accept_best_effort(cli: &Cli) -> Value {
         Ok(v) => v,
         Err(e) => {
             eprintln!("warning: --auto-consent: consent detection failed: {e}");
-            json!({"cmp": null, "action": null})
+            consent_failure_value()
         }
     }
+}
+
+/// The `{cmp, action, status}` object a *failed* consent pass reports on the
+/// `--auto-consent` paths (iter-160 Theme D).
+///
+/// The three keys must be present here too — `--jq '.results.consent.status'`
+/// has to work whether the pass ran or the connection dropped — and the status
+/// must come from the same vocabulary as a successful pass, not a fourth word
+/// invented on the error path. `no_cmp_detected` is the honest reading: nothing
+/// was detected. The reason it was not detected is the stderr warning the
+/// caller already gets.
+fn consent_failure_value() -> Value {
+    json!({"cmp": null, "action": null, "status": "no_cmp_detected"})
 }
 
 /// [`detect_and_accept_best_effort`] on an **existing** connection.
@@ -1856,7 +1869,7 @@ fn detect_and_accept_on(ctx: &mut crate::commands::connect_tab::ConnectedTab) ->
         Ok(v) => v,
         Err(e) => {
             eprintln!("warning: --auto-consent: consent detection failed: {e}");
-            json!({"cmp": null, "action": null})
+            consent_failure_value()
         }
     }
 }

@@ -227,17 +227,26 @@ hidden — open via `keypress ArrowDown` after focusing.
 **Source:** `dog-36`.
 
 ### C3. Consent / cookie banner intercepting clicks
-**Symptoms:** "clicks do nothing" / "page is unresponsive" /
-"`click` succeeds but no effect"
+**Symptoms:** "clicks do nothing" / "page is unresponsive"
 **Layer:** invisible consent overlay (cmp_*, OneTrust, Didomi)
 captures pointer events.
-**Probe:**
-1. `eval 'document.elementFromPoint(window.innerWidth/2, window.innerHeight/2).tagName'`
-2. `dom '[id*="onetrust"], [id*="didomi"], [class*="cmp"]' --limit 3`
-3. `eval 'window.cmp_noscreen = true'` then retry; or `click` the consent
-   accept-all button
-**Conclude:** `elementFromPoint` returns the overlay, not the target.
-**Source:** `dog-29`, `synth-bug`.
+**`click` now reports this directly (iter-160).** The hit test this playbook
+asked a human to run by hand is inside the command: `click` resolves the
+element's centre point with `elementFromPoint` before dispatching anything,
+and an obscured target exits 1 with
+`{"error_type": "click_obscured", "obscured_by": "div#veil", "matched": true,
+"reachable": false}` — the overlay is named in the error. So the symptom
+"`click` succeeds but no effect" no longer occurs for this cause; if you are
+reading this because of it, you are on a pre-160 build.
+**Probe (still useful for a partial overlay, or to identify the CMP):**
+1. `dom '[id*="onetrust"], [id*="didomi"], [class*="cmp"]' --limit 3`
+2. `eval 'document.elementFromPoint(window.innerWidth/2, window.innerHeight/2).tagName'`
+   — only needed when the obstruction is somewhere other than the target's
+   own centre point, which is all `click` checks.
+**Fix:** `consent accept` (exits 1 with `consent_no_cmp` when it recognises
+nothing — pass `--allow-no-cmp` for a speculative call), or `click` the
+accept-all control directly, then retry.
+**Source:** `dog-29`, `synth-bug`, iter-160.
 
 ### C4. Form submits full-page reload (preventDefault missing)
 **Symptoms:** "page flickers and resets" / "form reloads instead of

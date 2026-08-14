@@ -133,6 +133,7 @@ fn fetch_via_daemon(
                       hint: retry in a moment, run `ff-rdp daemon status` to check \
                       (`live_target_count`), or use --no-daemon for a direct connection."
                 .to_owned(),
+            details: None,
         });
     }
 

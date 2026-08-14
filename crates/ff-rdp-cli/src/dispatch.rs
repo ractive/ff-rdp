@@ -1177,7 +1177,7 @@ fn dispatch_inner(
             commands::index::run(cli, &opts)
         }
         Command::Consent { consent_command } => match consent_command {
-            ConsentCommand::Accept => commands::consent::run(cli),
+            ConsentCommand::Accept { allow_no_cmp } => commands::consent::run(cli, *allow_no_cmp),
         },
         Command::Completions { shell } => commands::completions::run(*shell),
     }

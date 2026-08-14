@@ -189,6 +189,9 @@ OUTPUT FORMAT (iter-60 compact defaults):
   --format html  raw HTML passthrough (dom and snapshot only — pre-iter-60 shape)
   --jq can be combined with --format text: jq runs first, text rendering applies
   Use --jq to filter the envelope: --jq '.results[0]', --jq '.total'
+    --jq is a VIEW: it never changes the envelope's shape. `network` was the one
+    exception until iter-160 (--jq silently switched results object -> array);
+    pass --detail there, as on every other list command.
   Use --detail for per-entry output on list commands (default is summary view)
   Contextual hints suggest follow-up commands: \"hints\": [...] in JSON, -> lines in text
   Hints default: on for --format text, off for JSON. Override: --hints / --no-hints
@@ -471,12 +474,16 @@ Examples:
 
 --auto-consent (iter-129): after the document commits, run the same
 CMP-detection-and-accept flow as `ff-rdp consent accept` and add
-`results.consent = {\"cmp\": \"sourcepoint\"|\"bbc\"|null, \"action\": \"accepted\"|null}`
-(both keys always present, never omitted). Best-effort — a detection failure
-prints a warning but does not fail the navigate. Not combinable with
---with-network. This is the CLI-native complement to `launch --auto-consent`
-(the Consent-O-Matic extension), which does not reliably work headless
-against Sourcepoint-gated sites.
+`results.consent = {\"cmp\": \"sourcepoint\"|\"bbc\"|null, \"action\": \"accepted\"|null,
+\"status\": \"accepted\"|\"detected_not_actioned\"|\"no_cmp_detected\"}` (all three keys
+always present, never omitted; `status` added in iter-160). Combinable with
+--with-network since iter-159, and the same three keys appear there.
+Best-effort — a detection failure prints a warning but does not fail the
+navigate, and unlike `consent accept` the navigate's exit code is UNCHANGED by
+the consent outcome: a page with no cookie banner is not a failed navigation.
+This is the CLI-native complement to `launch --auto-consent` (the
+Consent-O-Matic extension), which does not reliably work headless against
+Sourcepoint-gated sites.
 
 Output: {\"results\": {\"navigated\": \"...\", \"status\": 200|null, \"committed_url\": \"...\", \"ready_state\": \"...\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}
 
@@ -646,7 +653,13 @@ can tell how this command executed without a separate `daemon status` call.
 Default: 20 results, sorted by duration (slowest first).
 Output (summary mode): {\"results\": {\"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"hint\": null}, \"total\": N, \"meta\": {\"route\": \"daemon\", ...}}
 Output (--detail): {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"status\": 200, \"duration_ms\": N, ...}], \"total\": N, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"hint\": null, \"meta\": {\"route\": \"daemon\", ...}}
-  Note (iter-126): detail mode now carries the summary fields (total_requests, total_transfer_bytes, by_cause_type, slowest) alongside the results array, so --jq users (who are always in detail mode) can reach them.
+  Note (iter-126): detail mode carries the summary fields (total_requests, total_transfer_bytes, by_cause_type, slowest) alongside the results array, so --detail is a strict superset of the summary envelope.
+  Reaching the entry list: pass --detail (or --all/--headers/--security/--sort/--limit/--fields).
+  BREAKING (iter-160): --jq no longer switches this command into detail mode. `network --jq
+  \'.results | type\'` now answers \"object\", the same as plain `network` — previously it
+  answered \"array\", so the filter changed the document it was filtering. --jq is a view over
+  the envelope on all 30 commands; network was the only one where it was also a mode switch.
+  Migration: add --detail to any --jq invocation that expected the entry list.
 Output (--detail --headers): adds {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}} per entry.
 --format text truncates long `url` cells with a middle ellipsis (iter-128) so a
 single ~900-char tracking URL can't blow the table out to thousands of columns.")]
@@ -726,7 +739,30 @@ index out of range), the error names the match count. If the plain selector
 times out because it resolved to a hidden element, the error itself suggests
 --visible/--index with the observed match count.
 
-Output: {\"results\": {\"clicked\": true, \"tag\": \"...\", \"text\": \"...\", \"frame_url\": null}, \"total\": 1, \"meta\": {\"frame_url\": null, ...}}
+Reachability (iter-160): before dispatching anything, click hit-tests the
+element's centre point with document.elementFromPoint. The point must resolve to
+the element, a descendant of it (a <span> inside a <button> is the normal case),
+or an ancestor of it (an ancestor cannot obscure its own descendant). If the
+centre starts outside the viewport the element is scrolled into view first —
+below the fold is not an obstruction.
+
+  results.matched     the selector resolved to an element
+  results.reachable   true | false | null (hit test could not decide — e.g. a
+                      cross-origin iframe document that was never laid out; the
+                      events ARE dispatched and the envelope says so)
+  results.obscured_by the covering element, e.g. \"div#veil\" (null on success)
+
+A genuinely covered target is a FAILED action, not an informational result: exit
+1 with error_type \"click_obscured\" (or \"click_offscreen\" when the centre is
+still outside the viewport after scrolling), and matched/reachable/obscured_by
+appear at the top level of the error envelope. The removed `entered` field meant
+only \"querySelector matched\" while its name claimed the pointer could enter;
+read `matched` instead.
+
+Ceiling: events remain isTrusted: false and e.clientX/e.clientY remain 0. The hit
+test decides WHETHER to dispatch; it does not give the events real coordinates.
+
+Output: {\"results\": {\"clicked\": true, \"matched\": true, \"reachable\": true, \"obscured_by\": null, \"tag\": \"...\", \"text\": \"...\", \"frame_url\": null}, \"total\": 1, \"meta\": {\"frame_url\": null, ...}}
 `frame_url` is always present (never omitted) — null when the click landed on
 the top-level document, the frame's URL string when it landed inside a frame.
 With --wait-for-network: adds {\"network\": {\"url\": \"...\", \"method\": \"...\", \"status\": N, ...}} to results.")]
@@ -747,8 +783,20 @@ Auto-waits for the element to be focusable (exists, visible, not disabled, is an
 input/textarea/contenteditable) before typing. Use --no-wait to skip this.
 
 The value is set via the native HTMLInputElement/HTMLTextAreaElement/HTMLSelectElement
-prototype setter so React/Vue/Svelte value trackers are invalidated, and `input`
-and `change` events are dispatched after the assignment.
+prototype setter so React/Vue/Svelte value trackers are invalidated. Each character
+is typed as a keydown -> keypress -> keyup sequence with the value applied
+incrementally (iter-160), so a combobox that opens on keydown or a search box that
+debounces keyup responds as it would to a typist; `input` and `change` are dispatched
+once at the end, as before.
+
+Synthetic-input ceiling (reported as \"synthetic\": true in the output):
+  Firefox exposes no trusted-input surface over the devtools RDP — Marionette and
+  WebDriver BiDi are peer protocols, not layers reachable through it — so every
+  event `type` dispatches carries isTrusted: false. A page that filters on
+  e.isTrusted will ignore them, and a handler that calls preventDefault() on
+  keydown will NOT suppress the character: ff-rdp assigns the value directly, and
+  a synthetic preventDefault cannot cancel that assignment. This makes key-driven
+  UIs respond; it does not make `type` indistinguishable from a user.
 
 When a selector matches more than one element (e.g. two `input[name=keywords]`
 on the same page, one hidden), the default (flag-less) behaviour types into
@@ -756,7 +804,7 @@ DOM-order index 0. Use --visible to target the first non-hidden match instead,
 or --index N for a specific match (0-based). Mutually exclusive with each
 other. On success, the output gains {\"match_count\": N, \"chosen_index\": N}.
 
-Output: {\"results\": {\"typed\": true, \"tag\": \"INPUT\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
+Output: {\"results\": {\"typed\": true, \"synthetic\": true, \"tag\": \"INPUT\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
     Type(TypeArgs),
     /// Wait for a condition to become true (polls every 100ms), or sleep for a fixed duration.
     /// Exactly one of --selector, --text, --eval, --ref, or --sleep-ms must be specified.
@@ -795,7 +843,7 @@ With --key: {\"results\": {\"key\": \"...\", \"value\": \"...\"}, \"total\": 1, 
 
 Output: {\"results\": {\"role\": \"...\", \"name\": \"...\", \"children\": [...]}, \"total\": 1, \"meta\": {..., \"source\": \"native\"|\"js-fallback\"}}
 With a11y summary: {\"results\": [{\"role\": \"...\", \"name\": \"...\", \"level\": N}], \"total\": N, \"meta\": {...}}
-With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool, ...}], \"total\": N, \"sampled\": M, \"meta\": {..., \"source\": \"js-fallback\"}}
+With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool, ...}], \"total\": N, \"sampled\": M, \"capped\": bool, \"source\": \"js-fallback\", \"meta\": {..., \"source\": \"js-fallback\"}}
   a11y contrast `total` = returned results (AA failures under --fail-only, else all checks); `sampled` = elements examined. Pre-iter-127 `total` reported the sample size.
   `meta.source` (iter-143) is always present on a11y/a11y --critical/a11y contrast: \"native\" means the real Firefox platform accessibility tree (roles like \"document\"/\"paragraph\"); \"js-fallback\" means a DOM-derived approximation (roles like \"generic\"), with `meta.source_reason` naming why. `a11y --native` opts in to the native tree (never the default — DEC-027) by enabling Firefox's accessibility service for the duration of the call.
   `meta.service_left_enabled` / `meta.service_restore_error` (iter-149) are always present on plain `a11y`: `service_left_enabled` is true only when `--native` enabled the platform accessibility service and could not restore it afterward (the service stays enabled for as long as this command's connection is open, normally just until it exits), with `service_restore_error` naming the failure; both stay false/null when nothing needed restoring. The walked tree is still returned in `results` even when the restore failed.")]
@@ -1327,8 +1375,10 @@ clicking that frame's \"accept all\" control directly.
 Subcommands:
   consent accept   Detect a known CMP on the current tab and accept it
 
-Output: {\"results\": {\"cmp\": \"sourcepoint\"|\"bbc\"|null, \"action\": \"accepted\"|null}, \"total\": 1, \"meta\": {...}}
-Both keys are always present — null/null when no known CMP was found on the page.
+Output: {\"results\": {\"cmp\": \"sourcepoint\"|\"bbc\"|null, \"action\": \"accepted\"|null, \"status\": \"accepted\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, \"total\": 1, \"meta\": {...}}
+All three keys are always present — cmp/action are null/null when no known CMP was
+found on the page, and `status` (iter-160) names which of the three outcomes it was.
+`consent accept` exits 1 for the two non-accepting outcomes; see `consent accept --help`.
 
 See also: `ff-rdp navigate --auto-consent` to run this automatically after navigating."
     )]
@@ -2304,9 +2354,35 @@ pub enum ConsentCommand {
     #[command(
         long_about = "Detect a known cookie-consent-management-platform (CMP) overlay on the current tab and accept it.
 
-Output: {\"results\": {\"cmp\": \"sourcepoint\"|null, \"action\": \"accepted\"|null}, \"total\": 1, \"meta\": {...}}"
+Exit code (iter-160): 0 only when a banner was actually accepted. The command
+used to exit 0 for all three outcomes, so a page whose banner was still up and
+still swallowing clicks was indistinguishable from a dismissed one.
+
+  status \"accepted\"               exit 0
+  status \"detected_not_actioned\"  exit 1, error_type \"consent_not_actioned\"
+  status \"no_cmp_detected\"        exit 1, error_type \"consent_no_cmp\"
+
+One JSON document either way. On exit 0 that is the usual results envelope; on
+exit 1 it is the error envelope, which carries `cmp`, `action` and `status`
+alongside `error`/`error_type` so nothing is lost. The command deliberately does
+NOT print a results envelope and then fail — two JSON documents on stdout is the
+double-envelope bug iter-153 removed from `launch --replace`.
+
+Output: {\"results\": {\"cmp\": \"sourcepoint\"|null, \"action\": \"accepted\"|null, \"status\": \"accepted\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, \"total\": 1, \"meta\": {...}}"
     )]
-    Accept,
+    Accept {
+        /// Exit 0 instead of 1 when no known CMP was found on the page.
+        ///
+        /// Exists for callers that run `consent accept` speculatively — a
+        /// script that dismisses a banner if there is one and carries on if
+        /// there is not should not have to swallow the exit code of every
+        /// other failure to do that. It opts in ONLY to the
+        /// "no_cmp_detected" outcome: a CMP that was found and could not be
+        /// actioned still exits 1, because the caller asked for the banner to
+        /// go away and it is still there.
+        #[arg(long)]
+        allow_no_cmp: bool,
+    },
 }
 
 /// Subcommands for `ff-rdp record`.
@@ -2360,11 +2436,19 @@ the AA failures under --fail-only (pre-limit — a --limit truncates `results` b
 `sampled` field reports how many elements were examined, so total == sampled
 without --fail-only. `meta.summary` carries aa_pass/aa_fail/capped detail.
 
+`capped` and `source` sit at the TOP level next to `sampled` (iter-160), not
+only inside `meta`. `capped: true` means the in-page pass stopped at its
+1000-element ceiling, so `total: 0` means \"none of the sampled elements
+failed\" — not \"this page has no contrast failures\". A capped sample that
+returns no failures also emits a hint naming the element count, because the
+qualifier must travel with the clean bill of health rather than sitting two
+levels down in a block --format text does not print.
+
 Backward-compat note: before iter-127, `total` under --fail-only reported the
 sampled element count rather than the failure count; that count now lives in
 `sampled`.
 
-Output: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool, ...}], \"total\": N, \"sampled\": M, \"meta\": {\"summary\": {...}}}")]
+Output: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool, ...}], \"total\": N, \"sampled\": M, \"capped\": bool, \"source\": \"js-fallback\", \"meta\": {\"summary\": {...}}}")]
     Contrast {
         /// CSS selector to limit checking (default: all text elements)
         #[arg(long)]

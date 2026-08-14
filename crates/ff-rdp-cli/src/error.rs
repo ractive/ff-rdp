@@ -111,9 +111,18 @@ pub enum AppError {
     /// without matching on the human-readable `message`.  Exit code 1 keeps it
     /// in the documented "runtime / user error" bucket and avoids colliding
     /// with clap's usage-error exit code 2.
+    ///
+    /// `details`, when `Some(object)`, is merged **into** the error envelope
+    /// next to `error`/`error_type` rather than nested under a key (iter-160
+    /// Theme A: an obscured click reports `matched`/`reachable`/`obscured_by`
+    /// there, so the failing caller reads the covering element out of the same
+    /// flat object it already parses `error_type` from). A non-object value is
+    /// ignored — the envelope's top level is a map, and silently producing a
+    /// different shape would be the exact dishonesty this iteration removes.
     Unsupported {
         error_type: &'static str,
         message: String,
+        details: Option<serde_json::Value>,
     },
 }
 
@@ -217,7 +226,7 @@ impl AppError {
             Vec::new()
         };
 
-        if context.is_empty() {
+        let mut json = if context.is_empty() {
             serde_json::json!({
                 "error": message,
                 "error_type": error_type,
@@ -228,7 +237,24 @@ impl AppError {
                 "error_type": error_type,
                 "context": context,
             })
+        };
+
+        // iter-160 Theme A: merge `Unsupported`'s structured details in flat,
+        // never overwriting `error`/`error_type`/`context`.
+        if let Self::Unsupported {
+            details: Some(details),
+            ..
+        } = self
+            && let (Some(obj), Some(extra)) = (json.as_object_mut(), details.as_object())
+        {
+            for (k, v) in extra {
+                if k != "error" && k != "error_type" && k != "context" {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
         }
+
+        json
     }
 }
 
@@ -798,6 +824,7 @@ mod tests {
                 AppError::Unsupported {
                     error_type: "since_requires_daemon",
                     message: "x".to_owned(),
+                    details: None,
                 },
                 1,
                 "since_requires_daemon",

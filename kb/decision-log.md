@@ -698,3 +698,103 @@ returned 0 entries before, 20 entries after with 20/20 carrying non-null
 `crates/ff-rdp-cli/src/daemon/buffer.rs`,
 `crates/ff-rdp-cli/src/commands/network.rs`,
 `crates/ff-rdp-cli/src/commands/navigate.rs`, iter-137, iter-138, iter-159.
+
+## DEC-033: `click` drops `entered` outright rather than aliasing it, and an obscured click exits 1
+
+**Decision** (iter-160 Themes A/B): `click`'s result loses `entered` with no
+alias or deprecation window, gaining `matched` (the selector resolved) and
+`reachable` (the element's centre point hit-tests to itself or a descendant) in
+its place. An unreachable target is a **failed action**: `AppError::Unsupported`
+with `error_type` `click_obscured` (or `click_offscreen` when the centre point is
+outside the viewport), exit 1, with `matched`/`reachable`/`obscured_by` merged
+flat into the error envelope.
+
+**Why drop rather than alias**: `entered` was assigned immediately after the
+`querySelector` null check and before any `dispatchEvent` — it meant "the
+selector matched" while its name claimed the pointer could enter. Keeping it as
+an alias of `matched` would preserve a name that misdescribes the thing it is
+now aliasing, which is the defect, not a mitigation of it. It had exactly two
+producers (`js_helpers.rs`, `click.rs`) and zero consumers: no Rust code, no
+test, no fixture, and no kb document read the field. The two producers are now
+one — `ClickOnly` was a hand-written copy of the click JS, and that copy is
+precisely how a hardcoded `entered: true` literal survived in one dispatch mode
+while the other two computed it.
+
+**Why exit 1 rather than a warning field**: a caller writing
+`ff-rdp click X && ff-rdp type Y …` has to stop. An informational `reachable:
+false` at exit 0 would preserve the exact shape this iteration exists to remove —
+a confident success the command has not established. `AppError::Unsupported` is
+reused (no new variant) and gained an optional `details` field so the failing
+caller reads the covering element out of the same flat object it already parses
+`error_type` from.
+
+**The hit-test rule, and the two false failures it had to be corrected for.**
+Reachable iff the hit target is the element, a **descendant** of it, or an
+**ancestor** of it. The first cut compared only `hit === el || el.contains(hit)`
+and broke two things that a live run caught before merge:
+
+- `ff-rdp click body` failed with "covered by html", because `<body>` paints
+  nothing at its own centre and the hit resolves to its parent. An ancestor
+  cannot obscure its own descendant — an overlay is never an ancestor of what it
+  covers — so `hit.contains(el)` is a sound third clause, not a loophole.
+- An ordinary `<a>` inside an out-of-process iframe
+  (`live_129_click_cross_origin_frame`) hit-tested to `null`, because the child
+  document was never laid out. Reporting that as `click_offscreen` would break
+  every cross-origin frame click.
+
+So `reachable` is **three-valued**: `true`, `false`, or `null` for "the hit test
+could not decide". `null` dispatches the events and says so; only a literal
+`false` is an error. Turning "I could not tell" into exit 1 would be the same
+overstatement this iteration removes, pointed the other way.
+
+Below-the-fold is likewise not an obstruction: when the centre starts outside the
+viewport the element is scrolled into view (`block: 'center'`) and the rect
+re-read before any verdict. `click_offscreen` therefore means "still outside the
+viewport after scrolling" — a clipped or zero-size scroll container — not "you
+did not scroll first".
+
+**Trade-off**: `click` can now fail where it previously "succeeded" — a target
+under a transparent full-viewport wrapper that forwards pointer events is
+reported as obscured. That is the right default: the alternative is the pre-160
+behaviour, where the same page reported a click that never happened.
+
+**Not in scope**: trusted input. `e.clientX`/`e.clientY` stay `0` and events stay
+`isTrusted: false` — the hit test decides *whether* to dispatch, it does not give
+the events real coordinates. See `kb/rdp/client/remote-agent-cdp.md`: Marionette
+and WebDriver BiDi are peer protocols to devtools-RDP, not layers reachable
+through it.
+
+**Applies to**: `crates/ff-rdp-cli/src/commands/js_helpers.rs`,
+`crates/ff-rdp-cli/src/commands/click.rs`, `crates/ff-rdp-cli/src/error.rs`.
+
+## DEC-034: `--jq` never changes the shape it filters — `network` loses its detail-mode trigger
+
+**Decision** (iter-160 Theme F): `cli.jq.is_some()` is removed from `network`'s
+`use_detail_mode` predicate. `ff-rdp network --jq '.results | type'` now answers
+`"object"`, identical to plain `ff-rdp network`; `--detail` (and
+`--all`/`--headers`/`--security`/`--sort`/`--limit`/`--fields`) remain the ways
+to the entry list.
+
+**Why**, given this is a compatibility break and the alternative was one line of
+documentation:
+
+- `--jq` is a **view** applied to the envelope. If the view can change the
+  document, every jq expression a caller writes becomes conditional on which
+  command it is aimed at, and the one property that makes a uniform envelope
+  worth having across 30 commands is gone.
+- The documented contract already promised the honest behaviour ("use --jq to
+  filter the envelope"). Changing the doc to match the code would have ratified
+  the exception and invited the next one.
+- Verified during the 2026-08-13 step-back as network-only: `console`, `a11y`,
+  `perf`, `sources` and `cookies` are single-shape.
+- The migration is cheap and was already anticipated: iter-126 made detail mode
+  carry the full summary fields precisely because `--jq` users were forced into
+  it. Adding `--detail` therefore yields a strict superset of the old envelope,
+  not a trade.
+
+`--sort`/`--limit`/`--fields` deliberately stay in the disjunction: they are
+list-shaped controls whose meaning on a summary object is undefined. Only `--jq`,
+which is shape-agnostic by construction, comes out.
+
+**Applies to**: `crates/ff-rdp-cli/src/commands/network.rs`,
+`crates/ff-rdp-cli/src/cli/args.rs`, iter-126, iter-159.
