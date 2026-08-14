@@ -321,6 +321,38 @@ Out-of-repo: the same two script edits in the two `~/.claude/skills/*/scripts/` 
   An empty bullet at merge time means the decision was skipped, which is the failure mode
   this iteration exists to end.
 
+- **Evidence available at start (2026-08-14) — inputs to that decision, not the decision.**
+  The batch ran and all four sweeps happened, each pasted into its PR body. With the env gates
+  that produced them: 158 `executed=221 skipped=0 preexisting=9 total=230` (219/2, both gates);
+  159 `executed=237 skipped=0 preexisting=0 total=237` (225/3, both gates); 160 `executed=209
+  skipped=32 preexisting=8 total=249` (209/0, `FF_RDP_LIVE_TESTS` only); 161 `executed=225
+  skipped=32 total=257` (225/0, `FF_RDP_LIVE_TESTS` only). Three findings bear on the choice:
+  - **`executed=N` did not hold steady, but not from classifier drift.** Totals grew as each
+    iteration added tests, and 160/161 ran one gate instead of two. The plan's "if it swings,
+    Option A rests on sand" inference does not fire on this data.
+  - **The stated risk is stale.** [[iteration-157-live-sweep-classifier-drift]], cited above as
+    an open bug against the classifier, is `status: obsolete`.
+  - **Option A's precondition became true during the batch.** iter-158's panic-flip is what
+    makes a run log's `status ok` mean *reached Firefox* — before it, 152 call sites returned
+    early on an unset gate and libtest scored that `ok`, so a log-reading rule would have
+    inherited the false green it exists to prevent. If Option A is chosen, `--emit` must record
+    **which env gates were set**; 160-vs-159 is the proof that a summary without them invites
+    reading a shrunken corpus as an improvement.
+
+- **[[iteration-163-ac-fidelity-reads-only-the-first-line]] was marked `obsolete` for this
+  plan** (2026-08-14) — it repaired the evidence heuristics Phase 3a deletes. One fact carries
+  forward: the slug regex `\b(live|test|bench)_[a-z0-9_]+` does not match `unit_*`, the prefix
+  CLAUDE.md's AC convention produces for non-live tests. If the surviving rule checks that a
+  named test exists, it must recognise `unit_*` or it checks nothing for most ACs.
+
+- **Do not let this plan's own grep ACs pass vacuously.** Several ACs assert a `grep -c` count
+  or "no matches". A wrong path or glob satisfies "no matches" trivially — which is the bug CI
+  caught in iter-158, where `unit_158_source_scan_covers_the_live_suites` matched a literal
+  `tests/live` that never appears in a Windows path and so scanned zero files. Of the repo's
+  source-scan tests only `iter_158_harness_honesty.rs` asserts a non-empty corpus. Each grep AC
+  here must assert the scanned set is non-empty *before* asserting the count, and match on path
+  components rather than substrings.
+
 - **The safety regression this iteration accepts.** After 3b nothing detects mirror drift
   between `~/.claude/skills/*/scripts/` and `tools/*/scripts/`. That is a real loss, and
   the 2026-08-13 analysis is what justifies it: the drift gate's only "catch" was a defect

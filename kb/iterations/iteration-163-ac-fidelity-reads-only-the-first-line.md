@@ -10,7 +10,7 @@ dogfood_path: |
   # → on main: 5 ❌ "ticked AC with no evidence in diff", every one of them an AC
   #   whose evidence sits on the SECOND wrapped line. After the fix: 0 failures,
   #   and the iter-61v / iter-61t replay baselines still FAIL / PASS.
-status: planned
+status: obsolete
 title: "Iteration 163: ac-fidelity-check's evidence heuristics read only an AC's first wrapped line"
 type: iteration
 tags:
@@ -19,6 +19,24 @@ tags:
 ---
 
 # Iteration 163: `ac-fidelity-check`'s evidence heuristics read only an AC's first wrapped line
+
+> **OBSOLETE (2026-08-14) — superseded by [[iteration-162b-ac-fidelity-shrink]].**
+> This plan repairs the evidence heuristics that 162b's Phase 3a **deletes**: *"the
+> test-slug/symbol-in-diff evidence heuristics, the `[deferred — new plan: …]` accept that
+> exists only to escape them, and the `[verified: <YYYY-MM-DD>, …]` requirement on `live_*`
+> ACs."* Implementing 163 first would spend a hand-driven four-copy skill edit fixing code
+> 162b removes. This plan was filed mid-batch by the iter-158 implement agent, which had no
+> visibility of 162b.
+>
+> **Carry forward into 162b, and nothing else:** the slug regex is
+> `\b(live|test|bench)_[a-z0-9_]+` and does **not** match `unit_*`, the prefix CLAUDE.md's own
+> AC-checkbox convention produces for non-live tests. If the surviving single rule ever checks
+> that a named test exists, it must recognise `unit_*` or it silently checks nothing for the
+> majority of ACs. Everything else here — the `full_text` fix, the annotation-stripping risk,
+> the four fixture cases — dies with the heuristics.
+>
+> The reproduction data below stays valid and is worth reading once: it is the measured case
+> for deleting these heuristics rather than repairing them.
 
 Carry-over from [[iteration-158-launch-lifecycle-and-harness-honesty]], filed before that PR
 merges per CLAUDE.md's carry-over rule.

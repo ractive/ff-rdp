@@ -67,6 +67,18 @@ started on port 6000; the sweep probes that port once and, finding nothing, repo
 `ignored` rather than folding them into `executed`. Start one with
 `firefox -no-remote --start-debugger-server 6000 --headless` to execute them.
 
+**A `LIVE_SWEEP_SUMMARY` is meaningless without the env gates that produced it — always quote
+both.** Two sweeps are comparable only when the same gates were set. Measured across the 158–161
+batch (2026-08-14): iter-159 ran with both gates and got `executed=237 skipped=0`, 225 passed /
+3 failed; iter-160 ran with `FF_RDP_LIVE_TESTS=1` alone and got `executed=209 skipped=32`, 209
+passed / **0 failed**. The second looks like the better result and is a smaller one — the 32
+`FF_RDP_LIVE_NETWORK_TESTS` tests did not run, and they include `live_block_url_pattern`, a real
+product defect ([[iteration-164-two-failures-the-158-sweep-uncovered]]) that only fails when it
+executes. `0 failed` over a shrunken corpus is the same false green this section exists to
+warn about, one level up. Cite sweeps as `FF_RDP_LIVE_TESTS=1 [FF_RDP_LIVE_NETWORK_TESTS=1] →
+LIVE_SWEEP_SUMMARY …`, and never compare a `skipped=0` run against a `skipped>0` one without
+saying so.
+
 **AC checkbox convention**: every AC checkbox in an iteration plan MUST name the live test and the asserted post-condition, e.g.:
 ```
 - [ ] live_screenshot_full_page: PNG height ≥ scrollHeight × DPR

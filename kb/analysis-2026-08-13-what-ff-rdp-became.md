@@ -462,6 +462,32 @@ EXIT=1                                          # 49.5 minutes wall
 190 passed · 7 failed across 5 targets
 ```
 
+> **Superseded 2026-08-14 — this baseline is stale, do not quote it as current.** Iterations
+> 158–161 each ran a full sweep and pasted it into its PR body, which is the habit §5 asked for.
+> Post-batch state, with the env gates that produced each line:
+>
+> | iter | gates | summary | result | wall |
+> |---|---|---|---|---|
+> | 158 | both | `executed=221 skipped=0 preexisting=9 total=230` | 219 / 2 | 32.7 min |
+> | 159 | both | `executed=237 skipped=0 preexisting=0 total=237` | 225 / 3 | 32.5 min |
+> | 160 | `FF_RDP_LIVE_TESTS` only | `executed=209 skipped=32 preexisting=8 total=249` | 209 / 0 | 10.2 min |
+> | 161 | `FF_RDP_LIVE_TESTS` only | `executed=225 skipped=32 preexisting=0 total=257` | 225 / 0 | — |
+>
+> Three things this changes. **(1)** The seven failures above are resolved or reclassified:
+> `live_153_replace_emits_single_envelope` passes now that iter-158 fixed the 5 s launch bound,
+> and the six `ff-rdp-core` ConnectionRefused failures became the `preexisting` tier iter-158
+> Theme F added — the sweep now probes port 6000 and reports them `ignored` instead of failing
+> them. **(2)** `executed=N` swings across the four runs (221/237/209/225), but not from
+> classifier drift: totals grew as each iteration added tests, and 160/161 ran with one gate
+> instead of two. `skipped=32` is the network-gated set, not a regression. **(3)** The §5
+> precondition for a run-log gate — *"`live-sweep` is one day old … already has a bug filed
+> against it"* — has moved. That bug ([[iteration-157-live-sweep-classifier-drift]]) is
+> `obsolete`, the sweep has four hand-run iterations behind it, and, decisively, iter-158's
+> panic-flip is what makes a log's `status ok` mean *reached Firefox*: before it, 152 call sites
+> returned early on an unset gate and libtest scored that `ok`. A log-reading rule built before
+> 158 would have inherited exactly the false green it exists to prevent.
+> See [[iteration-162b-ac-fidelity-shrink]], which carries that decision.
+
 **One of the seven was a real product defect** — `live_153_replace_emits_single_envelope`, a feature
 merged six hours earlier. The other six were all one environmental cause: the `ff-rdp-core` live
 tests do not launch Firefox, they connect to a pre-existing instance on port 6000 (their own
