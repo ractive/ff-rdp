@@ -58,7 +58,7 @@ dogfood_path: |
   ff-rdp type '#nosuch' hello
   # → unchanged: "selector '#nosuch' not ready — 0 elements matched (not found)"
 first_call_sites: []
-status: planned
+status: in-review
 title: "Iteration 160: the JSON envelope asserts more than the command knows"
 type: iteration
 tags:
@@ -411,71 +411,71 @@ Also out of scope: the `network` watcher regression (that is
 wait, `--fields` / `--sort` silent no-ops, and `eval --stringify`. This iteration touches
 only what the envelope *says*.
 
-## Acceptance Criteria [0/18]
+## Acceptance Criteria [16/18]
 
-- [ ] live_160_click_obscured_reports_unreachable: with a button at (100,100,120x40)
+- [x] live_160_click_obscured_reports_unreachable: with a button at (100,100,120x40)
       covered by a `position:fixed;inset:0` overlay, `click '#t'` exits 1 with
       `error_type == "click_obscured"` and `obscured_by == "div#veil"`, and a separate
-      `eval 'window.__hits'` returns 0
-- [ ] live_160_click_reachable_fires_handler: after removing the overlay, `click '#t'`
+      `eval 'window.__hits'` returns 0 [verified: 2026-08-14, exit 1, error_type=click_obscured, obscured_by=div#veil, matched=true, reachable=false, window.__hits=0]
+- [x] live_160_click_reachable_fires_handler: after removing the overlay, `click '#t'`
       exits 0 with `matched == true`, `reachable == true`, `clicked == true`, and a
-      separate `eval 'window.__hits'` returns 1
-- [ ] live_160_click_descendant_hit_counts_as_reachable: clicking a `<button><span>Go</span></button>`
+      separate `eval 'window.__hits'` returns 1 [verified: 2026-08-14, exit 0, matched=true reachable=true clicked=true, `entered` absent, window.__hits=1]
+- [x] live_160_click_descendant_hit_counts_as_reachable: clicking a `<button><span>Go</span></button>`
       whose centre point resolves to the inner `<span>` exits 0 with `reachable == true`
-      and the handler counter read back by `eval` equals 1
-- [ ] unit_160_click_js_hit_tests_centre_point: `build_click_js` output contains
+      and the handler counter read back by `eval` equals 1 [verified: 2026-08-14, elementFromPoint(centre).id=inner, exit 0 reachable=true, window.__hits=1]
+- [x] unit_160_click_js_hit_tests_centre_point: `build_click_js` output contains
       `getBoundingClientRect`, `elementFromPoint`, and a `el.contains(` descendant check,
       and the hit test appears textually before the first `dispatchEvent` call
 - [ ] unit_160_click_result_reports_matched_and_reachable: the click result JSON key set
       contains `matched` and `reachable`, and `entered` is absent from both
       `build_click_js` and `build_click_js_for_mode` output in all three dispatch modes
-- [ ] live_160_type_emits_key_events: after arming `keydown`/`keyup` listeners that push
+- [x] live_160_type_emits_key_events: after arming `keydown`/`keyup` listeners that push
       into `window.__keys`, `type '#q' hi` leaves a separate
       `eval 'JSON.stringify(window.__keys)'` equal to
       `["keydown:h","keyup:h","keydown:i","keyup:i"]`, and `#q`'s value read back by the
-      same eval is `"hi"`
-- [ ] unit_160_type_help_states_synthetic_ceiling: the `type` long-help string contains
+      same eval is `"hi"` [verified: 2026-08-14, 4 key events observed in window.__keys - keydown:h, keyup:h, keydown:i, keyup:i - in that order; #q.value="hi"; results.synthetic=true]
+- [x] unit_160_type_help_states_synthetic_ceiling: the `type` long-help string contains
       `isTrusted: false` and names `preventDefault`, and the result JSON built by the type
       JS contains `synthetic: true`
-- [ ] live_160_consent_no_cmp_exits_nonzero: `consent accept` on a fixture page with an
+- [x] live_160_consent_no_cmp_exits_nonzero: `consent accept` on a fixture page with an
       unrecognised banner exits 1 with `error_type == "consent_no_cmp"`, and a separate
-      `eval 'document.getElementById("banner") !== null'` returns true
-- [ ] live_160_consent_allow_no_cmp_exits_zero: the same page with
+      `eval 'document.getElementById("banner") !== null'` returns true [verified: 2026-08-14, exit 1, error_type=consent_no_cmp, banner still in the DOM (eval returned true)]
+- [x] live_160_consent_allow_no_cmp_exits_zero: the same page with
       `consent accept --allow-no-cmp` exits 0 and `--jq '.results.status'` prints
-      `no_cmp_detected`
-- [ ] unit_160_consent_status_values_are_distinct: `ConsentResult::to_json` emits
+      `no_cmp_detected` [verified: 2026-08-14, exit 0, --jq '.results.status' printed no_cmp_detected]
+- [x] unit_160_consent_status_values_are_distinct: `ConsentResult::to_json` emits
       `status` values `accepted`, `detected_not_actioned` and `no_cmp_detected` for the
       three constructions, all three still carry non-omitted `cmp` and `action` keys, and
       only `accepted` maps to exit code 0
-- [ ] live_160_with_network_auto_consent_reports_status: `navigate <consent-walled-url>
+- [x] live_160_with_network_auto_consent_reports_status: `navigate <consent-walled-url>
       --with-network --auto-consent` (the combination iter-159 unblocked) returns
       `results.consent.status` with the same three-value vocabulary as `consent accept`,
       in both daemon and `--no-daemon` mode, and exits 0 in both — Theme D's `status`
       field must reach `merge_auto_consent` and both `run_with_network` call sites
-      (`navigate.rs:2145`, `navigate.rs:2325`), not just plain `navigate --auto-consent`
-- [ ] live_160_contrast_cap_and_source_at_top_level: on a fixture page with more than
+      (`navigate.rs:2145`, `navigate.rs:2325`), not just plain `navigate --auto-consent` [verified: 2026-08-14, all three producers returned results.consent.status=no_cmp_detected on the unrecognised-banner fixture, exit 0 in daemon and --no-daemon]
+- [x] live_160_contrast_cap_and_source_at_top_level: on a fixture page with more than
       1000 text-bearing elements, `a11y contrast --fail-only` puts `capped == true` and
       `source == "js-fallback"` at the envelope's top level (reachable as `--jq '.capped'`
-      and `--jq '.source'`), and emits a hint naming the sampled element count
+      and `--jq '.source'`), and emits a hint naming the sampled element count [verified: 2026-08-14, 1200-<p> fixture -> top-level capped=true source=js-fallback sampled=996 total=0, meta.summary.capped retained, --hints emitted "Sample was truncated ... 996 element(s) examined"]
 - [ ] unit_160_contrast_envelope_promotes_capped_and_source: the envelope assembled by
       the contrast path carries `capped` and `source` as top-level keys alongside
       `sampled`, and the `meta.summary.capped` copy is retained
-- [ ] live_160_network_results_shape_ignores_jq: after `navigate --with-network`,
+- [x] live_160_network_results_shape_ignores_jq: after `navigate --with-network`,
       `network --jq '.results | type'` prints `object` (identical to `network`'s shape)
-      and `network --detail --jq '.results | type'` prints `array`
-- [ ] unit_160_use_detail_excludes_jq: the `use_detail` predicate returns false when only
+      and `network --detail --jq '.results | type'` prints `array` [verified: 2026-08-14, 2 invocations: --jq '.results | type' printed "object"; --detail --jq '.results | type' printed "array"]
+- [x] unit_160_use_detail_excludes_jq: the `use_detail` predicate returns false when only
       `cli.jq` is set, and true for each of `--detail`, `--all`, `--headers`,
       `--security`, `--sort`, `--limit`, `--fields`
-- [ ] live_160_type_non_input_reports_thrown_reason: `type body hello` fails with a
+- [x] live_160_type_non_input_reports_thrown_reason: `type body hello` fails with a
       message containing `is not an input, textarea, select, or contenteditable` and
-      containing neither `layout did not stabilise` nor `rect did not stabilise`
-- [ ] live_160_selector_diagnostics_survive: on the same fixture, `type '#nosuch' hello`
+      containing neither `layout did not stabilise` nor `rect did not stabilise` [verified: 2026-08-14, `type body hello` reported "selector 'body' not ready - element exists but is not an input, textarea, select, or contenteditable (matched 1 element)"; neither stabilise string present]
+- [x] live_160_selector_diagnostics_survive: on the same fixture, `type '#nosuch' hello`
       still reports `0 elements matched (not found)` and `type '#hidden_input' hello`
       still reports `the 1 matching element is hidden` — both messages byte-identical to
-      the strings at `js_helpers.rs:378` and `js_helpers.rs:383`
-- [ ] live_160_ref_click_asserts_handler_effect: `live_140_ref_click_resolves` is extended
+      the strings at `js_helpers.rs:378` and `js_helpers.rs:383` [verified: 2026-08-14, `#nosuch` -> "0 elements matched (not found)", `#hidden_input` -> "the 1 matching element is hidden"]
+- [x] live_160_ref_click_asserts_handler_effect: `live_140_ref_click_resolves` is extended
       to arm a click counter on the "Two" button and, after `click --ref`, a separate
-      `eval` reports that counter equal to 1
+      `eval` reports that counter equal to 1 [verified: 2026-08-14, live_160_ref_click_asserts_handler_effect: click --ref resolved text="Two" and window.__two=1]
 
 ## Notes
 
@@ -487,6 +487,17 @@ only what the envelope *says*.
   reasoning from Themes B and F, and check the fixtures under
   `crates/ff-rdp-cli/tests/fixtures/` before landing — fixtures are recorded from real
   Firefox and must be re-recorded, never hand-edited, per the fixture rules.
+  **Checked (2026-08-14): no fixture needed re-recording.** `grep -rn entered
+  crates/*/tests/fixtures/` returns nothing. The one click fixture,
+  `eval_result_click.json`, holds
+  `{"clicked":true,"tag":"BUTTON","text":"Submit"}` — recorded by
+  `live_record_fixtures.rs:783-796`, which evaluates its *own* hand-written
+  `el.click()` snippet rather than `build_click_js`, so it never carried `entered`
+  and does not carry `matched`/`reachable` either. Its four e2e consumers
+  (`tests/e2e/click.rs`) exercise the CLI's result-resolution path, not the click
+  JS's field set, and pass unchanged. The one fast test that *did* encode
+  pre-160 behaviour was `network_with_jq_filter`, rewritten as
+  `network_with_detail_jq_filter` plus a new `network_jq_does_not_switch_results_to_an_array`.
 - Themes A and D compound in the field: an undismissed consent overlay is the single most
   common cause of a click that reports success and does nothing. After this iteration,
   that scenario produces `error_type: "click_obscured"` with the overlay named — which is
@@ -499,3 +510,22 @@ only what the envelope *says*.
 - Verify on the wire before fixing. Across iterations 135–151 the stated root cause
   diverged from reality at least eight times; the observations above were captured from
   actual runs, so reproduce each one before changing the code it points at.
+
+- **Two ACs are left unticked despite the work being done, and this is deliberate.**
+  `unit_160_click_result_reports_matched_and_reachable` and
+  `unit_160_contrast_envelope_promotes_capped_and_source` are both implemented, and
+  both named tests exist and pass (`cargo test -p ff-rdp-cli --bin ff-rdp`:
+  940 passed / 0 failed). `ac-fidelity-check.sh` still reports "no evidence in diff"
+  for them, for a reason that has nothing to do with this iteration: its heuristic 1
+  recognises only `live_`/`test_`/`bench_` slug prefixes (line 359), so a
+  `unit_160_*` name is not looked up as a test function at all, and its heuristics 2
+  and 3 read only the AC's **first line** (`text`, line 189) rather than the folded
+  text the non-execution and deferral checks were moved onto in iter-154 — and these
+  two ACs happen to carry no backticked symbol before their first line wraps. Fixing
+  either would mean editing `~/.claude/skills/ralph-loop/scripts/`, which CLAUDE.md
+  says must not be done from inside a ralph-loop run, and the alternatives — rewrapping
+  the AC so a symbol lands on line one, or renaming the test functions to `test_160_*`
+  so heuristic 1 fires — are both "reword until the grep stops firing", which the
+  iteration's own run constraints forbid. Left unticked and reported rather than
+  routed around. Worth folding into the [[project_discipline_gate_gaps]] follow-up:
+  the two heuristics should read `full_text`, and the slug regex should learn `unit_`.
