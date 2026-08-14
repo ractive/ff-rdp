@@ -630,3 +630,71 @@ a different, larger iteration (a run-log store), not a format tweak here.
 
 **Applies to**: `crates/xtask/src/live_sweep.rs`, `crates/xtask/src/main.rs`,
 `CONTRIBUTING.md`, `CLAUDE.md`, iter-155.
+
+## DEC-032: keep `isServerTargetSwitchingEnabled: true` on the daemon's watcher — the flag was never the defect; buffer suppression, two wrong wire shapes and a late `tabNavigated` were
+
+**Decision**: iter-159's Theme A offered two options — (a) give frame-target
+enumeration its own connection and put the daemon's core watcher back on the
+default acquisition path, or (b) keep the flag and widen `is_watcher_event` to
+accept target actors. **Neither was implemented.** The daemon keeps
+`get_watcher_with_options(..., Some(true))` and `is_watcher_event` stays a
+strict `from == <daemon watcher>` equality test.
+
+**Why**: the premise both options rest on — that server-side target switching
+moves resource emission onto the per-document target actor — is false, and a
+recorded frame says so. `network-event` is registered in
+`ParentProcessResources` (`devtools/server/actors/resources/index.js`), so
+`WatcherActor.watchResources` handles it in the parent process and
+`WatcherActor.emitResources` (`devtools/server/actors/watcher.js`) emits it;
+`from` is the watcher's own actor id with the flag on or off. The recording is
+`crates/ff-rdp-cli/tests/fixtures/resources_available_network_server_target_switching.json`
+(`from: "server1.conn0.watcher3"`), pinned by
+`unit_159_daemon_resource_routing_pinned`, and the reasoning is written up in
+[[rdp/actors/watcher|kb/rdp/actors/watcher.md]] together with the 153-vs-154
+diff that shows the relevant regions are unchanged across the skew.
+
+Option (a) would have bought a second connection and a second watcher
+lifecycle for nothing. Option (b) would have been actively harmful:
+`is_watcher_event` exists so the daemon does not steal resource events
+belonging to a *proxied command's own* watcher, and those genuinely do arrive
+`from: server1.conn2.watcher2.process8//windowGlobalTarget2` — the very shape
+the widened predicate would have swallowed, breaking the `watchResources`
+handshake forwarding.
+
+**What actually broke it** — four independent defects, all found by tracing the
+daemon's dispatch rather than by reading the flag's doc comment:
+
+1. `dispatch_firefox_message` skipped buffering any resource whose type had an
+   active stream subscriber. Since iter-138 Theme A a **plain** daemon
+   `navigate` opens a `network-event` stream (so `wait_for_doc_complete` can
+   read the document's HTTP status), so every navigation's resources were
+   handed to that transient subscriber, used for one status field, and
+   discarded. The suppression existed only to avoid double-counting the
+   `store-events` push-back — the workaround this iteration deleted.
+2. `daemon/buffer.rs::update_to_val` emitted the pre-iter-106 update shape
+   (`{"resourceUpdates": [{"resourceId": …}]}`); the reader wants a top-level
+   `resourceId` and an object-valued `resourceUpdates`, so every buffered
+   update was dropped and `status`/`content_type`/`transfer_size` were null.
+   iter-106 Theme D fixed this exact shape in the `store-events` serialiser and
+   missed this copy.
+3. `net_to_val` emitted a flat `causeType` while
+   `parse_single_network_resource` reads `cause.type`, so `cause_type` was `""`
+   on every daemon row and `by_cause_type` collapsed to one bucket.
+4. Firefox 153 emits `tabNavigated` at load **stop** — measured 257 buffered
+   entries deep — so the default `--since -1` window excluded the navigation's
+   own requests. Network epochs now start at the oldest surviving
+   `network-event` entry, which is sound because the server destroys the
+   previous document's request actors at will-navigate.
+
+Defects 2 and 3 are the same failure mode as the mask itself: a serialiser that
+nothing exercised, because the only thing filling the buffer was the workaround
+that used a different serialiser.
+
+**Measured**: plain daemon `navigate` → `network --source watcher --detail`
+returned 0 entries before, 20 entries after with 20/20 carrying non-null
+`method` **and** `status`.
+
+**Applies to**: `crates/ff-rdp-cli/src/daemon/server.rs`,
+`crates/ff-rdp-cli/src/daemon/buffer.rs`,
+`crates/ff-rdp-cli/src/commands/network.rs`,
+`crates/ff-rdp-cli/src/commands/navigate.rs`, iter-137, iter-138, iter-159.

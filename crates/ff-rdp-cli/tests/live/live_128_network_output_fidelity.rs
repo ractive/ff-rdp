@@ -48,13 +48,20 @@ fn stop_daemon(port: u16) {
         .output();
 }
 
-/// `live_128_network_detail_uses_watcher`: after a real `navigate
-/// --with-network` populates the daemon's watcher buffer, a single
-/// subsequent `network --detail --jq` call must read from that SAME
-/// buffer (`source: "watcher"` on every entry) rather than silently
-/// falling back to the lower-fidelity Performance API — and at least one
-/// entry must carry a non-null `method` and `content_type` (iter-128
+/// `live_128_network_detail_uses_watcher`: after a real navigate populates the
+/// daemon's watcher buffer, a single subsequent `network --detail --jq` call
+/// must read from that SAME buffer (`source: "watcher"` on every entry) rather
+/// than silently falling back to the lower-fidelity Performance API — and at
+/// least one entry must carry a non-null `method` and `content_type` (iter-128
 /// Theme B).
+///
+/// iter-159 Theme C strengthened this: the navigate is now **plain**, with no
+/// `--with-network`. As originally written the test could only ever measure the
+/// `store-events` workaround — `--with-network` ran its own direct capture and
+/// pushed the result into the daemon buffer, so the assertion passed whether or
+/// not the daemon's own watcher had delivered a single byte. It did not, for
+/// two releases. `store-events` is gone (Theme D) and the only thing that can
+/// fill the buffer now is the daemon watcher itself.
 #[test]
 #[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
 fn live_128_network_detail_uses_watcher() {
@@ -68,13 +75,9 @@ fn live_128_network_detail_uses_watcher() {
 
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(port))
-        .args([
-            "navigate",
-            "https://en.wikipedia.org/wiki/Firefox",
-            "--with-network",
-        ])
+        .args(["navigate", "https://en.wikipedia.org/wiki/Firefox"])
         .output()
-        .expect("navigate --with-network");
+        .expect("plain navigate");
     if !nav.status.success() {
         stop_daemon(port);
         eprintln!(
@@ -103,7 +106,8 @@ fn live_128_network_detail_uses_watcher() {
         .expect("results.entries must be an array");
     assert!(
         !entries.is_empty(),
-        "expected buffered watcher events after navigate --with-network, got 0 entries"
+        "expected the daemon's own watcher to have buffered events after a PLAIN \
+         navigate, got 0 entries — this is the iter-137→iter-159 regression"
     );
 
     let sources: Vec<&str> = entries
@@ -113,7 +117,7 @@ fn live_128_network_detail_uses_watcher() {
     assert!(
         sources.iter().all(|&s| s == "watcher"),
         "every entry must report source=\"watcher\" (not a performance-api fallback) \
-         after navigate --with-network already populated the daemon buffer; got sources: \
+         after a plain navigate populated the daemon buffer; got sources: \
          {sources:?}"
     );
 

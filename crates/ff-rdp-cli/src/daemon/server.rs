@@ -1233,9 +1233,9 @@ fn dispatch_firefox_message(
     if let Some((resource_bus, resource_rx)) = resources
         && is_watcher_event(msg, &watcher_actor)
     {
-        // Forward raw events to stream subscribers first, noting which resource
-        // types were claimed by at least one subscriber.
-        let streamed_types = dispatch_watcher_event_to_stream_subs(state, msg);
+        // Forward raw events to stream subscribers.  Which types a subscriber
+        // claimed no longer gates buffering — see the loop below.
+        dispatch_watcher_event_to_stream_subs(state, msg);
 
         // Wrap any grip actor IDs embedded in the watcher event in a
         // ResourceGripGuard backed by the daemon's release queue.  When the
@@ -1247,23 +1247,30 @@ fn dispatch_firefox_message(
             grip_guard.add_grip(grip);
         }
 
-        // Parse into typed Resources via the bus, then route to the buffer.
+        // Parse into typed Resources via the bus, then route **every** resource
+        // to the buffer — streamed or not.
         //
-        // For non-Destroyed resources: buffer only if the type had no active
-        // stream subscriber.  This avoids double-counting when the CLI stores
-        // events back via `store-events` after a `navigate --with-network` stream.
+        // iter-159: this loop used to skip non-Destroyed resources whose type
+        // had an active stream subscriber, to avoid double-counting when the
+        // CLI pushed its own capture back via the `store-events` RPC after a
+        // `navigate --with-network` stream.  That RPC is gone (Theme D), and
+        // the suppression it justified was the whole reason daemon-mode
+        // `network --source watcher` returned nothing: since iter-138 a
+        // **plain** `navigate` also opens a `network-event` stream (to read the
+        // main document's HTTP status in `wait_for_doc_complete`), so every
+        // navigation's resources were routed to that transient subscriber,
+        // dropped on the floor when it went away, and never buffered.  Measured
+        // on the wire: `resources-available-array` arriving `from` the daemon's
+        // own watcher actor, `is_watcher_event` → true, parsed as
+        // `network-event`, and then discarded with `buffered=false`.
         //
-        // For Destroyed resources: ALWAYS call buf.on_resource so stale entries
-        // are pruned regardless of whether the type has a stream subscriber.
-        // Skipping the buffer prune would leave stale entries in the buffer
-        // indefinitely.
+        // Buffering unconditionally is safe: a stream subscriber consumes a
+        // *copy* of the raw frame, and `--follow` readers clear the buffer for
+        // their type when they subscribe (`"stream"` RPC → `buffer.drain`).
         resource_bus.dispatch_event(msg);
         let mut buf = lock_or_recover!(state.buffer);
         for resource in resource_rx.try_iter() {
-            let is_destroyed = matches!(resource.as_ref(), ff_rdp_core::Resource::Destroyed { .. });
-            if is_destroyed || !streamed_types.contains(resource.type_name().as_ref()) {
-                buf.on_resource(resource.as_ref());
-            }
+            buf.on_resource(resource.as_ref());
         }
     } else if is_target_event(msg) {
         // Log target lifecycle events and track the count.
@@ -1661,14 +1668,13 @@ fn dispatch_console_push_event(state: &SharedState, msg: &Value) {
 /// Forward a watcher event to all streaming subscribers whose type set overlaps
 /// the event's resource types.
 ///
-/// Returns the set of resource type strings that were successfully forwarded to
-/// at least one subscriber — the caller uses this to skip buffering for those
-/// types (so that `navigate --with-network` streaming doesn't double-count events).
-fn dispatch_watcher_event_to_stream_subs(state: &SharedState, msg: &Value) -> HashSet<String> {
-    let mut streamed: HashSet<String> = HashSet::new();
-
+/// iter-159: this used to return the set of types it had forwarded, and the
+/// caller skipped buffering those. That suppression is gone — the daemon
+/// buffers every watcher resource it receives — so there is nothing left to
+/// report and the return type is `()`.
+fn dispatch_watcher_event_to_stream_subs(state: &SharedState, msg: &Value) {
     let Some(array) = msg.get("array").and_then(Value::as_array) else {
-        return streamed;
+        return;
     };
 
     // Collect the resource types present in this event.
@@ -1683,7 +1689,7 @@ fn dispatch_watcher_event_to_stream_subs(state: &SharedState, msg: &Value) -> Ha
     }
 
     if event_types.is_empty() {
-        return streamed;
+        return;
     }
 
     // Serialise the message once (shared across all subscribers).
@@ -1691,7 +1697,7 @@ fn dispatch_watcher_event_to_stream_subs(state: &SharedState, msg: &Value) -> Ha
         Ok(s) => s,
         Err(e) => {
             eprintln!("daemon: could not serialise watcher event: {e}");
-            return streamed;
+            return;
         }
     };
 
@@ -1700,23 +1706,13 @@ fn dispatch_watcher_event_to_stream_subs(state: &SharedState, msg: &Value) -> Ha
     let mut dead: Vec<usize> = Vec::new();
     for (i, sub) in subs.iter_mut().enumerate() {
         let wants = event_types.iter().any(|t| sub.types.contains(*t));
-        if wants {
-            if sub.writer.send_raw(&json).is_err() {
-                dead.push(i);
-            } else {
-                for t in &event_types {
-                    if sub.types.contains(*t) {
-                        streamed.insert((*t).to_owned());
-                    }
-                }
-            }
+        if wants && sub.writer.send_raw(&json).is_err() {
+            dead.push(i);
         }
     }
     for i in dead.into_iter().rev() {
         subs.remove(i);
     }
-
-    streamed
 }
 
 /// Forward a navigation boundary event to all stream subscribers watching `"network-event"`.
@@ -2689,77 +2685,6 @@ fn handle_daemon_message(
             }
         }
 
-        // ------------------------------------------------------------------
-        // Store pre-collected events back into the buffer (iter-61j G).
-        //
-        // Used by `navigate --with-network` after it drains events via
-        // streaming.  Without this, the buffer is empty after the stream
-        // ends and subsequent `ff-rdp network` calls fall back to the
-        // Performance API.
-        //
-        // Nav-boundary handling (iter-106 Theme D): when the request carries a
-        // `navUrl`, record a navigation boundary **atomically with** the event
-        // inserts (`record_boundary_and_insert`).  The navigation has already
-        // committed by the time `navigate --with-network` sends this, but the
-        // Firefox reader loop processes the matching `tabNavigated` on a
-        // *different* thread — so its boundary could land either just before or
-        // just after this insert.  If it landed after, its `store_start` would
-        // sit past every stored event and the default `--since -1` scope would
-        // resolve to an empty window (the "cross-invocation daemon buffer
-        // empty" bug).  Recording the boundary in the same critical section
-        // that inserts the events guarantees the events are visible under
-        // `--since -1`.  A duplicate `tabNavigated` boundary for the same URL is
-        // harmless (see `record_boundary_and_insert`).  Requests without a
-        // `navUrl` keep the legacy insert-only behaviour and rely on the
-        // reader-loop boundary.
-        //
-        // Request: {
-        //   type: "store-events",
-        //   resourceType: "network-event",
-        //   navUrl: "https://…",   ← optional; scopes the batch to a boundary
-        //   events: [...]          ← raw watcher event JSON values
-        // }
-        // Response: { from: "daemon", stored: N }
-        // ------------------------------------------------------------------
-        "store-events" => {
-            let Some(resource_type) = msg
-                .get("resourceType")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-            else {
-                return json!({
-                    "from": "daemon",
-                    "error": "store-events requires a non-empty resourceType field",
-                });
-            };
-            let Some(events_arr) = msg.get("events").and_then(Value::as_array) else {
-                return json!({
-                    "from": "daemon",
-                    "error": "store-events requires an `events` array field",
-                });
-            };
-            let nav_url = msg
-                .get("navUrl")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty());
-
-            let mut buf = lock_or_recover!(state.buffer);
-            let n = events_arr.len();
-            if let Some(nav_url) = nav_url {
-                buf.record_boundary_and_insert(resource_type, nav_url.to_owned(), events_arr);
-            } else {
-                for ev in events_arr {
-                    buf.insert_raw(resource_type, ev.clone());
-                }
-            }
-            drop(buf);
-
-            json!({
-                "from": "daemon",
-                "stored": n,
-            })
-        }
-
         "status" => {
             let uptime = state.start_time.elapsed().as_secs();
             let sizes = lock_or_recover!(state.buffer).sizes();
@@ -3469,12 +3394,16 @@ mod tests {
     fn top_level_switch_purges_buffer() {
         let state = test_state();
 
-        // Seed some buffered events from the initial document.
+        // Seed some buffered events from the initial document.  A
+        // console-message, because iter-159 exempts `network-event` from the
+        // purge: server-side target switching destroys the top-level target
+        // *during* the navigation whose requests we are trying to keep, and
+        // Firefox already prunes the previous document's request actors itself.
         state
             .buffer
             .lock()
             .expect("lock")
-            .insert_raw("network-event", json!({"url": "https://old.example/"}));
+            .insert_raw("console-message", json!({"message": "old"}));
 
         let target_a = ff_rdp_core::ActorId::from("conn0/target-a");
         let target_b = ff_rdp_core::ActorId::from("conn0/target-b");
@@ -3487,7 +3416,7 @@ mod tests {
                 .lock()
                 .expect("lock")
                 .sizes()
-                .get("network-event"),
+                .get("console-message"),
             Some(&1),
             "the first top-level target must not purge the buffer"
         );
@@ -3500,7 +3429,7 @@ mod tests {
                 .lock()
                 .expect("lock")
                 .sizes()
-                .get("network-event"),
+                .get("console-message"),
             Some(&1),
             "a same-target re-announcement must not purge the buffer"
         );
@@ -3513,8 +3442,47 @@ mod tests {
                 .lock()
                 .expect("lock")
                 .sizes()
-                .contains_key("network-event"),
+                .contains_key("console-message"),
             "a top-level target switch must purge stale buffered resources"
+        );
+    }
+
+    /// iter-159: the same switch must **keep** `network-event` entries.
+    ///
+    /// With `isServerTargetSwitchingEnabled: true` the top-level target is
+    /// destroyed and recreated on every cross-process navigation, so this purge
+    /// runs in the middle of the page load it is meant to run after. Measured on
+    /// `https://example.com`: the document request's available-entry was wiped
+    /// and only its later updates survived, leaving `network --detail` with 2
+    /// buffered entries and 0 rows.
+    #[test]
+    fn top_level_switch_keeps_network_events() {
+        let state = test_state();
+        state.buffer.lock().expect("lock").insert_raw(
+            "network-event",
+            json!({"url": "https://in-flight.example/"}),
+        );
+
+        handle_top_level_target_switch(
+            &state,
+            &ff_rdp_core::ActorId::from("conn0/target-a"),
+            "https://old.example/",
+        );
+        handle_top_level_target_switch(
+            &state,
+            &ff_rdp_core::ActorId::from("conn0/target-b"),
+            "https://new.example/",
+        );
+
+        assert_eq!(
+            state
+                .buffer
+                .lock()
+                .expect("lock")
+                .sizes()
+                .get("network-event"),
+            Some(&1),
+            "a target switch must not discard the navigation's own network events"
         );
     }
 
@@ -3759,6 +3727,148 @@ mod tests {
                 daemon_watcher
             ),
             "resources-available-array from a non-daemon watcher must not be intercepted"
+        );
+    }
+
+    /// Fixture recorded from a live Firefox session by
+    /// `live_159_record_resources_available_with_server_target_switching`
+    /// (`ff-rdp-core/tests/live_record_fixtures.rs`) against a watcher created
+    /// the way `establish_watcher` creates it: `getWatcher` with
+    /// `isServerTargetSwitchingEnabled: true`.
+    const RESOURCES_AVAILABLE_STS_FIXTURE: &str = include_str!(
+        "../../tests/fixtures/resources_available_network_server_target_switching.json"
+    );
+
+    /// iter-159, Theme A: pin **where** network resources are addressed from
+    /// when server-side target switching is on.
+    ///
+    /// The hypothesis going in was that enabling the flag moves resource
+    /// emission onto the per-document target actor (`…//windowGlobalTarget2`),
+    /// which `is_watcher_event`'s `from == daemon_watcher` equality test would
+    /// reject — silently discarding data the daemon successfully asked for.
+    /// The recording says otherwise: `network-event` is a **parent-process**
+    /// resource (`devtools/server/actors/resources/index.js`, the
+    /// `ParentProcessResources` dictionary), watched by the WatcherActor
+    /// itself, and emitted by `WatcherActor.emitResources`
+    /// (`devtools/server/actors/watcher.js`) — so `from` is the watcher's own
+    /// actor id regardless of the flag.  `is_watcher_event` was never the
+    /// defect and must not be widened to accept target actors, which would
+    /// make the daemon steal a proxied command's own watcher events.
+    ///
+    /// The test asserts the recorded `from` verbatim.  If a future Firefox
+    /// does move emission onto the target actor, this fails on the literal —
+    /// which is the signal to revisit the predicate, not to loosen it blindly.
+    #[test]
+    fn unit_159_daemon_resource_routing_pinned() {
+        let frame: Value = serde_json::from_str(RESOURCES_AVAILABLE_STS_FIXTURE)
+            .expect("recorded fixture must be valid JSON");
+
+        assert_eq!(
+            frame["type"], "resources-available-array",
+            "fixture must be a resource-array frame"
+        );
+        let from = frame["from"].as_str().expect("fixture must carry `from`");
+
+        // Verbatim: the recorded emitter is the watcher actor, not a target
+        // actor.  A target-actor id contains "//windowGlobalTarget".
+        assert_eq!(
+            from, "server1.conn0.watcher3",
+            "recorded emitter must be the watcher actor; got {from}"
+        );
+        assert!(
+            !from.contains("//windowGlobalTarget"),
+            "network-event must not be emitted by a target actor under \
+             isServerTargetSwitchingEnabled: true; got {from}"
+        );
+
+        // The daemon accepts it when the recorded emitter is its own watcher…
+        assert!(
+            is_watcher_event(&frame, from),
+            "the daemon must buffer resource frames from its own watcher"
+        );
+        // …and still refuses frames belonging to some other watcher, so a
+        // proxied command's `watchResources` handshake is never stolen.
+        assert!(
+            !is_watcher_event(&frame, "server1.conn0.watcher99"),
+            "frames from another watcher must reach the RPC client untouched"
+        );
+
+        // Guard the payload shape the buffer round-trips through: `cause` is a
+        // nested object (`cause.type`), which is what
+        // `parse_single_network_resource` reads and what `net_to_val` must
+        // reproduce.  Storing it as a flat `causeType` key lost it silently.
+        let item = &frame["array"][0][1][0];
+        assert!(
+            item["cause"]["type"].is_string(),
+            "cause must be a nested object with a `type`, got: {}",
+            item["cause"]
+        );
+        assert!(item["method"].is_string(), "method must be present");
+    }
+
+    /// iter-159: pin `establish_watcher`'s `getWatcher` arguments.
+    ///
+    /// Theme A chose neither of the plan's two options: the wire evidence
+    /// (`unit_159_daemon_resource_routing_pinned`) shows the flag does not
+    /// affect where `network-event` resources are addressed, so splitting the
+    /// connection (option a) would buy nothing and widening the acceptance
+    /// predicate (option b) would break the `watchResources` handshake
+    /// forwarding for proxied commands.  The daemon's core watcher therefore
+    /// keeps `isServerTargetSwitchingEnabled: true`, which is what iter-137's
+    /// frame-target enumeration through the daemon depends on.
+    ///
+    /// This test fails if someone "reverts the flag" as a speculative fix —
+    /// the exact trade iter-137 made in the other direction.
+    #[test]
+    fn unit_159_establish_watcher_acquisition_path() {
+        let src = include_str!("server.rs");
+        let call = "TabActor::get_watcher_with_options(transport, &tab_actor, Some(true))";
+        assert!(
+            src.contains(call),
+            "establish_watcher must keep isServerTargetSwitchingEnabled: true — \
+             iter-137's frame-target enumeration through the daemon depends on it, \
+             and iter-159 proved on the wire that the flag is not what broke \
+             network-event delivery (see unit_159_daemon_resource_routing_pinned)"
+        );
+    }
+
+    /// iter-159 Theme D: the `store-events` workaround must stay deleted.
+    ///
+    /// It let `navigate --with-network` push its own direct capture into the
+    /// daemon buffer, so a session that touched the working path even once
+    /// left data behind that made the broken daemon watcher look healthy — a
+    /// reviewer hit exactly that mid-investigation and briefly concluded the
+    /// regression was not real.  Re-adding it would restore the mask, so the
+    /// deletion is pinned by a source audit rather than left to review.
+    ///
+    /// Historical *mentions* in comments are fine and deliberate; what must
+    /// not come back is the RPC arm, its client, and its serialiser.
+    #[test]
+    fn unit_159_store_events_workaround_deleted() {
+        let server_src = include_str!("server.rs");
+        let client_src = include_str!("client.rs");
+        let network_events_src = include_str!("../commands/network_events.rs");
+        let navigate_src = include_str!("../commands/navigate.rs");
+
+        // Assembled at runtime: a literal here would match itself when this
+        // very file is read back by `include_str!`.
+        let arm = format!("{}{}{} =>", '"', "store-events", '"');
+        assert!(
+            !server_src.contains(&arm),
+            "daemon/server.rs must not carry a `store-events` RPC arm"
+        );
+        assert!(
+            !client_src.contains("fn store_network_events"),
+            "daemon/client.rs must not carry the `store-events` client"
+        );
+        assert!(
+            !network_events_src.contains("fn serialize_network_resources_for_buffer"),
+            "commands/network_events.rs must not carry \
+             `serialize_network_resources_for_buffer`"
+        );
+        assert!(
+            !navigate_src.contains("store_network_events("),
+            "navigate --with-network must not push its capture back into the buffer"
         );
     }
 

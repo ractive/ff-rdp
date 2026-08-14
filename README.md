@@ -181,16 +181,20 @@ ff-rdp network --filter api
 # Filter network by HTTP method
 ff-rdp network --method POST
 
-# Pin the capture source so daemon and --no-daemon return the same rows.
-# The default (--source auto) prefers the daemon's watcher buffer and falls
-# back to the Performance API when it is empty, so the same page can report
-# different row counts in the two connection modes; `meta.source_reason`
-# always states which rule applied.
-ff-rdp network --source performance-api
-ff-rdp network --source watcher
+# The capture source is always the one you asked for. The default is the RDP
+# resource watcher — the only source that carries method, status, content_type
+# and transfer_size. `meta.source` names where the rows came from; an empty
+# watcher buffer reports zero watcher rows rather than silently answering from
+# somewhere else (iter-159 removed that substitution).
+ff-rdp network                          # watcher (default)
+ff-rdp network --source performance-api # explicit opt-out: fewer fields
 
 # Navigate and capture all network traffic in one shot
 ff-rdp navigate https://example.com --with-network
+
+# Dismiss a cookie banner and capture the network in the same call — the
+# consent click happens inside the capture window.
+ff-rdp navigate https://www.theguardian.com --with-network --auto-consent
 
 # Find failed requests during navigation
 ff-rdp navigate https://example.com --with-network \

@@ -694,50 +694,6 @@ pub(crate) fn register_refs(
     anyhow::bail!("did not receive register-refs response within 64 frames")
 }
 
-/// Store pre-collected network events into the daemon buffer (iter-61j G).
-///
-/// Called by `navigate --with-network` after streaming completes so that
-/// subsequent `ff-rdp network` calls can read the captured events from the
-/// daemon buffer instead of falling back to the Performance API.
-///
-/// `nav_url` is the URL that was navigated to.  The daemon records a navigation
-/// boundary **atomically with** the inserts (iter-106 Theme D), so the stored
-/// batch is always visible under the default `--since -1` scope regardless of
-/// how the reader loop's asynchronous `tabNavigated` boundary for the same
-/// navigation interleaves with this call.  The earlier "do not pass a nav_url"
-/// guidance produced exactly the cross-invocation "empty results" bug this
-/// boundary fixes: the reader-loop boundary could land *after* the inserts and
-/// scope `--since -1` past every stored event.
-pub(crate) fn store_network_events(
-    transport: &mut RdpTransport,
-    nav_url: &str,
-    events: &[serde_json::Value],
-) -> Result<()> {
-    let msg = json!({
-        "to": "daemon",
-        "type": "store-events",
-        "resourceType": "network-event",
-        "navUrl": nav_url,
-        "events": events,
-    });
-    transport
-        .send(&msg)
-        .context("sending store-events to daemon")?;
-    // Drain up to 64 frames to skip any in-flight push events before the ack.
-    for _ in 0..64 {
-        let resp = transport
-            .recv()
-            .context("receiving store-events response")?;
-        if resp.get("from").and_then(serde_json::Value::as_str) == Some("daemon") {
-            if let Some(err) = resp.get("error").and_then(serde_json::Value::as_str) {
-                anyhow::bail!("daemon store-events error: {err}");
-            }
-            return Ok(());
-        }
-    }
-    anyhow::bail!("did not receive store-events response within 64 frames")
-}
-
 /// Format a hint pointing to the daemon log file, or an empty string if
 /// the path cannot be determined.
 fn log_path_hint() -> String {

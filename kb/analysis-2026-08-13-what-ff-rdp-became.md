@@ -119,6 +119,20 @@ The daemon's core resource watcher *is* the default target-acquisition path. Com
 **iter-137**, 2026-08-10 — whose own plan records the pre-change state as *"daemon → 77 rows,
 source: watcher."* It worked; iter-137 broke it while legitimately fixing frame targets.
 
+> **CORRECTION (iter-159, 2026-08-14): the root cause above is wrong.** The A/B measurement
+> stands; the attribution does not. `isServerTargetSwitchingEnabled` does not move
+> `network-event` delivery — a recorded frame
+> (`crates/ff-rdp-cli/tests/fixtures/resources_available_network_server_target_switching.json`)
+> shows it arriving `from` the **watcher** actor under exactly that flag, because
+> `TYPES.NETWORK_EVENT` lives in `ParentProcessResources` and the WatcherActor emits it itself.
+> `is_watcher_event` accepted every one of those frames. What actually broke it: the daemon
+> skipped buffering any resource type with an active stream subscriber, and since iter-138 a
+> *plain* `navigate` opens a `network-event` stream — plus two wrong wire shapes in the buffer's
+> own serialisers and a `tabNavigated` that arrives at load *stop*. See
+> [[iterations/iteration-159-daemon-watcher-regression]] and DEC-032. This entry is left in
+> place, uncorrected above the fold, as the ninth instance of the pattern §5 names: a confident
+> root cause that the wire did not support.
+
 **Why nobody noticed — this is the important part.** `navigate --with-network` pushes its own
 capture back into the daemon's buffer via a `store-events` RPC. Demonstrated:
 

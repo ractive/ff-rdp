@@ -433,7 +433,13 @@ fn dispatch_inner(
                 wait_strategy: *wait_strategy,
             };
             if *with_network {
-                commands::navigate::run_with_network(cli, url, &wait_opts, *network_timeout)
+                commands::navigate::run_with_network(
+                    cli,
+                    url,
+                    &wait_opts,
+                    *network_timeout,
+                    *auto_consent,
+                )
             } else {
                 commands::navigate::run(cli, url, &wait_opts, *auto_consent)
             }

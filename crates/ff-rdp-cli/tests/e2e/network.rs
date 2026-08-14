@@ -431,13 +431,18 @@ fn network_empty_when_no_events() {
 }
 
 // ---------------------------------------------------------------------------
-// Performance API fallback when watcher has no events
+// Performance API as an explicit opt-out (iter-159: never as a silent fallback)
 // ---------------------------------------------------------------------------
 
+/// iter-159: with an empty watcher buffer and no `--source`, `network` reports
+/// zero **watcher** rows.  It does not substitute the Performance API.
+///
+/// The deleted `auto` rule did exactly that, and because the substitute dataset
+/// has no `method`/`status`/`content_type`/`transfer_size`, a daemon whose
+/// watcher had stopped delivering anything at all looked like a page with no
+/// HTTP metadata rather than like a bug.
 #[test]
-fn network_falls_back_to_performance_api_when_watcher_empty() {
-    // Watcher returns no network events (no followups); Performance API eval
-    // returns two resource entries as a plain JSON array.
+fn network_empty_watcher_does_not_substitute_performance_api() {
     let server = MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
@@ -478,23 +483,21 @@ fn network_falls_back_to_performance_api_when_watcher_empty() {
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
-    // Should have fallen back to Performance API and returned 2 entries.
-    assert_eq!(json["total"], 2, "expected 2 entries from perf fallback");
-    let results = json["results"].as_array().expect("results is array");
-    // All entries should have source = "performance-api".
-    for entry in results {
-        assert_eq!(
-            entry["source"], "performance-api",
-            "expected performance-api source, got: {entry}"
-        );
-    }
-    // Meta should advertise the performance-api source.
-    assert_eq!(json["meta"]["source"], "performance-api");
+    assert_eq!(json["total"], 0, "empty watcher must report zero rows");
+    assert_eq!(
+        json["meta"]["source"], "watcher",
+        "meta.source must name where we looked, not a substitute"
+    );
+    assert!(
+        json["meta"].get("source_reason").is_none(),
+        "source_reason existed only to explain the deleted substitution"
+    );
 }
 
 #[test]
-fn network_summary_falls_back_to_performance_api() {
-    // Summary mode: watcher empty, perf fallback returns 2 entries.
+fn network_source_performance_api_returns_perf_rows() {
+    // Watcher returns no network events (no followups); Performance API eval
+    // returns two resource entries as a plain JSON array.
     let server = MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
@@ -517,7 +520,76 @@ fn network_summary_falls_back_to_performance_api() {
     let handle = std::thread::spawn(move || server.serve_one());
 
     let mut args = base_args(port);
-    args.push("network".to_owned());
+    args.extend([
+        "--detail".to_owned(),
+        "network".to_owned(),
+        "--source".to_owned(),
+        "performance-api".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+
+    // The explicit opt-out still returns Performance-API rows.
+    assert_eq!(
+        json["total"], 2,
+        "expected 2 entries from --source performance-api"
+    );
+    let results = json["results"].as_array().expect("results is array");
+    // All entries should have source = "performance-api".
+    for entry in results {
+        assert_eq!(
+            entry["source"], "performance-api",
+            "expected performance-api source, got: {entry}"
+        );
+    }
+    // Meta should advertise the performance-api source.
+    assert_eq!(json["meta"]["source"], "performance-api");
+}
+
+#[test]
+fn network_summary_source_performance_api_returns_perf_rows() {
+    // Summary mode with the explicit opt-out: perf source returns 2 entries.
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on(
+            "unwatchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_network_perf_fallback.json"),
+        );
+
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "network".to_owned(),
+        "--source".to_owned(),
+        "performance-api".to_owned(),
+    ]);
 
     let output = std::process::Command::new(ff_rdp_bin())
         .args(&args)
@@ -768,7 +840,7 @@ fn network_meta_source_watcher_when_watcher_has_entries() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn network_detail_headers_on_perf_fallback_emits_note() {
+fn network_detail_headers_on_perf_source_emits_note() {
     // Watcher returns no events; performance-api fallback returns 2 entries.
     // When --headers is requested, each entry should carry a note explaining
     // that headers are unavailable from performance-api.
@@ -798,6 +870,8 @@ fn network_detail_headers_on_perf_fallback_emits_note() {
         "--detail".to_owned(),
         "network".to_owned(),
         "--headers".to_owned(),
+        "--source".to_owned(),
+        "performance-api".to_owned(),
     ]);
 
     let output = std::process::Command::new(ff_rdp_bin())

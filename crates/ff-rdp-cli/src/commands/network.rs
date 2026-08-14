@@ -207,47 +207,28 @@ pub fn run(
         };
 
     let watcher_entries = build_network_entries_with_ids(&all_resources, &update_map);
-    let watcher_was_empty = watcher_entries.is_empty();
     // Keep resource IDs in watcher entries so detail+headers mode can fetch them.
     let filtered_watcher = apply_filters(watcher_entries, true);
 
-    // Pick the source (iter-137 Theme C).
+    // Pick the source.  Exactly one of two, and always the one that was asked
+    // for — there is no implicit substitution any more (iter-159 Theme D).
     //
-    // `auto` keeps the historical rule: watcher if it produced anything, else
-    // the Performance API. That rule is *connection-mode dependent* by
-    // construction — the daemon has been buffering network events since it
-    // started, so its watcher buffer is rarely empty, while a fresh direct
-    // connection subscribes after the page has already loaded and almost
-    // always falls through to the Performance API. Same page, same instant,
-    // different dataset. `--source watcher` / `--source performance-api` pin
-    // one mechanism so both connection modes answer from the same place, and
-    // `meta.source_reason` (below) names whichever rule applied.
-    let (results, used_perf_fallback, source_reason) = match source {
-        NetworkSource::PerformanceApi => {
-            let fallback = performance_api_fallback(&mut ctx);
-            (apply_filters(fallback, false), true, "requested")
-        }
-        NetworkSource::Watcher => {
-            // No fallback: an empty watcher buffer is reported as an empty
-            // watcher result rather than silently substituting a different
-            // dataset with different fields.
-            (filtered_watcher, false, "requested")
-        }
-        NetworkSource::Auto if watcher_was_empty => {
-            let fallback = performance_api_fallback(&mut ctx);
-            let filtered_fallback = apply_filters(fallback, false);
-            let used = !filtered_fallback.is_empty();
-            (
-                filtered_fallback,
-                used,
-                "auto: watcher buffer empty, fell back to performance-api",
-            )
-        }
-        NetworkSource::Auto => {
-            // filtered_watcher already has _resource_id present; keep it for the
-            // detail+headers path. It will be stripped before final output.
-            (filtered_watcher, false, "auto: watcher buffer non-empty")
-        }
+    // The deleted `auto` rule was "watcher if it produced anything, else the
+    // Performance API", which is *connection-mode dependent* by construction
+    // and, worse, indistinguishable from a broken watcher: when the daemon
+    // stopped buffering network events entirely (iter-137 → iter-159) every
+    // daemon-mode `network` call quietly answered from the Performance API,
+    // with `method`, `status`, `content_type` and `transfer_size` null on every
+    // row, and nothing in the default output said so.  An empty watcher buffer
+    // is now reported as zero watcher rows; `--source performance-api` remains
+    // as the explicit opt-out.
+    let is_perf_source = source == NetworkSource::PerformanceApi;
+    let results = if is_perf_source {
+        apply_filters(performance_api_fallback(&mut ctx), false)
+    } else {
+        // filtered_watcher already has _resource_id present; keep it for the
+        // detail+headers path. It will be stripped before final output.
+        filtered_watcher
     };
 
     // Count plain-HTTP (insecure) requests across the *whole* captured set, not
@@ -260,9 +241,9 @@ pub fn run(
         None
     };
 
-    // When both the watcher and the Performance API returned nothing, print a
-    // hint so the user knows how to get data.
-    if results.is_empty() && watcher_was_empty {
+    // When the requested source returned nothing, print a hint so the user
+    // knows how to get data.
+    if results.is_empty() {
         // stderr-ok: (b) hint — see the comment above; stdout still carries
         // the (empty) JSON result envelope.
         eprintln!(
@@ -271,28 +252,15 @@ pub fn run(
         );
     }
 
-    // Base meta.source on which buffer was actually consulted, not on the
-    // post-filter result count.  Otherwise `--filter <no-match>` against a
-    // non-empty watcher buffer would omit `meta.source` even though the data
-    // source was watcher.
-    let mut meta = if used_perf_fallback {
+    // `meta.source` names where we looked, not what we found: a zero-row
+    // watcher result still reports `watcher`, because the alternative — going
+    // quiet, or answering from somewhere else — is exactly the behaviour
+    // iter-159 removed.
+    let mut meta = if is_perf_source {
         json!({"source": "performance-api"})
-    } else if !watcher_was_empty || source == NetworkSource::Watcher {
-        // `--source watcher` reports `watcher` even with zero rows — the
-        // source is a statement about where we looked, not about what we
-        // found (iter-137 Theme C).
-        json!({"source": "watcher"})
     } else {
-        json!({})
+        json!({"source": "watcher"})
     };
-    // iter-137 Theme C: always say *why* this source was used, so the
-    // daemon-vs-direct row-count difference is explainable from the output
-    // instead of requiring the reader to know how `auto` resolves.
-    if let Some(m) = meta.as_object_mut()
-        && m.contains_key("source")
-    {
-        m.insert("source_reason".to_string(), json!(source_reason));
-    }
     // Include the navigation boundary that scoped the result, if any.
     if let Some(ref b) = nav_boundary
         && let Some(m) = meta.as_object_mut()
@@ -332,14 +300,14 @@ pub fn run(
         || headers
         || security;
 
-    let empty_hint = if results.is_empty() && watcher_was_empty {
+    let empty_hint = if results.is_empty() && filter.is_none() && method.is_none() {
         let hint = if via_daemon {
-            "No network events captured. Events are buffered by the daemon; navigate first with: ff-rdp navigate <url> --with-network, or use --follow to stream events in real time."
+            "No network events captured. Events are buffered by the daemon; navigate first with: ff-rdp navigate <url>, or use --follow to stream events in real time."
         } else {
             "No network events captured. Connect before the page loads, use ff-rdp navigate <url> --with-network, or use --follow to stream events in real time."
         };
         Some(json!(hint))
-    } else if results.is_empty() && (filter.is_some() || method.is_some()) {
+    } else if results.is_empty() {
         Some(json!(
             "No requests matched the current --filter/--method. Remove the filter to see all captured events."
         ))
@@ -381,7 +349,7 @@ pub fn run(
         // `_resource_id` marker is stripped once at the end, after both the
         // header and the security joins have had a chance to use it.
         let mut limited = limited;
-        if headers && used_perf_fallback {
+        if headers && is_perf_source {
             // Performance-api source has no response headers. Emit a note per
             // entry so callers know why headers are absent; never silently drop.
             const HEADERS_NOTE: &str = "--headers ignored (performance-api source has no \
@@ -400,7 +368,7 @@ pub fn run(
                         .or_insert_with(|| json!(HEADERS_NOTE));
                 }
             }
-        } else if !used_perf_fallback {
+        } else if !is_perf_source {
             // iter-128 Theme B: `content_type` is documented (`--help`) as
             // always available on watcher rows, but the `mimeType` field only
             // lands via the `network-event-update:response-content` push —
@@ -470,7 +438,7 @@ pub fn run(
                 &mut limited,
                 &mut ctx,
                 &actor_by_resource_id,
-                used_perf_fallback,
+                is_perf_source,
             );
         }
 
@@ -607,13 +575,13 @@ fn attach_security(
     limited: &mut [Value],
     ctx: &mut ConnectedTab,
     actor_by_resource_id: &HashMap<u64, ff_rdp_core::ActorId>,
-    used_perf_fallback: bool,
+    is_perf_source: bool,
 ) {
     const SECURITY_NOTE: &str = "--security ignored (performance-api source has no \
         per-request security info; use --with-network to engage the watcher)";
 
     for entry in limited.iter_mut() {
-        if used_perf_fallback {
+        if is_perf_source {
             if let Some(obj) = entry.as_object_mut() {
                 obj.entry("note".to_string())
                     .and_modify(|v| {

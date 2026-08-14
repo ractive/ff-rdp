@@ -46,24 +46,40 @@ pub(crate) fn drain_network_events(
     Ok((all_resources, all_updates))
 }
 
-/// Drain network events with a total time limit instead of an idle timeout.
+/// How long the resource stream must stay silent before
+/// [`drain_network_events_timed`] concludes the page has finished loading.
 ///
-/// Unlike [`drain_network_events`] which stops after a single idle timeout,
-/// this function collects events for up to `total_timeout` of wall-clock time,
-/// using a short per-read poll interval.  This is better for navigation where
-/// events arrive in bursts with gaps between them (e.g. the initial navigation
-/// request takes 1-2 seconds before any network events start flowing).
+/// Long enough to bridge the gaps inside a normal page load — the document
+/// request lands 1-2 s before its subresources, and lazily-triggered requests
+/// (fonts, XHR fired from `DOMContentLoaded`) follow the same pattern — and
+/// short enough that a quiet page returns in a couple of seconds rather than
+/// burning the whole `--timeout`.
+const NETWORK_IDLE_QUIET_PERIOD: Duration = Duration::from_secs(2);
+
+/// Drain network events until the stream goes idle, bounded by `total_timeout`.
 ///
-/// The third element of the returned tuple is `timeout_reached`: `true` when
-/// the wall-clock deadline fired while events were still arriving (i.e. the
-/// last `recv()` before the deadline check returned an event, not an idle
-/// timeout), `false` when collection stopped because the connection went idle.
+/// Collection stops at the **first** of:
+///  - `NETWORK_IDLE_QUIET_PERIOD` elapsing with no
+///    `resources-available-array` / `resources-updated-array` frame, once at
+///    least one event has been seen; or
+///  - `total_timeout` of wall-clock time (the hard ceiling).
+///
+/// iter-159: this used to run the wall clock out unconditionally — the loop's
+/// only exit was `start.elapsed() >= total_timeout` — so `navigate
+/// --with-network --timeout 30000` sat for the full 30 s on a page that had
+/// finished in 800 ms. The idle cutoff only applies after the first event, so
+/// a slow first byte still gets the whole budget.
+///
+/// The third element of the returned tuple keeps its meaning: `timeout_reached`
+/// is `true` only when the wall-clock ceiling fired while events were still
+/// arriving, `false` when collection stopped because the stream went quiet.
 pub(crate) fn drain_network_events_timed(
     transport: &mut RdpTransport,
     total_timeout: Duration,
 ) -> Result<(Vec<NetworkResource>, Vec<NetworkResourceUpdate>, bool), ProtocolError> {
     let start = Instant::now();
-    let poll_interval = Duration::from_millis(500);
+    // Poll faster than the quiet period so the idle cutoff has resolution.
+    let poll_interval = Duration::from_millis(250);
 
     // Set a short read timeout for responsive polling.
     transport.set_read_timeout(Some(poll_interval))?;
@@ -73,11 +89,23 @@ pub(crate) fn drain_network_events_timed(
     // True after a recv that returned actual data; reset to false on idle timeout.
     // When the deadline fires, this tells us whether events were still arriving.
     let mut last_recv_was_event = false;
+    // Instant of the most recent resource frame, or `None` before the first.
+    let mut last_event_at: Option<Instant> = None;
 
     loop {
         // Check wall-clock deadline before each read so we stop even when
         // messages arrive faster than the poll interval (continuous traffic).
         if start.elapsed() >= total_timeout {
+            break;
+        }
+
+        // Idle cutoff: once events have started, a quiet stream means the page
+        // is done.  Before the first event there is nothing to be idle about —
+        // a slow-to-respond origin must keep the full budget.
+        if let Some(last) = last_event_at
+            && last.elapsed() >= NETWORK_IDLE_QUIET_PERIOD
+        {
+            last_recv_was_event = false;
             break;
         }
 
@@ -88,18 +116,20 @@ pub(crate) fn drain_network_events_timed(
                 match msg_type {
                     "resources-available-array" => {
                         last_recv_was_event = true;
+                        last_event_at = Some(Instant::now());
                         all_resources.extend(parse_network_resources(&msg));
                     }
                     "resources-updated-array" => {
                         last_recv_was_event = true;
+                        last_event_at = Some(Instant::now());
                         all_updates.extend(parse_network_resource_updates(&msg));
                     }
                     _ => {}
                 }
             }
             Err(ProtocolError::Timeout) => {
-                // Per-read timeout with no message — the top-of-loop check
-                // will enforce the total deadline on the next iteration.
+                // Per-read timeout with no message — the top-of-loop checks
+                // enforce both the idle cutoff and the total deadline.
             }
             Err(e) => return Err(e),
         }
@@ -206,83 +236,6 @@ pub(crate) fn drain_network_from_daemon_since(
     let resource_updates = parse_network_resource_updates(&update_msg);
 
     Ok((resources, resource_updates, boundary))
-}
-
-/// Serialize parsed [`NetworkResource`] and [`NetworkResourceUpdate`] structs
-/// back to the flat-item JSON format that the daemon buffer stores.
-///
-/// The daemon buffer holds individual items from both `resources-available-array`
-/// and `resources-updated-array` events.  Items without a `resourceUpdates` field
-/// are treated as available resources; items with it are treated as updates.
-/// This function reconstructs those items from parsed structs so that
-/// `navigate --with-network` can store its captured events back into the daemon
-/// buffer for subsequent `ff-rdp network` reads (iter-61j G).
-pub(crate) fn serialize_network_resources_for_buffer(
-    resources: &[NetworkResource],
-    updates: &[(u64, &NetworkResourceUpdate)],
-) -> Vec<Value> {
-    let mut items = Vec::with_capacity(resources.len() + updates.len());
-    for r in resources {
-        items.push(json!({
-            "actor": r.actor.as_ref(),
-            "resourceId": r.resource_id,
-            "method": r.method,
-            "url": r.url,
-            "isXHR": r.is_xhr,
-            "causeType": r.cause_type,
-            "startedDateTime": r.started_date_time,
-            "timeStamp": r.timestamp,
-        }));
-    }
-    for (rid, u) in updates {
-        // Reconstruct the wire shape that `parse_network_resource_updates`
-        // reads (watcher.rs): a top-level `resourceId` plus a `resourceUpdates`
-        // **object** carrying the mutated fields.
-        //
-        // iter-106 Theme D: the previous shape nested `resourceId` *inside* an
-        // array-valued `resourceUpdates` (`{"resourceUpdates": [{"resourceId":
-        // …}]}`).  On the second-invocation drain, `parse_network_resource_updates`
-        // looks for `item.get("resourceId")` at the top level and treats
-        // `resourceUpdates` as an object — so every stored update was silently
-        // dropped (`resourceId` missing → `continue`), leaving the merged
-        // network entry with `status: null` / `transfer_size: null`.  Matching
-        // the real `resources-updated-array` shape makes the round-trip
-        // lossless.  `drain_network_from_daemon_since` still classifies these as
-        // updates via the presence of `resourceUpdates`.
-        let mut ru = serde_json::Map::new();
-        if let Some(ref s) = u.status {
-            ru.insert("status".to_owned(), json!(s));
-        }
-        if let Some(ref h) = u.http_version {
-            ru.insert("httpVersion".to_owned(), json!(h));
-        }
-        if let Some(ref m) = u.mime_type {
-            ru.insert("mimeType".to_owned(), json!(m));
-        }
-        if let Some(t) = u.total_time {
-            ru.insert("totalTime".to_owned(), json!(t));
-        }
-        if let Some(c) = u.content_size {
-            ru.insert("contentSize".to_owned(), json!(c));
-        }
-        if let Some(ts) = u.transferred_size {
-            ru.insert("transferredSize".to_owned(), json!(ts));
-        }
-        if let Some(fc) = u.from_cache {
-            ru.insert("fromCache".to_owned(), json!(fc));
-        }
-        if let Some(ref ra) = u.remote_address {
-            ru.insert("remoteAddress".to_owned(), json!(ra));
-        }
-        if let Some(ref ss) = u.security_state {
-            ru.insert("securityState".to_owned(), json!(ss));
-        }
-        items.push(json!({
-            "resourceId": rid,
-            "resourceUpdates": Value::Object(ru),
-        }));
-    }
-    items
 }
 
 /// Map a single PerformanceResourceTiming JSON entry (from `performance.getEntriesByType`)
@@ -614,55 +567,5 @@ mod tests {
             note.contains("method") && note.contains("status"),
             "note should mention both method and status: {note:?}"
         );
-    }
-
-    /// iter-106 Theme D: the buffer serialization must round-trip losslessly
-    /// through `parse_network_resource_updates`.
-    ///
-    /// The daemon stores `serialize_network_resources_for_buffer` output and a
-    /// later, separate `ff-rdp network` invocation drains + re-parses it.  The
-    /// former shape (`{"resourceUpdates": [{"resourceId": …}]}`) nested the id
-    /// inside an *array*, so `parse_network_resource_updates` — which reads a
-    /// top-level `resourceId` and treats `resourceUpdates` as an *object* —
-    /// dropped every update, leaving `status`/`transfer_size` null across the
-    /// invocation boundary.  This guards the corrected shape.
-    #[test]
-    fn serialize_buffer_update_round_trips_through_parser() {
-        use ff_rdp_core::parse_network_resource_updates;
-
-        let update = NetworkResourceUpdate {
-            resource_id: 42,
-            status: Some("200".to_owned()),
-            http_version: Some("HTTP/2".to_owned()),
-            mime_type: Some("text/html".to_owned()),
-            total_time: Some(45),
-            content_size: Some(528),
-            transferred_size: Some(371),
-            from_cache: Some(false),
-            remote_address: Some("93.184.215.14".to_owned()),
-            security_state: Some("secure".to_owned()),
-        };
-
-        let items = serialize_network_resources_for_buffer(&[], &[(42, &update)]);
-        assert_eq!(items.len(), 1, "one update item expected");
-        // The stored item must expose a top-level resourceId + an object-valued
-        // resourceUpdates, exactly what the wire parser consumes.
-        assert_eq!(items[0]["resourceId"], 42);
-        assert!(
-            items[0]["resourceUpdates"].is_object(),
-            "resourceUpdates must be an object, got: {}",
-            items[0]
-        );
-
-        // Reconstruct the resources-updated-array wrapper and re-parse.
-        let wrapper = json!({"array": [["network-event", items]]});
-        let parsed = parse_network_resource_updates(&wrapper);
-        assert_eq!(parsed.len(), 1, "update must survive the round-trip");
-        assert_eq!(parsed[0].resource_id, 42);
-        assert_eq!(parsed[0].status.as_deref(), Some("200"));
-        assert_eq!(parsed[0].transferred_size, Some(371));
-        assert_eq!(parsed[0].content_size, Some(528));
-        assert_eq!(parsed[0].from_cache, Some(false));
-        assert_eq!(parsed[0].remote_address.as_deref(), Some("93.184.215.14"));
     }
 }

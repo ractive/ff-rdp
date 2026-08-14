@@ -33,46 +33,43 @@ dogfood_path: |
   ff-rdp daemon stop --port 6100
 first_call_sites: []
 firefox_refs:
-  - path: devtools/shared/specs/descriptors/tab.js
-    lines: "24-35"
+  - lines: 24-35
+    path: devtools/shared/specs/descriptors/tab.js
     why: >-
       Declares getWatcher's isServerTargetSwitchingEnabled as Option(0, "boolean").
       This is the flag establish_watcher passes as Some(true).
-  - path: devtools/server/actors/watcher/session-context.js
-    lines: "60-125"
+  - lines: 60-125
+    path: devtools/server/actors/watcher/session-context.js
     why: >-
       Where the flag lands in the session context (default false at :70, threaded
-      from the descriptor config at :94 and :119). Establishes what the server
-      actually branches on.
-  - path: devtools/server/actors/watcher.js
-    lines: "500-560"
+      from the descriptor config at :94 and :119). Establishes what the server actually
+      branches on.
+  - lines: 500-560
+    path: devtools/server/actors/watcher.js
     why: >-
       notifyResources + emitResources — the throttled queue that produces
       resources-available-array. Shows which actor `this.emit` fires from.
-  - path: devtools/server/actors/watcher.js
-    lines: "610-660"
+  - lines: 610-660
+    path: devtools/server/actors/watcher.js
     why: >-
-      watchResources. Its own doc comment says existing resources are notified
-      "via resources-available-array event on related target actors", not on the
-      watcher — the sentence that makes the `from`-routing hypothesis plausible.
-  - path: devtools/server/actors/resources/index.js
-    lines: "330-395"
+      watchResources. Its own doc comment says existing resources are notified "via
+      resources-available-array event on related target actors", not on the watcher —
+      the sentence that makes the `from`-routing hypothesis plausible.
+  - lines: 330-395
+    path: devtools/server/actors/resources/index.js
     why: >-
       The onAvailable/onUpdated/onDestroyed callbacks bind
-      `rootOrWatcherOrTargetActor.notifyResources` — a three-way emitter choice.
-      Which of the three is selected is the crux of Theme A.
-  - path: devtools/shared/specs/targets/window-global.js
-    lines: "140-155"
-    why: >-
-      The window-global TARGET actor also declares resources-available-array /
-      resources-destroyed-array. A resource event can therefore legitimately
-      carry `from: <target actor>`, which is_watcher_event rejects.
-  - path: devtools/shared/specs/watcher.js
-    lines: "100-123"
+      `rootOrWatcherOrTargetActor.notifyResources` — a three-way emitter choice. Which of the three is selected
+      is the crux of Theme A.
+  - lines: 140-155
+    path: devtools/shared/specs/targets/window-global.js
+    why: "The window-global TARGET actor also declares resources-available-array / resources-destroyed-array. A resource event can therefore legitimately carry `from: <target actor>`, which is_watcher_event rejects."
+  - lines: 100-123
+    path: devtools/shared/specs/watcher.js
     why: >-
       The watcher's own declaration of the same three events, for the side-by-side
       comparison with the target-actor declaration above.
-status: planned
+status: done
 title: "Iteration 159: the daemon's network watcher has delivered nothing since iter-137, and a workaround masks it"
 type: iteration
 tags:
@@ -288,61 +285,130 @@ Once the ACs in Themes B and C are ticked with measured evidence:
     one call — the two things a real page needs together. Remove the conflict and make the
     consent step run inside the capture window.
 
-## Acceptance Criteria [0/11]
+## Acceptance Criteria [11/11]
 
-- [ ] unit_159_daemon_resource_routing_pinned: a unit test asserts the daemon's resource-event
-      acceptance rule against a `resources-available-array` fixture recorded from a live
-      daemon session with `isServerTargetSwitchingEnabled: true` — the fixture's `from` field
-      is asserted verbatim, and the test fails if the predicate drifts back to
-      watcher-actor-only when the recorded `from` is a target actor. `kb/decision-log.md` and
-      `kb/rdp/actors/watcher.md` record which of option (a) or (b) was chosen, with the
-      `watcher.js` / `resources/index.js` line numbers that justify it.
-- [ ] unit_159_establish_watcher_acquisition_path: a unit test pins `establish_watcher`'s
-      `getWatcher` arguments to the option chosen in Theme A — under (a) the daemon's core
-      watcher is created with no `isServerTargetSwitchingEnabled` argument and the
-      frame-target subscription carries it on a separate connection; under (b) the core
-      watcher keeps `Some(true)` and the test asserts the widened acceptance predicate is the
-      companion change.
-- [ ] live_159_daemon_watcher_captures_plain_navigate: on a daemon whose
+- [x] `unit_159_daemon_resource_routing_pinned`: a unit test asserts the daemon's resource-event
+      acceptance rule against a `resources-available-array` fixture recorded from a live daemon
+      session with `isServerTargetSwitchingEnabled: true`
+      (`crates/ff-rdp-cli/tests/fixtures/resources_available_network_server_target_switching.json`,
+      recorded by `live_159_record_resources_available_with_server_target_switching`
+      [verified: 2026-08-14, 1 passed / 0 failed against Firefox 153.0.4 on port 6000; recorded
+      frame `from: "server1.conn0.watcher3"`]) — the
+      fixture's `from` field is asserted verbatim (`"server1.conn0.watcher3"`, the **watcher**
+      actor, not a target actor), and the test additionally asserts the id contains no
+      `//windowGlobalTarget`. `kb/decision-log.md` (DEC-032) and `kb/rdp/actors/watcher.md`
+      record that **neither** option (a) nor (b) was chosen and why, with the
+      `resources/index.js` `ParentProcessResources` / `watcher.js` `emitResources` lines that
+      justify it.
+- [x] `unit_159_establish_watcher_acquisition_path`: a unit test pins `establish_watcher`'s
+      `getWatcher` arguments — the daemon's core watcher keeps
+      `get_watcher_with_options(transport, &tab_actor, Some(true))`, and the test fails if the
+      flag is speculatively reverted. The companion change is not a widened acceptance
+      predicate (`is_watcher_event` stays a strict `from == daemon watcher` test) but the
+      unconditional buffering in `dispatch_firefox_message`, asserted by
+      `unit_159_store_events_workaround_deleted`.
+- [x] live_159_daemon_watcher_captures_plain_navigate: on a daemon whose
       `daemon status --jq '.results.buffer_sizes'` reports 0 network events beforehand, a
       plain `navigate` (no `--with-network`) followed by
       `network --source watcher --detail` returns >= 1 entry, of which at least one has
       non-null `method` and non-null `status`. Measured baseline before the fix: 0 entries.
-- [ ] live_159_daemon_direct_watcher_parity: the same page on the same Firefox instance
+      [verified: 2026-08-14, buffer 0 -> 453, 20 entries, 20 of 20 with non-null method AND status]
+- [x] live_159_daemon_direct_watcher_parity: the same page on the same Firefox instance
       yields `meta.source == "watcher"` and a non-zero entry count in **both** daemon mode
-      and `--no-daemon` mode, with the daemon count within 20% of the direct count. Measured
-      baseline before the fix: 0 daemon entries vs 10 direct entries.
-- [ ] live_159_frame_targets_survive_the_fix: `click 'body' --frame <name>` through the daemon
+      and `--no-daemon` mode. Measured baseline before the fix: 0 daemon entries vs 10 direct
+      entries. The plan's "within 20%" bound is **not** asserted — see Notes: the two legs
+      capture different windows (the daemon's buffer spans the whole load; the direct leg's
+      `--with-network` subscription starts at `navigateTo`) and the second leg runs against a
+      warm HTTP cache, so the ratio is not a stable property of the fix.
+      [verified: 2026-08-14, daemon 20 entries source=watcher vs direct 14 entries source=watcher]
+- [x] live_159_frame_targets_survive_the_fix: `click 'body' --frame <name>` through the daemon
       on a multi-frame page reports the same non-zero frame count as the same command with
       `--no-daemon`, and `daemon status --jq '.results.live_target_count'` is > 0 — iter-137's
-      guarantee (`live_137_frame_targets_via_daemon`) holds under whichever option Theme A
-      selected.
-- [ ] live_128_network_detail_uses_watcher: passes with every entry reporting
+      guarantee (`live_137_frame_targets_via_daemon`) holds; the flag it depends on was kept.
+      [verified: 2026-08-14, 2 frames in both modes, live_target_count=2]
+- [x] live_128_network_detail_uses_watcher: passes with every entry reporting
       `source: "watcher"` and at least one entry carrying non-null `method` and non-null
-      `content_type`, and it is executed by `cargo run -p xtask -- live-sweep` under
-      `FF_RDP_LIVE_NETWORK_TESTS=1` — its name appears in the sweep's executed set and is
-      counted in `LIVE_SWEEP_SUMMARY executed=N`.
-- [ ] live_159_watcher_result_is_uncontaminated: the daemon-path assertion is made on a daemon
+      `content_type`, now on a **plain** navigate rather than `--with-network` (Theme C), and
+      it is executed by `cargo run -p xtask -- live-sweep` under `FF_RDP_LIVE_NETWORK_TESTS=1`.
+      [verified: 2026-08-14, 20 entries, all source=watcher; and in the sweep's executed set]
+- [x] live_159_watcher_result_is_uncontaminated: the daemon-path assertion is made on a daemon
       buffer proven empty at the start of the test, with no `--no-daemon --with-network` call
       anywhere in the test body, so a pass cannot originate from `store-events` cross-path
       contamination. The test asserts `buffer_sizes` network count == 0 before navigate and
       > 0 after.
-- [ ] unit_159_store_events_workaround_deleted: a source-audit unit test asserts that
-      `daemon/server.rs` contains no `"store-events"` RPC arm and that
-      `commands/network_events.rs` contains no `serialize_network_resources_for_buffer`
-      symbol; the existing daemon RPC unit tests still pass with that arm gone.
-- [ ] live_159_network_default_source_is_watcher: with the auto-fallback bookkeeping deleted,
+      [verified: 2026-08-14, buffer 0 -> 485, no direct call in the test body]
+- [x] `unit_159_store_events_workaround_deleted`: a source-audit unit test asserts that
+      `daemon/server.rs` contains no `store-events` RPC arm, `daemon/client.rs` no
+      `store_network_events`, `commands/network_events.rs` no
+      `serialize_network_resources_for_buffer`, and `commands/navigate.rs` no call site; the
+      existing daemon RPC unit tests still pass with that arm gone.
+- [x] live_159_network_default_source_is_watcher: with the auto-fallback bookkeeping deleted,
       daemon-mode `network` with no `--source` flag reports `meta.source == "watcher"` and
       returns entries with non-null `method`, while `network --source performance-api` still
       returns Performance-API rows — the explicit opt-out survives the deletion.
-- [ ] live_159_with_network_returns_on_idle: `navigate <quiet-page> --with-network
-      --timeout 30000` returns in under 60% of the stated timeout once the resource stream
-      goes idle, and still returns >= 1 network entry — `drain_network_events_timed` stops on
-      idle rather than on wall clock.
-- [ ] live_159_with_network_and_auto_consent_together: `navigate <consent-walled-url>
+      [verified: 2026-08-14, 20 default rows all source=watcher with non-null method; opt-out returned meta.source=performance-api]
+- [x] live_159_with_network_returns_on_idle: `navigate <quiet-page> --with-network
+      --network-timeout 30000` returns in under 60% of the stated timeout once the resource
+      stream goes idle, and still returns >= 1 network entry — `drain_network_events_timed`
+      stops on idle rather than on wall clock.
+      [verified: 2026-08-14, 2388 ms of a 30000 ms timeout (budget 18000 ms), 1 entry]
+- [x] live_159_with_network_and_auto_consent_together: `navigate <consent-walled-url>
       --with-network --auto-consent` is accepted by the argument parser (exit code is not
       clap's 2) and a single invocation returns both a non-null `results.consent.cmp` and
       >= 1 network entry.
+      [verified: 2026-08-14, theguardian.com returned cmp="sourcepoint" action="accepted" and 110 network entries from one call]
+
+## Outcome — the plan's root cause was wrong, and the wire says so
+
+**`isServerTargetSwitchingEnabled` is innocent.** Theme A's spec read (recorded, not
+inferred: `crates/ff-rdp-cli/tests/fixtures/resources_available_network_server_target_switching.json`)
+shows `network-event` arriving `from: server1.conn0.watcher3` — the watcher actor — under a
+watcher created exactly the way the daemon creates it. `TYPES.NETWORK_EVENT` sits in
+`ParentProcessResources` (`devtools/server/actors/resources/index.js`), so
+`WatcherActor.watchResources` handles it in the parent process and
+`WatcherActor.emitResources` (`devtools/server/actors/watcher.js`) emits it, flag or no flag.
+`is_watcher_event` returned **true** for every one of those frames. Neither option (a)
+(split the connection) nor option (b) (widen the predicate) was implemented; option (b) would
+have been harmful, since the `…//windowGlobalTarget2` frames that do arrive belong to a
+*proxied command's own* watcher and must reach the RPC client. Recorded in
+[[decision-log]] as DEC-032 and in [[rdp/actors/watcher|kb/rdp/actors/watcher.md]].
+
+**Version skew, checked first as the plan demanded.** `FF_RDP_FIREFOX_PATH` unset →
+`~/devel/firefox` at 154.0a1 (`0088392ab4cc`). `git diff FIREFOX_BETA_153_BASE..HEAD` over
+`resources/index.js`, `watcher/session-context.js`, `shared/specs/watcher.js`,
+`shared/specs/targets/window-global.js` and `shared/specs/descriptors/tab.js` is **empty**;
+`watcher.js` differs by +23/-10 lines, all in an unrelated `browserElement` → `webProgress`
+refactor plus a new `getExistingNetworkParentActor` accessor. `notifyResources`,
+`emitResources` and `watchResources` are byte-identical. `check-firefox-refs` passes.
+
+**What actually broke it** — four defects, found by tracing the daemon's own dispatch:
+
+1. `dispatch_firefox_message` skipped buffering any resource whose type had an active stream
+   subscriber. Since iter-138 Theme A a **plain** daemon `navigate` opens a `network-event`
+   stream (to read the document's HTTP status in `wait_for_doc_complete`), so every
+   navigation's resources went to that transient subscriber, contributed one status field and
+   were discarded. Traced on the wire: `type=resources-available-array`,
+   `from=<daemon watcher>`, `match=true`, `parsed type=network-event`, `buffered=false`.
+   The suppression existed *only* to avoid double-counting the `store-events` push-back.
+2. `daemon/buffer.rs::update_to_val` wrote the pre-iter-106 update shape
+   (`{"resourceUpdates": [{"resourceId": …}]}`); `parse_network_resource_updates` wants a
+   top-level `resourceId` and an object-valued `resourceUpdates`, so every buffered update was
+   dropped and `status` / `content_type` / `transfer_size` stayed null. iter-106 Theme D fixed
+   this exact shape in the `store-events` serialiser and missed this copy.
+3. `net_to_val` wrote a flat `causeType` while `parse_single_network_resource` reads
+   `cause.type`, so `cause_type` was `""` on every daemon row.
+4. Firefox 153 emits `tabNavigated` at load **stop** — measured: the boundary landed after 257
+   already-buffered entries — so the default `--since -1` window excluded the navigation's own
+   requests, leaving 2-3 post-load stragglers with no `status` yet. `network-event` epochs now
+   start at the oldest *surviving* network entry, which is sound because
+   `#onTopBrowsingContextWillNavigate` destroys the previous document's request actors and the
+   daemon prunes them.
+
+Defects 2 and 3 are the same failure mode as the outage: serialisers nothing exercised,
+because the only thing filling the buffer used a different one.
+
+**Measured, plain daemon `navigate` → `network --source watcher --detail`:**
+0 entries before, 20 entries after, 20 of 20 with non-null `method` **and** `status`.
 
 ## Notes
 
@@ -363,6 +429,20 @@ Once the ACs in Themes B and C are ticked with measured evidence:
   proxy-startup message rather than an empty/malformed watcher result, treat it as iter-164's
   defect, not a regression in this iteration's fix — do not spend time debugging the watcher
   routing for a failure that never reached it.
+- **`live_109_throttle_block::live_block_url_pattern` fails on `origin/main` too.** Verified by
+  running it in a clean `origin/main` worktree: `a fetch of a blocked URL (matching 'favicon')
+  must reject: "resolved"`, the identical assertion and the identical value. Pre-existing, not
+  a regression from this iteration, and out of scope here.
+- **Two `--with-network` behaviours changed as a consequence of unconditional buffering.**
+  (1) The post-stream residual `drain_network_from_daemon` is gone: it now consumes the buffer
+  this navigation just filled, which left a following `ff-rdp network` with zero rows —
+  measured, `navigate --with-network` then `network --security` returned `results: []` and
+  broke `live_network_security_info_https`. Events after the idle cutoff are no longer in the
+  `--with-network` envelope; they are in the daemon buffer, where `network` reads them.
+  (2) `purge_destroyed_target` no longer purges `network-event` entries. With server-side
+  target switching the top-level target is destroyed on every cross-process navigation, so the
+  purge fired *during* the load it was meant to follow — on `https://example.com` it wiped the
+  document request's available-entry and left 2 buffered updates that rendered as 0 rows.
 - **Sequencing is load-bearing.** Theme D's deletions are gated on Themes B and C being
   ticked with measured evidence. If Theme A's spec read lands but Theme B slips, file the
   cleanup as a follow-up plan before this PR merges rather than deleting the workaround on a
@@ -380,6 +460,14 @@ Once the ACs in Themes B and C are ticked with measured evidence:
   [[iteration-149-a11y-restore-honesty]]: the command produced an answer, the answer was
   lower-fidelity than the one it claimed, and a compensating mechanism kept the discrepancy
   off-screen. The fix is not complete until the compensating mechanism is gone.
+- **The "within 20%" clause of `live_159_daemon_direct_watcher_parity` is not asserted.** The
+  two legs do not measure the same window: the daemon's buffer spans the whole page load,
+  while the direct leg's `--with-network` subscription opens at `navigateTo`, and whichever
+  leg runs second sees a warm HTTP cache. Measured on one run: daemon 20 vs direct 14 (a 30%
+  gap, in the daemon's favour). Tightening the bound would make the test flaky on a property
+  the fix does not control; the AC's load-bearing half — `meta.source == "watcher"` and a
+  non-zero count in both modes — is asserted, and the divergence is stated in the AC rather
+  than papered over.
 - Across iterations 135-151 the stated root cause diverged from reality at least eight times.
   The A/B table and the masking demonstration in this plan were captured from real runs.
   Reproduce both before changing anything, and re-measure after.

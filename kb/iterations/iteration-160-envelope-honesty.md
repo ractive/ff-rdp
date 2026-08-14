@@ -226,9 +226,27 @@ make the two non-accepting outcomes exit 1 via `AppError::Unsupported`. Add
 want exit 0 when there was nothing to dismiss; model the flag's help text on
 `--allow-file-urls`, which explains *why* the opt-in exists rather than just what it does.
 
-**Do not change `navigate --auto-consent`.** Its embedded `results.consent` block
-(`args.rs:2130-2132`) gains the `status` field for consistency and nothing else — a page
-with no cookie banner is not a failed navigation.
+**Do not change `navigate --auto-consent`'s exit code.** Its embedded `results.consent`
+block gains the `status` field for consistency and nothing else — a page with no cookie
+banner is not a failed navigation. (Citation fix: the block is built by
+`merge_auto_consent` / `detect_and_accept_best_effort`, `navigate.rs:1809-1843` on
+`main` as of iter-159 — not `args.rs:2130-2132`, which was already wrong when this plan
+was written.)
+
+**Scope addition from iter-159: there are now three producers of this shape, not one.**
+iter-159 lifted the old `--with-network`/`--auto-consent` clap conflict and added a
+*second* consent call path, `detect_and_accept_on` (`navigate.rs:1854-1861`), reused at
+two call sites inside `run_with_network` — the daemon branch
+(`obj.insert("consent"...)` at `navigate.rs:2145`) and the direct-mode branch
+(`navigate.rs:2325`). Both currently emit the same two-key `{"cmp", "action"}` shape
+`merge_auto_consent` does, with no `status` field — i.e. both already have the exact gap
+Theme D exists to close, and neither existed when this plan's Theme D was drafted. The
+`status` field must land on all three producers (`merge_auto_consent`,
+`run_with_network`'s daemon branch, `run_with_network`'s direct branch), sourced from the
+same `ConsentResult`/status computation so the three never drift apart — do not
+special-case `--with-network`'s two call sites into their own status vocabulary. Exit
+code stays 0 for all three (this is the same "not change the exit code" rule above,
+now stated for three call sites instead of one).
 
 ### E — a capped sample from a fallback path reports a clean bill of health
 
@@ -256,7 +274,9 @@ sample must never be printable as a clean pass without the qualifier attached.
 
 ### F — `--jq` changes the shape it is supposed to filter
 
-`network.rs:326-333`:
+`network.rs:294-301` (line numbers as of iter-159, which touched this file; the
+predicate itself is unchanged by iter-159 — only its position shifted when the
+`auto`-fallback code above it was deleted):
 
 ```rust
 let use_detail = cli.detail
@@ -269,7 +289,7 @@ let use_detail = cli.detail
     || security;
 ```
 
-`use_detail` (consumed at `network.rs:350`) switches `results` from a summary **object**
+`use_detail` (consumed at `network.rs:318`) switches `results` from a summary **object**
 to an entries **array**. So `ff-rdp network --jq '.results | type'` answers `"array"`
 while `ff-rdp network` produced an object — the filter changed the document it was
 filtering. Verified during the step-back as **network-only**: `console`, `a11y`, `perf`,
@@ -286,7 +306,7 @@ Reasoning, since this is a compatibility break and the alternative is one line o
 - The documented contract (`args.rs:191`) already promises the honest behaviour. Changing
   the doc to match the code would ratify the exception and invite the next one.
 - The migration is cheap and already anticipated: iter-126's comment at
-  `network.rs:344-350` records that detail mode was made to carry the full summary fields
+  `network.rs:320-326` (iter-159 line numbers) records that detail mode was made to carry the full summary fields
   precisely because "`--jq` users … are forced into detail mode by the trigger list
   above." Once `--jq` no longer forces it, those users pass `--detail` and get an envelope
   that is a strict superset of what they had.
@@ -391,7 +411,7 @@ Also out of scope: the `network` watcher regression (that is
 wait, `--fields` / `--sort` silent no-ops, and `eval --stringify`. This iteration touches
 only what the envelope *says*.
 
-## Acceptance Criteria [0/17]
+## Acceptance Criteria [0/18]
 
 - [ ] live_160_click_obscured_reports_unreachable: with a button at (100,100,120x40)
       covered by a `position:fixed;inset:0` overlay, `click '#t'` exits 1 with
@@ -427,6 +447,12 @@ only what the envelope *says*.
       `status` values `accepted`, `detected_not_actioned` and `no_cmp_detected` for the
       three constructions, all three still carry non-omitted `cmp` and `action` keys, and
       only `accepted` maps to exit code 0
+- [ ] live_160_with_network_auto_consent_reports_status: `navigate <consent-walled-url>
+      --with-network --auto-consent` (the combination iter-159 unblocked) returns
+      `results.consent.status` with the same three-value vocabulary as `consent accept`,
+      in both daemon and `--no-daemon` mode, and exits 0 in both — Theme D's `status`
+      field must reach `merge_auto_consent` and both `run_with_network` call sites
+      (`navigate.rs:2145`, `navigate.rs:2325`), not just plain `navigate --auto-consent`
 - [ ] live_160_contrast_cap_and_source_at_top_level: on a fixture page with more than
       1000 text-bearing elements, `a11y contrast --fail-only` puts `capped == true` and
       `source == "js-fallback"` at the envelope's top level (reachable as `--jq '.capped'`

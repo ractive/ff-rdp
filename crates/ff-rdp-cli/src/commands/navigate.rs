@@ -18,10 +18,7 @@ use super::connect_tab::connect_and_get_target;
 use super::js_helpers::{
     WaitForPredicate, escape_selector, eval_or_bail, poll_js_condition, wait_for_predicates,
 };
-use super::network_events::{
-    build_network_entries, drain_network_events_timed, drain_network_from_daemon, merge_updates,
-    serialize_network_resources_for_buffer,
-};
+use super::network_events::{build_network_entries, drain_network_events_timed, merge_updates};
 use super::url_validation::validate_url_with_opts;
 
 /// Restore the socket read timeout to the value established at connect time.
@@ -1810,7 +1807,31 @@ pub fn run_core(
 /// navigate itself. The keys are always present either way, matching
 /// `consent accept`'s always-present-key discipline.
 fn merge_auto_consent(cli: &Cli, result: &mut Value) {
-    let consent = match connect_and_get_target(cli)
+    let consent = detect_and_accept_best_effort(cli);
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("consent".to_owned(), consent);
+    }
+}
+
+/// How long `--with-network --auto-consent` keeps draining after the consent
+/// click, so requests unblocked by the dismissal are part of the same capture.
+///
+/// Short by design: [`drain_network_events_timed`] returns as soon as the
+/// stream goes quiet, so this is a ceiling for a page that keeps loading, not a
+/// fixed wait.
+const CONSENT_POST_DRAIN_MS: u64 = 8_000;
+
+/// Run the CMP-detection-and-accept flow on its own connection and return the
+/// `{cmp, action}` object, never failing the caller.
+///
+/// Both keys are always present, matching `consent accept`'s discipline; a
+/// connection or protocol failure becomes a stderr warning plus two nulls.
+///
+/// Only for plain `navigate`, whose `run_core` connection is already dropped by
+/// the time this runs. `--with-network` must reuse its live connection instead
+/// — see [`detect_and_accept_on`].
+fn detect_and_accept_best_effort(cli: &Cli) -> Value {
+    match connect_and_get_target(cli)
         .and_then(|mut ctx| super::consent::detect_and_accept(&mut ctx))
     {
         Ok(v) => v,
@@ -1818,9 +1839,25 @@ fn merge_auto_consent(cli: &Cli, result: &mut Value) {
             eprintln!("warning: --auto-consent: consent detection failed: {e}");
             json!({"cmp": null, "action": null})
         }
-    };
-    if let Some(obj) = result.as_object_mut() {
-        obj.insert("consent".to_owned(), consent);
+    }
+}
+
+/// [`detect_and_accept_best_effort`] on an **existing** connection.
+///
+/// iter-159: `--with-network` cannot open a second connection for the consent
+/// step. In daemon mode the daemon serialises proxied RPC and this invocation
+/// is still holding the slot, so the second connection sat there until the read
+/// timeout fired — measured, the flag degraded to `consent detection failed:
+/// operation timed out after 10000ms (phase: recv)` on every run. Reusing `ctx`
+/// also keeps the resource subscription live across the interaction, so the
+/// requests the banner dismissal unblocks are still captured.
+fn detect_and_accept_on(ctx: &mut crate::commands::connect_tab::ConnectedTab) -> Value {
+    match super::consent::detect_and_accept(ctx) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("warning: --auto-consent: consent detection failed: {e}");
+            json!({"cmp": null, "action": null})
+        }
     }
 }
 
@@ -1898,11 +1935,26 @@ fn extract_document_status(
 /// 7. Unwatch resources to clean up server-side state.
 /// 8. Optionally wait for a condition (--wait-text / --wait-selector).
 /// 9. Emit combined JSON output.
+///
+/// iter-159: `auto_consent` is honoured here too.  `--with-network` and
+/// `--auto-consent` used to be mutually exclusive at the clap level, so on any
+/// consent-walled site — the exact case where you want both — you had to choose
+/// between dismissing the banner and capturing the network. The consent step now
+/// runs while capture is still in effect, on the **same** connection (a second
+/// one deadlocks against the daemon's RPC serialisation — see
+/// [`detect_and_accept_on`]).
+///
+/// The two paths differ in what reaches *this* envelope. Direct mode owns its
+/// watcher subscription, so a short follow-up drain after the click collects the
+/// requests the dismissal unblocks. Daemon mode has already stopped its stream
+/// by then; the post-consent requests go to the daemon buffer, where
+/// `ff-rdp network` reads them, rather than into this result.
 pub fn run_with_network(
     cli: &Cli,
     url: &str,
     wait_opts: &WaitAfterNav<'_>,
     network_timeout_ms: u64,
+    auto_consent: bool,
 ) -> Result<(), AppError> {
     validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
@@ -1981,41 +2033,42 @@ pub fn run_with_network(
             }
         }
 
-        // After stop-stream the daemon reverts to buffering.  Any events that
-        // arrived at Firefox between the idle-timeout firing and the daemon
-        // removing this client's stream subscription get buffered instead of
-        // forwarded.  Drain that residual buffer now so nothing is lost.
-        match drain_network_from_daemon(ctx.transport_mut()) {
-            Ok((residual_resources, residual_updates)) => {
-                all_resources.extend(residual_resources);
-                all_updates.extend(residual_updates);
-            }
-            Err(e) => {
-                eprintln!("warning: failed to drain residual daemon buffer after stream: {e:#}");
-            }
-        }
+        // iter-159: dismiss the consent overlay on this same connection. The
+        // requests it unblocks land in the daemon buffer (which never stops
+        // buffering) rather than in this envelope — see `run_with_network`'s
+        // doc comment for why the two paths differ here.
+        let consent = if auto_consent {
+            Some(detect_and_accept_on(&mut ctx))
+        } else {
+            None
+        };
 
-        // Store the collected events back into the daemon buffer so that a
-        // subsequent `ff-rdp network` call can read them rather than falling
-        // back to the Performance API (iter-61j G).  We record a navigation
-        // boundary so `--since -1` scopes the result correctly.
+        // iter-159: the daemon's residual buffer is deliberately **not** drained
+        // here, and the `store-events` push-back that used to follow it is gone.
         //
-        // `all_updates` is consumed by `merge_updates` later, so we build the
-        // update serialization before that.  Failures are non-fatal — streaming
-        // already returned the data; the worst case is the next `network` call
-        // falls back to the perf API as before.
+        // Both existed to paper over a daemon that never buffered its own
+        // watcher's events: the drain scooped up whatever landed between the
+        // idle cutoff and `stop-stream`, and `store-events` (iter-61j G) pushed
+        // this invocation's whole capture back so a later `ff-rdp network`
+        // would find something instead of falling through to the Performance
+        // API. The daemon now buffers every watcher resource unconditionally,
+        // so those events are already there — draining them would consume the
+        // buffer this navigation just filled and leave a following `network`
+        // with zero rows (measured: `navigate --with-network` then `network
+        // --security` returned `results: []`), while re-inserting them on top
+        // would duplicate every request.
+        //
+        // The cost is that a request arriving after the idle cutoff is not in
+        // *this* envelope. It is not lost: it is in the daemon buffer, which is
+        // what `ff-rdp network` reads.
+        //
+        // Collapse by `resource_id` anyway — cheap, and the in-flight frames
+        // collected by `stop_daemon_stream_draining` can overlap the tail of
+        // the stream. Updates need no dedupe: `merge_updates` folds them by
+        // `resource_id` with last-write-wins.
         {
-            let update_refs: Vec<(u64, &_)> =
-                all_updates.iter().map(|u| (u.resource_id, u)).collect();
-            let items = serialize_network_resources_for_buffer(&all_resources, &update_refs);
-            if let Err(e) =
-                crate::daemon::client::store_network_events(ctx.transport_mut(), url, &items)
-                && cli.is_verbose()
-            {
-                eprintln!(
-                    "warning: navigate --with-network: could not store events in daemon buffer: {e:#}"
-                );
-            }
+            let mut seen = std::collections::HashSet::new();
+            all_resources.retain(|r| seen.insert(r.resource_id));
         }
 
         // The network drain already waited for events to settle; no separate
@@ -2086,6 +2139,11 @@ pub fn run_with_network(
         {
             obj.insert("wait_for".to_string(), wf);
         }
+        if let Some(c) = consent
+            && let Some(obj) = result.as_object_mut()
+        {
+            obj.insert("consent".to_string(), c);
+        }
         let mut meta = json!({});
         crate::connection_meta::merge_into_if_verbose(
             &mut meta,
@@ -2149,7 +2207,35 @@ pub fn run_with_network(
     // Restore original timeout before any further RDP round-trips (unwatch).
     restore_timeout(ctx.transport_mut(), cli.timeout);
 
-    let (all_resources, all_updates, timeout_reached) = drain_result.map_err(AppError::from)?;
+    let (mut all_resources, mut all_updates, mut timeout_reached) =
+        drain_result.map_err(AppError::from)?;
+
+    // iter-159: dismiss the consent overlay while the resource subscription is
+    // still live, then drain again briefly so the requests the click triggers
+    // land in this invocation's capture.
+    let consent = if auto_consent {
+        let c = detect_and_accept_on(&mut ctx);
+        let post = drain_network_events_timed(
+            ctx.transport_mut(),
+            Duration::from_millis(CONSENT_POST_DRAIN_MS),
+        );
+        restore_timeout(ctx.transport_mut(), cli.timeout);
+        match post {
+            Ok((r, u, t)) => {
+                all_resources.extend(r);
+                all_updates.extend(u);
+                timeout_reached = timeout_reached || t;
+            }
+            Err(e) => {
+                eprintln!("warning: --auto-consent: post-consent network drain failed: {e}");
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        all_resources.retain(|r| seen.insert(r.resource_id));
+        Some(c)
+    } else {
+        None
+    };
 
     // iter-138 Theme G/A: extract the main document's status before
     // `merge_updates` consumes `all_updates` by value below.
@@ -2232,6 +2318,11 @@ pub fn run_with_network(
         && let Some(obj) = result.as_object_mut()
     {
         obj.insert("wait_for".to_string(), wf);
+    }
+    if let Some(c) = consent
+        && let Some(obj) = result.as_object_mut()
+    {
+        obj.insert("consent".to_string(), c);
     }
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(

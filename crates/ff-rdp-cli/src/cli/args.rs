@@ -612,25 +612,22 @@ Navigation scoping (daemon mode only):
   reached) an explicit --since fails with error_type \"since_requires_daemon\"
   rather than silently returning the unfiltered buffer.
 
-Source precedence (--source auto, the default):
-  1. Daemon watcher buffer (source=watcher): used when the daemon has buffered
-     network events for the current navigation. This is the default path when
-     the daemon is running and `navigate --with-network` was used previously.
-  2. Performance API fallback (source=performance-api): used only when the
-     watcher buffer is empty (no events captured for the current navigation).
+Source (--source watcher, the default):
+  --source watcher          the RDP resource watcher — the only source with
+                            method/status/content_type/transfer_size. An empty
+                            buffer reports 0 watcher rows; it is never swapped
+                            for a different dataset. (`auto` is a deprecated
+                            alias of `watcher`.)
+  --source performance-api  only Resource Timing; identical in both connection
+                            modes, no headers/security detail, and incompatible
+                            with --since (error_type
+                            \"since_requires_watcher_source\")
 
-`auto` therefore resolves differently per connection mode: the daemon has been
-buffering since it started, while a fresh --no-daemon connection subscribes
-after the page has already loaded and almost always falls through to the
-Performance API. Same page, same instant, different row counts and different
-available fields. Pin the source to make both modes agree:
-  --source watcher          only the watcher/daemon buffer; 0 rows stays 0 rows
-  --source performance-api  only Resource Timing; identical in both modes,
-                            no headers/security detail, and incompatible with
-                            --since (error_type \"since_requires_watcher_source\")
-`meta.source_reason` always states which rule applied: \"requested\",
-\"auto: watcher buffer non-empty\", or
-\"auto: watcher buffer empty, fell back to performance-api\".
+iter-159 removed the implicit fallback. `auto` used to mean \"watcher if it
+produced anything, else the Performance API\", which made the same page report
+different row counts in the two connection modes — and, worse, made a daemon
+whose watcher had stopped delivering anything at all look like a page with no
+HTTP metadata. `meta.source` names the source that was actually read.
 
 Field fidelity by source:
   watcher:         method, status, content_type, duration_ms, size_bytes, transfer_size all available.
@@ -1408,8 +1405,14 @@ pub struct NavigateArgs {
     /// overlay (see `ff-rdp consent accept`). Best-effort: a detection
     /// failure is reported as a warning, not a navigate failure. Adds
     /// `results.consent = {"cmp": ..., "action": ...}` (both keys always
-    /// present). Not supported together with --with-network.
-    #[arg(long, conflicts_with = "with_network")]
+    /// present).
+    ///
+    /// Combines with --with-network (iter-159): the consent click happens while
+    /// the network capture is still open, and a short follow-up drain collects
+    /// the requests the dismissal unblocks. Before iter-159 the two flags were
+    /// mutually exclusive, so a consent-walled site — the only kind where you
+    /// need both — forced a choice between them.
+    #[arg(long)]
     pub auto_consent: bool,
 }
 
@@ -1556,28 +1559,32 @@ pub struct NetworkArgs {
     /// `--since -1` or `--since=-1` without clap mistaking `-1` for a flag.
     #[arg(long, value_name = "NAV_INDEX_OR_ALL", allow_hyphen_values = true)]
     pub since: Option<String>,
-    /// Pin which capture source produces the rows, instead of letting the
-    /// connection mode decide (iter-137 Theme C).
+    /// Which capture source produces the rows.
     ///
-    /// `auto` (default) prefers the watcher and falls back to the Performance
-    /// API when the watcher buffer is empty — which is why the same page
-    /// reported 77 watcher rows through the daemon and 137 performance-api
-    /// rows with `--no-daemon`: the daemon has been buffering since it
-    /// started, a direct connection has not. `watcher` and `performance-api`
-    /// force one source, so both connection modes return the same rows from
-    /// the same place. `meta.source_reason` always states which rule applied.
-    #[arg(long, value_enum, default_value_t = NetworkSource::Auto)]
+    /// `watcher` (the default) reads the RDP resource watcher, the only source
+    /// that carries `method`, `status`, `content_type` and `transfer_size`.
+    /// `performance-api` evaluates `performance.getEntriesByType('resource')`
+    /// in the page instead — fewer fields, but it can see requests that
+    /// finished before ff-rdp connected.
+    ///
+    /// There is no automatic substitution: an empty watcher buffer is reported
+    /// as zero watcher rows, never silently swapped for a different dataset
+    /// with different fields (iter-159). `auto` is accepted as a deprecated
+    /// alias of `watcher`.
+    #[arg(long, value_enum, default_value_t = NetworkSource::Watcher)]
     pub source: NetworkSource,
 }
 
-/// Capture source for `ff-rdp network` (iter-137 Theme C).
+/// Capture source for `ff-rdp network` (iter-137 Theme C, narrowed in iter-159).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum NetworkSource {
-    /// Watcher buffer if non-empty, else the Performance API. Connection-mode
-    /// dependent by construction.
-    Auto,
-    /// Only the watcher/daemon resource buffer. Reports zero rows rather than
+    /// The watcher/daemon resource buffer. Reports zero rows rather than
     /// silently substituting a different dataset.
+    ///
+    /// `auto` is a deprecated alias: until iter-159 it meant "watcher if
+    /// non-empty, else performance-api", and that silent substitution is what
+    /// hid a daemon watcher that had been delivering nothing since iter-137.
+    #[value(alias = "auto")]
     Watcher,
     /// Only `performance.getEntriesByType('resource')`, evaluated in the page.
     /// Identical in daemon and direct mode; no headers or security detail.
