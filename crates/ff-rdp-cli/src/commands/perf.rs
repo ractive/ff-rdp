@@ -468,11 +468,11 @@ pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppE
             }
         });
     } else {
-        controls.apply_sort(&mut results);
+        controls.apply_sort(&mut results)?;
     }
     let (limited, total, truncated) = controls.apply_limit(results, default_limit);
     let shown = limited.len();
-    let limited = controls.apply_fields(limited);
+    let limited = controls.apply_fields(limited)?;
 
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(
@@ -639,7 +639,7 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
 
     // Apply --fields filtering to the single-object result before wrapping it.
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
-    let results = controls.apply_fields_object(results);
+    let results = controls.apply_fields_object(results)?;
 
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(

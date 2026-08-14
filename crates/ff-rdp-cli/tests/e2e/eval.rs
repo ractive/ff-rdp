@@ -606,13 +606,16 @@ fn eval_stringify_text_suppresses_hints() {
 }
 
 // ---------------------------------------------------------------------------
-// iter-61r: meta.eval_path field
+// iter-161 Theme E: meta.eval_path is gone
 // ---------------------------------------------------------------------------
 
-/// Verify that eval output always includes `meta.eval_path: "page-await"` on
-/// the standard (non-CSP-fallback) path (iter-61r Theme C).
+/// iter-61r Theme C added `meta.eval_path`, which could be `"page-await"` or
+/// `"chrome"`. iter-93 deleted the chrome path and DEC-020 confirmed it stays
+/// deleted, leaving a constant in the envelope that discriminated nothing.
+/// iter-161 Theme E removes the field; this test pins its absence so it does
+/// not creep back.
 #[test]
-fn eval_meta_eval_path_page_await() {
+fn eval_meta_has_no_eval_path() {
     let server = eval_server("eval_result_string.json");
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
@@ -636,9 +639,9 @@ fn eval_meta_eval_path_page_await() {
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
 
-    assert_eq!(
-        json["meta"]["eval_path"], "page-await",
-        "meta.eval_path must be 'page-await' on the standard path; envelope: {json}"
+    assert!(
+        json["meta"].get("eval_path").is_none(),
+        "meta.eval_path was removed in iter-161 Theme E; envelope: {json}"
     );
 }
 

@@ -1,5 +1,7 @@
 use serde_json::Value;
 
+use crate::error::AppError;
+
 /// Sort direction
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortDir {
@@ -36,8 +38,15 @@ impl OutputControls {
     }
 
     /// Apply sorting to results in-place.
-    pub fn apply_sort(&self, results: &mut [Value]) {
+    ///
+    /// Errors (iter-161 Theme D) when `--sort` names a field that appears on
+    /// no entry of `results`: the old behaviour was a silent no-op —
+    /// `compare_values(None, None)` is `Equal` for every pair, the sort is
+    /// stable, and the caller got document order plus exit 0 with no way to
+    /// tell the sort had been ignored.
+    pub fn apply_sort(&self, results: &mut [Value]) -> Result<(), AppError> {
         if let Some(ref field) = self.sort_field {
+            validate_names("--sort", std::slice::from_ref(field), results)?;
             let dir = self.sort_dir;
             results.sort_by(|a, b| {
                 let va = a.get(field);
@@ -49,6 +58,7 @@ impl OutputControls {
                 }
             });
         }
+        Ok(())
     }
 
     /// Apply limit and return `(limited_results, total_before_limit, was_truncated)`.
@@ -72,11 +82,17 @@ impl OutputControls {
     }
 
     /// Filter to only the requested fields on each result entry.
-    pub fn apply_fields(&self, results: Vec<Value>) -> Vec<Value> {
+    ///
+    /// Errors (iter-161 Theme D) when `--fields` names a key that appears on
+    /// no entry: the old behaviour silently destroyed the data —
+    /// `ff-rdp dom 'a' --limit 2 --fields bogusfield` printed
+    /// `{"results": [{}, {}], "total": 2}` and exited 0.
+    pub fn apply_fields(&self, results: Vec<Value>) -> Result<Vec<Value>, AppError> {
         let Some(ref fields) = self.fields else {
-            return results;
+            return Ok(results);
         };
-        results
+        validate_names("--fields", fields, &results)?;
+        Ok(results
             .into_iter()
             .map(|entry| {
                 if let Value::Object(map) = entry {
@@ -89,28 +105,103 @@ impl OutputControls {
                     entry
                 }
             })
-            .collect()
+            .collect())
     }
 
     /// Filter to only the requested fields on a single object value.
     ///
-    /// This is the single-object counterpart to [`apply_fields`] for commands
-    /// that return one record (e.g. `perf vitals`) rather than a list.
-    /// Non-object values are returned unchanged.
-    pub fn apply_fields_object(&self, value: Value) -> Value {
+    /// This is the single-object counterpart to [`Self::apply_fields`] for
+    /// commands that return one record (e.g. `perf vitals`) rather than a
+    /// list. Non-object values are returned unchanged.
+    ///
+    /// Errors on an unknown `--fields` name for the same reason
+    /// [`Self::apply_fields`] does (`perf vitals --fields bogus` → `{}`).
+    pub fn apply_fields_object(&self, value: Value) -> Result<Value, AppError> {
         let Some(ref fields) = self.fields else {
-            return value;
+            return Ok(value);
         };
         if let Value::Object(map) = value {
+            let available: Vec<&str> = map.keys().map(String::as_str).collect();
+            validate_against("--fields", fields, available)?;
             let filtered: serde_json::Map<String, Value> = map
                 .into_iter()
                 .filter(|(k, _)| fields.iter().any(|f| f == k))
                 .collect();
-            Value::Object(filtered)
+            Ok(Value::Object(filtered))
         } else {
-            value
+            Ok(value)
         }
     }
+}
+
+/// Reject `--fields`/`--sort` names that appear on no entry of `results`
+/// (iter-161 Theme D).
+///
+/// The schema is the data: the union of keys present across the object
+/// entries in hand. Design decisions, recorded in DEC-041:
+///
+/// - **Union, not intersection.** A key present on some entries and absent on
+///   others is legitimate — `dom` emits `text` only for elements that have
+///   it — so validating against the intersection would break working
+///   commands.
+/// - **Skip when there is nothing to validate against.** An empty result set,
+///   or one holding no object entries (a list of strings), yields an empty
+///   union; erroring there would turn a legitimate empty query into a
+///   failure. `ff-rdp dom '.no-such-class' --fields tag` stays exit 0.
+/// - **Strict by default, no `--fields-lax`.** Unlike a `--jq` filter that
+///   resolves to nothing — a legitimate probe, which is why `--jq-strict` is
+///   opt-in — a `--fields`/`--sort` name matching no entry is always a typo
+///   or a renamed field, and the old outcome was strictly worse than an
+///   error in every case a caller could want.
+fn validate_names(flag: &str, names: &[String], results: &[Value]) -> Result<(), AppError> {
+    let mut available: Vec<&str> = Vec::new();
+    for entry in results {
+        if let Value::Object(map) = entry {
+            for key in map.keys() {
+                let key = key.as_str();
+                if !available.contains(&key) {
+                    available.push(key);
+                }
+            }
+        }
+    }
+    validate_against(flag, names, available)
+}
+
+/// Reject any of `names` missing from `available` — see [`validate_names`],
+/// which computes `available` as the union of keys over a result *list*;
+/// [`OutputControls::apply_fields_object`] passes the keys of its single
+/// record directly.
+fn validate_against(
+    flag: &str,
+    names: &[String],
+    mut available: Vec<&str>,
+) -> Result<(), AppError> {
+    // Nothing to validate against — an empty result set is not an error.
+    if available.is_empty() {
+        return Ok(());
+    }
+
+    let unknown: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|n| !available.contains(n))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+
+    available.sort_unstable();
+    let noun = if unknown.len() == 1 { "name" } else { "names" };
+    Err(AppError::User(format!(
+        "{flag}: unknown field {noun} {}; available: {}",
+        unknown
+            .iter()
+            .map(|n| format!("'{n}'"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        available.join(", ")
+    )))
 }
 
 /// Compare two optional JSON values for sorting purposes.
@@ -163,7 +254,7 @@ mod tests {
     fn sort_numeric_asc() {
         let mut items = vec![json!({"n": 3}), json!({"n": 1}), json!({"n": 2})];
         let c = make_controls(None, false, Some("n"), SortDir::Asc, None);
-        c.apply_sort(&mut items);
+        c.apply_sort(&mut items).expect("field is present");
         assert_eq!(items[0]["n"], 1);
         assert_eq!(items[1]["n"], 2);
         assert_eq!(items[2]["n"], 3);
@@ -173,7 +264,7 @@ mod tests {
     fn sort_numeric_desc() {
         let mut items = vec![json!({"n": 1}), json!({"n": 3}), json!({"n": 2})];
         let c = make_controls(None, false, Some("n"), SortDir::Desc, None);
-        c.apply_sort(&mut items);
+        c.apply_sort(&mut items).expect("field is present");
         assert_eq!(items[0]["n"], 3);
         assert_eq!(items[1]["n"], 2);
         assert_eq!(items[2]["n"], 1);
@@ -187,7 +278,7 @@ mod tests {
             json!({"s": "cherry"}),
         ];
         let c = make_controls(None, false, Some("s"), SortDir::Asc, None);
-        c.apply_sort(&mut items);
+        c.apply_sort(&mut items).expect("field is present");
         assert_eq!(items[0]["s"], "apple");
         assert_eq!(items[1]["s"], "banana");
         assert_eq!(items[2]["s"], "cherry");
@@ -197,7 +288,7 @@ mod tests {
     fn sort_missing_field_sorts_before_present() {
         let mut items = vec![json!({"n": 5}), json!({"other": 1}), json!({"n": 2})];
         let c = make_controls(None, false, Some("n"), SortDir::Asc, None);
-        c.apply_sort(&mut items);
+        c.apply_sort(&mut items).expect("field is present");
         // None sorts first in Asc
         assert_eq!(items[0].get("n"), None);
         assert_eq!(items[1]["n"], 2);
@@ -208,7 +299,7 @@ mod tests {
     fn sort_noop_when_no_field() {
         let mut items = vec![json!({"n": 3}), json!({"n": 1})];
         let c = make_controls(None, false, None, SortDir::Asc, None);
-        c.apply_sort(&mut items);
+        c.apply_sort(&mut items).expect("field is present");
         // Order unchanged
         assert_eq!(items[0]["n"], 3);
         assert_eq!(items[1]["n"], 1);
@@ -262,7 +353,7 @@ mod tests {
     fn fields_filters_object_keys() {
         let items = vec![json!({"a": 1, "b": 2, "c": 3})];
         let c = make_controls(None, false, None, SortDir::Asc, Some(vec!["a", "c"]));
-        let out = c.apply_fields(items);
+        let out = c.apply_fields(items).expect("fields are present");
         assert_eq!(out[0]["a"], 1);
         assert_eq!(out[0]["c"], 3);
         assert!(out[0].get("b").is_none());
@@ -272,7 +363,7 @@ mod tests {
     fn fields_noop_when_not_set() {
         let items = vec![json!({"a": 1, "b": 2})];
         let c = make_controls(None, false, None, SortDir::Asc, None);
-        let out = c.apply_fields(items);
+        let out = c.apply_fields(items).expect("fields are present");
         assert_eq!(out[0]["a"], 1);
         assert_eq!(out[0]["b"], 2);
     }
@@ -281,9 +372,101 @@ mod tests {
     fn fields_passthrough_non_object() {
         let items = vec![json!("a string"), json!(42)];
         let c = make_controls(None, false, None, SortDir::Asc, Some(vec!["x"]));
-        let out = c.apply_fields(items);
+        let out = c.apply_fields(items).expect("fields are present");
         // Non-object entries pass through unchanged
         assert_eq!(out[0], json!("a string"));
         assert_eq!(out[1], json!(42));
+    }
+
+    // ── iter-161 Theme D: unknown --fields/--sort names fail loud ────────────
+
+    /// AC `unit_161_field_validation_union_and_empty_set`: the union of keys
+    /// present is the schema, and there is nothing to validate against when
+    /// the result set is empty or holds no objects.
+    #[test]
+    fn unit_161_field_validation_union_and_empty_set() {
+        // Union, not intersection: `text` is on only one of two entries
+        // (exactly what `dom` emits for elements that have text).
+        let items = vec![json!({"tag": "a", "text": "hi"}), json!({"tag": "img"})];
+        let c = make_controls(None, false, Some("text"), SortDir::Asc, Some(vec!["text"]));
+        let mut sortable = items.clone();
+        c.apply_sort(&mut sortable)
+            .expect("a key on only one entry is still in the union");
+        let out = c
+            .apply_fields(items)
+            .expect("a key on only one entry is still in the union");
+        assert_eq!(out.len(), 2);
+
+        // Empty result set: no union to check, so no error and nothing filtered.
+        let c = make_controls(None, false, Some("nope"), SortDir::Asc, Some(vec!["nope"]));
+        let mut empty: Vec<Value> = vec![];
+        c.apply_sort(&mut empty).expect("empty set is not an error");
+        assert_eq!(
+            c.apply_fields(vec![]).expect("empty set is not an error"),
+            Vec::<Value>::new()
+        );
+
+        // A result set of non-object values: same reasoning, empty union.
+        let strings = vec![json!("a"), json!("b")];
+        let mut sortable = strings.clone();
+        c.apply_sort(&mut sortable)
+            .expect("a list of strings has no keys to validate against");
+        assert_eq!(
+            c.apply_fields(strings.clone())
+                .expect("a list of strings has no keys to validate against"),
+            strings
+        );
+
+        // Single-record counterpart rejects an unknown name.
+        let err = c
+            .apply_fields_object(json!({"lcp_ms": 1, "cls": 0.1}))
+            .expect_err("apply_fields_object must reject an unknown name");
+        let msg = err.to_string();
+        assert!(msg.contains("--fields"), "must name the flag: {msg}");
+        assert!(msg.contains("'nope'"), "must name the offender: {msg}");
+        assert!(msg.contains("lcp_ms"), "must list what is available: {msg}");
+    }
+
+    /// The defect this replaces: `--fields bogusfield` used to return
+    /// `[{}, {}]` with exit 0, and `--sort nosuchfield` used to be a silent
+    /// no-op.
+    #[test]
+    fn unit_161_unknown_names_are_rejected_with_available_keys() {
+        let items = vec![json!({"tag": "a", "text": "x"}), json!({"tag": "b"})];
+
+        let c = make_controls(None, false, None, SortDir::Asc, Some(vec!["bogusfield"]));
+        let err = c
+            .apply_fields(items.clone())
+            .expect_err("--fields bogusfield must be an error, not [{}, {}]");
+        let msg = err.to_string();
+        assert!(msg.contains("--fields"), "must name the flag: {msg}");
+        assert!(
+            msg.contains("'bogusfield'"),
+            "must name the offender: {msg}"
+        );
+        assert!(msg.contains("tag"), "must list available keys: {msg}");
+        assert!(msg.contains("text"), "must list available keys: {msg}");
+
+        let c = make_controls(None, false, Some("nosuchfield"), SortDir::Asc, None);
+        let mut sortable = items.clone();
+        let err = c
+            .apply_sort(&mut sortable)
+            .expect_err("--sort nosuchfield must be an error, not a silent no-op");
+        let msg = err.to_string();
+        assert!(msg.contains("--sort"), "must name the flag: {msg}");
+        assert!(
+            msg.contains("'nosuchfield'"),
+            "must name the offender: {msg}"
+        );
+        assert!(msg.contains("tag"), "must list available keys: {msg}");
+
+        // Every name is reported, not just the first.
+        let c = make_controls(None, false, None, SortDir::Asc, Some(vec!["tag", "x", "y"]));
+        let msg = c
+            .apply_fields(items)
+            .expect_err("two unknown names must still be an error")
+            .to_string();
+        assert!(msg.contains("'x'") && msg.contains("'y'"), "got: {msg}");
+        assert!(msg.contains("names"), "plural wording expected: {msg}");
     }
 }

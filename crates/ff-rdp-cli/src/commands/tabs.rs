@@ -74,10 +74,10 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     // before sort/limit/total are computed (kb/iterations/
     // iteration-142-session-hygiene.md Theme C).
     items.retain(|item| !is_consent_o_matic_options_tab(item));
-    controls.apply_sort(&mut items);
+    controls.apply_sort(&mut items)?;
     let (limited, total, truncated) = controls.apply_limit(items, None);
     let shown = limited.len();
-    let limited = controls.apply_fields(limited);
+    let limited = controls.apply_fields(limited)?;
 
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(
@@ -194,7 +194,7 @@ mod tests {
         ];
         let fields = vec!["url".to_owned(), "title".to_owned()];
         let controls = make_controls(Some(fields));
-        let filtered = controls.apply_fields(items);
+        let filtered = controls.apply_fields(items).expect("fields are present");
         assert_eq!(filtered.len(), 2);
         for entry in &filtered {
             assert!(entry.get("url").is_some(), "url should be present");
@@ -208,7 +208,9 @@ mod tests {
         let items = vec![json!({"url": "https://example.com", "title": "Example", "id": 1})];
         // fields=None means no filtering — all keys preserved.
         let controls = make_controls(None);
-        let filtered = controls.apply_fields(items);
+        let filtered = controls
+            .apply_fields(items)
+            .expect("no --fields means no validation");
         assert_eq!(filtered[0].get("id"), Some(&json!(1)));
         assert_eq!(filtered[0].get("url").unwrap(), "https://example.com");
     }

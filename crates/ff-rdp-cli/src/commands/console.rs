@@ -116,11 +116,11 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
             }
         });
     } else {
-        controls.apply_sort(&mut results);
+        controls.apply_sort(&mut results)?;
     }
     let (limited, total, truncated) = controls.apply_limit(results, Some(50));
     let shown = limited.len();
-    let limited = controls.apply_fields(limited);
+    let limited = controls.apply_fields(limited)?;
 
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(

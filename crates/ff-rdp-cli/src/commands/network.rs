@@ -332,7 +332,7 @@ pub fn run(
                 }
             });
         } else {
-            controls.apply_sort(&mut detail);
+            controls.apply_sort(&mut detail)?;
         }
         let (limited, total, truncated) = controls.apply_limit(detail, Some(20));
         let shown = limited.len();
@@ -443,7 +443,7 @@ pub fn run(
             }
         }
 
-        let limited = controls.apply_fields(limited);
+        let limited = controls.apply_fields(limited)?;
         let mut envelope =
             output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
         // Iteration 126: carry the summary fields alongside `results` in the

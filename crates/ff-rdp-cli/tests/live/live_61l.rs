@@ -657,8 +657,8 @@ fn live_navigate_invalidates_console_actor() {
 /// operates at the Debugger API level — *outside* the page's scripting
 /// environment — and is therefore not subject to page CSP.  So the ordinary
 /// `page-await` path already bypasses CSP; the extra chrome hop was dead weight
-/// and was dropped, and `meta.eval_path` is now always `"page-await"`
-/// (`eval.rs:274-276`).
+/// and was dropped, leaving `meta.eval_path` a constant — which iter-161
+/// Theme E then removed from the envelope entirely.
 ///
 /// The `"chrome"` assertion was thus testing behaviour that no longer exists —
 /// which is exactly why it surfaced as `"page-await"` once un-masked by the
@@ -713,10 +713,12 @@ fn live_eval_chrome_csp_bypass() {
         json["results"], 2,
         "eval '1+1' should return 2, got: {json}"
     );
-    // iter-93: the chrome-context bypass was removed; eval always reports the
-    // CSP-safe page-await path.
-    assert_eq!(
-        json["meta"]["eval_path"], "page-await",
-        "meta.eval_path must be 'page-await' since iter-93 dropped the chrome bypass, got: {json}"
+    // iter-93 removed the chrome-context bypass, leaving `meta.eval_path` a
+    // constant; iter-161 Theme E removed the field itself. The load-bearing
+    // guarantee — eval works on a `script-src 'none'` page — is the
+    // `results == 2` assertion above.
+    assert!(
+        json["meta"].get("eval_path").is_none(),
+        "meta.eval_path was removed in iter-161 Theme E, got: {json}"
     );
 }
