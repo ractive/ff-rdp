@@ -2,8 +2,8 @@ use std::io::Read;
 
 use anyhow::Context as _;
 use ff_rdp_core::{
-    ActorId, EvaluateScope, Grip, ObjectActor, ScopedGrip, TabActor, WebConsoleActor,
-    sanitize_for_terminal,
+    ActorId, EvaluateScope, Grip, LongStringActor, ObjectActor, ScopedGrip, TabActor,
+    WebConsoleActor, sanitize_for_terminal,
 };
 use serde_json::json;
 
@@ -85,9 +85,18 @@ pub(crate) fn load_script(
 ///
 /// # Stringify
 ///
-/// `--stringify` wraps the expression in `JSON.stringify(...)` so the user gets
+/// `--stringify` wraps the value in `JSON.stringify(...)` so the user gets
 /// real values instead of Firefox grip metadata.  The stringify helper does NOT
 /// use `eval()` and is therefore unaffected by page CSP.
+///
+/// iter-161 Theme A: `--stringify` used to splice the user's raw text straight
+/// into the helper's argument slot, so it accepted only a single expression —
+/// `HELPER(const x = 5; x)` is not JavaScript, and `ff-rdp eval --stringify
+/// 'const x = 5; x'` failed with `expected expression, got keyword 'const'`
+/// even though bare `eval`, `--file` and `--stdin` all ran the same script
+/// fine. [`wrap_stringify`] now routes multi-statement scripts through the
+/// same statement-boundary machinery the await wrap uses, so `--stringify`
+/// accepts exactly what bare `eval` accepts.
 ///
 /// # Top-level `await` (iter-132 Theme C)
 ///
@@ -96,14 +105,14 @@ pub(crate) fn load_script(
 /// `SyntaxError: await is only valid in async functions...` — a friction
 /// point agents hit naturally (dogfooding session 62), since `.then()`-based
 /// scripts already work: `evaluateJSAsync` awaits a Promise **completion
-/// value** before returning it to the caller (`eval_path: "page-await"`).
+/// value** before returning it to the caller (the page-await path).
 ///
 /// The fix routes any script containing an `await` keyword through
 /// [`wrap_top_level_await`], which turns it into an async-IIFE call
 /// expression — i.e. exactly the kind of Promise-returning completion value
-/// `evaluateJSAsync` already knows how to await. `eval_path` stays
-/// `"page-await"` either way; from the caller's perspective only the
-/// previously-broken await scripts start working, nothing else changes.
+/// `evaluateJSAsync` already knows how to await. The evaluation path is the
+/// same either way; from the caller's perspective only the previously-broken
+/// await scripts start working, nothing else changes.
 ///
 /// iter-142 Theme E fixed two follow-on defects in the same wrap: (1) the
 /// single-vs-multi-statement heuristic (used to decide whether the wrap
@@ -125,13 +134,17 @@ pub(crate) fn build_script(user_script: &str, stringify: bool, _isolate: bool) -
     // Symbol's TypeError) propagate up as eval exceptions.
     const STRINGIFY_HELPER: &str = "(function(v){if(typeof v===\"string\")return v;try{return JSON.stringify(v);}catch(e){if(e instanceof TypeError&&e.message.includes(\"circular\"))return \"{\\\"error\\\":\\\"circular reference detected\\\"}\";throw e;}})";
 
-    // Stringify wraps `user_script` as the sole argument of a call
-    // expression — that is only valid JS if `user_script` is itself a
-    // single expression (a pre-existing constraint, unrelated to this
-    // iteration), so the wrapped form is always a single expression too.
+    let has_await = contains_await_keyword(user_script);
+
+    // Stringify wraps the user's value as the sole argument of a call
+    // expression.  Splicing `user_script` there raw is only valid JS when the
+    // script is itself a single expression; iter-161 Theme A routes anything
+    // else through [`wrap_statements_in_iife`] so what lands in the argument
+    // slot is always a single *call* expression.  Either way the wrapped form
+    // is a single expression, so `base_is_single_expression` stays `true`.
     let (base, base_is_single_expression) = if stringify {
         (
-            format!("(function(){{return {STRINGIFY_HELPER}({user_script});}})()"),
+            wrap_stringify(user_script, STRINGIFY_HELPER, has_await),
             true,
         )
     } else {
@@ -141,11 +154,50 @@ pub(crate) fn build_script(user_script: &str, stringify: bool, _isolate: bool) -
         )
     };
 
-    if contains_await_keyword(user_script) {
+    if has_await {
         wrap_top_level_await(&base, base_is_single_expression)
     } else {
         base
     }
+}
+
+/// Build the `--stringify` wrap: a call to `helper` whose single argument is
+/// the user's value (iter-161 Theme A).
+///
+/// For a single-expression script the shape is unchanged from iter-93 —
+/// `(function(){return HELPER(<expr>);})()` — so the common case does not
+/// grow an extra IIFE.
+///
+/// For anything else (declarations, several statements, control flow) the
+/// script is first turned into a value-producing IIFE by
+/// [`wrap_statements_in_iife`], and *that* call expression becomes the
+/// helper's argument:
+///
+/// ```js
+/// (function(){return HELPER((function(){ const x = 5;
+/// return (
+/// x
+/// ); })());})()
+/// ```
+///
+/// `has_await` makes both functions `async` and inserts the `await` that
+/// unwraps the inner Promise before it reaches the helper — a synchronous
+/// function containing `await` is a SyntaxError, and handing the helper an
+/// un-awaited Promise would stringify `{}`. The outer call expression is
+/// still a Promise, which is exactly what [`wrap_top_level_await`] and
+/// `evaluateJSAsync`'s server-side await expect.
+fn wrap_stringify(user_script: &str, helper: &str, has_await: bool) -> String {
+    let asyncness = if has_await { "async " } else { "" };
+    if looks_like_single_expression(user_script) {
+        return format!("({asyncness}function(){{return {helper}({user_script});}})()");
+    }
+    let inner = wrap_statements_in_iife(user_script.trim(), has_await);
+    let argument = if has_await {
+        format!("await {inner}")
+    } else {
+        inner
+    };
+    format!("({asyncness}function(){{return {helper}({argument});}})()")
 }
 
 /// JS identifier keywords that can never begin a bare expression — used by
@@ -421,21 +473,41 @@ fn wrap_top_level_await(base: &str, base_is_single_expression: bool) -> String {
     if base_is_single_expression {
         return format!("(async function(){{return (\n{base}\n);}})()");
     }
+    wrap_statements_in_iife(base, true)
+}
 
-    if let Some(split_at) = top_level_statement_boundaries(base).last().copied() {
-        let prefix = base[..split_at].trim_end();
-        let last = base[split_at..].trim();
+/// Turn a statement sequence into a zero-argument IIFE call expression that
+/// evaluates to the value of its last statement.
+///
+/// Extracted from [`wrap_top_level_await`] in iter-161 so `--stringify`
+/// (Theme A) reuses the same statement-boundary machinery instead of adding a
+/// second classifier; `is_async` selects between the `async` form the await
+/// wrap needs and the plain form `--stringify` uses when no `await` is
+/// present.
+///
+/// If the last top-level statement ([`top_level_statement_boundaries`]) is a
+/// bare expression, it is split off and returned via a synthesized
+/// `return (…)`; every earlier statement runs verbatim. When it is not (a
+/// declaration, a control-flow construct, a `return` the user wrote), there is
+/// nothing safe to auto-return and the body is emitted as-is — the script
+/// still evaluates, it just yields `undefined` unless the user returns
+/// something.
+fn wrap_statements_in_iife(body: &str, is_async: bool) -> String {
+    let asyncness = if is_async { "async " } else { "" };
+    if let Some(split_at) = top_level_statement_boundaries(body).last().copied() {
+        let prefix = body[..split_at].trim_end();
+        let last = body[split_at..].trim();
         if !last.is_empty() && looks_like_single_expression(last) {
             let last_expr = last.strip_suffix(';').unwrap_or(last).trim();
             return if prefix.is_empty() {
-                format!("(async function(){{return (\n{last_expr}\n);}})()")
+                format!("({asyncness}function(){{return (\n{last_expr}\n);}})()")
             } else {
-                format!("(async function(){{\n{prefix}\nreturn (\n{last_expr}\n);}})()")
+                format!("({asyncness}function(){{\n{prefix}\nreturn (\n{last_expr}\n);}})()")
             };
         }
     }
 
-    format!("(async function(){{\n{base}\n}})()")
+    format!("({asyncness}function(){{\n{body}\n}})()")
 }
 
 /// Build the final JavaScript source, exposed for use by the script runner.
@@ -574,6 +646,27 @@ pub fn run(
         _ => None,
     };
 
+    // iter-161 Theme C: a string longer than Firefox's ~1000-char inline
+    // limit arrives as a `longString` grip carrying only a preview. Every
+    // other command resolves that through `js_helpers::resolve_result`;
+    // `eval` did not, so it printed the preview as if it were the value —
+    // with no `meta.truncated`, no hint, and (because the grip is released a
+    // few lines below) no way for the caller to fetch the rest afterwards.
+    // Fetch the full string here, while the actor is still alive.
+    //
+    // `full_string` enforces `LongStringActor::MAX_FETCH` (16 MiB) and its
+    // error becomes an `AppError`, so an oversized payload surfaces through
+    // the normal JSON error envelope rather than a panic.
+    if let Some(ref sg) = scoped_grip
+        && let Grip::LongString {
+            ref actor, length, ..
+        } = *sg.grip()
+    {
+        let full = LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), length)
+            .map_err(AppError::from)?;
+        result_json = serde_json::Value::String(full);
+    }
+
     // For object grips, enrich the output with the list of own property names.
     // Best-effort: if the actor is gone or the request fails, we skip silently.
     //
@@ -605,14 +698,13 @@ pub fn run(
     // the caller double-wrapped via another JSON.stringify), keep the raw
     // string value and set `meta.stringify_parsed: false` so callers know the
     // round-trip did not produce a structured value.
+    // iter-161 Theme E: `meta.eval_path` used to be inserted here, hard-set to
+    // the constant "page-await". Its only other value ("chrome") was deleted
+    // in iter-93 and DEC-020 confirmed it stays deleted, so the field
+    // discriminated nothing while reading like a strategy selector. The
+    // page-await path itself is unchanged and still documented in
+    // `build_script`'s doc comment and in `eval --help`.
     let mut meta = json!({});
-    // Surface which evaluation path was taken (iter-61r Theme C / iter-93).
-    // "page-await" = evaluateJSAsync routed through Debugger.evalInGlobal,
-    //   which bypasses page CSP (devtools/server/actors/webconsole/
-    //   eval-with-debugger.js:119-247).  This is always the path taken.
-    if let Some(m) = meta.as_object_mut() {
-        m.insert("eval_path".to_owned(), json!("page-await"));
-    }
     if stringify && let serde_json::Value::String(ref s) = result_json {
         match serde_json::from_str::<serde_json::Value>(s) {
             Ok(parsed) => {
@@ -877,18 +969,34 @@ mod tests {
         assert!(!s.contains("eval("), "must not contain eval(): {s}");
     }
 
+    /// The four scripts the iter-93 matrix test covered. The live matrix test
+    /// `live_161_build_script_matrix_evaluates` repeats this list (it lives in
+    /// a separate integration-test crate) and hands each generated script to
+    /// Firefox — the only JS parser this repo is allowed to use, since all
+    /// code stays in Rust and there is no in-process parser to check "does
+    /// this parse" against.
+    const MATRIX_SCRIPTS: [&str; 4] = [
+        "document.title",
+        "1 + 1",
+        "const x = 1; x",
+        "throw new Error('boom')",
+    ];
+
     /// Invariant: build_script MUST NOT emit a bare `eval(` for any
     /// combination of flags and user input.  This is the CSP-safety invariant
     /// introduced in iter-93.
+    ///
+    /// iter-161 Theme B: this replaces
+    /// `build_script_never_emits_eval_for_any_combination`, which asserted
+    /// *only* the `eval(` invariant and therefore passed for
+    /// `("const x = 1; x", stringify=true)` while generating the syntactically
+    /// invalid JavaScript of Theme A — invalid JS contains no `eval(` either.
+    /// The structural assertion below is the part the old test was missing:
+    /// for a multi-statement script the helper's argument must be a call
+    /// expression, not the user's raw text spliced into an argument slot.
     #[test]
-    fn build_script_never_emits_eval_for_any_combination() {
-        let scripts = [
-            "document.title",
-            "1 + 1",
-            "const x = 1; x",
-            "throw new Error('boom')",
-        ];
-        for &script in &scripts {
+    fn unit_161_build_script_emits_no_bare_eval() {
+        for &script in &MATRIX_SCRIPTS {
             for stringify in [false, true] {
                 for isolate in [false, true] {
                     let s = build_script(script, stringify, isolate);
@@ -896,9 +1004,83 @@ mod tests {
                         !s.contains("eval("),
                         "eval() found in build_script({script:?}, stringify={stringify}, isolate={isolate}): {s}"
                     );
+                    if stringify && !looks_like_single_expression(script) {
+                        assert!(
+                            !s.contains(&format!("}})({script});")),
+                            "stringify spliced the raw statement text into the helper's \
+                             argument slot for {script:?}: {s}"
+                        );
+                        assert!(
+                            s.contains("})());})()"),
+                            "stringify must hand the helper a call expression for \
+                             {script:?}: {s}"
+                        );
+                    }
                 }
             }
         }
+    }
+
+    /// iter-161 Theme A / AC1: a multi-statement `--stringify` script runs
+    /// inside a zero-argument IIFE whose last statement is a synthesized
+    /// `return (…)`, and it is that IIFE's *call* that lands in the helper's
+    /// argument list — never the raw text.
+    #[test]
+    fn unit_161_stringify_wraps_multi_statement_in_iife() {
+        let s = build_script("const x = 5; x", true, false);
+        assert!(
+            s.contains("((function(){\nconst x = 5;\nreturn (\nx\n);})())"),
+            "expected the statements inside a zero-arg IIFE with a synthesized \
+             return, got: {s}"
+        );
+        assert!(
+            !s.contains("})(const x = 5; x)"),
+            "the raw statement text must not be spliced into the argument slot: {s}"
+        );
+        assert!(s.contains("JSON.stringify("));
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
+    }
+
+    /// iter-161 Theme A / AC2: the single-expression case — by far the common
+    /// one — keeps the exact iter-93 shape. The expected string below is what
+    /// `main` produced before this iteration, byte for byte: no extra IIFE.
+    #[test]
+    fn unit_161_stringify_single_expression_shape_unchanged() {
+        let expected = concat!(
+            "(function(){return ",
+            "(function(v){if(typeof v===\"string\")return v;try{return JSON.stringify(v);}",
+            "catch(e){if(e instanceof TypeError&&e.message.includes(\"circular\"))",
+            "return \"{\\\"error\\\":\\\"circular reference detected\\\"}\";throw e;}})",
+            "(document.title);})()"
+        );
+        assert_eq!(build_script("document.title", true, false), expected);
+    }
+
+    /// iter-161 Theme A: `--stringify` × top-level `await` × several
+    /// statements. A synchronous IIFE containing `await` is a SyntaxError, so
+    /// the inner value-producing IIFE must be `async` and its Promise must be
+    /// awaited before the helper sees it — otherwise the helper stringifies a
+    /// pending Promise (`{}`). Pinned as a test rather than argued, per the
+    /// plan.
+    #[test]
+    fn unit_161_stringify_await_multi_statement_is_async_throughout() {
+        let s = build_script("const r = await Promise.resolve({n:7}); r", true, false);
+        assert!(
+            s.starts_with("(async function(){return ("),
+            "the await wrap must stay outermost: {s}"
+        );
+        assert!(
+            s.contains("(await (async function(){\nconst r = await Promise.resolve({n:7});\nreturn (\nr\n);})())"),
+            "the inner statement IIFE must be async and awaited: {s}"
+        );
+        // No synchronous `function(){` may enclose the user's `await`: the
+        // only non-async function in the output is the stringify helper
+        // itself, which takes `v` as a parameter.
+        assert!(
+            !s.contains("(function(){"),
+            "a synchronous IIFE containing await is a SyntaxError: {s}"
+        );
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
     }
 
     // ── iter-132 Theme C: top-level await ────────────────────────────────────
