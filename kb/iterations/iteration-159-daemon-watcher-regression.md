@@ -290,7 +290,7 @@ Once the ACs in Themes B and C are ticked with measured evidence:
 
 ## Acceptance Criteria [11/11]
 
-- [x] unit_159_daemon_resource_routing_pinned: a unit test asserts the daemon's resource-event
+- [x] `unit_159_daemon_resource_routing_pinned`: a unit test asserts the daemon's resource-event
       acceptance rule against a `resources-available-array` fixture recorded from a live daemon
       session with `isServerTargetSwitchingEnabled: true`
       (`crates/ff-rdp-cli/tests/fixtures/resources_available_network_server_target_switching.json`,
@@ -303,7 +303,7 @@ Once the ACs in Themes B and C are ticked with measured evidence:
       record that **neither** option (a) nor (b) was chosen and why, with the
       `resources/index.js` `ParentProcessResources` / `watcher.js` `emitResources` lines that
       justify it.
-- [x] unit_159_establish_watcher_acquisition_path: a unit test pins `establish_watcher`'s
+- [x] `unit_159_establish_watcher_acquisition_path`: a unit test pins `establish_watcher`'s
       `getWatcher` arguments — the daemon's core watcher keeps
       `get_watcher_with_options(transport, &tab_actor, Some(true))`, and the test fails if the
       flag is speculatively reverted. The companion change is not a widened acceptance
