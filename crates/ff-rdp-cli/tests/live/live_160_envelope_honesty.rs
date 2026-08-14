@@ -110,11 +110,12 @@ fn navigate(port: u16, url: &str) {
 }
 
 /// **The independent read-back.** Evaluate `expr` in the page through a fresh
-/// `ff-rdp eval` invocation and return `results.value`. Nothing in this file
-/// trusts a command's own account of what it did.
+/// `ff-rdp eval` invocation and return the value it produced (`eval` puts the
+/// value directly in `results`). Nothing in this file trusts a command's own
+/// account of what it did.
 fn eval_value(port: u16, expr: &str) -> Value {
     let out = run_json(port, &["eval", expr]);
-    out["results"]["value"].clone()
+    out["results"].clone()
 }
 
 /// Serve a single page at `/` and navigate to it. Returns the live server —
@@ -622,14 +623,27 @@ fn live_160_contrast_cap_and_source_at_top_level() {
     assert_eq!(json["meta"]["summary"]["capped"], true, "{json}");
 
     // A truncated sample that found nothing must carry the qualifier with it.
-    if json["total"].as_u64() == Some(0) {
-        let hints = json["hints"].to_string();
-        assert!(
-            hints.contains("truncated"),
-            "a zero result from a truncated sample must not be printable as a \
-             clean pass without the qualifier: {json}"
-        );
-    }
+    // Hints default to off for JSON output (`--hints` opts in; they are on by
+    // default in `--format text`, which is the mode where `capped` would
+    // otherwise be invisible), so ask for them explicitly here.
+    let sampled = json["sampled"].as_u64().expect("sampled must be a number");
+    assert_eq!(
+        json["total"].as_u64(),
+        Some(0),
+        "fixture assumption: this page has no AA failures, which is what makes \
+         it the false-good case: {json}"
+    );
+    let hinted = run_json(port, &["a11y", "contrast", "--fail-only", "--hints"]);
+    let hints = hinted["hints"].to_string();
+    assert!(
+        hints.contains("truncated"),
+        "a zero result from a truncated sample must not be printable as a \
+         clean pass without the qualifier: {hinted}"
+    );
+    assert!(
+        hints.contains(&sampled.to_string()),
+        "the hint must name the sampled element count ({sampled}): {hinted}"
+    );
 
     stop_daemon(port);
 }
@@ -756,7 +770,7 @@ fn live_160_selector_diagnostics_survive() {
         return;
     };
 
-    let not_found = run(port, &["type", "--timeout-ms", "1500", "#nosuch", "hello"]);
+    let not_found = run(port, &["type", "--timeout", "3000", "#nosuch", "hello"]);
     assert!(!not_found.status.success(), "{}", combined(&not_found));
     assert!(
         combined(&not_found).contains("0 elements matched (not found)"),
