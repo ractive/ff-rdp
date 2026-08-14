@@ -179,6 +179,14 @@ fn live_129_click_zero_match_error() {
 /// (`cmp:"sourcepoint"`) is `live_129_sourcepoint_consent` below —
 /// network-gated separately since it depends on a specific real site's
 /// current CMP configuration, not just generic network access.
+///
+/// iter-160 Theme D updated the exit code this asserts, deliberately: a
+/// `consent accept` that dismissed nothing used to exit 0, so a page whose
+/// banner was still up and still swallowing clicks was indistinguishable from a
+/// dismissed one. `--allow-no-cmp` is the opt-in for a caller — like this test —
+/// that legitimately expects nothing to dismiss. The *envelope* half of the AC
+/// (cmp and action always present, both null here) is unchanged and still
+/// asserted below; only the exit code moved.
 #[test]
 #[ignore = "requires Firefox + network — FF_RDP_LIVE_TESTS=1"]
 fn live_129_consent_envelope_no_cmp() {
@@ -204,16 +212,34 @@ fn live_129_consent_envelope_no_cmp() {
 
     let consent = Command::new(ff_rdp_bin())
         .args(base_args(port))
-        .args(["consent", "accept"])
+        .args(["consent", "accept", "--allow-no-cmp"])
         .output()
         .expect("consent accept");
     assert!(
         consent.status.success(),
-        "consent accept must succeed even with no CMP present — stdout={} stderr={}",
+        "consent accept --allow-no-cmp must exit 0 when no CMP is present — stdout={} stderr={}",
         String::from_utf8_lossy(&consent.stdout),
         String::from_utf8_lossy(&consent.stderr)
     );
     let json = parse_json(&consent);
+    assert_eq!(
+        json["results"]["status"], "no_cmp_detected",
+        "iter-160: the outcome is named, not inferred from two nulls: {json}"
+    );
+
+    // Without the opt-in, the same page is a failure — the banner (if any) is
+    // still there and the caller must be able to tell.
+    let strict = Command::new(ff_rdp_bin())
+        .args(base_args(port))
+        .args(["consent", "accept"])
+        .output()
+        .expect("consent accept (strict)");
+    assert!(
+        !strict.status.success(),
+        "iter-160: bare `consent accept` must exit non-zero when nothing was dismissed — {}",
+        String::from_utf8_lossy(&strict.stdout)
+    );
+
     assert!(
         json["results"].get("cmp").is_some(),
         "cmp key must always be present: {json}"

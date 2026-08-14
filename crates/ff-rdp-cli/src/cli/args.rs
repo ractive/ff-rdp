@@ -739,7 +739,30 @@ index out of range), the error names the match count. If the plain selector
 times out because it resolved to a hidden element, the error itself suggests
 --visible/--index with the observed match count.
 
-Output: {\"results\": {\"clicked\": true, \"tag\": \"...\", \"text\": \"...\", \"frame_url\": null}, \"total\": 1, \"meta\": {\"frame_url\": null, ...}}
+Reachability (iter-160): before dispatching anything, click hit-tests the
+element's centre point with document.elementFromPoint. The point must resolve to
+the element, a descendant of it (a <span> inside a <button> is the normal case),
+or an ancestor of it (an ancestor cannot obscure its own descendant). If the
+centre starts outside the viewport the element is scrolled into view first —
+below the fold is not an obstruction.
+
+  results.matched     the selector resolved to an element
+  results.reachable   true | false | null (hit test could not decide — e.g. a
+                      cross-origin iframe document that was never laid out; the
+                      events ARE dispatched and the envelope says so)
+  results.obscured_by the covering element, e.g. \"div#veil\" (null on success)
+
+A genuinely covered target is a FAILED action, not an informational result: exit
+1 with error_type \"click_obscured\" (or \"click_offscreen\" when the centre is
+still outside the viewport after scrolling), and matched/reachable/obscured_by
+appear at the top level of the error envelope. The removed `entered` field meant
+only \"querySelector matched\" while its name claimed the pointer could enter;
+read `matched` instead.
+
+Ceiling: events remain isTrusted: false and e.clientX/e.clientY remain 0. The hit
+test decides WHETHER to dispatch; it does not give the events real coordinates.
+
+Output: {\"results\": {\"clicked\": true, \"matched\": true, \"reachable\": true, \"obscured_by\": null, \"tag\": \"...\", \"text\": \"...\", \"frame_url\": null}, \"total\": 1, \"meta\": {\"frame_url\": null, ...}}
 `frame_url` is always present (never omitted) — null when the click landed on
 the top-level document, the frame's URL string when it landed inside a frame.
 With --wait-for-network: adds {\"network\": {\"url\": \"...\", \"method\": \"...\", \"status\": N, ...}} to results.")]

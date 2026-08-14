@@ -461,6 +461,12 @@ fn build_click_js_for_mode(escaped_selector: &str, mode: DispatchMode) -> String
 /// introducing a variant, and merges `matched` / `reachable` / `obscured_by`
 /// into the error envelope so the JSON a failing caller parses names the
 /// covering element instead of only saying "no".
+///
+/// Only a literal `reachable: false` fails. `reachable: null` — the hit test
+/// could not decide, e.g. inside an out-of-process iframe whose document was
+/// never laid out — is **not** a failure: the events were dispatched and the
+/// envelope says the verdict is unknown. Turning "I could not tell" into exit 1
+/// would be the same overstatement this iteration removes, pointed the other way.
 fn unreachable_click_error(selector: &str, result: &Value) -> Option<AppError> {
     if result.get("reachable").and_then(Value::as_bool) != Some(false) {
         return None;
@@ -478,9 +484,10 @@ fn unreachable_click_error(selector: &str, result: &Value) -> Option<AppError> {
         None => (
             "click_offscreen",
             format!(
-                "selector '{selector}' matched an element whose centre point is outside the \
-                 viewport — no click was dispatched. Scroll it into view first (e.g. ff-rdp eval \
-                 'document.querySelector(\"{selector}\").scrollIntoView()')."
+                "selector '{selector}' matched an element whose centre point is still outside the \
+                 viewport after scrolling it into view — no click was dispatched. It may be inside \
+                 a clipped or zero-size scroll container; check with \
+                 `ff-rdp geometry '{selector}'`."
             ),
         ),
     };
@@ -818,6 +825,16 @@ mod tests {
                 "mode {mode:?}: no descendant check — a <span> inside a <button> \
                  must count as reachable: {js}"
             );
+            assert!(
+                js.contains("hit.contains(el)"),
+                "mode {mode:?}: no ancestor check — `click body` hit-tests to <html>, \
+                 and an ancestor cannot obscure its own descendant: {js}"
+            );
+            assert!(
+                js.contains("scrollIntoView"),
+                "mode {mode:?}: below-the-fold is not an obstruction — the element \
+                 must be scrolled into view before the verdict: {js}"
+            );
             let hit_at = js.find("elementFromPoint").expect("hit test present");
             if let Some(dispatch_at) = js.find("dispatchEvent") {
                 assert!(
@@ -890,6 +907,20 @@ mod tests {
         let err = unreachable_click_error("#t", &result).expect("must be an error");
         assert_eq!(err.error_type(), "click_offscreen");
         assert_eq!(err.to_error_json()["obscured_by"], Value::Null);
+    }
+
+    /// An indeterminate hit test (`reachable: null`) is not a failure. Measured
+    /// inside the out-of-process iframe `live_129_click_cross_origin_frame`
+    /// clicks: an ordinary `<a>` hit-tests to `null` because the child document
+    /// was never laid out. Reporting that as off-screen would break every
+    /// cross-origin frame click to satisfy a verdict the page never gave.
+    #[test]
+    fn unit_160_indeterminate_hit_test_is_not_an_error() {
+        let result = json!({
+            "clicked": true, "matched": true, "reachable": Value::Null,
+            "obscured_by": Value::Null, "offscreen": false,
+        });
+        assert!(unreachable_click_error("a", &result).is_none());
     }
 
     #[test]

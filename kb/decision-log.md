@@ -728,13 +728,35 @@ reused (no new variant) and gained an optional `details` field so the failing
 caller reads the covering element out of the same flat object it already parses
 `error_type` from.
 
-**Trade-off**: `click` can now fail where it previously "succeeded", including on
-pages where the hit test is pessimistic — a target under a transparent
-full-viewport wrapper that forwards pointer events, for instance, is reported as
-obscured. That is the right default: the alternative is the pre-160 behaviour,
-where the same page reported a click that never happened. `elementFromPoint`
-returning `null` (centre outside the viewport) is a separate `click_offscreen`
-discriminant, not folded into "obscured".
+**The hit-test rule, and the two false failures it had to be corrected for.**
+Reachable iff the hit target is the element, a **descendant** of it, or an
+**ancestor** of it. The first cut compared only `hit === el || el.contains(hit)`
+and broke two things that a live run caught before merge:
+
+- `ff-rdp click body` failed with "covered by html", because `<body>` paints
+  nothing at its own centre and the hit resolves to its parent. An ancestor
+  cannot obscure its own descendant — an overlay is never an ancestor of what it
+  covers — so `hit.contains(el)` is a sound third clause, not a loophole.
+- An ordinary `<a>` inside an out-of-process iframe
+  (`live_129_click_cross_origin_frame`) hit-tested to `null`, because the child
+  document was never laid out. Reporting that as `click_offscreen` would break
+  every cross-origin frame click.
+
+So `reachable` is **three-valued**: `true`, `false`, or `null` for "the hit test
+could not decide". `null` dispatches the events and says so; only a literal
+`false` is an error. Turning "I could not tell" into exit 1 would be the same
+overstatement this iteration removes, pointed the other way.
+
+Below-the-fold is likewise not an obstruction: when the centre starts outside the
+viewport the element is scrolled into view (`block: 'center'`) and the rect
+re-read before any verdict. `click_offscreen` therefore means "still outside the
+viewport after scrolling" — a clipped or zero-size scroll container — not "you
+did not scroll first".
+
+**Trade-off**: `click` can now fail where it previously "succeeded" — a target
+under a transparent full-viewport wrapper that forwards pointer events is
+reported as obscured. That is the right default: the alternative is the pre-160
+behaviour, where the same page reported a click that never happened.
 
 **Not in scope**: trusted input. `e.clientX`/`e.clientY` stay `0` and events stay
 `isTrusted: false` — the hit test decides *whether* to dispatch, it does not give

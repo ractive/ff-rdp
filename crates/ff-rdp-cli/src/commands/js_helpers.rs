@@ -707,12 +707,11 @@ pub(crate) enum DispatchMode {
 /// element matched by `escaped_selector`, then returns a sentinel-prefixed JSON.
 ///
 /// iter-160 Theme A/B: the JS **hit-tests the element's centre point before
-/// dispatching anything**. `document.elementFromPoint(cx, cy)` is consulted and
-/// the sequence only runs when the point resolves to the target itself or one
-/// of its descendants (a `<span>` inside a `<button>` is the normal case).
-/// Otherwise nothing is dispatched and the result carries
+/// dispatching anything** — see [`HIT_TEST_JS`] for the exact rule and the two
+/// false-failure modes it had to be corrected for. Only a genuine third-party
+/// obstruction suppresses the dispatch; the result then carries
 /// `clicked: false, reachable: false` plus a CSS description of whatever owns
-/// the point — the caller (`click.rs`) turns that into exit 1.
+/// the point, and the caller (`click.rs`) turns that into exit 1.
 ///
 /// The old `entered` field is gone. It was set immediately after the
 /// `querySelector` null check, so it only ever meant "the selector matched" —
@@ -755,11 +754,11 @@ pub(crate) fn build_click_js(escaped_selector: &str, mode: DispatchMode) -> Stri
   if (!el) throw new Error('Element not found: {escaped_selector} — use ff-rdp dom SELECTOR --count to verify the selector matches');
   var text = (el.textContent || '').trim().substring(0, 100);
 {HIT_TEST_JS}
-  if (!reachable) {{
-    return '{JSON_SENTINEL}' + JSON.stringify({{clicked: false, matched: true, reachable: false, obscured_by: obscuredBy, offscreen: hit === null, tag: el.tagName, text: text}});
+  if (reachable === false) {{
+    return '{JSON_SENTINEL}' + JSON.stringify({{clicked: false, matched: true, reachable: false, obscured_by: obscuredBy, offscreen: offscreen, tag: el.tagName, text: text}});
   }}
   {event_dispatch}
-  return '{JSON_SENTINEL}' + JSON.stringify({{clicked: true, matched: true, reachable: true, obscured_by: null, offscreen: false, tag: el.tagName, text: text}});
+  return '{JSON_SENTINEL}' + JSON.stringify({{clicked: true, matched: true, reachable: reachable, obscured_by: null, offscreen: false, tag: el.tagName, text: text}});
 }})()"
     )
 }
@@ -767,20 +766,59 @@ pub(crate) fn build_click_js(escaped_selector: &str, mode: DispatchMode) -> Stri
 /// The centre-point hit test shared by every [`build_click_js`] dispatch mode
 /// (iter-160 Theme A).
 ///
-/// Defines three locals for the caller to consume: `hit` (the element
-/// `elementFromPoint` returned, possibly `null` when the centre is outside the
-/// viewport), `reachable` (true iff `hit` is the target or a descendant of it),
-/// and `obscuredBy` (a short CSS description of `hit`, or `null`).
+/// Defines four locals for the caller: `hit` (whatever `elementFromPoint`
+/// returned), `reachable` (`true`, `false`, or `null` for "could not be
+/// determined"), `obscuredBy` (a short CSS description of `hit`, or `null`) and
+/// `offscreen`.
 ///
-/// The description is built the same way `a11y_contrast.rs`'s in-page JS builds
-/// its `selector` field — tag name, then `#id` when present, else the first two
-/// classes — so the two never drift into different notations for the same
-/// element.
+/// **The rule.** Reachable iff the hit target is the element, a **descendant**
+/// of it, or an **ancestor** of it. The first two are obvious — a `<span>`
+/// inside a `<button>` is the normal case. The third was a correction: the
+/// first cut compared only `hit === el || el.contains(hit)`, and
+/// `ff-rdp click body` then failed with "covered by html", because `<body>`
+/// paints nothing at its own centre and the hit resolves to its parent. An
+/// ancestor cannot obscure its own descendant — overlays are never ancestors of
+/// what they cover — so `hit.contains(el)` is a sound third clause and not a
+/// loophole.
+///
+/// **Two things this deliberately does NOT call a failure.**
+/// - *Merely below the fold.* If the centre starts outside the viewport the
+///   element is scrolled into view and the rect re-read, because "you did not
+///   scroll first" is not an obstruction. `offscreen` is reported only when the
+///   centre is still outside the viewport afterwards.
+/// - *Indeterminate.* `elementFromPoint` returns `null` for a document that was
+///   never laid out — measured inside the out-of-process iframe that
+///   `live_129_click_cross_origin_frame` clicks, where an ordinary `<a>` hit-tests
+///   to `null`. Reporting that as "off-screen" would be the same overstatement
+///   this iteration exists to remove, just inverted, so `reachable` is `null`,
+///   the events are dispatched, and the envelope says the hit test could not
+///   decide rather than inventing a verdict.
+///
+/// The CSS description is built the same way `a11y_contrast.rs`'s in-page JS
+/// builds its `selector` field — tag name, then `#id` when present, else the
+/// first two classes — so the two never drift into different notations for the
+/// same element.
 const HIT_TEST_JS: &str = r"  var __r = el.getBoundingClientRect();
-  var hit = document.elementFromPoint(__r.left + __r.width / 2, __r.top + __r.height / 2);
-  var reachable = hit !== null && (hit === el || el.contains(hit));
+  var __cx = __r.left + __r.width / 2;
+  var __cy = __r.top + __r.height / 2;
+  var __inView = function (x, y) {
+    return x >= 0 && y >= 0 && x < (window.innerWidth || 0) && y < (window.innerHeight || 0);
+  };
+  if (!__inView(__cx, __cy)) {
+    // Not an obstruction — just not scrolled to yet. A user would scroll.
+    try { el.scrollIntoView({block: 'center', inline: 'center'}); } catch (e) { el.scrollIntoView(); }
+    __r = el.getBoundingClientRect();
+    __cx = __r.left + __r.width / 2;
+    __cy = __r.top + __r.height / 2;
+  }
+  var offscreen = !__inView(__cx, __cy);
+  var hit = offscreen ? null : document.elementFromPoint(__cx, __cy);
+  var reachable;
+  if (offscreen) { reachable = false; }
+  else if (hit === null) { reachable = null; }
+  else { reachable = hit === el || el.contains(hit) || hit.contains(el); }
   var obscuredBy = null;
-  if (hit !== null && !reachable) {
+  if (hit !== null && reachable === false) {
     obscuredBy = hit.tagName.toLowerCase();
     if (hit.id) { obscuredBy += '#' + hit.id; }
     else if (hit.className && typeof hit.className === 'string') {
