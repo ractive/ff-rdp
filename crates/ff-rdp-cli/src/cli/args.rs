@@ -348,7 +348,8 @@ pub struct Cli {
     #[arg(long, global = true, conflicts_with = "limit")]
     pub all: bool,
 
-    /// Sort results by field name
+    /// Sort results by field name (a name present on no result entry is an
+    /// error, not a silent no-op)
     #[arg(long, global = true)]
     pub sort: Option<String>,
 
@@ -360,7 +361,8 @@ pub struct Cli {
     #[arg(long, global = true, conflicts_with = "asc")]
     pub desc: bool,
 
-    /// Comma-separated list of fields to include in each result entry
+    /// Comma-separated list of fields to include in each result entry (a name
+    /// present on no result entry is an error, not silently dropped)
     #[arg(long, global = true, value_delimiter = ',')]
     pub fields: Option<Vec<String>>,
 
