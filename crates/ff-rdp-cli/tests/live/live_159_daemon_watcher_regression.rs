@@ -409,7 +409,11 @@ fn live_159_frame_targets_survive_the_fix() {
     let port = ff.port();
 
     let mut nav = daemon_args(port);
-    nav.extend(["navigate".to_owned(), CROSS_ORIGIN_FIXTURE.to_owned()]);
+    nav.extend([
+        "navigate".to_owned(),
+        CROSS_ORIGIN_FIXTURE.to_owned(),
+        "--allow-unsafe-urls".to_owned(),
+    ]);
     let nav_out = run(nav);
     if !nav_out.status.success() {
         stop_daemon(port);

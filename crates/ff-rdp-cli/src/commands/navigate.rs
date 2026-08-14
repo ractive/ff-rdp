@@ -1828,12 +1828,33 @@ const CONSENT_POST_DRAIN_MS: u64 = 8_000;
 ///
 /// Both keys are always present, matching `consent accept`'s discipline; a
 /// connection or protocol failure becomes a stderr warning plus two nulls.
-/// Using a separate connection is what lets `--with-network` keep its resource
-/// subscription live across the consent interaction (iter-159).
+///
+/// Only for plain `navigate`, whose `run_core` connection is already dropped by
+/// the time this runs. `--with-network` must reuse its live connection instead
+/// — see [`detect_and_accept_on`].
 fn detect_and_accept_best_effort(cli: &Cli) -> Value {
     match connect_and_get_target(cli)
         .and_then(|mut ctx| super::consent::detect_and_accept(&mut ctx))
     {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("warning: --auto-consent: consent detection failed: {e}");
+            json!({"cmp": null, "action": null})
+        }
+    }
+}
+
+/// [`detect_and_accept_best_effort`] on an **existing** connection.
+///
+/// iter-159: `--with-network` cannot open a second connection for the consent
+/// step. In daemon mode the daemon serialises proxied RPC and this invocation
+/// is still holding the slot, so the second connection sat there until the read
+/// timeout fired — measured, the flag degraded to `consent detection failed:
+/// operation timed out after 10000ms (phase: recv)` on every run. Reusing `ctx`
+/// also keeps the resource subscription live across the interaction, so the
+/// requests the banner dismissal unblocks are still captured.
+fn detect_and_accept_on(ctx: &mut crate::commands::connect_tab::ConnectedTab) -> Value {
+    match super::consent::detect_and_accept(ctx) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("warning: --auto-consent: consent detection failed: {e}");
@@ -2012,7 +2033,7 @@ pub fn run_with_network(
         // buffer, so any requests the banner dismissal triggers are still
         // captured by this invocation.  The daemon keeps buffering throughout.
         let consent = if auto_consent {
-            Some(detect_and_accept_best_effort(cli))
+            Some(detect_and_accept_on(&mut ctx))
         } else {
             None
         };
@@ -2193,10 +2214,9 @@ pub fn run_with_network(
 
     // iter-159: dismiss the consent overlay while the resource subscription is
     // still live, then drain again briefly so the requests the click triggers
-    // land in this invocation's capture.  `detect_and_accept_best_effort` uses
-    // its own connection, so our watcher keeps receiving throughout.
+    // land in this invocation's capture.
     let consent = if auto_consent {
-        let c = detect_and_accept_best_effort(cli);
+        let c = detect_and_accept_on(&mut ctx);
         let post = drain_network_events_timed(
             ctx.transport_mut(),
             Duration::from_millis(CONSENT_POST_DRAIN_MS),

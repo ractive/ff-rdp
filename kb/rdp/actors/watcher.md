@@ -353,3 +353,66 @@ that picks the mechanism per connection (`ConnectedTab::via_daemon`); `click`
 and `consent` both go through it. The daemon path polls the snapshot up to
 `DEFAULT_FRAME_TARGETS_SETTLE` while it still shows only the top-level target,
 so a command issued immediately after `navigate` does not race frame creation.
+
+### Where resource events are addressed from (iter-159)
+
+**`isServerTargetSwitchingEnabled: true` does not move `network-event`
+delivery off the watcher actor.** This was the load-bearing question of
+iter-159 and it was answered on the wire, not by reading the spec twice.
+
+Recorded frame (fixture
+`crates/ff-rdp-cli/tests/fixtures/resources_available_network_server_target_switching.json`,
+captured by `live_159_record_resources_available_with_server_target_switching`
+against a watcher created exactly the way the daemon creates it):
+
+```json
+{"type": "resources-available-array", "from": "server1.conn0.watcher3",
+ "array": [["network-event", [{"actor": "server1.conn0.netEvent6",
+   "cause": {"type": "document"}, "method": "GET", "isNavigationRequest": true,
+   "url": "https://example.com/", …}]]]}
+```
+
+`from` is the **watcher** actor. The reason is structural, not incidental:
+`devtools/server/actors/resources/index.js` keeps two dictionaries that both
+contain `TYPES.NETWORK_EVENT` —
+
+- `ParentProcessResources` → `resources/network-events.js`, watched from the
+  **WatcherActor** (which runs in the parent process) and emitted by
+  `WatcherActor.notifyResources` → `emitResources`
+  (`devtools/server/actors/watcher.js`), i.e. `from: <watcher>`;
+- `FrameTargetResources` → `resources/network-events-content.js`, which by its
+  own doc comment "only handles events for requests (js/css) blocked by CSP"
+  plus cached/data-channel resources.
+
+`WatcherActor.watchResources` splits the requested types with
+`Resources.getParentProcessResourceTypes` and handles the parent-process ones
+itself before delegating the rest to targets, so ordinary HTTP traffic is
+always the watcher's. The target actor *does* declare
+`resources-available-array` in its own spec
+(`devtools/shared/specs/targets/window-global.js`) and events do arrive with
+`from: …//windowGlobalTarget2` — but those belong to a **different** watcher
+(a proxied CLI command's own), which is exactly why the daemon's
+`is_watcher_event` compares `from` against its own watcher id and must **not**
+be widened to accept target actors.
+
+Verified against the 153/154 skew: `devtools/server/actors/resources/index.js`,
+`watcher/session-context.js`, `shared/specs/watcher.js`,
+`shared/specs/targets/window-global.js` and `shared/specs/descriptors/tab.js`
+are byte-identical between `FIREFOX_BETA_153_BASE` and the checked-out
+154.0a1 revision `0088392ab4cc`. `watcher.js` differs by 23/-10 lines, all in
+an unrelated `browserElement` → `webProgress` refactor plus a new
+`getExistingNetworkParentActor` accessor; `notifyResources`, `emitResources`
+and `watchResources` are unchanged.
+
+### `tabNavigated` arrives at load *stop* (iter-159)
+
+Measured on Firefox 153: for a plain daemon `navigate` to an
+`en.wikipedia.org` article the daemon's `tabNavigated` handler ran after **257**
+network entries had already been buffered — i.e. after the whole page load, not
+at commit. Anything that treats `tabNavigated` as "the navigation starts here"
+will scope a navigation's own requests to the *previous* epoch. The daemon's
+network buffer therefore starts each `network-event` epoch at the oldest
+*surviving* network entry instead, which is sound because
+`network-events.js`'s `#onTopBrowsingContextWillNavigate` destroys the previous
+document's request actors and the daemon prunes them on the matching
+`resources-destroyed-array`.
