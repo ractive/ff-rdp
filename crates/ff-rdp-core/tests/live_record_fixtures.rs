@@ -1513,6 +1513,38 @@ fn live_long_string_substring() {
         save_cli_fixture("substring_page_text_response.json", &substr_resp);
     }
 
+    // iter-161 Theme C: `eval` resolves its own longString grips now, so the
+    // e2e mock needs the `substring` response that pairs with
+    // `eval_result_long_string.json` (same expression, same run — recording
+    // both here keeps the pair consistent).
+    //
+    // Note for partial re-records: the committed `eval_result_long_string.json`
+    // predates the `child\d+` → `child0` normalization and carries `child2`
+    // actor ids, matching the equally old `get_target_response.json`. Recording
+    // *only* this test therefore rewrites the pair to `child0` while
+    // `get_target_response.json` still says `child2`, and
+    // `eval_long_string_result_is_fetched_in_full` then times out waiting for an
+    // `evaluationResult` from a console actor it never addressed. Re-record the
+    // whole file, or re-align the `from` fields by hand afterwards.
+    let (_imm, eval_long) = record_eval(transport, &console, "'x'.repeat(50000)", None, None);
+    save_cli_fixture("eval_result_long_string.json", &eval_long);
+    if eval_long["result"]["type"] == "longString" {
+        let long_actor = eval_long["result"]["actor"]
+            .as_str()
+            .expect("longString actor");
+        let length = eval_long["result"]["length"].as_u64().unwrap_or(1000);
+        transport
+            .send(&json!({
+                "to": long_actor,
+                "type": "substring",
+                "start": 0,
+                "end": length
+            }))
+            .expect("send substring");
+        let substr_resp = recv_from_actor(transport, long_actor);
+        save_cli_fixture("substring_eval_long_string_response.json", &substr_resp);
+    }
+
     // Screenshot as longString
     let js_screenshot = "(function() { \
         var w = window.innerWidth || document.documentElement.clientWidth || 800; \

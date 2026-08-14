@@ -318,9 +318,19 @@ fn eval_conflicting_sources_errors() {
     let _ = std::fs::remove_file(&tmp);
 }
 
+/// iter-161 Theme C: a result over Firefox's ~1000-char inline limit is
+/// fetched in full through the `longString` actor's `substring` protocol.
+///
+/// This test previously asserted the defect — `results.type == "longString"`
+/// and `results.length == 50000`, i.e. the caller receiving a preview grip
+/// with no way to reach the other 49 000 characters (the grip is released
+/// immediately after printing, and no command speaks `substring`).
 #[test]
-fn eval_long_string_result() {
-    let server = eval_server("eval_result_long_string.json");
+fn eval_long_string_result_is_fetched_in_full() {
+    let server = eval_server("eval_result_long_string.json").on(
+        "substring",
+        load_fixture("substring_eval_long_string_response.json"),
+    );
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
 
@@ -334,11 +344,21 @@ fn eval_long_string_result() {
 
     handle.join().unwrap();
 
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["results"]["type"], "longString");
-    assert_eq!(json["results"]["length"], 50000);
+    let s = json["results"]
+        .as_str()
+        .unwrap_or_else(|| panic!("results must be the full string, not a grip: {json}"));
+    assert_eq!(s.len(), 50000, "expected all 50000 chars, got {}", s.len());
+    assert!(
+        s.chars().all(|c| c == 'x'),
+        "the fetched string must be the recorded payload"
+    );
 }
 
 // ---------------------------------------------------------------------------
