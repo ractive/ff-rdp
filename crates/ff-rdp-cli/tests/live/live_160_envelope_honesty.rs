@@ -435,10 +435,17 @@ fn live_160_consent_no_cmp_exits_nonzero() {
         "`consent accept` must not report success with the banner still up: {}",
         combined(&out)
     );
-    let text = combined(&out);
+    assert_eq!(out.status.code(), Some(1), "{}", combined(&out));
+
+    // Exactly ONE JSON document on stdout — the error envelope. Printing the
+    // success envelope first and *then* failing would be the iter-153
+    // double-envelope shape, so this parses rather than substring-matches.
+    let json = parse_json(&out, &["consent", "accept"]);
+    assert_eq!(json["error_type"], "consent_no_cmp", "{json}");
+    assert_eq!(json["status"], "no_cmp_detected", "{json}");
     assert!(
-        text.contains("consent_no_cmp"),
-        "error_type must be consent_no_cmp: {text}"
+        json.as_object().is_some_and(|o| o.contains_key("cmp")),
+        "cmp/action keep their always-present-key discipline on the error path too: {json}"
     );
 
     // The independent read-back: the banner is still in the document.
