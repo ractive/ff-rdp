@@ -811,7 +811,7 @@ With --key: {\"results\": {\"key\": \"...\", \"value\": \"...\"}, \"total\": 1, 
 
 Output: {\"results\": {\"role\": \"...\", \"name\": \"...\", \"children\": [...]}, \"total\": 1, \"meta\": {..., \"source\": \"native\"|\"js-fallback\"}}
 With a11y summary: {\"results\": [{\"role\": \"...\", \"name\": \"...\", \"level\": N}], \"total\": N, \"meta\": {...}}
-With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool, ...}], \"total\": N, \"sampled\": M, \"meta\": {..., \"source\": \"js-fallback\"}}
+With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool, ...}], \"total\": N, \"sampled\": M, \"capped\": bool, \"source\": \"js-fallback\", \"meta\": {..., \"source\": \"js-fallback\"}}
   a11y contrast `total` = returned results (AA failures under --fail-only, else all checks); `sampled` = elements examined. Pre-iter-127 `total` reported the sample size.
   `meta.source` (iter-143) is always present on a11y/a11y --critical/a11y contrast: \"native\" means the real Firefox platform accessibility tree (roles like \"document\"/\"paragraph\"); \"js-fallback\" means a DOM-derived approximation (roles like \"generic\"), with `meta.source_reason` naming why. `a11y --native` opts in to the native tree (never the default — DEC-027) by enabling Firefox's accessibility service for the duration of the call.
   `meta.service_left_enabled` / `meta.service_restore_error` (iter-149) are always present on plain `a11y`: `service_left_enabled` is true only when `--native` enabled the platform accessibility service and could not restore it afterward (the service stays enabled for as long as this command's connection is open, normally just until it exits), with `service_restore_error` naming the failure; both stay false/null when nothing needed restoring. The walked tree is still returned in `results` even when the restore failed.")]
@@ -2401,11 +2401,19 @@ the AA failures under --fail-only (pre-limit — a --limit truncates `results` b
 `sampled` field reports how many elements were examined, so total == sampled
 without --fail-only. `meta.summary` carries aa_pass/aa_fail/capped detail.
 
+`capped` and `source` sit at the TOP level next to `sampled` (iter-160), not
+only inside `meta`. `capped: true` means the in-page pass stopped at its
+1000-element ceiling, so `total: 0` means \"none of the sampled elements
+failed\" — not \"this page has no contrast failures\". A capped sample that
+returns no failures also emits a hint naming the element count, because the
+qualifier must travel with the clean bill of health rather than sitting two
+levels down in a block --format text does not print.
+
 Backward-compat note: before iter-127, `total` under --fail-only reported the
 sampled element count rather than the failure count; that count now lives in
 `sampled`.
 
-Output: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool, ...}], \"total\": N, \"sampled\": M, \"meta\": {\"summary\": {...}}}")]
+Output: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool, ...}], \"total\": N, \"sampled\": M, \"capped\": bool, \"source\": \"js-fallback\", \"meta\": {\"summary\": {...}}}")]
     Contrast {
         /// CSS selector to limit checking (default: all text elements)
         #[arg(long)]

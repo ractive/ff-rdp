@@ -81,6 +81,12 @@ pub struct HintContext {
     pub(crate) fail_only: bool,
     /// Specific storage type used (e.g., `"local"`, `"session"`).
     pub(crate) storage_type: Option<String>,
+    /// iter-160 Theme E: `(capped, sampled, returned)` for `a11y contrast` —
+    /// whether the in-page sample hit its 1000-element ceiling, how many
+    /// elements were examined, and how many rows the command is returning.
+    /// A zero result from a truncated sample must never be printable as a
+    /// clean pass without that qualifier attached.
+    pub(crate) capped_sample: Option<(bool, usize, usize)>,
 }
 
 impl HintContext {
@@ -92,6 +98,7 @@ impl HintContext {
             detail: false,
             fail_only: false,
             storage_type: None,
+            capped_sample: None,
         }
     }
 
@@ -112,6 +119,13 @@ impl HintContext {
 
     pub fn with_fail_only(mut self, fail_only: bool) -> Self {
         self.fail_only = fail_only;
+        self
+    }
+
+    /// Record that `a11y contrast`'s in-page sample was (or was not) truncated
+    /// (iter-160 Theme E).
+    pub fn with_capped_sample(mut self, capped: bool, sampled: usize, returned: usize) -> Self {
+        self.capped_sample = Some((capped, sampled, returned));
         self
     }
 
@@ -381,6 +395,25 @@ fn hints_a11y(_ctx: &HintContext) -> Vec<Hint> {
 }
 
 fn hints_a11y_contrast(ctx: &HintContext) -> Vec<Hint> {
+    // iter-160 Theme E: a capped sample that returned nothing reads as "this
+    // page has no contrast failures" — measured on a commercial site: 32
+    // checked, 0 failures, `capped: true`, both qualifiers buried in `meta`.
+    // Lead with the qualifier so the clean bill of health is never printable
+    // on its own. Same false-good shape iter-125 fixed for LCP.
+    if let Some((true, sampled, returned)) = ctx.capped_sample {
+        let mut hints = vec![Hint::new(
+            format!(
+                "Sample was truncated at the 1000-element ceiling — {sampled} element(s)                  examined, {returned} reported. Narrow the scope with a selector to check                  the rest of the page"
+            ),
+            "ff-rdp a11y contrast 'main' --fail-only",
+        )];
+        hints.extend(hints_a11y_contrast_default(ctx));
+        return hints;
+    }
+    hints_a11y_contrast_default(ctx)
+}
+
+fn hints_a11y_contrast_default(ctx: &HintContext) -> Vec<Hint> {
     if ctx.fail_only {
         vec![
             Hint::new("Run accessibility summary", "ff-rdp a11y summary"),
