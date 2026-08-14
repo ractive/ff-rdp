@@ -1939,10 +1939,16 @@ fn extract_document_status(
 /// iter-159: `auto_consent` is honoured here too.  `--with-network` and
 /// `--auto-consent` used to be mutually exclusive at the clap level, so on any
 /// consent-walled site — the exact case where you want both — you had to choose
-/// between dismissing the banner and capturing the network.  The consent step
-/// now runs **inside** the capture window: the resource subscription is still
-/// live when the banner is clicked, and a short follow-up drain collects the
-/// requests the click triggers.
+/// between dismissing the banner and capturing the network. The consent step now
+/// runs while capture is still in effect, on the **same** connection (a second
+/// one deadlocks against the daemon's RPC serialisation — see
+/// [`detect_and_accept_on`]).
+///
+/// The two paths differ in what reaches *this* envelope. Direct mode owns its
+/// watcher subscription, so a short follow-up drain after the click collects the
+/// requests the dismissal unblocks. Daemon mode has already stopped its stream
+/// by then; the post-consent requests go to the daemon buffer, where
+/// `ff-rdp network` reads them, rather than into this result.
 pub fn run_with_network(
     cli: &Cli,
     url: &str,
@@ -2027,9 +2033,10 @@ pub fn run_with_network(
             }
         }
 
-        // iter-159: run the consent step *before* draining the residual daemon
-        // buffer, so any requests the banner dismissal triggers are still
-        // captured by this invocation.  The daemon keeps buffering throughout.
+        // iter-159: dismiss the consent overlay on this same connection. The
+        // requests it unblocks land in the daemon buffer (which never stops
+        // buffering) rather than in this envelope — see `run_with_network`'s
+        // doc comment for why the two paths differ here.
         let consent = if auto_consent {
             Some(detect_and_accept_on(&mut ctx))
         } else {
