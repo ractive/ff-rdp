@@ -471,12 +471,16 @@ Examples:
 
 --auto-consent (iter-129): after the document commits, run the same
 CMP-detection-and-accept flow as `ff-rdp consent accept` and add
-`results.consent = {\"cmp\": \"sourcepoint\"|\"bbc\"|null, \"action\": \"accepted\"|null}`
-(both keys always present, never omitted). Best-effort — a detection failure
-prints a warning but does not fail the navigate. Not combinable with
---with-network. This is the CLI-native complement to `launch --auto-consent`
-(the Consent-O-Matic extension), which does not reliably work headless
-against Sourcepoint-gated sites.
+`results.consent = {\"cmp\": \"sourcepoint\"|\"bbc\"|null, \"action\": \"accepted\"|null,
+\"status\": \"accepted\"|\"detected_not_actioned\"|\"no_cmp_detected\"}` (all three keys
+always present, never omitted; `status` added in iter-160). Combinable with
+--with-network since iter-159, and the same three keys appear there.
+Best-effort — a detection failure prints a warning but does not fail the
+navigate, and unlike `consent accept` the navigate's exit code is UNCHANGED by
+the consent outcome: a page with no cookie banner is not a failed navigation.
+This is the CLI-native complement to `launch --auto-consent` (the
+Consent-O-Matic extension), which does not reliably work headless against
+Sourcepoint-gated sites.
 
 Output: {\"results\": {\"navigated\": \"...\", \"status\": 200|null, \"committed_url\": \"...\", \"ready_state\": \"...\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}
 
@@ -1339,8 +1343,10 @@ clicking that frame's \"accept all\" control directly.
 Subcommands:
   consent accept   Detect a known CMP on the current tab and accept it
 
-Output: {\"results\": {\"cmp\": \"sourcepoint\"|\"bbc\"|null, \"action\": \"accepted\"|null}, \"total\": 1, \"meta\": {...}}
-Both keys are always present — null/null when no known CMP was found on the page.
+Output: {\"results\": {\"cmp\": \"sourcepoint\"|\"bbc\"|null, \"action\": \"accepted\"|null, \"status\": \"accepted\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, \"total\": 1, \"meta\": {...}}
+All three keys are always present — cmp/action are null/null when no known CMP was
+found on the page, and `status` (iter-160) names which of the three outcomes it was.
+`consent accept` exits 1 for the two non-accepting outcomes; see `consent accept --help`.
 
 See also: `ff-rdp navigate --auto-consent` to run this automatically after navigating."
     )]
@@ -2316,9 +2322,32 @@ pub enum ConsentCommand {
     #[command(
         long_about = "Detect a known cookie-consent-management-platform (CMP) overlay on the current tab and accept it.
 
-Output: {\"results\": {\"cmp\": \"sourcepoint\"|null, \"action\": \"accepted\"|null}, \"total\": 1, \"meta\": {...}}"
+Exit code (iter-160): 0 only when a banner was actually accepted. The command
+used to exit 0 for all three outcomes, so a page whose banner was still up and
+still swallowing clicks was indistinguishable from a dismissed one.
+
+  status \"accepted\"               exit 0
+  status \"detected_not_actioned\"  exit 1, error_type \"consent_not_actioned\"
+  status \"no_cmp_detected\"        exit 1, error_type \"consent_no_cmp\"
+
+The envelope is printed in all three cases — the exit code changes, the output
+does not shrink.
+
+Output: {\"results\": {\"cmp\": \"sourcepoint\"|null, \"action\": \"accepted\"|null, \"status\": \"accepted\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, \"total\": 1, \"meta\": {...}}"
     )]
-    Accept,
+    Accept {
+        /// Exit 0 instead of 1 when no known CMP was found on the page.
+        ///
+        /// Exists for callers that run `consent accept` speculatively — a
+        /// script that dismisses a banner if there is one and carries on if
+        /// there is not should not have to swallow the exit code of every
+        /// other failure to do that. It opts in ONLY to the
+        /// "no_cmp_detected" outcome: a CMP that was found and could not be
+        /// actioned still exits 1, because the caller asked for the banner to
+        /// go away and it is still there.
+        #[arg(long)]
+        allow_no_cmp: bool,
+    },
 }
 
 /// Subcommands for `ff-rdp record`.

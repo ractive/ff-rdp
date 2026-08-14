@@ -26,9 +26,13 @@ use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::js_helpers::JSON_SENTINEL;
 
 /// `ff-rdp consent accept` — explicit, on-demand consent acceptance.
-pub fn run(cli: &Cli) -> Result<(), AppError> {
+///
+/// iter-160 Theme D: exit 1 unless a banner was actually accepted. `--allow-no-cmp`
+/// (`allow_no_cmp`) restores exit 0 for the no-CMP outcome only.
+pub fn run(cli: &Cli, allow_no_cmp: bool) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let result = detect_and_accept(&mut ctx)?;
+    let status = status_of(&result);
 
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(
@@ -44,7 +48,55 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&result, 1, &meta);
 
-    OutputPipeline::from_cli(cli)?.finalize(&envelope)
+    // iter-160 Theme D: the envelope is printed either way — a caller that
+    // wants the detail of *why* nothing was dismissed still gets `cmp`,
+    // `action` and `status` — but a non-accepting pass is a failed action and
+    // must not be reported as exit 0. Before this, `consent accept` returned
+    // `Ok(())` unconditionally, so a page whose banner was still up and still
+    // swallowing clicks looked identical to one that had been dismissed.
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)?;
+    if let Some(err) = consent_exit_error(status, allow_no_cmp) {
+        return Err(err);
+    }
+    Ok(())
+}
+
+/// The error `consent accept` must return for `status`, or `None` when it
+/// should exit 0 (iter-160 Theme D).
+///
+/// `allow_no_cmp` opts *only* the "nothing recognised was on the page" outcome
+/// back into exit 0. A CMP that was found and could not be actioned stays a
+/// failure regardless: the caller asked for the banner to be dismissed, the
+/// banner is still there, and something is wrong with the page or the accept
+/// table that the caller needs to see.
+fn consent_exit_error(status: ConsentStatus, allow_no_cmp: bool) -> Option<AppError> {
+    let error_type = status.error_type()?;
+    if allow_no_cmp && status == ConsentStatus::NoCmpDetected {
+        return None;
+    }
+    let message = match status {
+        ConsentStatus::Accepted => return None,
+        ConsentStatus::DetectedNotActioned => {
+            "a known consent-management platform was detected but its accept control could \
+             not be actioned — the banner is still on screen.\n\
+             hint: inspect the CMP frame with `ff-rdp dom --frames`, or click the control \
+             directly with `ff-rdp click --frame <url-substring> <selector>`."
+                .to_owned()
+        }
+        ConsentStatus::NoCmpDetected => {
+            "no consent-management platform this build recognises was found on the page — \
+             nothing was dismissed.\n\
+             hint: if the page has a banner ff-rdp does not know, dismiss it with `ff-rdp \
+             click <selector>`; pass --allow-no-cmp to exit 0 when a speculative \
+             `consent accept` legitimately has nothing to do."
+                .to_owned()
+        }
+    };
+    Some(AppError::Unsupported {
+        error_type,
+        message,
+        details: Some(json!({"status": status.as_str()})),
+    })
 }
 
 /// One entry in the CMP recognition table: a name plus the URL substrings
@@ -109,9 +161,52 @@ const NATIVE_CMP_TABLE: &[NativeCmpEntry] = &[NativeCmpEntry {
 /// omitted, so `--jq '.results.action'` never throws regardless of whether a
 /// CMP was present on the page (iter-128 `hint` lesson, applied here from the
 /// start per the iteration-129 plan).
-struct ConsentResult {
+pub(crate) struct ConsentResult {
     cmp: Option<&'static str>,
     action: Option<&'static str>,
+}
+
+/// The three outcomes a consent pass can have, as one word each (iter-160
+/// Theme D).
+///
+/// All three already existed in the code and were flattened into a single
+/// exit 0 with a two-key envelope — so `consent accept` reported success with
+/// the banner still on screen, still intercepting clicks (which is also the
+/// Theme A failure mode: the two compound in the field).
+///
+/// This is the *only* place the vocabulary is defined; all three producers
+/// (`consent accept`, `navigate --auto-consent`, and `--with-network
+/// --auto-consent`'s two call sites) go through `ConsentResult::status` so they
+/// cannot drift into separate wordings for the same outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConsentStatus {
+    /// A known CMP was found and its accept control was clicked.
+    Accepted,
+    /// A known CMP was recognised, but no accept control could be actioned
+    /// inside it.
+    DetectedNotActioned,
+    /// No CMP this build recognises was present.
+    NoCmpDetected,
+}
+
+impl ConsentStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::DetectedNotActioned => "detected_not_actioned",
+            Self::NoCmpDetected => "no_cmp_detected",
+        }
+    }
+
+    /// The `error_type` discriminant for a non-accepting outcome, or `None`
+    /// when the outcome is a success and the command must exit 0.
+    fn error_type(self) -> Option<&'static str> {
+        match self {
+            Self::Accepted => None,
+            Self::DetectedNotActioned => Some("consent_not_actioned"),
+            Self::NoCmpDetected => Some("consent_no_cmp"),
+        }
+    }
 }
 
 impl ConsentResult {
@@ -122,8 +217,38 @@ impl ConsentResult {
         }
     }
 
+    /// Classify this result. Derived from `cmp`/`action` rather than stored
+    /// alongside them, so the status and the two legacy keys can never
+    /// disagree about the same pass.
+    fn status(&self) -> ConsentStatus {
+        match (self.cmp, self.action) {
+            (Some(_), Some(_)) => ConsentStatus::Accepted,
+            (Some(_), None) => ConsentStatus::DetectedNotActioned,
+            (None, _) => ConsentStatus::NoCmpDetected,
+        }
+    }
+
     fn to_json(&self) -> Value {
-        json!({"cmp": self.cmp, "action": self.action})
+        json!({
+            "cmp": self.cmp,
+            "action": self.action,
+            "status": self.status().as_str(),
+        })
+    }
+}
+
+/// Read the `status` field back out of a `ConsentResult::to_json` value.
+///
+/// `detect_and_accept` returns a `Value` (its two `navigate` callers embed it
+/// verbatim), so `consent accept`'s exit-code decision has to re-read the field
+/// rather than keep the enum. An unparseable/absent status is treated as
+/// `NoCmpDetected` — the conservative reading, since the only way to get here
+/// without a status is a shape this module did not produce.
+fn status_of(result: &Value) -> ConsentStatus {
+    match result.get("status").and_then(Value::as_str) {
+        Some("accepted") => ConsentStatus::Accepted,
+        Some("detected_not_actioned") => ConsentStatus::DetectedNotActioned,
+        _ => ConsentStatus::NoCmpDetected,
     }
 }
 
@@ -451,5 +576,100 @@ mod tests {
     fn native_accept_js_escapes_single_quotes_in_selector() {
         let js = native_accept_js("a[data-x='y']");
         assert!(js.contains(r"a[data-x=\'y\']"));
+    }
+
+    // ── iter-160 Theme D: three outcomes, three statuses, two exit codes ───
+
+    /// AC `unit_160_consent_status_values_are_distinct`.
+    #[test]
+    fn unit_160_consent_status_values_are_distinct() {
+        let cases = [
+            (
+                ConsentResult {
+                    cmp: Some("sourcepoint"),
+                    action: Some("accepted"),
+                },
+                "accepted",
+                true,
+            ),
+            (
+                ConsentResult {
+                    cmp: Some("sourcepoint"),
+                    action: None,
+                },
+                "detected_not_actioned",
+                false,
+            ),
+            (ConsentResult::none(), "no_cmp_detected", false),
+        ];
+
+        let mut seen = std::collections::HashSet::new();
+        for (result, expected_status, exits_zero) in cases {
+            let json = result.to_json();
+            assert_eq!(json["status"], json!(expected_status), "{json}");
+            assert!(seen.insert(expected_status), "duplicate status value");
+
+            // `cmp`/`action` keep their always-present-key discipline: the
+            // keys exist even when null, so `--jq '.results.action'` never
+            // throws (iter-128's `hint` lesson, iter-129's plan).
+            let obj = json.as_object().expect("object");
+            assert!(obj.contains_key("cmp"), "cmp key dropped: {json}");
+            assert!(obj.contains_key("action"), "action key dropped: {json}");
+
+            // Only `accepted` exits 0 — and `--allow-no-cmp` is not in play here.
+            let err = consent_exit_error(status_of(&json), false);
+            assert_eq!(
+                err.is_none(),
+                exits_zero,
+                "status {expected_status} exit-code mapping wrong"
+            );
+            if let Some(err) = err {
+                assert_eq!(err.exit_code(), 1);
+            }
+        }
+        assert_eq!(seen.len(), 3);
+    }
+
+    #[test]
+    fn unit_160_allow_no_cmp_only_forgives_the_no_cmp_outcome() {
+        assert!(consent_exit_error(ConsentStatus::NoCmpDetected, true).is_none());
+        // A CMP that was found and could not be actioned is still a failure:
+        // the caller asked for the banner to go away and it is still there.
+        let err = consent_exit_error(ConsentStatus::DetectedNotActioned, true)
+            .expect("must still fail with --allow-no-cmp");
+        assert_eq!(err.error_type(), "consent_not_actioned");
+    }
+
+    #[test]
+    fn unit_160_consent_error_types_are_stable_discriminants() {
+        assert_eq!(
+            consent_exit_error(ConsentStatus::NoCmpDetected, false)
+                .expect("error")
+                .error_type(),
+            "consent_no_cmp"
+        );
+        assert_eq!(
+            consent_exit_error(ConsentStatus::DetectedNotActioned, false)
+                .expect("error")
+                .error_type(),
+            "consent_not_actioned"
+        );
+    }
+
+    /// The `no_cmp_detected` message must name the opt-out, so the caller who
+    /// legitimately wants exit 0 learns the flag from the failure itself.
+    #[test]
+    fn unit_160_no_cmp_error_names_allow_no_cmp() {
+        let err = consent_exit_error(ConsentStatus::NoCmpDetected, false).expect("error");
+        assert!(err.to_string().contains("--allow-no-cmp"), "{err}");
+    }
+
+    #[test]
+    fn unit_160_status_of_defaults_to_no_cmp_for_an_unknown_shape() {
+        assert_eq!(status_of(&json!({})), ConsentStatus::NoCmpDetected);
+        assert_eq!(
+            status_of(&json!({"status": "accepted"})),
+            ConsentStatus::Accepted
+        );
     }
 }
