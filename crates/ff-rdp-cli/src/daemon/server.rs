@@ -1233,10 +1233,9 @@ fn dispatch_firefox_message(
     if let Some((resource_bus, resource_rx)) = resources
         && is_watcher_event(msg, &watcher_actor)
     {
-        // Forward raw events to stream subscribers.  The set of types that were
-        // claimed by a subscriber is deliberately *not* used to gate buffering
-        // any more — see the comment on the buffering loop below.
-        let _streamed_types = dispatch_watcher_event_to_stream_subs(state, msg);
+        // Forward raw events to stream subscribers.  Which types a subscriber
+        // claimed no longer gates buffering — see the loop below.
+        dispatch_watcher_event_to_stream_subs(state, msg);
 
         // Wrap any grip actor IDs embedded in the watcher event in a
         // ResourceGripGuard backed by the daemon's release queue.  When the
@@ -1669,14 +1668,13 @@ fn dispatch_console_push_event(state: &SharedState, msg: &Value) {
 /// Forward a watcher event to all streaming subscribers whose type set overlaps
 /// the event's resource types.
 ///
-/// Returns the set of resource type strings that were successfully forwarded to
-/// at least one subscriber — the caller uses this to skip buffering for those
-/// types (so that `navigate --with-network` streaming doesn't double-count events).
-fn dispatch_watcher_event_to_stream_subs(state: &SharedState, msg: &Value) -> HashSet<String> {
-    let mut streamed: HashSet<String> = HashSet::new();
-
+/// iter-159: this used to return the set of types it had forwarded, and the
+/// caller skipped buffering those. That suppression is gone — the daemon
+/// buffers every watcher resource it receives — so there is nothing left to
+/// report and the return type is `()`.
+fn dispatch_watcher_event_to_stream_subs(state: &SharedState, msg: &Value) {
     let Some(array) = msg.get("array").and_then(Value::as_array) else {
-        return streamed;
+        return;
     };
 
     // Collect the resource types present in this event.
@@ -1691,7 +1689,7 @@ fn dispatch_watcher_event_to_stream_subs(state: &SharedState, msg: &Value) -> Ha
     }
 
     if event_types.is_empty() {
-        return streamed;
+        return;
     }
 
     // Serialise the message once (shared across all subscribers).
@@ -1699,7 +1697,7 @@ fn dispatch_watcher_event_to_stream_subs(state: &SharedState, msg: &Value) -> Ha
         Ok(s) => s,
         Err(e) => {
             eprintln!("daemon: could not serialise watcher event: {e}");
-            return streamed;
+            return;
         }
     };
 
@@ -1708,23 +1706,13 @@ fn dispatch_watcher_event_to_stream_subs(state: &SharedState, msg: &Value) -> Ha
     let mut dead: Vec<usize> = Vec::new();
     for (i, sub) in subs.iter_mut().enumerate() {
         let wants = event_types.iter().any(|t| sub.types.contains(*t));
-        if wants {
-            if sub.writer.send_raw(&json).is_err() {
-                dead.push(i);
-            } else {
-                for t in &event_types {
-                    if sub.types.contains(*t) {
-                        streamed.insert((*t).to_owned());
-                    }
-                }
-            }
+        if wants && sub.writer.send_raw(&json).is_err() {
+            dead.push(i);
         }
     }
     for i in dead.into_iter().rev() {
         subs.remove(i);
     }
-
-    streamed
 }
 
 /// Forward a navigation boundary event to all stream subscribers watching `"network-event"`.
