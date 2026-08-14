@@ -189,6 +189,9 @@ OUTPUT FORMAT (iter-60 compact defaults):
   --format html  raw HTML passthrough (dom and snapshot only — pre-iter-60 shape)
   --jq can be combined with --format text: jq runs first, text rendering applies
   Use --jq to filter the envelope: --jq '.results[0]', --jq '.total'
+    --jq is a VIEW: it never changes the envelope's shape. `network` was the one
+    exception until iter-160 (--jq silently switched results object -> array);
+    pass --detail there, as on every other list command.
   Use --detail for per-entry output on list commands (default is summary view)
   Contextual hints suggest follow-up commands: \"hints\": [...] in JSON, -> lines in text
   Hints default: on for --format text, off for JSON. Override: --hints / --no-hints
