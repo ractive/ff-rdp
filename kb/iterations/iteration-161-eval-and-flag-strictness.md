@@ -8,7 +8,7 @@ dogfood_path: |
   # main and the `# →` comment records what main ACTUALLY printed.
   ff-rdp launch --headless --auto-consent
   ff-rdp navigate https://news.ycombinator.com
-
+  
   # --- Theme A: --stringify must accept what bare eval accepts ---
   ff-rdp eval 'const x = 5; x'
   # → {"results": 5, "total": 1}                                  (works today)
@@ -24,7 +24,7 @@ dogfood_path: |
   # → after: {"results": {"a":1,"b":[2,3]}, "total": 1}  — structured, not a grip
   ff-rdp eval --stringify 'const r = await Promise.resolve({n:7}); r'
   # → after: {"results": {"n":7}, "total": 1}  — stringify + await + multi-statement
-
+  
   # --- Theme C: eval must return the whole string ---
   ff-rdp eval '"x".repeat(5000)' --jq '.results | length'
   # → main: 1000-ish (the preview grip); after: 5000
@@ -33,7 +33,7 @@ dogfood_path: |
   # → after: {"results": "xxxx…"} with all 5000 chars, no longString grip anywhere
   ff-rdp eval --stringify 'Array.from({length:400},(_,i)=>({i}))'
   # → after: a 400-element array in results (JSON well over 1000 chars)
-
+  
   # --- Theme D: --fields / --sort must fail loud ---
   ff-rdp dom 'a' --limit 2 --fields bogusfield
   # → main: {"results": [{},{}], "total": 2}, exit 0            (data destroyed)
@@ -47,12 +47,12 @@ dogfood_path: |
   # → unchanged: sorted ascending by tag, exit 0
   ff-rdp dom '.no-such-class-anywhere' --fields tag
   # → after: {"results": [], "total": 0}, exit 0 — an empty result set is not an error
-
+  
   # --- Theme E: meta.eval_path is gone ---
   ff-rdp eval 'document.title' --jq '.meta'
   # → main: {"eval_path": "page-await"}; after: no eval_path key
 first_call_sites: []
-status: in-review
+status: done
 title: "Iteration 161: --stringify cannot take a script, eval truncates long strings, and two flags fail silently"
 type: iteration
 tags:
