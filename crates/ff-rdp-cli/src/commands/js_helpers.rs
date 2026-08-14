@@ -609,7 +609,18 @@ pub(crate) enum DispatchMode {
 /// Build a JS expression that dispatches the appropriate event sequence on the
 /// element matched by `escaped_selector`, then returns a sentinel-prefixed JSON.
 ///
-/// The `entered` sentinel is set before the action so D2 can detect partial success.
+/// iter-160 Theme A/B: the JS **hit-tests the element's centre point before
+/// dispatching anything**. `document.elementFromPoint(cx, cy)` is consulted and
+/// the sequence only runs when the point resolves to the target itself or one
+/// of its descendants (a `<span>` inside a `<button>` is the normal case).
+/// Otherwise nothing is dispatched and the result carries
+/// `clicked: false, reachable: false` plus a CSS description of whatever owns
+/// the point — the caller (`click.rs`) turns that into exit 1.
+///
+/// The old `entered` field is gone. It was set immediately after the
+/// `querySelector` null check, so it only ever meant "the selector matched" —
+/// which is now reported honestly as `matched`, next to a `reachable` that
+/// really is the hit test.
 pub(crate) fn build_click_js(escaped_selector: &str, mode: DispatchMode) -> String {
     let event_dispatch: &str = match mode {
         DispatchMode::Pointer => {
@@ -643,15 +654,43 @@ pub(crate) fn build_click_js(escaped_selector: &str, mode: DispatchMode) -> Stri
 
     format!(
         r"(function() {{
-  var entered = false;
   var el = document.querySelector('{escaped_selector}');
   if (!el) throw new Error('Element not found: {escaped_selector} — use ff-rdp dom SELECTOR --count to verify the selector matches');
-  entered = true;
+  var text = (el.textContent || '').trim().substring(0, 100);
+{HIT_TEST_JS}
+  if (!reachable) {{
+    return '{JSON_SENTINEL}' + JSON.stringify({{clicked: false, matched: true, reachable: false, obscured_by: obscuredBy, offscreen: hit === null, tag: el.tagName, text: text}});
+  }}
   {event_dispatch}
-  return '{JSON_SENTINEL}' + JSON.stringify({{clicked: true, entered: entered, tag: el.tagName, text: (el.textContent || '').trim().substring(0, 100)}});
+  return '{JSON_SENTINEL}' + JSON.stringify({{clicked: true, matched: true, reachable: true, obscured_by: null, offscreen: false, tag: el.tagName, text: text}});
 }})()"
     )
 }
+
+/// The centre-point hit test shared by every [`build_click_js`] dispatch mode
+/// (iter-160 Theme A).
+///
+/// Defines three locals for the caller to consume: `hit` (the element
+/// `elementFromPoint` returned, possibly `null` when the centre is outside the
+/// viewport), `reachable` (true iff `hit` is the target or a descendant of it),
+/// and `obscuredBy` (a short CSS description of `hit`, or `null`).
+///
+/// The description is built the same way `a11y_contrast.rs`'s in-page JS builds
+/// its `selector` field — tag name, then `#id` when present, else the first two
+/// classes — so the two never drift into different notations for the same
+/// element.
+const HIT_TEST_JS: &str = r"  var __r = el.getBoundingClientRect();
+  var hit = document.elementFromPoint(__r.left + __r.width / 2, __r.top + __r.height / 2);
+  var reachable = hit !== null && (hit === el || el.contains(hit));
+  var obscuredBy = null;
+  if (hit !== null && !reachable) {
+    obscuredBy = hit.tagName.toLowerCase();
+    if (hit.id) { obscuredBy += '#' + hit.id; }
+    else if (hit.className && typeof hit.className === 'string') {
+      var __c = hit.className.trim().split(/\s+/).slice(0, 2).join('.');
+      if (__c) { obscuredBy += '.' + __c; }
+    }
+  }";
 
 // ---------------------------------------------------------------------------
 // Wait-for predicate helpers

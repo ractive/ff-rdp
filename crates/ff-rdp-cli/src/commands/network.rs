@@ -38,6 +38,7 @@ fn since_requires_daemon_error() -> AppError {
                   hint: drop --no-daemon so the command routes through the \
                   daemon, or omit --since for a one-shot capture."
             .to_owned(),
+        details: None,
     }
 }
 
@@ -75,6 +76,7 @@ pub fn run(
                       hint: use --source watcher (or drop --source) to keep --since, \
                       or drop --since for a full performance-api capture."
                 .to_owned(),
+            details: None,
         });
     }
 

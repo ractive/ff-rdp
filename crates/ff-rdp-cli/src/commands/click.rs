@@ -168,6 +168,12 @@ pub fn run_core(
         opts.frame,
         prefetched_targets,
     )?;
+    // iter-160 Theme A: the hit test inside the click JS refused to dispatch —
+    // fail here, before --settle/--wait-for/--wait-for-network get a chance to
+    // wait on a page nothing touched.
+    if let Some(err) = unreachable_click_error(selector, &click_json) {
+        return Err(err);
+    }
     // iter-129: always-present key discipline (see the plan's `meta.frame_url`
     // note and iter-128's `hint` regression) — present and `null` on the
     // top-frame path, never omitted, so `--jq '.results.frame_url'` never
@@ -432,20 +438,62 @@ fn do_click(
 
 /// Build the click JS for the given dispatch mode (shared by the top-level
 /// attempt and every frame-scan retry — same JS, different console actor).
+///
+/// iter-160 Theme A: `ClickOnly` used to be a hand-written copy of the JS here
+/// rather than a [`build_click_js`] mode, and that copy is exactly how the
+/// hardcoded `entered: true` literal survived in one dispatch mode after being
+/// computed in the other two. The centre-point hit test has to run in all three
+/// modes — `el.click()` is no more able to reach a covered button than
+/// `dispatchEvent` is — so there is one producer now and this is a thin
+/// delegation kept because both the top-level attempt and the frame scan name it.
 fn build_click_js_for_mode(escaped_selector: &str, mode: DispatchMode) -> String {
-    if mode == DispatchMode::ClickOnly {
-        // Legacy simple click — matches old behaviour exactly.
-        format!(
-            r"(function() {{
-  var el = document.querySelector('{escaped_selector}');
-  if (!el) throw new Error('Element not found: {escaped_selector} — use ff-rdp dom SELECTOR --count to verify the selector matches');
-  el.click();
-  return '{JSON_SENTINEL}' + JSON.stringify({{clicked: true, entered: true, tag: el.tagName, text: (el.textContent || '').trim().substring(0, 100)}});
-}})()"
-        )
-    } else {
-        build_click_js(escaped_selector, mode)
+    build_click_js(escaped_selector, mode)
+}
+
+/// Turn a click JS result that reports `reachable: false` into the error the
+/// caller must see (iter-160 Theme A).
+///
+/// An obscured or off-screen click is a **failed action**, not an informational
+/// outcome: a caller writing `ff-rdp click X && ff-rdp type Y …` has to stop.
+/// Returns `None` when the click did land, so the success envelope flows on
+/// unchanged.
+///
+/// Reuses [`AppError::Unsupported`] (exit 1, stable `error_type`) rather than
+/// introducing a variant, and merges `matched` / `reachable` / `obscured_by`
+/// into the error envelope so the JSON a failing caller parses names the
+/// covering element instead of only saying "no".
+fn unreachable_click_error(selector: &str, result: &Value) -> Option<AppError> {
+    if result.get("reachable").and_then(Value::as_bool) != Some(false) {
+        return None;
     }
+    let obscured_by = result.get("obscured_by").and_then(Value::as_str);
+    let (error_type, message) = match obscured_by {
+        Some(desc) => (
+            "click_obscured",
+            format!(
+                "selector '{selector}' matched an element that is covered by {desc} at its centre \
+                 point — no click was dispatched. Dismiss the overlay first (e.g. ff-rdp consent \
+                 accept), or target {desc} if that is what you meant to click."
+            ),
+        ),
+        None => (
+            "click_offscreen",
+            format!(
+                "selector '{selector}' matched an element whose centre point is outside the \
+                 viewport — no click was dispatched. Scroll it into view first (e.g. ff-rdp eval \
+                 'document.querySelector(\"{selector}\").scrollIntoView()')."
+            ),
+        ),
+    };
+    Some(AppError::Unsupported {
+        error_type,
+        message,
+        details: Some(json!({
+            "matched": result.get("matched").cloned().unwrap_or(json!(true)),
+            "reachable": false,
+            "obscured_by": obscured_by,
+        })),
+    })
 }
 
 /// Try `js` against each non-top frame in `targets` (or, with
