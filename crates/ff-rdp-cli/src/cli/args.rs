@@ -650,7 +650,13 @@ can tell how this command executed without a separate `daemon status` call.
 Default: 20 results, sorted by duration (slowest first).
 Output (summary mode): {\"results\": {\"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"hint\": null}, \"total\": N, \"meta\": {\"route\": \"daemon\", ...}}
 Output (--detail): {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"status\": 200, \"duration_ms\": N, ...}], \"total\": N, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"hint\": null, \"meta\": {\"route\": \"daemon\", ...}}
-  Note (iter-126): detail mode now carries the summary fields (total_requests, total_transfer_bytes, by_cause_type, slowest) alongside the results array, so --jq users (who are always in detail mode) can reach them.
+  Note (iter-126): detail mode carries the summary fields (total_requests, total_transfer_bytes, by_cause_type, slowest) alongside the results array, so --detail is a strict superset of the summary envelope.
+  Reaching the entry list: pass --detail (or --all/--headers/--security/--sort/--limit/--fields).
+  BREAKING (iter-160): --jq no longer switches this command into detail mode. `network --jq
+  \'.results | type\'` now answers \"object\", the same as plain `network` — previously it
+  answered \"array\", so the filter changed the document it was filtering. --jq is a view over
+  the envelope on all 30 commands; network was the only one where it was also a mode switch.
+  Migration: add --detail to any --jq invocation that expected the entry list.
 Output (--detail --headers): adds {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}} per entry.
 --format text truncates long `url` cells with a middle ellipsis (iter-128) so a
 single ~900-char tracking URL can't blow the table out to thousands of columns.")]
