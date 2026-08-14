@@ -18,9 +18,7 @@ use super::connect_tab::connect_and_get_target;
 use super::js_helpers::{
     WaitForPredicate, escape_selector, eval_or_bail, poll_js_condition, wait_for_predicates,
 };
-use super::network_events::{
-    build_network_entries, drain_network_events_timed, drain_network_from_daemon, merge_updates,
-};
+use super::network_events::{build_network_entries, drain_network_events_timed, merge_updates};
 use super::url_validation::validate_url_with_opts;
 
 /// Restore the socket read timeout to the value established at connect time.
@@ -2038,40 +2036,33 @@ pub fn run_with_network(
             None
         };
 
-        // After stop-stream the daemon reverts to buffering.  Any events that
-        // arrived at Firefox between the idle-timeout firing and the daemon
-        // removing this client's stream subscription get buffered instead of
-        // forwarded.  Drain that residual buffer now so nothing is lost.
-        match drain_network_from_daemon(ctx.transport_mut()) {
-            Ok((residual_resources, residual_updates)) => {
-                all_resources.extend(residual_resources);
-                all_updates.extend(residual_updates);
-            }
-            Err(e) => {
-                eprintln!("warning: failed to drain residual daemon buffer after stream: {e:#}");
-            }
-        }
-
-        // iter-159: the daemon now buffers **every** watcher resource, streamed
-        // or not, so the residual drain above returns the events this client
-        // already received over the stream as well as any that landed after the
-        // cutoff.  Collapse by `resource_id`, keeping the first occurrence, or
-        // every request would be reported twice.  Updates need no dedupe —
-        // `merge_updates` folds them by `resource_id` with last-write-wins.
+        // iter-159: the daemon's residual buffer is deliberately **not** drained
+        // here, and the `store-events` push-back that used to follow it is gone.
+        //
+        // Both existed to paper over a daemon that never buffered its own
+        // watcher's events: the drain scooped up whatever landed between the
+        // idle cutoff and `stop-stream`, and `store-events` (iter-61j G) pushed
+        // this invocation's whole capture back so a later `ff-rdp network`
+        // would find something instead of falling through to the Performance
+        // API. The daemon now buffers every watcher resource unconditionally,
+        // so those events are already there — draining them would consume the
+        // buffer this navigation just filled and leave a following `network`
+        // with zero rows (measured: `navigate --with-network` then `network
+        // --security` returned `results: []`), while re-inserting them on top
+        // would duplicate every request.
+        //
+        // The cost is that a request arriving after the idle cutoff is not in
+        // *this* envelope. It is not lost: it is in the daemon buffer, which is
+        // what `ff-rdp network` reads.
+        //
+        // Collapse by `resource_id` anyway — cheap, and the in-flight frames
+        // collected by `stop_daemon_stream_draining` can overlap the tail of
+        // the stream. Updates need no dedupe: `merge_updates` folds them by
+        // `resource_id` with last-write-wins.
         {
             let mut seen = std::collections::HashSet::new();
             all_resources.retain(|r| seen.insert(r.resource_id));
         }
-
-        // iter-159 Theme D: the `store-events` push-back is gone.  It existed
-        // (iter-61j G) so that a later `ff-rdp network` could read this
-        // invocation's capture instead of falling back to the Performance API
-        // — a workaround for a daemon buffer that never filled itself.  The
-        // daemon now buffers every watcher resource it receives, streamed or
-        // not, so the buffer already holds these events; re-inserting them
-        // duplicated every row.  Worse, the workaround fed the broken path
-        // from the working one and made the outage invisible to anyone whose
-        // session touched `--with-network` even once.
 
         // The network drain already waited for events to settle; no separate
         // commit-wait is needed. Neterror detection runs via listTabs below.

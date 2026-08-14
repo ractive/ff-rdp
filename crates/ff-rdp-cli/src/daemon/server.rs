@@ -3406,12 +3406,16 @@ mod tests {
     fn top_level_switch_purges_buffer() {
         let state = test_state();
 
-        // Seed some buffered events from the initial document.
+        // Seed some buffered events from the initial document.  A
+        // console-message, because iter-159 exempts `network-event` from the
+        // purge: server-side target switching destroys the top-level target
+        // *during* the navigation whose requests we are trying to keep, and
+        // Firefox already prunes the previous document's request actors itself.
         state
             .buffer
             .lock()
             .expect("lock")
-            .insert_raw("network-event", json!({"url": "https://old.example/"}));
+            .insert_raw("console-message", json!({"message": "old"}));
 
         let target_a = ff_rdp_core::ActorId::from("conn0/target-a");
         let target_b = ff_rdp_core::ActorId::from("conn0/target-b");
@@ -3424,7 +3428,7 @@ mod tests {
                 .lock()
                 .expect("lock")
                 .sizes()
-                .get("network-event"),
+                .get("console-message"),
             Some(&1),
             "the first top-level target must not purge the buffer"
         );
@@ -3437,7 +3441,7 @@ mod tests {
                 .lock()
                 .expect("lock")
                 .sizes()
-                .get("network-event"),
+                .get("console-message"),
             Some(&1),
             "a same-target re-announcement must not purge the buffer"
         );
@@ -3450,8 +3454,47 @@ mod tests {
                 .lock()
                 .expect("lock")
                 .sizes()
-                .contains_key("network-event"),
+                .contains_key("console-message"),
             "a top-level target switch must purge stale buffered resources"
+        );
+    }
+
+    /// iter-159: the same switch must **keep** `network-event` entries.
+    ///
+    /// With `isServerTargetSwitchingEnabled: true` the top-level target is
+    /// destroyed and recreated on every cross-process navigation, so this purge
+    /// runs in the middle of the page load it is meant to run after. Measured on
+    /// `https://example.com`: the document request's available-entry was wiped
+    /// and only its later updates survived, leaving `network --detail` with 2
+    /// buffered entries and 0 rows.
+    #[test]
+    fn top_level_switch_keeps_network_events() {
+        let state = test_state();
+        state.buffer.lock().expect("lock").insert_raw(
+            "network-event",
+            json!({"url": "https://in-flight.example/"}),
+        );
+
+        handle_top_level_target_switch(
+            &state,
+            &ff_rdp_core::ActorId::from("conn0/target-a"),
+            "https://old.example/",
+        );
+        handle_top_level_target_switch(
+            &state,
+            &ff_rdp_core::ActorId::from("conn0/target-b"),
+            "https://new.example/",
+        );
+
+        assert_eq!(
+            state
+                .buffer
+                .lock()
+                .expect("lock")
+                .sizes()
+                .get("network-event"),
+            Some(&1),
+            "a target switch must not discard the navigation's own network events"
         );
     }
 

@@ -333,11 +333,30 @@ impl ResourceBuffer {
     /// switch does not reset navigation-scope bookkeeping, and `store_start`
     /// values remain valid because `total_inserted` is never rewound.
     ///
+    /// `network-event` entries are **exempt** (iter-159).  With
+    /// `isServerTargetSwitchingEnabled: true` — which the daemon's watcher has
+    /// used since iter-137 — every cross-process navigation destroys the
+    /// top-level target, so this purge fires in the middle of the navigation it
+    /// is supposed to clean up *after*.  Measured on `https://example.com`: the
+    /// document request's `resources-available-array` entry was wiped and only
+    /// its later updates survived, leaving `network --detail` with 2 buffered
+    /// entries and 0 renderable rows (an update with no resource is dropped by
+    /// `build_network_entries`).
+    ///
+    /// Network events do not need this purge to stay honest: Firefox destroys
+    /// the previous document's request actors itself at will-navigate
+    /// (`resources/network-events.js` `#onTopBrowsingContextWillNavigate`) and
+    /// the daemon prunes them on the matching `resources-destroyed-array`, and
+    /// the per-navigation epoch (`NavBoundary::network_store_start`) scopes
+    /// whatever is left. Console and error messages get no such server-side
+    /// pruning, so they keep the iter-101 behaviour.
+    ///
     /// Returns the number of entries purged (for logging / test assertions).
     pub(crate) fn purge_destroyed_target(&mut self) -> usize {
-        let purged = self.store.len();
-        self.store.clear();
-        self.type_counts.clear();
+        let before = self.store.len();
+        self.store.retain(|e| e.resource_type == "network-event");
+        let purged = before - self.store.len();
+        self.type_counts.retain(|t, _| t == "network-event");
         purged
     }
 
@@ -724,7 +743,7 @@ mod tests {
     /// `purge_destroyed_target` drops all buffered entries and resets the
     /// per-type counts, but leaves nav-boundary bookkeeping intact.
     #[test]
-    fn purge_destroyed_target_clears_entries_keeps_boundaries() {
+    fn purge_destroyed_target_clears_non_network_entries_keeps_boundaries() {
         let mut buf = ResourceBuffer::new();
         buf.on_resource(&net(1, "https://old.example/"));
         buf.on_resource(&console(1, "old-log"));
@@ -732,9 +751,18 @@ mod tests {
         buf.on_resource(&net(2, "https://old.example/asset"));
 
         let purged = buf.purge_destroyed_target();
-        assert_eq!(purged, 3, "all three buffered entries must be purged");
-        assert!(buf.store.is_empty(), "store must be empty after purge");
-        assert!(buf.type_counts.is_empty(), "type_counts must be cleared");
+        // iter-159: `network-event` entries are exempt — see
+        // `purge_destroyed_target`. Only the console message is purged.
+        assert_eq!(purged, 1, "only the non-network entry must be purged");
+        assert!(
+            !buf.type_counts.contains_key("console-message"),
+            "purged types must be dropped from type_counts"
+        );
+        assert_eq!(
+            buf.type_counts.get("network-event"),
+            Some(&2),
+            "network events survive a target switch"
+        );
 
         // Boundaries survive so `--since` bookkeeping remains valid.
         assert_eq!(buf.boundaries.len(), 1);
@@ -743,8 +771,8 @@ mod tests {
         // New entries after the purge are drainable and carry monotonic seqs.
         buf.on_resource(&net(3, "https://new.example/"));
         let drained = buf.drain("network-event");
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0]["url"], "https://new.example/");
+        assert_eq!(drained.len(), 3);
+        assert_eq!(drained[2]["url"], "https://new.example/");
     }
 
     /// Theme I (iter-61x): `record_nav_boundary` truncates URLs longer than
