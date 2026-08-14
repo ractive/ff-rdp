@@ -498,3 +498,20 @@ Scope note: `apply_sort`/`apply_fields`/`apply_fields_object` had 29 non-test
 call sites, not the 43 the plan estimated (43 counts test call sites too).
 `navigate.rs`'s `apply_network_controls` had to change return type as well,
 since it wraps two of them.
+
+## Review fix (PR #200)
+
+Local review found that `apply_fields`'s `--fields` validation ran on the
+*post*-`apply_limit` page at all 12 call sites, not the full result set — a
+field genuinely present in the data but absent from the truncated `--limit`
+window was rejected as unknown. `dom`, `console`, `geometry` and `network`
+default `--limit` even when the caller never passes the flag, so this was
+reachable without `--limit` in the command line at all (e.g. `dom 'a' --fields
+text` on a page where the first 20 anchors happen to have no text but the
+21st does). Fixed by splitting validation into `OutputControls::validate_fields`,
+called before `apply_limit` alongside `apply_sort`'s existing pre-limit
+validation; `apply_fields` is now a non-validating projection. Regression test:
+`unit_161_fields_validated_before_limit_not_after`. DEC-035 updated to record
+the fix. `cargo fmt` / `cargo clippy --workspace --all-targets -D warnings` /
+`cargo test --workspace -q` all clean after the fix; xtask discipline gates
+and `ac-fidelity-check.sh` re-run green.
