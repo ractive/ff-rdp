@@ -9,12 +9,12 @@ dogfood_path: |
   gh pr list --state open --search 'head:iter-' --json number,headRefName
   # → must be empty.  Any open iter-* PR means a loop may still invoke
   #   ac-fidelity-check.sh / claims-vs-code.sh by path; do not start.
-
+  
   # -1. Cross-repo: magnificient hard-fails when the script vanishes.  Do this FIRST.
   rg -n 'ac-fidelity' ~/devel/magnificient/xtask/src/main.rs
   # → no matches, after its `ac-fidelity` subcommand is removed.  Before the fix,
   #   locate_ac_script() returns None and ac_fidelity() returns (false, …).
-
+  
   # 1. Phase 3a: the four-way delete lands while the mirror gate is alive.
   cargo run -p xtask -- check-discipline-regression
   # → exit 0.  THIS GREEN IS THE 4-OF-4 PROOF — capture it in the PR body.
@@ -23,24 +23,24 @@ dogfood_path: |
   # → four non-empty listings (run-iteration.sh, ralph.workflow.js, …) with neither
   #   ac-fidelity-check.sh nor claims-vs-code.sh in any of them.  Assert the
   #   directories are non-empty first — an empty listing is not proof of deletion.
-
+  
   # 2. Nothing invokes the deleted scripts any more.
   rg -n 'ac-fidelity|claims-vs-code' tools ~/.claude/skills/{ralph-loop,new-ralph-loop} \
      .github CLAUDE.md CONTRIBUTING.md crates
   # → no matches.
-
+  
   # 3. Phase 3b: the mirror gate itself goes.
   cargo run -q -p xtask -- --help
   # → 8 subcommands; check-discipline-regression is gone.
   grep -c 'cargo run -p xtask --' .github/workflows/ci.yml
   # → 2  (check-live-test-layout, check-source-invariants)
-
+  
   # 4. Nothing in the loop harness references a deleted script or subcommand.
   grep -rn -E 'claims-vs-code|check-(iteration-ready|discipline-regression)' \
     tools ~/.claude/skills/ralph-loop ~/.claude/skills/new-ralph-loop ~/.claude/skills/create-pr \
     .github CLAUDE.md CONTRIBUTING.md crates
   # → no matches.
-
+  
   # 5. The loop's scripts still parse.  NOTE: `node <file>` does NOT work on these —
   #    they carry `export const meta`, so node loads them as ESM, where the
   #    top-level `return` the Workflow runtime allows is a SyntaxError.  This
@@ -50,11 +50,11 @@ dogfood_path: |
   node --check ~/.claude/skills/new-ralph-loop/scripts/ralph.workflow.js
   # → both exit 0.  A real runtime smoke means invoking the Workflow tool with
   #    scriptPath=smoke.workflow.js; it spawns agents, so it is a deliberate act.
-
+  
   cargo build -p xtask && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q
   # → all three exit 0.
 first_call_sites: []
-status: planned
+status: done
 title: "Iteration 162b: delete ac-fidelity-check and claims-vs-code"
 type: iteration
 tags:
