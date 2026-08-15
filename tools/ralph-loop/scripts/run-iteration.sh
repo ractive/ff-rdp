@@ -136,7 +136,7 @@ else
   # Unparseable ID — produce a stable string so the prompt doesn't break.
   NEXT_ITER="${ITER_NUM}-next"
 fi
-PROMPT_REVIEW="You are reviewing iteration ${ITER_NUM} of this project. ${REVIEW_INTRO} Steps: 0) If the repo has a crates/xtask crate, list its subcommands with \`cargo run -p xtask -- --help\` and do not proceed until every check-* gate it actually offers exits 0. Do NOT invent subcommand names not in the help output. 1) 2) ${REVIEW_PR_STEP}; make the judgment calls yourself but delegate mechanical fixes to Agent-tool subagents with model ${CHILD_MODEL_WORKER} 3) Update the iteration ${ITER_NUM} plan at ${PLAN_PATH}: tick every \`- [ ]\` scope checkbox whose work actually landed in this PR (verify against the merged diff — do NOT tick speculatively), and update each scope-section heading's \`[N/M]\` count to reflect the real state. Leave any genuinely incomplete checkbox unchecked and note why in the section. Commit the plan update onto the PR branch and push. 4) CARRY-OVER SWEEP — do this explicitly, item by item; it is the only thing standing between "not finished" and "silently forgotten". Enumerate every AC left unticked, every deferral, and every out-of-scope finding flagged this iteration. For EACH, either fold it into the next iteration's plan or file a new plan for it, then list every item and its disposition in the PR body under "## Carry-over". Find the next plan with: hyalo find --glob '**/${PLAN_PREFIX}-${NEXT_ITER}-*.md' --format text (do NOT use --property 'title~=...' — frontmatter title fields do not contain the substring '${PLAN_PREFIX}-${NEXT_ITER}'). Edit it in place; do not rename or move it. 5) /merge-pr. ${DONE_SENTINEL}"
+PROMPT_REVIEW="You are reviewing iteration ${ITER_NUM} of this project. ${REVIEW_INTRO} Steps: 0) If the repo has a crates/xtask crate, list its subcommands with \`cargo run -p xtask -- --help\` and do not proceed until every check-* gate it actually offers exits 0. Do NOT invent subcommand names not in the help output. 1) ${REVIEW_PR_STEP}; make the judgment calls yourself but delegate mechanical fixes to Agent-tool subagents with model ${CHILD_MODEL_WORKER} 2) Update the iteration ${ITER_NUM} plan at ${PLAN_PATH}: tick every \`- [ ]\` scope checkbox whose work actually landed in this PR (verify against the merged diff — do NOT tick speculatively), and update each scope-section heading's \`[N/M]\` count to reflect the real state. Leave any genuinely incomplete checkbox unchecked and note why in the section. Commit the plan update onto the PR branch and push. 3) CARRY-OVER SWEEP — do this explicitly, item by item; it is the only thing standing between "not finished" and "silently forgotten". Enumerate every AC left unticked, every deferral, and every out-of-scope finding flagged this iteration. For EACH, either fold it into the next iteration's plan or file a new plan for it, then list every item and its disposition in the PR body under "## Carry-over". Find the next plan with: hyalo find --glob '**/${PLAN_PREFIX}-${NEXT_ITER}-*.md' --format text (do NOT use --property 'title~=...' — frontmatter title fields do not contain the substring '${PLAN_PREFIX}-${NEXT_ITER}'). Edit it in place; do not rename or move it. 4) /merge-pr. ${DONE_SENTINEL}"
 
 # --- cmux visual helpers (all soft-fail with || true) ---
 
@@ -458,44 +458,13 @@ if [[ "$SKIP_TO_REVIEW" != "review" ]]; then
   log_success "iter-${ITER_NUM}: implementation complete"
   echo "Phase 1 complete. Starting Phase 2..."
 fi
-# Repo discipline gates. iter-162a deleted check-dead-primitives and
-# check-todo-annotations from xtask; iter-162b deleted ac-fidelity-check.sh and
-# claims-vs-code.sh outright. Nothing hard-coded is left to run here: an xtask
-# gate list that this script pins goes stale every time the repo changes one,
-# which is what the two dead probe blocks removed here had been logging since
-# 162a. The review prompt tells the agent to enumerate `cargo run -p xtask --
-# --help` and run whatever check-* subcommands the repo actually ships.
-check_iteration_discipline() {
-  local repo_root="$1"
-
-  if ! (cd "$repo_root" && cargo run -p xtask -- --help > /dev/null 2>&1); then
-    log_info "iter-${ITER_NUM}: xtask not found — no discipline gates to run"
-    return 0
-  fi
-
-  log_info "iter-${ITER_NUM}: xtask present — Phase 2 enumerates and runs its check-* gates"
-  return 0
-}
-
-# Determine the repo root (parent of this script's directory hierarchy, or
-# use the working directory if git rev-parse fails).
-REPO_ROOT=$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || pwd)
-
-DISCIPLINE_LOG="${RALPH_CACHE_DIR:-$REPO_ROOT/.ralph-cache}/iter-${ITER_NUM}-discipline.log"
-mkdir -p "$(dirname "$DISCIPLINE_LOG")" 2>/dev/null || true
-if ! check_iteration_discipline "$REPO_ROOT" 2>&1 | tee "$DISCIPLINE_LOG"; then
-  # Discipline failures are NOT fatal here — the implementing agent is still
-  # alive in the cmux pane and Phase 2 reads $DISCIPLINE_LOG to fix each
-  # issue before /merge-pr. Exiting here (the prior behavior) stranded the
-  # iteration: the pane stayed open, /create-pr had already run in Phase 1,
-  # and the loop's manual recovery path was needed every time.
-  log_error "iter-${ITER_NUM}: discipline checks failed — Phase 2 will address them (details in $DISCIPLINE_LOG)"
-  progress 0.5 "iter-${ITER_NUM}: discipline failed, repairing in Phase 2"
-else
-  # Successful run still leaves the log around so Phase 2 sees "OK" lines if it
-  # peeks; keeps the contract uniform.
-  log_info "iter-${ITER_NUM}: discipline checks passed (log at $DISCIPLINE_LOG)"
-fi
+# No discipline gates run here any more. iter-162a deleted check-dead-primitives
+# and check-todo-annotations from xtask; iter-162b deleted ac-fidelity-check.sh
+# and claims-vs-code.sh outright. What remained was a function that could not
+# fail, an unreachable error branch, an iter-N-discipline.log nobody read, and a
+# full `cargo run -p xtask -- --help` build to choose between two log lines. The
+# review prompt (step 0) tells the agent to enumerate the xtask subcommands the
+# repo actually ships and run those.
 
 # --- Phase 2: Create PR, review, merge ---
 

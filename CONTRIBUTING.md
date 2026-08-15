@@ -70,8 +70,7 @@ which dominates the iteration loop's wall-clock cost.
   `--include-ignored`, so libtest reports genuine `ok`/`FAILED`), and runs the rest *without*
   `--include-ignored` so libtest reports them `ignored` using its own vocabulary. It ends with a
   machine-readable `LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K total=T` line — quote
-  `executed=N` in a `[verified: <date>, …]` AC annotation instead of the `cargo test` summary
-  line. Add `--dry-run` to see the split without invoking `cargo test`.
+  `executed=N` in the PR body instead of the `cargo test` summary line. Add `--dry-run` to see the split without invoking `cargo test`.
 - **`preexisting=K` is the third tier** (iter-158 Theme F). The `ff-rdp-core` live tests never
   launch Firefox — they connect to one somebody else started on the fixed default port 6000
   (`support::recording::firefox_port()`). Pre-158 `live-sweep` neither provided that instance nor

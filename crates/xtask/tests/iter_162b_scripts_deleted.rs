@@ -88,33 +88,93 @@ fn unit_162b_both_scripts_absent_from_skills() {
     }
 }
 
+/// Every tree that could invoke the deleted scripts. The skill directories are
+/// included because that is where the surviving live invocation was found in
+/// review: `~/.claude/skills/create-pr/SKILL.md` still ran ac-fidelity-check.sh
+/// while the first version of this test — which scanned only the two mirrors —
+/// passed. Scanning too narrowly is its own kind of vacuous.
+const INVOCATION_SCAN_ROOTS: &[&str] =
+    &["tools", "crates", ".github", "CLAUDE.md", "CONTRIBUTING.md"];
+
+const SKILL_SCAN_ROOTS: &[&str] = &[
+    ".claude/skills/ralph-loop",
+    ".claude/skills/new-ralph-loop",
+    ".claude/skills/create-pr",
+];
+
+/// A mention inside prose or a comment is fine — this repo documents what it
+/// deleted. An *invocation* is not. Match the shapes that actually run a
+/// script: `bash foo.sh`, `./foo.sh`, `"$dir/foo.sh"`, `path/to/foo.sh …`.
+fn invocations_in(body: &str, name: &str) -> bool {
+    body.lines().any(|line| {
+        let Some(pos) = line.find(name) else {
+            return false;
+        };
+        let before = &line[..pos];
+        // `bash <name>` / `sh <name>` / `./<name>` / `<anything>/<name>`
+        before.ends_with('/')
+            || before.trim_end().ends_with("bash")
+            || before.trim_end().ends_with("sh")
+    })
+}
+
+fn scan_file(path: &Path, scanned: &mut usize, offenders: &mut Vec<String>) {
+    let Ok(body) = std::fs::read_to_string(path) else {
+        return;
+    };
+    *scanned += 1;
+    for name in DELETED {
+        if invocations_in(&body, name) {
+            offenders.push(format!("{} invokes {name}", path.display()));
+        }
+    }
+}
+
+fn scan_tree(root: &Path, scanned: &mut usize, offenders: &mut Vec<String>) {
+    if root.is_file() {
+        scan_file(root, scanned, offenders);
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path
+                .file_name()
+                .is_some_and(|n| n == "target" || n == ".git")
+            {
+                continue;
+            }
+            scan_tree(&path, scanned, offenders);
+        } else {
+            scan_file(&path, scanned, offenders);
+        }
+    }
+}
+
 #[test]
 fn unit_162b_no_script_is_invoked_anywhere() {
     let root = workspace_root();
     let mut scanned = 0usize;
     let mut offenders = Vec::new();
-    for rel in MIRRORS {
-        for entry in std::fs::read_dir(root.join(rel)).expect("mirror dir") {
-            let path = entry.expect("dir entry").path();
-            if !path.is_file() {
-                continue;
-            }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            scanned += 1;
-            for name in DELETED {
-                // An invocation names the script with a path separator in
-                // front of it; a prose mention in a comment does not.
-                if body.contains(&format!("/{name}")) {
-                    offenders.push(format!("{} invokes {name}", path.display()));
-                }
+
+    for rel in INVOCATION_SCAN_ROOTS {
+        scan_tree(&root.join(rel), &mut scanned, &mut offenders);
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        for rel in SKILL_SCAN_ROOTS {
+            let dir = home.join(rel);
+            if dir.exists() {
+                scan_tree(&dir, &mut scanned, &mut offenders);
             }
         }
     }
+
     assert!(
-        scanned > 0,
-        "scanned zero files — the mirror paths are wrong and this test proves nothing"
+        scanned > 50,
+        "scanned only {scanned} files — the scan roots are wrong and this test proves nothing"
     );
     assert!(offenders.is_empty(), "{}", offenders.join("\n"));
 }
@@ -141,22 +201,45 @@ fn unit_162b_xtask_help_lists_eight() {
     assert!(out.status.success(), "xtask --help exited non-zero");
     let help = String::from_utf8_lossy(&out.stdout);
 
-    for name in EXPECTED_SUBCOMMANDS {
-        assert!(help.contains(name), "xtask --help no longer lists {name}");
+    // Parse the `Commands:` block rather than substring-matching, so a NINTH
+    // subcommand — a re-added gate under a new name — fails here instead of
+    // slipping through a set of `contains` checks.
+    let listed = parse_subcommands(&help);
+    let mut expected: Vec<&str> = EXPECTED_SUBCOMMANDS.to_vec();
+    expected.sort_unstable();
+    let mut actual: Vec<&str> = listed.iter().map(String::as_str).collect();
+    actual.sort_unstable();
+    assert_eq!(
+        actual, expected,
+        "xtask subcommands changed; update EXPECTED_SUBCOMMANDS deliberately if that is intended"
+    );
+}
+
+/// Collect subcommand names from clap's `Commands:` block: indented lines whose
+/// first token is the name. Stops at the next unindented section (`Options:`).
+fn parse_subcommands(help: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut in_block = false;
+    for line in help.lines() {
+        if line.starts_with("Commands:") {
+            in_block = true;
+            continue;
+        }
+        if in_block {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if !line.starts_with(char::is_whitespace) {
+                break;
+            }
+            if let Some(name) = line.split_whitespace().next()
+                && name != "help"
+            {
+                names.push(name.to_owned());
+            }
+        }
     }
-    for gone in [
-        "check-discipline-regression",
-        "check-iteration-ready",
-        "check-dead-primitives",
-        "check-todo-annotations",
-        "check-pre-fix-repro",
-        "check-oneway-conformance",
-    ] {
-        assert!(
-            !help.contains(gone),
-            "xtask --help still lists {gone}, deleted in iter-162a/162b"
-        );
-    }
+    names
 }
 
 #[test]
@@ -165,6 +248,9 @@ fn ci_162b_discipline_job_two_xtask_steps() {
         .expect("reading ci.yml");
     let invocations: Vec<&str> = ci
         .lines()
+        .map(str::trim)
+        // A YAML comment mentioning the command is not an invocation.
+        .filter(|l| !l.starts_with('#'))
         .filter(|l| l.contains("cargo run -p xtask --"))
         .collect();
     assert_eq!(
@@ -173,11 +259,14 @@ fn ci_162b_discipline_job_two_xtask_steps() {
         "expected exactly 2 xtask steps in CI, found: {invocations:#?}"
     );
     for line in &invocations {
+        // Take the subcommand only — trailing arguments are legitimate.
         let name = line
             .rsplit("xtask -- ")
             .next()
             .expect("subcommand after `xtask -- `")
-            .trim();
+            .split_whitespace()
+            .next()
+            .expect("non-empty subcommand");
         assert!(
             EXPECTED_SUBCOMMANDS.contains(&name),
             "CI invokes `{name}`, which xtask does not ship"

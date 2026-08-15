@@ -12,7 +12,6 @@ export const meta = {
 //                  iterations: [{ n, status, plan_path, title, missing? }] },
 //     copilot: false,
 //     models: { implement: 'opus', review: 'sonnet', verify: 'haiku' },
-//     skillDir: '/Users/james/.claude/skills/new-ralph-loop',
 //     agentCaps: { agentTool: false, sendMessage: true, agentType: null },  // smoke-probed 2026-07-04
 //     skipMissing: false,
 //     startedAt: '<date -u +%FT%TZ>',   // Date.now() is unavailable in workflow scripts
@@ -34,7 +33,6 @@ if (!pf || !Array.isArray(pf.iterations)) {
 }
 const copilot = A.copilot === true
 const models = Object.assign({ implement: 'opus', review: 'sonnet', verify: 'haiku' }, A.models || {})
-const skillDir = A.skillDir || '/Users/james/.claude/skills/new-ralph-loop'
 const caps = Object.assign({ agentTool: false, sendMessage: true, agentType: null }, A.agentCaps || {})
 const skipMissing = A.skipMissing === true
 const startedAt = A.startedAt || null
@@ -60,14 +58,15 @@ const REVIEW_SCHEMA = {
   type: 'object',
   required: ['ok', 'merged'],
   properties: {
-    ok: { type: 'boolean', description: 'review + discipline + plan-update all completed' },
+    ok: { type: 'boolean', description: 'xtask gates + review + plan-update + carry-over sweep all completed' },
     merged: { type: 'boolean', description: 'true only if /merge-pr actually merged and pushed main' },
     blocked_on_ci: { type: 'boolean', description: 'true when ALL review work is complete and ONLY still-pending PR checks prevent the merge — this is a hand-off, not a failure' },
     head_sha: { type: ['string', 'null'], description: 'git rev-parse HEAD of the PR branch — REQUIRED when blocked_on_ci=true' },
     pr_number: { type: ['integer', 'null'] },
     merge_commit: { type: ['string', 'null'], description: 'merge SHA if /merge-pr reported it' },
     findings_fixed: { type: ['integer', 'null'], description: 'count of review findings fixed' },
-    discipline: { enum: ['passed', 'fixed-then-passed', 'failed'] },
+    xtask_gates: { enum: ['passed', 'fixed-then-passed', 'failed', 'no-xtask'] },
+    carry_over_items: { type: ['integer', 'null'], description: 'count of unticked ACs / deferrals / findings placed by the carry-over sweep' },
     next_plan_adapted: { type: 'boolean' },
     failure_reason: { type: ['string', 'null'], description: 'REQUIRED when ok=false, or when merged=false and blocked_on_ci is not true' },
   },
