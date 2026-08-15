@@ -60,8 +60,8 @@ unset reports exactly the same as one that actually ran. Use `cargo run -p xtask
 for a real sweep: it classifies each gated test from its own `#[ignore = "…"]` reason, runs only
 the ones whose env var(s) are set (with `--include-ignored`), and runs the rest without
 `--include-ignored` so libtest reports them `ignored`. It prints a machine-readable
-`LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K total=T` line — that `executed=N`, not a
-`cargo test-live` pass count, is what a `[verified: <date>, …]` AC annotation should quote.
+`LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K total=T` line — quote that `executed=N`
+in the PR body, not a `cargo test-live` pass count.
 `preexisting=K` (iter-158 Theme F) counts env-qualified tests that need a Firefox somebody else
 started on port 6000; the sweep probes that port once and, finding nothing, reports them
 `ignored` rather than folding them into `executed`. Start one with
@@ -79,17 +79,41 @@ warn about, one level up. Cite sweeps as `FF_RDP_LIVE_TESTS=1 [FF_RDP_LIVE_NETWO
 LIVE_SWEEP_SUMMARY …`, and never compare a `skipped=0` run against a `skipped>0` one without
 saying so.
 
-**AC checkbox convention**: every AC checkbox in an iteration plan MUST name the live test and the asserted post-condition, e.g.:
+**AC checkbox convention**: every AC checkbox in an iteration plan should name the test and the
+asserted post-condition, e.g.:
 ```
 - [ ] live_screenshot_full_page: PNG height ≥ scrollHeight × DPR
 ```
-An AC without a named test is not done. **Ticking** a `live_*` AC additionally requires a
-`[verified: <YYYY-MM-DD>, <measured result>]` annotation recording the run — prose such as
-"verified live, PASS" is not accepted, the bracket form is:
+This is **authoring guidance, not a gate**. An AC is the spec you implement against; write it so
+the test to run is obvious. Recording a measured result when you tick a `live_*` AC is still worth
+doing for the next reader:
 ```
-- [x] live_screenshot_full_page: PNG height ≥ scrollHeight × DPR [verified: 2026-08-12, 2400 px ≥ 1200 × 2]
+- [x] live_screenshot_full_page: PNG height ≥ scrollHeight × DPR [2026-08-12: 2400 px ≥ 1200 × 2]
 ```
-`ac-fidelity-check.sh` enforces this (iter-154); see the Iteration discipline section for why.
+
+**Nothing checks tick state.** iter-162b deleted `ac-fidelity-check.sh` and with it the
+`[verified: …]` / `[deferred — new plan: …]` / `[allow-ac-wording: …]` machinery. A gate that reads
+a plan and a diff cannot tell whether a test ran; over its life it produced 28 commits whose only
+content was rewording an AC to silence it, against one catch a human had already found, and in the
+158–161 batch it scored zero catches, seven false positives, and one induced falsification (five
+iter-158 ACs merged both ticked *and* deferred). What replaces it is not another checker:
+
+- **Tick honestly, or leave it unticked.** If an AC's premise turned out to be wrong, say so in the
+  plan and leave the box empty. Never reword an AC so it matches what happened.
+- **Carry-over is filed before the PR merges** — see the Iteration discipline section.
+- **Product-source iterations paste a real live sweep into the PR body**, with the env gates that
+  produced it (see the Live tests section). That reads execution; an AC annotation does not.
+
+**Standing policy — every iteration touching product source runs a full sweep before its PR:**
+```sh
+FF_RDP_LIVE_TESTS=1 [FF_RDP_LIVE_NETWORK_TESTS=1] cargo run -p xtask -- live-sweep
+```
+Paste the real `LIVE_SWEEP_SUMMARY` line, the pass/fail counts and the gates you set. Do not
+paraphrase and do not reuse an earlier run's numbers. This is not ceremony: on iter-160 the sweep
+caught three failures the targeted tests missed, one of which would have broken every
+cross-origin frame click. An isolated `cargo test live_foo` is not a substitute — iter-153 shipped
+a broken feature certified by a truthful isolated run that passes in isolation and fails under
+contention.
 
 ## Code Patterns
 - No `.unwrap()` / `.expect()` outside of tests — use `anyhow::Context` with `?`
@@ -117,25 +141,14 @@ An AC without a named test is not done. **Ticking** a `live_*` AC additionally r
   `crates/ff-rdp-{core,cli}/src`) for their whole lifetime.
 - Every spec method change must have a live Firefox test, not just a unit test.
 - Carry-over work must be filed as a new iteration plan BEFORE the current PR merges.
-- AC checkboxes must be paired with test evidence or a `[deferred — new plan: …]` annotation.
-  An AC without a named test is not done — do not tick it.
-  The ralph-loop skill enforces this at merge time via `ac-fidelity-check.sh`:
-  every ticked AC must reference a test slug, a code symbol that appears in the
-  diff, or the `[deferred — new plan: <path>]` form. See iter-61z.
-  **The gate reads a plan and a diff — it cannot tell you a test ran.** A green
-  `ac-fidelity-check` means the ticked ACs *reference* evidence that resolves,
-  nothing more; running the tests is still on you. iter-154 narrowed the gap at
-  two points: a ticked AC whose text admits non-execution ("not exercised", "not
-  run", "never run", "not executed", "implemented and compiled", "not verified" —
-  matched as whole words) fails outright, and a ticked
-  AC naming a `live_*` test must carry `[verified: <YYYY-MM-DD>, <measured result>]`
-  — live tests are `#[ignore]`-gated and never run in CI, so nothing downstream
-  will ever execute them. Both read the AC's full wrapped text, not just its first
-  line. Untick or defer rather than routing around the wording — the deferral
-  annotation must be the **last** thing on the AC. If an AC legitimately *describes*
-  behaviour using those words ("`--dry-run` does not run the command"), annotate it
-  `[allow-ac-wording: <reason ≥10 chars>]`; that escape hatch exists so the remedy
-  for a false positive is never "reword until the grep stops firing".
+- Carry-over is the discipline that replaced the AC gate — treat it as load-bearing.
+  At the end of an iteration, enumerate every AC left unticked, every deferral, and every
+  out-of-scope finding, and for each one either fold it into the next iteration's plan or
+  file a new plan. List the dispositions in the PR body under `## Carry-over`. This is what
+  actually caught 158→159 and 159→160; the gate that was supposed to caught nothing.
+- Never reword an acceptance criterion to make it match what happened. If its premise turned
+  out wrong, leave it unticked and say why in the plan. Nothing checks tick state any more
+  (iter-162b), so an honest empty box is the only signal a later reader gets.
 - Spec drift: when ff-rdp must send a field or call a method that is NOT
   declared in the published Firefox spec dict (but the server *reads* it
   anyway), annotate the call site with `// allow-spec-drift: bug NNNN`,
@@ -147,11 +160,10 @@ An AC without a named test is not done. **Ticking** a `live_*` AC additionally r
   actual Bugzilla number in a follow-up iteration before the next release
   cut. The `rdp-spec-reviewer` agent flags any `TBD` annotation it sees.
 - Commit-message claims (`adds Foo::Bar`, "subscribes to dom-interactive",
-  "implements RdpError::Navigation") must be backed by the branch diff. The
-  ralph-loop skill emits a `## Claims vs code` PR-description section via
-  `claims-vs-code.sh`; unmatched claims become ❌ rows the reviewer sees. Add
-  `// allow-claim-miss: <symbol>` near the relevant code if a claim is
-  legitimately untestable.
+  "implements RdpError::Navigation") must be backed by the branch diff — a review rule now.
+  `claims-vs-code.sh`, which emitted a `## Claims vs code` PR section, was deleted in
+  iter-162b: advisory from day one, it never fired, and its promotion to a hard gate
+  ([[iteration-61aa-claim-miss-hard-gate]]) was closed obsolete.
 - Iteration plans must include `dogfood_path` and `first_call_sites` (if new pub items).
   Validate with: `cargo run -p xtask -- check-iteration-plan kb/iterations/iteration-NN-slug.md`
 - **Before `/create-pr` on an iter-* branch, run the discipline gates.** There is no
@@ -161,16 +173,12 @@ An AC without a named test is not done. **Ticking** a `live_*` AC additionally r
   ```bash
   cargo run -q -p xtask -- --help          # list the check-* subcommands
   cargo run -p xtask -- check-<name> ...   # run each one
-  bash tools/ralph-loop/scripts/ac-fidelity-check.sh --plan <plan> --base origin/main
   ```
-  Do not invent subcommand names that are not in the help output. `ac-fidelity-check.sh`
-  checks that ticked ACs *reference* resolvable evidence, declare no non-execution, and
-  carry `[verified: …]` where they name a `live_*` test — it cannot verify a test ran.
-  Fix every reported failure before pushing. Most gates are local-only — do not assume
-  CI will catch what you skip.
-- The CI `discipline` job runs three: `check-live-test-layout`,
-  `check-discipline-regression` and `check-source-invariants` (the merged
-  daemon-locks / error-envelope-paths / stderr-annotations scans).
+  Do not invent subcommand names that are not in the help output. Fix every reported failure
+  before pushing. Most gates are local-only — do not assume CI will catch what you skip.
+- The CI `discipline` job runs two: `check-live-test-layout` and
+  `check-source-invariants` (the merged daemon-locks / error-envelope-paths /
+  stderr-annotations scans).
   Two more are useful but local-only:
   - `check-firefox-refs <plan>` — validates `firefox_refs:` line ranges in an iteration plan
     against the local Firefox checkout (`FF_RDP_FIREFOX_PATH`). The only gate that checks a
@@ -178,11 +186,12 @@ An AC without a named test is not done. **Ticking** a `live_*` AC additionally r
     Firefox spec citations stopped before merge.
   - `check-actor-kb-sync --since origin/main` — fails if an actor `.rs` file was changed
     without a corresponding `kb/rdp/actors/*.md` update. A docs-sync reminder, not a defect gate.
-  `check-discipline-regression` pins the iter-61v (FAIL) and iter-61t (PASS) replay baselines
-  so the heuristics in `claims-vs-code.sh` / `ac-fidelity-check.sh` don't silently regress.
 - The ralph-loop skill scripts live in `~/.claude/skills/ralph-loop/scripts/`;
   a mirror is checked in at `tools/ralph-loop/scripts/` so changes are
-  reviewable. Edit both. `check-discipline-regression` catches drift.
+  reviewable. Edit both — **by hand, with nothing checking you**. `check-discipline-regression`
+  caught mirror drift until iter-162b deleted it along with the two scripts whose
+  quadruplication was the only reason it existed. This is a real loss of safety, accepted
+  because the gate guarded an obligation created by the machinery it guarded.
   The same applies to the **new-ralph-loop** skill:
   `~/.claude/skills/new-ralph-loop/scripts/` mirrors to
   `tools/new-ralph-loop/scripts/` (both `.sh` files *and* `ralph.workflow.js` /

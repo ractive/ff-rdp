@@ -8,99 +8,7 @@ set -euo pipefail
 #
 # Usage: run-iteration.sh <iteration-number> <plan-file-path> [review]
 #   If "review" is passed as 3rd arg, skip Phase 1 and go straight to Phase 2.
-#   If first arg is `--replay <iter-id>`, skip both phases and run the
-#   discipline replay (claims-vs-code + ac-fidelity) against the merged branch
-#   for <iter-id>. Output is written to $RALPH_CACHE_DIR/replay-<iter-id>.txt
-#   (or a temp dir if RALPH_CACHE_DIR is unset). Exit 0 if both checks pass,
-#   exit 1 if either fails.
 # Exit code: 0 on success, 1 on failure, 2 on throttle
-
-# --- Replay mode (no Phase 1/2; just run discipline checks against a merged branch).
-if [[ "${1:-}" == "--replay" ]]; then
-  REPLAY_ITER="${2:?Usage: run-iteration.sh --replay <iter-id>}"
-  # Accept both `61v` and `iter-61v` so docs that quote either form work.
-  REPLAY_ITER="${REPLAY_ITER#iter-}"
-  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-  # Anchor to the repo root so `git log`/`git ls-tree` work regardless of
-  # which directory the caller invoked the script from.
-  REPO_ROOT_REPLAY=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-  cd "$REPO_ROOT_REPLAY"
-  CACHE_DIR="${RALPH_CACHE_DIR:-$(mktemp -d -t ralph-replay.XXXXXX)}"
-  mkdir -p "$CACHE_DIR"
-  OUT="$CACHE_DIR/replay-${REPLAY_ITER}.txt"
-
-  # Find the merge commit for this iter on main. On CI the local `main`
-  # branch may not exist (detached HEAD on the PR commit) — fall back to
-  # `origin/main`. Use `-1` instead of `| head -1` so SIGPIPE under
-  # `set -o pipefail` can't kill the assignment.
-  MAIN_REF=main
-  if ! git rev-parse --verify --quiet main >/dev/null 2>&1; then
-    if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
-      MAIN_REF=origin/main
-    fi
-  fi
-  # Match `iter-NN/` (branch slug) or `iter-NN)` (commit subject) so e.g.
-  # `iter-61v` doesn't substring-match `iter-61va`. Suffix the grep with a
-  # non-alphanumeric boundary by alternating both forms.
-  MERGE_COMMIT=$(git log -1 --merges \
-    --grep="iter-${REPLAY_ITER}/" \
-    --format=%H "$MAIN_REF" 2>/dev/null || true)
-  if [[ -z "$MERGE_COMMIT" ]]; then
-    # Fall back to the looser match for legacy commit subjects that don't
-    # include the slash.
-    MERGE_COMMIT=$(git log -1 --merges \
-      --grep="iter-${REPLAY_ITER}" \
-      --format=%H "$MAIN_REF" 2>/dev/null || true)
-  fi
-  if [[ -z "$MERGE_COMMIT" ]]; then
-    echo "ERROR: no merge commit found on $MAIN_REF matching iter-${REPLAY_ITER}" >&2
-    exit 1
-  fi
-  RANGE="${MERGE_COMMIT}^1..${MERGE_COMMIT}^2"
-
-  # Find the plan file as of the merge commit. The plan name follows
-  # `kb/iterations/iteration-<id>-<slug>.md`.
-  PLAN_REL=$(git ls-tree -r "${MERGE_COMMIT}^2" --name-only -- kb/iterations 2>/dev/null \
-    | grep -E "iteration-${REPLAY_ITER}-[^/]+\.md$" | head -1 || true)
-  if [[ -z "$PLAN_REL" ]]; then
-    echo "WARN: no plan file found on iter-${REPLAY_ITER} branch — ac-fidelity will be skipped" >&2
-    PLAN_PATH_REPLAY=""
-  else
-    PLAN_PATH_REPLAY="$(mktemp -t replay-plan.XXXXXX).md"
-    git show "${MERGE_COMMIT}^2:${PLAN_REL}" > "$PLAN_PATH_REPLAY" 2>/dev/null || PLAN_PATH_REPLAY=""
-  fi
-
-  {
-    echo "# Replay report for iter-${REPLAY_ITER}"
-    echo "merge_commit: $MERGE_COMMIT"
-    echo "range: $RANGE"
-    echo "plan: ${PLAN_REL:-<none>}"
-    echo
-  } > "$OUT"
-
-  echo "[replay] running claims-vs-code on $RANGE..."
-  CVC_EXIT=0
-  "$SCRIPT_DIR/claims-vs-code.sh" --range "$RANGE" >> "$OUT" 2>&1 || CVC_EXIT=$?
-  echo >> "$OUT"
-
-  ACF_EXIT=0
-  if [[ -n "$PLAN_PATH_REPLAY" && -f "$PLAN_PATH_REPLAY" ]]; then
-    echo "[replay] running ac-fidelity-check on plan..."
-    "$SCRIPT_DIR/ac-fidelity-check.sh" --plan "$PLAN_PATH_REPLAY" --range "$RANGE" >> "$OUT" 2>&1 || ACF_EXIT=$?
-    rm -f "$PLAN_PATH_REPLAY"
-  fi
-
-  cat "$OUT"
-  echo
-  echo "[replay] output written to $OUT"
-
-  if [[ $CVC_EXIT -ne 0 || $ACF_EXIT -ne 0 ]]; then
-    echo "[replay] iter-${REPLAY_ITER}: FAIL (claims=$CVC_EXIT, ac-fidelity=$ACF_EXIT)"
-    exit 1
-  fi
-  echo "[replay] iter-${REPLAY_ITER}: PASS"
-  exit 0
-fi
 
 ITER_NUM="${1:?Usage: run-iteration.sh <iteration-number> <plan-file-path> [review]}"
 PLAN_PATH="${2:?Usage: run-iteration.sh <iteration-number> <plan-file-path> [review]}"
@@ -199,7 +107,7 @@ POLL_INTERVAL="${RALPH_POLL_INTERVAL:-10}"
 PHASE_TIMEOUT="${RALPH_PHASE_TIMEOUT:-14400}"
 DONE_SENTINEL="When ALL steps above are complete and successful, run this exact command: echo 0 > ${DONE_FILE} — if any step fails, run: echo 1 > ${DONE_FILE}"
 
-PROMPT_IMPLEMENT="You are implementing iteration ${ITER_NUM} of this project. Steps: 1) Create a new branch for this iteration (e.g. ${BRANCH_PREFIX}-${ITER_NUM}/short-description) from main 2) Read the iteration plan from ${PLAN_PATH} 3) Implement everything in the plan (code, tests, error handling) with an analyst/worker split: do the analysis YOURSELF — read the plan and relevant docs, make every design and API decision, and decompose the work into well-specified mechanical tasks — then delegate the code-writing to subagents via the Agent tool with model ${CHILD_MODEL_WORKER} and low effort, giving each worker a distilled brief (exact file paths, the design decisions already made, acceptance criteria) instead of having it re-read the plan and doctrine docs. Review and integrate each worker's diff yourself; write code directly only when a task is too small or too entangled to brief out. Do NOT spawn parallel cmux teammates 4) Ensure all docs, help texts, and project documentation are updated to reflect changes 5) Run the project quality gates (read CLAUDE.md for the specific commands; if there is no CLAUDE.md, use the repo README) 6) If the repo has a crates/xtask crate, run \`cargo run -p xtask -- check-iteration-ready --plan ${PLAN_PATH} --base origin/main\` and fix every reported failure — do not proceed until it exits 0; if there is no xtask crate, skip this step 7) /create-pr${IMPLEMENT_COPILOT_STEP} ${DONE_SENTINEL}"
+PROMPT_IMPLEMENT="You are implementing iteration ${ITER_NUM} of this project. Steps: 1) Create a new branch for this iteration (e.g. ${BRANCH_PREFIX}-${ITER_NUM}/short-description) from main 2) Read the iteration plan from ${PLAN_PATH} 3) Implement everything in the plan (code, tests, error handling) with an analyst/worker split: do the analysis YOURSELF — read the plan and relevant docs, make every design and API decision, and decompose the work into well-specified mechanical tasks — then delegate the code-writing to subagents via the Agent tool with model ${CHILD_MODEL_WORKER} and low effort, giving each worker a distilled brief (exact file paths, the design decisions already made, acceptance criteria) instead of having it re-read the plan and doctrine docs. Review and integrate each worker's diff yourself; write code directly only when a task is too small or too entangled to brief out. Do NOT spawn parallel cmux teammates 4) Ensure all docs, help texts, and project documentation are updated to reflect changes 5) Run the project quality gates (read CLAUDE.md for the specific commands; if there is no CLAUDE.md, use the repo README) 6) If the repo has a crates/xtask crate, list its subcommands with \`cargo run -p xtask -- --help\` and run every check-* gate it actually offers, fixing each reported failure — do not proceed until they all exit 0. Do NOT invent subcommand names that are not in the help output; if there is no xtask crate, skip this step 7) /create-pr${IMPLEMENT_COPILOT_STEP} ${DONE_SENTINEL}"
 
 # Compute the *likely* next iteration ID for the Phase 2 plan-adaptation step.
 # Pure-integer ITER_NUM increments (16 → 17). Letter-suffixed ITER_NUM (16b →
@@ -228,7 +136,7 @@ else
   # Unparseable ID — produce a stable string so the prompt doesn't break.
   NEXT_ITER="${ITER_NUM}-next"
 fi
-PROMPT_REVIEW="You are reviewing iteration ${ITER_NUM} of this project. ${REVIEW_INTRO} Steps: 0) If a discipline report exists at \${RALPH_CACHE_DIR:-.ralph-cache}/iter-${ITER_NUM}-discipline.log, read it. For each FAIL or ❌ line, either implement the missing test/code so the AC text matches the diff, untick the AC, or annotate it with \`[deferred — new plan: iteration-NN-slug.md]\` (the annotation must be the LAST thing on the AC) and create the follow-up plan. Do NOT reword an AC to get past the gate — that is the failure mode iter-154 exists to stop. A ticked AC naming a \`live_*\` test additionally needs \`[verified: <YYYY-MM-DD>, <measured result>]\`, which means actually running it (\`FF_RDP_LIVE_TESTS=1 cargo test-live\`) and pasting the real numbers; if you did not run it, leave it unticked. Do not proceed to step 1 until \`cargo run -p xtask -- check-iteration-ready --plan ${PLAN_PATH} --base origin/main\` exits 0 (skip this check if the repo has no crates/xtask crate). 1) If a claims-vs-code report exists at \${RALPH_CACHE_DIR:-.ralph-cache}/iter-${ITER_NUM}-claims.md, append its contents to the PR body via: gh pr edit <PR-number> --body \"\$(gh pr view <PR-number> --json body -q .body)\$(printf '\\n\\n')\$(cat \${RALPH_CACHE_DIR:-.ralph-cache}/iter-${ITER_NUM}-claims.md)\" — this surfaces any ❌ rows to the reviewer. 2) ${REVIEW_PR_STEP}; make the judgment calls yourself but delegate mechanical fixes to Agent-tool subagents with model ${CHILD_MODEL_WORKER} 3) Update the iteration ${ITER_NUM} plan at ${PLAN_PATH}: tick every \`- [ ]\` scope checkbox whose work actually landed in this PR (verify against the merged diff — do NOT tick speculatively), and update each scope-section heading's \`[N/M]\` count to reflect the real state. Leave any genuinely incomplete checkbox unchecked and note why in the section. Commit the plan update onto the PR branch and push. 4) Check if a plan exists for iteration ${NEXT_ITER} — find it with: hyalo find --glob '**/${PLAN_PREFIX}-${NEXT_ITER}-*.md' --format text (do NOT use --property 'title~=...' — frontmatter title fields do not contain the substring '${PLAN_PREFIX}-${NEXT_ITER}'). If found, check whether its scope needs to be adapted based on what you learned this iteration, and update it if so 5) /merge-pr. ${DONE_SENTINEL}"
+PROMPT_REVIEW="You are reviewing iteration ${ITER_NUM} of this project. ${REVIEW_INTRO} Steps: 0) If the repo has a crates/xtask crate, list its subcommands with \`cargo run -p xtask -- --help\` and do not proceed until every check-* gate it actually offers exits 0. Do NOT invent subcommand names not in the help output. 1) ${REVIEW_PR_STEP}; make the judgment calls yourself but delegate mechanical fixes to Agent-tool subagents with model ${CHILD_MODEL_WORKER} 2) Update the iteration ${ITER_NUM} plan at ${PLAN_PATH}: tick every \`- [ ]\` scope checkbox whose work actually landed in this PR (verify against the merged diff — do NOT tick speculatively), and update each scope-section heading's \`[N/M]\` count to reflect the real state. Leave any genuinely incomplete checkbox unchecked and note why in the section. Commit the plan update onto the PR branch and push. 3) CARRY-OVER SWEEP — do this explicitly, item by item; it is the only thing standing between "not finished" and "silently forgotten". Enumerate every AC left unticked, every deferral, and every out-of-scope finding flagged this iteration. For EACH, either fold it into the next iteration's plan or file a new plan for it, then list every item and its disposition in the PR body under "## Carry-over". Find the next plan with: hyalo find --glob '**/${PLAN_PREFIX}-${NEXT_ITER}-*.md' --format text (do NOT use --property 'title~=...' — frontmatter title fields do not contain the substring '${PLAN_PREFIX}-${NEXT_ITER}'). Edit it in place; do not rename or move it. 4) /merge-pr. ${DONE_SENTINEL}"
 
 # --- cmux visual helpers (all soft-fail with || true) ---
 
@@ -550,112 +458,13 @@ if [[ "$SKIP_TO_REVIEW" != "review" ]]; then
   log_success "iter-${ITER_NUM}: implementation complete"
   echo "Phase 1 complete. Starting Phase 2..."
 fi
-
-# --- Iteration discipline checks (pre-Phase 2) ---
-#
-# Run in-repo xtask checks before opening the PR. These are the same checks CI
-# runs in the `discipline` job. Running them here surfaces failures before the
-# PR is created, giving the implementing agent a chance to fix them in Phase 2.
-#
-# If `cargo run -p xtask` fails (xtask not yet in the repo), log a warning and
-# continue — the CI job is the load-bearing gate.
-#
-# claims-vs-code.sh and ac-fidelity-check.sh (added in iter-61z) run alongside
-# the xtask checks. claims-vs-code is advisory (its output goes to the cmux
-# log so Phase 2 can attach it to the PR body); ac-fidelity is a hard gate
-# that blocks the merge if a ticked AC has no evidence.
-check_iteration_discipline() {
-  local repo_root="$1"
-  local script_dir
-  script_dir="$(cd "$(dirname "$0")" && pwd)"
-
-  # Check if xtask is available in this repo.
-  if ! (cd "$repo_root" && cargo run -p xtask -- --help > /dev/null 2>&1); then
-    log_info "iter-${ITER_NUM}: xtask not found — skipping discipline checks (add crates/xtask to enable)"
-    return 0
-  fi
-
-  log_info "iter-${ITER_NUM}: running discipline checks..."
-
-  local failed=0
-
-  # Probe each subcommand before running it — not every repo's xtask ships
-  # these (hoverread's has check-iteration-ready but not the two below). Without
-  # the probe, "unrecognized subcommand" is logged as a FAIL, and Phase 2 then
-  # wastes review-model effort trying to "fix" a check that doesn't exist. clap
-  # exits 0 for `<known-subcmd> --help`, non-zero for an unknown subcommand.
-  if (cd "$repo_root" && cargo run -q -p xtask -- check-dead-primitives --help >/dev/null 2>&1); then
-    if ! (cd "$repo_root" && cargo run -p xtask -- check-dead-primitives --since origin/main 2>&1); then
-      log_error "iter-${ITER_NUM}: check-dead-primitives FAILED — unwired pub items detected"
-      failed=1
-    else
-      log_info "iter-${ITER_NUM}: check-dead-primitives OK"
-    fi
-  else
-    log_info "iter-${ITER_NUM}: xtask has no check-dead-primitives — skipped"
-  fi
-
-  if (cd "$repo_root" && cargo run -q -p xtask -- check-todo-annotations --help >/dev/null 2>&1); then
-    if ! (cd "$repo_root" && cargo run -p xtask -- check-todo-annotations --since origin/main 2>&1); then
-      log_error "iter-${ITER_NUM}: check-todo-annotations FAILED — unannotated TODOs detected"
-      failed=1
-    else
-      log_info "iter-${ITER_NUM}: check-todo-annotations OK"
-    fi
-  else
-    log_info "iter-${ITER_NUM}: xtask has no check-todo-annotations — skipped"
-  fi
-
-  # Claims-vs-code (advisory): emit a markdown section. Phase 2 attaches it to
-  # the PR body. Non-zero exit becomes a WARN line rather than a hard fail so
-  # iterations whose commit messages don't fit the heuristic don't block.
-  local claims_out="${RALPH_CACHE_DIR:-$repo_root/.ralph-cache}/iter-${ITER_NUM}-claims.md"
-  mkdir -p "$(dirname "$claims_out")" 2>/dev/null || true
-  if (cd "$repo_root" && "$script_dir/claims-vs-code.sh" --branch "${BRANCH_NAME:-HEAD}" --base main > "$claims_out" 2>&1); then
-    log_info "iter-${ITER_NUM}: claims-vs-code OK (report at $claims_out)"
-  else
-    log_info "iter-${ITER_NUM}: claims-vs-code WARN — unmatched claim(s); see $claims_out"
-  fi
-
-  # AC fidelity (hard gate): every ticked AC must be backed by diff evidence
-  # or marked `[deferred — new plan: <path>]`.
-  if [[ -f "$PLAN_PATH" ]]; then
-    if ! (cd "$repo_root" && "$script_dir/ac-fidelity-check.sh" --plan "$PLAN_PATH" --branch "${BRANCH_NAME:-HEAD}" --base main 2>&1); then
-      log_error "iter-${ITER_NUM}: ac-fidelity-check FAILED — ticked AC lacks evidence in diff"
-      failed=1
-    else
-      log_info "iter-${ITER_NUM}: ac-fidelity-check OK"
-    fi
-  fi
-
-  if [[ $failed -ne 0 ]]; then
-    log_error "iter-${ITER_NUM}: discipline checks FAILED — fix before creating PR"
-    return 1
-  fi
-
-  log_info "iter-${ITER_NUM}: discipline checks passed"
-  return 0
-}
-
-# Determine the repo root (parent of this script's directory hierarchy, or
-# use the working directory if git rev-parse fails).
-REPO_ROOT=$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || pwd)
-
-DISCIPLINE_LOG="${RALPH_CACHE_DIR:-$REPO_ROOT/.ralph-cache}/iter-${ITER_NUM}-discipline.log"
-mkdir -p "$(dirname "$DISCIPLINE_LOG")" 2>/dev/null || true
-if ! check_iteration_discipline "$REPO_ROOT" 2>&1 | tee "$DISCIPLINE_LOG"; then
-  # Discipline failures are NOT fatal here — the implementing agent is still
-  # alive in the cmux pane and Phase 2 reads $DISCIPLINE_LOG to fix each
-  # issue before /merge-pr. Exiting here (the prior behavior) stranded the
-  # iteration: the pane stayed open, /create-pr had already run in Phase 1,
-  # and the loop's manual recovery path was needed every time.
-  log_error "iter-${ITER_NUM}: discipline checks failed — Phase 2 will address them (details in $DISCIPLINE_LOG)"
-  progress 0.5 "iter-${ITER_NUM}: discipline failed, repairing in Phase 2"
-else
-  # Successful run still leaves the log around so Phase 2 sees "OK" lines if it
-  # peeks; keeps the contract uniform.
-  log_info "iter-${ITER_NUM}: discipline checks passed (log at $DISCIPLINE_LOG)"
-fi
+# No discipline gates run here any more. iter-162a deleted check-dead-primitives
+# and check-todo-annotations from xtask; iter-162b deleted ac-fidelity-check.sh
+# and claims-vs-code.sh outright. What remained was a function that could not
+# fail, an unreachable error branch, an iter-N-discipline.log nobody read, and a
+# full `cargo run -p xtask -- --help` build to choose between two log lines. The
+# review prompt (step 0) tells the agent to enumerate the xtask subcommands the
+# repo actually ships and run those.
 
 # --- Phase 2: Create PR, review, merge ---
 

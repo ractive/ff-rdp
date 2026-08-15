@@ -128,10 +128,13 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Build xtask
         run: cargo build -p xtask
-      # iter-162a cut this job from 10 xtask invocations to 3. What went, and why:
+      # iter-162a cut this job from 10 xtask invocations to 3; iter-162b to 2.
+      # What went, and why:
       # check-dead-primitives (induced a decoy, missed 425 lines of dead API),
       # check-todo-annotations (guarded an empty set; its pre-commit-hook twin
       # went too), check-oneway-conformance (its own step name said "no-op in CI"),
+      # check-discipline-regression (iter-162b — it existed only to keep four
+      # copies of two scripts in sync, and those scripts are gone),
       # check-firefox-refs (same — it needs a Firefox checkout no runner has; kept
       # as a local gate, it is the best one in the repo), and check-actor-kb-sync
       # (a docs-sync reminder, now local-only). check-daemon-locks,
@@ -142,12 +145,6 @@ jobs:
         # binary reappears. Live suites must be modules of tests/live/main.rs so
         # a plain `cargo test` links one live target instead of ~45.
         run: cargo run -p xtask -- check-live-test-layout
-      - name: Check discipline regression (mirror + replay baselines)
-        # The skill scripts at ~/.claude/skills/ralph-loop are not present in
-        # CI runners, so the mirror-sync half is automatically skipped. The
-        # replay baselines run against the in-repo tools/ralph-loop/scripts
-        # copy and validate that iter-61v fails / iter-61t passes.
-        run: cargo run -p xtask -- check-discipline-regression
       - name: Check source invariants (daemon locks, error envelope, stderr annotations)
         # Three regex scans of product source, each with its own named result line:
         #   daemon-locks (iter-63)          — no `.lock().unwrap()` under daemon/;

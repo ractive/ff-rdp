@@ -9,56 +9,69 @@ dogfood_path: |
   gh pr list --state open --search 'head:iter-' --json number,headRefName
   # → must be empty.  Any open iter-* PR means a loop may still invoke
   #   ac-fidelity-check.sh / claims-vs-code.sh by path; do not start.
-
-  # 1. Phase 3a: the four-way edit lands while the mirror gate is alive.
+  
+  # -1. Cross-repo: magnificient hard-fails when the script vanishes.  Do this FIRST.
+  rg -n 'ac-fidelity' ~/devel/magnificient/xtask/src/main.rs
+  # → no matches, after its `ac-fidelity` subcommand is removed.  Before the fix,
+  #   locate_ac_script() returns None and ac_fidelity() returns (false, …).
+  
+  # 1. Phase 3a: the four-way delete lands while the mirror gate is alive.
   cargo run -p xtask -- check-discipline-regression
-  # → exit 0.  All four copies of ac-fidelity-check.sh identical, claims-vs-code.sh
-  #   absent from all four.  THIS GREEN IS THE 4-OF-4 PROOF — capture it in the PR body.
-  md5 -q ~/.claude/skills/ralph-loop/scripts/ac-fidelity-check.sh \
-         ~/.claude/skills/new-ralph-loop/scripts/ac-fidelity-check.sh \
-         tools/ralph-loop/scripts/ac-fidelity-check.sh \
-         tools/new-ralph-loop/scripts/ac-fidelity-check.sh
-  # → four identical hashes.
-  ls tools/ralph-loop/scripts/claims-vs-code.sh tools/new-ralph-loop/scripts/claims-vs-code.sh
-  # → both "No such file or directory".
-
-  # 2. The shrunk gate still rejects a self-incriminating AC.
-  bash tools/ralph-loop/scripts/ac-fidelity-check.sh --plan tools/tests/ac-fidelity-check/unrun-live-ac.md --range HEAD~1..HEAD
-  # → exit 1, naming the offending AC.
-  bash tools/ralph-loop/scripts/ac-fidelity-check.sh --plan tools/tests/ac-fidelity-check/allowed-wording-ac.md --range HEAD~1..HEAD
-  # → exit 0.
-
+  # → exit 0.  THIS GREEN IS THE 4-OF-4 PROOF — capture it in the PR body.
+  ls ~/.claude/skills/ralph-loop/scripts/ ~/.claude/skills/new-ralph-loop/scripts/ \
+     tools/ralph-loop/scripts/ tools/new-ralph-loop/scripts/
+  # → four non-empty listings (run-iteration.sh, ralph.workflow.js, …) with neither
+  #   ac-fidelity-check.sh nor claims-vs-code.sh in any of them.  Assert the
+  #   directories are non-empty first — an empty listing is not proof of deletion.
+  
+  # 2. Nothing invokes the deleted scripts any more.
+  rg -n 'ac-fidelity|claims-vs-code' tools ~/.claude/skills/{ralph-loop,new-ralph-loop} \
+     .github CLAUDE.md CONTRIBUTING.md crates
+  # → no matches.
+  
   # 3. Phase 3b: the mirror gate itself goes.
   cargo run -q -p xtask -- --help
   # → 8 subcommands; check-discipline-regression is gone.
   grep -c 'cargo run -p xtask --' .github/workflows/ci.yml
   # → 2  (check-live-test-layout, check-source-invariants)
-
+  
   # 4. Nothing in the loop harness references a deleted script or subcommand.
   grep -rn -E 'claims-vs-code|check-(iteration-ready|discipline-regression)' \
     tools ~/.claude/skills/ralph-loop ~/.claude/skills/new-ralph-loop ~/.claude/skills/create-pr \
     .github CLAUDE.md CONTRIBUTING.md crates
   # → no matches.
-
-  # 5. The loop still starts.  Smoke it, do not assume it.
-  node ~/.claude/skills/new-ralph-loop/scripts/smoke.workflow.js
-  # → exits 0; the review-phase prompt it prints contains no path to claims-vs-code.sh.
-
+  
+  # 5. The loop's scripts still parse.  NOTE: `node <file>` does NOT work on these —
+  #    they carry `export const meta`, so node loads them as ESM, where the
+  #    top-level `return` the Workflow runtime allows is a SyntaxError.  This
+  #    plan originally specified `node smoke.workflow.js` and that check has
+  #    never been runnable.  Use --check, which parses them as scripts:
+  node --check ~/.claude/skills/new-ralph-loop/scripts/smoke.workflow.js
+  node --check ~/.claude/skills/new-ralph-loop/scripts/ralph.workflow.js
+  # → both exit 0.  A real runtime smoke means invoking the Workflow tool with
+  #    scriptPath=smoke.workflow.js; it spawns agents, so it is a deliberate act.
+  
   cargo build -p xtask && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q
   # → all three exit 0.
 first_call_sites: []
-status: planned
-title: "Iteration 162b: shrink ac-fidelity-check to one rule and delete claims-vs-code"
+status: done
+title: "Iteration 162b: delete ac-fidelity-check and claims-vs-code"
 type: iteration
 tags:
   - iteration
 ---
 
-# Iteration 162b: shrink ac-fidelity-check to one rule and delete claims-vs-code
+# Iteration 162b: delete ac-fidelity-check and claims-vs-code
 
 Phase 3 of the removal described in [[analysis-2026-08-13-what-ff-rdp-became]] §5,
-split out from [[iteration-162a-discipline-removal-safe-phases]]. Also carries the
-`live-sweep --emit` decision, which is only answerable once this runs.
+split out from [[iteration-162a-discipline-removal-safe-phases]].
+
+> **Scope changed 2026-08-14, after the 158–161 batch.** This plan previously shrank
+> `ac-fidelity-check.sh` to one surviving rule and carried an open `live-sweep --emit`
+> decision. Both are dropped: the script is **deleted outright**, and no rule replaces it.
+> The batch supplied the missing evidence, and the owner supplied the missing fact — see
+> [[#Why nothing replaces it]]. Deleting instead of shrinking removes ~1,860 LOC instead of
+> ~1,270, eliminates the `--emit` decision, and leaves nothing to mirror for this file.
 
 ## Run this AFTER the 158-161 batch — never before, never during
 
@@ -144,20 +157,11 @@ why `CLAUDE.md:159-169` carries the mirror rule at all.
 
 In this one commit:
 
-1. **Shrink `ac-fidelity-check.sh` to a single rule** in all four copies. Which rule is the
-   open decision — see [[#The `--emit` decision]]. Whichever way it goes, the following are
-   deleted: the test-slug/symbol-in-diff evidence heuristics, the
-   `[deferred — new plan: …]` accept that exists only to escape them, and the
-   `[verified: <YYYY-MM-DD>, …]` requirement on `live_*` ACs.
-   Keep the AC-folding machinery (multi-line continuation handling, `ac-fidelity-check.sh:90-145`)
-   — every candidate rule needs it; that fold is what iter-154 built after the
-   iteration-151 confession hid on a continuation line.
-   Prune `tools/tests/ac-fidelity-check/` to the fixtures the surviving rule exercises and
-   trim `crates/xtask/tests/ac_fidelity_check.rs` to match. The fixtures that stay under
-   the text-rule option are `unrun-live-ac.md`, `iter151-prefix-ac.md`,
-   `allowed-wording-ac.md`, `blank-line-continuation-ac.md`; `deferred-ac.md`,
-   `deferral-mention-ac.md`, `evidenced-live-ac.md` and `unevidenced-live-ac.md` go with
-   the heuristics they test.
+1. **Delete `ac-fidelity-check.sh`** (464 LOC each) in all four copies. Nothing survives it:
+   not the evidence heuristics, not the `[verified: <YYYY-MM-DD>, …]` requirement on `live_*`
+   ACs, not the non-execution wording scan, not the AC-folding machinery iter-154 built to
+   feed them. Delete `tools/tests/ac-fidelity-check/` entirely and
+   `crates/xtask/tests/ac_fidelity_check.rs` with it.
 
 2. **Delete `claims-vs-code.sh`** in all four copies (188 LOC each).
 
@@ -179,7 +183,7 @@ In this one commit:
    `run-iteration.sh --replay 61v/61t`, and `run-iteration.sh:83` calls `claims-vs-code.sh`
    unconditionally — so the moment step 2 lands, the replay cannot run at all. Independently,
    the pinned `61v=FAIL` baseline cannot survive step 1: 61v fails on the evidence
-   heuristics, which step 1 removes. Drop the replay
+   heuristics, which step 1 deletes. Drop the replay
    (`check_discipline_regression.rs:29,45,111` and the `--replay` code path at
    `run-iteration.sh:70-96`), keep the four-way mirror diff, and run
    `cargo run -p xtask -- check-discipline-regression` before committing.
@@ -201,54 +205,52 @@ The four-copy mirror obligation **survives this iteration as a manual discipline
 in `CLAUDE.md` rather than pretending it went away: the mirror rule at `CLAUDE.md:159-169`
 stays, minus its *"`check-discipline-regression` catches drift"* clause. This is a real
 regression in safety and the plan should not hide it — the mitigation is that after this
-iteration there is one script left to mirror instead of two, at ~120 LOC instead of 652.
+iteration there are **no** copies of either script left to mirror; `run-iteration.sh` and
+`ralph.workflow.js` remain mirrored, and their drift risk is unchanged.
 
-## The `--emit` decision
+## Why nothing replaces it
 
-**Decide this here, with evidence in hand. Do not carry it forward again.**
+This plan originally kept one rule and weighed two candidates (a `live-sweep --emit` run-log
+rule, and the non-execution wording scan). Both are dropped. The deciding facts, in the order
+they matter:
 
-By the time this iteration runs, `live-sweep` will have been run by hand four times — once
-per iteration 158, 159, 160, 161 — with each `LIVE_SWEEP_SUMMARY executed=N skipped=M
-total=T` line pasted into its PR body. That is the evidence base that did not exist when
-[[analysis-2026-08-13-what-ff-rdp-became]] recommended deferring.
+**1. The artifact has no reader.** The repository owner, 2026-08-14: *"I lost the overview how
+it works and I never actually looked at the ACs anyway."* Every rule in this family polices the
+accuracy of a record that no human reads. Ticked ACs are not consumed downstream either — the
+next iteration's agent reads the diff, the PR and the previous plan's prose, not its checkboxes.
 
-The single surviving `ac-fidelity` rule is one of two, and they are not interchangeable:
+**2. It has a negative net record, now including an induced falsification.** 28 commits whose
+entire content is rewording an AC so the gate stops firing ([[gate-forensics]] §5b). One
+demonstrated catch (PR #188), found by a human who unticked the ACs at `6273773`; the gate was
+taught the wording afterwards. Across the 158–161 batch: **zero catches, seven false positives**
+(five in 158, two in 160), and one case where the gate actively corrupted the record — five
+iter-158 ACs merged carrying `[x]` *and* `[deferred — new plan: …]` simultaneously, because a
+review agent needed the gate green. That contradiction was removed post-merge at `7092fba`. A
+gate whose failure mode is *making the plan lie* cannot be justified by the plan's accuracy.
 
-**Option A — the run-log rule.** *"A ticked AC naming a `live_*` test names a test that
-resolves in the run log with status `ok`."* This is the honest rule: it reads execution,
-not prose, and it is the only one in the family that could have caught iter-153. **It
-requires `live-sweep --emit` to exist** — a machine-readable per-test run log
-(test slug, status, timestamp, commit SHA) that the gate can query. `live-sweep` today
-prints a summary line and nothing per-test.
-*Cost*: `--emit` plus a log-reading rule ≈ 100 LOC, replacing the ~1,600 LOC of
-plan-and-diff heuristics being deleted (4 copies × 464 LOC = 1,856 today; ~120 × 4 = 480
-under the text rule; ~100 in xtask plus a thin reader under this one).
-*Risk*: `live-sweep` is 845 LOC and was one day old when this plan was written;
-[[iteration-157-live-sweep-classifier-drift]] already files a bug against its classifier.
-Building a gate on top of it is how `check-pre-fix-repro` happened — 1,192 LOC on a
-plausible theory, two iterations of flap-fixing, zero catches.
+**3. The real problem it was introduced for is solved elsewhere, and better.** The original
+motivation was that an iteration would leave planned work undone and the next would build on
+top without checking. The defence against that is the loop's **next-plan adaptation** step
+(`ralph.workflow.js`, review prompt step 4), which fired three times in the 158–161 batch —
+159's plan gained notes on 158's landed launch fixes, 160's was adapted for 159's
+`--with-network` change and `network.rs` line shifts. That is a prompt, not a gate, and it
+works. Strengthening it is [[#Theme D — replace the gate with the thing that actually worked]].
 
-**Option B — the text rule.** *"A ticked AC whose own folded text admits the work was not
-carried out fails outright."* No new machinery; keeps the current heuristic family's one
-non-gameable member. It is the only rule that cannot be satisfied by moving a backticked
-symbol onto the AC's first line.
-*Cost*: ~120 LOC × 4 copies, all of it already written.
-*Weakness, stated plainly*: its one demonstrated catch (PR #188, two ACs reading
-*"implemented and compiled … not exercised end-to-end in this session's time budget"*) was
-found by a **human**, who unticked them at `6273773`; the gate was taught the wording
-afterwards, in iter-154. It catches a confession, not a lie.
+**4. What replaced the `live_*` half is a habit, not code.** The 158–161 batch required a real
+`FF_RDP_LIVE_TESTS=1 cargo run -p xtask -- live-sweep` in every PR body. That caught three
+genuine failures on iter-160's branch *before the PR opened*, one of which would have broken
+every cross-origin frame click. It reads execution rather than prose, which is exactly what
+Option A promised, and it needs no `--emit`, no log format and no gate.
 
-**What the implementer must do:** pick one, and record in this plan's Notes *which way you
-went and why*, citing the four `LIVE_SWEEP_SUMMARY` lines from 158–161. Two specific
-questions those lines answer: did `executed=N` stay stable across the four runs (if it
-swings, the classifier bug in 157 is real and Option A rests on sand), and did the sweep
-actually get run all four times (if it did not, no gate reading its log has anything to
-read). **A "keep both" answer is not available** — the point of this iteration is that the
-gate has one rule.
+**5. Option A would not have caught iter-153 anyway** — the case cited for it. That AC's
+`[verified: 2026-08-13, … 3 passed / 0 failed]` annotation was **truthful**: a real isolated run
+that really passed, certifying a feature that fails under contention. An isolated run emits a
+log too. A run-log rule beats the annotation only if the log pins the commit SHA, the env gates
+and full-sweep completeness — at which point it is a worse-ergonomics version of point 4.
 
-If Option A is chosen, `--emit` is built **in this iteration**, not deferred to another:
-deferring it is what leaves the text rule in place indefinitely under the label
-"temporary."
+**ACs are load-bearing as instructions, not as records.** They remain the specification an
+implementing agent works against, and plans keep them. What ends is machine-checking them
+afterwards. Ticks become advisory; trust the diff, the PR and the sweep.
 
 ## What survives
 
@@ -264,11 +266,33 @@ After 162a + 162b, the gates that remain are:
 | `check-iteration-plan` | frontmatter schema |
 | `check-actor-kb-sync` (local) | which files a diff touched |
 | `find-iteration-plan` | a branch name (a resolver, not a gate) |
-| `ac-fidelity-check.sh`, one rule | *see the decision above* |
 
-Every one of these except the last reads something other than acceptance-criteria prose.
-That was the finding in [[analysis-2026-08-13-what-ff-rdp-became]] §5, and the decision
-above determines whether the exception survives as an exception or joins the list.
+**Every remaining gate reads something other than acceptance-criteria prose.** That was the
+finding in [[analysis-2026-08-13-what-ff-rdp-became]] §5; after this iteration there is no
+exception to it. `check-iteration-plan` still reads a plan, but only its frontmatter schema —
+it makes plans findable and well-formed, and asserts nothing about whether the work was done.
+
+## Theme D — replace the gate with the thing that actually worked
+
+Removing the gate without strengthening its replacement is how the original problem returns.
+Two prompt-level changes, no new code:
+
+1. **Sharpen next-plan adaptation.** `ralph.workflow.js`'s review prompt step 4 currently says
+   *"adapt its scope if needed"* — advisory and vague. Rewrite it as an explicit sweep: list
+   every AC left unticked, every deferral, and every finding the implement agent flagged; for
+   each, either fold it into the next plan or file a new one, and say in the PR body which.
+   Mirror into `run-iteration.sh`'s `PROMPT_REVIEW`. This is the mechanism that caught 158→159
+   and 159→160 in the batch; make it a checklist rather than a sentence.
+2. **Make the per-PR live sweep standing policy.** CLAUDE.md gains what the 158–161 batch was
+   told ad hoc: an iteration touching product source pastes a real
+   `FF_RDP_LIVE_TESTS=1 cargo run -p xtask -- live-sweep` result into its PR body, quoting the
+   env gates that produced it (already required by the CLAUDE.md live-tests section as of
+   `9398086`). This is the honest half of what `ac-fidelity`'s `live_*` rule pretended to do.
+
+Also update the AC-checkbox convention in `CLAUDE.md` (currently the `[verified: …]` /
+`[deferred — new plan: …]` / `[allow-ac-wording: …]` machinery): keep "name the test and the
+post-condition" as authoring guidance, and state plainly that nothing checks tick state — ACs
+are the spec you implement against, not a record anything verifies.
 
 ## Out of scope
 
@@ -285,65 +309,71 @@ above determines whether the exception survives as an exception or joins the lis
 
 | Measurable | After 162a | After 162b |
 |---|---|---|
-| In-repo discipline LOC | ~8,200 | ~6,900 |
-| Removed by this iteration (in-repo) | — | **~1,270 (≈15%)** |
-| Removed by this iteration (`~/.claude/skills/`) | — | **~1,150** |
-| Cumulative removal, 162a + 162b | — | **~4,770 (≈41% of 11,706)** |
+| In-repo discipline LOC | ~8,200 | **~6,500** |
+| Removed by this iteration (in-repo) | — | **~1,700 (≈21%)** |
+| Removed by this iteration (`~/.claude/skills/`) | — | **~1,300** |
+| Cumulative removal, 162a + 162b | — | **~5,200 (≈44% of 11,706)** |
 | xtask subcommands | 9 | **8** |
 | `cargo run -p xtask --` steps in the CI `discipline` job | 3 | **2** |
-| Copies of `ac-fidelity-check.sh` | 4 × 464 | 4 × ~120 |
+| Copies of `ac-fidelity-check.sh` | 4 × 464 | **0** |
 | Copies of `claims-vs-code.sh` | 4 × 188 | **0** |
-| Gates that read acceptance-criteria text | 2 | 1, one rule |
+| Gates that read acceptance-criteria text | 2 | **0** |
+| New code added | — | **0** |
 
-In-repo arithmetic (verified with `wc -l`): 2 × 188 (claims mirrors) + 2 × ~344
-(ac-fidelity shrink in the mirrors) + 208 (`check_discipline_regression.rs`) ≈ **1,272**.
-Out-of-repo: the same two script edits in the two `~/.claude/skills/*/scripts/` copies ≈
-1,150. If Option A is chosen, add ~100 LOC back for `live-sweep --emit`.
+In-repo arithmetic (`wc -l`): 2 × 464 (ac-fidelity mirrors) + 2 × 188 (claims mirrors) + 208
+(`check_discipline_regression.rs`), plus `tools/tests/ac-fidelity-check/` and
+`crates/xtask/tests/ac_fidelity_check.rs` ≈ **1,700**. Out-of-repo: the same two scripts in
+the two `~/.claude/skills/*/scripts/` copies = 2 × 652 = **1,304**.
 
-## Acceptance Criteria [0/11]
+## Acceptance Criteria [8/10]
 
-- [ ] `unit_162b_ac_fidelity_four_copies_identical`: `md5` of `ac-fidelity-check.sh` is byte-identical across `~/.claude/skills/ralph-loop/scripts/`, `~/.claude/skills/new-ralph-loop/scripts/`, `tools/ralph-loop/scripts/` and `tools/new-ralph-loop/scripts/`; the file is ≤ 150 lines in each; and `claims-vs-code.sh` is absent from all four directories.
+Every grep-based AC below must assert its **scanned set is non-empty before** asserting the
+count. A wrong path or glob satisfies "no matches" trivially — the bug CI caught in iter-158,
+where `unit_158_source_scan_covers_the_live_suites` matched a literal `tests/live` that never
+appears in a Windows path and so scanned zero files. Match on path components, not substrings.
+
+- [x] `unit_162b_both_scripts_absent_from_mirrors` + `unit_162b_both_scripts_absent_from_skills`: neither `ac-fidelity-check.sh` nor `claims-vs-code.sh` exists in `~/.claude/skills/ralph-loop/scripts/`, `~/.claude/skills/new-ralph-loop/scripts/`, `tools/ralph-loop/scripts/` or `tools/new-ralph-loop/scripts/`; the test first asserts all four directories exist and are non-empty, so a mistyped path cannot pass it.
 - [ ] `check-discipline-regression` exits 0 on the Phase-3a commit — four-way mirror in sync, replay path removed — and the captured output is pasted into the PR body. This green is the 3-of-4-edit guard and must be recorded before Phase 3b deletes the check.
-- [ ] `ac_fidelity_check::*`: the pruned `crates/xtask/tests/ac_fidelity_check.rs` passes, asserting the surviving rule fires on its designated failing fixture and stays silent on its designated passing one, and that a plan whose ticked AC names a test absent from the diff now exits 0 — the evidence heuristics are gone by design.
-- [ ] `unit_162b_xtask_help_lists_eight`: `cargo run -q -p xtask -- --help` names exactly `check-iteration-plan`, `check-firefox-refs`, `check-actor-kb-sync`, `check-live-test-layout`, `check-dogfood-script`, `check-source-invariants`, `find-iteration-plan`, `live-sweep` — 8 subcommands — and `check-discipline-regression` is absent.
-- [ ] `ci_162b_discipline_job_two_xtask_steps`: `grep -c 'cargo run -p xtask --' .github/workflows/ci.yml` returns 2, and both names — `check-live-test-layout`, `check-source-invariants` — resolve in `cargo run -q -p xtask -- --help`.
-- [ ] `unit_162b_no_dangling_script_references`: `grep -rnE 'claims-vs-code|check-(iteration-ready|discipline-regression)' tools ~/.claude/skills/{ralph-loop,new-ralph-loop,create-pr} .github CLAUDE.md CONTRIBUTING.md crates` returns no matches — covering `run-iteration.sh:83,89,202,231,563,614,623`, `ralph.workflow.js:152`, and `tools/ralph-loop/README.md:9,16,18,32,47`.
-- [ ] `smoke_162b_loop_still_starts`: `node ~/.claude/skills/new-ralph-loop/scripts/smoke.workflow.js` exits 0, and the review-phase prompt it emits contains no filesystem path ending in `claims-vs-code.sh`.
-- [ ] `cargo build -p xtask`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace -q` each exit 0, with no unused-import or dead-code warning in `crates/xtask`.
-- [ ] The `--emit` decision is recorded in this plan's `## Notes` naming the option chosen, the four `LIVE_SWEEP_SUMMARY executed=N skipped=M total=T` lines from iterations 158-161 that informed it, and whether `executed=N` held steady across them.
-- [ ] If Option A was chosen: `live_162b_sweep_emits_run_log` asserts `cargo run -p xtask -- live-sweep --emit <path>` writes one record per test with slug, status and commit SHA, and that `ac-fidelity-check.sh` exits 1 for a ticked `live_*` AC whose named test carries a status other than `ok` in that log. If Option B was chosen: this AC is marked `[deferred — new plan: <path>]` with the follow-up plan filed before this PR merges.
-- [ ] `CLAUDE.md` retains the four-copy mirror rule with the `check-discipline-regression` clause removed and an explicit statement that the mirror is now maintained by hand; `grep -c 'ac-fidelity-check.sh' CLAUDE.md` returns a non-zero count and no line claims automated drift detection.
+- [x] `crates/xtask/tests/ac_fidelity_check.rs` and `tools/tests/ac-fidelity-check/` are deleted, and `cargo test --workspace -q` passes without them.
+- [x] `unit_162b_xtask_help_lists_eight`: `cargo run -q -p xtask -- --help` names exactly `check-iteration-plan`, `check-firefox-refs`, `check-actor-kb-sync`, `check-live-test-layout`, `check-dogfood-script`, `check-source-invariants`, `find-iteration-plan`, `live-sweep` — 8 subcommands — and `check-discipline-regression` is absent.
+- [x] `ci_162b_discipline_job_two_xtask_steps`: `grep -c 'cargo run -p xtask --' .github/workflows/ci.yml` returns 2, and both names — `check-live-test-layout`, `check-source-invariants` — resolve in `cargo run -q -p xtask -- --help`.
+- [x] `unit_162b_no_script_is_invoked_anywhere`: no *invocation* of either deleted script survives anywhere in `tools/`, `crates/`, `.github/`, `CLAUDE.md`, `CONTRIBUTING.md` or the `ralph-loop` / `new-ralph-loop` / `create-pr` skill directories. Prose and comments describing the deletion are allowed and present; the test matches only `bash <name>` / `./<name>` / `<path>/<name>`. It asserts it scanned >50 files first. **Corrected during review** — the first version scanned only the two mirror directories and passed while `~/.claude/skills/create-pr/SKILL.md` still ran `ac-fidelity-check.sh`; that invocation is now deleted and the widened test was confirmed to fail when it is restored.
+- [ ] `smoke_162b_loop_still_starts`: **not ticked — the check as originally written cannot run.** `node <file>` loads these scripts as ESM (they carry `export const meta`), where the top-level `return` the Workflow runtime permits is a SyntaxError; the command in the original dogfood step 5 has never worked. `node --check` passes on both workflow scripts, and `unit_162b_no_script_is_invoked_anywhere` proves no deleted-script path survives in either mirror. A genuine runtime smoke requires invoking the Workflow tool on `smoke.workflow.js`, which spawns agents; that has not been done.
+- [x] `cargo build -p xtask`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace -q` each exit 0, with no unused-import or dead-code warning in `crates/xtask`.
+- [x] **Theme D landed:** `ralph.workflow.js`'s review prompt step 4 and `run-iteration.sh`'s `PROMPT_REVIEW` both instruct an explicit carry-over sweep (enumerate unticked ACs, deferrals and flagged findings; fold each into the next plan or file a new one; state which in the PR body), identically in both mirrored copies; and `CLAUDE.md` states the standing per-PR live-sweep requirement.
+- [x] `CLAUDE.md`'s AC-checkbox convention is rewritten: ACs are authoring guidance (name the test and the post-condition), **nothing checks tick state**, and the `[verified: …]` / `[deferred — new plan: …]` / `[allow-ac-wording: …]` machinery is gone. The four-copy mirror rule survives for `run-iteration.sh` and `ralph.workflow.js`, stated as a manual discipline with its `check-discipline-regression` clause removed.
 
 ## Notes
 
-- **Record the `--emit` decision here.** Leave this bullet in place and fill it in during
-  implementation: which option, the four `LIVE_SWEEP_SUMMARY` lines, and the reasoning.
-  An empty bullet at merge time means the decision was skipped, which is the failure mode
-  this iteration exists to end.
+- **The `--emit` decision is closed: no `--emit`, no rule.** It was a choice between two
+  surviving rules; there is no surviving rule. The four sweep lines it was to be decided on,
+  with the env gates that produced them, are kept here because they are the record of the habit
+  that replaces the gate: 158 `executed=221 skipped=0 preexisting=9 total=230` (219/2, both
+  gates); 159 `executed=237 skipped=0 preexisting=0 total=237` (225/3, both gates); 160
+  `executed=209 skipped=32 preexisting=8 total=249` (209/0, `FF_RDP_LIVE_TESTS` only); 161
+  `executed=225 skipped=32 total=257` (225/0, `FF_RDP_LIVE_TESTS` only). `executed=N` swings,
+  but from tests being added and from 160/161 running one gate instead of two — not classifier
+  drift. [[iteration-157-live-sweep-classifier-drift]] is `obsolete`. If a run-log gate is ever
+  revisited, the one thing this batch proved it would need is a record of **which env gates were
+  set**: 160's `0 failed` over a 32-test-smaller corpus reads better than 159's `3 failed` and
+  is worth less.
 
-- **Evidence available at start (2026-08-14) — inputs to that decision, not the decision.**
-  The batch ran and all four sweeps happened, each pasted into its PR body. With the env gates
-  that produced them: 158 `executed=221 skipped=0 preexisting=9 total=230` (219/2, both gates);
-  159 `executed=237 skipped=0 preexisting=0 total=237` (225/3, both gates); 160 `executed=209
-  skipped=32 preexisting=8 total=249` (209/0, `FF_RDP_LIVE_TESTS` only); 161 `executed=225
-  skipped=32 total=257` (225/0, `FF_RDP_LIVE_TESTS` only). Three findings bear on the choice:
-  - **`executed=N` did not hold steady, but not from classifier drift.** Totals grew as each
-    iteration added tests, and 160/161 ran one gate instead of two. The plan's "if it swings,
-    Option A rests on sand" inference does not fire on this data.
-  - **The stated risk is stale.** [[iteration-157-live-sweep-classifier-drift]], cited above as
-    an open bug against the classifier, is `status: obsolete`.
-  - **Option A's precondition became true during the batch.** iter-158's panic-flip is what
-    makes a run log's `status ok` mean *reached Firefox* — before it, 152 call sites returned
-    early on an unset gate and libtest scored that `ok`, so a log-reading rule would have
-    inherited the false green it exists to prevent. If Option A is chosen, `--emit` must record
-    **which env gates were set**; 160-vs-159 is the proof that a summary without them invites
-    reading a shrunken corpus as an improvement.
+- **[[iteration-163-ac-fidelity-reads-only-the-first-line]] is `obsolete`** (2026-08-14) — it
+  repaired heuristics this plan deletes. Nothing carries forward now that no rule survives; its
+  reproduction data remains the measured case for deleting rather than repairing them.
 
-- **[[iteration-163-ac-fidelity-reads-only-the-first-line]] was marked `obsolete` for this
-  plan** (2026-08-14) — it repaired the evidence heuristics Phase 3a deletes. One fact carries
-  forward: the slug regex `\b(live|test|bench)_[a-z0-9_]+` does not match `unit_*`, the prefix
-  CLAUDE.md's AC convention produces for non-live tests. If the surviving rule checks that a
-  named test exists, it must recognise `unit_*` or it checks nothing for most ACs.
+- **Consumers outside this repo** (found 2026-08-14 by recursive search of `~/devel`). Handle
+  these or the deletion breaks them:
+  - `magnificient/xtask/src/main.rs:196-216` shells out to `ac-fidelity-check.sh` in
+    `tools/ralph-loop/scripts/` or `~/.claude/skills/ralph-loop/scripts/`, and returns
+    `(false, …)` — a **hard failure** — when it is not found. Its `ac-fidelity` subcommand must
+    go **before** the script is deleted.
+  - `hyalo/crates/xtask/src/ac_fidelity.rs` (571 LOC) is an independent Rust reimplementation
+    wired into CI at `.github/workflows/quality-gates.yml:21`. It keyword-matches AC prose
+    against the whole workspace. Measured 2026-08-14: it passes all 191 plans, and it passes a
+    ticked AC reading *"zzqqxx_nonexistent_widget_flurb resolves the frobnicator quuxbaz"* — it
+    cannot fail. Removed separately, in that repo.
+  - `comparis/neon/kb/refactor-*.md` mention the gate in prose only. Nothing to do.
 
 - **Do not let this plan's own grep ACs pass vacuously.** Several ACs assert a `grep -c` count
   or "no matches". A wrong path or glob satisfies "no matches" trivially — which is the bug CI

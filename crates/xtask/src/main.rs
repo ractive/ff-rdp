@@ -1,5 +1,4 @@
 mod check_actor_kb_sync;
-mod check_discipline_regression;
 mod check_dogfood_script;
 mod check_firefox_refs;
 mod check_iteration_plan;
@@ -24,9 +23,6 @@ struct Cli {
 enum Commands {
     /// Validate an iteration plan's frontmatter and required sections.
     CheckIterationPlan(check_iteration_plan::Args),
-    /// Verify the ralph-loop skill scripts mirror is in sync and replay
-    /// baselines (iter-61v fails, iter-61t passes) still hold.
-    CheckDisciplineRegression(check_discipline_regression::Args),
     /// Scan product source for three defect shapes: `.lock().unwrap()` in the daemon,
     /// `eprintln!` + `AppError::Exit(N)` that bypasses the JSON envelope, and any
     /// `eprintln!` under commands/ without a `// stderr-ok: <reason>` justification.
@@ -53,7 +49,6 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::CheckIterationPlan(args) => check_iteration_plan::run(args),
-        Commands::CheckDisciplineRegression(args) => check_discipline_regression::run(args),
         Commands::CheckSourceInvariants(args) => check_source_invariants::run(args),
         Commands::CheckFirefoxRefs(args) => check_firefox_refs::run(args),
         Commands::CheckActorKbSync(args) => check_actor_kb_sync::run(args),
