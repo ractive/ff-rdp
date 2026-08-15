@@ -6,8 +6,13 @@ The canonical copies of these scripts live in
 - changes to the skill can be reviewed in a normal PR diff;
 - the skill code is preserved in the project's git history alongside the
   iteration plans it operates on; and
-- `cargo xtask check-discipline-regression` can verify the mirror is in sync
-  with the live skill on disk (so a stale mirror can't silently diverge).
+- the mirror stays reviewable even though the canonical copy lives outside the
+  repo.
+
+There is **no automated drift check**. `cargo xtask check-discipline-regression`
+verified the mirror until iter-162b deleted it, along with the two scripts whose
+four-way duplication was the only reason it existed. Keeping the mirror in sync
+is now a manual discipline.
 
 ## Scripts
 
@@ -29,19 +34,17 @@ Edit the canonical copy first:
 $EDITOR ~/.claude/skills/ralph-loop/scripts/<file>
 ```
 
-Then refresh the mirror and run the regression target:
+Then refresh the mirror and confirm it matches:
 
 ```sh
 cp ~/.claude/skills/ralph-loop/scripts/*.sh tools/ralph-loop/scripts/
-cargo run -p xtask -- check-discipline-regression
+diff -r ~/.claude/skills/ralph-loop/scripts/ tools/ralph-loop/scripts/
 ```
 
-The xtask diffs the mirror against the live skill and fails if they drift, so
-CI catches the case where the skill was edited but the mirror wasn't (or vice
-versa). It used to also replay iter-61v (expected: fails) and iter-61t
-(expected: passes) against the live scripts; that behavioural baseline pinned
-the heuristics in `ac-fidelity-check.sh` and `claims-vs-code.sh` and went with
-them in iter-162b.
+Nothing enforces this. Until iter-162b, `check-discipline-regression` diffed the
+mirror against the live skill in CI and also replayed iter-61v (expected: fails)
+and iter-61t (expected: passes); that behavioural baseline pinned the heuristics
+in the two deleted scripts and could not outlive them.
 
 ## Why a mirror and not a symlink?
 
@@ -49,5 +52,6 @@ The skill directory lives outside the repo (`~/.claude/skills/ralph-loop/`),
 so a symlink would only work on the maintainer's machine. The mirror lets CI
 and other contributors see the scripts without needing the skill installed.
 
-The trade-off: edits must be made in two places. The `check-discipline-regression`
-xtask is the load-bearing safeguard that catches drift.
+The trade-off: edits must be made in two places, and since iter-162b nothing
+checks that you did. A 3-of-4 edit is exactly what went wrong in iter-140/146
+(`3dc5330`) — run the `diff -r` above.

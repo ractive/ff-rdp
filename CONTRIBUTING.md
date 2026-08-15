@@ -267,19 +267,17 @@ cargo run -q -p xtask -- --help
 
 cargo run -p xtask -- check-live-test-layout
 cargo run -p xtask -- check-source-invariants
-cargo run -p xtask -- check-discipline-regression
 cargo run -p xtask -- check-actor-kb-sync --since origin/main
 [ -n "$PLAN" ] && cargo run -p xtask -- check-iteration-plan "$PLAN"
 [ -n "$PLAN" ] && cargo run -p xtask -- check-firefox-refs "$PLAN"
 [ -n "$PLAN" ] && cargo run -p xtask -- check-dogfood-script "$PLAN"
-[ -n "$PLAN" ] && bash tools/ralph-loop/scripts/ac-fidelity-check.sh \
-  --plan "$PLAN" --base origin/main
 ```
 
-`ac-fidelity-check.sh` checks that ticked ACs *reference* evidence that resolves in the
-diff, declare no non-execution, and carry `[verified: <YYYY-MM-DD>, <measured result>]`
-where they name a `live_*` test. It reads a plan and a diff only: it cannot verify a
-test ran (iter-154).
+There is no AC gate. `ac-fidelity-check.sh` was deleted in iter-162b: it read a plan and a
+diff, could not tell whether any test ran, and over its life produced 28 commits whose only
+content was rewording an AC to silence it. Tick honestly or leave the box empty, file
+carry-over before the PR merges, and paste a real `live-sweep` result into the PR body for
+any iteration touching product source.
 
 Fix every reported failure before pushing. The `/create-pr` skill runs these
 automatically on iter-* branches.

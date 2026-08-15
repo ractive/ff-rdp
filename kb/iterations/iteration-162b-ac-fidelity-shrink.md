@@ -41,9 +41,15 @@ dogfood_path: |
     .github CLAUDE.md CONTRIBUTING.md crates
   # → no matches.
 
-  # 5. The loop still starts.  Smoke it, do not assume it.
-  node ~/.claude/skills/new-ralph-loop/scripts/smoke.workflow.js
-  # → exits 0; the review-phase prompt it prints contains no path to claims-vs-code.sh.
+  # 5. The loop's scripts still parse.  NOTE: `node <file>` does NOT work on these —
+  #    they carry `export const meta`, so node loads them as ESM, where the
+  #    top-level `return` the Workflow runtime allows is a SyntaxError.  This
+  #    plan originally specified `node smoke.workflow.js` and that check has
+  #    never been runnable.  Use --check, which parses them as scripts:
+  node --check ~/.claude/skills/new-ralph-loop/scripts/smoke.workflow.js
+  node --check ~/.claude/skills/new-ralph-loop/scripts/ralph.workflow.js
+  # → both exit 0.  A real runtime smoke means invoking the Workflow tool with
+  #    scriptPath=smoke.workflow.js; it spawns agents, so it is a deliberate act.
 
   cargo build -p xtask && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q
   # → all three exit 0.
@@ -319,23 +325,23 @@ In-repo arithmetic (`wc -l`): 2 × 464 (ac-fidelity mirrors) + 2 × 188 (claims 
 `crates/xtask/tests/ac_fidelity_check.rs` ≈ **1,700**. Out-of-repo: the same two scripts in
 the two `~/.claude/skills/*/scripts/` copies = 2 × 652 = **1,304**.
 
-## Acceptance Criteria [0/10]
+## Acceptance Criteria [8/10]
 
 Every grep-based AC below must assert its **scanned set is non-empty before** asserting the
 count. A wrong path or glob satisfies "no matches" trivially — the bug CI caught in iter-158,
 where `unit_158_source_scan_covers_the_live_suites` matched a literal `tests/live` that never
 appears in a Windows path and so scanned zero files. Match on path components, not substrings.
 
-- [ ] `unit_162b_both_scripts_absent_from_all_four`: neither `ac-fidelity-check.sh` nor `claims-vs-code.sh` exists in `~/.claude/skills/ralph-loop/scripts/`, `~/.claude/skills/new-ralph-loop/scripts/`, `tools/ralph-loop/scripts/` or `tools/new-ralph-loop/scripts/`; the test first asserts all four directories exist and are non-empty, so a mistyped path cannot pass it.
+- [x] `unit_162b_both_scripts_absent_from_all_four`: neither `ac-fidelity-check.sh` nor `claims-vs-code.sh` exists in `~/.claude/skills/ralph-loop/scripts/`, `~/.claude/skills/new-ralph-loop/scripts/`, `tools/ralph-loop/scripts/` or `tools/new-ralph-loop/scripts/`; the test first asserts all four directories exist and are non-empty, so a mistyped path cannot pass it.
 - [ ] `check-discipline-regression` exits 0 on the Phase-3a commit — four-way mirror in sync, replay path removed — and the captured output is pasted into the PR body. This green is the 3-of-4-edit guard and must be recorded before Phase 3b deletes the check.
-- [ ] `crates/xtask/tests/ac_fidelity_check.rs` and `tools/tests/ac-fidelity-check/` are deleted, and `cargo test --workspace -q` passes without them.
-- [ ] `unit_162b_xtask_help_lists_eight`: `cargo run -q -p xtask -- --help` names exactly `check-iteration-plan`, `check-firefox-refs`, `check-actor-kb-sync`, `check-live-test-layout`, `check-dogfood-script`, `check-source-invariants`, `find-iteration-plan`, `live-sweep` — 8 subcommands — and `check-discipline-regression` is absent.
-- [ ] `ci_162b_discipline_job_two_xtask_steps`: `grep -c 'cargo run -p xtask --' .github/workflows/ci.yml` returns 2, and both names — `check-live-test-layout`, `check-source-invariants` — resolve in `cargo run -q -p xtask -- --help`.
-- [ ] `unit_162b_no_dangling_script_references`: `grep -rnE 'ac-fidelity|claims-vs-code|check-(iteration-ready|discipline-regression)' tools ~/.claude/skills/{ralph-loop,new-ralph-loop,create-pr} .github CLAUDE.md CONTRIBUTING.md crates` returns no matches, after asserting the scan covered a non-zero file count — covering `run-iteration.sh:83,89,202,231,563,614,623`, `ralph.workflow.js:152,153`, and `tools/ralph-loop/README.md:9,16,18,32,47`.
-- [ ] `smoke_162b_loop_still_starts`: `node ~/.claude/skills/new-ralph-loop/scripts/smoke.workflow.js` exits 0, and the review-phase prompt it emits contains no filesystem path ending in `ac-fidelity-check.sh` or `claims-vs-code.sh`.
-- [ ] `cargo build -p xtask`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace -q` each exit 0, with no unused-import or dead-code warning in `crates/xtask`.
-- [ ] **Theme D landed:** `ralph.workflow.js`'s review prompt step 4 and `run-iteration.sh`'s `PROMPT_REVIEW` both instruct an explicit carry-over sweep (enumerate unticked ACs, deferrals and flagged findings; fold each into the next plan or file a new one; state which in the PR body), identically in both mirrored copies; and `CLAUDE.md` states the standing per-PR live-sweep requirement.
-- [ ] `CLAUDE.md`'s AC-checkbox convention is rewritten: ACs are authoring guidance (name the test and the post-condition), **nothing checks tick state**, and the `[verified: …]` / `[deferred — new plan: …]` / `[allow-ac-wording: …]` machinery is gone. The four-copy mirror rule survives for `run-iteration.sh` and `ralph.workflow.js`, stated as a manual discipline with its `check-discipline-regression` clause removed.
+- [x] `crates/xtask/tests/ac_fidelity_check.rs` and `tools/tests/ac-fidelity-check/` are deleted, and `cargo test --workspace -q` passes without them.
+- [x] `unit_162b_xtask_help_lists_eight`: `cargo run -q -p xtask -- --help` names exactly `check-iteration-plan`, `check-firefox-refs`, `check-actor-kb-sync`, `check-live-test-layout`, `check-dogfood-script`, `check-source-invariants`, `find-iteration-plan`, `live-sweep` — 8 subcommands — and `check-discipline-regression` is absent.
+- [x] `ci_162b_discipline_job_two_xtask_steps`: `grep -c 'cargo run -p xtask --' .github/workflows/ci.yml` returns 2, and both names — `check-live-test-layout`, `check-source-invariants` — resolve in `cargo run -q -p xtask -- --help`.
+- [x] `unit_162b_no_dangling_script_references`: `grep -rnE 'ac-fidelity|claims-vs-code|check-(iteration-ready|discipline-regression)' tools ~/.claude/skills/{ralph-loop,new-ralph-loop,create-pr} .github CLAUDE.md CONTRIBUTING.md crates` returns no matches, after asserting the scan covered a non-zero file count — covering `run-iteration.sh:83,89,202,231,563,614,623`, `ralph.workflow.js:152,153`, and `tools/ralph-loop/README.md:9,16,18,32,47`.
+- [ ] `smoke_162b_loop_still_starts`: **not ticked — the check as originally written cannot run.** `node <file>` loads these scripts as ESM (they carry `export const meta`), where the top-level `return` the Workflow runtime permits is a SyntaxError; the command in the original dogfood step 5 has never worked. `node --check` passes on both workflow scripts, and `unit_162b_no_script_is_invoked_anywhere` proves no deleted-script path survives in either mirror. A genuine runtime smoke requires invoking the Workflow tool on `smoke.workflow.js`, which spawns agents; that has not been done.
+- [x] `cargo build -p xtask`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace -q` each exit 0, with no unused-import or dead-code warning in `crates/xtask`.
+- [x] **Theme D landed:** `ralph.workflow.js`'s review prompt step 4 and `run-iteration.sh`'s `PROMPT_REVIEW` both instruct an explicit carry-over sweep (enumerate unticked ACs, deferrals and flagged findings; fold each into the next plan or file a new one; state which in the PR body), identically in both mirrored copies; and `CLAUDE.md` states the standing per-PR live-sweep requirement.
+- [x] `CLAUDE.md`'s AC-checkbox convention is rewritten: ACs are authoring guidance (name the test and the post-condition), **nothing checks tick state**, and the `[verified: …]` / `[deferred — new plan: …]` / `[allow-ac-wording: …]` machinery is gone. The four-copy mirror rule survives for `run-iteration.sh` and `ralph.workflow.js`, stated as a manual discipline with its `check-discipline-regression` clause removed.
 
 ## Notes
 

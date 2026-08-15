@@ -118,3 +118,69 @@ fn unit_162b_no_script_is_invoked_anywhere() {
     );
     assert!(offenders.is_empty(), "{}", offenders.join("\n"));
 }
+
+/// The subcommand list after iter-162a (16 → 9) and iter-162b (9 → 8).
+/// Pinned so a re-added gate has to be a deliberate edit here, not a drive-by.
+const EXPECTED_SUBCOMMANDS: &[&str] = &[
+    "check-iteration-plan",
+    "check-source-invariants",
+    "check-firefox-refs",
+    "check-actor-kb-sync",
+    "check-live-test-layout",
+    "check-dogfood-script",
+    "find-iteration-plan",
+    "live-sweep",
+];
+
+#[test]
+fn unit_162b_xtask_help_lists_eight() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .arg("--help")
+        .output()
+        .expect("running xtask --help");
+    assert!(out.status.success(), "xtask --help exited non-zero");
+    let help = String::from_utf8_lossy(&out.stdout);
+
+    for name in EXPECTED_SUBCOMMANDS {
+        assert!(help.contains(name), "xtask --help no longer lists {name}");
+    }
+    for gone in [
+        "check-discipline-regression",
+        "check-iteration-ready",
+        "check-dead-primitives",
+        "check-todo-annotations",
+        "check-pre-fix-repro",
+        "check-oneway-conformance",
+    ] {
+        assert!(
+            !help.contains(gone),
+            "xtask --help still lists {gone}, deleted in iter-162a/162b"
+        );
+    }
+}
+
+#[test]
+fn ci_162b_discipline_job_two_xtask_steps() {
+    let ci = std::fs::read_to_string(workspace_root().join(".github/workflows/ci.yml"))
+        .expect("reading ci.yml");
+    let invocations: Vec<&str> = ci
+        .lines()
+        .filter(|l| l.contains("cargo run -p xtask --"))
+        .collect();
+    assert_eq!(
+        invocations.len(),
+        2,
+        "expected exactly 2 xtask steps in CI, found: {invocations:#?}"
+    );
+    for line in &invocations {
+        let name = line
+            .rsplit("xtask -- ")
+            .next()
+            .expect("subcommand after `xtask -- `")
+            .trim();
+        assert!(
+            EXPECTED_SUBCOMMANDS.contains(&name),
+            "CI invokes `{name}`, which xtask does not ship"
+        );
+    }
+}
