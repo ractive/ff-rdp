@@ -1032,3 +1032,58 @@ behaviour was identical to the pre-165 default.
 `crates/ff-rdp-cli/src/cli/args.rs`,
 `crates/ff-rdp-cli/tests/live/live_165_eval_call_scope.rs`,
 `crates/ff-rdp-cli/tests/live/live_161_eval_and_flag_strictness.rs`.
+
+---
+
+## DEC-040: the main document is matched by canonical URL, and `status: null` always carries a `status_reason`
+
+**Decision** (iter-166): `navigate` identifies the main document's
+`network-event` resource by comparing **canonicalised** URLs
+(`url::Url::parse` + fragment stripped) rather than by exact string equality
+against the URL the caller typed, and it prefers the URL that **committed**
+over the URL that was requested. Alongside `status`, the envelope now always
+carries `status_reason`, which is `null` exactly when `status` is not, and
+otherwise one of `not_observed`, `no_document_request`, `no_status_reported`.
+
+**Why**: measured on `main` at 07a9c03, plain `ff-rdp navigate
+https://example.com` reported `status: null` for a page that had returned 200 —
+on the daemon route, the `--no-daemon` route and the `--with-network` route
+alike. Firefox canonicalises `https://example.com` to `https://example.com/`
+before requesting it, so `r.url == requested_url` never matched and no status
+was ever found. Supplying the trailing slash by hand returned `200`, which is
+what settled it. The bug was invisible because the two routes had two private
+copies of the same matching rule and no test asserted `results.status` on a
+plain `navigate` at all; iter-166 collapses both copies into one
+`DocumentStatusTracker`.
+
+**Why the committed URL wins over the requested one**: on a redirect the
+requested URL is the hop that returned `301`, and the caller asked what the
+page they *got* returned. Within one preference the last match wins, since a
+redirect chain can emit several resources for the same URL and the final one is
+the hop that committed.
+
+**Why there is no looser fallback** — specifically not "if only one
+`cause_type == "document"` resource was seen, use it": Firefox emits that cause
+for subframe loads too, so on a page whose main document issued no request
+(`about:blank`, a bfcache restore) that rule would report an iframe's status as
+the page's. Reporting nothing, with a `status_reason` that says why, beats
+reporting a number that is wrong.
+`unit_extract_document_status_ignores_subframe_document_resource` (iter-138)
+and `unit_166_status_null_is_distinguishable` both pin this.
+
+**Why `status_reason` rather than dropping or restructuring `status`**: the
+plan forbids dropping it — it is the only thing in `navigate`'s default
+envelope that reports what the *server* said, as opposed to what the document
+ended up looking like. A bare `null` conflated three situations a caller has to
+tell apart, which is the [[iteration-160-envelope-honesty]] class of problem in
+its milder form. Adding a sibling key keeps `status` byte-for-byte compatible
+for every consumer that already reads it.
+
+**Not in scope**: `back`/`forward`/`reload` still emit
+`{committed_url, ready_state, elapsed_ms}` with no `status` key at all — they
+never subscribe to `network-event`. Filed as carry-over rather than widened
+here; iter-138 Theme A deliberately covers `navigate` only.
+
+**Applies to**: `crates/ff-rdp-cli/src/commands/navigate.rs`,
+`crates/ff-rdp-cli/src/cli/args.rs`,
+`crates/ff-rdp-cli/tests/live/live_166_navigate_document_status.rs`.

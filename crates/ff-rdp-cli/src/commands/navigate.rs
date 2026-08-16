@@ -100,6 +100,175 @@ impl WaitAfterNav<'_> {
     }
 }
 
+/// Why `navigate` reports `status: null` (iter-166 Theme B).
+///
+/// Before iter-166 a bare `null` conflated three very different situations, and
+/// a caller scripting `navigate` could not tell "the server sent no status"
+/// from "we never looked". Each variant below is emitted as the envelope's
+/// `status_reason`, which is `null` exactly when `status` is non-`null`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusUnknown {
+    /// This route never subscribed to `network-event`, so no HTTP status could
+    /// have been observed no matter what the server sent: `back`/`forward`/
+    /// `reload` (iter-138 Theme A covers `navigate` only), `--no-wait`, and
+    /// the pure-`readystate` wait strategy.
+    NotObserved,
+    /// Network events *were* observed, but none of them was the committed
+    /// document's own request — a `data:`/`about:` URL, a bfcache restore, or
+    /// a same-document (`pushState`/fragment) navigation, none of which issue
+    /// one.
+    NoDocumentRequest,
+    /// The committed document's request was identified, but Firefox never
+    /// reported an HTTP status for it — the response line had not arrived when
+    /// the wait resolved, or the channel failed before one existed.
+    NoStatusReported,
+}
+
+impl StatusUnknown {
+    /// The stable wire string for the `status_reason` envelope key.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NotObserved => "not_observed",
+            Self::NoDocumentRequest => "no_document_request",
+            Self::NoStatusReported => "no_status_reported",
+        }
+    }
+}
+
+/// Canonicalise a URL before comparing a *requested* (or *committed*) URL
+/// against the URL Firefox reports on a `network-event` resource.
+///
+/// This is the iter-166 defect in one function. Firefox requests the
+/// **canonical** form of whatever it is handed — `https://example.com` becomes
+/// `https://example.com/` — while `requested_url` is the raw string the caller
+/// typed. The old exact-string comparison therefore never matched the main
+/// document on the single most common invocation there is, and `status` was
+/// `null` for a page that plainly returned 200.
+///
+/// The fragment is stripped because it is never sent to the server, so a
+/// `network-event` URL can never carry one; the query is deliberately kept,
+/// since two same-path requests differing only in query really are different
+/// requests and collapsing them would reintroduce the subframe-contamination
+/// risk the `cause_type`/`url` pair exists to avoid.
+///
+/// Unparseable input is returned unchanged so the comparison degrades to the
+/// old exact-string behaviour rather than to a panic.
+fn canonical_doc_url(u: &str) -> String {
+    url::Url::parse(u).map_or_else(
+        |_| u.to_owned(),
+        |mut parsed| {
+            parsed.set_fragment(None);
+            parsed.into()
+        },
+    )
+}
+
+/// Correlates the main document's `network-event` resource with the HTTP status
+/// Firefox reports for it, and — when there is no status — records *why*.
+///
+/// Shared by both routes that can report `navigate`'s `status`: the streamed
+/// one in [`wait_for_doc_complete`] (fed event-by-event as they arrive) and the
+/// batch one in [`extract_document_status`] used by `--with-network` (fed from
+/// the drained resource/update vectors). Before iter-166 those two carried
+/// separate copies of the same matching rule, and both copies had the same bug.
+#[derive(Debug, Default)]
+struct DocumentStatusTracker {
+    /// Whether the caller subscribed to `network-event` at all. `false` makes
+    /// [`Self::resolve`] report [`StatusUnknown::NotObserved`] without
+    /// pretending it looked.
+    observing: bool,
+    /// `(resource_id, canonical url)` for every `cause_type == "document"`
+    /// resource seen, in arrival order.
+    docs: Vec<(u64, String)>,
+    /// `(resource_id, status)` for every status-carrying update, in arrival
+    /// order. Firefox typically carries `status` only on the FIRST update for a
+    /// resource, so this keeps every one rather than the most recent record.
+    statuses: Vec<(u64, u16)>,
+}
+
+impl DocumentStatusTracker {
+    /// A tracker for a route that subscribed to `network-event`.
+    fn observing() -> Self {
+        Self {
+            observing: true,
+            ..Self::default()
+        }
+    }
+
+    /// Record a `network-event` resource, keeping only document loads.
+    fn note_resource(&mut self, res: &ff_rdp_core::NetworkResource) {
+        if res.cause_type == "document" {
+            self.docs
+                .push((res.resource_id, canonical_doc_url(&res.url)));
+        }
+    }
+
+    /// Record a `network-event` update, keeping only the status-carrying ones.
+    fn note_update(&mut self, upd: &ff_rdp_core::NetworkResourceUpdate) {
+        if let Some(ref s) = upd.status
+            && let Ok(code) = s.parse::<u16>()
+        {
+            self.statuses.push((upd.resource_id, code));
+        }
+    }
+
+    /// Pick the main document's resource id.
+    ///
+    /// Preference order, most trustworthy first:
+    /// 1. the URL that actually **committed** — the end of a redirect chain, so
+    ///    the status reported is the one belonging to the document the caller
+    ///    ended up with rather than an intermediate `301`;
+    /// 2. the URL that was **requested** — identical to the above when nothing
+    ///    redirected, and all there is when `location.href` could not be read.
+    ///
+    /// There is deliberately no third, looser rule. A `cause_type ==
+    /// "document"` resource is emitted for subframe loads too, so "if only one
+    /// document request was seen, use it" would report an iframe's status as
+    /// the page's whenever the main document itself issued no request (a
+    /// bfcache restore, `about:blank`). Reporting nothing — with a
+    /// `status_reason` that says so — beats reporting the wrong number.
+    ///
+    /// Within a preference, the LAST match wins: a redirect chain can produce
+    /// several resources for the same URL, and the hop that actually committed
+    /// is the final one.
+    fn pick_document(&self, requested_url: &str, committed_url: &str) -> Option<u64> {
+        for want in [committed_url, requested_url] {
+            if want.is_empty() {
+                continue;
+            }
+            let want = canonical_doc_url(want);
+            if let Some((id, _)) = self.docs.iter().rev().find(|(_, u)| *u == want) {
+                return Some(*id);
+            }
+        }
+        None
+    }
+
+    /// The main document's HTTP status, or the reason there isn't one.
+    ///
+    /// Exactly one side of the pair is `Some`, which is what lets the envelope
+    /// guarantee `status_reason == null` iff `status != null`.
+    fn resolve(
+        &self,
+        requested_url: &str,
+        committed_url: &str,
+    ) -> (Option<u16>, Option<StatusUnknown>) {
+        if !self.observing {
+            return (None, Some(StatusUnknown::NotObserved));
+        }
+        let Some(id) = self.pick_document(requested_url, committed_url) else {
+            return (None, Some(StatusUnknown::NoDocumentRequest));
+        };
+        self.statuses
+            .iter()
+            .rev()
+            .find(|(rid, _)| *rid == id)
+            .map_or((None, Some(StatusUnknown::NoStatusReported)), |(_, s)| {
+                (Some(*s), None)
+            })
+    }
+}
+
 /// The result of waiting for a navigation to commit.
 #[derive(Debug)]
 struct CommitInfo {
@@ -111,14 +280,14 @@ struct CommitInfo {
     elapsed_ms: u64,
     /// The main document's HTTP status code (iter-138 Theme A), when observed
     /// via a `network-event` resource whose `cause_type == "document"` and
-    /// whose `url` matches the requested URL. `None` when the caller didn't
-    /// subscribe to network events (`back`/`forward`/`reload` don't — Theme A
-    /// only covers `navigate`) or when the status update hadn't arrived by
-    /// the time the wait resolved (e.g. events-phase timeout fell back to the
-    /// readystate poll, which has no network subscription at all). Callers
+    /// whose canonical URL matches the committed (or requested) URL. Callers
     /// must surface this as an explicit `null`, never omit it — consistent
     /// with iter-128's always-present-nullable-key convention.
     http_status: Option<u16>,
+    /// Why [`Self::http_status`] is `None`, and `None` itself when it is
+    /// `Some` (iter-166 Theme B). Kept in lockstep with `http_status` so a
+    /// caller can tell "the server sent no status" from "we never looked".
+    status_reason: Option<StatusUnknown>,
 }
 
 /// Configuration for the interleaved `document.readyState` fast-path used by the
@@ -493,39 +662,29 @@ fn needs_href_fallback(candidate: &str, requested_url: &str) -> bool {
 /// `poll_interval`).  This prevents a deadlock where another thread tries to
 /// acquire the same mutex while this call is waiting for Firefox.
 ///
-/// Update `doc_resource_id`/`doc_status` from a network resource (iter-138
-/// Theme A tracking, shared by `wait_for_doc_complete`'s main drain and its
-/// post-loop grace-wait), and return the inner `Value` when `resource` is a
-/// `DocumentEvent` (the caller should continue processing it), or `None`
-/// when `resource` was a `NetworkEvent`/`NetworkUpdate` (already handled
-/// here) or an unrelated resource type (nothing to do).
+/// Feed a network resource into `tracker` (iter-138 Theme A tracking, shared by
+/// `wait_for_doc_complete`'s main drain and its post-loop grace-wait), and
+/// return the inner `Value` when `resource` is a `DocumentEvent` (the caller
+/// should continue processing it), or `None` when `resource` was a
+/// `NetworkEvent`/`NetworkUpdate` (already handled here) or an unrelated
+/// resource type (nothing to do).
 ///
-/// Matched by `cause_type == "document"` (Firefox's netmonitor cause for a
-/// top-level or subframe HTML document load) AND `url == requested_url`
-/// (the exact URL passed to `navigateTo`) so a subframe's own document
-/// request (same cause type, different URL) is not mistaken for the page's
-/// own navigation — the same subframe-contamination risk Theme F hits for
-/// `document-event`.
+/// Which resource is the main document is decided later, by
+/// [`DocumentStatusTracker::pick_document`], rather than the instant an event
+/// arrives: before iter-166 this function matched eagerly on
+/// `url == requested_url` and so could not use the committed URL, which is only
+/// known once the wait has resolved.
 fn extract_document_event<'a>(
     resource: &'a Resource,
-    requested_url: &str,
-    doc_resource_id: &mut Option<u64>,
-    doc_status: &mut Option<u16>,
+    tracker: &mut DocumentStatusTracker,
 ) -> Option<&'a Value> {
     match resource {
         Resource::NetworkEvent(res) => {
-            if res.cause_type == "document" && res.url == requested_url {
-                *doc_resource_id = Some(res.resource_id);
-            }
+            tracker.note_resource(res);
             None
         }
         Resource::NetworkUpdate(upd) => {
-            if *doc_resource_id == Some(upd.resource_id)
-                && let Some(ref s) = upd.status
-                && let Ok(code) = s.parse::<u16>()
-            {
-                *doc_status = Some(code);
-            }
+            tracker.note_update(upd);
             None
         }
         Resource::DocumentEvent(v) => Some(v),
@@ -546,6 +705,7 @@ fn wait_for_doc_complete(
     nav_start: Instant,
     mut probe: Option<&mut ReadyStateProbe<'_>>,
     requested_url: &str,
+    network_observed: bool,
 ) -> Result<CommitInfo, AppError> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
@@ -571,14 +731,17 @@ fn wait_for_doc_complete(
     // Tracks whether the probe's console actor has been refreshed against the
     // post-navigation docshell yet (see the noSuchActor fix, iter-124).
     let mut probe_refreshed = false;
-    // The main document's network resource_id and observed HTTP status
-    // (iter-138 Theme A). Populated only when the caller subscribed to
+    // The main document's network resources and their observed HTTP statuses
+    // (iter-138 Theme A). Only populated when the caller subscribed to
     // `ResourceType::NetworkEvent` alongside `DocumentEvent` (currently only
-    // `navigate`'s `run_core` does — `back`/`forward`/`reload` don't, so
-    // these stay `None`/`None` and `CommitInfo.http_status` reports `null`
-    // for them, which is correct: Theme A only covers `navigate`).
-    let mut doc_resource_id: Option<u64> = None;
-    let mut doc_status: Option<u16> = None;
+    // `navigate`'s `run_core` does — `back`/`forward`/`reload` don't, and pass
+    // `network_observed: false` so the envelope says `not_observed` instead of
+    // implying the server was silent: Theme A only covers `navigate`).
+    let mut tracker = if network_observed {
+        DocumentStatusTracker::observing()
+    } else {
+        DocumentStatusTracker::default()
+    };
 
     let mut commit_info: CommitInfo = 'wait: loop {
         // Check deadline first so we do not drain another batch of events
@@ -598,12 +761,7 @@ fn wait_for_doc_complete(
 
         // Drain the channel — may have been filled by a previous recv batch.
         while let Ok(arc) = rx.try_recv() {
-            let Some(v) = extract_document_event(
-                arc.as_ref(),
-                requested_url,
-                &mut doc_resource_id,
-                &mut doc_status,
-            ) else {
+            let Some(v) = extract_document_event(arc.as_ref(), &mut tracker) else {
                 continue;
             };
             {
@@ -699,7 +857,10 @@ fn wait_for_doc_complete(
                                 committed_url,
                                 ready_state: "loading".to_owned(),
                                 elapsed_ms,
-                                http_status: doc_status,
+                                // Resolved once, after the loop and its grace-wait (iter-166):
+                                // the committed URL is not known until this break.
+                                http_status: None,
+                                status_reason: None,
                             };
                         }
                     }
@@ -737,7 +898,10 @@ fn wait_for_doc_complete(
                                 committed_url,
                                 ready_state: "interactive".to_owned(),
                                 elapsed_ms,
-                                http_status: doc_status,
+                                // Resolved once, after the loop and its grace-wait (iter-166):
+                                // the committed URL is not known until this break.
+                                http_status: None,
+                                status_reason: None,
                             };
                         }
                     }
@@ -814,14 +978,20 @@ fn wait_for_doc_complete(
                                 committed_url: href,
                                 ready_state: "complete".to_owned(),
                                 elapsed_ms,
-                                http_status: doc_status,
+                                // Resolved once, after the loop and its grace-wait (iter-166):
+                                // the committed URL is not known until this break.
+                                http_status: None,
+                                status_reason: None,
                             };
                         }
                         break 'wait CommitInfo {
                             committed_url: committed,
                             ready_state: "complete".to_owned(),
                             elapsed_ms,
-                            http_status: doc_status,
+                            // Resolved once, after the loop and its grace-wait (iter-166):
+                            // the committed URL is not known until this break.
+                            http_status: None,
+                            status_reason: None,
                         };
                     }
                     _ => {}
@@ -853,7 +1023,10 @@ fn wait_for_doc_complete(
                     committed_url: href,
                     ready_state: "complete".to_owned(),
                     elapsed_ms,
-                    http_status: doc_status,
+                    // Resolved once, after the loop and its grace-wait (iter-166):
+                    // the committed URL is not known until this break.
+                    http_status: None,
+                    status_reason: None,
                 };
             }
             same_doc_next_check_at = Some(Instant::now() + p.probe_interval);
@@ -916,7 +1089,10 @@ fn wait_for_doc_complete(
                         committed_url: committed,
                         ready_state: "complete".to_owned(),
                         elapsed_ms,
-                        http_status: doc_status,
+                        // Resolved once, after the loop and its grace-wait (iter-166):
+                        // the committed URL is not known until this break.
+                        http_status: None,
+                        status_reason: None,
                     };
                 }
             }
@@ -955,41 +1131,71 @@ fn wait_for_doc_complete(
     // synchronized. Trusting `doc_status` the instant the events loop above
     // resolves made `navigate` report a false `status: null` on pages that
     // plainly did have one. Give it a short, bounded grace window to catch up
-    // before finalizing — well under the caller's overall timeout, and a
-    // no-op for callers that never subscribed to `NetworkEvent`
-    // (`back`/`forward`/`reload`, where `doc_status` can never become `Some`
-    // no matter how long we wait, so the loop below exits on its first check).
-    if commit_info.http_status.is_none() {
-        let grace_deadline = Instant::now() + Duration::from_millis(300);
-        while doc_status.is_none() && Instant::now() < grace_deadline {
-            while let Ok(arc) = rx.try_recv() {
-                let _ = extract_document_event(
-                    arc.as_ref(),
-                    requested_url,
-                    &mut doc_resource_id,
-                    &mut doc_status,
-                );
-            }
-            if doc_status.is_some() {
-                break;
-            }
-            match transport.recv() {
-                Ok(msg) => {
-                    bus_arc
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .dispatch_event(&msg);
-                }
-                Err(ff_rdp_core::ProtocolError::Timeout) => {}
-                // A transport error here is not the wait's problem to solve —
-                // the commit itself already succeeded — so just stop trying
-                // for the status and report whatever was captured (possibly
-                // still `None`).
-                Err(_) => break,
-            }
+    // before finalizing — well under the caller's overall timeout.
+    //
+    // iter-166: the resolution now runs against `commit_info.committed_url` as
+    // well as `requested_url`, so it can only happen here — the committed URL
+    // does not exist until the loop above breaks. Two consequences follow, and
+    // `status_reason` is what makes both expressible:
+    //
+    // * `NotObserved` — nobody subscribed, so no amount of waiting can produce
+    //   a status. Skipping the loop entirely (rather than spinning it out on a
+    //   condition that can never become true) takes 300 ms off every
+    //   `back`/`forward`/`reload`.
+    // * `NoStatusReported` — the document's request HAS been identified and it
+    //   committed, so its response line exists and the update carrying it is
+    //   merely late. That is worth waiting materially longer for; the 300 ms
+    //   of iter-138 made `live_138_navigate_reports_404` fail roughly one run
+    //   in three even on an idle machine, reporting `null` for a page whose
+    //   404 was already on the wire. The loop exits the instant the status
+    //   lands, so the longer budget costs nothing in the common case.
+    //
+    // `NoDocumentRequest` keeps the original short window: the `network-event`
+    // itself may still be in flight, but nothing guarantees one is coming.
+    // The budget is re-derived on every pass rather than fixed up front,
+    // because the reason itself changes as events arrive: a wait that starts
+    // out `NoDocumentRequest` becomes `NoStatusReported` the moment the
+    // document's `network-event` lands, and that is exactly when the longer
+    // budget should apply.
+    let resolved = |t: &DocumentStatusTracker| t.resolve(requested_url, &commit_info.committed_url);
+    let grace_start = Instant::now();
+    loop {
+        let (status, reason) = resolved(&tracker);
+        if status.is_some() {
+            break;
         }
-        commit_info.http_status = doc_status;
+        let budget_ms = match reason {
+            Some(StatusUnknown::NotObserved) => 0,
+            Some(StatusUnknown::NoStatusReported) => 2000,
+            _ => 300,
+        };
+        if grace_start.elapsed() >= Duration::from_millis(budget_ms) {
+            break;
+        }
+        while let Ok(arc) = rx.try_recv() {
+            let _ = extract_document_event(arc.as_ref(), &mut tracker);
+        }
+        if resolved(&tracker).0.is_some() {
+            break;
+        }
+        match transport.recv() {
+            Ok(msg) => {
+                bus_arc
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .dispatch_event(&msg);
+            }
+            Err(ff_rdp_core::ProtocolError::Timeout) => {}
+            // A transport error here is not the wait's problem to solve —
+            // the commit itself already succeeded — so just stop trying
+            // for the status and report whatever was captured (possibly
+            // still `None`).
+            Err(_) => break,
+        }
     }
+    let (status, reason) = resolved(&tracker);
+    commit_info.http_status = status;
+    commit_info.status_reason = reason;
 
     Ok(commit_info)
 }
@@ -1115,8 +1321,10 @@ fn wait_for_readystate_complete(
         elapsed_ms,
         // The readystate poll doesn't subscribe to network events — no
         // status is ever observable from this path (iter-138 Theme A covers
-        // only the primary events-based `wait_for_doc_complete` path).
+        // only the primary events-based `wait_for_doc_complete` path), which
+        // is exactly what `not_observed` says (iter-166).
         http_status: None,
+        status_reason: Some(StatusUnknown::NotObserved),
     })
 }
 
@@ -1289,6 +1497,10 @@ pub(crate) fn wait_for_navigation_commit(
             nav_start,
             readystate_probe.as_mut(),
             requested_url,
+            // `back`/`forward`/`reload` subscribe to `DocumentEvent` only, so
+            // there is no HTTP status to be had here and the envelope says
+            // `not_observed` rather than a bare `null` (iter-166).
+            false,
         )
     });
 
@@ -1697,6 +1909,11 @@ pub fn run_core(
             nav_start,
             readystate_probe.as_mut(),
             url,
+            // This is the one route that subscribes to `NetworkEvent`
+            // alongside `DocumentEvent` (see the `subscribe` call above), so a
+            // missing status here really does mean the server or the document
+            // produced none (iter-166).
+            true,
         );
 
         // iter-138 Theme A: stop the daemon stream so it reverts to buffering
@@ -1772,10 +1989,15 @@ pub fn run_core(
 
     // iter-138 Theme A: `status` is always present, defaulting to `null` —
     // consistent with iter-128's always-present-nullable-key convention.
-    // Stays `null` under `--no-wait` (no network subscription is ever
-    // started) or when the main document's status update simply hadn't
-    // arrived by the time the commit wait resolved.
-    let mut result = json!({"navigated": url, "status": Value::Null});
+    // iter-166 Theme B: `status_reason` is present alongside it and says which
+    // kind of `null` this is. The default pair below is what `--no-wait`
+    // reports: no network subscription is ever started, so nothing was
+    // observed — as opposed to the server having answered without a status.
+    let mut result = json!({
+        "navigated": url,
+        "status": Value::Null,
+        "status_reason": StatusUnknown::NotObserved.as_str(),
+    });
     if let Some(ref ci) = commit_info
         && let Some(obj) = result.as_object_mut()
     {
@@ -1783,6 +2005,10 @@ pub fn run_core(
         obj.insert("ready_state".to_string(), json!(ci.ready_state));
         obj.insert("elapsed_ms".to_string(), json!(ci.elapsed_ms));
         obj.insert("status".to_string(), json!(ci.http_status));
+        obj.insert(
+            "status_reason".to_string(),
+            json!(ci.status_reason.map(StatusUnknown::as_str)),
+        );
     }
     if let Some(w) = wait_result
         && let Some(obj) = result.as_object_mut()
@@ -1901,38 +2127,39 @@ pub fn run(
     OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
-/// Find the main document's HTTP status among captured network resources
-/// (iter-138 Theme G — `navigate --with-network` gets this "for free" since
-/// it already captures every request; see Theme A's `wait_for_doc_complete`
-/// tracker for the identical `cause_type`/`url` matching rationale).
+/// Build the document-status tracker for the batch (`--with-network`) route
+/// from the drained resource/update vectors (iter-138 Theme G — `navigate
+/// --with-network` gets the status "for free" since it already captures every
+/// request).
 ///
-/// Iterates in reverse so a redirect chain's *last* matching resource wins
-/// (the one that actually committed), rather than the first (the original,
-/// possibly-redirected request).
+/// Split from the resolution step because the two happen at different points:
+/// `all_updates` is consumed by `merge_updates` before `location.href` has been
+/// evaluated, so the tracker is built early and
+/// [`DocumentStatusTracker::resolve`] is called later, once the committed URL
+/// is known. iter-166 replaced this function's private copy of the matching
+/// rule — which had the same exact-string-URL bug as the streamed route's — so
+/// there is now exactly one implementation of "which request was the document".
 fn extract_document_status(
     resources: &[ff_rdp_core::NetworkResource],
     updates: &[ff_rdp_core::NetworkResourceUpdate],
-    requested_url: &str,
-) -> Option<u16> {
-    let resource_id = resources
-        .iter()
-        .rev()
-        .find(|r| r.cause_type == "document" && r.url == requested_url)?
-        .resource_id;
+) -> DocumentStatusTracker {
+    let mut tracker = DocumentStatusTracker::observing();
+    for r in resources {
+        tracker.note_resource(r);
+    }
     // `resources-updated-array` entries are incremental partial updates —
     // Firefox typically carries `status` only on the FIRST update for a
     // resource, with later updates (contentSize, totalTime, ...) leaving it
     // `None`. Taking the single most-recent update record (as `merge_updates`
     // does for *all* fields) would silently lose the status the instant a
-    // second update arrives. Instead, take the last update that actually
-    // carried a status — mirroring `merge_updates`'s own "last non-None value
-    // wins per field" semantics rather than "last record wins overall".
-    updates
-        .iter()
-        .filter(|u| u.resource_id == resource_id)
-        .filter_map(|u| u.status.as_deref())
-        .next_back()
-        .and_then(|s| s.parse::<u16>().ok())
+    // second update arrives, so the tracker keeps every status-carrying update
+    // and resolves to the last one — mirroring `merge_updates`'s own "last
+    // non-None value wins per field" semantics rather than "last record wins
+    // overall".
+    for u in updates {
+        tracker.note_update(u);
+    }
+    tracker
 }
 
 /// Navigate to `url` and capture all network requests made during navigation.
@@ -2095,7 +2322,7 @@ pub fn run_with_network(
         // between truthful navigation info and network data. The drain has
         // already settled by this point, so a direct eval is exactly as
         // truthful as the plain path's post-commit reads.
-        let doc_status = extract_document_status(&all_resources, &all_updates, url);
+        let doc_tracker = extract_document_status(&all_resources, &all_updates);
 
         // Theme K: refresh consoleActor after navigate — MUST happen before
         // the eval below: `ctx.target.console_actor` is still bound to the
@@ -2109,11 +2336,13 @@ pub fn run_with_network(
             let committed_url = eval_location_href(ctx.transport_mut(), &console_actor);
             let ready_state = eval_document_ready_state(ctx.transport_mut(), &console_actor);
             let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let (http_status, status_reason) = doc_tracker.resolve(url, &committed_url);
             Some(CommitInfo {
                 committed_url,
                 ready_state,
                 elapsed_ms,
-                http_status: doc_status,
+                http_status,
+                status_reason,
             })
         };
 
@@ -2141,6 +2370,10 @@ pub fn run_with_network(
             obj.insert("ready_state".to_string(), json!(ci.ready_state));
             obj.insert("elapsed_ms".to_string(), json!(ci.elapsed_ms));
             obj.insert("status".to_string(), json!(ci.http_status));
+            obj.insert(
+                "status_reason".to_string(),
+                json!(ci.status_reason.map(StatusUnknown::as_str)),
+            );
         }
         if let Some(w) = wait_result
             && let Some(obj) = result.as_object_mut()
@@ -2250,9 +2483,10 @@ pub fn run_with_network(
         None
     };
 
-    // iter-138 Theme G/A: extract the main document's status before
-    // `merge_updates` consumes `all_updates` by value below.
-    let doc_status = extract_document_status(&all_resources, &all_updates, url);
+    // iter-138 Theme G/A: capture the main document's status candidates before
+    // `merge_updates` consumes `all_updates` by value below. Resolution waits
+    // until the committed URL has been evaluated (iter-166).
+    let doc_tracker = extract_document_status(&all_resources, &all_updates);
 
     // Merge updates into resources by resource_id.
     let update_map = merge_updates(all_updates);
@@ -2292,11 +2526,13 @@ pub fn run_with_network(
         let committed_url = eval_location_href(ctx.transport_mut(), &console_actor);
         let ready_state = eval_document_ready_state(ctx.transport_mut(), &console_actor);
         let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let (http_status, status_reason) = doc_tracker.resolve(url, &committed_url);
         Some(CommitInfo {
             committed_url,
             ready_state,
             elapsed_ms,
-            http_status: doc_status,
+            http_status,
+            status_reason,
         })
     };
 
@@ -2321,6 +2557,10 @@ pub fn run_with_network(
         obj.insert("ready_state".to_string(), json!(ci.ready_state));
         obj.insert("elapsed_ms".to_string(), json!(ci.elapsed_ms));
         obj.insert("status".to_string(), json!(ci.http_status));
+        obj.insert(
+            "status_reason".to_string(),
+            json!(ci.status_reason.map(StatusUnknown::as_str)),
+        );
     }
     if let Some(w) = wait_result
         && let Some(obj) = result.as_object_mut()
@@ -2860,6 +3100,9 @@ mod tests {
             started,
             None,
             "https://example.com/",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
@@ -3068,6 +3311,9 @@ mod tests {
             Instant::now(),
             None,
             "https://example.com/",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
 
         probe_handle.join().unwrap();
@@ -3293,6 +3539,9 @@ mod tests {
             nav_start,
             Some(&mut probe),
             "https://example.com/",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
 
         let (ready_text, href_text) = server_handle.join().unwrap();
@@ -3417,6 +3666,9 @@ mod tests {
             nav_start,
             Some(&mut probe),
             "https://retry.example/",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
 
         let (stale_eval_text, ready_text, href_text) = server_handle.join().unwrap();
@@ -3545,6 +3797,9 @@ mod tests {
             nav_start,
             Some(&mut probe),
             "https://example.com/",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
 
         // The server thread's loop is bounded (50 iterations) purely so it
@@ -3663,6 +3918,9 @@ mod tests {
             nav_start,
             Some(&mut probe),
             "https://spa.example/app",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
 
         server_handle.join().unwrap();
@@ -3763,6 +4021,9 @@ mod tests {
             nav_start,
             Some(&mut probe),
             "https://spa.example/loading",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
 
         let href_text = server_handle.join().unwrap();
@@ -3906,6 +4167,19 @@ mod tests {
         }
     }
 
+    /// The pre-iter-166 shape of `extract_document_status`: build the tracker
+    /// and resolve it for a navigation that did not redirect, so the requested
+    /// and committed URLs are the same string.
+    fn doc_status(
+        resources: &[ff_rdp_core::NetworkResource],
+        updates: &[ff_rdp_core::NetworkResourceUpdate],
+        url: &str,
+    ) -> Option<u16> {
+        extract_document_status(resources, updates)
+            .resolve(url, url)
+            .0
+    }
+
     /// `unit_extract_document_status_matches_cause_and_url` — the AC-facing
     /// happy path: one `document`-cause resource matching the requested URL,
     /// with a status update.
@@ -3914,7 +4188,7 @@ mod tests {
         let resources = vec![doc_resource("https://example.com/404", 1)];
         let updates = vec![status_update(1, "404")];
         assert_eq!(
-            extract_document_status(&resources, &updates, "https://example.com/404"),
+            doc_status(&resources, &updates, "https://example.com/404"),
             Some(404)
         );
     }
@@ -3932,7 +4206,7 @@ mod tests {
         ];
         let updates = vec![status_update(1, "200"), status_update(2, "503")];
         assert_eq!(
-            extract_document_status(&resources, &updates, "https://example.com/page"),
+            doc_status(&resources, &updates, "https://example.com/page"),
             Some(503),
             "must report the requested URL's own status, not the subframe's"
         );
@@ -3946,13 +4220,10 @@ mod tests {
         let resources = vec![doc_resource("https://example.com/other", 1)];
         let updates = vec![status_update(1, "200")];
         assert_eq!(
-            extract_document_status(&resources, &updates, "https://example.com/page"),
+            doc_status(&resources, &updates, "https://example.com/page"),
             None
         );
-        assert_eq!(
-            extract_document_status(&[], &[], "https://example.com/page"),
-            None
-        );
+        assert_eq!(doc_status(&[], &[], "https://example.com/page"), None);
     }
 
     /// `unit_extract_document_status_prefers_last_match_on_redirect` — a
@@ -3967,7 +4238,7 @@ mod tests {
         ];
         let updates = vec![status_update(1, "302"), status_update(2, "200")];
         assert_eq!(
-            extract_document_status(&resources, &updates, "https://example.com/page"),
+            doc_status(&resources, &updates, "https://example.com/page"),
             Some(200)
         );
     }
@@ -3994,10 +4265,141 @@ mod tests {
             },
         ];
         assert_eq!(
-            extract_document_status(&resources, &updates, "https://example.com/page"),
+            doc_status(&resources, &updates, "https://example.com/page"),
             Some(200),
             "a later update that doesn't carry `status` must not erase an \
              earlier one that did"
+        );
+    }
+
+    // ── iter-166: URL canonicalisation and `status_reason` ──────────────────
+
+    /// `unit_166_matches_document_across_url_canonicalisation` — the iteration's
+    /// whole defect in one assertion. A caller types `https://example.com`;
+    /// Firefox requests the canonical `https://example.com/` and reports that
+    /// URL on the `network-event`. The pre-iter-166 exact-string comparison
+    /// therefore matched nothing and `navigate` reported `status: null` for a
+    /// page that had plainly returned 200 — measured live before the fix (see
+    /// the plan's Theme A section) on all three routes.
+    #[test]
+    fn unit_166_matches_document_across_url_canonicalisation() {
+        let resources = vec![doc_resource("https://example.com/", 1)];
+        let updates = vec![status_update(1, "200")];
+        assert_eq!(
+            doc_status(&resources, &updates, "https://example.com"),
+            Some(200),
+            "a missing trailing slash must not hide the document's status"
+        );
+        // The reverse direction, and a fragment (never sent to the server, so
+        // it can never appear on a `network-event`), match too.
+        assert_eq!(
+            doc_status(&resources, &updates, "https://example.com/#top"),
+            Some(200)
+        );
+        // A differing path still must not match — canonicalisation is not
+        // permission to be sloppy.
+        assert_eq!(
+            doc_status(&resources, &updates, "https://example.com/other"),
+            None
+        );
+    }
+
+    /// `unit_166_prefers_the_committed_url_over_the_requested_one` — on a
+    /// cross-scheme redirect the requested URL never appears among the
+    /// document resources; the URL that committed does, and its status is the
+    /// one the caller ended up with.
+    #[test]
+    fn unit_166_prefers_the_committed_url_over_the_requested_one() {
+        let resources = vec![
+            doc_resource("http://example.com/", 1),
+            doc_resource("https://example.com/", 2),
+        ];
+        let updates = vec![status_update(1, "301"), status_update(2, "200")];
+        let tracker = extract_document_status(&resources, &updates);
+        assert_eq!(
+            tracker.resolve("http://example.com", "https://example.com/"),
+            (Some(200), None),
+            "the committed document's status wins over the redirect hop's"
+        );
+    }
+
+    /// `unit_166_status_null_is_distinguishable` — the AC. A `null` status now
+    /// always arrives with a `status_reason` naming which of the three
+    /// situations produced it, so a caller can tell "the server sent no
+    /// status" from "this route never looked". The two fields are mutually
+    /// exclusive: `status_reason` is `None` exactly when a status was found.
+    #[test]
+    fn unit_166_status_null_is_distinguishable() {
+        // 1. The route never subscribed to `network-event` (back/forward/
+        //    reload, `--no-wait`, the readystate-only wait strategy).
+        let blind = DocumentStatusTracker::default();
+        assert_eq!(
+            blind.resolve("https://example.com/", "https://example.com/"),
+            (None, Some(StatusUnknown::NotObserved))
+        );
+
+        // 2. Network events were observed, but the committed document issued
+        //    no request of its own (`about:blank`, a bfcache restore, a
+        //    same-document navigation). A subframe's request is present and is
+        //    deliberately NOT borrowed to fill the gap.
+        let resources = vec![doc_resource("https://cdn.example.com/frame.html", 1)];
+        let updates = vec![status_update(1, "200")];
+        assert_eq!(
+            extract_document_status(&resources, &updates).resolve("about:blank", "about:blank"),
+            (None, Some(StatusUnknown::NoDocumentRequest)),
+            "a subframe's status must never be reported as the page's"
+        );
+
+        // 3. The document's request was found, but no status was ever
+        //    reported for it (response line not yet in, or the channel failed).
+        let resources = vec![doc_resource("https://example.com/", 7)];
+        assert_eq!(
+            extract_document_status(&resources, &[])
+                .resolve("https://example.com/", "https://example.com/"),
+            (None, Some(StatusUnknown::NoStatusReported))
+        );
+
+        // And the success case carries no reason at all.
+        let updates = vec![status_update(7, "204")];
+        assert_eq!(
+            extract_document_status(&resources, &updates)
+                .resolve("https://example.com/", "https://example.com/"),
+            (Some(204), None)
+        );
+
+        // The wire strings are stable — `--jq '.results.status_reason'` is a
+        // scripting surface, so these are part of the contract.
+        assert_eq!(StatusUnknown::NotObserved.as_str(), "not_observed");
+        assert_eq!(
+            StatusUnknown::NoDocumentRequest.as_str(),
+            "no_document_request"
+        );
+        assert_eq!(
+            StatusUnknown::NoStatusReported.as_str(),
+            "no_status_reported"
+        );
+    }
+
+    /// `unit_166_canonical_doc_url_leaves_unparseable_input_alone` — the
+    /// comparison must degrade to the old exact-string behaviour rather than
+    /// panic or normalise a non-URL into something that accidentally matches.
+    #[test]
+    fn unit_166_canonical_doc_url_leaves_unparseable_input_alone() {
+        assert_eq!(canonical_doc_url("not a url"), "not a url");
+        assert_eq!(canonical_doc_url("about:blank"), "about:blank");
+        assert_eq!(
+            canonical_doc_url("https://example.com"),
+            "https://example.com/"
+        );
+        assert_eq!(
+            canonical_doc_url("https://example.com/a?b=1#c"),
+            "https://example.com/a?b=1"
+        );
+        // The query is deliberately preserved: two same-path requests that
+        // differ only in query really are different requests.
+        assert_ne!(
+            canonical_doc_url("https://example.com/a?b=1"),
+            canonical_doc_url("https://example.com/a?b=2")
         );
     }
 
@@ -4231,6 +4633,9 @@ mod tests {
             nav_start,
             Some(&mut probe),
             "https://www.comparis.ch/hypotheken",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
 
         server_handle.join().unwrap();
