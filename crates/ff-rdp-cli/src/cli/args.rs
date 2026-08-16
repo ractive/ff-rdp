@@ -561,6 +561,14 @@ expression (a declaration, a control-flow construct) does the script need
 its own explicit `return` to surface a value (it still runs either way — no
 SyntaxError).
 
+That statement split understands JS literals: a `;` or newline inside a
+string, a template literal, a regular-expression literal or a `//` / `/* */`
+comment is not a statement separator, and a backslash escape does not end the
+literal it sits in (iter-167 — `eval --stringify '/a;b/.test(\"a;b\")'` used to
+fail with \"unterminated regular expression literal\"). It is still a scanner
+rather than a full JS parser: `${...}` inside a template literal is skipped
+whole, and a `/` right after `}` is read as division, never as a regex.
+
 Since iter-165 that same last-statement rule also governs a plain (non-await)
 script that declares something, because that script now runs in the per-call
 IIFE described above: `eval 'const x = 1; x'` returns 1, while a declaring
