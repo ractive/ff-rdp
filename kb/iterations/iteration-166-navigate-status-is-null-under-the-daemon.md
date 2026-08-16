@@ -193,6 +193,19 @@ always 200 cannot pass — an unknown path must report the server's 404, on both
       be), before the fix, with the measurement that settled it [2026-08-16: candidate 2, recorded
       in Theme A above and committed before the first line of the fix was written]
 
+## Carry-over
+
+Both filed into [[iteration-169-navigate-status-delivery-and-nav-verb-parity]] before this PR
+merges. See the PR body's `## Carry-over` table for the full enumeration, including the sweep
+lines this iteration did not fix.
+
+- **Theme A of 169** — the residual `live_138_navigate_reports_404` flake. iter-166 cut it from
+  3-in-12 to 1-in-12 by re-deriving the grace budget from `status_reason`, but the remaining
+  failures exhaust the full 2000 ms window with `no_status_reported`, so the update is lost in
+  delivery rather than late. Not fixable inside this plan's scope.
+- **Theme B of 169** — `back`/`forward`/`reload` emit no `status`/`status_reason` key at all.
+  Recorded as out of scope in DEC-040.
+
 ## Notes
 
 - Do **not** fix this by dropping the `status` field. It is the only thing in `navigate`'s
