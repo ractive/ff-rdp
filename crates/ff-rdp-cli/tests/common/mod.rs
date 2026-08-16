@@ -288,13 +288,26 @@ pub const KILL_WAIT_TIMEOUT_ENV: &str = "FF_RDP_TEST_KILL_WAIT_TIMEOUT_MS";
 /// generous, because the cost of over-waiting is bounded (the poll returns the
 /// instant the pid goes away) while the cost of under-waiting is the flaky
 /// precondition failure this iteration exists to remove.
+pub const DEFAULT_KILL_WAIT_MS: u64 = 5_000;
+
 pub fn kill_wait_timeout() -> Duration {
-    let ms = std::env::var(KILL_WAIT_TIMEOUT_ENV)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|ms| *ms > 0)
-        .unwrap_or(5_000);
-    Duration::from_millis(ms)
+    kill_wait_timeout_from(std::env::var(KILL_WAIT_TIMEOUT_ENV).ok().as_deref())
+}
+
+/// Pure parse behind [`kill_wait_timeout`], split out so the override contract
+/// is testable without mutating process-global env state — `cargo test` runs a
+/// binary's tests on parallel threads, and `set_var`/`remove_var` from one of
+/// them is visible to all the others.
+///
+/// Unparseable or zero values fall back to [`DEFAULT_KILL_WAIT_MS`] rather than
+/// to "don't wait": a typo'd override must not silently restore the pre-168
+/// behaviour this iteration removes.
+pub fn kill_wait_timeout_from(raw: Option<&str>) -> Duration {
+    Duration::from_millis(
+        raw.and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|ms| *ms > 0)
+            .unwrap_or(DEFAULT_KILL_WAIT_MS),
+    )
 }
 
 /// Poll cadence for [`wait_for_pid_exit_with`].
