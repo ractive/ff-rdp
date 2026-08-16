@@ -1,4 +1,5 @@
 # Documentation
+(This section is the single copy — the root `CLAUDE.md` links here rather than repeating it.)
 
 Keep all documentation in `./kb` as `*.md` markdown files with YAML frontmatter (text, numbers, checkboxes, dates, lists). Use it as your second brain:
 - Research outcomes → `research/`
