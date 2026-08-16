@@ -239,7 +239,10 @@ impl FirefoxGuard {
 
 impl Drop for FirefoxGuard {
     fn drop(&mut self) {
-        kill_pid(self.0);
+        // iter-168: same bounded wait as `LiveFirefox::drop`. The process this
+        // guard owns was started by `ff-rdp launch --replace`, so it carries an
+        // owner-PID marker too and leaks the identical liveness window.
+        kill_pid_and_wait(self.0);
     }
 }
 
@@ -269,6 +272,134 @@ pub fn kill_pid(pid: u32) {
             CloseHandle(h);
         }
     }
+}
+
+/// Env var overriding [`kill_wait_timeout`] (iter-168), in **milliseconds**.
+pub const KILL_WAIT_TIMEOUT_ENV: &str = "FF_RDP_TEST_KILL_WAIT_TIMEOUT_MS";
+
+/// Default bound for [`kill_pid_and_wait`], in milliseconds (iter-168).
+///
+/// Sized from iteration-168 Theme A's measurements: on this project's macOS
+/// dev machine the post-`SIGKILL` window in which `kill(pid, 0)` still reports
+/// a headless Firefox as alive measured 16–27 ms across ten launches, at load
+/// averages from 6.5 to 54. 5 s is ~185× the observed worst case — deliberately
+/// generous, because the cost of over-waiting is bounded (the poll returns the
+/// instant the pid goes away) while the cost of under-waiting is the flaky
+/// precondition failure this iteration exists to remove.
+pub const DEFAULT_KILL_WAIT_MS: u64 = 5_000;
+
+/// How long [`kill_pid_and_wait`] waits for a signalled process to actually
+/// disappear before giving up loudly. [`DEFAULT_KILL_WAIT_MS`] by default;
+/// override with [`KILL_WAIT_TIMEOUT_ENV`].
+pub fn kill_wait_timeout() -> Duration {
+    kill_wait_timeout_from(std::env::var(KILL_WAIT_TIMEOUT_ENV).ok().as_deref())
+}
+
+/// Pure parse behind [`kill_wait_timeout`], split out so the override contract
+/// is testable without mutating process-global env state — `cargo test` runs a
+/// binary's tests on parallel threads, and `set_var`/`remove_var` from one of
+/// them is visible to all the others.
+///
+/// Unparseable or zero values fall back to [`DEFAULT_KILL_WAIT_MS`] rather than
+/// to "don't wait": a typo'd override must not silently restore the pre-168
+/// behaviour this iteration removes.
+pub fn kill_wait_timeout_from(raw: Option<&str>) -> Duration {
+    Duration::from_millis(
+        raw.and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|ms| *ms > 0)
+            .unwrap_or(DEFAULT_KILL_WAIT_MS),
+    )
+}
+
+/// Poll cadence for [`wait_for_pid_exit_with`].
+///
+/// 1 ms rather than the 100 ms [`poll_for_daemon_port`] uses: the window being
+/// waited out is ~20 ms, and this runs on *every* live test's teardown, so a
+/// coarse cadence would add up to 100 ms × ~150 drops of pure sleeping to a
+/// suite that already takes half an hour.
+const KILL_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
+/// Poll `alive` until it reports `false` or `timeout` elapses (iter-168).
+///
+/// Returns `Some(elapsed)` with how long the process took to disappear, or
+/// `None` if it was still alive at the deadline. Always probes at least once,
+/// so a zero timeout degrades to a single check rather than to "never checked"
+/// — an already-dead pid must return immediately, not after a sleep.
+///
+/// Takes the liveness probe as a closure so the timeout path is testable
+/// without an unkillable process (and without a real Firefox anywhere).
+pub fn wait_for_pid_exit_with(
+    timeout: Duration,
+    mut alive: impl FnMut() -> bool,
+) -> Option<Duration> {
+    let started = std::time::Instant::now();
+    loop {
+        if !alive() {
+            return Some(started.elapsed());
+        }
+        if started.elapsed() >= timeout {
+            return None;
+        }
+        std::thread::sleep(KILL_WAIT_POLL_INTERVAL);
+    }
+}
+
+/// Wait for `pid` to actually leave the process table, bounded by `timeout`.
+///
+/// Thin [`pid_alive`] binding of [`wait_for_pid_exit_with`]; see
+/// [`kill_pid_and_wait`] for why anything waits at all.
+pub fn wait_for_pid_exit(pid: u32, timeout: Duration) -> Option<Duration> {
+    wait_for_pid_exit_with(timeout, || pid_alive(pid))
+}
+
+/// `SIGKILL` `pid`, then wait (bounded) for it to actually go away (iter-168).
+///
+/// [`kill_pid`] only *signals*: it returns in ~20 µs while the kernel takes
+/// ~20 ms to finish tearing the process down, and the test process is not
+/// Firefox's parent so it never reaps it either. During that window
+/// `kill(pid, 0)` — the liveness probe behind [`pid_alive`], and behind
+/// `live_96_profile_cleanup`'s owner-PID precondition — still reports the
+/// process as alive, so `profiles prune --all` correctly refuses to delete a
+/// profile it believes is in use and an unrelated test fails.
+///
+/// That is the whole of iteration-168: signal-and-hope where a bounded poll
+/// belongs, the same shape iter-164 fixed in [`LiveFirefox::with_daemon`].
+///
+/// Never panics: this runs from `Drop`, including while an assertion is
+/// unwinding, and a panic during unwind aborts the process — turning one
+/// failing test into a suiteless run. The timeout path therefore *reports*
+/// (see [`report_kill_wait_timeout`]) rather than asserting, and returns
+/// nothing: every caller is a `Drop` with no recovery available, so a status
+/// value here would be pure unread API surface.
+pub fn kill_pid_and_wait(pid: u32) {
+    kill_pid(pid);
+    let timeout = kill_wait_timeout();
+    if wait_for_pid_exit(pid, timeout).is_none() {
+        report_kill_wait_timeout(pid, timeout);
+    }
+}
+
+/// Loud diagnostic for [`kill_pid_and_wait`]'s give-up path (iter-168).
+///
+/// A silent give-up would recreate the pre-168 behaviour exactly — the process
+/// stays alive, the next profile-scanning test fails, and nothing says why. So
+/// this names the pid, the bound, the env var that raises it, and the test that
+/// owned the process, which is what iter-151's `OWNER_TEST_MARKER` bought and
+/// what made this defect diagnosable in the first place.
+///
+/// Writes through [`std::io::stderr`] rather than `eprintln!` because the
+/// latter panics if the write fails, and this is reachable from a `Drop` on an
+/// unwinding thread.
+fn report_kill_wait_timeout(pid: u32, timeout: Duration) {
+    let _ = writeln!(
+        std::io::stderr(),
+        "LiveFirefox: pid {pid} was still alive {:?} after SIGKILL (owner test: {}). \
+         Raise {KILL_WAIT_TIMEOUT_ENV} (milliseconds) if this is a slow machine rather \
+         than a wedged process; until it exits, its ff-rdp profile dir still reads as \
+         owned by a live process and `profiles prune --all` will refuse to remove it.",
+        timeout,
+        current_test_name(),
+    );
 }
 
 /// Env var overriding where [`record_live_launch`] appends its line.
@@ -475,7 +606,10 @@ impl LiveFirefox {
         // Bounded, env-overridable wait (iter-113 Theme A) on top of the
         // product's own `--launch-timeout` bound (iter-158 Theme A).
         if !wait_for_tcp(port, launch_wait_timeout()) {
-            kill_pid(firefox_pid);
+            // iter-168: this abandoned launch already planted an owner-PID
+            // marker, so it must be *gone* — not merely signalled — before the
+            // retry (or a later profile-scanning test) looks at the root.
+            kill_pid_and_wait(firefox_pid);
             return Err(format!(
                 "{context}\n  → launch reported pid {firefox_pid} but port {port} never \
                  accepted a connection within {}s ({LAUNCH_TIMEOUT_ENV})",
@@ -637,7 +771,11 @@ pub fn poll_for_daemon_port(
 
 impl Drop for LiveFirefox {
     fn drop(&mut self) {
-        kill_pid(self.firefox_pid);
+        // iter-168: wait for the process to actually go away, not just for the
+        // signal to be delivered. Every live test inherits this drop, so the
+        // race lived here rather than in any one test — see
+        // `kill_pid_and_wait`.
+        kill_pid_and_wait(self.firefox_pid);
     }
 }
 
@@ -798,6 +936,12 @@ impl Drop for RawFirefox {
         // what the kill-scoping guard under test actually does), then we
         // `wait()` on the held `Child` to reap it — otherwise a directly
         // spawned child left un-waited becomes a zombie on Unix.
+        //
+        // iter-168: this path needs no `kill_pid_and_wait`. `Child::wait`
+        // blocks until the process has actually terminated, which is strictly
+        // stronger than polling `kill(pid, 0)` — `RawFirefox` is a direct child
+        // of the test process, whereas `LiveFirefox`'s Firefox is not, which is
+        // exactly why the latter had to poll.
         kill_pid(self.pid);
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.profile);
