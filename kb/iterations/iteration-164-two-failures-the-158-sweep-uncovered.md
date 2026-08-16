@@ -135,22 +135,34 @@ Pre-iter-158, `firefox_with_daemon` returned `Option<LiveFirefox>` and every cal
 `else { return; }` — libtest reports that as `ok`. The condition is not new; the reporting is.
 This is precisely what Theme D was for, and it found a real one on its first run.
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
-- [ ] live_164_block_url_pattern_rejects: after `throttle --block favicon`, an in-page
+- [x] live_164_block_url_pattern_rejects: after `throttle --block favicon`, an in-page
       `fetch('…/favicon.ico')` rejects, and an un-blocked URL still resolves — i.e.
       `live_109_throttle_block::live_block_url_pattern` passes inside a full
       `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1` sweep
-- [ ] unit_164_block_patterns_reach_the_actor: a unit test asserts the block-list request sent
+      [2026-08-16: both pass in the dual-gate sweep `executed=259 skipped=0 preexisting=0`.
+      The new test additionally asserts the block survives a *second* navigate, and that
+      `--unblock` restores the fetch]
+- [x] unit_164_block_patterns_reach_the_actor: a unit test asserts the block-list request sent
       to the network-parent actor carries the patterns the CLI accepted, so an intake-vs-
       enforcement regression is distinguishable without Firefox
-- [ ] unit_164_with_daemon_polls_instead_of_sleeping: the harness helper waits for the registry
+      [`commands/throttle.rs`; drives `resolve_block_urls` → `set_blocked_urls` against a stub
+      Firefox and asserts the `setBlockedUrls` frame carries `["favicon", "*.png"]`. A companion
+      test pins `--unblock` as an explicit empty list rather than "no request at all"]
+- [x] unit_164_with_daemon_polls_instead_of_sleeping: the harness helper waits for the registry
       entry on a bounded poll rather than a fixed 500 ms sleep, asserted against a stub registry
-- [ ] live_164_daemon_autostart_survives_load: eight concurrent launch+`eval` pairs each report
+      [`tests/iter_164_harness_daemon_poll.rs`; the stub reports "not running" for 8 probes —
+      past the old 500 ms — then registers, and the poll still finds it]
+- [x] live_164_daemon_autostart_survives_load: eight concurrent launch+`eval` pairs each report
       `daemon status --jq '.results.running' == true`
-- [ ] unit_164_silent_direct_fallback_is_reported: when `resolve_connection_target` falls back to
+      [2026-08-16: passes in the dual-gate sweep. It asserts against the product's own
+      `daemon status`, not the harness's return value, so a harness bug cannot green it]
+- [x] unit_164_silent_direct_fallback_is_reported: when `resolve_connection_target` falls back to
       a direct connection after a failed autostart, the dropped `deferred_warning` is surfaced in
       `meta` under `--verbose` instead of being discarded
+      [`connection_meta.rs`, as `meta.daemon_fallback`; companion tests pin that it is
+      verbose-only and absent when no fallback happened]
 
 ## Notes
 
