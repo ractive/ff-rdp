@@ -219,11 +219,18 @@ impl DocumentStatusTracker {
     ///    the status reported is the one belonging to the document the caller
     ///    ended up with rather than an intermediate `301`;
     /// 2. the URL that was **requested** — identical to the above when nothing
-    ///    redirected, and all there is when `location.href` could not be read;
-    /// 3. the only document request seen, if there was exactly one. With a
-    ///    single candidate there is nothing to confuse it with; with several
-    ///    (a redirect chain, or subframes) guessing would risk reporting a
-    ///    subframe's status as the page's, so this gives up instead.
+    ///    redirected, and all there is when `location.href` could not be read.
+    ///
+    /// There is deliberately no third, looser rule. A `cause_type ==
+    /// "document"` resource is emitted for subframe loads too, so "if only one
+    /// document request was seen, use it" would report an iframe's status as
+    /// the page's whenever the main document itself issued no request (a
+    /// bfcache restore, `about:blank`). Reporting nothing — with a
+    /// `status_reason` that says so — beats reporting the wrong number.
+    ///
+    /// Within a preference, the LAST match wins: a redirect chain can produce
+    /// several resources for the same URL, and the hop that actually committed
+    /// is the final one.
     fn pick_document(&self, requested_url: &str, committed_url: &str) -> Option<u64> {
         for want in [committed_url, requested_url] {
             if want.is_empty() {
@@ -234,10 +241,7 @@ impl DocumentStatusTracker {
                 return Some(*id);
             }
         }
-        match self.docs.as_slice() {
-            [(id, _)] => Some(*id),
-            _ => None,
-        }
+        None
     }
 
     /// The main document's HTTP status, or the reason there isn't one.
@@ -3064,6 +3068,9 @@ mod tests {
             started,
             None,
             "https://example.com/",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
@@ -3272,6 +3279,9 @@ mod tests {
             Instant::now(),
             None,
             "https://example.com/",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
 
         probe_handle.join().unwrap();
@@ -3497,6 +3507,9 @@ mod tests {
             nav_start,
             Some(&mut probe),
             "https://example.com/",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
 
         let (ready_text, href_text) = server_handle.join().unwrap();
@@ -3621,6 +3634,9 @@ mod tests {
             nav_start,
             Some(&mut probe),
             "https://retry.example/",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
 
         let (stale_eval_text, ready_text, href_text) = server_handle.join().unwrap();
@@ -3749,6 +3765,9 @@ mod tests {
             nav_start,
             Some(&mut probe),
             "https://example.com/",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
 
         // The server thread's loop is bounded (50 iterations) purely so it
@@ -3867,6 +3886,9 @@ mod tests {
             nav_start,
             Some(&mut probe),
             "https://spa.example/app",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
 
         server_handle.join().unwrap();
@@ -3967,6 +3989,9 @@ mod tests {
             nav_start,
             Some(&mut probe),
             "https://spa.example/loading",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
 
         let href_text = server_handle.join().unwrap();
@@ -4110,6 +4135,17 @@ mod tests {
         }
     }
 
+    /// The pre-iter-166 shape of `extract_document_status`: build the tracker
+    /// and resolve it for a navigation that did not redirect, so the requested
+    /// and committed URLs are the same string.
+    fn doc_status(
+        resources: &[ff_rdp_core::NetworkResource],
+        updates: &[ff_rdp_core::NetworkResourceUpdate],
+        url: &str,
+    ) -> Option<u16> {
+        extract_document_status(resources, updates).resolve(url, url).0
+    }
+
     /// `unit_extract_document_status_matches_cause_and_url` — the AC-facing
     /// happy path: one `document`-cause resource matching the requested URL,
     /// with a status update.
@@ -4118,7 +4154,7 @@ mod tests {
         let resources = vec![doc_resource("https://example.com/404", 1)];
         let updates = vec![status_update(1, "404")];
         assert_eq!(
-            extract_document_status(&resources, &updates, "https://example.com/404"),
+            doc_status(&resources, &updates, "https://example.com/404"),
             Some(404)
         );
     }
@@ -4136,7 +4172,7 @@ mod tests {
         ];
         let updates = vec![status_update(1, "200"), status_update(2, "503")];
         assert_eq!(
-            extract_document_status(&resources, &updates, "https://example.com/page"),
+            doc_status(&resources, &updates, "https://example.com/page"),
             Some(503),
             "must report the requested URL's own status, not the subframe's"
         );
@@ -4150,11 +4186,11 @@ mod tests {
         let resources = vec![doc_resource("https://example.com/other", 1)];
         let updates = vec![status_update(1, "200")];
         assert_eq!(
-            extract_document_status(&resources, &updates, "https://example.com/page"),
+            doc_status(&resources, &updates, "https://example.com/page"),
             None
         );
         assert_eq!(
-            extract_document_status(&[], &[], "https://example.com/page"),
+            doc_status(&[], &[], "https://example.com/page"),
             None
         );
     }
@@ -4171,7 +4207,7 @@ mod tests {
         ];
         let updates = vec![status_update(1, "302"), status_update(2, "200")];
         assert_eq!(
-            extract_document_status(&resources, &updates, "https://example.com/page"),
+            doc_status(&resources, &updates, "https://example.com/page"),
             Some(200)
         );
     }
@@ -4198,10 +4234,138 @@ mod tests {
             },
         ];
         assert_eq!(
-            extract_document_status(&resources, &updates, "https://example.com/page"),
+            doc_status(&resources, &updates, "https://example.com/page"),
             Some(200),
             "a later update that doesn't carry `status` must not erase an \
              earlier one that did"
+        );
+    }
+
+    // ── iter-166: URL canonicalisation and `status_reason` ──────────────────
+
+    /// `unit_166_matches_document_across_url_canonicalisation` — the iteration's
+    /// whole defect in one assertion. A caller types `https://example.com`;
+    /// Firefox requests the canonical `https://example.com/` and reports that
+    /// URL on the `network-event`. The pre-iter-166 exact-string comparison
+    /// therefore matched nothing and `navigate` reported `status: null` for a
+    /// page that had plainly returned 200 — measured live before the fix (see
+    /// the plan's Theme A section) on all three routes.
+    #[test]
+    fn unit_166_matches_document_across_url_canonicalisation() {
+        let resources = vec![doc_resource("https://example.com/", 1)];
+        let updates = vec![status_update(1, "200")];
+        assert_eq!(
+            doc_status(&resources, &updates, "https://example.com"),
+            Some(200),
+            "a missing trailing slash must not hide the document's status"
+        );
+        // The reverse direction, and a fragment (never sent to the server, so
+        // it can never appear on a `network-event`), match too.
+        assert_eq!(
+            doc_status(&resources, &updates, "https://example.com/#top"),
+            Some(200)
+        );
+        // A differing path still must not match — canonicalisation is not
+        // permission to be sloppy.
+        assert_eq!(
+            doc_status(&resources, &updates, "https://example.com/other"),
+            None
+        );
+    }
+
+    /// `unit_166_prefers_the_committed_url_over_the_requested_one` — on a
+    /// cross-scheme redirect the requested URL never appears among the
+    /// document resources; the URL that committed does, and its status is the
+    /// one the caller ended up with.
+    #[test]
+    fn unit_166_prefers_the_committed_url_over_the_requested_one() {
+        let resources = vec![
+            doc_resource("http://example.com/", 1),
+            doc_resource("https://example.com/", 2),
+        ];
+        let updates = vec![status_update(1, "301"), status_update(2, "200")];
+        let tracker = extract_document_status(&resources, &updates);
+        assert_eq!(
+            tracker.resolve("http://example.com", "https://example.com/"),
+            (Some(200), None),
+            "the committed document's status wins over the redirect hop's"
+        );
+    }
+
+    /// `unit_166_status_null_is_distinguishable` — the AC. A `null` status now
+    /// always arrives with a `status_reason` naming which of the three
+    /// situations produced it, so a caller can tell "the server sent no
+    /// status" from "this route never looked". The two fields are mutually
+    /// exclusive: `status_reason` is `None` exactly when a status was found.
+    #[test]
+    fn unit_166_status_null_is_distinguishable() {
+        // 1. The route never subscribed to `network-event` (back/forward/
+        //    reload, `--no-wait`, the readystate-only wait strategy).
+        let blind = DocumentStatusTracker::default();
+        assert_eq!(
+            blind.resolve("https://example.com/", "https://example.com/"),
+            (None, Some(StatusUnknown::NotObserved))
+        );
+
+        // 2. Network events were observed, but the committed document issued
+        //    no request of its own (`about:blank`, a bfcache restore, a
+        //    same-document navigation). A subframe's request is present and is
+        //    deliberately NOT borrowed to fill the gap.
+        let resources = vec![doc_resource("https://cdn.example.com/frame.html", 1)];
+        let updates = vec![status_update(1, "200")];
+        assert_eq!(
+            extract_document_status(&resources, &updates).resolve("about:blank", "about:blank"),
+            (None, Some(StatusUnknown::NoDocumentRequest)),
+            "a subframe's status must never be reported as the page's"
+        );
+
+        // 3. The document's request was found, but no status was ever
+        //    reported for it (response line not yet in, or the channel failed).
+        let resources = vec![doc_resource("https://example.com/", 7)];
+        assert_eq!(
+            extract_document_status(&resources, &[])
+                .resolve("https://example.com/", "https://example.com/"),
+            (None, Some(StatusUnknown::NoStatusReported))
+        );
+
+        // And the success case carries no reason at all.
+        let updates = vec![status_update(7, "204")];
+        assert_eq!(
+            extract_document_status(&resources, &updates)
+                .resolve("https://example.com/", "https://example.com/"),
+            (Some(204), None)
+        );
+
+        // The wire strings are stable — `--jq '.results.status_reason'` is a
+        // scripting surface, so these are part of the contract.
+        assert_eq!(StatusUnknown::NotObserved.as_str(), "not_observed");
+        assert_eq!(
+            StatusUnknown::NoDocumentRequest.as_str(),
+            "no_document_request"
+        );
+        assert_eq!(
+            StatusUnknown::NoStatusReported.as_str(),
+            "no_status_reported"
+        );
+    }
+
+    /// `unit_166_canonical_doc_url_leaves_unparseable_input_alone` — the
+    /// comparison must degrade to the old exact-string behaviour rather than
+    /// panic or normalise a non-URL into something that accidentally matches.
+    #[test]
+    fn unit_166_canonical_doc_url_leaves_unparseable_input_alone() {
+        assert_eq!(canonical_doc_url("not a url"), "not a url");
+        assert_eq!(canonical_doc_url("about:blank"), "about:blank");
+        assert_eq!(canonical_doc_url("https://example.com"), "https://example.com/");
+        assert_eq!(
+            canonical_doc_url("https://example.com/a?b=1#c"),
+            "https://example.com/a?b=1"
+        );
+        // The query is deliberately preserved: two same-path requests that
+        // differ only in query really are different requests.
+        assert_ne!(
+            canonical_doc_url("https://example.com/a?b=1"),
+            canonical_doc_url("https://example.com/a?b=2")
         );
     }
 
@@ -4435,6 +4599,9 @@ mod tests {
             nav_start,
             Some(&mut probe),
             "https://www.comparis.ch/hypotheken",
+            // These mock-transport tests exercise `navigate`'s route, which
+            // subscribes to `NetworkEvent` (iter-166).
+            true,
         );
 
         server_handle.join().unwrap();
