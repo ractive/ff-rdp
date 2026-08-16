@@ -12,20 +12,20 @@ dogfood_path: |
   #   {"committed_url":"https://example.com/","ready_state":"complete","status":null}
   #   `status` must be 200. It is null on the FIRST navigate of a fresh daemon,
   #   so this is not a leftover-state effect.
-
+  
   # The data is demonstrably reachable over the same connection:
   ff-rdp --port 7401 navigate https://example.com --with-network --jq '.results.network | length'
   # → 11 entries, including the main document. So the network-event resources
   #   DO arrive; plain `navigate` is failing to correlate one of them with the
   #   document it just committed.
-
+  
   # Same question without the daemon — unmeasured as of filing, settle it first:
   ff-rdp --port 7401 --no-daemon navigate https://example.com \
       --jq '.results | {committed_url, status}'
   # → if direct mode reports 200, the defect is in the daemon's network-event
   #   delivery to a plain (non---with-network) navigate; if it is null there
   #   too, the defect is in `extract_document_status`'s matching.
-status: planned
+status: done
 title: "Iteration 166: navigate reports status: null for a document it successfully loaded"
 type: iteration
 tags:
