@@ -292,14 +292,15 @@ fn live_161_build_script_matrix_evaluates() {
     for script in scripts {
         for stringify in [false, true] {
             for isolate in [false, true] {
-                // A fresh global per combination. `const x = 1; x` on the
-                // non-stringify path is sent to Firefox verbatim, so its
-                // declaration persists in the page's global and the *second*
-                // run of the same combination fails with "redeclaration of
-                // const x" — a real property of `eval` (measured here), not
-                // of the wrap under test. Reloading isolates each run so the
-                // assertion below stays about parsing.
-                navigate(port, "about:blank");
+                // iter-165 removed the `navigate(port, "about:blank")` that
+                // used to sit here. It gave every combination a fresh global
+                // because `const x = 1; x` on the non-stringify path was sent
+                // to Firefox verbatim, so the declaration persisted in the
+                // page's global and a repeat run died with "redeclaration of
+                // const x". That workaround routed around the very defect
+                // iter-165 fixes; with the plain path now wrapped per call
+                // the matrix runs against one long-lived global and still
+                // passes, which is the fix's live proof.
                 let mut args = vec!["eval", script];
                 if stringify {
                     args.push("--stringify");

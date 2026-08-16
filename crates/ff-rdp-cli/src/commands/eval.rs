@@ -946,12 +946,151 @@ mod tests {
     }
 
     #[test]
-    fn build_script_isolate_flag_is_noop_passthrough() {
-        // With isolate=true and stringify=false, result is still the raw script.
-        // --isolate is a no-op since iter-93 (no eval() wrapper).
+    fn build_script_isolate_single_expression_is_passthrough() {
+        // A single expression declares nothing, so isolation has nothing to
+        // do: iter-165 leaves it verbatim and its completion value unchanged.
         let s = build_script("document.title", false, true);
         assert_eq!(s, "document.title");
         assert!(!s.contains("eval("), "must not contain eval(): {s}");
+    }
+
+    // ── iter-165: per-call scope on the plain synchronous path ───────────────
+
+    /// The defect this iteration fixes. Before iter-165 the plain path sent
+    /// `const x = 1; x` to `Debugger.evalInGlobal` verbatim, so the binding
+    /// landed in the tab's global lexical environment and the *second*
+    /// identical call died with `redeclaration of const x`. The IIFE wrap
+    /// keeps the binding call-local, and the trailing bare expression is
+    /// still auto-returned so the value is unchanged.
+    #[test]
+    fn unit_165_plain_multi_statement_is_wrapped_per_call() {
+        let s = build_script("const x = 1; x", false, true);
+        assert_eq!(s, "(function(){\nconst x = 1;\nreturn (\nx\n);})()");
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
+    }
+
+    /// `let` and `class` share the global lexical environment with `const`,
+    /// so all three must be wrapped; `var`/`function` are function-scoped by
+    /// the same wrap.
+    #[test]
+    fn unit_165_plain_wrap_covers_every_declaration_form() {
+        for script in [
+            "let y = 1; y",
+            "var v = 1; v",
+            "class C {}; 1",
+            "function f(){return 1}; f()",
+        ] {
+            let s = build_script(script, false, true);
+            assert!(
+                s.starts_with("(function(){"),
+                "{script:?} must be wrapped per call, got: {s}"
+            );
+            assert!(
+                s.contains("return (\n"),
+                "{script:?} must keep auto-returning its trailing expression, got: {s}"
+            );
+        }
+    }
+
+    /// `--no-isolate` is honoured again (iter-165): it restores the pre-165
+    /// verbatim send, which is what someone deliberately building state up
+    /// across calls wants. Its pre-165 behaviour was identical to the pre-165
+    /// default, so nobody already passing it sees a change.
+    #[test]
+    fn unit_165_no_isolate_sends_plain_script_verbatim() {
+        let s = build_script("const x = 1; x", false, false);
+        assert_eq!(s, "const x = 1; x");
+        assert!(!s.contains("eval("), "must not contain eval(): {s}");
+    }
+
+    /// `--no-isolate` must not be able to un-wrap the two paths whose wrap is
+    /// a syntactic necessity: `--stringify` (iter-161) and top-level `await`
+    /// (iter-132). Their declarations stay call-local either way.
+    #[test]
+    fn unit_165_no_isolate_cannot_unwrap_stringify_or_await() {
+        let stringified = build_script("const x = 1; x", true, false);
+        assert!(
+            stringified.contains("((function(){\nconst x = 1;\nreturn (\nx\n);})())"),
+            "--stringify must stay wrapped under --no-isolate: {stringified}"
+        );
+        let awaited = build_script("const x = await Promise.resolve(1); x", false, false);
+        assert!(
+            awaited.starts_with("(async function(){"),
+            "an await script must stay wrapped under --no-isolate: {awaited}"
+        );
+    }
+
+    /// An `await` script must not pick up a second, redundant IIFE from the
+    /// iter-165 wrap — [`wrap_top_level_await`] already applies exactly the
+    /// same one.
+    #[test]
+    fn unit_165_await_path_is_wrapped_once() {
+        let s = build_script("const x = await Promise.resolve(1); x", false, true);
+        assert_eq!(
+            s,
+            "(async function(){\nconst x = await Promise.resolve(1);\nreturn (\nx\n);})()"
+        );
+    }
+
+    /// AC `unit_165_help_text_matches_behaviour`: the `eval` `long_about` and
+    /// [`build_script`] must not drift apart again. Each documented claim is
+    /// paired with the behavioural assertion that makes it true, so a change
+    /// to either side alone fails this test.
+    #[test]
+    fn unit_165_help_text_matches_behaviour() {
+        use clap::CommandFactory as _;
+
+        let cmd = Cli::command();
+        let eval_cmd = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "eval")
+            .expect("eval subcommand must exist");
+        let help = eval_cmd
+            .get_long_about()
+            .expect("eval must have a long_about")
+            .to_string();
+
+        // Claim: declarations never leak across calls (default path).
+        assert!(
+            help.contains("never leak across calls"),
+            "help must state the per-call-scope contract: {help}"
+        );
+        assert!(
+            build_script("const x = 1; x", false, true).starts_with("(function(){"),
+            "the default path must actually isolate, or the claim above is false"
+        );
+
+        // Claim: --no-isolate opts out and shares one scope.
+        assert!(
+            help.contains("--no-isolate to opt out and share ONE scope across calls"),
+            "help must document --no-isolate as the opt-out: {help}"
+        );
+        assert_eq!(
+            build_script("const x = 1; x", false, false),
+            "const x = 1; x",
+            "--no-isolate must actually send the script unwrapped"
+        );
+
+        // The pre-165 claim, now false, must not come back.
+        assert!(
+            !help.contains("is now a no-op"),
+            "help must not call --no-isolate a no-op while build_script honours it: {help}"
+        );
+        assert!(
+            !help.contains("each call already has its own scope"),
+            "the pre-165 wording asserted Debugger.evalInGlobal gave per-call \
+             scope, which it does not — the isolation is ff-rdp's wrap: {help}"
+        );
+
+        // Claim: a single expression is sent verbatim.
+        assert!(
+            help.contains("A single expression declares nothing and is still sent verbatim"),
+            "help must document the single-expression passthrough: {help}"
+        );
+        assert_eq!(
+            build_script("document.title", false, true),
+            "document.title"
+        );
     }
 
     #[test]
