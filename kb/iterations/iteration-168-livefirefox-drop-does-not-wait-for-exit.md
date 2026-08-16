@@ -2,7 +2,7 @@
 title: "Iteration 168: LiveFirefox::drop signals but never waits, so a killed Firefox still reads as alive"
 type: iteration
 date: 2026-08-16
-status: in-progress
+status: in-review
 branch: iter-168/livefirefox-drop-waits-for-exit
 depends_on: []
 first_call_sites: []
