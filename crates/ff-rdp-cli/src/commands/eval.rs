@@ -77,11 +77,36 @@ pub(crate) fn load_script(
 /// sent raw — Firefox evaluates it via the DevTools mechanism, which bypasses
 /// page CSP by design.
 ///
-/// # `--no-isolate` flag
+/// # Per-call scope and the `--no-isolate` flag (iter-165)
 ///
-/// `--no-isolate` is now effectively a no-op because isolation no longer relies
-/// on `eval()`.  The flag is retained for CLI backward compatibility but does
-/// not change the generated script.
+/// Dropping the `eval()` wrapper in iter-93 also dropped the *isolation* it
+/// happened to provide, and nothing replaced it: from iter-93 to iter-164 the
+/// plain synchronous path sent the user's script to `Debugger.evalInGlobal`
+/// verbatim.  That call evaluates in the target global's own lexical
+/// environment — it bypasses page CSP, but it does **not** hand each
+/// evaluation a fresh scope — so a top-level `const`/`let`/`class` was
+/// installed in the tab's global lexical environment and survived until
+/// navigation.  Running the same script twice therefore failed the second
+/// time with `redeclaration of const x`, while `eval --help` promised the
+/// opposite (measured 2026-08-16, see `kb/iterations/iteration-165-*`).
+///
+/// iter-165 restores the promised contract by wrapping any non-single-
+/// expression script in the same value-producing IIFE
+/// [`wrap_statements_in_iife`] that `--stringify` (iter-161) and the
+/// top-level-`await` path (iter-132) already used — those two paths were
+/// already isolated, so the plain synchronous path was the sole exception.
+/// A single expression cannot declare anything, so it is still sent verbatim
+/// and its completion value is unchanged.
+///
+/// `--no-isolate` stops being a no-op and becomes the documented opt-out it
+/// was originally introduced as (iter-52): with it, the plain synchronous
+/// path is sent verbatim again and declarations accumulate in the tab's
+/// global lexical environment, which is what someone building state up across
+/// several `eval` calls wants.  It cannot un-wrap the `--stringify` or
+/// `await` paths — their wraps are a syntactic necessity, not an isolation
+/// choice — so declarations never leak there regardless.  Because the flag's
+/// pre-165 behaviour was identical to the pre-165 *default*, callers already
+/// passing `--no-isolate` see no change at all.
 ///
 /// # Stringify
 ///
@@ -124,7 +149,7 @@ pub(crate) fn load_script(
 /// wrap never returned anything, so a trailing bare expression silently
 /// became `{"type":"undefined"}` instead of its real value. See
 /// [`top_level_statement_boundaries`] and [`wrap_top_level_await`].
-pub(crate) fn build_script(user_script: &str, stringify: bool, _isolate: bool) -> String {
+pub(crate) fn build_script(user_script: &str, stringify: bool, isolate: bool) -> String {
     // The stringify helper: if the value is already a string, return it as-is;
     // otherwise JSON.stringify it. This prevents double-encoding when the JS
     // expression already evaluates to a string (e.g. `document.title`).
@@ -147,6 +172,17 @@ pub(crate) fn build_script(user_script: &str, stringify: bool, _isolate: bool) -
             wrap_stringify(user_script, STRINGIFY_HELPER, has_await),
             true,
         )
+    } else if isolate && !has_await && !looks_like_single_expression(user_script) {
+        // iter-165: the plain synchronous path is the only one that used to
+        // reach `Debugger.evalInGlobal` unwrapped, so it was the only one
+        // whose `const`/`let`/`class` declarations survived into the next
+        // call. Wrapping it in the same IIFE the other two paths already use
+        // makes the promise in `eval --help` true.
+        //
+        // `has_await` is excluded because [`wrap_top_level_await`] below runs
+        // the very same wrap for those scripts — wrapping here too would
+        // nest two IIFEs for no gain.
+        (wrap_statements_in_iife(user_script.trim(), false), true)
     } else {
         (
             user_script.to_owned(),
@@ -565,9 +601,10 @@ pub fn run(
 ) -> Result<(), AppError> {
     let script = load_script(script, file, use_stdin)?;
     let scope = cli_scope.to_scope();
-    // --no-isolate is a no-op since iter-93: the eval() isolation wrapper was
-    // dropped because it triggered page CSP.  The flag is retained for CLI
-    // backward compatibility.
+    // iter-165: `--no-isolate` is honoured again. By default a multi-statement
+    // script runs inside a per-call IIFE so its `const`/`let`/`class` never
+    // leak into the next `eval`; `--no-isolate` sends it to the shared global
+    // lexical environment instead. See [`build_script`]'s doc comment.
     let final_script = build_script(&script, stringify, !no_isolate);
 
     let mut ctx = connect_and_get_target(cli)?;

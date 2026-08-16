@@ -507,10 +507,26 @@ Prefer --file or --stdin for scripts that contain shell metacharacters,
 optional chaining (?.), template literals, or multi-line statements — shell
 quoting can mangle them and produce a SyntaxError at column 1.
 
-Since iter-93, scripts are routed through Firefox's Debugger.evalInGlobal
-sandbox scope (which bypasses page CSP), so each call already has its own
-scope and `const`/`let` declarations never leak across calls. The
-`--no-isolate` flag is kept for backwards compatibility but is now a no-op.
+Scripts are routed through Firefox's Debugger.evalInGlobal, which bypasses
+page CSP (iter-93). That call does NOT give each evaluation a fresh scope —
+it evaluates in the tab's own global lexical environment — so from iter-93 to
+iter-164 a top-level `const`/`let`/`class` survived until navigation and
+re-running the same script failed with `redeclaration of const x`, even
+though this help claimed otherwise. iter-165 restores the promised contract:
+a multi-statement script now runs inside a per-call IIFE (the same wrap
+--stringify and `await` scripts already used), so `const`/`let`/`class`
+declarations never leak across calls and repeating an `eval` is idempotent.
+`var`, `function` declarations and bare assignments inside such a script are
+function-scoped by that wrap too and likewise do not leak; to publish state
+deliberately, assign it to the page global (`window.mine = ...`), which is
+unaffected. A single expression declares nothing and is still sent verbatim.
+
+Pass --no-isolate to opt out and share ONE scope across calls: a plain
+synchronous script is then sent unwrapped, exactly as it was before iter-165,
+so declarations accumulate in the tab's global lexical environment (useful
+when building helpers up over several calls). --no-isolate does not change
+--stringify or `await` scripts — their wrap is required for those to work at
+all, so their declarations never leak either way.
 
 Top-level `await` works (iter-132): `ff-rdp eval 'await Promise.resolve(41) + 1'`
 resolves to 42. Scripts containing `await` are transparently wrapped in an
@@ -525,6 +541,14 @@ the script keeps working. Only when the last statement is not a bare
 expression (a declaration, a control-flow construct) does the script need
 its own explicit `return` to surface a value (it still runs either way — no
 SyntaxError).
+
+Since iter-165 that last-statement rule governs EVERY multi-statement script,
+not only `await` ones, because they all run in the per-call IIFE described
+above. Two consequences on the plain path: `eval 'return 1'` now returns 1
+instead of failing with `SyntaxError: illegal return statement`, and a script
+whose last statement is a bare control-flow construct (`eval 'if (1) { 2 }'`)
+now yields `undefined` instead of that construct's script completion value —
+add an explicit `return`, or pass --no-isolate, to get the old value back.
 
 Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}
 
@@ -1498,8 +1522,11 @@ pub struct EvalArgs {
     /// (accepts multi-statement scripts, same as bare eval)
     #[arg(long)]
     pub stringify: bool,
-    /// No-op since iter-93. Kept for backwards compatibility — isolation
-    /// is now provided by Firefox's Debugger.evalInGlobal sandbox scope.
+    /// Share one scope across calls: send a plain synchronous script to the
+    /// tab's global lexical environment instead of wrapping it per call, so
+    /// `const`/`let`/`class` persist into the next `eval` (iter-165 — this
+    /// was a no-op from iter-93 to iter-164). Does not affect --stringify or
+    /// `await` scripts, whose wrap is a syntactic necessity.
     #[arg(long)]
     pub no_isolate: bool,
     /// Evaluate inside a specific frame/iframe actor (iter-77 S3).
