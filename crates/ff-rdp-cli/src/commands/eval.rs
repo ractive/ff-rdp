@@ -463,9 +463,11 @@ fn declares_at_top_level(script: &str) -> bool {
     if body.is_empty() {
         return false;
     }
+    // Every boundary is a byte index in `body` at or before its end (the
+    // trailing `;` of `const x = 1;` yields exactly `body.len()`), so the
+    // slice below is always in range.
     std::iter::once(0)
         .chain(top_level_statement_boundaries(body))
-        .filter(|&start| start <= body.len())
         .any(|start| {
             let statement = body[start..].trim_start();
             DECLARATION_LEADING_KEYWORDS
@@ -651,10 +653,11 @@ pub fn run(
 ) -> Result<(), AppError> {
     let script = load_script(script, file, use_stdin)?;
     let scope = cli_scope.to_scope();
-    // iter-165: `--no-isolate` is honoured again. By default a multi-statement
-    // script runs inside a per-call IIFE so its `const`/`let`/`class` never
-    // leak into the next `eval`; `--no-isolate` sends it to the shared global
-    // lexical environment instead. See [`build_script`]'s doc comment.
+    // iter-165: `--no-isolate` is honoured again. By default a script that
+    // declares something at top level runs inside a per-call IIFE, so its
+    // `const`/`let`/`class` never leak into the next `eval`; `--no-isolate`
+    // sends it to the shared global lexical environment instead. See
+    // [`build_script`]'s doc comment.
     let final_script = build_script(&script, stringify, !no_isolate);
 
     let mut ctx = connect_and_get_target(cli)?;
