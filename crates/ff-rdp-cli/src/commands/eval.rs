@@ -385,6 +385,12 @@ const KEYWORDS_BEFORE_REGEX: &[&str] = &[
 /// Real tokenizers need parser feedback to tell those apart; this one calls
 /// it division, which fails *safe*: a mis-scanned regex leaves extra
 /// boundaries, and extra boundaries only ever cost a wrap, never a crash.
+///
+/// A dotted property access (`obj.in`, `obj.new`, …) is excluded from the
+/// keyword match even though the word matches: every reserved word is a
+/// legal property name after a bare `.` since ES5, and misreading one as the
+/// keyword is the one direction that does *not* fail safe (it can hide a
+/// real boundary rather than add a spurious one).
 fn slash_starts_regex(
     chars: &[(usize, char)],
     prev_significant: Option<char>,
@@ -409,6 +415,16 @@ fn slash_starts_regex(
     let mut start = end;
     while start > 0 && is_ident(chars[start - 1].1) {
         start -= 1;
+    }
+    if start > 0 && chars[start - 1].1 == '.' {
+        // `obj.in`, `obj.new`, `obj.case`, … — every reserved word is a
+        // legal property name after a bare `.` since ES5 (iter-167 review
+        // fix). Without this check `obj.in / 2` misread `in` as the
+        // keyword, judged the `/` a regex open, and the resulting
+        // (wrong-direction) scan could swallow a real top-level `;` that
+        // followed — the one case in this heuristic that does NOT fail
+        // safe, since it hides a boundary instead of only adding one.
+        return false;
     }
     let word: String = chars[start..=end].iter().map(|&(_, c)| c).collect();
     KEYWORDS_BEFORE_REGEX.contains(&word.as_str())
@@ -1898,6 +1914,36 @@ mod tests {
             assert!(
                 !top_level_statement_boundaries(script).is_empty(),
                 "{script:?} has a real top-level `;` and must split"
+            );
+        }
+    }
+
+    /// Review fix (iter-167): every reserved word is a legal property name
+    /// after a bare `.` since ES5, so `obj.in`, `obj.new`, `obj.case`, … are
+    /// member access, not the keywords `slash_starts_regex` matches against.
+    /// Before the fix, `obj.in / 2; foo() / 3` misread the first `/` as a
+    /// regex open and its scan swallowed the real top-level `;` between the
+    /// two slashes — the one direction of this heuristic that does not fail
+    /// safe, since it hides a boundary instead of only adding one.
+    #[test]
+    fn unit_167_dotted_property_named_like_keyword_is_not_the_keyword() {
+        let boundaries = top_level_statement_boundaries("obj.in / 2; foo() / 3");
+        assert_eq!(
+            boundaries,
+            vec!["obj.in / 2;".len()],
+            "expected the real `;` boundary, regex misdetection swallowed it: {boundaries:?}"
+        );
+
+        for script in [
+            "obj.in / 2",
+            "obj.new / 2",
+            "obj.case / 2",
+            "obj.instanceof / 2",
+            "obj.typeof / 2",
+        ] {
+            assert!(
+                looks_like_single_expression(script),
+                "{script:?} is a single division expression, not a regex"
             );
         }
     }
