@@ -26,7 +26,7 @@ dogfood_path: |
   #   at all, so `--jq '.results.status'` yields null for a reason no caller can
   #   see. iter-130 Theme B promised all four verbs report the same shape.
 status: planned
-title: "Iteration 169: navigate's document status update is occasionally never delivered, and back/forward/reload report no status at all"
+title: "Iteration 169: navigate's document status update is occasionally never delivered, back/forward/reload report no status at all, and the live suite kills a Firefox it does not own"
 type: iteration
 tags:
   - iteration
@@ -35,7 +35,7 @@ tags:
   - carry-over
 ---
 
-# Iteration 169: `navigate`'s document status update is occasionally never delivered, and `back`/`forward`/`reload` report no status at all
+# Iteration 169: `navigate`'s document status update is occasionally never delivered, `back`/`forward`/`reload` report no status at all, and the live suite kills a Firefox it does not own
 
 Carry-over from [[iteration-166-navigate-status-is-null-under-the-daemon]], filed before that PR
 merges per CLAUDE.md's carry-over rule. Both items were found *by* iter-166 — the first by its
@@ -102,7 +102,34 @@ Two honest outcomes, and the iteration should pick one on evidence rather than a
 The second is cheap and honest; the first is more useful. Measure what the subscription costs on
 a `reload` before choosing.
 
-## Acceptance Criteria [0/4]
+## Theme C — something in the CLI live suite kills a Firefox it does not own
+
+iter-166 ran the sweep twice, both times with a hand-started
+`firefox -no-remote -profile … --start-debugger-server 6000 --headless` so the `ff-rdp-core` tier
+would execute rather than be reported `preexisting`. On the **second** run that Firefox was dead
+by the time the core tier started: all 9 core tests failed instantly with
+`ConnectionFailed(… ConnectionRefused)` in `0.00s`, and the process (a PID recorded at launch) was
+gone. On the **first** run, same command, same machine, the same Firefox survived and all 9
+passed. Restarting it after the second sweep and re-running the four core targets gave 9/9 `ok`
+immediately.
+
+So the CLI tier kills an unrelated, externally-started Firefox some of the time. That is worth
+naming rather than shrugging at: it is a *scoping* failure, and process scoping is exactly what
+`live_110_kill_scoping` exists to protect. Candidates, in order:
+
+1. `live_110_kill_scoping` itself, or whatever it exercises — a kill that matches on process name
+   or profile prefix rather than on the PID the suite launched;
+2. `live_96_profile_cleanup::live_profiles_prune_removes_all_when_no_firefox_running` — a prune
+   that decides "no Firefox is running" and cleans up more than it owns;
+3. `daemon stop` scoping (iter-110's subject), if a daemon on one port can reach a Firefox it did
+   not start.
+
+This is **not** the same defect as [[iteration-168-livefirefox-drop-does-not-wait-for-exit]],
+which is about a Firefox the suite *did* own outliving its `LiveFirefox`. Here the suite kills one
+it never owned. Fix the scoping, not the sweep procedure — telling operators "do not run anything
+else on 6000" would defeat the reason the core tier uses a fixed port.
+
+## Acceptance Criteria [0/6]
 
 - [ ] the delivery path is identified — which of Theme A's three candidates loses the update,
       recorded in this plan with the measurement that settled it, before the fix
@@ -112,6 +139,10 @@ a `reload` before choosing.
       asserting both keys are present on all three verbs
 - [ ] no grace window in `navigate.rs` is longer than the 2000 ms iter-166 set — the fix must be
       in delivery, not in waiting
+- [ ] the process that kills the externally-started port-6000 Firefox is identified by name, with
+      the reproduction that found it — not inferred from the candidate list
+- [ ] a full `live-sweep` with a hand-started Firefox on 6000 leaves that Firefox alive, verified
+      by checking its PID after the sweep rather than by the core tier merely passing
 
 ## Notes
 

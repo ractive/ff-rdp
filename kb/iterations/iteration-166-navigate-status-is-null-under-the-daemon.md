@@ -205,6 +205,11 @@ lines this iteration did not fix.
   delivery rather than late. Not fixable inside this plan's scope.
 - **Theme B of 169** — `back`/`forward`/`reload` emit no `status`/`status_reason` key at all.
   Recorded as out of scope in DEC-040.
+- **Theme C of 169** — the second sweep's 7 `ff-rdp-core` failures. The hand-started Firefox on
+  port 6000 was dead by the time the core tier ran (instant `ConnectionRefused`, PID gone); it
+  survived the first sweep and, restarted, gave 9/9 immediately. "Environmental" is a diagnosis,
+  not a disposition: something in the CLI tier kills a Firefox it does not own, and that is a
+  scoping defect with its own row rather than a footnote.
 
 ## Notes
 
