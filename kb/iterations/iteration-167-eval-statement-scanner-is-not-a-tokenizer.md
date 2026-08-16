@@ -154,6 +154,14 @@ Unwanted side effect found while fixing (not in the plan, kept): a comment-only 
 `// c\nconst q = 1` used to reach `--stringify`'s argument slot raw and fail to parse; both now
 evaluate to `undefined`.
 
+**Review fix (post-implementation, PR #205 local review):** `slash_starts_regex` matched
+`KEYWORDS_BEFORE_REGEX` against the previous identifier regardless of what preceded it, so a
+dotted property access named like a reserved word (`obj.in`, `obj.new`, `obj.case`, … — legal
+since ES5) was misread as the keyword. `obj.in / 2; foo() / 3` demonstrated the failure: the fake
+regex scan swallowed the real top-level `;` between the two `/` — the one direction of this
+heuristic that does not fail safe. Fixed by excluding the match when the identifier is immediately
+preceded by `.`; see `unit_167_dotted_property_named_like_keyword_is_not_the_keyword`.
+
 ## Theme C — decision: the two triggers stay apart
 
 Recorded as a revisit note under DEC-039 rather than a new DEC entry, because the decision is
