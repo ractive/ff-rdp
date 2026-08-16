@@ -20,7 +20,7 @@ dogfood_path: |
   ff-rdp --port 7301 eval --stringify "const z = 1; z"
   # → iter-161 wraps --stringify statements in an IIFE, so this path is
   #   expected to be unaffected. Confirm; the asymmetry is the clue.
-status: in-review
+status: done
 title: "Iteration 165: eval's const/let bindings leak across calls, contradicting eval --help"
 type: iteration
 tags:
