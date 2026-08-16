@@ -980,6 +980,21 @@ regex and comment cases as byte-for-byte passthrough. Paying an inconsistency
 with `--stringify`'s trigger to avoid regressing working scripts is the right
 side of that trade; the *contract* both paths state is identical.
 
+**Revisited at iter-167 (Theme C), decision unchanged.** The second half of
+that paragraph no longer holds: iter-167 taught
+`top_level_statement_boundaries` about regex literals, `//` and `/* */`
+comments and backslash escapes, so `eval --stringify '/a;b/.test("a;b")'` —
+named above as already broken on `main` — now works, and the scanner is no
+longer a reason to keep the triggers apart. The *first* half is untouched and
+is sufficient on its own. Measured against a live Firefox at iter-167:
+`eval 'if (1) { 2 }'` returns `2` and `eval 'for (let i = 0; i < 3; i++) { i }'`
+returns `2`; converging on `--stringify`'s "wrap anything that is not a single
+expression" trigger would turn both into `undefined`, buying `eval 'return 1'`
+(today `return not in function`) in exchange. Two working behaviours for one is
+the wrong trade, so the plain path keeps the declaration trigger and
+`--stringify` keeps the single-expression one. The asymmetry now rests on the
+completion-value argument alone, which is where it always belonged.
+
 **Why**: five pieces of evidence, all pointing the same way.
 
 1. `Debugger.evalInGlobal` evaluates in the target global's *own* lexical

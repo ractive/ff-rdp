@@ -102,10 +102,17 @@ pub(crate) fn load_script(
 /// it would buy no isolation while changing its completion value: a function
 /// body has no script-completion-value semantics, so `eval 'if (1) { 2 }'`
 /// would start returning `undefined` instead of `2`. Restricting the trigger
-/// keeps every declaration-free script byte-for-byte on its pre-165 path, and
-/// confines the wrap's known blast radius — [`top_level_statement_boundaries`]
-/// is a char scanner, not a JS tokenizer, and does not understand regex
-/// literals or comments — to scripts that also contain a declaration.
+/// keeps every declaration-free script byte-for-byte on its pre-165 path.
+///
+/// iter-165 gave a second reason for the narrow trigger — it confined the
+/// blast radius of [`top_level_statement_boundaries`], which did not
+/// understand regex literals or comments. iter-167 Theme B fixed the scanner,
+/// so that reason is gone; the trigger stays narrow on the completion-value
+/// argument alone, which never depended on it. Measured against a live
+/// Firefox at iter-167: converging the two triggers would cost
+/// `eval 'if (1) { 2 }'` and `eval 'for (let i = 0; i < 3; i++) { i }'` their
+/// completion values (`2` each, today) to make `eval 'return 1'` work — two
+/// working behaviours traded for one, so they stay apart. See DEC-039.
 ///
 /// `--no-isolate` stops being a no-op and becomes the documented opt-out it
 /// was originally introduced as (iter-52): with it, the plain synchronous
@@ -260,11 +267,12 @@ const STATEMENT_LEADING_KEYWORDS: &[&str] = &[
 /// path in [`wrap_top_level_await`], which still evaluates — it just won't
 /// surface a value unless the script has an explicit `return`):
 ///
-/// - A `;`/newline inside a string/template literal is tracked (see
-///   [`top_level_statement_boundaries`]) so those don't false-positive as
-///   statement separators, but the tracking is char-based, not a real
-///   tokenizer — it does not understand regex literals or escaped quotes,
-///   so a regex containing `;`/newline-adjacent punctuation could misfire.
+/// - A `;`/newline inside a string, template literal, regex literal or
+///   comment is tracked (see [`top_level_statement_boundaries`]) so those
+///   don't false-positive as statement separators. The tracking is still
+///   char-based rather than a real tokenizer — iter-167 closed the regex,
+///   comment and backslash-escape gaps, but `${…}` interpolation is skipped
+///   as opaque text and a `/` after `}` is always read as division.
 /// - Only a fixed, common prefix list is checked against statement-leading
 ///   keywords; more obscure statement forms (labelled statements, etc.)
 ///   are not recognized and would be (harmlessly) treated as expressions,
@@ -279,10 +287,14 @@ fn looks_like_single_expression(script: &str) -> bool {
     if body.is_empty() {
         return false;
     }
+    // iter-167: `// note\nconst x = 1` is a declaration, not an expression —
+    // the keyword check has to look past any leading comment to see that.
+    let leading = trim_leading_trivia(body);
     !looks_like_multi_statement(body)
+        && !leading.is_empty()
         && !STATEMENT_LEADING_KEYWORDS
             .iter()
-            .any(|kw| body_starts_with_keyword(body, kw))
+            .any(|kw| body_starts_with_keyword(leading, kw))
 }
 
 /// Whether `c` can end a complete JS statement/expression on its own —
@@ -327,6 +339,158 @@ fn is_continuation_start_char(c: char) -> bool {
     )
 }
 
+/// Keywords after which a `/` can only begin a regular-expression literal,
+/// never a division (iter-167).
+///
+/// [`slash_starts_regex`] decides regex-vs-division from the previous
+/// significant character, and every one of these keywords ends in an
+/// identifier character — so without this list `return /a;b/` would look
+/// exactly like `count / 2` and the regex would be scanned as a division.
+/// Keywords that are *statements* in their own right (`return`, `throw`,
+/// `case`, `do`, `else`) and the unary operators (`typeof`, `void`,
+/// `delete`, `new`, `await`, `yield`) are the whole set that can legally be
+/// followed by a regex literal; `instanceof`/`in`/`of` are binary operators
+/// whose right operand may also be one.
+const KEYWORDS_BEFORE_REGEX: &[&str] = &[
+    "return",
+    "typeof",
+    "instanceof",
+    "in",
+    "of",
+    "new",
+    "delete",
+    "void",
+    "throw",
+    "case",
+    "do",
+    "else",
+    "yield",
+    "await",
+];
+
+/// Whether the `/` whose preceding significant character is `prev_significant`
+/// (at `prev_idx` in `chars`) starts a regular-expression literal rather than
+/// a division operator (iter-167 Theme B).
+///
+/// This is the standard lexer heuristic and needs exactly one character of
+/// context, which [`top_level_statement_boundaries`] already carries: a `/`
+/// is division only if the token before it can end an expression — a
+/// closing bracket, a string terminator, or an identifier/number that is not
+/// one of [`KEYWORDS_BEFORE_REGEX`]. At the very start of a script, or after
+/// an operator/`(`/`,`/`;`/`=`, nothing is there to divide, so the `/` opens
+/// a regex.
+///
+/// The one genuinely ambiguous case is `}`, which ends both an object
+/// literal (`{}` / 2 — division) and a block (`if (x) {} /re/` — regex).
+/// Real tokenizers need parser feedback to tell those apart; this one calls
+/// it division, which fails *safe*: a mis-scanned regex leaves extra
+/// boundaries, and extra boundaries only ever cost a wrap, never a crash.
+///
+/// A dotted property access (`obj.in`, `obj.new`, …) is excluded from the
+/// keyword match even though the word matches: every reserved word is a
+/// legal property name after a bare `.` since ES5, and misreading one as the
+/// keyword is the one direction that does *not* fail safe (it can hide a
+/// real boundary rather than add a spurious one).
+fn slash_starts_regex(
+    chars: &[(usize, char)],
+    prev_significant: Option<char>,
+    prev_idx: Option<usize>,
+) -> bool {
+    let Some(prev) = prev_significant else {
+        // Nothing before it: a leading `/` cannot be a division.
+        return true;
+    };
+    if !is_statement_end_char(prev) {
+        return true;
+    }
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    if !is_ident(prev) {
+        // `)`, `]`, `}` or a closing quote — treat as division (see the `}`
+        // note above).
+        return false;
+    }
+    let Some(end) = prev_idx else {
+        return false;
+    };
+    let mut start = end;
+    while start > 0 && is_ident(chars[start - 1].1) {
+        start -= 1;
+    }
+    if start > 0 && chars[start - 1].1 == '.' {
+        // `obj.in`, `obj.new`, `obj.case`, … — every reserved word is a
+        // legal property name after a bare `.` since ES5 (iter-167 review
+        // fix). Without this check `obj.in / 2` misread `in` as the
+        // keyword, judged the `/` a regex open, and the resulting
+        // (wrong-direction) scan could swallow a real top-level `;` that
+        // followed — the one case in this heuristic that does NOT fail
+        // safe, since it hides a boundary instead of only adding one.
+        return false;
+    }
+    let word: String = chars[start..=end].iter().map(|&(_, c)| c).collect();
+    KEYWORDS_BEFORE_REGEX.contains(&word.as_str())
+}
+
+/// Index in `chars` of the `/` that closes the regular-expression literal
+/// opening at `start`, or `None` if there is no valid one (iter-167).
+///
+/// Handles backslash escapes (`/a\/b/`) and character classes (`/[/]/`, where
+/// the `/` is literal). A regex literal may not contain an unescaped line
+/// terminator, so a newline means this was not a regex after all and the
+/// caller must fall back to treating the `/` as division — which is the
+/// fail-safe direction: the scan is abandoned rather than swallowing the rest
+/// of the script.
+fn scan_regex_literal(chars: &[(usize, char)], start: usize) -> Option<usize> {
+    let mut i = start + 1;
+    let mut in_class = false;
+    while i < chars.len() {
+        match chars[i].1 {
+            '\\' => i += 1,
+            '\n' => return None,
+            '[' => in_class = true,
+            ']' => in_class = false,
+            '/' if !in_class => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The byte offset of the first non-whitespace character at or after `from`,
+/// if the break before it is an Automatic Semicolon Insertion boundary —
+/// [`is_statement_end_char`] before it, NOT [`is_continuation_start_char`]
+/// after.
+///
+/// Split out of [`top_level_statement_boundaries`] in iter-167 because a
+/// block comment containing a line terminator is an ASI boundary candidate in
+/// exactly the same way the newline it hides would have been, so the same
+/// check now runs from two places.
+fn asi_boundary_after(
+    chars: &[(usize, char)],
+    from: usize,
+    prev_significant: Option<char>,
+) -> Option<usize> {
+    let mut j = from;
+    while j < chars.len() && chars[j].1.is_whitespace() {
+        j += 1;
+    }
+    let prev = prev_significant?;
+    let &(next_byte, next) = chars.get(j)?;
+    (is_statement_end_char(prev) && !is_continuation_start_char(next)).then_some(next_byte)
+}
+
+/// Append `at` to `boundaries` unless it is already the last entry.
+///
+/// iter-167: two paths can now propose the same offset — a block comment's
+/// ASI check ([`asi_boundary_after`]) and the check for a later newline — and
+/// a repeated boundary would make [`wrap_statements_in_iife`] split on an
+/// empty statement.
+fn push_boundary(boundaries: &mut Vec<usize>, at: usize) {
+    if boundaries.last() != Some(&at) {
+        boundaries.push(at);
+    }
+}
+
 /// Scan `body` (best-effort — see [`looks_like_single_expression`]'s doc
 /// comment for the acknowledged gaps) and return, in order, the byte
 /// offsets where a new top-level JS statement appears to begin: one past
@@ -349,6 +513,36 @@ fn is_continuation_start_char(c: char) -> bool {
 /// newline *inside* a string is never mistaken for a separator — the old
 /// `;`-only check did not do this either) and `(`/`[`/`{` nesting depth (a
 /// multi-line object/array literal or argument list is never split).
+///
+/// # iter-167: regex literals, comments and escapes
+///
+/// Until iter-167 the scanner tracked *only* quotes and depth, and iter-165
+/// narrowed its own wrap trigger to work around that. Measured on main
+/// (2026-08-16, `kb/iterations/iteration-167-*`), five inputs emitted invalid
+/// JavaScript, e.g. `eval --stringify '/a;b/.test("a;b")'` →
+/// `unterminated regular expression literal`, because the `;` inside the
+/// regex was reported as a top-level boundary and the wrap split the script
+/// into `/a;` and `b/.test("a;b")`. Now also tracked:
+///
+/// - **Regex literals**, opened by a `/` that [`slash_starts_regex`] judges
+///   cannot be a division and closed by [`scan_regex_literal`].
+/// - **`//` line comments**, skipped up to but *not including* their
+///   terminating newline, which is still an ASI boundary candidate; and
+///   **`/* */` block comments**, skipped whole, with an
+///   [`asi_boundary_after`] check when the comment spans a line terminator.
+///   Before this, an apostrophe in a comment (`// don't`) opened string state
+///   and swallowed the rest of the script.
+/// - **Backslash escapes** inside single-quoted, double-quoted and template
+///   strings as well as regex literals, so `"a\";b"` no longer ends its
+///   string at the escaped quote.
+///
+/// Still not a JS tokenizer, and deliberately so (all code stays in Rust and
+/// this repo has no JS parser dependency). Known remaining gaps: `${…}`
+/// interpolation inside a template literal is skipped as opaque text rather
+/// than re-entered, and a `/` after `}` is always read as division because
+/// telling an object literal from a block needs parser feedback. Both fail
+/// safe — the worst outcome is a boundary the scanner should not have
+/// reported, which costs a wrap, never a crash.
 fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
     #[derive(Clone, Copy, PartialEq)]
     enum Str {
@@ -358,42 +552,90 @@ fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
         Template,
     }
 
-    let mut boundaries = Vec::new();
+    let mut boundaries: Vec<usize> = Vec::new();
     let mut state = Str::None;
     let mut depth: i32 = 0;
     let mut prev_significant: Option<char> = None;
+    let mut prev_significant_idx: Option<usize> = None;
     let chars: Vec<(usize, char)> = body.char_indices().collect();
     let n = chars.len();
     let mut i = 0;
 
     while i < n {
         let (byte_idx, c) = chars[i];
-        match state {
-            Str::Single => {
-                if c == '\'' {
-                    state = Str::None;
-                    prev_significant = Some(c);
-                }
-                i += 1;
+
+        // --- inside a string/template literal ---------------------------------
+        if state != Str::None {
+            // iter-167: a backslash escapes the next character, so `"a\";b"`
+            // stays one string instead of ending at the escaped quote.
+            if c == '\\' {
+                i += 2;
                 continue;
             }
-            Str::Double => {
-                if c == '"' {
-                    state = Str::None;
-                    prev_significant = Some(c);
+            let closer = match state {
+                Str::Single => '\'',
+                Str::Double => '"',
+                _ => '`',
+            };
+            if c == closer {
+                state = Str::None;
+                prev_significant = Some(c);
+                prev_significant_idx = Some(i);
+            }
+            i += 1;
+            continue;
+        }
+
+        // --- comments and regex literals (iter-167) ---------------------------
+        if c == '/' {
+            let next = chars.get(i + 1).map(|&(_, c)| c);
+            if next == Some('/') {
+                // Stop *at* the newline so the ASI arm below still sees it.
+                let mut j = i + 2;
+                while j < n && chars[j].1 != '\n' {
+                    j += 1;
                 }
-                i += 1;
+                i = j;
                 continue;
             }
-            Str::Template => {
-                if c == '`' {
-                    state = Str::None;
-                    prev_significant = Some(c);
+            if next == Some('*') {
+                let mut j = i + 2;
+                let mut spans_line = false;
+                let mut closed = false;
+                while j < n {
+                    if chars[j].1 == '\n' {
+                        spans_line = true;
+                    }
+                    if chars[j].1 == '*' && chars.get(j + 1).map(|&(_, c)| c) == Some('/') {
+                        closed = true;
+                        break;
+                    }
+                    j += 1;
                 }
-                i += 1;
+                let after = if closed { j + 2 } else { n };
+                if spans_line
+                    && depth == 0
+                    && let Some(at) = asi_boundary_after(&chars, after, prev_significant)
+                {
+                    push_boundary(&mut boundaries, at);
+                }
+                i = after;
                 continue;
             }
-            Str::None => {}
+            if slash_starts_regex(&chars, prev_significant, prev_significant_idx)
+                && let Some(end) = scan_regex_literal(&chars, i)
+            {
+                // A regex literal is a complete primary expression, like a
+                // string literal: what follows it may be a division and a
+                // newline after it is an ASI boundary. `)` is the character
+                // that already carries both of those properties through
+                // `is_statement_end_char`/`slash_starts_regex`.
+                prev_significant = Some(')');
+                prev_significant_idx = Some(end);
+                i = end + 1;
+                continue;
+            }
+            // Otherwise it is a division operator; fall through.
         }
 
         match c {
@@ -402,24 +644,22 @@ fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
             '`' => state = Str::Template,
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            ';' if depth == 0 => boundaries.push(byte_idx + c.len_utf8()),
+            ';' if depth == 0 => push_boundary(&mut boundaries, byte_idx + c.len_utf8()),
             '\n' if depth == 0 => {
-                let mut j = i + 1;
-                while j < n && chars[j].1.is_whitespace() {
-                    j += 1;
-                }
-                if let (Some(prev), Some(&(next_byte, next))) = (prev_significant, chars.get(j))
-                    && is_statement_end_char(prev)
-                    && !is_continuation_start_char(next)
-                {
-                    boundaries.push(next_byte);
+                if let Some(at) = asi_boundary_after(&chars, i + 1, prev_significant) {
+                    push_boundary(&mut boundaries, at);
                 }
             }
             _ => {}
         }
 
-        if depth == 0 && state == Str::None && !c.is_whitespace() {
+        // iter-167: tracked at every depth, not just depth 0. The scanner now
+        // consults `prev_significant` to tell a regex from a division, and a
+        // regex inside an argument list (`foo(/a'b/)`) used to open string
+        // state on its apostrophe and swallow the rest of the script.
+        if state == Str::None && !c.is_whitespace() {
             prev_significant = Some(c);
+            prev_significant_idx = Some(i);
         }
         i += 1;
     }
@@ -469,11 +709,37 @@ fn declares_at_top_level(script: &str) -> bool {
     std::iter::once(0)
         .chain(top_level_statement_boundaries(body))
         .any(|start| {
-            let statement = body[start..].trim_start();
+            // iter-167: a statement may begin with a comment.
+            let statement = trim_leading_trivia(&body[start..]);
             DECLARATION_LEADING_KEYWORDS
                 .iter()
                 .any(|kw| body_starts_with_keyword(statement, kw))
         })
+}
+
+/// `s` with leading whitespace and leading `//` / `/* */` comments removed
+/// (iter-167).
+///
+/// [`top_level_statement_boundaries`] reports where a statement *begins*, and
+/// a statement may begin with trivia: in `// note\nconst x = 1; x` the first
+/// statement's text starts with the comment, so matching
+/// [`DECLARATION_LEADING_KEYWORDS`] or [`STATEMENT_LEADING_KEYWORDS`] against
+/// it raw sees `//` and concludes the script neither declares anything nor is
+/// a statement — which sent a commented declaration down the wrong path.
+/// An unterminated comment consumes the rest of the input, which is what the
+/// JS grammar does with it too.
+fn trim_leading_trivia(s: &str) -> &str {
+    let mut rest = s.trim_start();
+    loop {
+        rest = if let Some(after) = rest.strip_prefix("//") {
+            after.find('\n').map_or("", |k| &after[k + 1..])
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            after.find("*/").map_or("", |k| &after[k + 2..])
+        } else {
+            return rest;
+        }
+        .trim_start();
+    }
 }
 
 /// Whether `body` starts with the statement-leading keyword `kw`, at a real
@@ -1051,11 +1317,12 @@ mod tests {
     }
 
     /// A declaration-free script must come out of `build_script` byte-for-byte
-    /// unchanged, whatever its statement shape. This is the guard on the
-    /// iter-165 wrap's blast radius: [`top_level_statement_boundaries`] is a
-    /// char scanner that does not understand regex literals or comments, and
-    /// restricting the trigger to declaring scripts keeps its known gaps out
-    /// of every script that has nothing to isolate.
+    /// unchanged, whatever its statement shape. iter-165 wrote this as the
+    /// guard on its wrap's blast radius, because
+    /// [`top_level_statement_boundaries`] did not understand regex literals or
+    /// comments; iter-167 fixed the scanner, so the test now pins the
+    /// completion-value contract instead — these scripts must keep reaching
+    /// `Debugger.evalInGlobal` as themselves.
     #[test]
     fn unit_165_declaration_free_scripts_are_never_rewritten() {
         for script in [
@@ -1282,11 +1549,24 @@ mod tests {
     /// Firefox — the only JS parser this repo is allowed to use, since all
     /// code stays in Rust and there is no in-process parser to check "does
     /// this parse" against.
-    const MATRIX_SCRIPTS: [&str; 4] = [
+    ///
+    /// iter-167 appended the five inputs whose generated script did not parse
+    /// on main (the Theme A table in `kb/iterations/iteration-167-*`). Each
+    /// declaring entry uses a distinct binding name on purpose: exactly one
+    /// combination per script (`stringify=false, isolate=false`) is sent to
+    /// Firefox verbatim and therefore declares into the tab's real global, so
+    /// two scripts sharing a name would collide with `redeclaration of const`
+    /// and blame the wrap for it.
+    const MATRIX_SCRIPTS: [&str; 9] = [
         "document.title",
         "1 + 1",
         "const x = 1; x",
         "throw new Error('boom')",
+        r#"/a;b/.test("a;b")"#,
+        r#"const s167a = "x"; /a;b/.test("a;b")"#,
+        r#"const s167b = "a\";b"; s167b"#,
+        "const s167c = `a\\`;b`; s167c",
+        "// don't touch\nconst s167d = 1; s167d",
     ];
 
     /// Invariant: build_script MUST NOT emit a bare `eval(` for any
@@ -1589,5 +1869,232 @@ mod tests {
         assert!(s.contains("JSON.stringify("));
         assert!(s.contains("await Promise.resolve(41)"));
         assert!(!s.contains("eval("), "must not contain eval(): {s}");
+    }
+
+    // ── iter-167: the scanner understands regex literals, comments, escapes ──
+
+    /// AC: `unit_167_scanner_ignores_regex_and_comments`.
+    ///
+    /// The headline defect. Measured on main against a live Firefox
+    /// (2026-08-16): `eval --stringify '/a;b/.test("a;b")'` returned
+    /// `unterminated regular expression literal`, because the `;` inside the
+    /// regex was reported as a top-level statement boundary and the wrap split
+    /// the script into `/a;` and `b/.test("a;b")`. The same class of misfire
+    /// hid inside `//` and `/* */` comments.
+    #[test]
+    fn unit_167_scanner_ignores_regex_and_comments() {
+        for script in [
+            r#"/a;b/.test("a;b")"#,
+            "const r = /a;b/",
+            "// a; b",
+            "/* a; b */",
+            "const x = 1 /* a;\nb */",
+            "x.replace(/;/g, ',')",
+            // A `;` inside a character class, and an escaped `/` inside the
+            // literal, must not end the regex early either.
+            r"/[;/]/.test(';')",
+            r"/a\/b;c/.test('a/b;c')",
+        ] {
+            assert!(
+                top_level_statement_boundaries(script).is_empty(),
+                "{script:?} is one statement — the `;` is inside a regex or \
+                 comment, got {:?}",
+                top_level_statement_boundaries(script)
+            );
+        }
+
+        // …and a real top-level `;` is still a boundary, including one that
+        // follows a regex literal or a comment.
+        for script in [
+            "const r = /a;b/; r.test('a;b')",
+            "const x = 1; // a; b\nx",
+            "const x = 1 /* c */; x",
+            "a; b",
+        ] {
+            assert!(
+                !top_level_statement_boundaries(script).is_empty(),
+                "{script:?} has a real top-level `;` and must split"
+            );
+        }
+    }
+
+    /// Review fix (iter-167): every reserved word is a legal property name
+    /// after a bare `.` since ES5, so `obj.in`, `obj.new`, `obj.case`, … are
+    /// member access, not the keywords `slash_starts_regex` matches against.
+    /// Before the fix, `obj.in / 2; foo() / 3` misread the first `/` as a
+    /// regex open and its scan swallowed the real top-level `;` between the
+    /// two slashes — the one direction of this heuristic that does not fail
+    /// safe, since it hides a boundary instead of only adding one.
+    #[test]
+    fn unit_167_dotted_property_named_like_keyword_is_not_the_keyword() {
+        let boundaries = top_level_statement_boundaries("obj.in / 2; foo() / 3");
+        assert_eq!(
+            boundaries,
+            vec!["obj.in / 2;".len()],
+            "expected the real `;` boundary, regex misdetection swallowed it: {boundaries:?}"
+        );
+
+        for script in [
+            "obj.in / 2",
+            "obj.new / 2",
+            "obj.case / 2",
+            "obj.instanceof / 2",
+            "obj.typeof / 2",
+        ] {
+            assert!(
+                looks_like_single_expression(script),
+                "{script:?} is a single division expression, not a regex"
+            );
+        }
+    }
+
+    /// AC: `unit_167_division_is_not_a_regex`.
+    ///
+    /// The risk the fix introduces: teaching the scanner that `/` can open a
+    /// regex must not make it swallow a division. Regex-vs-division is decided
+    /// by the previous significant character — `a` can end an expression, so
+    /// `a / b` is division; `return` cannot, so `return /re/` is a regex.
+    #[test]
+    fn unit_167_division_is_not_a_regex() {
+        // `a / b; c / d` must still split at its real `;`. If the first `/`
+        // were read as a regex it would run to the second `/`, swallowing the
+        // `;` with it.
+        let boundaries = top_level_statement_boundaries("a / b; c / d");
+        assert_eq!(
+            boundaries,
+            vec!["a / b;".len()],
+            "division must not be scanned as a regex literal"
+        );
+
+        for script in ["x / y", "(a + b) / 2", "arr[0] / 2", "'8' / 2", "8 / 2 / 2"] {
+            assert!(
+                top_level_statement_boundaries(script).is_empty(),
+                "{script:?} is a single division expression, got {:?}",
+                top_level_statement_boundaries(script)
+            );
+            assert!(
+                looks_like_single_expression(script),
+                "{script:?} must stay a single expression"
+            );
+        }
+
+        // A keyword before the slash flips the decision back to regex: the
+        // `;` inside these literals must not be reported as a boundary.
+        for script in ["return /a;b/", "typeof /a;b/", "x = 1 instanceof /a;b/"] {
+            assert!(
+                top_level_statement_boundaries(script).is_empty(),
+                "{script:?}: a `/` after a keyword opens a regex, got {:?}",
+                top_level_statement_boundaries(script)
+            );
+        }
+    }
+
+    /// Backslash escapes inside strings, templates and regex literals.
+    /// Measured on main: `eval --stringify 'const s = "a\";b"; s'` failed with
+    /// `"" string literal contains an unescaped line break` — the scanner
+    /// ended the string at the *escaped* quote, so the following `;` looked
+    /// top-level. The template-literal form failed the same way with
+    /// `expected expression, got ')'`.
+    #[test]
+    fn unit_167_backslash_escapes_do_not_end_a_literal() {
+        for script in [
+            r#"const s = "a\";b""#,
+            r"const s = 'a\';b'",
+            "const s = `a\\`;b`",
+            r#"const s = "a\\""#,
+        ] {
+            assert!(
+                top_level_statement_boundaries(script).is_empty(),
+                "{script:?}: the `;`/quote is escaped inside the literal, got {:?}",
+                top_level_statement_boundaries(script)
+            );
+        }
+
+        // The wrap that used to emit invalid JS now emits a valid IIFE.
+        let s = build_script(r#"const s = "a\";b"; s"#, true, false);
+        assert!(
+            s.contains(r#"const s = "a\";b";"#),
+            "the whole declaration must stay in the prefix, got: {s}"
+        );
+        assert!(
+            s.contains("return (\ns\n)"),
+            "expected `s` auto-returned: {s}"
+        );
+    }
+
+    /// An apostrophe inside a `//` comment used to open single-quote string
+    /// state and swallow the rest of the script, so `declares_at_top_level`
+    /// missed the `const` and `--stringify` produced
+    /// `expected expression, got keyword 'const'` (measured on main).
+    #[test]
+    fn unit_167_comment_contents_are_not_scanned() {
+        let script = "// don't touch\nconst x = 1; x";
+        assert!(
+            declares_at_top_level(script),
+            "the `const` after the comment must still be seen"
+        );
+        let s = build_script(script, true, false);
+        assert!(
+            s.contains("const x = 1;"),
+            "the declaration must reach the IIFE body: {s}"
+        );
+        assert!(
+            s.contains("return (\nx\n)"),
+            "expected `x` auto-returned: {s}"
+        );
+    }
+
+    /// The regex fix end to end: every wrap path must now emit valid JS for
+    /// `/a;b/.test("a;b")`. Firefox is the real judge (see
+    /// `live_167_regex_literal_survives_every_wrap`); this pins the generated
+    /// shape so a regression is caught without a browser.
+    #[test]
+    fn unit_167_regex_script_is_never_split() {
+        let script = r#"/a;b/.test("a;b")"#;
+        assert!(
+            looks_like_single_expression(script),
+            "a regex-literal call is one expression"
+        );
+
+        // --stringify: the script lands whole in the helper's argument slot,
+        // with no IIFE split around the regex.
+        let s = build_script(script, true, false);
+        assert!(
+            s.contains(&format!("}})({script});")),
+            "a single expression must go straight into the argument slot: {s}"
+        );
+        assert!(!s.contains("/a;\n"), "the regex must not be split: {s}");
+
+        // await: the wrap must be the single-expression `return (…)` form.
+        let awaited = format!("await Promise.resolve({script})");
+        let s = build_script(&awaited, false, true);
+        assert_eq!(
+            s,
+            format!("(async function(){{return (\n{awaited}\n);}})()")
+        );
+
+        // plain: declaration-free, so still byte-for-byte passthrough.
+        assert_eq!(build_script(script, false, true), script);
+    }
+
+    /// A block comment containing a line terminator is an ASI boundary
+    /// candidate in the same way the newline it hides would have been —
+    /// `1 /* x\ny */ 2` is two statements, not one. Skipping the comment
+    /// wholesale without this check would have made the scanner *lose* a
+    /// boundary it used to find.
+    #[test]
+    fn unit_167_multiline_block_comment_is_still_an_asi_boundary() {
+        let script = "const x = 1 /* note\nmore */ x";
+        let boundaries = top_level_statement_boundaries(script);
+        assert_eq!(
+            boundaries.len(),
+            1,
+            "expected exactly one boundary (no duplicates), got {boundaries:?}"
+        );
+        assert_eq!(
+            &script[boundaries[0]..],
+            "x",
+            "the boundary must land on the statement after the comment"
+        );
     }
 }
