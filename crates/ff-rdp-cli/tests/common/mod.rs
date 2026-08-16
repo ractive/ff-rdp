@@ -277,9 +277,7 @@ pub fn kill_pid(pid: u32) {
 /// Env var overriding [`kill_wait_timeout`] (iter-168), in **milliseconds**.
 pub const KILL_WAIT_TIMEOUT_ENV: &str = "FF_RDP_TEST_KILL_WAIT_TIMEOUT_MS";
 
-/// How long [`wait_for_pid_exit`] waits for a signalled process to actually
-/// disappear before giving up loudly (iter-168). Defaults to 5 s; override with
-/// [`KILL_WAIT_TIMEOUT_ENV`].
+/// Default bound for [`kill_pid_and_wait`], in milliseconds (iter-168).
 ///
 /// Sized from iteration-168 Theme A's measurements: on this project's macOS
 /// dev machine the post-`SIGKILL` window in which `kill(pid, 0)` still reports
@@ -290,6 +288,9 @@ pub const KILL_WAIT_TIMEOUT_ENV: &str = "FF_RDP_TEST_KILL_WAIT_TIMEOUT_MS";
 /// precondition failure this iteration exists to remove.
 pub const DEFAULT_KILL_WAIT_MS: u64 = 5_000;
 
+/// How long [`kill_pid_and_wait`] waits for a signalled process to actually
+/// disappear before giving up loudly. [`DEFAULT_KILL_WAIT_MS`] by default;
+/// override with [`KILL_WAIT_TIMEOUT_ENV`].
 pub fn kill_wait_timeout() -> Duration {
     kill_wait_timeout_from(std::env::var(KILL_WAIT_TIMEOUT_ENV).ok().as_deref())
 }
@@ -351,8 +352,7 @@ pub fn wait_for_pid_exit(pid: u32, timeout: Duration) -> Option<Duration> {
     wait_for_pid_exit_with(timeout, || pid_alive(pid))
 }
 
-/// `SIGKILL` `pid`, then wait (bounded) for it to actually go away — returning
-/// `true` if it did (iter-168).
+/// `SIGKILL` `pid`, then wait (bounded) for it to actually go away (iter-168).
 ///
 /// [`kill_pid`] only *signals*: it returns in ~20 µs while the kernel takes
 /// ~20 ms to finish tearing the process down, and the test process is not
@@ -368,16 +368,15 @@ pub fn wait_for_pid_exit(pid: u32, timeout: Duration) -> Option<Duration> {
 /// Never panics: this runs from `Drop`, including while an assertion is
 /// unwinding, and a panic during unwind aborts the process — turning one
 /// failing test into a suiteless run. The timeout path therefore *reports*
-/// (see [`report_kill_wait_timeout`]) and returns `false` rather than
-/// asserting.
-pub fn kill_pid_and_wait(pid: u32) -> bool {
+/// (see [`report_kill_wait_timeout`]) rather than asserting, and returns
+/// nothing: every caller is a `Drop` with no recovery available, so a status
+/// value here would be pure unread API surface.
+pub fn kill_pid_and_wait(pid: u32) {
     kill_pid(pid);
     let timeout = kill_wait_timeout();
-    if wait_for_pid_exit(pid, timeout).is_some() {
-        return true;
+    if wait_for_pid_exit(pid, timeout).is_none() {
+        report_kill_wait_timeout(pid, timeout);
     }
-    report_kill_wait_timeout(pid, timeout);
-    false
 }
 
 /// Loud diagnostic for [`kill_pid_and_wait`]'s give-up path (iter-168).
