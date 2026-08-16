@@ -25,7 +25,7 @@ dogfood_path: |
   # → eight `true`. On main, at load average ~18, at least one is false: the
   #   autostart handshake gives up and the caller silently falls back to a
   #   direct connection.
-status: planned
+status: in-review
 title: "Iteration 164: URL blocking does not block, and daemon autostart gives up under load"
 type: iteration
 tags:
@@ -74,6 +74,39 @@ block API changed shape (the test's own comment notes the blocked-flag field nam
 across Firefox versions", which is why it probes from inside the page rather than reading the
 flag).
 
+### What it actually was (2026-08-16, measured on Firefox 153)
+
+**The netmonitor block API did not change shape, and the suspicion above was wrong.** The
+patterns reach Firefox, Firefox accepts them, and Firefox enforces them. `throttle --block
+favicon` followed *directly* by the fetch probe rejects correctly. What breaks it is the
+`navigate` in between:
+
+| sequence | probe result |
+|---|---|
+| `--block favicon` → probe | `rejected` ✓ |
+| `--block favicon` → daemon `navigate` → probe | `resolved` ✗ |
+| `--block favicon` → `--no-daemon navigate` → probe | `rejected` ✓ |
+| `--block favicon` → in-page `location.href = …` → probe | `rejected` ✓ |
+| `--block favicon` → `reload` → probe | `rejected` ✓ |
+
+Only the *daemon-path* `navigate` clears it, and in-page navigation does not — so it is not
+navigation that resets the block-list, it is a frame `navigate` sends. That frame is
+`unwatchResources(["document-event", "network-event"])`, emitted by `ResourceCommand::unsubscribe`
+on teardown (`commands/navigate.rs`). Firefox keeps the block-list on the `NetworkObserver` owned
+by the `network-event` resource watcher — not on `NetworkParentActor` — so unwatching that
+resource destroys the observer, and the next `watchResources` builds a fresh one with an empty
+list. `ResourceCommand`'s ref-count is per CLI **process**, so it cannot know that a *different*
+process already asked the shared daemon connection to watch `network-event`.
+
+Fixed in the daemon rather than in `navigate`: `classify_client_resource_teardown`
+(`daemon/server.rs`) strips daemon-owned resource types from a proxied client's
+`unwatchResources`, exactly as iter-137 already drops client `unwatchTargets`. Both are
+`oneway: true`, so dropping them leaves no client waiting. Rationale and the rejected
+per-command alternative: DEC-037.
+
+The same mechanism silently discarded `setNetworkThrottling` too;
+`live_throttle_slow3g_slows_fetch` never caught it only because it navigates *before* throttling.
+
 ## Defect 2 — daemon autostart gives up under load, and the caller cannot tell
 
 ```
@@ -121,6 +154,19 @@ This is precisely what Theme D was for, and it found a real one on its first run
 
 ## Notes
 
+- **The `dogfood_path` above is wrong on one line and is left uncorrected on purpose.**
+  `ff-rdp --port 7201 throttle --status` is not a real invocation — `status` is a positional
+  PROFILE value (`throttle status`), and `--status` is rejected with
+  `tip: to pass '--status' as a value, use '-- --status'`. The reproduction was run with
+  `throttle status`, which does confirm intake (it reports the recorded profile, though not the
+  block-list: Firefox exposes no getter the client reads, so `blocked_urls` is only ever echoed
+  by the `throttle --block` call itself). Recorded here rather than edited into the path so the
+  next reader sees what was actually run.
+- Defect 2's product half was fixed by budget, not by redesign: the autostart registry wait was a
+  hard-coded 5 s and is now 20 s with an `FF_RDP_DAEMON_START_TIMEOUT_MS` override (DEC-038).
+  Waiting longer is free on the path that matters — `resolve_connection_target` already fast-fails
+  in 100 ms when Firefox's debug port is closed, so the budget is only spent when a daemon really
+  is starting.
 - Do **not** fix these by loosening the tests. `live_block_url_pattern`'s in-page probe is the
   strongest available observation of blocking and must stay; `live_141`'s daemon assertion is
   what made the second defect visible at all.

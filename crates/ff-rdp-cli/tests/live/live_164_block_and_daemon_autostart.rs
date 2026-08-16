@@ -21,6 +21,13 @@
 //! concurrent launch + `eval` pairs and requires all eight to end up on the
 //! daemon.
 //!
+//! daemon-parity: both tests here run **exclusively** through the daemon —
+//! that is the regime under test. Defect 1 only exists on the shared daemon
+//! connection (a `--no-daemon` command owns its own watcher, so it can neither
+//! set nor destroy another connection's block-list), and defect 2 is about the
+//! daemon autostart handshake, which `--no-daemon` skips by definition. The
+//! flag appears here only in prose.
+//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 \

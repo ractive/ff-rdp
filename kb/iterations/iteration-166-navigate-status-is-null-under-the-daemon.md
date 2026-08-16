@@ -1,0 +1,120 @@
+---
+branch: iter-166/navigate-status-null
+date: 2026-08-16
+depends_on: []
+dogfood_path: |
+  # `navigate` promises the main document's HTTP status (iter-138 Theme A).
+  # Measure whether it delivers one.
+  ff-rdp launch --headless --debug-port 7401
+  ff-rdp --port 7401 navigate https://example.com \
+      --jq '.results | {committed_url, ready_state, status}'
+  # → on main (2026-08-16, fresh daemon, Firefox 153):
+  #   {"committed_url":"https://example.com/","ready_state":"complete","status":null}
+  #   `status` must be 200. It is null on the FIRST navigate of a fresh daemon,
+  #   so this is not a leftover-state effect.
+
+  # The data is demonstrably reachable over the same connection:
+  ff-rdp --port 7401 navigate https://example.com --with-network --jq '.results.network | length'
+  # → 11 entries, including the main document. So the network-event resources
+  #   DO arrive; plain `navigate` is failing to correlate one of them with the
+  #   document it just committed.
+
+  # Same question without the daemon — unmeasured as of filing, settle it first:
+  ff-rdp --port 7401 --no-daemon navigate https://example.com \
+      --jq '.results | {committed_url, status}'
+  # → if direct mode reports 200, the defect is in the daemon's network-event
+  #   delivery to a plain (non---with-network) navigate; if it is null there
+  #   too, the defect is in `extract_document_status`'s matching.
+status: planned
+title: "Iteration 166: navigate reports status: null for a document it successfully loaded"
+type: iteration
+tags:
+  - iteration
+  - navigate
+  - daemon
+---
+
+# Iteration 166: `navigate` reports `status: null` for a document it successfully loaded
+
+Carry-over from [[iteration-164-two-failures-the-158-sweep-uncovered]], filed before that PR
+merges per CLAUDE.md's carry-over rule. Found while verifying iter-164's daemon fix did not
+regress `navigate`; **it is not caused by that iteration** — the same `status: null` appears on
+the *first* navigate of a fresh daemon, which is a code path iter-164's change cannot reach (no
+`unwatchResources` frame has been sent yet at that point).
+
+## The defect
+
+`navigate https://example.com` returns:
+
+```json
+{"committed_url": "https://example.com/", "ready_state": "complete", "status": null}
+```
+
+`ready_state: "complete"` and a correct `committed_url` prove the navigation succeeded, so
+`status: null` is not "the page failed" — it is "we did not find out". iter-138 Theme A added a
+`network-event` subscription to `wait_for_doc_complete` specifically so the main document's HTTP
+status could be reported, and `extract_document_status` (`commands/navigate.rs`) exists to pull
+it out. One of the two is not doing its job.
+
+This is the [[iteration-160-envelope-honesty]] class of problem in its milder form: the field is
+`null` rather than wrong, so nothing lies outright. But a caller scripting `navigate` cannot
+distinguish "the server returned no status" from "the CLI did not observe one", and `null` is
+the value it would also see for a genuine failure.
+
+## Why it was not caught
+
+No live test asserts `results.status` on a plain `navigate`. `live_138_navigation_truthfulness_2`
+and `live_130_navigation_truthfulness` assert `committed_url` and `ready_state`; the status field
+is only exercised through `--with-network`, which takes an entirely different code path (it
+drains the daemon buffer rather than correlating a streamed event).
+
+## Themes
+
+### Theme A — establish where it breaks, daemon vs direct
+
+Run the `dogfood_path` above, both routes, before touching anything. Three candidate causes, and
+the measurement distinguishes them:
+
+1. the daemon does not deliver `network-event` frames to a plain `navigate` (it manages
+   `network-event` centrally and only streams on request — `commands/navigate.rs` calls
+   `start_daemon_stream` for exactly this reason, so verify the stream is actually producing);
+2. the events arrive but `extract_document_status` fails to match the main document (URL
+   normalisation, redirect, or the event arriving after the wait returned);
+3. the status only lands on the `network-event` *update* packet, which the wait may not consume.
+
+Record which one it is in this plan before writing the fix.
+
+### Theme B — fix it, and make `null` mean something
+
+Whatever the cause, `status: null` must afterwards mean "the server sent no status", not "we
+did not look". If a status genuinely cannot be observed for some navigation shapes (e.g. a
+`data:` URL, or a bfcache restore with no network request at all), say so in the envelope
+rather than emitting a bare `null`.
+
+### Theme C — pin it with a live test on both routes
+
+The reason this survived is that no test asserted the field on the plain path. Fix that for the
+daemon route *and* the `--no-daemon` route — per CONTRIBUTING's daemon-parity rule, a feature
+tested on only one of the two is how iteration-129 shipped broken.
+
+## Acceptance Criteria [0/4]
+
+- [ ] live_166_navigate_reports_document_status: a live test asserts
+      `navigate https://example.com` returns `results.status == 200` over the **daemon** route
+- [ ] live_166_navigate_status_direct_parity: the same assertion over `--no-daemon`, so the two
+      routes cannot diverge again unnoticed
+- [ ] unit_166_status_null_is_distinguishable: `null` is reserved for "the navigation produced
+      no HTTP status" and a navigation whose status could not be observed says so explicitly
+      (a `status_reason`, or an equivalent named field) — asserted without Firefox
+- [ ] the cause is recorded in this plan (which of Theme A's three candidates it turned out to
+      be), before the fix, with the measurement that settled it
+
+## Notes
+
+- Do **not** fix this by dropping the `status` field. It is the only thing in `navigate`'s
+  default envelope that reports what the *server* said, as opposed to what the document ended up
+  looking like.
+- Related: [[iteration-164-two-failures-the-158-sweep-uncovered]] (where it was observed),
+  [[iteration-160-envelope-honesty]] (same class), and
+  [[analysis-2026-08-13-what-ff-rdp-became]] §3.2, whose `network` watcher regression is a
+  *different* subsystem defect and is not in this plan.
