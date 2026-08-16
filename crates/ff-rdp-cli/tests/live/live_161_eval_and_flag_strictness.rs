@@ -283,11 +283,22 @@ fn live_161_build_script_matrix_evaluates() {
     let ff = firefox_with_daemon("live_161_build_script_matrix_evaluates");
     let port = ff.port();
 
+    // Kept in sync with `MATRIX_SCRIPTS` in `commands/eval.rs`. iter-167
+    // appended the five inputs whose generated script did not parse on main
+    // (the Theme A table in `kb/iterations/iteration-167-*`); each declaring
+    // entry uses a distinct binding name because exactly one combination per
+    // script (`stringify=false, isolate=false`) is sent to Firefox verbatim
+    // and declares into the tab's real global.
     let scripts = [
         "document.title",
         "1 + 1",
         "const x = 1; x",
         "throw new Error('boom')",
+        r#"/a;b/.test("a;b")"#,
+        r#"const s167a = "x"; /a;b/.test("a;b")"#,
+        r#"const s167b = "a\";b"; s167b"#,
+        "const s167c = `a\\`;b`; s167c",
+        "// don't touch\nconst s167d = 1; s167d",
     ];
     for script in scripts {
         for stringify in [false, true] {
@@ -315,11 +326,21 @@ fn live_161_build_script_matrix_evaluates() {
                     "generated script did not parse for {script:?} \
                      (stringify={stringify}, isolate={isolate}): {text}"
                 );
-                assert!(
-                    !text.contains("expected expression"),
-                    "generated script did not parse for {script:?} \
-                     (stringify={stringify}, isolate={isolate}): {text}"
-                );
+                // iter-167: the three parse errors the appended scripts
+                // produced on main are not spelled "SyntaxError" in the
+                // envelope, so each is named explicitly.
+                for marker in [
+                    "expected expression",
+                    "unterminated regular expression",
+                    "unescaped line break",
+                ] {
+                    assert!(
+                        !text.contains(marker),
+                        "generated script did not parse for {script:?} \
+                         (stringify={stringify}, isolate={isolate}, \
+                         {marker}): {text}"
+                    );
+                }
                 if script.starts_with("throw ") {
                     // The user's own exception, not a wrapper defect.
                     assert!(

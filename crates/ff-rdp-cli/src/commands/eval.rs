@@ -1533,11 +1533,24 @@ mod tests {
     /// Firefox — the only JS parser this repo is allowed to use, since all
     /// code stays in Rust and there is no in-process parser to check "does
     /// this parse" against.
-    const MATRIX_SCRIPTS: [&str; 4] = [
+    ///
+    /// iter-167 appended the five inputs whose generated script did not parse
+    /// on main (the Theme A table in `kb/iterations/iteration-167-*`). Each
+    /// declaring entry uses a distinct binding name on purpose: exactly one
+    /// combination per script (`stringify=false, isolate=false`) is sent to
+    /// Firefox verbatim and therefore declares into the tab's real global, so
+    /// two scripts sharing a name would collide with `redeclaration of const`
+    /// and blame the wrap for it.
+    const MATRIX_SCRIPTS: [&str; 9] = [
         "document.title",
         "1 + 1",
         "const x = 1; x",
         "throw new Error('boom')",
+        r#"/a;b/.test("a;b")"#,
+        r#"const s167a = "x"; /a;b/.test("a;b")"#,
+        r#"const s167b = "a\";b"; s167b"#,
+        "const s167c = `a\\`;b`; s167c",
+        "// don't touch\nconst s167d = 1; s167d",
     ];
 
     /// Invariant: build_script MUST NOT emit a bare `eval(` for any
@@ -1957,7 +1970,10 @@ mod tests {
             s.contains(r#"const s = "a\";b";"#),
             "the whole declaration must stay in the prefix, got: {s}"
         );
-        assert!(s.contains("return (\ns\n)"), "expected `s` auto-returned: {s}");
+        assert!(
+            s.contains("return (\ns\n)"),
+            "expected `s` auto-returned: {s}"
+        );
     }
 
     /// An apostrophe inside a `//` comment used to open single-quote string
@@ -1976,7 +1992,10 @@ mod tests {
             s.contains("const x = 1;"),
             "the declaration must reach the IIFE body: {s}"
         );
-        assert!(s.contains("return (\nx\n)"), "expected `x` auto-returned: {s}");
+        assert!(
+            s.contains("return (\nx\n)"),
+            "expected `x` auto-returned: {s}"
+        );
     }
 
     /// The regex fix end to end: every wrap path must now emit valid JS for
@@ -2003,7 +2022,10 @@ mod tests {
         // await: the wrap must be the single-expression `return (…)` form.
         let awaited = format!("await Promise.resolve({script})");
         let s = build_script(&awaited, false, true);
-        assert_eq!(s, format!("(async function(){{return (\n{awaited}\n);}})()"));
+        assert_eq!(
+            s,
+            format!("(async function(){{return (\n{awaited}\n);}})()")
+        );
 
         // plain: declaration-free, so still byte-for-byte passthrough.
         assert_eq!(build_script(script, false, true), script);
