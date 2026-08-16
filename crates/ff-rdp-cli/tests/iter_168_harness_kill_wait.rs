@@ -213,7 +213,7 @@ fn unit_168_kill_wait_timeout_env_override() {
     );
     assert_eq!(
         kill_wait_timeout_from(Some("  30000 ")),
-        Duration::from_millis(30_000),
+        Duration::from_secs(30),
         "surrounding whitespace must not defeat the override"
     );
     for junk in ["", "0", "abc", "-1", "2.5"] {

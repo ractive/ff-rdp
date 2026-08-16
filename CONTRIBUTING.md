@@ -48,6 +48,23 @@ which dominates the iteration loop's wall-clock cost.
   bound so a harness timeout can never be mistaken for a product failure. The
   500 ms sleep is what made `live_141_text_empty_result_keeps_metadata` fail in
   iter-158's sweep at load average 18.6 — for a daemon that had started.
+- **Killing a live Firefox waits for it to actually die** (iter-168). `kill_pid`
+  only *signals*: it returns in ~20 µs while the kernel takes 16–27 ms to finish
+  tearing a headless Firefox down (measured over ten launches at load averages
+  6.5–54; the window did **not** vary with load). The test process is not
+  Firefox's parent, so it never reaps it either, and throughout that window
+  `kill(pid, 0)` — the probe behind `common::pid_alive`, behind `profiles
+  prune`'s liveness check, and behind `live_96_profile_cleanup`'s owner-PID
+  precondition — still reports the process as alive. `LiveFirefox::drop` and
+  `FirefoxGuard::drop` therefore call `common::kill_pid_and_wait`, which polls
+  for up to 5 s (`FF_RDP_TEST_KILL_WAIT_TIMEOUT_MS`, milliseconds) at a 1 ms
+  cadence and prints a loud diagnostic naming the pid and the owning test if the
+  process outlives the bound. **Do not use it on a direct child** of the test
+  process: a `SIGKILL`ed child stays a zombie — and `kill(pid, 0)` keeps
+  succeeding — until someone reaps it, so `Child::wait` is both correct and
+  strictly stronger there (`RawFirefox::drop` does exactly that). Anything in
+  `Drop` must also stay non-panicking: a panic while unwinding aborts the
+  process and turns one failing test into a suiteless run.
 - **Launch waits are bounded and env-overridable** (iter-113 Theme A). The
   live launchers wait for Firefox's remote-debugging port via a bound that
   defaults to 30 s and is overridable with `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`
