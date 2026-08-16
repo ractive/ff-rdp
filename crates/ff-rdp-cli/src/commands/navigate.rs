@@ -248,7 +248,11 @@ impl DocumentStatusTracker {
     ///
     /// Exactly one side of the pair is `Some`, which is what lets the envelope
     /// guarantee `status_reason == null` iff `status != null`.
-    fn resolve(&self, requested_url: &str, committed_url: &str) -> (Option<u16>, Option<StatusUnknown>) {
+    fn resolve(
+        &self,
+        requested_url: &str,
+        committed_url: &str,
+    ) -> (Option<u16>, Option<StatusUnknown>) {
         if !self.observing {
             return (None, Some(StatusUnknown::NotObserved));
         }
@@ -1127,38 +1131,66 @@ fn wait_for_doc_complete(
     // synchronized. Trusting `doc_status` the instant the events loop above
     // resolves made `navigate` report a false `status: null` on pages that
     // plainly did have one. Give it a short, bounded grace window to catch up
-    // before finalizing — well under the caller's overall timeout, and a
-    // no-op for callers that never subscribed to `NetworkEvent`
-    // (`back`/`forward`/`reload`, where `doc_status` can never become `Some`
-    // no matter how long we wait, so the loop below exits on its first check).
+    // before finalizing — well under the caller's overall timeout.
     //
     // iter-166: the resolution now runs against `commit_info.committed_url` as
     // well as `requested_url`, so it can only happen here — the committed URL
-    // does not exist until the loop above breaks.
+    // does not exist until the loop above breaks. Two consequences follow, and
+    // `status_reason` is what makes both expressible:
+    //
+    // * `NotObserved` — nobody subscribed, so no amount of waiting can produce
+    //   a status. Skipping the loop entirely (rather than spinning it out on a
+    //   condition that can never become true) takes 300 ms off every
+    //   `back`/`forward`/`reload`.
+    // * `NoStatusReported` — the document's request HAS been identified and it
+    //   committed, so its response line exists and the update carrying it is
+    //   merely late. That is worth waiting materially longer for; the 300 ms
+    //   of iter-138 made `live_138_navigate_reports_404` fail roughly one run
+    //   in three even on an idle machine, reporting `null` for a page whose
+    //   404 was already on the wire. The loop exits the instant the status
+    //   lands, so the longer budget costs nothing in the common case.
+    //
+    // `NoDocumentRequest` keeps the original short window: the `network-event`
+    // itself may still be in flight, but nothing guarantees one is coming.
+    // The budget is re-derived on every pass rather than fixed up front,
+    // because the reason itself changes as events arrive: a wait that starts
+    // out `NoDocumentRequest` becomes `NoStatusReported` the moment the
+    // document's `network-event` lands, and that is exactly when the longer
+    // budget should apply.
     let resolved = |t: &DocumentStatusTracker| t.resolve(requested_url, &commit_info.committed_url);
-    if resolved(&tracker).0.is_none() {
-        let grace_deadline = Instant::now() + Duration::from_millis(300);
-        while Instant::now() < grace_deadline {
-            while let Ok(arc) = rx.try_recv() {
-                let _ = extract_document_event(arc.as_ref(), &mut tracker);
+    let grace_start = Instant::now();
+    loop {
+        let (status, reason) = resolved(&tracker);
+        if status.is_some() {
+            break;
+        }
+        let budget_ms = match reason {
+            Some(StatusUnknown::NotObserved) => 0,
+            Some(StatusUnknown::NoStatusReported) => 2000,
+            _ => 300,
+        };
+        if grace_start.elapsed() >= Duration::from_millis(budget_ms) {
+            break;
+        }
+        while let Ok(arc) = rx.try_recv() {
+            let _ = extract_document_event(arc.as_ref(), &mut tracker);
+        }
+        if resolved(&tracker).0.is_some() {
+            break;
+        }
+        match transport.recv() {
+            Ok(msg) => {
+                bus_arc
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .dispatch_event(&msg);
             }
-            if resolved(&tracker).0.is_some() {
-                break;
-            }
-            match transport.recv() {
-                Ok(msg) => {
-                    bus_arc
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .dispatch_event(&msg);
-                }
-                Err(ff_rdp_core::ProtocolError::Timeout) => {}
-                // A transport error here is not the wait's problem to solve —
-                // the commit itself already succeeded — so just stop trying
-                // for the status and report whatever was captured (possibly
-                // still `None`).
-                Err(_) => break,
-            }
+            Err(ff_rdp_core::ProtocolError::Timeout) => {}
+            // A transport error here is not the wait's problem to solve —
+            // the commit itself already succeeded — so just stop trying
+            // for the status and report whatever was captured (possibly
+            // still `None`).
+            Err(_) => break,
         }
     }
     let (status, reason) = resolved(&tracker);
@@ -4143,7 +4175,9 @@ mod tests {
         updates: &[ff_rdp_core::NetworkResourceUpdate],
         url: &str,
     ) -> Option<u16> {
-        extract_document_status(resources, updates).resolve(url, url).0
+        extract_document_status(resources, updates)
+            .resolve(url, url)
+            .0
     }
 
     /// `unit_extract_document_status_matches_cause_and_url` — the AC-facing
@@ -4189,10 +4223,7 @@ mod tests {
             doc_status(&resources, &updates, "https://example.com/page"),
             None
         );
-        assert_eq!(
-            doc_status(&[], &[], "https://example.com/page"),
-            None
-        );
+        assert_eq!(doc_status(&[], &[], "https://example.com/page"), None);
     }
 
     /// `unit_extract_document_status_prefers_last_match_on_redirect` — a
@@ -4356,7 +4387,10 @@ mod tests {
     fn unit_166_canonical_doc_url_leaves_unparseable_input_alone() {
         assert_eq!(canonical_doc_url("not a url"), "not a url");
         assert_eq!(canonical_doc_url("about:blank"), "about:blank");
-        assert_eq!(canonical_doc_url("https://example.com"), "https://example.com/");
+        assert_eq!(
+            canonical_doc_url("https://example.com"),
+            "https://example.com/"
+        );
         assert_eq!(
             canonical_doc_url("https://example.com/a?b=1#c"),
             "https://example.com/a?b=1"

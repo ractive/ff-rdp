@@ -145,17 +145,53 @@ The reason this survived is that no test asserted the field on the plain path. F
 daemon route *and* the `--no-daemon` route — per CONTRIBUTING's daemon-parity rule, a feature
 tested on only one of the two is how iteration-129 shipped broken.
 
-## Acceptance Criteria [0/4]
+### Theme B — as built
 
-- [ ] live_166_navigate_reports_document_status: a live test asserts
+`CommitInfo` grew a `status_reason`, emitted as an always-present envelope key that is `null`
+exactly when `status` is not, and otherwise one of three strings:
+
+| `status_reason` | means |
+|---|---|
+| `not_observed` | this route never subscribed to `network-event`: `--no-wait`, or `back`/`forward`/`reload` |
+| `no_document_request` | the document committed without issuing a request of its own — `about:blank`, bfcache, same-document nav |
+| `no_status_reported` | the document's request was identified but Firefox never reported a status for it |
+
+All three were produced live before being asserted (daemon route, Firefox 153):
+
+```
+$ ff-rdp --port 7401 navigate https://example.com --no-wait --jq '.results|{status,status_reason}'
+{"status":null,"status_reason":"not_observed"}
+$ ff-rdp --port 7401 navigate about:blank --allow-unsafe-urls --jq '.results|{status,status_reason}'
+{"status":null,"status_reason":"no_document_request"}
+```
+
+`data:text/html,<h1>hi</h1>` turned out **not** to be a `no_document_request` case, contrary to
+the theme's own guess: Firefox synthesises a network-event for it and reports `status: 200`. The
+example in the theme text is wrong; `about:blank` is the real instance of that shape.
+
+### Theme C — as built
+
+`crates/ff-rdp-cli/tests/live/live_166_navigate_document_status.rs`, four tests: the two AC legs
+plus `live_166_navigate_status_reflects_the_server` (a local fixture server, so a 200 that is
+always 200 cannot pass — an unknown path must report the server's 404, on both routes) and
+`live_166_null_status_carries_a_reason`.
+
+## Acceptance Criteria [4/4]
+
+- [x] live_166_navigate_reports_document_status: a live test asserts
       `navigate https://example.com` returns `results.status == 200` over the **daemon** route
-- [ ] live_166_navigate_status_direct_parity: the same assertion over `--no-daemon`, so the two
-      routes cannot diverge again unnoticed
-- [ ] unit_166_status_null_is_distinguishable: `null` is reserved for "the navigation produced
+      [2026-08-16: passes; also covers the trailing-slash form and `--with-network`, both of which
+      reported `null` on main]
+- [x] live_166_navigate_status_direct_parity: the same assertion over `--no-daemon`, so the two
+      routes cannot diverge again unnoticed [2026-08-16: passes — and this leg was not a
+      formality, `--no-daemon` reported `null` on main exactly like the daemon route]
+- [x] unit_166_status_null_is_distinguishable: `null` is reserved for "the navigation produced
       no HTTP status" and a navigation whose status could not be observed says so explicitly
       (a `status_reason`, or an equivalent named field) — asserted without Firefox
-- [ ] the cause is recorded in this plan (which of Theme A's three candidates it turned out to
-      be), before the fix, with the measurement that settled it
+      [2026-08-16: `status_reason`, three variants, wire strings pinned in the same test]
+- [x] the cause is recorded in this plan (which of Theme A's three candidates it turned out to
+      be), before the fix, with the measurement that settled it [2026-08-16: candidate 2, recorded
+      in Theme A above and committed before the first line of the fix was written]
 
 ## Notes
 

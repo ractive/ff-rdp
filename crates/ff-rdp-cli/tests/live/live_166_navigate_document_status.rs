@@ -305,7 +305,11 @@ fn live_166_null_status_carries_a_reason() {
     let global = daemon_args(port);
 
     // A document that issues no network request of its own.
-    let results = navigate_ok(&global, &["about:blank", "--allow-unsafe-urls"], "about:blank");
+    let results = navigate_ok(
+        &global,
+        &["about:blank", "--allow-unsafe-urls"],
+        "about:blank",
+    );
     assert_eq!(
         results["status"],
         Value::Null,
