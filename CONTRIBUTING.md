@@ -40,6 +40,14 @@ which dominates the iteration loop's wall-clock cost.
   `#[test]` instead. Reach for it sparingly: an ungated live test's early
   return is counted by libtest as a pass, which is exactly the false-green
   `live-sweep` exists to eliminate (iter-155).
+- **Daemon waits are bounded and env-overridable too** (iter-164). The harness
+  helper `LiveFirefox::with_daemon` polls for the daemon's registry entry for up
+  to 30 s (`FF_RDP_TEST_DAEMON_READY_TIMEOUT_S`) instead of the fixed 500 ms
+  sleep it used through iter-163; the *product*'s own autostart wait is 20 s
+  (`FF_RDP_DAEMON_START_TIMEOUT_MS`). Keep the harness bound above the product
+  bound so a harness timeout can never be mistaken for a product failure. The
+  500 ms sleep is what made `live_141_text_empty_result_keeps_metadata` fail in
+  iter-158's sweep at load average 18.6 — for a daemon that had started.
 - **Launch waits are bounded and env-overridable** (iter-113 Theme A). The
   live launchers wait for Firefox's remote-debugging port via a bound that
   defaults to 30 s and is overridable with `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`

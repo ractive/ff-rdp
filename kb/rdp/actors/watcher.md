@@ -109,6 +109,23 @@ In ff-rdp these are now routed through `actor_send` (which writes the packet and
 
 Contrast with `walker.releaseNode` (`devtools/shared/specs/walker.js:127-133`): it is response-less in practice but is **not** declared `oneway: true` in the spec, so it correctly remains an `actor_request`. Do not conflate "no useful reply value" with "oneway" — only the spec annotation determines oneway status.
 
+### `unwatchResources` is destructive, not merely a subscription decrement (iter-164)
+
+`unwatchResources` destroys the parent-process resource watcher for the named
+types, along with any state that watcher owns. For `network-event` that state
+includes the `NetworkObserver` holding the session's URL block-list and
+throttling config — so a single `unwatchResources(["network-event"])` silently
+undoes `setBlockedUrls` / `setNetworkThrottling` (see [[network-parent]]).
+It is *not* ref-counted server-side: one client's unwatch wipes the
+subscription for every other user of that connection.
+
+Consequence for the daemon: the resource subscriptions belong to the daemon,
+which installs them at startup and keeps them for the session, so the daemon
+drops a proxied client's `unwatchResources` for daemon-owned types
+(`network-event`, `console-message`, `error-message`) exactly as it already
+drops `unwatchTargets`. Being `oneway`, dropping either frame leaves no client
+waiting. See DEC-037 in [[decision-log]].
+
 ## target-destroyed-form — registry invalidation (iter-74)
 
 When the watcher emits `target-destroyed-form`, ff-rdp calls `Registry::invalidate_target` on the target actor, which cascades to all dependent fronts (inspector, walker, console) registered with that `target_root`. This prevents stale-actor errors on subsequent operations.

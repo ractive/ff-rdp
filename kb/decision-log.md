@@ -878,3 +878,74 @@ The `--help` prose describing that path is accurate and stays.
 `crates/ff-rdp-cli/tests/live/live_61r_eval.rs`,
 `crates/ff-rdp-cli/tests/live/live_eval_csp.rs`,
 `crates/ff-rdp-cli/tests/e2e/eval.rs`, DEC-015, DEC-020.
+
+## DEC-037: resource subscriptions are daemon-owned; the daemon drops a client's `unwatchResources`
+
+**Decision** (iter-164, defect 1): the daemon inspects every proxied client
+frame and, for `unwatchResources`, strips the resource types it owns
+(`network-event`, `console-message`, `error-message`) — forwarding the
+remainder, or dropping the frame outright when nothing else is named. Symmetric
+with the `unwatchTargets` drop that iter-137 introduced for the same structural
+reason.
+
+**Why**: `throttle --block <pattern>` was accepted, echoed back in
+`results.blocked_urls`, and then not enforced. Intake was never the problem.
+Firefox keeps the URL block-list (and the throttling config) on the
+`NetworkObserver` owned by the `network-event` resource watcher, **not** on
+`NetworkParentActor`. `unwatchResources(["network-event"])` destroys that
+observer; the next `watchResources` builds a fresh one with an empty
+block-list, and nothing anywhere reports the loss.
+
+`navigate` subscribes to `[document-event, network-event]` through
+`ResourceCommand` and unsubscribes on teardown. `ResourceCommand`'s ref-count is
+per CLI **process**, so it cannot know that a *different* process
+(`ff-rdp throttle --block …`) already asked the shared daemon connection to
+watch `network-event`. Through the daemon that teardown landed on the shared
+connection and wiped the configuration a previous command had installed —
+`block → navigate → fetch` resolved, while `block → fetch` (no navigate)
+rejected correctly. Confirmed by connection scoping: a `--no-daemon` navigate,
+which has its own watcher, leaves a daemon-set block-list intact.
+
+**Rejected alternative**: teaching `navigate` not to unwatch `network-event`
+when `via_daemon`. It fixes exactly one command; any future command that routes
+`network-event` through `ResourceCommand` reintroduces the defect, and each one
+would have to remember. Ownership belongs where the subscription is installed —
+the daemon — so that is where it is enforced. Dropping the frame is safe:
+`unwatchResources` is `oneway: true` in `devtools/shared/specs/watcher.js`, so
+no client is left awaiting a reply, and the client's paired `watchResources` was
+itself a no-op on an already-watching connection.
+
+**Applies to**: `crates/ff-rdp-cli/src/daemon/server.rs`
+(`classify_client_resource_teardown`), `kb/rdp/actors/network-parent.md`,
+`crates/ff-rdp-cli/tests/live/live_164_block_and_daemon_autostart.rs`.
+
+## DEC-038: autostart waits 20 s for the registry, and a silent direct fallback is reported
+
+**Decision** (iter-164, defect 2): `resolve_connection_target` waits
+`FF_RDP_DAEMON_START_TIMEOUT_MS` (default 20 000 ms, was a hard-coded 5 s) for a
+freshly spawned daemon to write its registry entry; and when it still gives up,
+the `deferred_warning` that used to be discarded on the success path is
+remembered and surfaced as `meta.daemon_fallback` under `--verbose`.
+
+**Why**: iter-158's `live-sweep` ran at load average 18.6 and a daemon that
+needed longer than 5 s to connect to Firefox, run `listTabs`/`getWatcher` and
+install `watchResources` was abandoned — the caller then got a *direct*
+connection instead of the daemon it asked for. Waiting longer costs nothing on
+the failure path that matters, because `resolve_connection_target` already
+fast-fails in 100 ms when Firefox's debug port is unreachable; the budget is
+only ever spent when Firefox is up and a daemon really is starting.
+
+The reporting half is the same class of dishonesty iter-158 removed from the
+test harness. `ConnectionTarget::Direct::deferred_warning` is printed only if
+the direct fallback *also* fails — deliberate, since the message was benign
+noise on the happy path — but that left a caller who asked for daemon mode and
+quietly got direct mode with no signal at all: `meta.route` said `"direct"`
+without saying why, and the two registry-check error paths never reached
+`daemon_status::record_autostart_failed`, so they produced no envelope warning
+either. `--verbose` is the right gate: the route itself stays in default output,
+the diagnosis does not.
+
+**Applies to**: `crates/ff-rdp-cli/src/daemon/client.rs`,
+`crates/ff-rdp-cli/src/connection_meta.rs`,
+`crates/ff-rdp-cli/src/commands/connect_tab.rs`,
+`crates/ff-rdp-cli/tests/common/mod.rs`.
