@@ -2,7 +2,7 @@
 title: "Iteration 167: eval's statement scanner mis-splits regex literals and comments"
 type: iteration
 date: 2026-08-16
-status: in-review
+status: done
 branch: iter-167/eval-statement-scanner
 depends_on: []
 first_call_sites: []
