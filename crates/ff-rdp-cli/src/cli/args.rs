@@ -513,13 +513,19 @@ it evaluates in the tab's own global lexical environment — so from iter-93 to
 iter-164 a top-level `const`/`let`/`class` survived until navigation and
 re-running the same script failed with `redeclaration of const x`, even
 though this help claimed otherwise. iter-165 restores the promised contract:
-a multi-statement script now runs inside a per-call IIFE (the same wrap
---stringify and `await` scripts already used), so `const`/`let`/`class`
-declarations never leak across calls and repeating an `eval` is idempotent.
-`var`, `function` declarations and bare assignments inside such a script are
-function-scoped by that wrap too and likewise do not leak; to publish state
-deliberately, assign it to the page global (`window.mine = ...`), which is
-unaffected. A single expression declares nothing and is still sent verbatim.
+a script that DECLARES something at top level (`const`, `let`, `class`, `var`
+or `function`) now runs inside a per-call IIFE — the same wrap --stringify
+and `await` scripts already used — so declarations never leak across calls
+and repeating an `eval` is idempotent. `var` and `function` are
+function-scoped by that wrap too and likewise stop leaking. To publish state
+deliberately, assign it to the page global (`window.mine = ...` or a bare
+`mine = ...`); property writes are not declarations and are unaffected.
+
+A script that declares nothing cannot leak anything, so it is sent verbatim
+exactly as before — including a lone expression, and including statement
+forms like `if (1) { 2 }`, whose script completion value is preserved. A
+declaration nested inside a block, a loop head or a function body is already
+scoped there and does not trigger the wrap either.
 
 Pass --no-isolate to opt out and share ONE scope across calls: a plain
 synchronous script is then sent unwrapped, exactly as it was before iter-165,
@@ -542,13 +548,13 @@ expression (a declaration, a control-flow construct) does the script need
 its own explicit `return` to surface a value (it still runs either way — no
 SyntaxError).
 
-Since iter-165 that last-statement rule governs EVERY multi-statement script,
-not only `await` ones, because they all run in the per-call IIFE described
-above. Two consequences on the plain path: `eval 'return 1'` now returns 1
-instead of failing with `SyntaxError: illegal return statement`, and a script
-whose last statement is a bare control-flow construct (`eval 'if (1) { 2 }'`)
-now yields `undefined` instead of that construct's script completion value —
-add an explicit `return`, or pass --no-isolate, to get the old value back.
+Since iter-165 that same last-statement rule also governs a plain (non-await)
+script that declares something, because that script now runs in the per-call
+IIFE described above: `eval 'const x = 1; x'` returns 1, while a declaring
+script whose LAST statement is not a bare expression — `eval 'const x = 1; if
+(x) { 2 }'` — yields `undefined` rather than 2. Add an explicit `return`, or
+pass --no-isolate, to get the script completion value back. Declaration-free
+scripts are untouched by this rule; they never enter the wrap.
 
 Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}
 

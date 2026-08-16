@@ -130,9 +130,22 @@ Three conclusions the table forces:
 
 ## Theme B outcome — outcome (a): the code was wrong
 
-Implemented per [[decision-log]] **DEC-039**. The plain synchronous path now wraps any
-non-single-expression script in the same per-call IIFE, and `--no-isolate` becomes the real
-opt-out (its iter-52 meaning). Outcome (b) was rejected because nothing in the repo depends on
+Implemented per [[decision-log]] **DEC-039**. On the plain synchronous path, a script that
+**declares something at top level** (`const`, `let`, `class`, `var`, `function`) now runs inside
+the same per-call IIFE, and `--no-isolate` becomes the real opt-out (its iter-52 meaning).
+
+The trigger is a top-level declaration, not "anything that is not a single expression" (which is
+what `--stringify` uses). A script that declares nothing cannot leak, so wrapping it would buy no
+isolation while costing its script completion value — `eval 'if (1) { 2 }'` would start returning
+`undefined` instead of `2` — and would expose it to the char scanner's known blind spots
+(`top_level_statement_boundaries` does not understand regex literals: `/a;b/.test('a;b')` reads as
+two statements to it). Verified live after the fix: `if (1) { 2 }` → 2, `for (let i = 0; i < 3;
+i++) { i }` → 2, `/a;b/.test('a;b')` → true, `if (1) { const b1 = 2 }; 3` → 3 twice with
+`typeof b1` → `"undefined"`. The one accepted behaviour change is that a *declaring* script whose
+last statement is not a bare expression (`const d = 1; if (d) { 2 }`) now yields `undefined`;
+`return`, or `--no-isolate`, restores it.
+
+Outcome (b) was rejected because nothing in the repo depends on
 lexical bindings surviving between calls — the cross-call state that exists (`window.__hits`,
 `window.__ready`, the `js_helpers` settle probes) is explicit page-global *property* assignment,
 which the wrap does not touch — and because (b) would have documented a contract that is

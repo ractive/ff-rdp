@@ -90,13 +90,22 @@ pub(crate) fn load_script(
 /// time with `redeclaration of const x`, while `eval --help` promised the
 /// opposite (measured 2026-08-16, see `kb/iterations/iteration-165-*`).
 ///
-/// iter-165 restores the promised contract by wrapping any non-single-
-/// expression script in the same value-producing IIFE
-/// [`wrap_statements_in_iife`] that `--stringify` (iter-161) and the
-/// top-level-`await` path (iter-132) already used — those two paths were
-/// already isolated, so the plain synchronous path was the sole exception.
-/// A single expression cannot declare anything, so it is still sent verbatim
-/// and its completion value is unchanged.
+/// iter-165 restores the promised contract by routing the plain path through
+/// the same value-producing IIFE [`wrap_statements_in_iife`] that
+/// `--stringify` (iter-161) and the top-level-`await` path (iter-132) already
+/// used — those two paths were already isolated, so the plain synchronous
+/// path was the sole exception.
+///
+/// The wrap is applied only when the script actually declares something at
+/// top level ([`declares_at_top_level`]), not to every non-single-expression
+/// script. A script that declares nothing cannot leak anything, so wrapping
+/// it would buy no isolation while changing its completion value: a function
+/// body has no script-completion-value semantics, so `eval 'if (1) { 2 }'`
+/// would start returning `undefined` instead of `2`. Restricting the trigger
+/// keeps every declaration-free script byte-for-byte on its pre-165 path, and
+/// confines the wrap's known blast radius — [`top_level_statement_boundaries`]
+/// is a char scanner, not a JS tokenizer, and does not understand regex
+/// literals or comments — to scripts that also contain a declaration.
 ///
 /// `--no-isolate` stops being a no-op and becomes the documented opt-out it
 /// was originally introduced as (iter-52): with it, the plain synchronous
@@ -172,7 +181,7 @@ pub(crate) fn build_script(user_script: &str, stringify: bool, isolate: bool) ->
             wrap_stringify(user_script, STRINGIFY_HELPER, has_await),
             true,
         )
-    } else if isolate && !has_await && !looks_like_single_expression(user_script) {
+    } else if isolate && !has_await && declares_at_top_level(user_script) {
         // iter-165: the plain synchronous path is the only one that used to
         // reach `Debugger.evalInGlobal` unwrapped, so it was the only one
         // whose `const`/`let`/`class` declarations survived into the next
@@ -422,6 +431,47 @@ fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
 /// [`top_level_statement_boundaries`].
 fn looks_like_multi_statement(body: &str) -> bool {
     !top_level_statement_boundaries(body).is_empty()
+}
+
+/// Declaration forms that install a binding in the *target global* when the
+/// script is evaluated at top level: `const`/`let`/`class` go into the global
+/// lexical environment, `var`/`function` onto the global object. These are
+/// exactly the forms that survived from one `ff-rdp eval` to the next before
+/// iter-165.
+///
+/// A declaration nested inside a block, loop head or function body is already
+/// scoped to that construct and cannot leak, which is why the check below
+/// only looks at the start of each *top-level* statement.
+const DECLARATION_LEADING_KEYWORDS: &[&str] = &["var ", "let ", "const ", "class ", "function"];
+
+/// Whether `script` declares something at top level that would otherwise be
+/// installed in the target global (see [`DECLARATION_LEADING_KEYWORDS`]).
+///
+/// This is the iter-165 wrap trigger. It reuses
+/// [`top_level_statement_boundaries`] to find where each top-level statement
+/// begins and matches [`body_starts_with_keyword`] against each — so
+/// `const x = 1; x` and `foo(); let y = 2; y` both qualify, while
+/// `if (1) { const z = 2 }` (block-scoped, cannot leak) and
+/// `for (const a of xs) {}` (loop-scoped) do not.
+///
+/// Best-effort in the same way as everything else built on that scanner, and
+/// it fails *safe*: a missed declaration leaves the script on its pre-165
+/// path (it leaks, as it did before), and a spurious hit only costs the wrap,
+/// whose completion-value rule is documented in `eval --help`.
+fn declares_at_top_level(script: &str) -> bool {
+    let body = script.trim();
+    if body.is_empty() {
+        return false;
+    }
+    std::iter::once(0)
+        .chain(top_level_statement_boundaries(body))
+        .filter(|&start| start <= body.len())
+        .any(|start| {
+            let statement = body[start..].trim_start();
+            DECLARATION_LEADING_KEYWORDS
+                .iter()
+                .any(|kw| body_starts_with_keyword(statement, kw))
+        })
 }
 
 /// Whether `body` starts with the statement-leading keyword `kw`, at a real
@@ -954,6 +1004,72 @@ mod tests {
         assert!(!s.contains("eval("), "must not contain eval(): {s}");
     }
 
+    /// The iter-165 wrap trigger. Only a *top-level* declaration can escape
+    /// into the target global; anything else keeps its pre-165 path.
+    #[test]
+    fn unit_165_declares_at_top_level_matches_only_leaking_forms() {
+        for script in [
+            "const x = 1; x",
+            "let y = 1; y",
+            "var v = 1; v",
+            "class C {}; 1",
+            "function f(){return 1}; f()",
+            "foo(); const later = 1; later",
+            "const only = 1",
+            "const asi = 1\nasi",
+        ] {
+            assert!(
+                declares_at_top_level(script),
+                "{script:?} declares at top level and must trigger the wrap"
+            );
+        }
+        for script in [
+            "document.title",
+            "1 + 1",
+            "throw new Error('boom')",
+            "if (1) { 2 }",
+            // Block- and loop-scoped declarations cannot reach the global.
+            "if (1) { const z = 2 }",
+            "for (const a of [1]) { a }",
+            "(function(){ const inner = 1; return inner })()",
+            // Identifiers that merely start with a keyword's letters.
+            "constant()",
+            "letters.length",
+            "functionCall()",
+            "",
+            "   ",
+        ] {
+            assert!(
+                !declares_at_top_level(script),
+                "{script:?} declares nothing at top level and must stay on its \
+                 pre-165 path"
+            );
+        }
+    }
+
+    /// A declaration-free script must come out of `build_script` byte-for-byte
+    /// unchanged, whatever its statement shape. This is the guard on the
+    /// iter-165 wrap's blast radius: [`top_level_statement_boundaries`] is a
+    /// char scanner that does not understand regex literals or comments, and
+    /// restricting the trigger to declaring scripts keeps its known gaps out
+    /// of every script that has nothing to isolate.
+    #[test]
+    fn unit_165_declaration_free_scripts_are_never_rewritten() {
+        for script in [
+            "if (1) { 2 }",
+            "for (let i = 0; i < 3; i++) { i }",
+            "document.title\n// trailing comment",
+            "/a;b/.test('a;b')",
+            "throw new Error('boom')",
+        ] {
+            assert_eq!(
+                build_script(script, false, true),
+                script,
+                "{script:?} declares nothing and must be sent verbatim"
+            );
+        }
+    }
+
     // ── iter-165: per-call scope on the plain synchronous path ───────────────
 
     /// The defect this iteration fixes. Before iter-165 the plain path sent
@@ -963,7 +1079,7 @@ mod tests {
     /// keeps the binding call-local, and the trailing bare expression is
     /// still auto-returned so the value is unchanged.
     #[test]
-    fn unit_165_plain_multi_statement_is_wrapped_per_call() {
+    fn unit_165_plain_declaring_script_is_wrapped_per_call() {
         let s = build_script("const x = 1; x", false, true);
         assert_eq!(s, "(function(){\nconst x = 1;\nreturn (\nx\n);})()");
         assert!(!s.contains("eval("), "must not contain eval(): {s}");
@@ -1082,15 +1198,27 @@ mod tests {
              scope, which it does not — the isolation is ff-rdp's wrap: {help}"
         );
 
-        // Claim: a single expression is sent verbatim.
+        // Claim: a script that declares nothing is sent verbatim.
         assert!(
-            help.contains("A single expression declares nothing and is still sent verbatim"),
-            "help must document the single-expression passthrough: {help}"
+            help.contains(
+                "A script that declares nothing cannot leak anything, so it is sent verbatim"
+            ),
+            "help must document the declaration-free passthrough: {help}"
         );
         assert_eq!(
             build_script("document.title", false, true),
             "document.title"
         );
+        assert_eq!(build_script("if (1) { 2 }", false, true), "if (1) { 2 }");
+
+        // Claim: the wrap trigger is a top-level declaration, and the help
+        // names every form it covers.
+        for kw in ["`const`", "`let`", "`class`", "`var`", "`function`"] {
+            assert!(
+                help.contains(kw),
+                "help must name {kw} as a declaration form the wrap covers: {help}"
+            );
+        }
     }
 
     #[test]

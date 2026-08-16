@@ -953,15 +953,32 @@ the diagnosis does not.
 ## DEC-039: `eval` gives every call its own scope; `--no-isolate` becomes the real opt-out
 
 **Decision** (iter-165): the code was wrong, not the help text. `eval`'s plain
-synchronous path now wraps any non-single-expression script in the same
-per-call, value-producing IIFE that `--stringify` (iter-161) and top-level
-`await` (iter-132) already used, so top-level `const`/`let`/`class` declarations
-never leak into the next `eval` and repeating a script against one tab is
-idempotent. `--no-isolate` stops being a no-op and becomes the documented
-opt-out: with it, a plain synchronous script is sent to `Debugger.evalInGlobal`
-verbatim again, so declarations accumulate in the tab's global lexical
-environment. It cannot un-wrap `--stringify` or `await` scripts — those wraps
-are a syntactic necessity, not an isolation choice.
+synchronous path now routes a script that **declares something at top level**
+(`const`, `let`, `class`, `var`, `function`) through the same per-call,
+value-producing IIFE that `--stringify` (iter-161) and top-level `await`
+(iter-132) already used, so those declarations never leak into the next `eval`
+and repeating a script against one tab is idempotent. `--no-isolate` stops
+being a no-op and becomes the documented opt-out: with it, a plain synchronous
+script is sent to `Debugger.evalInGlobal` verbatim again, so declarations
+accumulate in the tab's global lexical environment. It cannot un-wrap
+`--stringify` or `await` scripts — those wraps are a syntactic necessity, not
+an isolation choice.
+
+**Why a declaration trigger rather than "wrap everything that is not a single
+expression"**, which is what `--stringify` does: a script that declares nothing
+cannot leak anything, so wrapping it buys no isolation while changing its
+result — a function body has no script-completion-value semantics, so
+`eval 'if (1) { 2 }'` would start returning `undefined` instead of `2`. The
+narrower trigger also confines the wrap's known weak spot.
+`top_level_statement_boundaries` is a char scanner, not a JS tokenizer: it does
+not understand regex literals, so `eval '/a;b/.test("a;b")'` looks like two
+statements to it and, if wrapped, becomes a SyntaxError (that input is in fact
+already broken under `--stringify` on `main`). Requiring a declaration keyword
+at a statement start means a scanner misfire can only bite a script that also
+declares — and `unit_165_declaration_free_scripts_are_never_rewritten` pins the
+regex and comment cases as byte-for-byte passthrough. Paying an inconsistency
+with `--stringify`'s trigger to avoid regressing working scripts is the right
+side of that trade; the *contract* both paths state is identical.
 
 **Why**: five pieces of evidence, all pointing the same way.
 
@@ -1001,15 +1018,15 @@ scope on the plain path. The only argument for (b) was that cross-call
 persistence might be load-bearing for interactive use; evidence 4 says it is
 not, and `--no-isolate` preserves it for anyone who wants it.
 
-**Cost, accepted and documented**: the plain path's completion value changes in
-two narrow ways, both now stated in `eval --help` and pinned by
-`live_165_wrap_completion_value_consequences`. `eval 'return 1'` now returns 1
-instead of `SyntaxError: illegal return statement` (an improvement). A script
-whose last statement is a bare control-flow construct — `eval 'if (1) { 2 }'` —
-now yields `undefined` instead of `2`; the fix is an explicit `return`, or
+**Cost, accepted and documented**: exactly one behaviour change, confined to
+declaring scripts, stated in `eval --help` and pinned by
+`live_165_wrap_trigger_is_confined_to_declaring_scripts` — a declaring script
+whose LAST statement is not a bare expression (`eval 'const x = 1; if (x) { 2
+}'`) now yields `undefined` instead of `2`; the fix is an explicit `return`, or
 `--no-isolate`. This is the same trade iter-161 already made for `--stringify`.
-Callers already passing `--no-isolate` see no change whatsoever, because the
-flag's pre-165 behaviour was identical to the pre-165 default.
+Every declaration-free script is byte-for-byte unchanged, and callers already
+passing `--no-isolate` see no change whatsoever, because the flag's pre-165
+behaviour was identical to the pre-165 default.
 
 **Applies to**: `crates/ff-rdp-cli/src/commands/eval.rs`,
 `crates/ff-rdp-cli/src/cli/args.rs`,

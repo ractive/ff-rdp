@@ -266,42 +266,65 @@ fn live_165_scope_behaviour_table() {
 // The two documented consequences of the wrap
 // ---------------------------------------------------------------------------
 
-/// The plain path's completion-value semantics change in exactly two ways,
-/// both now stated in `eval --help`. Pinning them here stops the help from
-/// drifting back into a claim Firefox does not honour.
+/// The iter-165 wrap fires only for a script that declares something at top
+/// level, so its completion-value rule reaches exactly those scripts and
+/// nothing else. Both halves are stated in `eval --help`; pinning them here
+/// stops the help from drifting back into a claim Firefox does not honour.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_165_wrap_completion_value_consequences() {
+fn live_165_wrap_trigger_is_confined_to_declaring_scripts() {
     if !live_tests_enabled() {
-        eprintln!("live_165_wrap_completion_value_consequences: set FF_RDP_LIVE_TESTS=1");
+        eprintln!(
+            "live_165_wrap_trigger_is_confined_to_declaring_scripts: set FF_RDP_LIVE_TESTS=1"
+        );
         return;
     }
-    let ff = firefox_with_daemon("live_165_wrap_completion_value_consequences");
+    let ff = firefox_with_daemon("live_165_wrap_trigger_is_confined_to_declaring_scripts");
     let port = ff.port();
 
-    // (1) `return` at top level used to be `SyntaxError: illegal return
-    //     statement`; inside the per-call IIFE it is legal and returns.
-    assert_eq!(
-        eval_ok(port, "return 1", &[]),
-        Value::from(1),
-        "an explicit top-level return must now surface its value"
-    );
-
-    // (2) A trailing control-flow construct no longer yields its script
-    //     completion value — the help says to add an explicit `return` or to
-    //     pass --no-isolate.
+    // A declaration-free statement script keeps its script completion value —
+    // it never enters the wrap, so iter-165 cannot have changed it. This is
+    // the assertion that would have caught the wider trigger considered and
+    // rejected while implementing iter-165.
     assert_eq!(
         eval_ok(port, "if (1) { 2 }", &[]),
-        serde_json::json!({"type": "undefined"}),
-        "a trailing control-flow construct has no auto-returnable value"
+        Value::from(2),
+        "a script that declares nothing must keep its completion value"
     );
     assert_eq!(
-        eval_ok(port, "if (1) { return 2 }", &[]),
+        eval_ok(port, "for (let i = 0; i < 3; i++) { i }", &[]),
+        Value::from(2),
+        "a loop-scoped `let` must not trigger the wrap"
+    );
+    // …and a block-scoped declaration is already isolated by JS itself, so it
+    // does not trigger the wrap and does not leak either.
+    assert_eq!(
+        eval_ok(port, "if (1) { const b1 = 2 }; 3", &[]),
+        Value::from(3)
+    );
+    assert_eq!(
+        eval_ok(port, "if (1) { const b1 = 2 }; 3", &[]),
+        Value::from(3)
+    );
+    assert_eq!(eval_ok(port, "typeof b1", &[]), Value::from("undefined"));
+
+    // A *declaring* script does enter the wrap, so the documented
+    // last-statement rule applies to it: a trailing bare expression is
+    // auto-returned, a trailing control-flow construct is not.
+    assert_eq!(eval_ok(port, "const d1 = 1; d1", &[]), Value::from(1));
+    assert_eq!(
+        eval_ok(port, "const d2 = 1; if (d2) { 2 }", &[]),
+        serde_json::json!({"type": "undefined"}),
+        "a declaring script whose last statement is control flow has no \
+         auto-returnable value"
+    );
+    assert_eq!(
+        eval_ok(port, "const d3 = 1; if (d3) { return 2 }", &[]),
         Value::from(2),
         "the documented workaround — an explicit return — must work"
     );
     assert_eq!(
-        eval_ok(port, "if (1) { 2 }", &["--no-isolate"]),
+        eval_ok(port, "const d4 = 1; if (d4) { 2 }", &["--no-isolate"]),
         Value::from(2),
         "the other documented workaround — --no-isolate — must restore the \
          script completion value"
