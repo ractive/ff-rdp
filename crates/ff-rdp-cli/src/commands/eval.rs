@@ -327,6 +327,130 @@ fn is_continuation_start_char(c: char) -> bool {
     )
 }
 
+/// Keywords after which a `/` can only begin a regular-expression literal,
+/// never a division (iter-167).
+///
+/// [`slash_starts_regex`] decides regex-vs-division from the previous
+/// significant character, and every one of these keywords ends in an
+/// identifier character — so without this list `return /a;b/` would look
+/// exactly like `count / 2` and the regex would be scanned as a division.
+/// Keywords that are *statements* in their own right (`return`, `throw`,
+/// `case`, `do`, `else`) and the unary operators (`typeof`, `void`,
+/// `delete`, `new`, `await`, `yield`) are the whole set that can legally be
+/// followed by a regex literal; `instanceof`/`in`/`of` are binary operators
+/// whose right operand may also be one.
+const KEYWORDS_BEFORE_REGEX: &[&str] = &[
+    "return",
+    "typeof",
+    "instanceof",
+    "in",
+    "of",
+    "new",
+    "delete",
+    "void",
+    "throw",
+    "case",
+    "do",
+    "else",
+    "yield",
+    "await",
+];
+
+/// Whether the `/` whose preceding significant character is `prev_significant`
+/// (at `prev_idx` in `chars`) starts a regular-expression literal rather than
+/// a division operator (iter-167 Theme B).
+///
+/// This is the standard lexer heuristic and needs exactly one character of
+/// context, which [`top_level_statement_boundaries`] already carries: a `/`
+/// is division only if the token before it can end an expression — a
+/// closing bracket, a string terminator, or an identifier/number that is not
+/// one of [`KEYWORDS_BEFORE_REGEX`]. At the very start of a script, or after
+/// an operator/`(`/`,`/`;`/`=`, nothing is there to divide, so the `/` opens
+/// a regex.
+///
+/// The one genuinely ambiguous case is `}`, which ends both an object
+/// literal (`{}` / 2 — division) and a block (`if (x) {} /re/` — regex).
+/// Real tokenizers need parser feedback to tell those apart; this one calls
+/// it division, which fails *safe*: a mis-scanned regex leaves extra
+/// boundaries, and extra boundaries only ever cost a wrap, never a crash.
+fn slash_starts_regex(
+    chars: &[(usize, char)],
+    prev_significant: Option<char>,
+    prev_idx: Option<usize>,
+) -> bool {
+    let Some(prev) = prev_significant else {
+        // Nothing before it: a leading `/` cannot be a division.
+        return true;
+    };
+    if !is_statement_end_char(prev) {
+        return true;
+    }
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    if !is_ident(prev) {
+        // `)`, `]`, `}` or a closing quote — treat as division (see the `}`
+        // note above).
+        return false;
+    }
+    let Some(end) = prev_idx else {
+        return false;
+    };
+    let mut start = end;
+    while start > 0 && is_ident(chars[start - 1].1) {
+        start -= 1;
+    }
+    let word: String = chars[start..=end].iter().map(|&(_, c)| c).collect();
+    KEYWORDS_BEFORE_REGEX.contains(&word.as_str())
+}
+
+/// Index in `chars` of the `/` that closes the regular-expression literal
+/// opening at `start`, or `None` if there is no valid one (iter-167).
+///
+/// Handles backslash escapes (`/a\/b/`) and character classes (`/[/]/`, where
+/// the `/` is literal). A regex literal may not contain an unescaped line
+/// terminator, so a newline means this was not a regex after all and the
+/// caller must fall back to treating the `/` as division — which is the
+/// fail-safe direction: the scan is abandoned rather than swallowing the rest
+/// of the script.
+fn scan_regex_literal(chars: &[(usize, char)], start: usize) -> Option<usize> {
+    let mut i = start + 1;
+    let mut in_class = false;
+    while i < chars.len() {
+        match chars[i].1 {
+            '\\' => i += 1,
+            '\n' => return None,
+            '[' => in_class = true,
+            ']' => in_class = false,
+            '/' if !in_class => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The byte offset of the first non-whitespace character at or after `from`,
+/// if the break before it is an Automatic Semicolon Insertion boundary —
+/// [`is_statement_end_char`] before it, NOT [`is_continuation_start_char`]
+/// after.
+///
+/// Split out of [`top_level_statement_boundaries`] in iter-167 because a
+/// block comment containing a line terminator is an ASI boundary candidate in
+/// exactly the same way the newline it hides would have been, so the same
+/// check now runs from two places.
+fn asi_boundary_after(
+    chars: &[(usize, char)],
+    from: usize,
+    prev_significant: Option<char>,
+) -> Option<usize> {
+    let mut j = from;
+    while j < chars.len() && chars[j].1.is_whitespace() {
+        j += 1;
+    }
+    let prev = prev_significant?;
+    let &(next_byte, next) = chars.get(j)?;
+    (is_statement_end_char(prev) && !is_continuation_start_char(next)).then_some(next_byte)
+}
+
 /// Scan `body` (best-effort — see [`looks_like_single_expression`]'s doc
 /// comment for the acknowledged gaps) and return, in order, the byte
 /// offsets where a new top-level JS statement appears to begin: one past
@@ -349,6 +473,36 @@ fn is_continuation_start_char(c: char) -> bool {
 /// newline *inside* a string is never mistaken for a separator — the old
 /// `;`-only check did not do this either) and `(`/`[`/`{` nesting depth (a
 /// multi-line object/array literal or argument list is never split).
+///
+/// # iter-167: regex literals, comments and escapes
+///
+/// Until iter-167 the scanner tracked *only* quotes and depth, and iter-165
+/// narrowed its own wrap trigger to work around that. Measured on main
+/// (2026-08-16, `kb/iterations/iteration-167-*`), five inputs emitted invalid
+/// JavaScript, e.g. `eval --stringify '/a;b/.test("a;b")'` →
+/// `unterminated regular expression literal`, because the `;` inside the
+/// regex was reported as a top-level boundary and the wrap split the script
+/// into `/a;` and `b/.test("a;b")`. Now also tracked:
+///
+/// - **Regex literals**, opened by a `/` that [`slash_starts_regex`] judges
+///   cannot be a division and closed by [`scan_regex_literal`].
+/// - **`//` line comments**, skipped up to but *not including* their
+///   terminating newline, which is still an ASI boundary candidate; and
+///   **`/* */` block comments**, skipped whole, with an
+///   [`asi_boundary_after`] check when the comment spans a line terminator.
+///   Before this, an apostrophe in a comment (`// don't`) opened string state
+///   and swallowed the rest of the script.
+/// - **Backslash escapes** inside single-quoted, double-quoted and template
+///   strings as well as regex literals, so `"a\";b"` no longer ends its
+///   string at the escaped quote.
+///
+/// Still not a JS tokenizer, and deliberately so (all code stays in Rust and
+/// this repo has no JS parser dependency). Known remaining gaps: `${…}`
+/// interpolation inside a template literal is skipped as opaque text rather
+/// than re-entered, and a `/` after `}` is always read as division because
+/// telling an object literal from a block needs parser feedback. Both fail
+/// safe — the worst outcome is a boundary the scanner should not have
+/// reported, which costs a wrap, never a crash.
 fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
     #[derive(Clone, Copy, PartialEq)]
     enum Str {
@@ -358,42 +512,99 @@ fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
         Template,
     }
 
-    let mut boundaries = Vec::new();
+    let mut boundaries: Vec<usize> = Vec::new();
     let mut state = Str::None;
     let mut depth: i32 = 0;
     let mut prev_significant: Option<char> = None;
+    let mut prev_significant_idx: Option<usize> = None;
     let chars: Vec<(usize, char)> = body.char_indices().collect();
     let n = chars.len();
     let mut i = 0;
 
+    // Two paths can now propose the same offset (a block comment's ASI check
+    // and a later newline's), and a repeated boundary would make
+    // `wrap_statements_in_iife` split on an empty statement.
+    let mut push = |boundaries: &mut Vec<usize>, at: usize| {
+        if boundaries.last() != Some(&at) {
+            boundaries.push(at);
+        }
+    };
+
     while i < n {
         let (byte_idx, c) = chars[i];
-        match state {
-            Str::Single => {
-                if c == '\'' {
-                    state = Str::None;
-                    prev_significant = Some(c);
-                }
-                i += 1;
+
+        // --- inside a string/template literal ---------------------------------
+        if state != Str::None {
+            // iter-167: a backslash escapes the next character, so `"a\";b"`
+            // stays one string instead of ending at the escaped quote.
+            if c == '\\' {
+                i += 2;
                 continue;
             }
-            Str::Double => {
-                if c == '"' {
-                    state = Str::None;
-                    prev_significant = Some(c);
+            let closer = match state {
+                Str::Single => '\'',
+                Str::Double => '"',
+                _ => '`',
+            };
+            if c == closer {
+                state = Str::None;
+                prev_significant = Some(c);
+                prev_significant_idx = Some(i);
+            }
+            i += 1;
+            continue;
+        }
+
+        // --- comments and regex literals (iter-167) ---------------------------
+        if c == '/' {
+            let next = chars.get(i + 1).map(|&(_, c)| c);
+            if next == Some('/') {
+                // Stop *at* the newline so the ASI arm below still sees it.
+                let mut j = i + 2;
+                while j < n && chars[j].1 != '\n' {
+                    j += 1;
                 }
-                i += 1;
+                i = j;
                 continue;
             }
-            Str::Template => {
-                if c == '`' {
-                    state = Str::None;
-                    prev_significant = Some(c);
+            if next == Some('*') {
+                let mut j = i + 2;
+                let mut spans_line = false;
+                let mut closed = false;
+                while j < n {
+                    if chars[j].1 == '\n' {
+                        spans_line = true;
+                    }
+                    if chars[j].1 == '*' && chars.get(j + 1).map(|&(_, c)| c) == Some('/') {
+                        closed = true;
+                        break;
+                    }
+                    j += 1;
                 }
-                i += 1;
+                let after = if closed { j + 2 } else { n };
+                if spans_line
+                    && depth == 0
+                    && let Some(at) = asi_boundary_after(&chars, after, prev_significant)
+                {
+                    push(&mut boundaries, at);
+                }
+                i = after;
                 continue;
             }
-            Str::None => {}
+            if slash_starts_regex(&chars, prev_significant, prev_significant_idx)
+                && let Some(end) = scan_regex_literal(&chars, i)
+            {
+                // A regex literal is a complete primary expression, like a
+                // string literal: what follows it may be a division and a
+                // newline after it is an ASI boundary. `)` is the character
+                // that already carries both of those properties through
+                // `is_statement_end_char`/`slash_starts_regex`.
+                prev_significant = Some(')');
+                prev_significant_idx = Some(end);
+                i = end + 1;
+                continue;
+            }
+            // Otherwise it is a division operator; fall through.
         }
 
         match c {
@@ -402,24 +613,22 @@ fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
             '`' => state = Str::Template,
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            ';' if depth == 0 => boundaries.push(byte_idx + c.len_utf8()),
+            ';' if depth == 0 => push(&mut boundaries, byte_idx + c.len_utf8()),
             '\n' if depth == 0 => {
-                let mut j = i + 1;
-                while j < n && chars[j].1.is_whitespace() {
-                    j += 1;
-                }
-                if let (Some(prev), Some(&(next_byte, next))) = (prev_significant, chars.get(j))
-                    && is_statement_end_char(prev)
-                    && !is_continuation_start_char(next)
-                {
-                    boundaries.push(next_byte);
+                if let Some(at) = asi_boundary_after(&chars, i + 1, prev_significant) {
+                    push(&mut boundaries, at);
                 }
             }
             _ => {}
         }
 
-        if depth == 0 && state == Str::None && !c.is_whitespace() {
+        // iter-167: tracked at every depth, not just depth 0. The scanner now
+        // consults `prev_significant` to tell a regex from a division, and a
+        // regex inside an argument list (`foo(/a'b/)`) used to open string
+        // state on its apostrophe and swallow the rest of the script.
+        if state == Str::None && !c.is_whitespace() {
             prev_significant = Some(c);
+            prev_significant_idx = Some(i);
         }
         i += 1;
     }
