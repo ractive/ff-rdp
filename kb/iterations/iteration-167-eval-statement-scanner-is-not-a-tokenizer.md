@@ -73,11 +73,48 @@ now is too.
   record it; converging is not automatically right, because the uniform trigger costs
   `eval 'if (1) { 2 }'` its script completion value.
 
+## Theme A measurement (run 2026-08-16, live Firefox on port 7501, before any code change)
+
+`ff-rdp launch --headless --debug-port 7501` + `navigate https://example.com`, then each input below.
+`✗` = the wrap emitted invalid JavaScript; `✓ (luck)` = the scanner still reported a wrong boundary
+set but the split happened to land somewhere that reassembled into valid JS.
+
+| # | command | main's output | verdict |
+|---|---|---|---|
+| 1 | `eval '/a;b/.test("a;b")'` | `{"results": true}` | ✓ — sent verbatim, no wrap (iter-165 keeps declaration-free scripts off it) |
+| 2 | `eval --stringify '/a;b/.test("a;b")'` | `{"error":"unterminated regular expression literal","error_type":"User"}` | **✗ reproduces exactly as predicted** |
+| 3 | `eval --stringify 'const r = /a;b/; r.test("a;b")'` | `{"results": true}` | ✓ (luck) — two bogus boundaries, but `wrap_statements_in_iife` uses only the *last*, which lands after the real `;` |
+| 4 | `eval --stringify 'const t = 1 // note\nt'` | `{"results": 1}` | ✓ (luck) — the comment is not tracked, but the ASI newline boundary lands on `t` anyway |
+| 5 | `eval 'const r = /a;b/; r.test("a;b")'` (iter-165 plain wrap) | `{"results": true}` | ✓ (luck), same reason as #3 |
+| 6 | `eval 'await Promise.resolve(/a;b/.test("a;b"))'` | `{"results": true}` | ✓ — the regex sits at depth ≥ 1, where `;` is never a boundary |
+| 7 | `eval --stringify 'const x = 1 /* a; b */; x'` | `{"results": 1}` | ✓ (luck) |
+| 8 | `eval 'const x = 1 /* a; b */; x'` | `{"results": 1}` | ✓ (luck) |
+| 9 | `eval --stringify 'const t = 1; // a; b\nt'` | `{"results": 1}` | ✓ (luck) |
+| 10 | `eval --stringify 'const s = "a\";b"; s'` | `{"error":"\"\" string literal contains an unescaped line break","error_type":"User"}` | **✗ backslash escapes inside strings** |
+| 11 | `eval --stringify 'const a = 8; a / 2'` | `{"results": 4}` | ✓ — division is not currently mistaken for a regex (there is no regex state to mistake it for) |
+| 12 | `eval --stringify 'const s = "x"; /a;b/.test("a;b")'` | `{"error":"unterminated regular expression literal","error_type":"User"}` | **✗ regex as the last statement** |
+| 13 | `eval --stringify "// don't touch\nconst x = 1; x"` | `{"error":"expected expression, got keyword 'const'","error_type":"User"}` | **✗ an apostrophe in a `//` comment opens string state and swallows the rest** |
+| 14 | `eval --stringify 'const re = /a\/b;c/; re.test("a/b;c")'` | `{"results": true}` | ✓ (luck) |
+| 15 | `eval "// don't touch\nconst x = 1; x"` | `{"results": 1}` | ✓ (luck) — `declares_at_top_level` misses the swallowed `const`, so the script stays on the unwrapped path |
+| 16 | `eval --stringify 'const s = ` + "`a\\`;b`" + `; s'` | `{"error":"expected expression, got ')'","error_type":"User"}` | **✗ backslash escapes inside template literals** |
+
+Premise confirmed: 5 of 16 inputs produce invalid JavaScript on main, and the plan's headline case
+(#2) reproduces with the exact predicted failure. The iteration is **not** closed obsolete. The
+measurement also widened the blast radius past what the plan predicted — an apostrophe in a `//`
+comment (#13) and a backslash escape in a string or template (#10, #16) are the same class of
+defect and are fixed here too.
+
+Note on the `✓ (luck)` rows: they are not evidence the scanner works. Each one reports a wrong
+boundary set; they survive only because the two consumers that matter
+(`wrap_statements_in_iife`, which reads `.last()`, and `declares_at_top_level`, which reads
+`.any()`) happen to be insensitive to the extra boundaries in those particular inputs. Every one
+of them is a regression waiting for a slightly different input.
+
 ## Tasks
 
 ### A. Measure
-- [ ] Run every line of `dogfood_path` and paste the actual outputs into this plan
-- [ ] Add each reproducing input to the live matrix in `live_161_build_script_matrix_evaluates`
+- [x] Run every line of `dogfood_path` and paste the actual outputs into this plan
+- [x] Add each reproducing input to the live matrix in `live_161_build_script_matrix_evaluates`
 
 ### B. Fix the scanner
 - [ ] Track regex-literal state in `top_level_statement_boundaries`, keyed off `prev_significant`
