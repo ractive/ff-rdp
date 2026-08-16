@@ -1,0 +1,124 @@
+---
+title: "Iteration 167: eval's statement scanner mis-splits regex literals and comments"
+type: iteration
+date: 2026-08-16
+status: planned
+branch: iter-167/eval-statement-scanner
+depends_on: []
+first_call_sites: []
+dogfood_path: |
+  # `--stringify` accepts "exactly what bare eval accepts" (iter-161). Measure
+  # whether that survives a regex literal containing a semicolon.
+  ff-rdp launch --headless --debug-port 7501
+  ff-rdp --port 7501 navigate https://example.com
+
+  ff-rdp --port 7501 eval '/a;b/.test("a;b")'
+  # → true. The plain path sends it verbatim (iter-165 deliberately keeps
+  #   declaration-free scripts off the wrap), so this one works.
+
+  ff-rdp --port 7501 eval --stringify '/a;b/.test("a;b")'
+  # → on main (2026-08-16, measured at iter-165 by reading the scanner, NOT
+  #   yet run): expected to fail. `top_level_statement_boundaries` sees the
+  #   `;` inside the regex as a top-level statement separator, so the script
+  #   is split into `/a;` and `b/.test("a;b")` and wrapped into invalid JS.
+  #   RUN THIS FIRST and record the exact error before touching any code —
+  #   the whole premise of this plan is that prediction.
+
+  ff-rdp --port 7501 eval --stringify 'const r = /a;b/; r.test("a;b")'
+  # → same question with a declaration, which also puts the PLAIN path on the
+  #   wrap since iter-165. Record both.
+
+  ff-rdp --port 7501 eval --stringify 'const t = 1 // note
+  t'
+  # → line comments are not tracked either; record whether the split lands
+  #   inside the comment.
+tags: [iteration, eval]
+---
+
+# Iteration 167: `eval`'s statement scanner mis-splits regex literals and comments
+
+Carry-over from [[iteration-165-eval-scope-leak-contradicts-help]], filed before that PR merged.
+
+`top_level_statement_boundaries` in `crates/ff-rdp-cli/src/commands/eval.rs` decides where one
+top-level JS statement ends and the next begins. Everything built on it — the `--stringify` wrap
+(iter-161), the top-level-`await` wrap (iter-132/142) and now the iter-165 per-call scope wrap —
+inherits its accuracy. It is a character scanner, not a tokenizer, and its own doc comment already
+admits the gap: it tracks `'`/`"`/`` ` `` string state and bracket depth, but it does **not**
+understand regex literals, `//` line comments, `/* */` block comments, or backslash escapes inside
+strings.
+
+That is not hypothetical. `/a;b/.test("a;b")` contains a top-level `;` inside a regex literal; the
+scanner reports a boundary there, so a wrap splits the script into `/a;` and `b/.test("a;b")` and
+emits invalid JavaScript. iter-165 measured this by inspection and deliberately narrowed its own
+wrap trigger to scripts containing a top-level declaration so the plain path could not be exposed
+to it — but `--stringify` and `await` scripts still are, and a declaring script on the plain path
+now is too.
+
+## Themes
+
+- **A — Measure the real blast radius.** Run the `dogfood_path` above against a live Firefox and
+  record, per input, which of the three wrap paths breaks and with what error. The plan's premise
+  is a prediction from reading the code; if it does not reproduce, say so and close the iteration
+  obsolete rather than fixing an imagined defect.
+- **B — Teach the scanner what a `/` means.** Regex-vs-division is decidable from the previous
+  significant character, which the scanner already tracks as `prev_significant`: a `/` starts a
+  regex when the previous significant char cannot end an expression (`is_statement_end_char` is
+  false), and is division otherwise. `//` and `/*` are recognised in the same place. Backslash
+  escapes need handling inside regex and string state alike.
+- **C — Decide whether the two wrap triggers converge.** iter-165's plain path wraps only when
+  `declares_at_top_level`; `--stringify` wraps whenever the script is not a single expression. The
+  asymmetry was accepted in DEC-039 *because* the scanner is unreliable. If Theme B makes it
+  reliable, re-examine whether the plain path should wrap uniformly — which would also make
+  `eval 'return 1'` work instead of `SyntaxError: illegal return statement`. Decide on evidence and
+  record it; converging is not automatically right, because the uniform trigger costs
+  `eval 'if (1) { 2 }'` its script completion value.
+
+## Tasks
+
+### A. Measure
+- [ ] Run every line of `dogfood_path` and paste the actual outputs into this plan
+- [ ] Add each reproducing input to the live matrix in `live_161_build_script_matrix_evaluates`
+
+### B. Fix the scanner
+- [ ] Track regex-literal state in `top_level_statement_boundaries`, keyed off `prev_significant`
+- [ ] Skip `//` line comments and `/* */` block comments
+- [ ] Handle backslash escapes inside strings, templates and regex literals
+- [ ] Unit tests for each: division vs regex, a regex containing `;`, a comment containing `;`,
+      an escaped quote inside a string
+
+### C. Trigger convergence
+- [ ] Re-examine `declares_at_top_level` vs `!looks_like_single_expression` and record the decision
+      (a DEC entry if the triggers converge, a note in this plan if they stay apart)
+
+## Acceptance Criteria [0/4]
+
+- [ ] live_167_regex_literal_survives_every_wrap: `eval`, `eval --stringify` and an `await`
+      variant of `/a;b/.test("a;b")` all return `true` against a live Firefox
+- [ ] unit_167_scanner_ignores_regex_and_comments: `top_level_statement_boundaries` reports no
+      boundary for a `;` inside a regex literal, a `//` comment or a `/* */` comment, and still
+      reports one for a real top-level `;`
+- [ ] unit_167_division_is_not_a_regex: `a / b; c / d` still splits at the real `;` and is not
+      swallowed as a regex literal
+- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+
+## Design notes
+
+The scanner is deliberately not a JS parser and must not become one — all code stays in Rust and
+this repo has no JS parser dependency. The regex-vs-division rule above is the standard lexer
+heuristic and is decidable from one character of context, which the scanner already carries. Any
+case it still cannot decide must fail *safe*: leaving a script unwrapped means it evaluates as it
+did before, which is the pre-165 behaviour, not a crash.
+
+## Out of scope
+
+- Replacing the wrap machinery with a real parser or a WASM JS tokenizer.
+- Re-litigating DEC-039's choice of outcome (a) over (b); only the *trigger*, not the contract, is
+  open here.
+
+## References
+
+- [[iteration-165-eval-scope-leak-contradicts-help]] — where this was found and why the plain path
+  was narrowed to avoid it
+- [[iteration-161-eval-and-flag-strictness]] — the `--stringify` wrap that first depended on the
+  scanner
+- [[decision-log]] — DEC-039

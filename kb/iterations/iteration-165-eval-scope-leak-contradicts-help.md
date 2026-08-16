@@ -20,7 +20,7 @@ dogfood_path: |
   ff-rdp --port 7301 eval --stringify "const z = 1; z"
   # → iter-161 wraps --stringify statements in an IIFE, so this path is
   #   expected to be unaffected. Confirm; the asymmetry is the clue.
-status: planned
+status: done
 title: "Iteration 165: eval's const/let bindings leak across calls, contradicting eval --help"
 type: iteration
 tags:
@@ -96,19 +96,89 @@ help text's current (false) claim.
 this. Under (a) that workaround must be removed and the test must pass without it, otherwise
 the fix is unverified. Under (b) it stays, with a comment naming this plan.
 
-## Acceptance Criteria [0/4]
+## Theme A outcome — the measured table
 
-- [ ] live_165_scope_behaviour_table: a live test asserts the measured behaviour of `const`,
+Measured 2026-08-16 on `main` (8c61d26), Firefox 145 headless on macOS, one tab
+(`https://example.com`), `ff-rdp` on the daemon path, each script run **twice in a row**.
+
+| script | plain path | `--stringify` path |
+|---|---|---|
+| `const x = 1; x` | 1st → `1`; **2nd → `redeclaration of const x`** | both → `1` |
+| `let y = 1; y` | 1st → `1`; **2nd → `redeclaration of let y`** | both → `1` |
+| `class C {}; 1` | 1st → `1`; **2nd → `redeclaration of let C`** | both → `1` |
+| `var v = 1; v` | both → `1` (binding persists on the global object) | both → `1`, binding does **not** persist |
+| `w = 1; w` (bare assign) | both → `1`, persists | n/a (persists, by design) |
+| `function f(){…}; f()` | both → `1`, persists | both → `1` |
+| `const q = 1` (declaration only) | 1st → `undefined`; **2nd → `redeclaration of const q`** | — |
+| `const aw = await Promise.resolve(1); aw` | both → `1` (already IIFE-wrapped since iter-132) | — |
+| `const ni = 1; ni` with `--no-isolate` | identical to the plain path — the flag was inert | — |
+
+Cross-path visibility, same session: after plain `var v = 1`, `--stringify 'typeof v'` → `"number"`
+(the plain path really did write the page global); after `--stringify 'var zv = 1'`,
+plain `typeof zv` → `"undefined"` (the stringify IIFE function-scoped it).
+
+Three conclusions the table forces:
+
+1. `const`, `let` and `class` share the tab's **global lexical environment** and are the failing
+   cases. `var`, `function` and bare assignment write the global *object* and never conflict, so
+   the defect is exactly the lexical trio the help text named.
+2. The plain **synchronous** path is the only one that leaks. `--stringify` (iter-161) and
+   top-level `await` (iter-132) both already route through `wrap_statements_in_iife`. This is an
+   inconsistency inside ff-rdp, not a property of `Debugger.evalInGlobal`.
+3. `--no-isolate` behaved identically to the default, confirming it was inert — so reviving it
+   cannot regress anyone who already passes it.
+
+## Theme B outcome — outcome (a): the code was wrong
+
+Implemented per [[decision-log]] **DEC-039**. On the plain synchronous path, a script that
+**declares something at top level** (`const`, `let`, `class`, `var`, `function`) now runs inside
+the same per-call IIFE, and `--no-isolate` becomes the real opt-out (its iter-52 meaning).
+
+The trigger is a top-level declaration, not "anything that is not a single expression" (which is
+what `--stringify` uses). A script that declares nothing cannot leak, so wrapping it would buy no
+isolation while costing its script completion value — `eval 'if (1) { 2 }'` would start returning
+`undefined` instead of `2` — and would expose it to the char scanner's known blind spots
+(`top_level_statement_boundaries` does not understand regex literals: `/a;b/.test('a;b')` reads as
+two statements to it). Verified live after the fix: `if (1) { 2 }` → 2, `for (let i = 0; i < 3;
+i++) { i }` → 2, `/a;b/.test('a;b')` → true, `if (1) { const b1 = 2 }; 3` → 3 twice with
+`typeof b1` → `"undefined"`. The one accepted behaviour change is that a *declaring* script whose
+last statement is not a bare expression (`const d = 1; if (d) { 2 }`) now yields `undefined`;
+`return`, or `--no-isolate`, restores it.
+
+Outcome (b) was rejected because nothing in the repo depends on
+lexical bindings surviving between calls — the cross-call state that exists (`window.__hits`,
+`window.__ready`, the `js_helpers` settle probes) is explicit page-global *property* assignment,
+which the wrap does not touch — and because (b) would have documented a contract that is
+non-idempotent in a loop, inconsistent across ff-rdp's own eval paths, and would have left no way
+at all to get a fresh scope on the plain path. Full argument and the accepted costs: DEC-039.
+
+Post-fix, re-measured the same table: every row of the plain column now matches its
+`--stringify` column, and `typeof x` / `typeof y` / `typeof v` / `typeof C` all read
+`"undefined"` from a later call.
+
+## Acceptance Criteria [4/4]
+
+- [x] live_165_scope_behaviour_table: a live test asserts the measured behaviour of `const`,
       `let` and `var` on both the plain and `--stringify` paths across two consecutive `eval`
       calls against one tab, with the table recorded in this plan
-- [ ] live_165_repeated_const_matches_help: two consecutive `ff-rdp eval "const x = 1; x"` calls
+      — `crates/ff-rdp-cli/tests/live/live_165_eval_call_scope.rs`; it also pins `class`, the
+      bare-assignment/`window.x` escape hatches, and the `--no-isolate` opt-out (whose *second*
+      call must still fail, which is what makes the flag's help honest). Table above.
+- [x] live_165_repeated_const_matches_help: two consecutive `ff-rdp eval "const x = 1; x"` calls
       against the same tab both exit 0 and both print `1` — or, under outcome (b), the test
       asserts the documented-and-measured persistence instead and this AC is rewritten to match
       the chosen contract before being ticked
-- [ ] unit_165_help_text_matches_behaviour: a test over `args.rs`'s `eval` `long_about` asserts
+      — outcome (a) was chosen, so the AC is ticked in its original (a) form, unmodified. The
+      test runs the script three times, and does the same for `let`.
+- [x] unit_165_help_text_matches_behaviour: a test over `args.rs`'s `eval` `long_about` asserts
       the scoping sentence describes the implemented behaviour, so the two cannot drift again
-- [ ] live_161_build_script_matrix_evaluates: passes without its fresh-global-per-combination
+      — in `commands/eval.rs`; it pairs each documented claim with the `build_script` assertion
+      that makes it true (and asserts the two false pre-165 phrasings cannot come back), so
+      changing either side alone fails the test.
+- [x] live_161_build_script_matrix_evaluates: passes without its fresh-global-per-combination
       workaround under outcome (a); under (b) the workaround carries a comment citing this plan
+      — the `navigate(port, "about:blank")` per combination is deleted; the matrix now runs
+      against one long-lived global.
 
 ## Notes
 

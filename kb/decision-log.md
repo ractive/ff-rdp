@@ -949,3 +949,86 @@ the diagnosis does not.
 `crates/ff-rdp-cli/src/connection_meta.rs`,
 `crates/ff-rdp-cli/src/commands/connect_tab.rs`,
 `crates/ff-rdp-cli/tests/common/mod.rs`.
+
+## DEC-039: `eval` gives every call its own scope; `--no-isolate` becomes the real opt-out
+
+**Decision** (iter-165): the code was wrong, not the help text. `eval`'s plain
+synchronous path now routes a script that **declares something at top level**
+(`const`, `let`, `class`, `var`, `function`) through the same per-call,
+value-producing IIFE that `--stringify` (iter-161) and top-level `await`
+(iter-132) already used, so those declarations never leak into the next `eval`
+and repeating a script against one tab is idempotent. `--no-isolate` stops
+being a no-op and becomes the documented opt-out: with it, a plain synchronous
+script is sent to `Debugger.evalInGlobal` verbatim again, so declarations
+accumulate in the tab's global lexical environment. It cannot un-wrap
+`--stringify` or `await` scripts — those wraps are a syntactic necessity, not
+an isolation choice.
+
+**Why a declaration trigger rather than "wrap everything that is not a single
+expression"**, which is what `--stringify` does: a script that declares nothing
+cannot leak anything, so wrapping it buys no isolation while changing its
+result — a function body has no script-completion-value semantics, so
+`eval 'if (1) { 2 }'` would start returning `undefined` instead of `2`. The
+narrower trigger also confines the wrap's known weak spot.
+`top_level_statement_boundaries` is a char scanner, not a JS tokenizer: it does
+not understand regex literals, so `eval '/a;b/.test("a;b")'` looks like two
+statements to it and, if wrapped, becomes a SyntaxError (that input is in fact
+already broken under `--stringify` on `main`). Requiring a declaration keyword
+at a statement start means a scanner misfire can only bite a script that also
+declares — and `unit_165_declaration_free_scripts_are_never_rewritten` pins the
+regex and comment cases as byte-for-byte passthrough. Paying an inconsistency
+with `--stringify`'s trigger to avoid regressing working scripts is the right
+side of that trade; the *contract* both paths state is identical.
+
+**Why**: five pieces of evidence, all pointing the same way.
+
+1. `Debugger.evalInGlobal` evaluates in the target global's *own* lexical
+   environment. It bypasses page CSP (which is what iter-93 needed) but it
+   does not hand each evaluation a fresh scope — the premise `eval --help` had
+   asserted since iter-93 was simply false. Measured 2026-08-16 against
+   Firefox on macOS: `ff-rdp eval 'const x = 1; x'` twice against one tab gave
+   `1` then `{"error":"redeclaration of const x"}`.
+2. Per-call scope was the *original* design, not a new idea. iter-52 added
+   `--no-isolate` explicitly as the opt-out "when the user wants to share state
+   across calls". iter-93 removed the `eval()`-based isolation wrapper for CSP
+   reasons and silently lost the isolation with it, leaving the flag inert and
+   the help text describing a contract nothing implemented.
+3. ff-rdp already isolated on three of its four eval paths: `--stringify`
+   (iter-161) and the top-level-`await` wrap (iter-132) both route through
+   `wrap_statements_in_iife`; only the plain synchronous path did not. That is
+   an inconsistency, not a design — and the asymmetry the plan called "the most
+   direct evidence" for what the fix should look like.
+4. Nothing in the repo depends on lexical bindings surviving between calls. The
+   cross-call state that does exist (`window.__hits`, `window.__ready`, the
+   `js_helpers` settle probes) is written as explicit page-global property
+   assignment, which the IIFE wrap does not touch. No playbook, example script,
+   skill or test declares a binding in one `eval` and reads it in the next.
+5. `eval --help` *already* documented the wrapped completion-value rule ("a
+   multi-statement script auto-returns its value if the LAST statement is a
+   bare expression … otherwise the script needs its own explicit `return`") as
+   though it were general, when it held only on the await/stringify paths.
+   Wrapping the plain path makes that paragraph true too.
+
+**Why not fix the help text instead** (outcome (b) in the plan): it would have
+documented behaviour that is inconsistent across ff-rdp's own eval paths,
+non-idempotent in a loop — the single most common way an agent calls `eval` —
+and it would have required inventing a story for `--no-isolate` exactly
+backwards from the one iter-52 gave it, with no way at all to get a fresh
+scope on the plain path. The only argument for (b) was that cross-call
+persistence might be load-bearing for interactive use; evidence 4 says it is
+not, and `--no-isolate` preserves it for anyone who wants it.
+
+**Cost, accepted and documented**: exactly one behaviour change, confined to
+declaring scripts, stated in `eval --help` and pinned by
+`live_165_wrap_trigger_is_confined_to_declaring_scripts` — a declaring script
+whose LAST statement is not a bare expression (`eval 'const x = 1; if (x) { 2
+}'`) now yields `undefined` instead of `2`; the fix is an explicit `return`, or
+`--no-isolate`. This is the same trade iter-161 already made for `--stringify`.
+Every declaration-free script is byte-for-byte unchanged, and callers already
+passing `--no-isolate` see no change whatsoever, because the flag's pre-165
+behaviour was identical to the pre-165 default.
+
+**Applies to**: `crates/ff-rdp-cli/src/commands/eval.rs`,
+`crates/ff-rdp-cli/src/cli/args.rs`,
+`crates/ff-rdp-cli/tests/live/live_165_eval_call_scope.rs`,
+`crates/ff-rdp-cli/tests/live/live_161_eval_and_flag_strictness.rs`.

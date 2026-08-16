@@ -507,10 +507,32 @@ Prefer --file or --stdin for scripts that contain shell metacharacters,
 optional chaining (?.), template literals, or multi-line statements — shell
 quoting can mangle them and produce a SyntaxError at column 1.
 
-Since iter-93, scripts are routed through Firefox's Debugger.evalInGlobal
-sandbox scope (which bypasses page CSP), so each call already has its own
-scope and `const`/`let` declarations never leak across calls. The
-`--no-isolate` flag is kept for backwards compatibility but is now a no-op.
+Scripts are routed through Firefox's Debugger.evalInGlobal, which bypasses
+page CSP (iter-93). That call does NOT give each evaluation a fresh scope —
+it evaluates in the tab's own global lexical environment — so from iter-93 to
+iter-164 a top-level `const`/`let`/`class` survived until navigation and
+re-running the same script failed with `redeclaration of const x`, even
+though this help claimed otherwise. iter-165 restores the promised contract:
+a script that DECLARES something at top level (`const`, `let`, `class`, `var`
+or `function`) now runs inside a per-call IIFE — the same wrap --stringify
+and `await` scripts already used — so declarations never leak across calls
+and repeating an `eval` is idempotent. `var` and `function` are
+function-scoped by that wrap too and likewise stop leaking. To publish state
+deliberately, assign it to the page global (`window.mine = ...` or a bare
+`mine = ...`); property writes are not declarations and are unaffected.
+
+A script that declares nothing cannot leak anything, so it is sent verbatim
+exactly as before — including a lone expression, and including statement
+forms like `if (1) { 2 }`, whose script completion value is preserved. A
+declaration nested inside a block, a loop head or a function body is already
+scoped there and does not trigger the wrap either.
+
+Pass --no-isolate to opt out and share ONE scope across calls: a plain
+synchronous script is then sent unwrapped, exactly as it was before iter-165,
+so declarations accumulate in the tab's global lexical environment (useful
+when building helpers up over several calls). --no-isolate does not change
+--stringify or `await` scripts — their wrap is required for those to work at
+all, so their declarations never leak either way.
 
 Top-level `await` works (iter-132): `ff-rdp eval 'await Promise.resolve(41) + 1'`
 resolves to 42. Scripts containing `await` are transparently wrapped in an
@@ -525,6 +547,14 @@ the script keeps working. Only when the last statement is not a bare
 expression (a declaration, a control-flow construct) does the script need
 its own explicit `return` to surface a value (it still runs either way — no
 SyntaxError).
+
+Since iter-165 that same last-statement rule also governs a plain (non-await)
+script that declares something, because that script now runs in the per-call
+IIFE described above: `eval 'const x = 1; x'` returns 1, while a declaring
+script whose LAST statement is not a bare expression — `eval 'const x = 1; if
+(x) { 2 }'` — yields `undefined` rather than 2. Add an explicit `return`, or
+pass --no-isolate, to get the script completion value back. Declaration-free
+scripts are untouched by this rule; they never enter the wrap.
 
 Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}
 
@@ -1498,8 +1528,11 @@ pub struct EvalArgs {
     /// (accepts multi-statement scripts, same as bare eval)
     #[arg(long)]
     pub stringify: bool,
-    /// No-op since iter-93. Kept for backwards compatibility — isolation
-    /// is now provided by Firefox's Debugger.evalInGlobal sandbox scope.
+    /// Share one scope across calls: send a plain synchronous script to the
+    /// tab's global lexical environment instead of wrapping it per call, so
+    /// `const`/`let`/`class` persist into the next `eval` (iter-165 — this
+    /// was a no-op from iter-93 to iter-164). Does not affect --stringify or
+    /// `await` scripts, whose wrap is a syntactic necessity.
     #[arg(long)]
     pub no_isolate: bool,
     /// Evaluate inside a specific frame/iframe actor (iter-77 S3).
