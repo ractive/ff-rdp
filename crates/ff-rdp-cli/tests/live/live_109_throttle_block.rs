@@ -113,8 +113,9 @@ fn live_throttle_slow3g_slows_fetch() {
         return;
     }
     let ff = LiveFirefox::headless_on_random_port();
-    // iter-164 Theme D discipline: a `return` here is reported `ok` by libtest,
-    // which is how the enforcement gap this test guards stayed invisible.
+    // iter-158 Theme D discipline (applied here by iter-164): a `return` is
+    // reported `ok` by libtest, which is how the enforcement gap this test
+    // guards stayed invisible for so long.
     assert!(
         ff.with_daemon().is_some(),
         "live_throttle_slow3g_slows_fetch: the proxy daemon did not start for Firefox on port {}",
@@ -186,8 +187,9 @@ fn live_block_url_pattern() {
         return;
     }
     let ff = LiveFirefox::headless_on_random_port();
-    // iter-164 Theme D discipline: a `return` here is reported `ok` by libtest,
-    // which is how the enforcement gap this test guards stayed invisible.
+    // iter-158 Theme D discipline (applied here by iter-164): a `return` is
+    // reported `ok` by libtest, which is how the enforcement gap this test
+    // guards stayed invisible for so long.
     assert!(
         ff.with_daemon().is_some(),
         "live_block_url_pattern: the proxy daemon did not start for Firefox on port {}",
