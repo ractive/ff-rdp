@@ -454,8 +454,21 @@ The result includes 'committed_url', 'ready_state', 'elapsed_ms', and 'status' s
 agents can confirm what page actually loaded — including the main document's real
 HTTP status (iter-138): a 404 or 503 page still commits successfully (readyState
 reaches 'complete'), so 'status' is the only reliable way to detect it without a
-follow-up 'network' call. 'status' is always present, `null` when genuinely
-unavailable (e.g. --no-wait, or the status update simply hadn't arrived yet).
+follow-up 'network' call. 'status' is always present, and `null` when there is no
+HTTP status to report — in which case 'status_reason' (also always present, and
+`null` exactly when 'status' is not) says which kind of `null` it is:
+  not_observed        this route never subscribed to network events, so no status
+                      could have been seen: --no-wait, or `back`/`forward`/`reload`
+  no_document_request the document committed without issuing a request of its own —
+                      about:blank, a bfcache restore, a same-document navigation
+  no_status_reported  the document's request was identified but Firefox never
+                      reported a status for it (response line not in yet, or the
+                      channel failed)
+Before iter-166 'status' was `null` for ordinary pages that plainly returned 200:
+the main document was matched by an exact string comparison against the URL as
+typed, and Firefox requests the canonical form ('https://example.com' becomes
+'https://example.com/'), so nothing ever matched. On a redirect, 'status' is the
+status of the document that COMMITTED, not of the redirect hop.
 
 Same-document navigations — SPA `history.pushState`/`popstate` traversal (via
 `back`/`forward`), and same-page fragment navigation (`#frag`) — never fire the
@@ -488,10 +501,10 @@ This is the CLI-native complement to `launch --auto-consent` (the
 Consent-O-Matic extension), which does not reliably work headless against
 Sourcepoint-gated sites.
 
-Output: {\"results\": {\"navigated\": \"...\", \"status\": 200|null, \"committed_url\": \"...\", \"ready_state\": \"...\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}
+Output: {\"results\": {\"navigated\": \"...\", \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\", \"committed_url\": \"...\", \"ready_state\": \"...\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}
 
 --with-network output: results.network is ONE canonical object on every path (quiet or busy page, --detail/--jq or default, --all or capped); 'committed_url'/'ready_state'/'status' are also present alongside it (iter-138 — previously dropped, forcing a choice between truthful navigation info and network data):
-  {\"navigated\": \"...\", \"network\": {\"entries\": [...], \"shown\": N, \"total\": N, \"truncated\": bool, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false}, \"committed_url\": \"...\", \"ready_state\": \"...\", \"status\": 200|null}
+  {\"navigated\": \"...\", \"network\": {\"entries\": [...], \"shown\": N, \"total\": N, \"truncated\": bool, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false}, \"committed_url\": \"...\", \"ready_state\": \"...\", \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"}
   entries is capped at 20 by default (use --all to expand); summary fields always reflect the FULL capture.
   Note (iter-126): previously results.network was a BARE ARRAY in non-truncated detail mode (and --all), so .results.network.entries / .total_requests threw \"cannot index array\" on quiet pages. It is now always the object above; consumers of the old bare-array form should read .results.network.entries.")]
     Navigate(NavigateArgs),
