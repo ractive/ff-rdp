@@ -263,7 +263,32 @@ rather than a late unvalidated addition to this one. Filed as
 ### C. Profile-directory ownership
 - [x] Record in this plan whether leaving the profile dir behind is deliberate, and the evidence
 
-## Acceptance Criteria [4/4]
+## Live sweep (2026-08-16)
+
+```text
+FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
+LIVE_SWEEP_SUMMARY executed=270 skipped=0 preexisting=0 total=270
+→ 260 passed / 10 failed
+```
+
+With a hand-started `firefox -no-remote -headless --start-debugger-server 6000`, so the
+`ff-rdp-core` tier executed rather than being classified `preexisting`. Corpus grew from iter-165's
+262 to 270 (this iteration's `live_168_*`, plus the tests iters 166/167 merged in the meantime), so
+this is a **larger** corpus, not a shrunken one.
+
+`live_96_profile_cleanup::live_profiles_prune_removes_all_when_no_firefox_running` **passed** —
+the failure this iteration was filed against did not recur. `live_168_adjacent_tests_leave_no_live_owner`
+passed. All ten failures are enumerated with dispositions in the PR's Carry-over table; every one
+of them passes on re-run, so none is a deterministic regression:
+
+| test | failure | disposition |
+|---|---|---|
+| `live_128_meta_route` | daemon autostart read an **empty** registry file (`EOF while parsing a value at line 1 column 0`), burned its 20 s budget, fell back to `route: "direct"` | [[iteration-172-daemon-registry-torn-read-on-autostart]] |
+| `live_138_navigate_reports_200` | `status: null`, `status_reason: "no_status_reported"` under the daemon | [[iteration-169-navigate-status-delivery-and-nav-verb-parity]] |
+| `live_138_navigate_reports_404` | same | [[iteration-169-navigate-status-delivery-and-nav-verb-parity]] |
+| 7 × `ff-rdp-core` live tests | `ConnectionRefused` on port 6000 — the hand-started browser did not survive the 831 s CLI tier; 7/7 pass against a fresh one | [[iteration-173-live-sweep-port-6000-firefox-does-not-survive]] |
+
+## Acceptance Criteria [3/4]
 
 - [x] `unit_168_drop_waits_for_pid_exit`: the wait helper returns promptly for a process that
       exits, returns immediately for an already-dead pid, and hits its bounded timeout for a pid
@@ -277,8 +302,15 @@ rather than a late unvalidated addition to this one. Filed as
 - [x] The Theme A measurements are recorded in this plan, including the reproduce rate — or, if
       it did not reproduce, that fact and the decision that follows from it (see A1–A4; the repro
       rate is 0/10 and the decision is in A3)
-- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean,
+- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean,
       plus a dual-gate live sweep whose `live_96` and `live_128` both pass in the same run
+      — **left unticked: the second clause did not hold.** fmt/clippy/`cargo test --workspace -q`
+      are clean and the dual-gate sweep ran (`executed=270 skipped=0 preexisting=0`), and `live_96`
+      passed, but `live_128_meta_route` failed in that same run — on the daemon-registry torn read
+      filed as [[iteration-172-daemon-registry-torn-read-on-autostart]], which has nothing to do
+      with this iteration's change and passes on re-run. The AC is not reworded to say "for an
+      unrelated reason": as written it is unmet, and an honest empty box is the only signal a later
+      reader gets.
 
 **Not claimed, deliberately:** that this iteration fixes the `live_96` precondition failure
 observed in iter-165. See A3 — the measured window is four orders of magnitude too small to
