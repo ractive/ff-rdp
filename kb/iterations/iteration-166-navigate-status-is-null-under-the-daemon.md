@@ -84,6 +84,54 @@ the measurement distinguishes them:
 
 Record which one it is in this plan before writing the fix.
 
+#### Measured 2026-08-16, on `main` at 07a9c03, before any code change
+
+Firefox 153 headless, fresh daemon on port 7401 (`ff-rdp launch --headless --debug-port 7401`):
+
+```
+$ ff-rdp --port 7401 navigate https://example.com --jq '.results | {committed_url, ready_state, status}'
+{"committed_url":"https://example.com/","ready_state":"complete","status":null}
+
+$ ff-rdp --port 7401 --no-daemon navigate https://example.com --jq '.results | {committed_url, ready_state, status}'
+{"committed_url":"https://example.com/","ready_state":"complete","status":null}
+
+$ ff-rdp --port 7401 navigate https://example.com --with-network --jq '.results | {status, n: (.network.entries|length)}'
+{"status":null,"n":2}
+```
+
+So it is **not** a daemon defect: direct mode is null too, and so is `--with-network`, which
+reaches the status through the entirely separate `extract_document_status` path. Three code
+paths, one shared symptom — which rules out candidate 1 (the daemon stream *is* producing; the
+`--with-network` capture proves the events arrive) and candidate 3 (the status is on the update
+packet and *is* being consumed — see below).
+
+The `--with-network` dump names the cause outright:
+
+```
+$ ff-rdp --port 7401 navigate https://example.com --with-network --jq '.results.network.entries'
+[{"method":"GET","url":"https://example.com/","cause_type":"document","status":200,...},
+ {"method":"GET","url":"data:,","cause_type":"img","status":200,...}]
+```
+
+The main document's resource is present, has `cause_type == "document"`, and carries
+`status: 200`. What fails is the match: both `extract_document_event` and
+`extract_document_status` select it with `r.url == requested_url`, an **exact string
+comparison**, and Firefox canonicalises the requested `https://example.com` to
+`https://example.com/` before issuing the request. `"https://example.com/" != "https://example.com"`,
+so no resource is ever selected and `doc_status` stays `None` on every route.
+
+Confirmed by supplying the canonical form by hand:
+
+```
+$ ff-rdp --port 7401 navigate https://example.com/ --jq '.results | {committed_url, status}'
+{"committed_url":"https://example.com/","status":200}
+```
+
+**Cause: candidate 2 — `extract_document_status`/`extract_document_event` fail to match the main
+document because of URL normalisation.** Candidates 1 and 3 are disproved above. The defect is
+route-independent, which is why the plan's daemon-vs-direct framing (and its title) turned out to
+be the wrong axis: the trailing slash, not the daemon, is what decides it.
+
 ### Theme B — fix it, and make `null` mean something
 
 Whatever the cause, `status: null` must afterwards mean "the server sent no status", not "we
