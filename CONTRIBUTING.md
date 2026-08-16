@@ -64,7 +64,13 @@ which dominates the iteration loop's wall-clock cost.
   succeeding — until someone reaps it, so `Child::wait` is both correct and
   strictly stronger there (`RawFirefox::drop` does exactly that). Anything in
   `Drop` must also stay non-panicking: a panic while unwinding aborts the
-  process and turns one failing test into a suiteless run.
+  process and turns one failing test into a suiteless run. Platform note:
+  `pid_alive` is `kill(pid, 0)` on Unix but `OpenProcess` on Windows, and
+  `OpenProcess` keeps succeeding for an **exited** process while any handle to
+  it is open — including the one `std::process::Child` holds until it is
+  dropped. Probing a pid you also hold a `Child` for reads "alive" on Windows
+  and "dead" on Unix; the live guards are unaffected because they hold no
+  handle.
 - **Launch waits are bounded and env-overridable** (iter-113 Theme A). The
   live launchers wait for Firefox's remote-debugging port via a bound that
   defaults to 30 s and is overridable with `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`

@@ -162,6 +162,16 @@ fn unit_168_wait_for_pid_exit_reads_real_pids() {
     // A reaped child is genuinely gone from the process table. Spawned and
     // waited here rather than hard-coding a pid, because an invented pid could
     // collide with a live process.
+    //
+    // The `drop(child)` is load-bearing on Windows, and the reason is worth
+    // knowing: `pid_alive` there is `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`,
+    // which keeps succeeding for an **exited** process as long as any handle to
+    // it is still open — and `std::process::Child` holds one until it is
+    // dropped. `wait()` alone therefore leaves the pid reading as alive on
+    // Windows while it reads as dead on Unix, which is exactly how this test
+    // first failed in CI. It is not a hazard for the real callers
+    // (`LiveFirefox`, `FirefoxGuard`) because they hold no handle at all: their
+    // Firefox is spawned by a separate `ff-rdp launch` process, not by this one.
     let mut child = std::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" })
         .args(if cfg!(windows) {
             ["/C", "exit 0"]
@@ -174,12 +184,14 @@ fn unit_168_wait_for_pid_exit_reads_real_pids() {
         .expect("spawn a trivially short-lived child");
     let pid = child.id();
     child.wait().expect("reap the short-lived child");
+    drop(child);
 
     let started = Instant::now();
     let waited = wait_for_pid_exit(pid, Duration::from_secs(5));
     assert!(
         waited.is_some(),
-        "a reaped child's pid must read as exited, not time out"
+        "a reaped child's pid must read as exited, not time out (on Windows this \
+         fails if any handle to the exited process is still open — see the note above)"
     );
     assert!(
         started.elapsed() < Duration::from_millis(500),
