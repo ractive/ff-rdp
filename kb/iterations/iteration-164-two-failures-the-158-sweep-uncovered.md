@@ -15,7 +15,7 @@ dogfood_path: |
   #   still completes.
   ff-rdp --port 7201 throttle --status --jq '.results'
   # → the pattern must be listed, so the failure is in enforcement, not intake.
-
+  
   # ── 2. Daemon autostart under load ──────────────────────────────────────────
   # Reproduce under real contention — this only fails when the machine is busy.
   for i in 1 2 3 4 5 6 7 8; do (ff-rdp launch --headless --debug-port $((7210+i)) \
@@ -25,7 +25,7 @@ dogfood_path: |
   # → eight `true`. On main, at load average ~18, at least one is false: the
   #   autostart handshake gives up and the caller silently falls back to a
   #   direct connection.
-status: in-review
+status: done
 title: "Iteration 164: URL blocking does not block, and daemon autostart gives up under load"
 type: iteration
 tags:
