@@ -553,32 +553,85 @@ impl LiveFirefox {
             return None;
         }
 
-        // Give the daemon a moment to write its registry.
-        std::thread::sleep(Duration::from_millis(500));
-
-        // Confirm daemon is running and return its proxy port.
-        let status = Command::new(ff_rdp_bin())
-            .args([
-                "--host",
-                "127.0.0.1",
-                "--port",
-                &self.port.to_string(),
-                "daemon",
-                "status",
-            ])
-            .output()
-            .ok()?;
-
-        let status_json = serde_json::from_slice::<serde_json::Value>(&status.stdout).ok()?;
-        if status_json["results"]["running"].as_bool() != Some(true) {
-            return None;
-        }
-        let daemon_port = status_json["results"]["port"]
-            .as_u64()
-            .and_then(|p| u16::try_from(p).ok())?;
+        // iter-164 (defect 2): poll for the registry entry instead of sleeping
+        // a fixed 500 ms. At load average 18.6 the daemon had not registered
+        // within 500 ms and `with_daemon` reported "no daemon" for a daemon
+        // that came up 200 ms later — which iter-158's honest harness then
+        // turned into a hard failure of an unrelated test.
+        let port = self.port;
+        let daemon_port = poll_for_daemon_port(daemon_ready_timeout(), || {
+            let status = Command::new(ff_rdp_bin())
+                .args([
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    &port.to_string(),
+                    "daemon",
+                    "status",
+                ])
+                .output()
+                .ok()?;
+            let status_json = serde_json::from_slice::<serde_json::Value>(&status.stdout).ok()?;
+            daemon_port_from_status(&status_json)
+        })?;
 
         eprintln!("LiveFirefox: daemon proxy port={daemon_port}");
         Some(daemon_port)
+    }
+}
+
+/// Env var overriding [`daemon_ready_timeout`] (iter-164).
+pub const DAEMON_READY_TIMEOUT_ENV: &str = "FF_RDP_TEST_DAEMON_READY_TIMEOUT_S";
+
+/// How long [`LiveFirefox::with_daemon`] waits for the autostarted daemon to
+/// register (iter-164). Defaults to 30 s; override with
+/// [`DAEMON_READY_TIMEOUT_ENV`].
+///
+/// Generous on purpose: this is the harness half of iteration-164's defect 2.
+/// It must comfortably exceed the product's own autostart budget
+/// (`FF_RDP_DAEMON_START_TIMEOUT_MS`, default 20 s) so a harness timeout can
+/// never be mistaken for a product failure.
+pub fn daemon_ready_timeout() -> Duration {
+    let secs = std::env::var(DAEMON_READY_TIMEOUT_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(30);
+    Duration::from_secs(secs)
+}
+
+/// Extract the daemon proxy port from a `daemon status` envelope, or `None`
+/// when the daemon is not (yet) running (iter-164).
+///
+/// Split out from [`LiveFirefox::with_daemon`] so the polling contract is
+/// unit-testable against a stub registry without a live Firefox.
+pub fn daemon_port_from_status(status_json: &serde_json::Value) -> Option<u16> {
+    if status_json["results"]["running"].as_bool() != Some(true) {
+        return None;
+    }
+    status_json["results"]["port"]
+        .as_u64()
+        .and_then(|p| u16::try_from(p).ok())
+}
+
+/// Poll `probe` until it yields a daemon port or `timeout` elapses (iter-164).
+///
+/// Always probes at least once, so a zero timeout degrades to a single
+/// attempt rather than to "never checked". Returns `None` when the deadline
+/// passes with every probe still reporting "not running".
+pub fn poll_for_daemon_port(
+    timeout: Duration,
+    mut probe: impl FnMut() -> Option<u16>,
+) -> Option<u16> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(port) = probe() {
+            return Some(port);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 

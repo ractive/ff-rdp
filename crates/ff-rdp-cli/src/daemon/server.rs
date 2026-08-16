@@ -2228,6 +2228,11 @@ fn handle_client(
                 *lock_or_recover!(state.last_activity) = Instant::now();
 
                 let to = msg.get("to").and_then(Value::as_str).unwrap_or_default();
+                // iter-164: decide up-front whether this frame is a client
+                // `unwatchResources` that would tear down a daemon-owned
+                // resource subscription (and, with it, Firefox's
+                // `NetworkObserver` — the block-list and throttling config).
+                let teardown = classify_client_resource_teardown(&msg);
                 if to == "daemon" {
                     // Provide a fresh writer clone for this client so that
                     // handle_daemon_message can register a StreamSubscriber
@@ -2252,6 +2257,15 @@ fn handle_client(
                             anyhow::anyhow!("sending daemon response to CLI client: {e}")
                         })?;
                     }
+                } else if matches!(teardown, ResourceTeardown::DropEntirely) {
+                    // iter-164: swallow it. See `classify_client_resource_teardown`
+                    // — every requested type is daemon-owned, and `unwatchResources`
+                    // is oneway so no client is left waiting for a reply.
+                    tracing::debug!(
+                        frame = %msg,
+                        "daemon: dropped client unwatchResources — the resource \
+                         subscription is daemon-owned"
+                    );
                 } else if is_client_target_teardown(&msg) {
                     // iter-137 Theme A: swallow it.  See the fn's doc comment —
                     // this frame destroys every target on the shared
@@ -2304,9 +2318,16 @@ fn handle_client(
                             }
                         }
                     }
-                    // Forward to Firefox.
+                    // Forward to Firefox. iter-164: a partially-daemon-owned
+                    // `unwatchResources` is forwarded with the daemon-owned
+                    // types stripped out, so the client's own types (e.g.
+                    // `document-event`) are still released.
+                    let outbound = match teardown {
+                        ResourceTeardown::Forward(rewritten) => rewritten,
+                        _ => msg,
+                    };
                     lock_or_recover!(firefox_writer)
-                        .send(&msg)
+                        .send(&outbound)
                         .context("forwarding CLI message to Firefox")?;
                 }
             }
@@ -2352,6 +2373,91 @@ fn handle_client(
 /// `watchTargets` was itself a no-op (the connection was already watching).
 fn is_client_target_teardown(msg: &Value) -> bool {
     msg.get("type").and_then(Value::as_str) == Some("unwatchTargets")
+}
+
+/// Resource types whose `watchResources` subscription belongs to the daemon
+/// (iter-164).
+///
+/// The daemon installs these once at startup (see [`DAEMON_RESOURCE_TYPES`])
+/// and keeps them for the whole session. Mirrors that list as wire names.
+const DAEMON_OWNED_RESOURCE_NAMES: &[&str] = &["network-event", "console-message", "error-message"];
+
+/// What to do with a client frame that may be an `unwatchResources` request
+/// (iter-164).
+#[derive(Debug, PartialEq, Eq)]
+enum ResourceTeardown {
+    /// Not an `unwatchResources` frame — forward unchanged.
+    NotApplicable,
+    /// Every requested type is daemon-owned — drop the frame entirely.
+    DropEntirely,
+    /// Some requested types are the client's own — forward this rewritten
+    /// frame, which lists only those.
+    Forward(Value),
+}
+
+/// Classify a client frame against the daemon-owned resource subscriptions
+/// (iter-164).
+///
+/// The daemon **must not forward** an `unwatchResources` naming a daemon-owned
+/// type. Confirmed on the wire against Firefox 153: `unwatchResources` destroys
+/// the corresponding resource watcher in the parent process, and for
+/// `network-event` that watcher owns the session's `NetworkObserver` — which
+/// holds the URL block-list (`setBlockedUrls`) and the throttling config
+/// (`setNetworkThrottling`). Through the daemon those calls landed on the
+/// *shared* connection, so:
+///
+/// ```text
+/// ff-rdp throttle --block favicon   → setBlockedUrls(["favicon"])   ✓ enforced
+/// ff-rdp navigate https://example.com                               ← unwatchResources(["document-event","network-event"])
+/// ff-rdp eval "fetch('…/favicon.ico')"                              → RESOLVES (block-list gone)
+/// ```
+///
+/// That is the iter-164 defect: `throttle --block` was accepted, echoed back by
+/// the envelope, and then silently discarded by the very next `navigate`.
+/// `navigate` subscribes to `document-event` + `network-event` through
+/// [`ResourceCommand`] and unsubscribes on teardown
+/// (`commands/navigate.rs`), and the bus's ref-count is per CLI *process* — it
+/// has no idea another process already asked the shared connection to watch
+/// `network-event`.
+///
+/// Dropping the frame is safe at the protocol level because `unwatchResources`
+/// is declared `oneway: true` in `devtools/shared/specs/watcher.js`, so Firefox
+/// never replies and no client is left waiting. It is also correct
+/// semantically: the client's paired `watchResources` was itself a no-op, the
+/// connection was already watching.
+///
+/// Types the daemon does **not** own (e.g. `document-event`) are still
+/// forwarded, via [`ResourceTeardown::Forward`], so a client that genuinely
+/// owns a subscription can still release it.
+fn classify_client_resource_teardown(msg: &Value) -> ResourceTeardown {
+    if msg.get("type").and_then(Value::as_str) != Some("unwatchResources") {
+        return ResourceTeardown::NotApplicable;
+    }
+    let Some(types) = msg.get("resourceTypes").and_then(Value::as_array) else {
+        // Malformed / absent list — nothing identifiable to strip. Forward it
+        // unchanged rather than guessing.
+        return ResourceTeardown::NotApplicable;
+    };
+    let kept: Vec<Value> = types
+        .iter()
+        .filter(|t| {
+            t.as_str()
+                .is_none_or(|s| !DAEMON_OWNED_RESOURCE_NAMES.contains(&s))
+        })
+        .cloned()
+        .collect();
+    if kept.len() == types.len() {
+        // Nothing daemon-owned was named.
+        return ResourceTeardown::NotApplicable;
+    }
+    if kept.is_empty() {
+        return ResourceTeardown::DropEntirely;
+    }
+    let mut rewritten = msg.clone();
+    if let Some(obj) = rewritten.as_object_mut() {
+        obj.insert("resourceTypes".to_owned(), Value::Array(kept));
+    }
+    ResourceTeardown::Forward(rewritten)
 }
 
 /// Scope guard that unregisters a client from all daemon roles when dropped
@@ -2737,6 +2843,95 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    // ── iter-164: client `unwatchResources` must not tear down daemon-owned
+    //    resource subscriptions (defect 1 — `throttle --block` did not block).
+
+    /// The exact frame `navigate` sends on teardown through the daemon
+    /// (`ResourceCommand::unsubscribe` for `[document-event, network-event]`).
+    /// It named `network-event`, which destroyed Firefox's `NetworkObserver`
+    /// and with it the block-list an earlier `throttle --block` had installed.
+    #[test]
+    fn unit_164_daemon_strips_network_event_from_client_unwatch() {
+        let msg = json!({
+            "to": "server1.conn0.watcher4",
+            "type": "unwatchResources",
+            "resourceTypes": ["document-event", "network-event"],
+        });
+        match classify_client_resource_teardown(&msg) {
+            ResourceTeardown::Forward(rewritten) => {
+                assert_eq!(
+                    rewritten["resourceTypes"],
+                    json!(["document-event"]),
+                    "the client's own document-event must still be released, \
+                     the daemon-owned network-event must not: {rewritten}"
+                );
+                assert_eq!(rewritten["to"], "server1.conn0.watcher4");
+                assert_eq!(rewritten["type"], "unwatchResources");
+            }
+            other => panic!("expected a rewritten forward, got {other:?}"),
+        }
+    }
+
+    /// A client `unwatchResources` naming *only* daemon-owned types is dropped
+    /// outright. Safe because `unwatchResources` is `oneway: true` in
+    /// `devtools/shared/specs/watcher.js` — no client is left awaiting a reply.
+    #[test]
+    fn unit_164_daemon_drops_wholly_daemon_owned_unwatch() {
+        for types in [
+            json!(["network-event"]),
+            json!(["console-message"]),
+            json!(["error-message"]),
+            json!(["network-event", "console-message", "error-message"]),
+        ] {
+            let msg = json!({
+                "to": "server1.conn0.watcher4",
+                "type": "unwatchResources",
+                "resourceTypes": types,
+            });
+            assert_eq!(
+                classify_client_resource_teardown(&msg),
+                ResourceTeardown::DropEntirely,
+                "must be dropped: {msg}"
+            );
+        }
+    }
+
+    /// Frames that are not a daemon-owned `unwatchResources` are forwarded
+    /// untouched — the daemon must not become a general-purpose rewriter.
+    #[test]
+    fn unit_164_daemon_forwards_unrelated_frames_unchanged() {
+        for msg in [
+            json!({"to": "w", "type": "unwatchResources", "resourceTypes": ["document-event"]}),
+            json!({"to": "w", "type": "watchResources", "resourceTypes": ["network-event"]}),
+            json!({"to": "w", "type": "unwatchTargets", "targetType": "frame"}),
+            // Malformed: no `resourceTypes` array to inspect.
+            json!({"to": "w", "type": "unwatchResources"}),
+            json!({"to": "w", "type": "navigateTo", "url": "https://example.com"}),
+        ] {
+            assert_eq!(
+                classify_client_resource_teardown(&msg),
+                ResourceTeardown::NotApplicable,
+                "must pass through unchanged: {msg}"
+            );
+        }
+    }
+
+    /// The wire names the daemon protects must stay in lockstep with the typed
+    /// list it actually subscribes to at startup. If a future iteration adds a
+    /// fourth entry to `DAEMON_RESOURCE_TYPES` and forgets this list, clients
+    /// silently regain the ability to tear that subscription down.
+    #[test]
+    fn unit_164_daemon_owned_names_match_subscribed_types() {
+        let subscribed: Vec<&str> = DAEMON_RESOURCE_TYPES
+            .iter()
+            .map(|t| t.as_wire_str())
+            .collect();
+        assert_eq!(
+            subscribed, DAEMON_OWNED_RESOURCE_NAMES,
+            "DAEMON_OWNED_RESOURCE_NAMES must mirror DAEMON_RESOURCE_TYPES"
+        );
+    }
 
     /// AC `unit_watcher_settle_delay_fits_inside_startup_retry_budget`
     /// (iter-146 Theme C): the one-time settle delay

@@ -1067,7 +1067,10 @@ network-parent actor throws \"Not listening for network events\" otherwise).
 LIFETIME: throttling and blocking live as long as the RDP connection that set
 them.  Under the daemon that means until the daemon restarts; with --no-daemon
 the one-shot process disconnects immediately and the setting is discarded — the
-envelope then carries a `lifetime_warning`.
+envelope then carries a `lifetime_warning`.  Both survive `navigate` and
+`reload` under the daemon (iter-164: they used not to — navigate's resource
+teardown destroyed the block-list on the shared connection, so `--block` was
+accepted, echoed here, and then not enforced).
 
 STATUS (iter-131): `throttle status` reports the profile the daemon last
 applied. Firefox's network-parent actor has no getter for the active

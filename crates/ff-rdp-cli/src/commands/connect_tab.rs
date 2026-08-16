@@ -50,6 +50,16 @@ pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
         }
     };
 
+    // iter-164 (defect 2): the caller asked for daemon mode, autostart did not
+    // deliver one, and we are about to run over a direct connection instead.
+    // Historically `deferred_warning` was printed only if the *direct* fallback
+    // also failed, so on the (common, under-load) success path the fact that
+    // daemon mode silently degraded was dropped on the floor. Remember it so
+    // `meta` can report it under `--verbose`.
+    if let Some(w) = &deferred_warning {
+        crate::connection_meta::remember_daemon_fallback(w.clone());
+    }
+
     let connection = connect_to_firefox(
         &connect_host,
         connect_port,

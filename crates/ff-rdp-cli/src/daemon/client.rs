@@ -405,7 +405,8 @@ pub(crate) fn resolve_connection_target(
     //        → "registry write raced or was slow".
     //    The Theme D spawn lock above removes the third cause (TOCTOU
     //    double-spawn orphaning the winner) structurally.
-    match process::wait_for_registry(Duration::from_secs(5), firefox_host, firefox_port) {
+    let registry_wait = registry_wait_timeout();
+    match process::wait_for_registry(registry_wait, firefox_host, firefox_port) {
         Ok(info) => ConnectionTarget::Daemon {
             port: info.proxy_port,
             auth_token: info.auth_token,
@@ -413,12 +414,51 @@ pub(crate) fn resolve_connection_target(
         Err(e) => {
             let cause = classify_registry_wait_failure(firefox_host, firefox_port);
             direct_with_autostart_warning(format!(
-                "daemon started but did not register within 5s ({cause}): {e:#} — \
+                "daemon started but did not register within {}s ({cause}): {e:#} — \
                  connecting directly{}",
+                registry_wait.as_secs(),
                 log_path_hint()
             ))
         }
     }
+}
+
+/// Environment variable overriding how long autostart waits for the freshly
+/// spawned daemon to write its registry entry (iter-164).
+pub(crate) const REGISTRY_WAIT_ENV: &str = "FF_RDP_DAEMON_START_TIMEOUT_MS";
+
+/// Default registry wait, in milliseconds (iter-164).
+///
+/// Was a hard-coded 5 s through iter-163. iter-158's `live-sweep` ran at load
+/// average 18.6 and a freshly spawned daemon — which has to connect to Firefox,
+/// run `listTabs`/`getWatcher`, and install `watchResources` before it writes
+/// the registry — did not finish inside 5 s. Autostart then gave up and the
+/// caller silently got a *direct* connection instead of the daemon it asked for
+/// (iteration-164 defect 2).
+///
+/// Waiting longer costs nothing on the failure path that actually matters:
+/// `resolve_connection_target` already fast-fails in 100 ms when Firefox's
+/// debug port is unreachable, so this budget is only ever spent when Firefox is
+/// up and a daemon really is starting.
+const DEFAULT_REGISTRY_WAIT_MS: u64 = 20_000;
+
+/// How long to wait for a spawned daemon's registry entry (iter-164).
+///
+/// [`DEFAULT_REGISTRY_WAIT_MS`] unless [`REGISTRY_WAIT_ENV`] holds a positive
+/// integer number of milliseconds. A malformed or zero value is ignored in
+/// favour of the default rather than producing a zero-length wait.
+fn registry_wait_timeout() -> Duration {
+    parse_registry_wait(std::env::var(REGISTRY_WAIT_ENV).ok().as_deref())
+}
+
+/// Pure half of [`registry_wait_timeout`], split out so it is unit-testable
+/// without mutating process-global environment state.
+fn parse_registry_wait(raw: Option<&str>) -> Duration {
+    let ms = raw
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+        .unwrap_or(DEFAULT_REGISTRY_WAIT_MS);
+    Duration::from_millis(ms)
 }
 
 /// Build a [`ConnectionTarget::Direct`] whose fallback is *also* recorded as a
@@ -1705,6 +1745,40 @@ mod tests {
                 );
             }
             ConnectionTarget::Daemon { .. } => panic!("--no-daemon must never resolve to Daemon"),
+        }
+    }
+
+    // ── iter-164 defect 2: autostart gave up too early under load ──────────
+
+    /// The default autostart budget must be materially larger than the 5 s that
+    /// iter-158's sweep (load average 18.6) exceeded, or the fix is cosmetic.
+    #[test]
+    fn unit_164_registry_wait_default_exceeds_the_load_failure_point() {
+        assert_eq!(parse_registry_wait(None), Duration::from_secs(20));
+        assert!(
+            parse_registry_wait(None) > Duration::from_secs(5),
+            "5 s is the budget that failed under load; the default must exceed it"
+        );
+    }
+
+    /// A well-formed override wins; anything else falls back to the default
+    /// rather than producing a zero-length (i.e. always-failing) wait.
+    #[test]
+    fn unit_164_registry_wait_override_parses_or_falls_back() {
+        assert_eq!(
+            parse_registry_wait(Some("1500")),
+            Duration::from_millis(1500)
+        );
+        assert_eq!(
+            parse_registry_wait(Some("  2500  ")),
+            Duration::from_millis(2500)
+        );
+        for bad in ["", "0", "-1", "abc", "1.5"] {
+            assert_eq!(
+                parse_registry_wait(Some(bad)),
+                Duration::from_secs(20),
+                "malformed override {bad:?} must fall back to the default"
+            );
         }
     }
 

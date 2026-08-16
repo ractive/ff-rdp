@@ -255,9 +255,22 @@ fn live_navigate_with_network_all_keeps_summary() {
     );
 }
 
-/// `live_network_detail_carries_summary`: standalone `network --jq` returns the
+/// `live_network_detail_carries_summary`: `network --detail` returns the
 /// summary fields (`total_requests`, `total_transfer_bytes`) alongside the entry
 /// list on a page with captured traffic.
+///
+/// **Contract change, iter-160**: this test used to reach the entry list via
+/// `network --jq .`, on the pre-iter-160 rule that a `--jq` filter forced detail
+/// mode. [[iteration-160-envelope-honesty]] deliberately removed that coupling —
+/// `--jq` filters the envelope, it no longer reshapes it — and made `--detail`
+/// the documented way to the entry array, asserted by
+/// `live_160_network_results_shape_ignores_jq`. That iteration did not update
+/// this test, which has asserted the retired contract ever since and failed as
+/// soon as a sweep ran with `FF_RDP_LIVE_NETWORK_TESTS=1`
+/// (first observed in iter-164's dual-gate sweep, 2026-08-16:
+/// "network --jq detail results must be an array, got: {total_requests: 1, …}").
+/// Corrected here to the surviving contract; the summary-field assertions are
+/// unchanged, because those are what this test is actually for.
 #[test]
 #[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
 fn live_network_detail_carries_summary() {
@@ -284,12 +297,12 @@ fn live_network_detail_carries_summary() {
         return;
     }
 
-    // Standalone `network --jq` forces detail mode; summary fields must ride along.
+    // `--detail` selects the entry list (iter-160); summary fields must ride along.
     let net = Command::new(ff_rdp_bin())
         .args(base_args(port))
-        .args(["network", "--jq", "."])
+        .args(["network", "--detail", "--jq", "."])
         .output()
-        .expect("network --jq");
+        .expect("network --detail --jq");
     stop_daemon(port);
     if !net.status.success() {
         eprintln!(
@@ -302,7 +315,7 @@ fn live_network_detail_carries_summary() {
     // Detail mode: results is the entry array, summary fields at the envelope top.
     assert!(
         json["results"].is_array(),
-        "network --jq detail results must be an array, got: {}",
+        "network --detail results must be an array, got: {}",
         json["results"]
     );
     assert!(
