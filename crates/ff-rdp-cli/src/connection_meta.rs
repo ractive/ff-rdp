@@ -21,6 +21,70 @@ static OWNER_CACHE: OnceLock<std::sync::Mutex<Vec<OwnerCacheEntry>>> = OnceLock:
 
 static REMEMBERED_VERSION: OnceLock<std::sync::Mutex<Option<u32>>> = OnceLock::new();
 
+static DAEMON_FALLBACK: OnceLock<std::sync::Mutex<Option<String>>> = OnceLock::new();
+
+/// The `meta` key under which a silent daemon→direct fallback is reported
+/// (iter-164).
+pub(crate) const DAEMON_FALLBACK_KEY: &str = "daemon_fallback";
+
+/// Record that the CLI asked for daemon mode, autostart did not produce a
+/// usable daemon, and the command ran over a *direct* connection instead
+/// (iter-164).
+///
+/// `resolve_connection_target` builds this diagnostic as
+/// `ConnectionTarget::Direct::deferred_warning`, whose contract is
+/// "print only if the direct fallback *also* fails". When the direct
+/// connection succeeds — the common case under load — the string was simply
+/// dropped, so a caller who asked for daemon mode and quietly got direct mode
+/// had no signal at all. `meta.route` says `"direct"` but not *why*, and the
+/// two registry-check error paths never reach
+/// `daemon_status::record_autostart_failed`, so they produced no envelope
+/// warning either.
+///
+/// Remembering it here lets [`merge_into`] surface the reason in `meta` under
+/// `--verbose` instead of discarding it.
+pub fn remember_daemon_fallback(reason: impl Into<String>) {
+    let lock = DAEMON_FALLBACK.get_or_init(|| std::sync::Mutex::new(None));
+    let mut guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = Some(reason.into());
+}
+
+/// The daemon→direct fallback reason recorded for this process, if any.
+pub fn remembered_daemon_fallback() -> Option<String> {
+    let lock = DAEMON_FALLBACK.get_or_init(|| std::sync::Mutex::new(None));
+    let guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    guard.clone()
+}
+
+/// Serialization lock for tests that exercise the process-global
+/// [`DAEMON_FALLBACK`] slot (iter-164).
+///
+/// Mirrors [`crate::daemon_status::test_lock`]: one process-wide slot means two
+/// concurrently-running tests would observe each other's writes. Every test
+/// that records/asserts must hold this for its whole sequence.
+#[cfg(test)]
+fn fallback_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Clear the recorded fallback reason. Test-only: the slot is process-global,
+/// so tests that assert on it must reset it.
+#[cfg(test)]
+fn clear_daemon_fallback() {
+    let lock = DAEMON_FALLBACK.get_or_init(|| std::sync::Mutex::new(None));
+    let mut guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = None;
+}
+
 /// Cache the Firefox version observed at handshake so later commands can
 /// surface it in `meta.connection` without re-reading the greeting.
 pub fn remember_version(version: Option<u32>) {
@@ -145,6 +209,11 @@ pub(crate) fn is_loopback(host: &str) -> bool {
 pub fn merge_into(meta: &mut Value, host: &str, port: u16, firefox_version: Option<u32>) {
     if let Some(obj) = meta.as_object_mut() {
         obj.insert("connection".to_string(), build(host, port, firefox_version));
+        // iter-164: a silent daemon→direct fallback is reported here rather
+        // than thrown away (see `remember_daemon_fallback`).
+        if let Some(reason) = remembered_daemon_fallback() {
+            obj.insert(DAEMON_FALLBACK_KEY.to_string(), Value::String(reason));
+        }
     }
 }
 
@@ -286,6 +355,64 @@ mod tests {
         let mut meta = json!({});
         merge_source(&mut meta, "native", None);
         assert!(!is_meta_empty(&meta), "meta with source must not be empty");
+    }
+
+    // ── iter-164 AC5 — a silent daemon→direct fallback is reported, not
+    //    discarded. These share a process-global slot, so each clears it first
+    //    and again at the end.
+
+    /// `unit_164_silent_direct_fallback_is_reported`: when autostart failed and
+    /// the command ran directly, `--verbose` meta must carry the reason.
+    #[test]
+    fn unit_164_silent_direct_fallback_is_reported() {
+        let _guard = fallback_test_lock();
+        clear_daemon_fallback();
+        remember_daemon_fallback(
+            "warning: daemon started but did not register within 20s \
+             (registry write raced or was slow)",
+        );
+        let mut meta = json!({});
+        merge_into_if_verbose(&mut meta, "127.0.0.1", 6000, None, true);
+        merge_route(&mut meta, false);
+        assert_eq!(meta["route"], "direct");
+        let reported = meta[DAEMON_FALLBACK_KEY]
+            .as_str()
+            .expect("meta must report why daemon mode degraded to direct");
+        assert!(
+            reported.contains("did not register"),
+            "the dropped deferred_warning must be surfaced verbatim, got {reported}"
+        );
+        clear_daemon_fallback();
+    }
+
+    /// Without `--verbose` the key stays out of the envelope — `meta.route`
+    /// already says `"direct"`; the reason is the verbose detail.
+    #[test]
+    fn unit_164_fallback_reason_is_verbose_only() {
+        let _guard = fallback_test_lock();
+        clear_daemon_fallback();
+        remember_daemon_fallback("warning: could not acquire daemon spawn lock");
+        let mut meta = json!({});
+        merge_into_if_verbose(&mut meta, "127.0.0.1", 6000, None, false);
+        assert!(
+            meta.get(DAEMON_FALLBACK_KEY).is_none(),
+            "non-verbose meta must stay lean: {meta}"
+        );
+        clear_daemon_fallback();
+    }
+
+    /// The happy path (daemon actually used) records nothing, so the key is
+    /// absent even under `--verbose`.
+    #[test]
+    fn unit_164_no_fallback_means_no_key() {
+        let _guard = fallback_test_lock();
+        clear_daemon_fallback();
+        let mut meta = json!({});
+        merge_into_if_verbose(&mut meta, "127.0.0.1", 6000, None, true);
+        assert!(
+            meta.get(DAEMON_FALLBACK_KEY).is_none(),
+            "no fallback recorded -> key omitted: {meta}"
+        );
     }
 
     #[test]

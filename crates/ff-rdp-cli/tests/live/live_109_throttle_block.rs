@@ -113,10 +113,13 @@ fn live_throttle_slow3g_slows_fetch() {
         return;
     }
     let ff = LiveFirefox::headless_on_random_port();
-    if ff.with_daemon().is_none() {
-        eprintln!("daemon did not start — skipping");
-        return;
-    }
+    // iter-164 Theme D discipline: a `return` here is reported `ok` by libtest,
+    // which is how the enforcement gap this test guards stayed invisible.
+    assert!(
+        ff.with_daemon().is_some(),
+        "live_throttle_slow3g_slows_fetch: the proxy daemon did not start for Firefox on port {}",
+        ff.port()
+    );
     let port = ff.port();
 
     // Navigate to a real same-origin page so in-page fetch() has a document
@@ -183,10 +186,13 @@ fn live_block_url_pattern() {
         return;
     }
     let ff = LiveFirefox::headless_on_random_port();
-    if ff.with_daemon().is_none() {
-        eprintln!("daemon did not start — skipping");
-        return;
-    }
+    // iter-164 Theme D discipline: a `return` here is reported `ok` by libtest,
+    // which is how the enforcement gap this test guards stayed invisible.
+    assert!(
+        ff.with_daemon().is_some(),
+        "live_block_url_pattern: the proxy daemon did not start for Firefox on port {}",
+        ff.port()
+    );
     let port = ff.port();
 
     // Block any URL containing "favicon". The block-list echo confirms the set.

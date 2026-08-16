@@ -370,6 +370,121 @@ mod tests {
         );
     }
 
+    /// iter-164 AC2 — `unit_164_block_patterns_reach_the_actor`.
+    ///
+    /// Ties CLI *intake* to the *wire* request in one test: the patterns the
+    /// user typed go through `resolve_block_urls` and must arrive at the
+    /// network-parent actor as `setBlockedUrls({urls: [...]})`, unchanged and
+    /// in order.
+    ///
+    /// Why this exists: iteration-164's defect 1 was that `throttle --block
+    /// favicon` was accepted, echoed by the envelope, and then not enforced.
+    /// Without this test, "the CLI never sent the patterns" and "Firefox was
+    /// told and then had the block-list destroyed" are indistinguishable
+    /// without a live Firefox. It pins the first half, so a future recurrence
+    /// is immediately localised to enforcement.
+    #[test]
+    fn unit_164_block_patterns_reach_the_actor() {
+        use std::net::{TcpListener, TcpStream};
+        use std::time::Duration;
+
+        use ff_rdp_core::{ActorId, FramedReader, FramedWriter, RdpTransport};
+
+        let mut args = base_args();
+        args.block = vec!["favicon".to_owned(), "*.png".to_owned()];
+        let urls = resolve_block_urls(&args);
+        assert_eq!(
+            urls,
+            vec!["favicon".to_owned(), "*.png".to_owned()],
+            "intake must not rewrite the user's patterns"
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind stub Firefox");
+        let addr = listener.local_addr().expect("stub addr");
+
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let reply_stream: TcpStream = stream.try_clone().expect("clone stub stream");
+            let mut reader = FramedReader::from_stream(stream);
+            let req = reader.recv().expect("stub read request");
+            // `setBlockedUrls` declares no response block but is not oneway —
+            // Firefox still sends an empty ACK the client must read.
+            let mut writer = FramedWriter::from_stream(reply_stream);
+            writer
+                .send(&json!({"from": "server1.conn0.networkParent9"}))
+                .expect("stub ack");
+            req
+        });
+
+        let mut transport =
+            RdpTransport::connect_raw("127.0.0.1", addr.port(), Duration::from_secs(5))
+                .expect("connect to stub Firefox");
+        let front = NetworkParentFront::new(
+            ActorId::from("server1.conn0.networkParent9"),
+            Registry::default(),
+            ActorId::from("server1.conn0.watcher9"),
+        );
+        front
+            .set_blocked_urls(&mut transport, &urls)
+            .expect("set_blocked_urls");
+
+        let req = server.join().expect("stub thread");
+        assert_eq!(req["to"], "server1.conn0.networkParent9");
+        assert_eq!(req["type"], "setBlockedUrls");
+        assert_eq!(
+            req["urls"],
+            json!(["favicon", "*.png"]),
+            "the block-list request must carry exactly the accepted patterns: {req}"
+        );
+    }
+
+    /// iter-164 — `--unblock` must reach the actor as an explicit empty list,
+    /// not as "no request at all". Firefox only clears its block-list when it
+    /// is *told* to.
+    #[test]
+    fn unit_164_unblock_reaches_the_actor_as_empty_list() {
+        use std::net::{TcpListener, TcpStream};
+        use std::time::Duration;
+
+        use ff_rdp_core::{ActorId, FramedReader, FramedWriter, RdpTransport};
+
+        let mut args = base_args();
+        args.unblock = true;
+        let urls = resolve_block_urls(&args);
+        assert!(urls.is_empty());
+        assert!(wants_block_change(&args), "--unblock must trigger a send");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind stub Firefox");
+        let addr = listener.local_addr().expect("stub addr");
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let reply_stream: TcpStream = stream.try_clone().expect("clone stub stream");
+            let mut reader = FramedReader::from_stream(stream);
+            let req = reader.recv().expect("stub read request");
+            let mut writer = FramedWriter::from_stream(reply_stream);
+            writer
+                .send(&json!({"from": "server1.conn0.networkParent10"}))
+                .expect("stub ack");
+            req
+        });
+
+        let mut transport =
+            RdpTransport::connect_raw("127.0.0.1", addr.port(), Duration::from_secs(5))
+                .expect("connect to stub Firefox");
+        let front = NetworkParentFront::new(
+            ActorId::from("server1.conn0.networkParent10"),
+            Registry::default(),
+            ActorId::from("server1.conn0.watcher10"),
+        );
+        front
+            .set_blocked_urls(&mut transport, &urls)
+            .expect("set_blocked_urls");
+
+        let req = server.join().expect("stub thread");
+        assert_eq!(req["type"], "setBlockedUrls");
+        assert_eq!(req["urls"], json!([]));
+    }
+
     #[test]
     fn run_requires_at_least_one_action() {
         // No profile and no block flags → a descriptive user error before any

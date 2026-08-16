@@ -2380,8 +2380,7 @@ fn is_client_target_teardown(msg: &Value) -> bool {
 ///
 /// The daemon installs these once at startup (see [`DAEMON_RESOURCE_TYPES`])
 /// and keeps them for the whole session. Mirrors that list as wire names.
-const DAEMON_OWNED_RESOURCE_NAMES: &[&str] =
-    &["network-event", "console-message", "error-message"];
+const DAEMON_OWNED_RESOURCE_NAMES: &[&str] = &["network-event", "console-message", "error-message"];
 
 /// What to do with a client frame that may be an `unwatchResources` request
 /// (iter-164).
@@ -2844,6 +2843,95 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    // ── iter-164: client `unwatchResources` must not tear down daemon-owned
+    //    resource subscriptions (defect 1 — `throttle --block` did not block).
+
+    /// The exact frame `navigate` sends on teardown through the daemon
+    /// (`ResourceCommand::unsubscribe` for `[document-event, network-event]`).
+    /// It named `network-event`, which destroyed Firefox's `NetworkObserver`
+    /// and with it the block-list an earlier `throttle --block` had installed.
+    #[test]
+    fn unit_164_daemon_strips_network_event_from_client_unwatch() {
+        let msg = json!({
+            "to": "server1.conn0.watcher4",
+            "type": "unwatchResources",
+            "resourceTypes": ["document-event", "network-event"],
+        });
+        match classify_client_resource_teardown(&msg) {
+            ResourceTeardown::Forward(rewritten) => {
+                assert_eq!(
+                    rewritten["resourceTypes"],
+                    json!(["document-event"]),
+                    "the client's own document-event must still be released, \
+                     the daemon-owned network-event must not: {rewritten}"
+                );
+                assert_eq!(rewritten["to"], "server1.conn0.watcher4");
+                assert_eq!(rewritten["type"], "unwatchResources");
+            }
+            other => panic!("expected a rewritten forward, got {other:?}"),
+        }
+    }
+
+    /// A client `unwatchResources` naming *only* daemon-owned types is dropped
+    /// outright. Safe because `unwatchResources` is `oneway: true` in
+    /// `devtools/shared/specs/watcher.js` — no client is left awaiting a reply.
+    #[test]
+    fn unit_164_daemon_drops_wholly_daemon_owned_unwatch() {
+        for types in [
+            json!(["network-event"]),
+            json!(["console-message"]),
+            json!(["error-message"]),
+            json!(["network-event", "console-message", "error-message"]),
+        ] {
+            let msg = json!({
+                "to": "server1.conn0.watcher4",
+                "type": "unwatchResources",
+                "resourceTypes": types,
+            });
+            assert_eq!(
+                classify_client_resource_teardown(&msg),
+                ResourceTeardown::DropEntirely,
+                "must be dropped: {msg}"
+            );
+        }
+    }
+
+    /// Frames that are not a daemon-owned `unwatchResources` are forwarded
+    /// untouched — the daemon must not become a general-purpose rewriter.
+    #[test]
+    fn unit_164_daemon_forwards_unrelated_frames_unchanged() {
+        for msg in [
+            json!({"to": "w", "type": "unwatchResources", "resourceTypes": ["document-event"]}),
+            json!({"to": "w", "type": "watchResources", "resourceTypes": ["network-event"]}),
+            json!({"to": "w", "type": "unwatchTargets", "targetType": "frame"}),
+            // Malformed: no `resourceTypes` array to inspect.
+            json!({"to": "w", "type": "unwatchResources"}),
+            json!({"to": "w", "type": "navigateTo", "url": "https://example.com"}),
+        ] {
+            assert_eq!(
+                classify_client_resource_teardown(&msg),
+                ResourceTeardown::NotApplicable,
+                "must pass through unchanged: {msg}"
+            );
+        }
+    }
+
+    /// The wire names the daemon protects must stay in lockstep with the typed
+    /// list it actually subscribes to at startup. If a future iteration adds a
+    /// fourth entry to `DAEMON_RESOURCE_TYPES` and forgets this list, clients
+    /// silently regain the ability to tear that subscription down.
+    #[test]
+    fn unit_164_daemon_owned_names_match_subscribed_types() {
+        let subscribed: Vec<&str> = DAEMON_RESOURCE_TYPES
+            .iter()
+            .map(|t| t.as_wire_str())
+            .collect();
+        assert_eq!(
+            subscribed, DAEMON_OWNED_RESOURCE_NAMES,
+            "DAEMON_OWNED_RESOURCE_NAMES must mirror DAEMON_RESOURCE_TYPES"
+        );
+    }
 
     /// AC `unit_watcher_settle_delay_fits_inside_startup_retry_budget`
     /// (iter-146 Theme C): the one-time settle delay
