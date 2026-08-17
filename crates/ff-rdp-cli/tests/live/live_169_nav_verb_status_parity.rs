@@ -19,8 +19,14 @@
 //! commit-wait path and on `--no-wait`, on both connection routes
 //! (CONTRIBUTING's daemon-parity rule). They use a **local** fixture server so
 //! the status assertion is against a response this test controls rather than
-//! a real origin: a `reload` of a 200 page must report 200, and a reload of a
-//! path the fixture server does not serve must report 404.
+//! a real origin: a `reload` of a 200 page must report 200, not merely "some
+//! number".
+//!
+//! daemon-parity: `live_169_nav_verbs_report_status_daemon` is the daemon leg
+//! (the mode every real invocation uses, and the one where `network-event`
+//! delivery needs an explicit daemon `stream` request) and
+//! `live_169_nav_verbs_report_status_direct` is the `--no-daemon` leg, so the
+//! two cannot diverge again unnoticed.
 //!
 //! # Running
 //!
@@ -31,9 +37,7 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 
-use crate::common::{
-    FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled,
-};
+use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
 /// Global args for the **default** connection mode — no `--no-daemon`, so the
 /// CLI auto-starts and proxies through the daemon. That is the mode every real
@@ -127,16 +131,23 @@ fn fixture_routes() -> HashMap<String, FixtureRoute> {
 ///
 /// Returns without asserting anything only when the fixture server cannot
 /// bind — every other path asserts.
-fn exercise_nav_verbs(ff: &LiveFirefox, global: &[String], route: &str) {
+fn exercise_nav_verbs(global: &[String], route: &str) {
     let Some(server) = FixtureServer::start(fixture_routes()) else {
         panic!("{route}: could not bind the local fixture server");
     };
     let url_a = format!("{}/a", server.base_url());
     let url_b = format!("{}/b", server.base_url());
-    let _ = ff;
 
-    run_ok(global, &["navigate", &url_a], &format!("{route}: navigate a"));
-    run_ok(global, &["navigate", &url_b], &format!("{route}: navigate b"));
+    run_ok(
+        global,
+        &["navigate", &url_a],
+        &format!("{route}: navigate a"),
+    );
+    run_ok(
+        global,
+        &["navigate", &url_b],
+        &format!("{route}: navigate b"),
+    );
 
     // --- reload: a real request, so a real status ------------------------
     let results = run_ok(global, &["reload"], &format!("{route}: reload"));
@@ -190,7 +201,7 @@ fn live_169_nav_verbs_report_status_daemon() {
         ff.port()
     );
     let port = ff.port();
-    exercise_nav_verbs(&ff, &daemon_args(port), "daemon");
+    exercise_nav_verbs(&daemon_args(port), "daemon");
     stop_daemon(port);
 }
 
@@ -207,5 +218,5 @@ fn live_169_nav_verbs_report_status_direct() {
         return;
     }
     let ff = LiveFirefox::headless_on_random_port();
-    exercise_nav_verbs(&ff, &direct_args(ff.port()), "direct");
+    exercise_nav_verbs(&direct_args(ff.port()), "direct");
 }

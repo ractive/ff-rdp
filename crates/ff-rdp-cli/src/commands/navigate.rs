@@ -1229,9 +1229,8 @@ fn wait_for_doc_complete(
             if with_event_replay(transport, bus_arc, |t| {
                 probe_readystate_complete(t, &probe_actor, probe_epoch)
             }) {
-                let mut committed = with_event_replay(transport, bus_arc, |t| {
-                    eval_location_href(t, &probe_actor)
-                });
+                let mut committed =
+                    with_event_replay(transport, bus_arc, |t| eval_location_href(t, &probe_actor));
                 // iter-130 Theme A hardening (comparis.ch live-Firefox repro,
                 // not caught by any mock-based unit test): a
                 // `readyState === 'complete'` reading whose resolved URL is a
@@ -1246,9 +1245,7 @@ fn wait_for_doc_complete(
                 // `refresh_probe_console_actor` re-resolves via `getTarget`,
                 // which returns the *current* docshell's actors.
                 if needs_href_fallback(&committed, requested_url)
-                    && with_event_replay(transport, bus_arc, |t| {
-                        refresh_probe_console_actor(t, p)
-                    })
+                    && with_event_replay(transport, bus_arc, |t| refresh_probe_console_actor(t, p))
                 {
                     probe_refreshed = true;
                     let fresh_actor = p.console_actor.clone();
