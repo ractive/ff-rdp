@@ -722,6 +722,122 @@ mod tests {
         assert_eq!(file_perms, 0o600, "registry file should be owner-only");
     }
 
+    // ── iter-172: the lock must not live on the published path ──────────────
+
+    /// AC (iter-172): acquiring the registry write lock must not bring the
+    /// published record into existence.
+    ///
+    /// **Fails on `main`.** Through iter-171 the "lock" *was*
+    /// `OpenOptions::new().create(true).open(daemon.<port>.json)`, so this
+    /// assertion trips the moment the lock is taken: a zero-byte
+    /// `daemon.<port>.json` is exactly what a concurrent reader then parses
+    /// into `EOF while parsing a value at line 1 column 0`.
+    #[test]
+    fn taking_the_registry_write_lock_does_not_publish_an_empty_record() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _lock = acquire_registry_write_lock_in(dir.path(), SAMPLE_PORT).expect("lock");
+
+        assert!(
+            !dir.path().join("daemon.6000.json").exists(),
+            "taking the registry write lock must not create the published record"
+        );
+        assert!(
+            dir.path().join("daemon.6000.write.lock").exists(),
+            "the lock must live on its own sibling file"
+        );
+    }
+
+    /// AC (iter-172), the reader-visible form: while one writer holds the
+    /// registry write lock, a second writer blocked behind it must not have
+    /// published anything a reader could see. On `main` the blocked writer had
+    /// already created the zero-byte record before it began waiting on the
+    /// lock — the exact window that produced the observed autostart failures.
+    #[test]
+    fn a_blocked_writer_never_publishes_an_empty_record() {
+        use std::sync::mpsc;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let published = dir.path().join("daemon.6000.json");
+
+        // Hold the lock so the writer spawned below cannot proceed.
+        let held = acquire_registry_write_lock_in(dir.path(), SAMPLE_PORT).expect("hold lock");
+
+        let write_dir = dir.path().to_path_buf();
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let writer = std::thread::spawn(move || {
+            started_tx.send(()).expect("signal start");
+            write_registry_in(&write_dir, &sample_info()).expect("write");
+        });
+        started_rx.recv().expect("writer thread started");
+        // Give the blocked writer ample time to do anything it is going to do
+        // before it parks on the lock.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        assert!(
+            !published.exists(),
+            "a writer waiting on the registry lock must not have published a record; \
+             found {} bytes at {}",
+            fs::metadata(&published).map_or(0, |m| m.len()),
+            published.display()
+        );
+
+        drop(held);
+        writer.join().expect("writer thread");
+
+        // And once it does land, it lands complete.
+        let info = read_registry_in(dir.path(), SAMPLE_PORT)
+            .expect("read")
+            .expect("record present after the writer completed");
+        assert_eq!(info.firefox_port, SAMPLE_PORT);
+    }
+
+    /// AC (iter-172): a zero-byte record reads as *absent*, not as a parse
+    /// error. **Fails on `main`**, which returns
+    /// `EOF while parsing a value at line 1 column 0` and so degrades every
+    /// invocation on that port to `route: "direct"` for as long as the file
+    /// sits there.
+    #[test]
+    fn read_zero_byte_registry_is_treated_as_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("daemon.6000.json"), []).expect("write empty");
+
+        let result =
+            read_registry_in(dir.path(), SAMPLE_PORT).expect("an empty record is not an error");
+        assert!(
+            result.is_none(),
+            "a zero-byte registry file carries no record, so it must read as None"
+        );
+    }
+
+    /// Whitespace-only is the same case as zero-byte — nothing was published.
+    #[test]
+    fn read_whitespace_only_registry_is_treated_as_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("daemon.6000.json"), b"  \n\t ").expect("write blank");
+
+        let result = read_registry_in(dir.path(), SAMPLE_PORT).expect("blank is not an error");
+        assert!(result.is_none());
+    }
+
+    /// A completed write must leave no `.write.lock` *content* behind that a
+    /// reader could confuse with the record, and must leave the record itself
+    /// parseable — the pair of properties the sibling-lock split buys.
+    #[test]
+    fn write_publishes_only_via_rename_and_keeps_the_lock_separate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_registry_in(dir.path(), &sample_info()).expect("write");
+
+        let record = fs::read_to_string(dir.path().join("daemon.6000.json")).expect("read record");
+        assert!(
+            !record.trim().is_empty(),
+            "the published record must never be empty"
+        );
+        assert!(
+            dir.path().join("daemon.6000.write.lock").exists(),
+            "the write lock is a sibling file, not the record"
+        );
+    }
+
     #[test]
     fn read_corrupt_json_returns_error() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -898,6 +1014,63 @@ mod tests {
         assert_eq!(parse_spawn_lock_port("daemon.log"), None);
         assert_eq!(parse_spawn_lock_port("daemon.6000.spawn.lock.tmp"), None);
         assert_eq!(parse_spawn_lock_port("not-a-daemon-file"), None);
+        // iter-172's sibling write lock is a different file with a different
+        // suffix — the spawn-lock matcher must not claim it.
+        assert_eq!(parse_spawn_lock_port("daemon.6000.write.lock"), None);
+    }
+
+    /// iter-172: the write-lock matcher is as narrow as the spawn-lock one,
+    /// and the combined matcher used by the GC accepts exactly the two lock
+    /// files and nothing else in `~/.ff-rdp/`.
+    #[test]
+    fn parse_write_and_combined_lock_ports_match_exact_suffixes_only() {
+        assert_eq!(parse_write_lock_port("daemon.6000.write.lock"), Some(6000));
+        assert_eq!(parse_write_lock_port("daemon.6000.spawn.lock"), None);
+        assert_eq!(parse_write_lock_port("daemon.6000.json"), None);
+        assert_eq!(parse_write_lock_port("daemon.6000.json.tmp"), None);
+
+        assert_eq!(parse_lock_port("daemon.6000.spawn.lock"), Some(6000));
+        assert_eq!(parse_lock_port("daemon.6001.write.lock"), Some(6001));
+        // The published record and its write-ahead file are never candidates.
+        assert_eq!(parse_lock_port("daemon.6000.json"), None);
+        assert_eq!(parse_lock_port("daemon.6000.json.tmp"), None);
+        assert_eq!(parse_lock_port("daemon.6000.throttle.json"), None);
+        assert_eq!(parse_lock_port("daemon.log"), None);
+    }
+
+    /// iter-172: the new `daemon.<port>.write.lock` must be swept by the same
+    /// stale-lock GC as the spawn lock, or it becomes a second class of file
+    /// that accumulates in `~/.ff-rdp/` forever (dogfood-62 #9 for the first).
+    #[test]
+    fn gc_collects_stale_write_locks_and_spares_live_ones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Port 6000: dead owner — both of its locks must go.
+        write_registry_in(dir.path(), &info_with_pid(6000, DEAD_PID)).expect("write dead");
+        fs::write(dir.path().join("daemon.6000.spawn.lock"), []).expect("dead spawn lock");
+
+        // Port 6001: live owner — its write lock must survive.
+        write_registry_in(dir.path(), &info_with_pid(6001, std::process::id()))
+            .expect("write live");
+
+        gc_stale_spawn_locks_in(dir.path());
+
+        assert!(
+            !dir.path().join("daemon.6000.write.lock").exists(),
+            "a write lock whose owning daemon is dead must be collected"
+        );
+        assert!(
+            !dir.path().join("daemon.6000.spawn.lock").exists(),
+            "the spawn lock for the same dead daemon must still be collected"
+        );
+        assert!(
+            dir.path().join("daemon.6001.write.lock").exists(),
+            "the write lock of a live daemon must survive"
+        );
+        assert!(
+            dir.path().join("daemon.6001.json").exists(),
+            "the GC must never touch a published record"
+        );
     }
 
     /// AC `unit_spawn_lock_gc`: a spawn lock whose registry entry's pid is
