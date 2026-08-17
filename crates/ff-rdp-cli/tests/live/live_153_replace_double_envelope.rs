@@ -29,9 +29,9 @@
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
 //!       --test live live_153 -- --nocapture
 
-use std::process::Command;
-
-use crate::common::{FirefoxGuard, LiveFirefox, ff_rdp_bin, live_tests_enabled, pid_alive};
+use crate::common::{
+    FirefoxGuard, LiveFirefox, ff_rdp_launch_command, live_tests_enabled, pid_alive,
+};
 
 /// Run `ff-rdp --host 127.0.0.1 --port <port> <args...>` inside an isolated
 /// `FF_RDP_HOME` and return `(exit_success, raw_stdout_bytes)`.
@@ -45,7 +45,7 @@ fn run_raw(home: &std::path::Path, port: u16, args: &[&str]) -> (bool, Vec<u8>) 
         "10000".into(),
     ];
     full.extend(args.iter().map(|s| (*s).to_owned()));
-    let out = Command::new(ff_rdp_bin())
+    let out = ff_rdp_launch_command()
         .env("FF_RDP_HOME", home)
         .args(&full)
         .output()

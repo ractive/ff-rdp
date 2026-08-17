@@ -176,9 +176,13 @@ That block inferred, from four orphaned profiles all reading `spawned by unknown
 "the owner-test marker … does not survive the process being killed rather than dropped". **That
 inference is wrong.** `live_158_launch_survives_contended_bind` — the test the interrupted run
 died in — spawns `ff-rdp launch` through a bare `Command::new(ff_rdp_bin())` and therefore never
-sets `FF_RDP_LIVE_TEST_NAME` at all. The marker did not decay; it was never requested. 20 such
-call sites exist across 10 live-test files, and all of them were producing unattributable
-profiles. Fixed by routing them through a tagged `ff_rdp_launch_command()` (and
+sets `FF_RDP_LIVE_TEST_NAME` at all. The marker did not decay; it was never requested. **22 such
+call sites exist across 12 live-test files**, and all of them were producing unattributable
+profiles. (The first pass claimed 20 across 10 and was wrong: this PR's own review found two more
+— `live_123_daemon_autostart_and_registry.rs`'s `launch --replace` and `live_153`'s shared
+`run_raw` helper — which is why the count is stated here as verified rather than as remembered.
+`live_158`'s two remaining bare `Command::new(ff_rdp_bin())` sites are `daemon stop` and `tabs`;
+neither spawns a Firefox, so neither needs the tag.) Fixed by routing them through a tagged `ff_rdp_launch_command()` (and
 `ff_rdp_launch_command_for` for `live_158`'s worker threads, which are unnamed and would otherwise
 still stamp `unknown`).
 

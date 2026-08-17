@@ -22,7 +22,9 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::common::live_tests_enabled;
-use crate::common::{FirefoxGuard, LiveFirefox, RawFirefox, ff_rdp_bin, kill_pid, pid_alive};
+use crate::common::{
+    FirefoxGuard, LiveFirefox, RawFirefox, ff_rdp_bin, ff_rdp_launch_command, kill_pid, pid_alive,
+};
 
 /// Run `ff-rdp --port <port> <args...>` inside an isolated `FF_RDP_HOME` and
 /// return the parsed JSON envelope (or `None` on non-JSON output).
@@ -365,7 +367,7 @@ fn live_daemon_stop_prior_instance_targets_debug_port_not_cli_port() {
     // port (cli.port); post-fix it correctly names the TARGET's port (the one
     // --debug-port actually resolved), proving stop_prior_instance reached the
     // right daemon regardless of whether the trailing port-free wait succeeds.
-    let replace_out = Command::new(ff_rdp_bin())
+    let replace_out = ff_rdp_launch_command()
         .env("FF_RDP_HOME", home.path())
         .args([
             "--host",
