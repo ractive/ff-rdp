@@ -2,7 +2,7 @@
 title: "Iteration 172: the registry writer locks the published path, so autostart reads a zero-byte record and silently falls back to direct"
 type: iteration
 date: 2026-08-16
-status: planned
+status: in-progress
 branch: iter-172/registry-lock-on-published-path
 depends_on: []
 first_call_sites: []
@@ -13,11 +13,11 @@ dogfood_path: |
   # from the moment a write starts until the rename lands. Readers in that
   # window parse zero bytes. Reproduce it deterministically — do NOT hunt for it
   # under load.
-
+  
   # 1. Baseline: the routed command must report meta.route == "daemon".
   ff-rdp --port <port> --verbose network --jq '.meta.route'
   # → EXPECTED on a quiet machine: "daemon"
-
+  
   # 2. Deterministic repro of the empty read, no load required. Remove any
   #    existing record, then create the file the way the writer's lock step
   #    does — empty — and read it back through the product:
@@ -30,13 +30,17 @@ dogfood_path: |
   #    EOF while parsing a value at line 1 column 0 — connecting directly"
   #   and meta.route == "direct". This is the exact envelope observed once in
   #   iteration 168's sweep (2026-08-16).
-
+  
   # 3. Show it is the lock step, not a torn write: write_registry_in already
   #    does tmp-file + fs::rename (registry.rs:132-152, guarded by the unit test
   #    write_is_atomic_tmp_cleaned_up). Confirm by racing a real writer —
   #    hold the lock in one process and stat/read the path from another:
   #    the file is present and zero-length before the rename.
-tags: [iteration, daemon, registry, reliability]
+tags:
+  - iteration
+  - daemon
+  - registry
+  - reliability
 ---
 
 # Iteration 172: the daemon registry is read while it is being written
@@ -173,6 +177,89 @@ distinct one wearing the same error text; do not assume.
 Theme C now has a measured cost: this route downgrade has silently reddened three unrelated tests
 across two sweeps.
 
+## Theme A — the reproduction, run 2026-08-17
+
+**The diagnosis in the "Added 2026-08-17" block is correct.** Every step of `dogfood_path` ran; the
+outputs are below verbatim.
+
+### 1. Baseline — a routed command reports `daemon`
+
+```console
+$ ff-rdp --port 6000 --verbose network --jq '.meta.route'
+"daemon"
+```
+
+### 2. Planted zero-byte record, `main` binary (21e777a, built in a scratch worktree)
+
+```console
+$ ff-rdp --port 6000 daemon stop; rm -f ~/.ff-rdp/daemon.6000.json; : > ~/.ff-rdp/daemon.6000.json
+$ ls -la ~/.ff-rdp/daemon.6000.json
+-rw-r--r--  1 james  staff  0 Aug 17 21:00 /Users/james/.ff-rdp/daemon.6000.json
+$ <main>/ff-rdp --port 6000 --verbose network
+  "daemon_fallback": "warning: failed to check daemon status: parsing registry at
+   /Users/james/.ff-rdp/daemon.6000.json: EOF while parsing a value at line 1 column 0
+   (check /Users/james/.ff-rdp/daemon.log for details)",
+  "route": "direct"
+--- elapsed: 11s
+```
+
+The error text matches the sweep failures character for character.
+
+### 3. Racing a real writer — the file *is* observed empty, and it is the lock step
+
+A probe added to a scratch checkout of `main` (not committed) that takes the lock exactly the way
+`write_registry_in` did, then looks at the published path from a reader's point of view:
+
+```console
+$ cargo test -p ff-rdp-cli --bins probe_172 -- --nocapture     # on main, 21e777a
+PROBE: published path exists=true len=0
+PROBE: read error chain -> parsing registry at .../daemon.6000.json:
+                           EOF while parsing a value at line 1 column 0
+panicked: PROBE FAILS ON MAIN: the lock step published a 0-byte record
+```
+
+So the answers to the Theme A tasks are:
+
+- **Is the registry file observed empty or truncated mid-write?** Empty, never truncated — the
+  record is zero bytes for the entire span between the lock `open` and the `rename`. It is
+  reproducible on demand (100 % of probe runs), not a rare race: the *reader* landing inside the
+  span is what is rare.
+- **Is the registry write atomic today?** Yes. `serde_json::to_string_pretty` → `daemon.<port>.json.tmp`
+  → `fs::rename`, guarded by `write_is_atomic_tmp_cleaned_up`. The title's "torn read" mechanism is
+  wrong and the retitled one is right.
+
+### 4. After the fix, same planted file
+
+```console
+$ rm -f ~/.ff-rdp/daemon.6000.json; : > ~/.ff-rdp/daemon.6000.json
+$ ff-rdp --port 6000 --verbose network --jq '{route: .meta.route, fallback: .meta.daemon_fallback}'
+{"route":"daemon","fallback":null}
+--- elapsed: 1s
+$ ls -la ~/.ff-rdp/daemon.6000.*
+-rw-------  232  daemon.6000.json
+-rw-------    0  daemon.6000.spawn.lock
+-rw-------    0  daemon.6000.write.lock      ← the lock is now a sibling
+```
+
+### 5. The "spawn died before the registry write" phrasing — same defect
+
+The plan asked whether the second `daemon_fallback` wording was a distinct bug wearing the same
+error text. It is not. `classify_registry_wait_failure` (`client.rs:491`) re-reads the registry to
+decide what to say; on the zero-byte file that read returns `Err`, which falls through to the
+catch-all `_` arm and prints **"spawn died before the registry write"** about a daemon that was
+perfectly alive. One cause, two wordings — and the misclassification made the reports actively
+misleading.
+
+### 6. `live_160_ref_click_asserts_handler_effect` — NOT confirmed, and not assumed in
+
+Its assertion still carried no evidence, so nothing in this reproduction attributes it to this
+defect. What *is* now established is that its failure mode is reachable from this defect:
+`with_daemon` gives up when `daemon status` never reports a running daemon, and `daemon status`
+reads the same registry, so a zero-byte record makes it report "not running" for the full 30 s
+budget. Reachable is not the same as responsible — a Firefox launch stall under sweep load produces
+an identical `None`. The honest disposition is therefore: **cause unknown, evidence now collected
+on the next occurrence** (Theme C below). The acceptance criterion covering it is left unticked.
+
 ## Themes
 
 - **A — Reproduce deterministically before changing anything** (revised 2026-08-17 — this no
@@ -191,20 +278,95 @@ across two sweeps.
   after being asked for the daemon, with the reason only in `meta.daemon_fallback` and a warning.
   Decide whether that is loud enough, given that this cost an unrelated test a red.
 
+## What was changed
+
+Three layers, in decreasing order of how much of the defect each one removes.
+
+### 1. The writer stops locking the published path (the fix)
+
+`registry::acquire_registry_write_lock_in` (new) takes the exclusive lock on a sibling
+`daemon.<port>.write.lock`, exactly as `acquire_spawn_lock_in` has done since iter-100 and for the
+reason its own doc comment already gave. `write_registry_in` calls it and holds it across the tmp
+write *and* the rename. The published record now only ever comes into existence via `fs::rename`,
+so a reader sees either no file or a complete one.
+
+The two lock helpers were collapsed onto one `acquire_file_lock(path, what)` and one `FileLock`
+guard (`SpawnLock` was a one-field wrapper with the same body), and the stale-lock GC learned the
+new filename via `parse_write_lock_port` / `parse_lock_port` — otherwise iter-172 would have
+introduced a second class of zero-byte file that accumulates in `~/.ff-rdp/` forever, which is
+dogfood-62 #9 all over again.
+
+### 2. A zero-byte record reads as absent, not as corruption
+
+`read_registry_in` returns `Ok(None)` for an empty (or whitespace-only) file. Argued on its own
+merits rather than assumed in: layer 1 stops *this* build producing the file, but a copy left by a
+pre-iter-172 build sits in `~/.ff-rdp/` indefinitely, and while it does it poisons that port
+**permanently** — every invocation, not just one inside a race window. Deliberately narrow: only a
+zero-length file is absence. Non-empty bytes that do not parse are still an error
+(`read_corrupt_json_returns_error` is unchanged), because that really is corruption and swallowing
+it would hide a genuine problem.
+
+### 3. The autostart poll retries an unreadable read
+
+`wait_for_registry` bailed on the first `Err`. It is polling a file another process is actively
+producing, so "cannot read it yet" is a normal intermediate state, not a verdict — the only reason
+it was terminal is that `read_registry` split "no record" and "unreadable record" into different
+arms. It now keeps polling to its deadline and reports the last read error in the timeout message,
+so a genuinely corrupt registry still names itself. This also makes the caller's
+"did not register within 20s" *true*: on `main` that sentence was printed after a wait of roughly
+50 ms.
+
+Extracted `wait_for_registry_in(dir, …)` so the loop is unit-testable against a tempdir instead of
+the real `~/.ff-rdp`.
+
+### Rejected
+
+- **Reader-only fix (retry, leave the writer alone).** Rejected: it would have left the product
+  publishing an empty record on every single write and hoped every reader retried. `daemon status`,
+  `doctor` and `classify_registry_wait_failure` all read the registry too.
+- **Making `find_running_daemon` swallow *all* read errors.** Rejected: a genuinely corrupt record
+  is worth a loud fallback, and `doctor` surfaces it. Only the zero-byte case — which is
+  unambiguously "no record" — was reclassified.
+- **Removing the empty file in a GC pass.** Rejected as a fix (it is a cleanup, not a cure) though
+  the `rename` in layer 1 overwrites it on the next successful registration anyway.
+
 ## Tasks
 
 ### A. Reproduce
-- [ ] Run every step of `dogfood_path` and paste actual outputs into this plan
-- [ ] Record whether the registry file is observed empty or truncated mid-write, and how often
-- [ ] Record whether the registry write is atomic (temp + rename) today
+- [x] Run every step of `dogfood_path` and paste actual outputs into this plan
+- [x] Record whether the registry file is observed empty or truncated mid-write, and how often
+- [x] Record whether the registry write is atomic (temp + rename) today
 
 ### B. Fix
-- [ ] The chosen writer and/or reader change, with the rejected alternatives recorded
-- [ ] Unit test: a torn (empty) registry read is retried, not treated as terminal
-- [ ] Live test that exercises autostart registration
+- [x] The chosen writer and/or reader change, with the rejected alternatives recorded
+- [x] Unit test: a torn (empty) registry read is retried, not treated as terminal
+      (`unit_172_wait_for_registry_keeps_polling_an_unreadable_record`,
+      `unit_172_wait_for_registry_recovers_after_a_bad_read`)
+- [x] Live test that exercises autostart registration
+      (`live_172_zero_byte_registry_does_not_downgrade_to_direct`,
+      `live_172_published_record_is_complete_and_lock_is_a_sibling`)
 
 ### C. Reporting
-- [ ] Record the decision on how loudly a route downgrade is reported
+- [x] Record the decision on how loudly a route downgrade is reported
+
+**Decision: the envelope reporting is left as it is; the *test harness* reporting is what was
+wrong.**
+
+`meta.route` is already unconditional (iter-128 Theme D) and `meta.daemon_fallback` already carries
+the reason under `--verbose` (iter-164). Escalating a downgrade to a hard error was considered and
+rejected: falling back to a direct connection is the correct behaviour when the daemon genuinely
+cannot start, and a command that *worked* must not exit non-zero. Making the warning unconditional
+on stderr was also rejected — it would break the JSON-only output contract for the common,
+harmless case.
+
+What actually cost three sweeps a red was on the other side of the fence: the live harness threw
+the reason away. `LiveFirefox::with_daemon` returned a bare `Option`, so eighteen live tests could
+only say "the proxy daemon did not start" and nothing more. `with_daemon_or_reason` (new) returns
+the reason — the autostart trigger now runs `--verbose` so `meta.route` / `meta.daemon_fallback`
+are present, and `daemon_route_note` extracts them. `with_daemon` delegates and prints the reason
+to stderr, so **all eighteen existing call sites gained the diagnostic without being touched**;
+`live_160_envelope_honesty` (the test whose cause could not be established) puts it directly in its
+panic message. This is the general form of the fix iter-169 applied to `live_158`.
 
 ## Acceptance Criteria [0/4]
 
