@@ -2,7 +2,7 @@
 title: "Iteration 170: eval's scanner still cannot see into ${} or past a }"
 type: iteration
 date: 2026-08-16
-status: in-review
+status: done
 branch: iter-170/eval-scanner-residual-gaps
 depends_on:
   - iteration-167-eval-statement-scanner-is-not-a-tokenizer
@@ -16,18 +16,18 @@ dogfood_path: |
   # reproduces.
   ff-rdp launch --headless --debug-port 7502
   ff-rdp --port 7502 navigate https://example.com
-
+  
   # Gap 1 — `${...}` inside a template literal is skipped as opaque text
   # rather than re-entered, so a quote or backtick inside an interpolation
   # can end the template early.
   ff-rdp --port 7502 eval --stringify 'const s = `a${"`"}b`; s'
   # → predicted: the inner backtick closes the template, the scanner sees a
   #   top-level `;` that is not one, and the wrap emits invalid JS.
-
+  
   ff-rdp --port 7502 eval --stringify 'const s = `x${ ";" }y`; s'
   # → the `;` is inside an interpolation but also inside the template, which
   #   IS tracked — record whether this one is already fine.
-
+  
   # Gap 2 — a `/` right after `}` is always read as division, because telling
   # an object literal from a block needs parser feedback.
   ff-rdp --port 7502 eval --stringify 'const n = 1; if (n) {} /a;b/.test("a;b")'
