@@ -565,9 +565,19 @@ That statement split understands JS literals: a `;` or newline inside a
 string, a template literal, a regular-expression literal or a `//` / `/* */`
 comment is not a statement separator, and a backslash escape does not end the
 literal it sits in (iter-167 — `eval --stringify '/a;b/.test(\"a;b\")'` used to
-fail with \"unterminated regular expression literal\"). It is still a scanner
-rather than a full JS parser: `${...}` inside a template literal is skipped
-whole, and a `/` right after `}` is read as division, never as a regex.
+fail with \"unterminated regular expression literal\"). iter-170 closed the two
+gaps that left open: a `${...}` interpolation is scanned as the code it is, so
+a backtick or quote inside one no longer ends the template early
+(`eval --stringify 'const s = `a${\"`\"}b`; s'` used to yield `undefined`), and
+whether a `/` after `}` divides or opens a regex is now decided from what the
+matching `{` opened — a block (`if (n) {} /a;b/.test(\"a;b\")`, which used to be
+a SyntaxError) or an object literal (`const o = {v:8}; o.v / 2`, still
+division). A block also ends its own statement, so no `;` or newline is needed
+after `}`.
+
+It is still a scanner rather than a full JS parser. It does not commit on an
+arrow function's `{` body, a `class` body or a labelled block, so each is read
+as an object literal — the conservative answer, which can only cost a wrap.
 
 Since iter-165 that same last-statement rule also governs a plain (non-await)
 script that declares something, because that script now runs in the per-call
