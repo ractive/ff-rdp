@@ -42,15 +42,26 @@ a silent early return.)
 ### Reading the summary
 
 ```
-LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K total=T
+LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K vanished=V launch_timeout=L total=T
 ```
 
 - `executed=N` — actually ran. This is the number to quote.
 - `skipped=M` — env gate not set. Usually the `FF_RDP_LIVE_NETWORK_TESTS` set.
 - `preexisting=K` — needs a Firefox *somebody else* started on the fixed port 6000 (the
-  `ff-rdp-core` live tests never launch one). The sweep probes that port once and, finding
+  `ff-rdp-core` live tests never launch one). The sweep probes that port at start and, finding
   nothing, reports them `ignored` rather than folding them into `executed`. Start one with
   `firefox -no-remote --start-debugger-server 6000 --headless` to execute them.
+- `vanished=V` (iter-173) — the port-6000 browser was there at classification time and gone when
+  the tier ran. The sweep re-probes immediately before each tier that needs it (and again after a
+  failing phase), and reports those tests `ignored`. **Does not fail the sweep.** A non-zero `V`
+  means restart the browser and re-run those targets before treating the numbers as the record.
+- `launch_timeout=L` (iter-173, folded in from iter-170) — Firefox never opened its debug port
+  within the per-test budget under sweep load. **Still fails the sweep** (it is a real red), but
+  it is not a product defect; re-run the named test in isolation, or raise
+  `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`.
+
+`vanished` and `launch_timeout` are carved out of `executed`, not added to it — `total=T` is
+conserved, so a reclassification can never inflate the number you quote.
 
 **A summary is meaningless without the gates that produced it.** Two sweeps compare only when the
 same gates were set. Measured across the 158–161 batch:

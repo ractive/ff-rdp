@@ -100,7 +100,8 @@ which dominates the iteration loop's wall-clock cost.
   its own ignore-reason text, runs only the tests whose required env var(s) are actually set (with
   `--include-ignored`, so libtest reports genuine `ok`/`FAILED`), and runs the rest *without*
   `--include-ignored` so libtest reports them `ignored` using its own vocabulary. It ends with a
-  machine-readable `LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K total=T` line — quote
+  machine-readable
+  `LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K vanished=V launch_timeout=L total=T` line — quote
   `executed=N` in the PR body instead of the `cargo test` summary line. Add `--dry-run` to see the split without invoking `cargo test`.
 - **`preexisting=K` is the third tier** (iter-158 Theme F). The `ff-rdp-core` live tests never
   launch Firefox — they connect to one somebody else started on the fixed default port 6000
@@ -114,6 +115,28 @@ which dominates the iteration loop's wall-clock cost.
   start one itself — port 6000 is the port a human is most likely to already be using by hand,
   and the fails-closed ownership guard in `daemon/client.rs` exists because ff-rdp once killed
   exactly such an instance.
+- **`vanished=V` and `launch_timeout=L` are unmet preconditions, not failures** (iter-173). Both
+  used to be reported as failing tests, which is iter-155's lie with the sign flipped: red for a
+  reason that has nothing to do with the code under test, in the one artifact every iteration
+  pastes into its PR body.
+  - `vanished=V` — the port-6000 Firefox answered the probe when the sweep started and was gone
+    by the time a tier that needs it actually ran. The `ff-rdp-cli` tier takes 35-40 minutes and
+    runs first, so this window is wide; in iteration 168's sweep the browser was killed inside it
+    and all seven `ff-rdp-core` tests were reported `FAILED` with `ConnectionRefused` (they pass
+    7/7 against a fresh browser). The sweep now re-probes `127.0.0.1:6000` immediately before
+    each such target and, if it has gone, runs those tests *without* `--include-ignored` so
+    libtest reports them `ignored`. It also re-probes after a failing phase, so a browser that
+    dies mid-tier is attributed the same way. **`vanished` does not fail the sweep** — those
+    tests never reached a browser at all.
+  - `launch_timeout=L` — a test panicked because Firefox never opened its debug port within the
+    per-test launch budget (`FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`, 30 s since iter-158). A serial
+    38-minute sweep spends that budget against a fully loaded machine; iter-170's
+    `live_daemon_autostart_tabless` hit it and passed on a re-run in isolation. **This still
+    fails the sweep** — it is a red libtest result, and turning reds green on inference is how a
+    real regression gets waved through. The separate count exists so a reader can tell "the
+    product is broken" from "the machine could not start a browser in time".
+  - Both counts are carved *out* of `executed`, never added on top of it: `total=T` is conserved,
+    so no reclassification can inflate `executed`.
 - **A live test that cannot launch Firefox FAILS** (iter-158 Theme D). `LiveFirefox::
   headless_on_random_port` returns the launcher directly and panics with the launch exit status
   and its captured stdout *and* stderr; there is no `Option` to `else { return; }` on, and the

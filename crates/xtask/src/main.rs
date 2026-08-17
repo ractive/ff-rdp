@@ -41,7 +41,11 @@ enum Commands {
     FindIterationPlan(find_iteration_plan::Args),
     /// Run the live-Firefox test suite so an unmet env gate reports `ignored`
     /// (libtest's own vocabulary) instead of a fake `ok` (iter-155). Prints a
-    /// machine-readable `LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K total=T` line.
+    /// machine-readable `LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K
+    /// vanished=V launch_timeout=L total=T` line, where the last two are unmet
+    /// preconditions (a port-6000 browser that went away mid-sweep, and a
+    /// Firefox that never opened its debug port in time) rather than product
+    /// failures (iter-173).
     LiveSweep(live_sweep::Args),
 }
 

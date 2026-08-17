@@ -55,18 +55,27 @@ fn unit_168_drop_waits_for_pid_exit() {
     // effectively did by never asking), and must return as soon as it goes,
     // not burn the whole budget.
     let probes = AtomicUsize::new(0);
-    let signalled_at = Instant::now();
     let dies_after = Duration::from_millis(30);
+    // One clock, taken BEFORE the call. `wait_for_pid_exit_with` starts its own
+    // `Instant` inside itself, strictly after this one, and the value it returns
+    // is measured from *that* later origin — so the returned duration is always
+    // short of `dies_after` by the gap between the two, and asserting
+    // `waited >= dies_after` can never be guaranteed. It passed only while poll
+    // overshoot happened to exceed the gap; on windows-latest at PR #211 it came
+    // back 29.9836 ms, i.e. 16 µs short, and failed. Assert on `started`, which
+    // is provably at or before the helper's own origin, and which is also the
+    // clock the fake process's death is defined against.
     let started = Instant::now();
     let waited = wait_for_pid_exit_with(Duration::from_secs(5), || {
         probes.fetch_add(1, Ordering::SeqCst);
-        signalled_at.elapsed() < dies_after
+        started.elapsed() < dies_after
     });
     let elapsed = started.elapsed();
     let waited = waited.expect("a process that exits within the budget must be observed exiting");
     assert!(
-        waited >= dies_after,
-        "the helper must wait until the process is actually gone, not return early: {waited:?}"
+        elapsed >= dies_after,
+        "the helper must wait until the process is actually gone, not return early: \
+         observed {elapsed:?} on the shared clock (helper reported {waited:?})"
     );
     assert!(
         elapsed < Duration::from_secs(1),
