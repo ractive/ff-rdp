@@ -621,4 +621,78 @@ mod tests {
             "PID 999_999_999 should be detected as dead"
         );
     }
+
+    /// AC (iter-171): `process_start_token` is available on this platform, is
+    /// stable for a given process, and is `None` for a PID that does not
+    /// exist. Without the first property the whole identity check silently
+    /// degrades to the pre-iter-171 bare-liveness behaviour on this target, so
+    /// the assertion is deliberately unconditional on the tier-1 platforms.
+    #[test]
+    fn unit_process_start_token_stable_for_self_and_none_for_dead_pid() {
+        let pid = std::process::id();
+        let first = process_start_token(pid);
+
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "linux",
+            target_os = "android",
+            windows
+        ))]
+        assert!(
+            first.is_some(),
+            "a supported platform must supply a start token for its own PID {pid}"
+        );
+
+        assert_eq!(
+            first,
+            process_start_token(pid),
+            "the start token for a live process must not change between calls"
+        );
+        assert_eq!(
+            process_start_token(999_999_999),
+            None,
+            "a PID that does not exist has no start token"
+        );
+    }
+
+    /// AC (iter-171): the token actually *distinguishes* processes — two
+    /// concurrently-live PIDs must not share a token. This is the property
+    /// that makes `(pid, token)` a usable identity: if the token were, say, a
+    /// per-boot constant, every recycled PID would still read as its original
+    /// owner and the fix would be inert.
+    #[test]
+    fn unit_process_start_token_differs_between_processes() {
+        let Some(mine) = process_start_token(std::process::id()) else {
+            // Unsupported platform — `owner_liveness` degrades to bare
+            // liveness there by design, so there is nothing to assert.
+            return;
+        };
+
+        #[cfg(unix)]
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn `sleep 30`");
+        #[cfg(windows)]
+        let mut child = Command::new("cmd")
+            .args(["/C", "timeout", "/T", "30", "/NOBREAK"])
+            .spawn()
+            .expect("spawn timeout");
+
+        let child_token = process_start_token(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(
+            child_token.is_some(),
+            "a live child process must have a start token"
+        );
+        assert_ne!(
+            child_token,
+            Some(mine),
+            "two concurrently-live processes must not share a start token — \
+             otherwise the token cannot distinguish a recycled PID"
+        );
+    }
 }

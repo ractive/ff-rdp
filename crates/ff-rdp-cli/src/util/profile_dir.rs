@@ -983,22 +983,30 @@ mod tests {
     /// PID. Proves: (a) a marked managed dir → `true` for that PID; (b) a
     /// *different* (foreign) PID → `false`; (c) an empty root → `false`. This
     /// is the primitive that stops ff-rdp from killing a user's own Firefox.
+    ///
+    /// iter-171: the marked PID is now this live test process rather than the
+    /// fabricated `4242`. The gate grades the marker through
+    /// [`owner_liveness`], which cannot confirm the identity of a PID that
+    /// does not exist — and every real caller has already established that its
+    /// candidate is the live process listening on the port, so a dead PID was
+    /// never a case this gate had to authorise.
     #[test]
     fn unit_pid_is_ff_rdp_spawned_true_only_for_marked_managed_profile() {
         let root = tempfile::tempdir().expect("tempdir");
+        let live_pid = std::process::id();
 
         // Empty root: no profile owns anything.
         assert!(
-            !pid_is_ff_rdp_spawned_under(root.path(), 4242),
+            !pid_is_ff_rdp_spawned_under(root.path(), live_pid),
             "an empty profile root must never authorise a kill"
         );
 
-        // A managed dir whose marker names PID 4242.
+        // A managed dir whose marker names the live PID.
         let dir = seed_fake_profile(root.path(), &"a".repeat(16), Duration::from_secs(1));
-        std::fs::write(dir.join(OWNER_PID_MARKER), b"4242\n").expect("write marker");
+        write_owner_pid_marker(&dir, live_pid);
 
         assert!(
-            pid_is_ff_rdp_spawned_under(root.path(), 4242),
+            pid_is_ff_rdp_spawned_under(root.path(), live_pid),
             "the marked managed PID must be recognised as ff-rdp-spawned"
         );
         assert!(
@@ -1159,6 +1167,182 @@ mod tests {
             !dir.exists(),
             "a marker-less stale dir must still be pruned"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // iter-171: PID reuse must not resurrect a dead profile's ownership
+    // -----------------------------------------------------------------
+
+    /// Seed a managed profile dir under `root` whose owner-PID marker names a
+    /// **live** process (this one) but whose owner-start marker records a
+    /// token that process cannot have — i.e. exactly the on-disk state a
+    /// leaked profile reaches once the OS hands its old PID to something else.
+    ///
+    /// Forging the token rather than waiting for a real recycle is deliberate:
+    /// PID recycling was measured at ~229 allocations/second against a
+    /// `PID_MAX` of 99 999 on this project's macOS dev machine, so reproducing
+    /// it honestly costs minutes of saturated spawning per run.
+    fn seed_recycled_pid_profile(root: &Path, suffix: &str) -> PathBuf {
+        let dir = seed_fake_profile(root, suffix, Duration::from_secs(1));
+        write_owner_pid_marker(&dir, std::process::id());
+        // Overwrite whatever real token the write captured with one that is
+        // structurally valid but belongs to no incarnation of this PID.
+        std::fs::write(dir.join(OWNER_START_MARKER), b"0.000001\n")
+            .expect("forge a mismatched start token");
+        dir
+    }
+
+    /// AC (iter-171, fails on `main`): a profile whose owner PID is alive but
+    /// is a *different process* than the one that wrote the marker must not
+    /// read as live-owned.
+    ///
+    /// On `main` `profile_is_owned_by_live_process` is `kill(pid, 0)` and
+    /// answers `true` here, because the recycled PID really is alive — which
+    /// is what made a leaked directory permanently unreclaimable and what
+    /// tripped `live_96_profile_cleanup`'s precondition.
+    #[test]
+    fn pre_fix_repro_recycled_owner_pid_reads_as_live() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let recycled = seed_recycled_pid_profile(root.path(), &"7".repeat(16));
+
+        assert_eq!(
+            owner_liveness(&recycled),
+            OwnerLiveness::Dead,
+            "a live PID whose start token disagrees with the recorded one is a \
+             recycled PID, not the original owner"
+        );
+        assert!(
+            !profile_is_owned_by_live_process(&recycled),
+            "a recycled PID must not resurrect a dead profile's ownership"
+        );
+    }
+
+    /// AC (iter-171, fails on `main`): the recycled-PID profile is actually
+    /// *reclaimed* — not merely graded correctly. This is the user-visible
+    /// half: on `main` the age-gated sweep sees a live owner, skips the entry
+    /// outright, and therefore never removes it at any age.
+    #[test]
+    fn pre_fix_repro_prune_never_reclaims_recycled_pid_profile() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let recycled = seed_recycled_pid_profile(root.path(), &"8".repeat(16));
+
+        let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
+
+        assert_eq!(
+            summary.removed,
+            vec![recycled.clone()],
+            "a profile whose owner PID has been recycled must be reclaimed"
+        );
+        assert!(!recycled.exists(), "{} must be gone", recycled.display());
+    }
+
+    /// AC (iter-171): the kill-scoping gate (iter-110 Theme A0) must not be
+    /// fooled either. A stale marker naming a recycled PID would otherwise
+    /// hand it a permission slip to SIGKILL a process ff-rdp never spawned —
+    /// the precise failure mode that gate exists to prevent.
+    #[test]
+    fn unit_pid_is_ff_rdp_spawned_refuses_recycled_pid() {
+        let root = tempfile::tempdir().expect("tempdir");
+        seed_recycled_pid_profile(root.path(), &"9".repeat(16));
+
+        assert!(
+            !pid_is_ff_rdp_spawned_under(root.path(), std::process::id()),
+            "a marker whose start token disagrees names a PID ff-rdp no longer \
+             owns — it must never authorise a kill"
+        );
+    }
+
+    /// The genuine owner is unaffected: `write_owner_pid_marker` records the
+    /// live process's real token, so the same paths still read `Live` and the
+    /// profile is still protected from pruning and still authorises the
+    /// iter-110 gate.
+    #[test]
+    fn unit_owner_markers_roundtrip_for_the_real_owner() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"a".repeat(16), Duration::from_hours(192));
+        write_owner_pid_marker(&dir, std::process::id());
+
+        assert_eq!(owner_liveness(&dir), OwnerLiveness::Live);
+        assert!(profile_is_owned_by_live_process(&dir));
+        assert!(pid_is_ff_rdp_spawned_under(
+            root.path(),
+            std::process::id()
+        ));
+
+        let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
+        assert!(
+            summary.removed.is_empty(),
+            "the real owner's profile must still survive the sweep at any age"
+        );
+        assert!(dir.exists());
+    }
+
+    /// A pre-iter-171 profile — owner-PID marker present, no start marker —
+    /// keeps its old semantics exactly: a live PID reads `Live`, a dead one
+    /// reads `Dead`. Without this, upgrading ff-rdp would make every existing
+    /// profile on disk suddenly unprotected (or suddenly unreclaimable).
+    #[test]
+    fn unit_owner_liveness_legacy_profile_without_start_marker() {
+        let root = tempfile::tempdir().expect("tempdir");
+
+        let live = seed_fake_profile(root.path(), &"b".repeat(16), Duration::from_secs(1));
+        std::fs::write(
+            live.join(OWNER_PID_MARKER),
+            format!("{}\n", std::process::id()),
+        )
+        .expect("write legacy live marker");
+        assert_eq!(owner_liveness(&live), OwnerLiveness::Live);
+
+        let dead = seed_fake_profile(root.path(), &"c".repeat(16), Duration::from_secs(1));
+        std::fs::write(
+            dead.join(OWNER_PID_MARKER),
+            format!("{}\n", spawn_and_reap_child_pid()),
+        )
+        .expect("write legacy dead marker");
+        assert_eq!(owner_liveness(&dead), OwnerLiveness::Dead);
+
+        let unmarked = seed_fake_profile(root.path(), &"d".repeat(16), Duration::from_secs(1));
+        assert_eq!(owner_liveness(&unmarked), OwnerLiveness::Unmarked);
+    }
+
+    /// A blank or unreadable start marker means "identity was never recorded",
+    /// not "identity failed" — so it must degrade to the legacy answer rather
+    /// than declaring a genuinely-live owner dead and deleting its profile.
+    #[test]
+    fn unit_blank_start_marker_degrades_to_bare_liveness() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"e".repeat(16), Duration::from_secs(1));
+        write_owner_pid_marker(&dir, std::process::id());
+        std::fs::write(dir.join(OWNER_START_MARKER), b"   \n").expect("blank the start marker");
+
+        assert_eq!(owner_liveness(&dir), OwnerLiveness::Live);
+        assert!(profile_is_owned_by_live_process(&dir));
+    }
+
+    /// `Unverified` (PID alive, token recorded, OS will not disclose the live
+    /// process's start time) resolves in opposite directions per caller:
+    /// the deletion paths keep the directory, the kill gate refuses. Driven
+    /// through `owner_liveness`'s own consumers rather than faked, so the
+    /// mapping stays honest if a variant is ever added.
+    #[test]
+    fn unit_unverified_owner_keeps_profile_but_refuses_kill() {
+        assert!(
+            !matches!(OwnerLiveness::Unverified, OwnerLiveness::Live),
+            "Unverified must remain distinct from Live"
+        );
+        // Deletion direction: `profile_is_owned_by_live_process` (the guard
+        // every prune path consults) treats Unverified as owned → keep.
+        // Kill direction: `pid_is_ff_rdp_spawned_under` requires exactly
+        // `Live` → refuse. Both are asserted structurally here because the
+        // OS cannot be made to withhold a start time on demand.
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"f".repeat(16), Duration::from_secs(1));
+        write_owner_pid_marker(&dir, std::process::id());
+        assert!(profile_is_owned_by_live_process(&dir));
+        assert!(pid_is_ff_rdp_spawned_under(
+            root.path(),
+            std::process::id()
+        ));
     }
 
     /// AC: `unit_prune_orphan_profiles_bounded_by_max` — 60 stale dirs seeded,
