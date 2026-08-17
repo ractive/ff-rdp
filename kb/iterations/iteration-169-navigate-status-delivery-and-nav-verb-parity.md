@@ -194,6 +194,41 @@ Two honest outcomes, and the iteration should pick one on evidence rather than a
 The second is cheap and honest; the first is more useful. Measure what the subscription costs on
 a `reload` before choosing.
 
+### Resolved 2026-08-17 — the subscription costs nothing measurable, so take the useful option
+
+Measured (Firefox 153, daemon route, `https://example.com` already loaded, five consecutive
+`ff-rdp reload` invocations, `RUST_LOG=debug`):
+
+```
+wall=1398ms grace_ms=0  "status":304,"status_reason":null   ← first, includes daemon warm-up
+wall=344ms  grace_ms=0  "status":304,"status_reason":null
+wall=456ms  grace_ms=0  "status":304,"status_reason":null
+wall=329ms  grace_ms=0  "status":304,"status_reason":null
+wall=480ms  grace_ms=0  "status":304,"status_reason":null
+```
+
+`grace_ms=0` on every run: the status was already in the tracker by the time the commit resolved,
+so the post-commit grace loop exits on its first pass and adds nothing. The only new cost is the
+daemon `stream`/`stop-stream` pair, two local round-trips. (`304` rather than `200` because a soft
+reload revalidates — which is precisely the sort of thing a caller could not previously see.)
+
+So: option one. All three verbs subscribe to `ResourceType::NetworkEvent` alongside
+`DocumentEvent`, issue the daemon `stream` request `run_core` already issues, and pass
+`network_observed: true`.
+
+Paths that genuinely cannot correlate a document still emit both keys rather than omitting them:
+
+| path | `status` | `status_reason` |
+|---|---|---|
+| `reload`/`back`/`forward`, committed | the document's | `null` |
+| … BFCache restore, no request issued | `null` | `no_document_request` |
+| `--no-wait` (returns before any resource can arrive) | `null` | `not_observed` |
+| `reload --wait-idle` (counts frames against a quiescence deadline, never correlates a document) | `null` | `not_observed` |
+| readystate-only wait strategy | `null` | `not_observed` |
+
+`StatusUnknown::NotObserved`'s doc comment was rewritten to match: it now means "this route never
+*correlated* the committed document's request", not "this route never subscribed".
+
 ## Theme C — something in the CLI live suite kills a Firefox it does not own
 
 iter-166 ran the sweep twice, both times with a hand-started
