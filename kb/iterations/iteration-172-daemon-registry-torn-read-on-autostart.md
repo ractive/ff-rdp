@@ -2,7 +2,7 @@
 title: "Iteration 172: the registry writer locks the published path, so autostart reads a zero-byte record and silently falls back to direct"
 type: iteration
 date: 2026-08-16
-status: in-review
+status: done
 branch: iter-172/registry-lock-on-published-path
 depends_on: []
 first_call_sites: []
