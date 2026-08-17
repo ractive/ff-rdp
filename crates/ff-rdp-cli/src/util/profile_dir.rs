@@ -623,17 +623,22 @@ pub fn prune_orphan_profiles(
         // case as alive is how a leaked directory became permanently
         // unreclaimable: the age gate below never runs for a live owner, so
         // the profile survived every future sweep.
-        match owner_liveness(&path) {
+        let owner = owner_liveness(&path);
+        let marker_pid = read_owner_pid_marker(&path);
+        match owner {
             OwnerLiveness::Live | OwnerLiveness::Unverified => {
                 tracing::debug!(
-                    "prune_orphan_profiles: keeping {} — owner PID is alive",
+                    "prune_orphan_profiles: keeping {} — owner PID {marker_pid:?} is alive \
+                     ({owner:?})",
                     path.display()
                 );
                 continue;
             }
             OwnerLiveness::Dead => {
                 tracing::debug!(
-                    "prune_orphan_profiles: owner of {} is gone — removing immediately",
+                    "prune_orphan_profiles: owner PID {marker_pid:?} of {} is gone (dead, or a \
+                     recycled PID that is no longer the process that wrote the marker) — \
+                     removing immediately",
                     path.display()
                 );
                 match std::fs::remove_dir_all(&path) {
