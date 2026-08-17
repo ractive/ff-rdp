@@ -727,7 +727,7 @@ fn push_boundary(boundaries: &mut Vec<usize>, at: usize) {
 /// [`brace_opens_block`] does not commit on an arrow function's `{` body, a
 /// `class` body or a labelled block, so each is treated as an object literal
 /// — a `/` after one reads as division and no statement boundary follows it.
-/// Filed as [[iteration-171-eval-scanner-brace-positions]].
+/// Filed as `kb/iterations/iteration-171-eval-scanner-brace-positions.md`.
 fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
     #[derive(Clone, Copy, PartialEq)]
     enum Str {
