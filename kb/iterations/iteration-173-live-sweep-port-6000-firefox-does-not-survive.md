@@ -137,13 +137,38 @@ sweep is a separate question and may be the right answer instead; decide it on e
 ### C. Port policy
 - [ ] Record the decision on the fixed port 6000, and the reasoning
 
-## Acceptance Criteria [0/4]
+### D. `PREEXISTING_MARKERS` misclassifies on a bare substring (folded in by iter-172, 2026-08-17)
+- [ ] Make the `preexisting` classification robust to a live source that merely *mentions*
+      `firefox_port`, without weakening the executed / skipped / preexisting accounting
+- [ ] Unit test with a source that names the field but launches its own Firefox
+
+`source_needs_preexisting_instance` decides the tier by substring match, and one of its three
+markers is the bare word `firefox_port` (`live_sweep.rs:107-114`). That is the name of a field in
+`daemon.<port>.json`, so **any `ff-rdp-cli` live test that reads the registry back and asserts on
+that field is silently reclassified as needing a Firefox somebody else started on port 6000** —
+even though it launches its own. iter-172 hit this while writing
+`live_172_published_record_is_complete_and_lock_is_a_sibling`: the two new tests moved into the
+`preexisting` bucket and tripped `test_158_real_core_targets_are_preexisting`
+(`assertion left: 2, right: 0 — the ff-rdp-cli live suites launch their own Firefox`).
+
+That assertion caught it, which is the good news. The bad news is what it caught it *with*: a
+whole-workspace invariant test, not a message about the file in question, and the only available
+workaround was for the test to avoid writing the word — which iter-172 did, with a comment
+explaining why. The next author will not know to.
+
+Consequence if it goes unfixed: a CLI test that mentions the field is classified `preexisting`,
+so when nothing is listening on 6000 it is reported `ignored` instead of run. That is the same
+false-green shape as [[iteration-155-live-skip-reports-green]], reached by a different road.
+
+## Acceptance Criteria [0/5]
 
 - [ ] The Theme A diagnosis is recorded, naming the cause and the evidence for it
 - [ ] A sweep whose port-6000 browser disappears mid-run does not report core-tier tests as
       failed — asserted by a test that fails on `main`
 - [ ] `LIVE_SWEEP_SUMMARY` still distinguishes executed / skipped / preexisting honestly, and
       never inflates `executed` to hide the change
+- [ ] A `ff-rdp-cli` live source that names `firefox_port` but launches its own Firefox is
+      classified as executed, not `preexisting` — asserted by a test that fails on `main`
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
       clean, plus a dual-gate live sweep
 

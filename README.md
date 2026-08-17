@@ -423,11 +423,21 @@ ff-rdp --no-daemon eval "1+1"
   for the original owner (iter-171). A profile written by an older ff-rdp has
   no start marker and keeps the previous PID-only behaviour.
 - Every `ff-rdp launch` also sweeps `~/.ff-rdp/` housekeeping files: stale
-  per-port spawn locks, the legacy port-less `daemon.spawn.lock` name, and
+  per-port spawn locks, the per-port registry write locks (iter-172), the
+  legacy port-less `daemon.spawn.lock` name, and
   `daemon.<port>.throttle.json` state files whose recorded daemon PID is no
   longer alive (iter-142). Previously this only ran on the rare
   daemon-autostart path, so a session that reused an already-running daemon
   never triggered it at all.
+- The daemon registry `daemon.<port>.json` is only ever published by an atomic
+  `rename`, and the lock that serializes writers lives in a **sibling**
+  `daemon.<port>.write.lock` (iter-172). Locking the published path itself —
+  which is what earlier builds did — meant a zero-byte record existed for the
+  whole span between taking the lock and the rename, and a client that read it
+  in that window gave up on the daemon and silently ran the command over a
+  direct connection instead. A zero-byte record left behind by such a build is
+  now read as "no daemon registered" rather than as a parse error, so the next
+  invocation starts a daemon normally instead of degrading forever.
 - `ff-rdp profiles list` / `ff-rdp profiles prune` inspect and reclaim the
   profile directory explicitly; `ff-rdp doctor` warns when the profile store
   grows past 100 entries or 1 GiB. `profiles prune --all` skips the age gate

@@ -566,16 +566,55 @@ pub fn spawn_daemon(
 /// Validating the host and port ensures we connect to the daemon we just
 /// spawned, not a leftover entry targeting a different Firefox instance.
 ///
-/// Returns an error if the timeout is exceeded, the registry cannot be read,
-/// or the registry contains a mismatched host/port.
+/// Returns an error if the timeout is exceeded, or if the registry contains a
+/// mismatched host/port.
+///
+/// A *read* failure is **not** terminal (iter-172): see
+/// [`wait_for_registry_in`].
 pub fn wait_for_registry(
     timeout: Duration,
     expected_host: &str,
     expected_port: u16,
 ) -> Result<DaemonInfo> {
+    wait_for_registry_in(
+        &registry::registry_dir()?,
+        timeout,
+        expected_host,
+        expected_port,
+    )
+}
+
+/// [`wait_for_registry`] against an explicit registry directory (testable).
+///
+/// **A read failure is retried, not fatal (iter-172).** Through iter-171 an
+/// unreadable registry ended the wait on the spot, so a single bad read —
+/// most notoriously the zero-byte `daemon.<port>.json` the old writer
+/// published while holding its lock — abandoned autostart within ~50 ms and
+/// dropped the caller onto a direct connection. The caller then reported
+/// "daemon started but did not register within 20s", which was not even true:
+/// nothing had waited 20 s.
+///
+/// The writer fix (see [`registry::acquire_registry_write_lock_in`]) is what
+/// removes that file. Retrying here is defence in depth, and it earns its
+/// place on its own: this loop is polling a file another process is actively
+/// producing, so "cannot read it *yet*" is a normal intermediate state, not a
+/// verdict. The only reason it was ever fatal is that `read_registry` folded
+/// "no record" and "unreadable record" into different arms.
+///
+/// The last read error is kept and reported on timeout, so a genuinely
+/// corrupt registry still names itself rather than degrading to a bare
+/// "timed out".
+pub fn wait_for_registry_in(
+    dir: &std::path::Path,
+    timeout: Duration,
+    expected_host: &str,
+    expected_port: u16,
+) -> Result<DaemonInfo> {
     let deadline = Instant::now() + timeout;
+    // Assigned by every non-returning arm of the match below before it is read.
+    let mut last_read_error: Option<String>;
     loop {
-        match registry::read_registry(expected_port) {
+        match registry::read_registry_in(dir, expected_port) {
             Ok(Some(info)) => {
                 anyhow::ensure!(
                     info.firefox_host == expected_host && info.firefox_port == expected_port,
@@ -585,11 +624,21 @@ pub fn wait_for_registry(
                 );
                 return Ok(info);
             }
-            Ok(None) => {}
-            Err(e) => return Err(e).context("reading daemon registry while waiting"),
+            Ok(None) => last_read_error = None,
+            Err(e) => last_read_error = Some(format!("{e:#}")),
         }
         if Instant::now() >= deadline {
-            anyhow::bail!("timed out after {timeout:?} waiting for daemon to write registry");
+            match last_read_error {
+                Some(e) => anyhow::bail!(
+                    "timed out after {timeout:?} waiting for daemon to write registry; \
+                     the registry stayed unreadable: {e}"
+                ),
+                None => {
+                    anyhow::bail!(
+                        "timed out after {timeout:?} waiting for daemon to write registry"
+                    )
+                }
+            }
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -692,6 +741,110 @@ mod tests {
             Some(mine),
             "two concurrently-live processes must not share a start token — \
              otherwise the token cannot distinguish a recycled PID"
+        );
+    }
+
+    // ── iter-172: an unreadable registry must not end the autostart wait ────
+
+    const WAIT_PORT: u16 = 6000;
+
+    fn wait_sample_info() -> DaemonInfo {
+        DaemonInfo {
+            pid: std::process::id(),
+            proxy_port: 7000,
+            firefox_host: "127.0.0.1".to_owned(),
+            firefox_port: WAIT_PORT,
+            started_at: "2026-08-17T00:00:00Z".to_owned(),
+            auth_token: "a".repeat(64),
+        }
+    }
+
+    /// AC (iter-172): a registry that cannot be parsed is a *transient* state
+    /// of a file another process is still producing, so the wait keeps polling
+    /// until its deadline instead of giving up on the first bad read.
+    ///
+    /// **Fails on `main`**, where the `Err` arm returned immediately: the call
+    /// came back in single-digit milliseconds while the caller went on to
+    /// report "daemon started but did not register within 20s".
+    #[test]
+    fn unit_172_wait_for_registry_keeps_polling_an_unreadable_record() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("daemon.6000.json"), b"{ truncated").expect("plant");
+
+        let timeout = Duration::from_millis(400);
+        let started = Instant::now();
+        let err = wait_for_registry_in(dir.path(), timeout, "127.0.0.1", WAIT_PORT)
+            .expect_err("an unreadable registry cannot succeed");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed >= timeout,
+            "the wait must use its whole budget, not bail on the first bad read \
+             (returned after {elapsed:?} of a {timeout:?} budget)"
+        );
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("timed out"),
+            "the failure must be reported as a timeout: {msg}"
+        );
+        assert!(
+            msg.contains("parsing registry"),
+            "the last read error must survive into the timeout message so a \
+             genuinely corrupt registry still names itself: {msg}"
+        );
+    }
+
+    /// The payoff: a record that becomes readable *after* an unreadable read
+    /// is picked up, instead of the whole autostart being abandoned — the
+    /// shape the old writer produced on every single write (unusable file
+    /// first, real record at the `rename`).
+    ///
+    /// Deliberately plants *unparseable bytes* rather than the zero-byte file
+    /// the old writer actually left: an empty record now reads as `Ok(None)`
+    /// (see `registry::read_registry_in`), so planting one would exercise the
+    /// "not yet registered" arm and never reach the retry this test is about.
+    /// The zero-byte case is covered by
+    /// `registry::tests::read_zero_byte_registry_is_treated_as_absent` and by
+    /// `live_172_zero_byte_registry_does_not_downgrade_to_direct`.
+    #[test]
+    fn unit_172_wait_for_registry_recovers_after_a_bad_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("daemon.6000.json");
+        std::fs::write(&path, b"{ truncated").expect("plant unreadable");
+
+        let write_dir = dir.path().to_path_buf();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            registry::write_registry_in(&write_dir, &wait_sample_info()).expect("write");
+        });
+
+        let info =
+            wait_for_registry_in(dir.path(), Duration::from_secs(10), "127.0.0.1", WAIT_PORT)
+                .expect("the record that landed mid-wait must be picked up");
+        writer.join().expect("writer thread");
+
+        assert_eq!(info.proxy_port, 7000);
+        assert_eq!(info.firefox_port, WAIT_PORT);
+    }
+
+    /// A registry that never appears at all still times out with the plain
+    /// message — the "stayed unreadable" clause is only added when there
+    /// really was a read error to report.
+    #[test]
+    fn unit_172_wait_for_registry_absent_record_times_out_plainly() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let err = wait_for_registry_in(
+            dir.path(),
+            Duration::from_millis(120),
+            "127.0.0.1",
+            WAIT_PORT,
+        )
+        .expect_err("no record can never succeed");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("timed out"), "{msg}");
+        assert!(
+            !msg.contains("stayed unreadable"),
+            "an absent record is not an unreadable one: {msg}"
         );
     }
 }
