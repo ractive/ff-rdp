@@ -99,21 +99,45 @@ CI's `discipline` job runs only two of them: `check-live-test-layout` and
 **This replaced the AC gate. It is the only thing standing between "not finished" and "silently
 forgotten", and nothing enforces it.**
 
-Enumerate, from this iteration:
+**Build the table mechanically, from the sweep output — not from memory of what you flagged.**
+Read back the live-sweep log line by line and give **every non-green line its own row**. Then add
+everything else this iteration produced:
 
 - every AC left unticked,
 - every `[deferred …]` annotation,
 - every out-of-scope finding you or a reviewer flagged, in the plan, the PR body or a milestone.
 
-For **each** item, do one of exactly two things, now:
+A finding stated **anywhere** in the PR body or the plan is a carry-over candidate regardless of
+which section it appears in — including the prose of the live-sweep write-up. That is exactly how
+iter-165 lost one: it diagnosed a leaked Firefox correctly in its sweep prose, gave it no row, and
+neither its own sweep nor its review pass noticed.
 
-1. fold it into the next iteration's plan (edit in place — never rename or move a plan file that
-   a running loop references), or
-2. file a new plan at `kb/iterations/iteration-NN-slug.md`, validated with
-   `cargo run -p xtask -- check-iteration-plan <path>`.
+Rows you must **not** drop:
 
-Then list every item and its disposition in the PR body under `## Carry-over`. An item you cannot
-place is not a reason to skip the sweep — file it as its own plan.
+- failures you diagnose as **environmental**, pre-existing, or load-sensitive. **"Environmental" is
+  a diagnosis, not a disposition** — a live suite that kills an unowned process, or a sweep that
+  misreports a browser that vanished, is a defect of ours either way;
+- items that **passed this run** but failed a previous one. One green run is not evidence a defect
+  is fixed, particularly for anything load-sensitive.
+
+For **each** row, record one of exactly four dispositions, now:
+
+1. **fold** it into the next iteration's plan (edit in place — never rename or move a plan file
+   that a running loop references),
+2. **file** a new plan at `kb/iterations/iteration-NN-slug.md`, validated with
+   `cargo run -p xtask -- check-iteration-plan <path>`,
+3. **closed in this PR** — the fix landed here; say where,
+4. **no plan, with a stated reason** — allowed only when there is nothing measured left to act on,
+   and it must name what would change that ("if it fails again it needs its own plan").
+
+List every item and its disposition in the PR body under `## Carry-over`. An unlabelled row is a
+visibly incomplete sweep. An item you cannot place is not a reason to skip it — file it as its own
+plan.
+
+**If an external process interfered with the sweep** (someone killed a browser, the machine slept,
+another sweep overlapped), say so on the affected rows and re-run before treating the numbers as
+the record. A contaminated sweep produces confidently-worded plans for defects that were never
+there.
 
 Carry-over must be filed **before the current PR merges**. iter-165 was filed late, after its
 parent merged, and only because a human went looking.

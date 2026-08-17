@@ -61,6 +61,29 @@ This matches every property of the iter-165 observation that iteration 168's mec
 it survives arbitrary wall-clock distance between the two tests, it is rare, and it gets likelier
 the more processes the run spawns — which is exactly what "load average 18.6" describes.
 
+### Added 2026-08-17 — a second, non-hypothetical way the marker goes stale
+
+Reproduced by accident while re-running the sweep on `main` at `4d639e2`: a sweep **killed
+mid-test** orphans that test's browsers outright, because `LiveFirefox::drop` never runs. A run
+terminated during `live_158_launch_survives_contended_bind` left four Firefox processes alive for
+over an hour. They were still holding their profile dirs when the *next* sweep ran, and broke it
+twice — `live_158` failed with `port 7101 is already in use by firefox (PID 66554)`, and
+`live_96_profile_cleanup` failed its precondition naming all four dirs.
+
+Two things this adds to the plan, both cheap to act on:
+
+- the false positive does **not** require PID reuse to bite. A killed runner leaves genuinely-live
+  processes owning profile dirs that no test will ever clean up, which is the same end state and
+  far more likely than pid recycling on a developer machine;
+- **the owner-test marker did not name anything.** All four read `spawned by unknown test`, so
+  iter-151 Theme A's marker — the thing that exists to name the culprit — does not survive the
+  process being killed rather than dropped. Whatever Theme B does about staleness should also make
+  the marker durable at *launch* time, not at drop time.
+
+A clean sweep on the same commit, with those orphans cleared first, was 269 passed / 1 failed with
+`live_96_profile_cleanup` **green** — so nothing here contradicts iteration 168's fix; it means
+the remaining exposure needs either contention or an interrupted run to surface.
+
 **Unverified.** iteration 168 measured the 16–27 ms window but did not measure PID recycling, and
 did not force the false positive. Theme A below does both before anything is changed.
 

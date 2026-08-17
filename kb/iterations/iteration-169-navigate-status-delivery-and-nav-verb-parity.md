@@ -77,6 +77,41 @@ Where to look, in the order the evidence favours:
 Fix the delivery, not the symptom. Do **not** widen the grace window further: it is already 2000
 ms and the measurement above shows more time does not help.
 
+### Added 2026-08-17 — this is bigger than `live_138`, and the 2000 ms claim above does not hold
+
+Measured on `main` at `4d639e2` (post-166, post-167, post-168), two full dual-gate sweeps run by
+hand on an otherwise-idle machine, `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1
+cargo run -p xtask -- live-sweep`, `executed=270 skipped=0 preexisting=0` both times:
+
+- **iter-166's own acceptance test fails, 2 sweeps out of 2** —
+  `live_166_navigate_document_status::live_166_navigate_reports_document_status`, on the
+  "daemon, no trailing slash" leg. It was the *only* failure in the second, fully clean sweep
+  (269 passed / 1 failed). So the defect is not confined to `live_138`'s 404 fixture, and it is
+  not rare: it is the ordinary `https://example.com` daemon path, reproducing on demand under
+  sweep load while passing in isolation.
+- **The failing envelopes returned in 200 ms and 250 ms**, not after the full 2000 ms:
+
+  ```
+  {"navigated":"https://example.com","status":null,"status_reason":"no_status_reported",
+   "committed_url":"https://example.com/","ready_state":"complete","elapsed_ms":250}
+  ```
+
+  That contradicts the bullet above ("the residual failures exhaust the full 2000 ms"), which was
+  measured only against `live_138`. Under load, `no_status_reported` is emitted an order of
+  magnitude *before* the budget it is supposed to have waited out.
+
+So Theme A now has two candidate defects, and the second one is cheaper to check first:
+
+0. **the 2000 ms budget is not being applied on this path at all** — either the "document request
+   has been identified" condition that selects the 2000 ms branch is false (in which case
+   `no_status_reported` is the *wrong reason string*, and the envelope is lying about which of the
+   three cases occurred — the exact failure `status_reason` was added to prevent), or the branch is
+   selected and the wait is not actually performed. Read `DocumentStatusTracker`'s reason
+   derivation against the grace-window selection before touching the stream. A 250 ms envelope is
+   evidence the wait never happened; it is not evidence about delivery.
+
+Only if the budget *is* genuinely being spent do candidates 1–3 above apply.
+
 ## Theme B — `back`/`forward`/`reload` report no status key at all
 
 `nav_action.rs` builds `{committed_url, ready_state, elapsed_ms}` and stops there, so
@@ -128,6 +163,29 @@ This is **not** the same defect as [[iteration-168-livefirefox-drop-does-not-wai
 which is about a Firefox the suite *did* own outliving its `LiveFirefox`. Here the suite kills one
 it never owned. Fix the scoping, not the sweep procedure — telling operators "do not run anything
 else on 6000" would defeat the reason the core tier uses a fixed port.
+
+### Added 2026-08-17 — did not reproduce in two hand-run sweeps; iter-168's instance was not ours
+
+Two dual-gate sweeps on `main` at `4d639e2`, same hand-started port-6000 Firefox: the browser
+survived both (~13 min of CLI tier each) and the core tier reported **9/9 passed** both times. So
+the symptom is not reliable, and one of the three recorded instances is now explained away:
+iteration 168's sweep had a **human** kill Firefox processes on this machine mid-CLI-tier
+(21:37–21:40 against a 21:31–21:45 tier). That accounts for iter-168's 7 core-tier reds and for
+`live_128_meta_route`'s empty registry file — see the note in
+[[iteration-172-daemon-registry-torn-read-on-autostart]].
+
+iter-166's sweep-2 instance is **not** explained: nobody was killing anything then. So this theme
+stays open on that one observation, but it is a single unreproduced event, not a pattern —
+size the work accordingly, and start by trying to reproduce it under sweep load before hunting
+scoping candidates 1–3.
+
+A related mechanism was measured while re-running, and it is *not* this theme: killing the test
+runner mid-test orphans that test's browsers, because `LiveFirefox::drop` never runs. A sweep
+killed during `live_158_launch_survives_contended_bind` left four Firefox processes alive for over
+an hour; they then broke the *next* sweep's `live_158` (port 7101 held by an orphan) and
+`live_96_profile_cleanup` (four profile dirs "still owned by a live process"). Every marker read
+`spawned by unknown test`, so iter-151's owner-test marker does not survive a killed runner —
+that gap belongs with [[iteration-171-stale-owner-pid-marker-and-pid-reuse]].
 
 ## Acceptance Criteria [0/6]
 

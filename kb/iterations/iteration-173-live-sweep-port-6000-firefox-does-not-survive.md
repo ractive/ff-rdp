@@ -45,6 +45,22 @@ Carry-over from [[iteration-168-livefirefox-drop-does-not-wait-for-exit]]'s dual
 
 ## What was observed
 
+> **Added 2026-08-17 — the browser's death was external; the reporting defect is unaffected.**
+> A human killed Firefox processes on that machine between 21:37 and 21:40, inside iteration 168's
+> 21:31–21:45 CLI tier. Two subsequent dual-gate sweeps on `main` at `4d639e2` kept the same
+> hand-started port-6000 browser alive through ~13 minutes of CLI tier each, and the core tier
+> reported **9/9 passed** both times.
+>
+> This does **not** weaken the plan — it sharpens it. Theme A ("find out what kills it") is now
+> largely answered for this instance and should not be a hunt: what remains is
+> [[iteration-169-navigate-status-delivery-and-nav-verb-parity]] Theme C's single unexplained
+> occurrence from iteration 166's sweep. The defect *this* plan is actually about is the
+> **classification**: `live-sweep` probes port 6000 once and never re-checks, so a browser that
+> vanishes for **any** reason — including an operator killing it — is reported as 7 failing tests
+> rather than as an unmet precondition. An external kill is a perfectly good demonstration of that
+> bug, and arguably the cleanest one available. Fix the reporting; treat the cause as out of scope
+> here.
+
 The `ff-rdp-core` live tests never launch a browser; they connect to whatever is on the fixed port
 6000, and `live-sweep` probes that port **once, at classification time** to decide whether to run
 them. In iteration 168's sweep the probe succeeded, the CLI tier then ran for 831 seconds, and by

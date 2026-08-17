@@ -42,6 +42,22 @@ Carry-over from [[iteration-168-livefirefox-drop-does-not-wait-for-exit]]'s dual
 
 ## What was observed
 
+> **Added 2026-08-17 — the trigger was almost certainly external, and this did not reproduce.**
+> The sweep this plan was filed from was contaminated: a human killed Firefox processes on that
+> machine between 21:37 and 21:40, inside the CLI tier's 21:31–21:45 window. A SIGKILL landing on a
+> daemon mid-registry-write is a sufficient explanation for the empty file below, so the "torn
+> write under load" premise is unsupported by this observation. Two subsequent dual-gate sweeps on
+> `main` at `4d639e2` (`executed=270 skipped=0 preexisting=0`, one of them fully clean at
+> 269 passed / 1 failed) had `live_128_meta_route` **pass** both times.
+>
+> Do **not** open this as "reproduce the torn read under load" — that reproduction may not exist.
+> What survives is narrower and still worth fixing on its own terms: an empty or truncated
+> registry file costs the full 20 s budget and then degrades **silently** to `route: "direct"`.
+> That is a robustness defect whatever truncated the file, and it is checkable without a repro
+> (write an empty `daemon.<pid>.json` by hand and watch the fallback). Check whether the writer
+> uses temp-file + rename; if it already does, close this plan obsolete rather than hunting a race
+> that a kill explains.
+
 `live_128_network_output_fidelity::live_128_meta_route` failed once in that sweep. The assertion
 message carries the product's own diagnosis:
 
