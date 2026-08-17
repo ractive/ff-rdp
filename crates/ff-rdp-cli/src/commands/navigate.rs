@@ -148,8 +148,10 @@ impl StatusUnknown {
 /// `--jq '.results.status'` returned `null` on a `reload` for a reason no
 /// caller could see — indistinguishable from `navigate`'s meaningful `null`.
 /// Every path of all four verbs now emits both keys; the ones that genuinely
-/// cannot observe a status (`--no-wait`, which returns before any resource can
-/// arrive) say so with `not_observed` rather than staying silent.
+/// cannot correlate a document request — `--no-wait`, which returns before any
+/// resource can arrive, and `reload --wait-idle`, which counts frames against
+/// a quiescence deadline — say so with `not_observed` rather than staying
+/// silent.
 pub(crate) fn not_observed_status() -> serde_json::Map<String, Value> {
     let mut map = serde_json::Map::new();
     map.insert("status".to_owned(), Value::Null);
@@ -802,9 +804,9 @@ const MAX_STATUS_GRACE_MS: u64 = 2000;
 /// `network-event` lands, and that is exactly when the longer budget should
 /// apply.
 ///
-/// * [`StatusUnknown::NotObserved`] — nobody subscribed, so no amount of
-///   waiting can produce a status. Zero, rather than spinning out a window on
-///   a condition that can never become true.
+/// * [`StatusUnknown::NotObserved`] — this route never correlates a document
+///   request, so no amount of waiting can produce a status. Zero, rather than
+///   spinning out a window on a condition that can never become true.
 /// * [`StatusUnknown::NoStatusReported`] — the document's request has been
 ///   identified and it committed, so its response line exists and the update
 ///   carrying it is merely late. Worth waiting materially longer for; the
