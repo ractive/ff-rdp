@@ -183,7 +183,9 @@ Firefox" option is **rejected** for the reason above.
       *mid*-tier is caught by a post-phase re-probe in `classify_failures`)
 - [x] Unit test for the classification, without a real Firefox
       (`test_173_vanished_browser_moves_core_tests_out_of_qualified`,
-      `test_173_connection_refused_after_browser_loss_is_not_a_genuine_failure`, and four more)
+      `test_173_connection_refused_after_browser_loss_is_not_a_genuine_failure`, and six more —
+      eight `test_173_*` tests total cover Theme B/the launch-timeout classification, plus two more
+      for Task D, for ten new tests overall; verified via `cargo test -p xtask live_sweep:: -- --list`)
 
 ### C. Port policy
 - [x] Record the decision on the fixed port 6000, and the reasoning — see Theme C above
@@ -295,7 +297,7 @@ from the `preexisting` bucket. Nothing was removed from the corpus.
 **What this sweep did not exercise.** `vanished=0 launch_timeout=0` means the new runtime paths
 never fired: nothing failed, and the browser did not die. The re-probe ran (once per
 `ff-rdp-core` target, four times) and found the browser present each time, which is the
-no-op branch. The classification itself is covered only by the six deterministic unit tests. A
+no-op branch. The classification itself is covered only by the eight deterministic unit tests. A
 live end-to-end demonstration would need a 38-minute sweep plus a deliberately timed kill; see
 the carry-over row.
 
@@ -311,7 +313,7 @@ the carry-over row.
 - [[iteration-110-post-batch-live-sweep]] — an ff-rdp operation must never signal a Firefox it did not
   launch; relevant if Theme A finds a product `killpg` behind this
 
-## Carry-over (2026-08-17)
+## Carry-over (2026-08-17, reviewer-updated 2026-08-17)
 
 Built line by line from `sweep.log`. **Every line of that log is green** — 277 `ok`, zero
 `FAILED`, zero `panicked`, zero `error[`, exit 0 — so there is no row sourced from a non-green
@@ -319,14 +321,21 @@ sweep line. The rows below come from the other three sources the closing procedu
 unticked, items that passed *this* run but failed a previous one, and findings stated in the plan
 prose.
 
+**Reviewer note:** iter-173 is the last iteration of this run — there is no next iteration's plan
+to fold anything into. Rows 1, 2, 4 and 6 were originally dispositioned "no plan, with a stated
+reason", which is only a safe disposition when a later iteration is expected to revisit the
+trigger condition. Since none will, they are now filed together as
+[[iteration-178-live-sweep-carryover-watch-conditions]] instead (`check-iteration-plan: OK`).
+Rows 3, 5 and 7 stay as originally dispositioned — they are genuinely resolved, not deferred.
+
 | # | item | source | disposition |
 |---|---|---|---|
-| 1 | Task A's first box — "run every step of `dogfood_path`" — left **unticked**. Steps 1 and 2 were run; step 3 (poll for the pid through a sweep to find what kills the browser) was deliberately not run as a hunt. | AC/task left unticked | **no plan, with a stated reason.** The cause was established as an external human kill before this iteration began (Theme A table, three other suspects ruled out by name), and step 3 against a browser that does not die produces a non-reproduction, which is what this sweep and the two `4d639e2` sweeps already are. The box is left empty rather than reworded. *What would change this: a port-6000 browser dying in a sweep on a machine where no human touched it.* |
-| 2 | `live_160_envelope_honesty::live_160_ref_click_asserts_handler_effect` — **passed this run**; failed iter-168's and iter-171's sweeps. | passed now, failed before | **no plan, with a stated reason**, carrying forward iter-172's rule verbatim: its cause was never established, one green run is not evidence, but `with_daemon_or_reason` now prints `meta.route` / `meta.daemon_fallback`, so **if it fails again the printed reason attributes it and it needs its own plan**. Nothing measured is left to act on today. |
+| 1 | Task A's first box — "run every step of `dogfood_path`" — left **unticked**. Steps 1 and 2 were run; step 3 (poll for the pid through a sweep to find what kills the browser) was deliberately not run as a hunt. | AC/task left unticked | **filed as [[iteration-178-live-sweep-carryover-watch-conditions]], watch condition 4.** The cause was established as an external human kill before this iteration began (Theme A table, three other suspects ruled out by name), and step 3 against a browser that does not die produces a non-reproduction, which is what this sweep and the two `4d639e2` sweeps already are. The task box stays empty rather than reworded. Trigger: a port-6000 browser dies in a future sweep on a machine no human touched. |
+| 2 | `live_160_envelope_honesty::live_160_ref_click_asserts_handler_effect` — **passed this run**; failed iter-168's and iter-171's sweeps. | passed now, failed before | **filed as [[iteration-178-live-sweep-carryover-watch-conditions]], watch condition 1**, carrying forward iter-172's rule verbatim: its cause was never established, one green run is not evidence, but `with_daemon_or_reason` now prints `meta.route` / `meta.daemon_fallback`. Trigger: this test fails again — the printed reason then attributes it. |
 | 3 | `live_123_daemon_autostart_and_registry::live_daemon_autostart_tabless` launch timeout — **passed this run**; failed iter-170's sweep with `never opened debug port … within 30s`. | passed now, failed before | **closed in this PR, for the reporting half only.** A launch timeout now lands in `launch_timeout=L` with an explicit stderr line naming the tests, instead of being indistinguishable from a product failure (`classify_failures`, `test_173_launch_timeout_is_classified_separately_from_a_real_failure`). The *budget* is untouched — see row 4. |
-| 4 | "Whether the launch budget itself should scale with the sweep is a separate question and may be the right answer instead; decide it on evidence." | plan prose, iter-170 fold-in | **no plan, with a stated reason.** The evidence available today argues against changing it: `launch_timeout=0` across 277 tests in a 38-minute serial sweep on this machine. Raising a timeout with no failing measurement to point at is guessing. *What would change this: any sweep reporting `launch_timeout>0` — the count now exists precisely so that evidence is collectable — at which point it needs its own plan.* |
+| 4 | "Whether the launch budget itself should scale with the sweep is a separate question and may be the right answer instead; decide it on evidence." | plan prose, iter-170 fold-in | **filed as [[iteration-178-live-sweep-carryover-watch-conditions]], watch condition 2.** The evidence available today argues against changing it: `launch_timeout=0` across 277 tests in a 38-minute serial sweep on this machine. Raising a timeout with no failing measurement to point at is guessing. Trigger: any sweep reporting `launch_timeout>0` — the count now exists precisely so that evidence is collectable. |
 | 5 | Theme B's stronger option: "better: have the sweep launch and own that Firefox", which would also remove the manual setup step `iteration-close` asks every iteration to perform by hand. | plan prose | **closed in this PR** — **rejected**, with the reasoning recorded in Theme C and DEC-043. Binding port 6000 inherits the ownership problem the fails-closed guard in `daemon/client.rs` exists to prevent (the 2026-07-09 kill-scoping incident). The manual setup step therefore stays. |
-| 6 | The `vanished` and `launch_timeout` runtime paths **never fired in this sweep** (`vanished=0 launch_timeout=0`): nothing failed and the browser did not die, so only the re-probe's no-op branch executed live. | plan prose (live-sweep section) | **no plan, with a stated reason.** The classification is covered by six deterministic unit tests over real captured libtest output, which is the level the ACs asked for; a live demonstration costs a 38-minute sweep plus a deliberately timed `kill` of the operator's browser, and would prove nothing the unit tests do not. *What would change this: a future sweep reporting `vanished>0` whose numbers look wrong — that is a bug in this iteration's code and needs its own plan.* |
+| 6 | The `vanished` and `launch_timeout` runtime paths **never fired in this sweep** (`vanished=0 launch_timeout=0`): nothing failed and the browser did not die, so only the re-probe's no-op branch executed live. | plan prose (live-sweep section) | **filed as [[iteration-178-live-sweep-carryover-watch-conditions]], watch condition 3.** The classification is covered today by eight deterministic unit tests over real captured libtest output, which is the level the ACs asked for; a live demonstration costs a 38-minute sweep plus a deliberately timed `kill` of the operator's browser, and would prove nothing the unit tests do not. Trigger: a future sweep reports `vanished>0` (or `launch_timeout>0`) whose numbers don't reconcile against the log — that is a bug in this iteration's code. |
 | 7 | The single unexplained port-6000 death from iteration 166's sweep — not the iteration-168 one, which Theme A attributes. | plan prose (`Added 2026-08-17` block) | **already filed** — it is [[iteration-169-navigate-status-delivery-and-nav-verb-parity]] Theme C and stays open there. Not duplicated here. |
 
 Nothing external interfered with this sweep: the port-6000 Firefox held the port throughout with
