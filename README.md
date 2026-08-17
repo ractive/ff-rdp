@@ -413,6 +413,15 @@ ff-rdp --no-daemon eval "1+1"
   definitive proof of abandonment, not just "old enough to guess at" (iter-142;
   fixes an observed 62 profiles / 2.7 GB accumulating in a single day, all
   younger than the old 7-day gate).
+- The marker is a **pair**: alongside the PID, `.ff-rdp-owner-start` records
+  the owning process's OS start time, and both are written the instant Firefox
+  is spawned. A profile directory outlives the Firefox that owned it, so its
+  PID marker does too — and once the OS recycles that PID, a bare liveness
+  check reports the abandoned profile as still in use, so no age-gated prune
+  will ever reclaim it. Comparing the recorded start time against the live
+  PID's makes the check an *identity* check: a recycled PID no longer passes
+  for the original owner (iter-171). A profile written by an older ff-rdp has
+  no start marker and keeps the previous PID-only behaviour.
 - Every `ff-rdp launch` also sweeps `~/.ff-rdp/` housekeeping files: stale
   per-port spawn locks, the legacy port-less `daemon.spawn.lock` name, and
   `daemon.<port>.throttle.json` state files whose recorded daemon PID is no

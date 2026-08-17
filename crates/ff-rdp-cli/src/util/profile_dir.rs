@@ -252,21 +252,20 @@ pub(crate) fn write_owner_pid_marker(dir: &Path, pid: u32) {
         return;
     }
 
-    match start_token {
-        Some(token) => {
-            let start_marker = dir.join(OWNER_START_MARKER);
-            if let Err(e) = std::fs::write(&start_marker, format!("{token}\n")) {
-                tracing::warn!(
-                    "write_owner_pid_marker: could not write {}: {e}",
-                    start_marker.display()
-                );
-            }
-        }
-        None => tracing::debug!(
+    let Some(token) = start_token else {
+        tracing::debug!(
             "write_owner_pid_marker: no start token available for pid {pid} — {} will fall back \
              to bare PID liveness",
             dir.display()
-        ),
+        );
+        return;
+    };
+    let start_marker = dir.join(OWNER_START_MARKER);
+    if let Err(e) = std::fs::write(&start_marker, format!("{token}\n")) {
+        tracing::warn!(
+            "write_owner_pid_marker: could not write {}: {e}",
+            start_marker.display()
+        );
     }
 }
 
