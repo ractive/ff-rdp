@@ -198,6 +198,40 @@ Unchanged, including the two rows the classification could most plausibly have b
       the behaviour changes) — behaviour changed, so DEC-042, plus the summary above.
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
+## Live sweep (2026-08-17)
+
+Gates: `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`, plus a hand-started Firefox on port 6000
+(profile `/tmp/ff-rdp-sweep-profile-6000`). Orphan check before the run: `pgrep -f 'ff-rdp/profiles'`
+returned nothing.
+
+```text
+LIVE_SWEEP_SUMMARY executed=274 skipped=0 preexisting=0 total=274
+  -> 271 passed / 3 failed;  ff-rdp-core tier 9/9
+```
+
+Baseline of record for this batch was `executed=270 ... 269 passed / 1 failed` on `main` @ `4d639e2`.
+The corpus grew, it did not shrink: +2 from this branch's `live_170_*` and +2 from iter-169's
+`live_169_*`, which merged into `main` between the baseline and this run. The baseline's single
+failure — `live_166_navigate_reports_document_status` — **passed** here; it was iteration 169's
+subject and iter-169 merged as #207.
+
+All eval suites are green, including every regression suite this change could plausibly have
+broken: `live_161_*` 8/8, `live_165_*` 3/3, `live_167_*` 3/3, and both new `live_170_*` tests.
+
+## Carry-over
+
+| # | item | disposition |
+| --- | --- | --- |
+| 1 | `live_128_network_output_fidelity::live_128_meta_route` — FAILED in the sweep: route `direct`, `parsing registry at ~/.ff-rdp/daemon.49263.json: EOF while parsing a value at line 1 column 0`. Passes in isolation. | **fold** — iteration 172's exact located cause (the registry writer locks the published path). Added to `iteration-172-daemon-registry-torn-read-on-autostart.md` as an observed instance, with the differing `daemon_fallback` wording flagged for its Theme A. |
+| 2 | `live_134_meta_route_all_commands::live_134_meta_route_all_commands` — FAILED, same zero-byte-registry signature on `click`. Passes in isolation. | **fold** — same, into iteration 172. |
+| 3 | `live_123_daemon_autostart_and_registry::live_daemon_autostart_tabless` — FAILED: `never opened debug port 64638 within 30s`. Passes in isolation. A per-test 30 s launch budget spent during a 38-minute serial sweep. **Environmental is a diagnosis, not a disposition**: the sweep reporting an unstartable browser as a failing assertion is a defect of ours. | **fold** — into iteration 173, whose Theme B already owns "the sweep must not report an unmet precondition as a failure", with a note that this is a second, distinct precondition. |
+| 4 | `live_166_navigate_reports_document_status` — the batch baseline's only failure. **Passed this run.** One green run is not proof, so it gets a row. | **closed elsewhere** — iteration 169's subject; merged into `main` as #207 (`c886507`) before this sweep ran. Not this PR's to close. |
+| 5 | `brace_opens_block` does not commit on an arrow function's `{` body, a `class` body or a labelled block, so each is read as an object literal — a `/` after one divides and no boundary follows it. Unmeasured: no case forced the question here. | **file** — `kb/iterations/iteration-171-eval-scanner-brace-positions.md`, `check-iteration-plan: OK`. Its Theme A must measure before fixing, like this one did. |
+| 6 | Gap-2's dogfood line returns `true` only because a top-level block's `}` now ends its own statement — a change beyond the plan's Theme C wording. | **closed in this PR** — `block_boundary_after`, `unit_170_block_close_ends_a_statement`, `live_170_brace_kind_decides_regex_and_boundary`, DEC-042. Recorded in the Theme C section above rather than reworded into the AC. |
+
+Nothing external interfered with this sweep: no `ff-rdp/profiles` orphans before or after, and the
+port-6000 browser was verified alive immediately before the run and executed all 9 core-tier tests.
+
 ## Design notes
 
 The scanner must not become a JS parser — all code stays in Rust and this repo has no JS parser

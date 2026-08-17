@@ -114,6 +114,37 @@ slept a fixed 500 ms instead of polling. This is the *product* half, one layer d
 now in place and running, and it is the individual read inside the poll that fails. A poll that
 retries would have recovered; the message shows it did not treat the parse error as retryable.
 
+## Observed again — iteration 170's live sweep (2026-08-17)
+
+Folded in by iter-170's carry-over sweep. Two more tests carry this exact signature, so the
+symptom set this iteration must clear is now three tests, not one:
+
+```text
+FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
+LIVE_SWEEP_SUMMARY executed=274 skipped=0 preexisting=0 total=274  -> 271 passed / 3 failed
+
+live_128_network_output_fidelity::live_128_meta_route          FAILED
+  route "direct", meta.daemon_fallback: "daemon started but did not register within 20s
+  (registry write raced or was slow): ... parsing registry at ~/.ff-rdp/daemon.49263.json:
+  EOF while parsing a value at line 1 column 0"
+
+live_134_meta_route_all_commands::live_134_meta_route_all_commands   FAILED
+  `click` reported route "direct", warning daemon_autostart_failed:
+  "daemon started but did not register within 20s (spawn died before the registry write):
+  ... parsing registry at ~/.ff-rdp/daemon.51326.json: EOF while parsing a value at line 1
+  column 0"
+```
+
+Both pass when re-run in isolation (3/3 ok, 60 s), which is consistent with the located cause: the
+lock window is short, so a reader only lands in it when the machine is loaded. Note the two
+`daemon_fallback` reasons differ — "registry write raced or was slow" vs "spawn died before the
+registry write" — and the second one names a *dead spawn* while still reporting the zero-byte
+parse error. Theme A should establish whether that second phrasing is the same defect or a
+distinct one wearing the same error text; do not assume.
+
+Theme C now has a measured cost: this route downgrade has silently reddened three unrelated tests
+across two sweeps.
+
 ## Themes
 
 - **A — Reproduce deterministically before changing anything** (revised 2026-08-17 — this no

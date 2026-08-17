@@ -81,6 +81,29 @@ regression gets waved through.
 The `preexisting=K` counter already encodes "needs a Firefox somebody else started". It is
 computed once and never revisited.
 
+## A second precondition the sweep reports as a product failure (folded in from iter-170)
+
+iter-170's carry-over sweep hit a different unmet precondition that the sweep reported the same
+wrong way — as a failing test:
+
+```text
+live_123_daemon_autostart_and_registry::live_daemon_autostart_tabless   FAILED
+  RawFirefox: /Applications/Firefox.app/.../firefox (pid 43844) never opened debug port
+  64638 within 30s (raise FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS)
+```
+
+It passes on a re-run in isolation. The sweep is serial and took 38 minutes, so a per-test 30 s
+launch budget is being spent against a fully loaded machine — iter-158 raised that budget to 30 s
+for exactly this contention and the sweep still exceeds it.
+
+This belongs to Theme B for the same reason the port-6000 case does: **a browser that could not be
+started is an unmet precondition, not a failing assertion**, and reporting it as the latter is what
+sends the next reader hunting a product defect that is not there. Whatever Theme B does for the
+port-6000 probe should give a launch timeout inside a sweep the same distinct classification — at
+minimum a separate count in `LIVE_SWEEP_SUMMARY` so a reader can tell "the product is broken" from
+"the machine could not start a browser in time". Whether the budget itself should scale with the
+sweep is a separate question and may be the right answer instead; decide it on evidence.
+
 ## Themes
 
 - **A — Establish what actually kills it.** Run the `dogfood_path` step 3. Do not guess: the
