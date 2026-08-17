@@ -2,7 +2,7 @@
 title: "Iteration 171: a leaked profile dir's owner-PID marker outlives its process, so PID reuse makes dead profiles read as live"
 type: iteration
 date: 2026-08-16
-status: planned
+status: done
 branch: iter-171/stale-owner-pid-marker
 depends_on: [iteration-168-livefirefox-drop-does-not-wait-for-exit]
 first_call_sites: []
@@ -105,32 +105,172 @@ did not force the false positive. Theme A below does both before anything is cha
   (`live_96`, `live_151`, `live_168`). A harness-only fix leaves real users exposed to the same
   false positive; a product-side fix is a wider blast radius. Pick one and say why.
 
+## Theme A — measured 2026-08-17, before any code changed
+
+### A1. Does a dropped `LiveFirefox` leave a markered profile dir?
+
+**The plan's own step-1 example does not reproduce, for a reason that does not rescue the
+hypothesis.** Running `live_128_meta_route` left the profile count at exactly 20 before and after,
+with the *same set* of directory names (`comm -13`/`-23` both empty):
+
+```
+before=20 after=20
+--- new dirs ---   (none)
+--- removed dirs --- (none)
+```
+
+`live_128_meta_route` calls `stop_daemon(port)`, and `daemon stop` runs `cleanup_profile_dir`,
+which removes the managed directory. So the *right* probe is a launch with no `daemon stop`
+after it. Done by hand:
+
+```
+$ ff-rdp launch --headless --debug-port 7311        # FF_RDP_LIVE_TEST_NAME=manual_theme_a
+new dir: ff-rdp-profile-6EI9roVTjc93dRmD
+  .ff-rdp-owner-pid .ff-rdp-owner-test .parentlock cert9.db cookies.sqlite … user.js
+  pid=14338 test=manual_theme_a
+$ kill -9 14338
+alive after kill: no
+dir still exists: yes
+marker still names pid: 14338      ← stale, and it stays stale forever
+```
+
+Confirmed: the directory and its marker outlive the process. The 20 directories already on disk
+when this started were all **marker-less** (only `user.js`), i.e. launches that died before
+writing a marker — see A5.
+
+### A2. Does a forced pid collision trip the checks?
+
+Yes, both of them.
+
+```
+== (a) marker names DEAD pid 14338
+  ff-rdp profiles prune --older-than 0s --dry-run → in would_remove: 1
+== (b) marker forged to LIVE pid 17262 (simulated pid reuse)
+  ff-rdp profiles prune --older-than 0s --dry-run → in would_remove: 0
+== (c) live_96-style precondition scan
+  PRECONDITION VIOLATION: ff-rdp-profile-6EI9roVTjc93dRmD pid 17262 alive, test=manual_theme_a
+```
+
+One byte of difference in the marker flips an abandoned profile from "reclaim it" to "never
+reclaim it at any age", and makes `live_96_profile_cleanup` fail its precondition naming a
+browser that has been dead for minutes. Note the plan's phrasing "`prune --all` then refuses it"
+is not accurate — `--all` *does* remove live-owner dirs (it warns and lists them under
+`removed_live`, iter-97 Theme C). The path that refuses is the **age-gated** one, which is worse:
+it refuses silently and forever.
+
+### A3. How fast does this machine recycle pids?
+
+```
+1000 `sh -c :` spawns: pid 15558 → 16662  (1104 pids) in 4.83 s  ≈ 229 pids/second
+macOS PID_MAX = 99 999 → one full wrap ≈ 437 s ≈ 7.3 minutes of saturated spawning
+```
+
+A ~40-minute live sweep spawns several `ff-rdp` processes per test across ~270 tests, plus a
+Firefox parent and its content processes per launch. A wrap inside one sweep is **plausible**, not
+exotic — and every leaked marker is a live target for the whole remainder of that sweep. The
+hypothesis holds; the iteration proceeds.
+
+### A4. Correction to the "Added 2026-08-17" block
+
+That block inferred, from four orphaned profiles all reading `spawned by unknown test`, that
+"the owner-test marker … does not survive the process being killed rather than dropped". **That
+inference is wrong.** `live_158_launch_survives_contended_bind` — the test the interrupted run
+died in — spawns `ff-rdp launch` through a bare `Command::new(ff_rdp_bin())` and therefore never
+sets `FF_RDP_LIVE_TEST_NAME` at all. The marker did not decay; it was never requested. **22 such
+call sites exist across 12 live-test files**, and all of them were producing unattributable
+profiles. (The first pass claimed 20 across 10 and was wrong: this PR's own review found two more
+— `live_123_daemon_autostart_and_registry.rs`'s `launch --replace` and `live_153`'s shared
+`run_raw` helper — which is why the count is stated here as verified rather than as remembered.
+`live_158`'s two remaining bare `Command::new(ff_rdp_bin())` sites are `daemon stop` and `tabs`;
+neither spawns a Firefox, so neither needs the tag.) Fixed by routing them through a tagged `ff_rdp_launch_command()` (and
+`ff_rdp_launch_command_for` for `live_158`'s worker threads, which are unnamed and would otherwise
+still stamp `unknown`).
+
+The block's *other* point stands and is acted on: markers are now written the instant the PID
+exists, not after the port probe, which under contention can legitimately run for tens of seconds
+(iter-158). A caller killed inside that window used to leave a completely unmarked directory.
+
+### A5. Residual, filed rather than fixed here
+
+The 20 pre-existing directories contained `user.js` and nothing else — no marker, no Firefox
+artefacts. Those are launches that failed (or were killed) between `build_command` and the marker
+write, and marker-less directories fall back to the 7-day mtime heuristic, so they linger. Moving
+the marker write earlier shrinks that window to almost nothing but does not close it: a failure
+inside `build_command` itself still leaks. Filed as
+[[iteration-175-failed-launch-leaks-unmarked-profile-dir]].
+
+## Theme B — the chosen mechanism, and why not the others
+
+**Chosen: record the owning process's OS start time alongside its PID and compare both.**
+
+- `daemon::process::process_start_token(pid) -> Option<String>` returns an opaque per-incarnation
+  token: `proc_pidinfo(PROC_PIDTBSDINFO)` on macOS, `/proc/<pid>/stat` field 22 on Linux,
+  `GetProcessTimes` on Windows, `None` elsewhere.
+- It is persisted in a **sibling** file, `.ff-rdp-owner-start`, not as a second line of
+  `.ff-rdp-owner-pid`. Three out-of-crate readers (`live_96`, `live_151`, `live_168`) parse that
+  file with `read_to_string(..).trim().parse::<u32>()`; a two-line body would make every one of
+  them silently stop matching, which for `live_96` means its precondition quietly stops firing —
+  the exact softening AC 3 forbids.
+- `owner_liveness()` grades the pair into four states, because the two consumers want *opposite*
+  fallbacks when identity cannot be established: a deletion path must keep the directory when in
+  doubt, and the kill-scoping gate must refuse to signal when in doubt.
+
+Rejected:
+
+- **Have `LiveFirefox::drop` remove its own profile directory.** Harness-only, so `profiles prune`
+  and every real user keep the false positive; and it does nothing for the case that actually bit
+  us twice, where the runner is killed and `drop` never runs at all.
+- **Have the liveness check verify the process is a Firefox ff-rdp owns** (match the executable
+  and its `-profile` argument). Strictly more work than the start time for the same answer,
+  needs a per-OS process-inspection path anyway, and it is defeated by the one case start time
+  handles for free — a recycled PID that happens to *be* another Firefox, which on a machine
+  running a live sweep is not a remote possibility.
+- **Age out markers by wall clock** (treat a marker older than N hours as stale). Wrong in both
+  directions: a long-running session is not stale, and a recycled PID one minute after death is.
+
+## Theme C — placement
+
+**Product-side.** The marker is written by `util::profile_dir` and read by the product's own
+`profiles prune`, `launch`'s orphan sweep and iter-110's kill-scoping gate; the harness is merely
+one more reader. A harness-only fix would leave a real user's profile store growing without bound
+(the age-gated prune skipping a recycled-PID directory forever) and would leave the kill gate
+holding a stale permission slip for a PID ff-rdp no longer owns — the one thing that gate exists
+to prevent. Blast radius is contained by making the new signal *additive*: a profile with no
+`.ff-rdp-owner-start` (every profile written by an older ff-rdp) grades exactly as it did before.
+
 ## Tasks
 
 ### A. Verify
-- [ ] Run every step of `dogfood_path` and paste actual outputs into this plan
-- [ ] Record whether a dropped `LiveFirefox` leaves a markered profile dir, with counts
-- [ ] Record the forced-collision result: does a live pid in a dead profile's marker trip
+- [x] Run every step of `dogfood_path` and paste actual outputs into this plan
+- [x] Record whether a dropped `LiveFirefox` leaves a markered profile dir, with counts
+- [x] Record the forced-collision result: does a live pid in a dead profile's marker trip
       `live_96`'s precondition and `prune --all`?
-- [ ] Record this machine's PID recycle rate (spawns and wall clock)
+- [x] Record this machine's PID recycle rate (spawns and wall clock)
 
 ### B. Fix
-- [ ] The chosen invalidation mechanism, with the rejected alternatives recorded
-- [ ] Unit tests that do not require a real Firefox
-- [ ] A live test that fails on `main` and passes on the branch, the way `live_168` does
+- [x] The chosen invalidation mechanism, with the rejected alternatives recorded
+- [x] Unit tests that do not require a real Firefox
+- [x] A live test that fails on `main` and passes on the branch, the way `live_168` does
 
 ### C. Placement
-- [ ] Record whether the fix is harness-side or product-side, and why
+- [x] Record whether the fix is harness-side or product-side, and why
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
-- [ ] The Theme A verification is recorded in this plan, including the decision that follows if
+- [x] The Theme A verification is recorded in this plan, including the decision that follows if
       the hypothesis does not hold
-- [ ] A stale marker naming a recycled pid no longer reads as a live owner — asserted by a test
+- [x] A stale marker naming a recycled pid no longer reads as a live owner — asserted by a test
       that fails on `main`
-- [ ] `live_96_profile_cleanup`'s precondition is left as loud as iter-146 Theme B made it (no
-      softening back into a skip)
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
+      — `pre_fix_repro_recycled_owner_pid_reads_as_live`,
+      `pre_fix_repro_prune_never_reclaims_recycled_pid_profile`,
+      `unit_pid_is_ff_rdp_spawned_refuses_recycled_pid` and
+      `live_171_recycled_owner_pid_no_longer_reads_as_live`. "Fails on main" was demonstrated,
+      not asserted: `owner_liveness` was temporarily patched back to a bare `kill(pid, 0)` and all
+      three unit tests failed, then the patch was reverted.
+- [x] `live_96_profile_cleanup`'s precondition is left as loud as iter-146 Theme B made it (no
+      softening back into a skip) — untouched; the sibling-file marker layout was chosen
+      specifically so its `parse::<u32>()` keeps matching
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
       clean, plus a dual-gate live sweep
 
 ## Out of scope

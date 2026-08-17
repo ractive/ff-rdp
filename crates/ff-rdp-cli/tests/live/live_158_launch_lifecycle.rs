@@ -23,7 +23,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::common::{
-    FirefoxGuard, LiveFirefox, base_args, ff_rdp_bin, kill_pid, live_tests_enabled, pid_alive,
+    FirefoxGuard, LiveFirefox, base_args, current_test_name, ff_rdp_bin, ff_rdp_launch_command,
+    ff_rdp_launch_command_for, kill_pid, live_tests_enabled, pid_alive,
 };
 
 /// Parse a `ff-rdp` stdout buffer into JSON, with the raw text in the panic
@@ -72,10 +73,17 @@ fn live_158_launch_survives_contended_bind() {
 
     // Four at once: enough contention to reproduce the >5 s bind, launched in
     // parallel threads so they genuinely compete rather than queue.
+    //
+    // iter-171: the owner-test name is captured *here*, on the test's own
+    // thread — the worker threads below are unnamed, so tagging from inside
+    // them would stamp every profile `unknown`. This test is the one whose
+    // four abandoned profiles the iteration-168 postmortem could not attribute.
+    let owner = current_test_name();
     let handles: Vec<_> = (0..4)
         .map(|i| {
+            let owner = owner.clone();
             std::thread::spawn(move || {
-                let out = Command::new(ff_rdp_bin())
+                let out = ff_rdp_launch_command_for(&owner)
                     .args(["launch", "--headless"])
                     .args(["--debug-port", &(7101 + i).to_string()])
                     .output()
@@ -145,7 +153,7 @@ fn live_158_launch_reports_effective_wait_bound() {
         return;
     }
 
-    let flag_out = Command::new(ff_rdp_bin())
+    let flag_out = ff_rdp_launch_command()
         .args(["launch", "--headless", "--debug-port", "7105"])
         .args(["--launch-timeout", "45"])
         .output()
@@ -166,7 +174,7 @@ fn live_158_launch_reports_effective_wait_bound() {
         "--launch-timeout must be reported in meta.launch_wait_secs: {flag_json}"
     );
 
-    let env_out = Command::new(ff_rdp_bin())
+    let env_out = ff_rdp_launch_command()
         .args(["launch", "--headless", "--debug-port", "7106"])
         .env("FF_RDP_LAUNCH_TIMEOUT_SECS", "40")
         .output()
@@ -205,7 +213,7 @@ fn live_158_replace_repeats_cleanly() {
     }
 
     let port = 7108u16;
-    let first = Command::new(ff_rdp_bin())
+    let first = ff_rdp_launch_command()
         .args(["launch", "--headless", "--debug-port", &port.to_string()])
         .output()
         .expect("spawn the initial `ff-rdp launch`");
@@ -221,7 +229,7 @@ fn live_158_replace_repeats_cleanly() {
     );
 
     for round in 1..=3u8 {
-        let out = Command::new(ff_rdp_bin())
+        let out = ff_rdp_launch_command()
             .args(["launch", "--headless", "--debug-port", &port.to_string()])
             .arg("--replace")
             .output()
@@ -278,7 +286,7 @@ fn live_158_stop_reaches_orphaned_children() {
     }
 
     let port = 7109u16;
-    let out = Command::new(ff_rdp_bin())
+    let out = ff_rdp_launch_command()
         .args(["launch", "--headless", "--debug-port", &port.to_string()])
         .output()
         .expect("spawn `ff-rdp launch`");
@@ -352,7 +360,7 @@ fn live_158_launch_creates_missing_profile_dir() {
         "precondition: the profile must not exist"
     );
 
-    let out = Command::new(ff_rdp_bin())
+    let out = ff_rdp_launch_command()
         .args(["launch", "--headless", "--debug-port", "7110"])
         .args(["--profile", &profile.to_string_lossy()])
         .output()
@@ -406,7 +414,7 @@ fn live_158_occupied_port_fails_fast_with_the_occupant() {
     let port = listener.local_addr().expect("local_addr").port();
 
     let started = std::time::Instant::now();
-    let out = Command::new(ff_rdp_bin())
+    let out = ff_rdp_launch_command()
         .args(["launch", "--headless", "--debug-port", &port.to_string()])
         .output()
         .expect("spawn `ff-rdp launch` against an occupied port");

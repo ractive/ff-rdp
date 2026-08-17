@@ -10,6 +10,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
+use crate::common::ff_rdp_launch_command;
+
 fn ff_rdp_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }
@@ -45,7 +47,7 @@ impl LiveFirefox {
     /// name what `ff-rdp launch` actually said.
     fn launch() -> Self {
         let port = free_port();
-        let output = Command::new(ff_rdp_bin())
+        let output = ff_rdp_launch_command()
             .args(["launch", "--headless", "--debug-port", &port.to_string()])
             .output()
             .expect("spawn `ff-rdp launch`");
