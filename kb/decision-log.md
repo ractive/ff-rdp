@@ -1239,3 +1239,58 @@ answer) regardless of the `)` immediately before its `{`. Declarations
 from four positions" trade-off claim above is superseded by this addendum,
 not corrected in place, per this repo's discipline against rewriting a claim
 to fit what was later found.
+
+## DEC-043: `live-sweep` re-probes port 6000 per tier and counts unmet preconditions separately from failures
+
+**Decision** (iter-173): `live-sweep` keeps the fixed port 6000 and keeps its
+"classify, do not launch" policy (DEC of iter-158 Theme F, unchanged). What
+changes is that the probe is no longer taken *once*: it is re-taken
+immediately before every target whose tests need that browser, and again after
+a phase that failed. Tests whose browser went away in between move out of
+`executed` into a new `vanished=V` count and are run *without*
+`--include-ignored`, so libtest reports them `ignored`. A separate
+`launch_timeout=L` count is carved out for tests that panicked because Firefox
+never opened its debug port within the per-test budget. The summary line
+becomes
+`LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K vanished=V launch_timeout=L total=T`.
+
+**Why**: `live-sweep` exists so a live suite cannot report results it did not
+earn (iter-155). Reporting an unmet precondition as a failing test is that same
+lie with the sign flipped. In iteration 168's sweep the hand-started port-6000
+Firefox was killed during the 831-second `ff-rdp-cli` tier, and all seven
+`ff-rdp-core` tests were reported `FAILED` with `ConnectionRefused`; they pass
+7/7 against a fresh browser. A reviewer who trusts the summary either chases
+seven ghosts or learns to discount core-tier reds, and the second is how a real
+regression gets waved through. The same shape reached iter-170 as a 30 s launch
+timeout under sweep load.
+
+**Why not have the sweep own the browser** (the alternative Theme B offered):
+binding 6000 inherits the whole ownership problem the fails-closed guard in
+`daemon/client.rs` exists to prevent. Port 6000 is ff-rdp's documented default
+and the port a human is most likely to be using by hand; a sweep that launches
+on it either collides with the operator or has to decide whether to kill a
+browser it did not start — the 2026-07-09 kill-scoping incident. Moving the
+`ff-rdp-core` tests to a free port changes their contract and was out of scope.
+The harm was never the fixed port; it was asserting a precondition checked once,
+forty minutes earlier. Re-probing costs one TCP connect per target.
+
+**Trade-off**: `vanished` does **not** fail the sweep (those tests never
+reached a browser), but `launch_timeout` **does**. A launch timeout is a red
+libtest result, and turning reds green on inference is the failure mode this
+tool exists to prevent; the plan asked only for a distinct count, so that is
+all it gets. Both counts are carved out of `executed`, never added on top, so
+`total=T` is conserved and no reclassification can inflate the number a PR body
+quotes. Attribution is by parsing libtest's `---- <name> stdout ----` blocks,
+which means the phases now capture stdout instead of inheriting it — output is
+teed through line by line so a 35-40 minute tier still shows progress live.
+
+**Also**: `SELF_LAUNCH_MARKERS` (`LiveFirefox` / `RawFirefox`) now override the
+`PREEXISTING_MARKERS` substring test. One of those markers is the bare word
+`firefox_port`, which is also a field name in `daemon.<port>.json`, so any
+`ff-rdp-cli` live test asserting on that field was silently reclassified as
+needing somebody else's browser — iter-172 hit this and worked around it by not
+writing the word. With nothing on 6000 such a test would be reported `ignored`
+instead of run: iter-155's false green by another road.
+
+**Applies to**: `crates/xtask/src/live_sweep.rs`, `crates/xtask/src/main.rs`,
+`CONTRIBUTING.md`, `.claude/skills/iteration-close/SKILL.md`.
