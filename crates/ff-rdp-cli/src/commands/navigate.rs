@@ -1194,6 +1194,23 @@ fn wait_for_doc_complete(
         }
     }
     let (status, reason) = resolved(&tracker);
+    // iter-169 Theme A instrumentation. The envelope's `elapsed_ms` is
+    // snapshotted at commit time (inside the wait loop above) and so says
+    // nothing about how long this grace loop ran — which made a
+    // `no_status_reported` envelope reporting `elapsed_ms: 250` look like
+    // proof the 2000 ms budget had been skipped when it is simply not
+    // measuring it. Log the grace-loop's own elapsed alongside the tracker's
+    // contents so the next diagnosis starts from a measurement instead of an
+    // inference.
+    tracing::debug!(
+        grace_ms = u64::try_from(grace_start.elapsed().as_millis()).unwrap_or(u64::MAX),
+        observing = tracker.observing,
+        doc_resources = tracker.docs.len(),
+        status_updates = tracker.statuses.len(),
+        reason = reason.map_or("none", StatusUnknown::as_str),
+        committed_url = %commit_info.committed_url,
+        "navigate: document status resolved"
+    );
     commit_info.http_status = status;
     commit_info.status_reason = reason;
 
