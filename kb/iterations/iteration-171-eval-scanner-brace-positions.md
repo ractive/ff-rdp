@@ -118,6 +118,25 @@ list is not evidence. A spurious boundary can land inside a literal (SyntaxError
 can leave the wrap with nothing to auto-return (silent `undefined`). Any claim of that shape needs
 the two-binary A/B comparison, not an argument.
 
+## Carried in from iter-170's PR review (2026-08-17)
+
+Review of iter-170's PR (#208) found and fixed a fourth misclassified position before merge: a
+`function` *expression*'s body (`const f = function(){}`) was classified `Block` identically to a
+`function` *declaration*'s, because both are `)`-preceded — `brace_opens_block` cannot tell them
+apart from the `{` alone. Live-tested regression: `eval --stringify 'const f = function(){} / 2'`
+threw `unterminated regular expression literal` on a script that evaluates fine on `main`. Fixed in
+the same PR by `function_keyword_is_declaration`, which checks the token before the `function`
+keyword itself (walking back past a leading `async`), not just before its `{`.
+
+That fix has one acknowledged, unreached residual: it detects the `function` keyword by a forward
+word-boundary scan and pushes the current depth onto a stack, popped at the next `{` reached at that
+depth. If `function` appears in expression position but is never actually followed by a matching
+`(...) {` — a case no live or unit input has produced — the stale marker could misclassify a later,
+unrelated `{}` at the same depth as `ObjectLiteral` instead of `Block`. That is the *safe* direction
+(the pre-170 default), so it costs a missed opportunity, not a new crash, and is not itself a reason
+to reopen iter-170. Worth a Theme A line here if this iteration's own measurement turns up a
+matching case; otherwise it stays a documented, unreached theoretical gap.
+
 ## Out of scope
 
 - Replacing the wrap machinery with a real parser or a WASM JS tokenizer — rejected in iter-167 and
