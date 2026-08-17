@@ -483,3 +483,114 @@ fn back_no_wait_returns_bare_envelope_immediately() {
          one: {json}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// iter-169 Theme B — status / status_reason parity across all four verbs
+// ---------------------------------------------------------------------------
+
+/// Assert the iter-169 Theme B envelope invariant on a `results` object:
+/// both keys are always present, and exactly one of them is non-`null`.
+fn assert_status_pair_present(results: &serde_json::Value, label: &str) {
+    assert!(
+        results.get("status").is_some(),
+        "{label}: `status` must always be present, got {results}"
+    );
+    assert!(
+        results.get("status_reason").is_some(),
+        "{label}: `status_reason` must always be present, got {results}"
+    );
+    let has_status = !results["status"].is_null();
+    let has_reason = !results["status_reason"].is_null();
+    assert!(
+        has_status != has_reason,
+        "{label}: exactly one of status/status_reason must be non-null, got {results}"
+    );
+}
+
+/// `back`/`forward`/`reload` emit `status` and `status_reason` on the
+/// commit-wait path (iter-169 Theme B). This mock delivers document-events
+/// but no `network-event` resources at all, so the honest answer is
+/// `no_document_request` — the point of the test is that both keys exist and
+/// carry a *reason*, where before this iteration neither key was emitted and
+/// `--jq '.results.status'` returned a bare `null`.
+#[test]
+fn nav_verbs_emit_status_and_reason_on_commit_path() {
+    for (verb, method) in [("back", "goBack"), ("forward", "goForward")] {
+        let server = nav_action_commit_server(method);
+        let port = server.port();
+        let handle = std::thread::spawn(move || server.serve_one());
+
+        let mut args = base_args(port);
+        args.push(verb.to_owned());
+
+        let output = std::process::Command::new(ff_rdp_bin())
+            .args(&args)
+            .output()
+            .expect("failed to spawn ff-rdp");
+        handle.join().unwrap();
+
+        assert!(
+            output.status.success(),
+            "{verb}: expected success, stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_status_pair_present(&json["results"], verb);
+    }
+
+    // `reload` uses the four-eval mock (it captures its own pre-dispatch
+    // `location.href`), so it needs the dedicated server builder.
+    let server = nav_action_commit_server_reload();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.push("reload".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "reload: expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_status_pair_present(&json["results"], "reload");
+}
+
+/// `--no-wait` returns before any resource can arrive, so it cannot have
+/// observed a status — but it must still say so with `not_observed` rather
+/// than omitting the keys (iter-169 Theme B: "on every path").
+#[test]
+fn nav_verbs_no_wait_report_not_observed() {
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"));
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["back".to_owned(), "--no-wait".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "back --no-wait must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["results"]["status"], serde_json::Value::Null);
+    assert_eq!(
+        json["results"]["status_reason"], "not_observed",
+        "back --no-wait must name the reason it saw no status: {json}"
+    );
+}

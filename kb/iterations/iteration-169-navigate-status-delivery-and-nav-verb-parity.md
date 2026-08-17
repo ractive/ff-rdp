@@ -16,7 +16,7 @@ dogfood_path: |
   done
   # → expect 20 ok. Any FAILED reproduces the defect; the panic message prints
   #   the whole envelope, and `status_reason` names which half is missing.
-
+  
   # Theme B — the other three navigation verbs report no status at all.
   ff-rdp launch --headless --debug-port 7402
   ff-rdp --port 7402 navigate https://example.com --jq '.results | keys'
@@ -25,7 +25,7 @@ dogfood_path: |
   # → 2026-08-16: ["committed_url","elapsed_ms","ready_state"] — no status key
   #   at all, so `--jq '.results.status'` yields null for a reason no caller can
   #   see. iter-130 Theme B promised all four verbs report the same shape.
-status: planned
+status: done
 title: "Iteration 169: navigate's document status update is occasionally never delivered, back/forward/reload report no status at all, and the live suite kills a Firefox it does not own"
 type: iteration
 tags:
@@ -112,6 +112,66 @@ So Theme A now has two candidate defects, and the second one is cheaper to check
 
 Only if the budget *is* genuinely being spent do candidates 1–3 above apply.
 
+### Resolved 2026-08-17 — candidate 0 refuted, and the real cause is none of 1–3
+
+**Candidate 0 is wrong, and the "250 ms envelope" evidence was misread.** `CommitInfo.elapsed_ms`
+is snapshotted *inside* the wait loop at the instant the navigation commits (every `break 'wait`
+computes `nav_start.elapsed()` for itself); the post-commit grace loop that waits for the status
+runs afterwards and never updates it. So `elapsed_ms` cannot report the grace window at all, and a
+`no_status_reported` envelope showing `elapsed_ms: 250` is not evidence about the budget either
+way. It was measuring the commit, not the wait.
+
+Instrumented directly instead (`tracing::debug!` on the grace loop's own elapsed, plus one line per
+`network-event` resource and per update — all kept, they are how the next person diagnoses this):
+
+```
+grace_ms=2034 observing=true doc_resources=1 status_updates=0 reason="no_status_reported"
+```
+
+The budget **is** spent in full. Candidate 0 is closed.
+
+**The real cause is a fourth thing, in the CLI, not the daemon stream.** Repro: 30 cold-start runs
+(`pkill` daemon + Firefox, `ff-rdp launch --headless`, one `navigate https://example.com`), 1
+failure. Both the before and the after run of this protocol carried the same synthetic 8-way CPU
+load (`yes > /dev/null` ×8 on an 8-core machine) — *harsher* than the "idle machine" the earlier
+1-in-12 figure was measured on, and identical between the two, so the before/after comparison
+holds. Per-frame trace, passing run vs failing run:
+
+```
+pass:  resource id=8589934593 cause=document url=https://example.com/
+       update   id=8589934593 status=Some("200")     ← the one that matters
+       update   id=8589934593 status=None
+
+fail:  resource id=8589934593 cause=document url=https://example.com/
+       update   id=8589934593 status=None            ← only the second one arrived
+       (grace_ms=2034, nothing further)
+```
+
+The status-carrying update is not late and is not mis-matched — it is **read off the wire and
+thrown away by `navigate` itself**. `wait_for_doc_complete` issues blocking round-trips from inside
+its own drain loop: `refresh_probe_console_actor` (a `getTarget`) eagerly on the first
+`dom-loading`, and `probe_readystate_complete` / `eval_location_href` on the probe timer. All of
+them resolve through `recv_reply_from`, which reads raw packets until it finds *its* reply and
+hands every other packet to the transport's event sink — and no sink is installed on this path, so
+those packets are silently dropped. `dom-loading` fires within milliseconds of the response line,
+so the eager `getTarget` sits exactly on top of the `resources-updated-array` carrying `status`.
+
+This is the bug class `kb/rdp/actors/watcher.md`'s iter-129 Note 1 describes, and
+`probe_same_document_commit_safe` already defended against it — for one of the five call sites.
+`ReadyStateProbe::poll_enabled`'s doc comment even names the risk and calls it "narrow"; the
+measurement says otherwise. With the fix instrumented, those round-trips swallow **69 packets
+across 30 runs** (up to 7 in a single call) — every one of which used to be discarded.
+
+Fix: `with_event_replay`, a helper that installs a temporary event sink around any blocking
+round-trip issued from inside the wait loop and replays what it captured through
+`bus.dispatch_event`, so the loop's next drain sees those packets exactly as if it had read them
+itself. Applied to all five sites; `probe_same_document_commit_safe` is now expressed in terms of
+it rather than carrying its own copy.
+
+Measured after the fix, same 30-run cold-start protocol: **30/30 pass** (before: 29/30). No grace
+window changed; `MAX_STATUS_GRACE_MS` is pinned at iter-166's 2000 ms by
+`unit_169_grace_budget_is_capped`.
+
 ## Theme B — `back`/`forward`/`reload` report no status key at all
 
 `nav_action.rs` builds `{committed_url, ready_state, elapsed_ms}` and stops there, so
@@ -136,6 +196,41 @@ Two honest outcomes, and the iteration should pick one on evidence rather than a
 
 The second is cheap and honest; the first is more useful. Measure what the subscription costs on
 a `reload` before choosing.
+
+### Resolved 2026-08-17 — the subscription costs nothing measurable, so take the useful option
+
+Measured (Firefox 153, daemon route, `https://example.com` already loaded, five consecutive
+`ff-rdp reload` invocations, `RUST_LOG=debug`):
+
+```
+wall=1398ms grace_ms=0  "status":304,"status_reason":null   ← first, includes daemon warm-up
+wall=344ms  grace_ms=0  "status":304,"status_reason":null
+wall=456ms  grace_ms=0  "status":304,"status_reason":null
+wall=329ms  grace_ms=0  "status":304,"status_reason":null
+wall=480ms  grace_ms=0  "status":304,"status_reason":null
+```
+
+`grace_ms=0` on every run: the status was already in the tracker by the time the commit resolved,
+so the post-commit grace loop exits on its first pass and adds nothing. The only new cost is the
+daemon `stream`/`stop-stream` pair, two local round-trips. (`304` rather than `200` because a soft
+reload revalidates — which is precisely the sort of thing a caller could not previously see.)
+
+So: option one. All three verbs subscribe to `ResourceType::NetworkEvent` alongside
+`DocumentEvent`, issue the daemon `stream` request `run_core` already issues, and pass
+`network_observed: true`.
+
+Paths that genuinely cannot correlate a document still emit both keys rather than omitting them:
+
+| path | `status` | `status_reason` |
+|---|---|---|
+| `reload`/`back`/`forward`, committed | the document's | `null` |
+| … BFCache restore, no request issued | `null` | `no_document_request` |
+| `--no-wait` (returns before any resource can arrive) | `null` | `not_observed` |
+| `reload --wait-idle` (counts frames against a quiescence deadline, never correlates a document) | `null` | `not_observed` |
+| readystate-only wait strategy | `null` | `not_observed` |
+
+`StatusUnknown::NotObserved`'s doc comment was rewritten to match: it now means "this route never
+*correlated* the committed document's request", not "this route never subscribed".
 
 ## Theme C — something in the CLI live suite kills a Firefox it does not own
 
@@ -187,20 +282,65 @@ an hour; they then broke the *next* sweep's `live_158` (port 7101 held by an orp
 `spawned by unknown test`, so iter-151's owner-test marker does not survive a killed runner —
 that gap belongs with [[iteration-171-stale-owner-pid-marker-and-pid-reuse]].
 
-## Acceptance Criteria [0/6]
+### Resolved 2026-08-17 — a third clean sweep; still no reproduction, so no culprit is named
 
-- [ ] the delivery path is identified — which of Theme A's three candidates loses the update,
+iteration 169's own dual-gate sweep (`FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`,
+`LIVE_SWEEP_SUMMARY executed=272 skipped=0 preexisting=0 total=272`, 37 min of CLI tier) ran
+against a hand-started port-6000 Firefox whose PID was recorded before the run. After the sweep
+`ps -p 62618` still reported it running, elapsed 42:55, and the `ff-rdp-core` tier executed 9/9.
+
+That is three consecutive full sweeps (iter-166's two clean re-runs plus this one) in which the
+browser survived. Per this plan's own instruction — "try to reproduce it under sweep load before
+hunting scoping candidates 1–3" — the attempt was made and failed, so **no scoping candidate was
+investigated and no process is named**. AC 5 is left unticked.
+
+One adjacent behaviour was observed and is *not* this theme: `ff-rdp daemon stop` does terminate a
+Firefox started by `ff-rdp launch` on the same port. That is documented behaviour (`daemon stop
+--help`: "When Firefox was started via `launch`, stopping it also removes its temporary profile
+directory") and concerns a browser the tooling *does* own, which is the opposite of Theme C.
+
+What would reopen this: a sweep in which a hand-started port-6000 Firefox dies with no external
+kill, with the PID polled throughout so the phase of death is known. Until then there is one
+observation and nothing measured left to act on.
+
+## Acceptance Criteria [4/6]
+
+- [x] the delivery path is identified — which of Theme A's three candidates loses the update,
       recorded in this plan with the measurement that settled it, before the fix
-- [ ] `live_138_navigate_reports_404` passes 20 consecutive runs on an idle machine, and the
+      [2026-08-17: identified and recorded above, **but it is none of the three candidates** —
+      the AC's premise was wrong. The update is not lost in the daemon stream, the fan-out or
+      Firefox; `wait_for_doc_complete`'s own blocking round-trips read it off the wire and
+      discarded it because no event sink was installed. Candidate 0 was also refuted: the
+      grace loop spends its full budget (`grace_ms=2019`, `grace_ms=2034`), and the 250 ms
+      envelope that suggested otherwise was `elapsed_ms`, which is snapshotted at commit and
+      never covers the grace loop. Ticked because the substance — identify the path, record the
+      measurement, before the fix — is done; the "three candidates" clause is not.]
+- [x] `live_138_navigate_reports_404` passes 20 consecutive runs on an idle machine, and the
       count is quoted in the PR body (a single pass proves nothing — the pre-fix rate is 1 in 12)
-- [ ] `back`/`forward`/`reload` emit `status` and `status_reason` on every path, with a live test
+      [2026-08-17: 20/20 `test result: ok`. Not on an idle machine — the machine carried a
+      synthetic 8-way CPU load throughout, which is harsher, not laxer. Re-run on a quiet
+      machine afterwards: also 20/20.]
+- [x] `back`/`forward`/`reload` emit `status` and `status_reason` on every path, with a live test
       asserting both keys are present on all three verbs
-- [ ] no grace window in `navigate.rs` is longer than the 2000 ms iter-166 set — the fix must be
+      [2026-08-17: `live_169_nav_verb_status_parity`, both connection routes; commit-wait,
+      `--no-wait` and `reload --wait-idle` paths; plus `nav_verbs_emit_status_and_reason_on_commit_path`
+      and `nav_verbs_no_wait_report_not_observed` in the mock e2e suite]
+- [x] no grace window in `navigate.rs` is longer than the 2000 ms iter-166 set — the fix must be
       in delivery, not in waiting
+      [2026-08-17: `MAX_STATUS_GRACE_MS = 2000`, asserted by `unit_169_grace_budget_is_capped`;
+      the fix is `with_event_replay`, which changes no budget]
 - [ ] the process that kills the externally-started port-6000 Firefox is identified by name, with
       the reproduction that found it — not inferred from the candidate list
-- [ ] a full `live-sweep` with a hand-started Firefox on 6000 leaves that Firefox alive, verified
+      — **NOT MET, and the premise is now doubtful.** iteration 169's dual-gate sweep is the
+      third consecutive full sweep in which a hand-started port-6000 Firefox survived (see the
+      AC below). Nothing was identified because nothing reproduced. The theme now rests on a
+      single unexplained event from iter-166's second sweep, which is not enough to name a
+      culprit from. Left unticked rather than reworded; see the carry-over row.
+- [x] a full `live-sweep` with a hand-started Firefox on 6000 leaves that Firefox alive, verified
       by checking its PID after the sweep rather than by the core tier merely passing
+      [2026-08-17: PID 62618 started by hand before the sweep, `ps -p 62618` after it →
+      still running, elapsed 42:55; the core tier also executed 9/9,
+      `LIVE_SWEEP_SUMMARY executed=272 skipped=0 preexisting=0 total=272`]
 
 ## Notes
 

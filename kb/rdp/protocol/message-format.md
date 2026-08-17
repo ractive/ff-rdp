@@ -193,3 +193,27 @@ Both helpers now forward non-matching and sibling-actor packets to the
 event/resource sink that the daemon already uses for unsolicited events.
 This ensures cross-actor traffic (WatcherActor resources arriving while
 a console eval is pending) is never lost.
+
+### The invariant only holds when a sink is installed (iter-169)
+
+`forward_event` is a no-op when `event_sink` is `None` — the packet is
+dropped, silently, exactly as before iter-74. So "never discarded" is a
+property of *the caller*, not of the transport: any code that issues a
+blocking round-trip while it is also the only reader of an event stream
+must install a sink for the duration of that call and replay what it
+captures.
+
+Measured cost of getting this wrong (iter-169): `navigate`'s wait loop
+issued a blocking `getTarget` on the first `dom-loading`, milliseconds
+after Firefox emits the main document's response line, with no sink
+installed. Across 30 cold-start `navigate https://example.com` runs those
+in-loop round-trips read and discarded **69 packets** — one of which was
+the `resources-updated-array` carrying the document's HTTP status, making
+`navigate` report `status: null, status_reason: "no_status_reported"`
+after waiting out a 2 000 ms grace window for an update it had already
+thrown away.
+
+The fix is `with_event_replay` in `commands/navigate.rs`: swap in a
+temporary sink, run the round-trip, swap the previous sink back, replay
+the captured packets through `ResourceCommand::dispatch_event`. Use it
+for *every* blocking call made from inside a drain loop. See DEC-041.

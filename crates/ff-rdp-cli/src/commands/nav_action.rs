@@ -84,7 +84,12 @@ pub fn run(cli: &Cli, action: NavAction) -> Result<(), AppError> {
         // wait entirely, mirroring `navigate --no-wait`.
         let packet = build_packet(action);
         ctx.transport_mut().send(&packet).map_err(AppError::from)?;
-        json!({})
+        // iter-169 Theme B: `--no-wait` returns before any resource can
+        // arrive, so it cannot have observed a status — but it must still
+        // emit both keys, or `--jq '.results.status'` is a bare `null` whose
+        // cause the caller cannot see. `not_observed` is exactly what that
+        // variant was introduced to say.
+        serde_json::Value::Object(super::navigate::not_observed_status())
     } else {
         // `reload`'s target URL is knowable ahead of time (the current page,
         // reloaded) — capture it so `needs_href_fallback` can tell a genuine
@@ -406,7 +411,7 @@ fn emit_reload_result(
     force: bool,
     via_daemon: bool,
 ) -> Result<(), AppError> {
-    let result = if force {
+    let mut result = if force {
         json!({
             "reloaded": true,
             "idle_at_ms": idle_at_ms,
@@ -420,6 +425,14 @@ fn emit_reload_result(
             "requests_observed": requests_observed,
         })
     };
+    // iter-169 Theme B: `--wait-idle` streams network events but only *counts*
+    // them, against a quiescence deadline rather than against the committed
+    // document — so it genuinely cannot report the main document's status.
+    // Say that with `not_observed` instead of leaving the keys off, so
+    // `--jq '.results.status'` behaves the same on every `reload` invocation.
+    if let Some(obj) = result.as_object_mut() {
+        obj.extend(super::navigate::not_observed_status());
+    }
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
