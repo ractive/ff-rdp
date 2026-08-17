@@ -1261,6 +1261,250 @@ fn unrelated() {}
     }
 
     // -----------------------------------------------------------------------
+    // iter-173 Task D — a self-launching suite is never `preexisting`
+    // -----------------------------------------------------------------------
+
+    /// AC4: an `ff-rdp-cli` live source that *names* `firefox_port` (the field
+    /// in `daemon.<port>.json`) but launches its own Firefox must classify as
+    /// executed, not `preexisting`. On `main` the bare-substring marker put it
+    /// in the wrong bucket, so with nothing on port 6000 it would be reported
+    /// `ignored` instead of run — iter-155's false green by another road.
+    #[test]
+    fn test_173_registry_assertion_does_not_make_a_suite_preexisting() {
+        let src = r#"
+use crate::common::LiveFirefox;
+
+#[test]
+#[ignore = "requires Firefox and FF_RDP_LIVE_TESTS=1"]
+fn live_172_published_record_is_complete() {
+    let ff = LiveFirefox::headless_on_random_port();
+    let rec: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(rec["firefox_port"].as_u64(), Some(u64::from(ff.port())));
+}
+"#;
+        assert!(
+            !source_needs_preexisting_instance(src),
+            "a suite that launches its own Firefox must not be reclassified as \
+             `preexisting` merely because it asserts on the `firefox_port` field"
+        );
+        let got = scan_source(src, Some("live_172_registry"));
+        assert_eq!(got.len(), 1);
+        assert!(
+            !got[0].needs_preexisting,
+            "the scanned test must carry the corrected classification"
+        );
+    }
+
+    /// The negative marker must not swallow the genuine `preexisting` signal:
+    /// a source that only reads `firefox_port()` and never launches anything
+    /// still needs somebody else's browser.
+    #[test]
+    fn test_173_self_launch_marker_does_not_weaken_the_preexisting_tier() {
+        assert!(source_needs_preexisting_instance(
+            "use support::recording::{firefox_port, should_run_live};\nfn t() { firefox_port(); }"
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-173 Theme B — a vanished browser is a precondition, not a failure
+    // -----------------------------------------------------------------------
+
+    /// AC2 (classification half): the port-6000 probe said "available" when
+    /// the sweep started, the CLI tier ran for 35 minutes, and a fresh probe
+    /// before the core tier says the browser is gone. Those tests must leave
+    /// `qualified` and land in `not_running()` so libtest reports them
+    /// `ignored` — never `FAILED` on `ConnectionRefused`.
+    #[test]
+    fn test_173_vanished_browser_moves_core_tests_out_of_qualified() {
+        let tests = vec![gated_preexisting("live_connect_and_list_tabs")];
+        let gates = EnvGates {
+            live: true,
+            network: true,
+            preexisting_available: true,
+        };
+
+        let (still_there, none_gone) = repartition_for_probe(&tests, &gates, true);
+        assert!(none_gone.is_empty());
+        assert_eq!(still_there.qualified, vec!["live_connect_and_list_tabs"]);
+
+        let (after, vanished) = repartition_for_probe(&tests, &gates, false);
+        assert_eq!(
+            vanished,
+            vec!["live_connect_and_list_tabs".to_owned()],
+            "a browser present at classification time and gone at tier time \
+             must be reported as an unmet precondition"
+        );
+        assert!(after.qualified.is_empty(), "it must not run for real");
+        assert_eq!(after.not_running(), vec!["live_connect_and_list_tabs"]);
+    }
+
+    /// A target that launches its own Firefox is untouched by the re-probe —
+    /// the fresh probe result is irrelevant to it.
+    #[test]
+    fn test_173_reprobe_does_not_touch_self_launching_targets() {
+        let tests = vec![gated("cli::t1", true, false)];
+        let gates = EnvGates {
+            live: true,
+            network: false,
+            preexisting_available: true,
+        };
+        let (part, vanished) = repartition_for_probe(&tests, &gates, false);
+        assert!(vanished.is_empty());
+        assert_eq!(part.qualified, vec!["cli::t1"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-173 — post-hoc failure attribution
+    // -----------------------------------------------------------------------
+
+    /// The real shape of iteration 168's core tier: every test `FAILED` with
+    /// `ConnectionRefused` because the browser was gone. With a fresh probe
+    /// confirming it, none of them is a genuine failure.
+    const CONNECTION_REFUSED_OUTPUT: &str = "\
+running 2 tests
+test live_connect_and_list_tabs ... FAILED
+test live_selected_tab_is_marked ... FAILED
+
+failures:
+
+---- live_connect_and_list_tabs stdout ----
+thread 'live_connect_and_list_tabs' panicked at crates/ff-rdp-core/tests/live_firefox_test.rs:41:
+connect failed: ConnectionFailed(Os { code: 61, kind: ConnectionRefused, message: \"Connection refused\" })
+
+---- live_selected_tab_is_marked stdout ----
+thread 'live_selected_tab_is_marked' panicked at crates/ff-rdp-core/tests/live_firefox_test.rs:77:
+connect failed: ConnectionFailed(Os { code: 61, kind: ConnectionRefused, message: \"Connection refused\" })
+
+failures:
+    live_connect_and_list_tabs
+    live_selected_tab_is_marked
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored
+";
+
+    #[test]
+    fn test_173_connection_refused_after_browser_loss_is_not_a_genuine_failure() {
+        let verdict = classify_failures(CONNECTION_REFUSED_OUTPUT, false, true);
+        assert_eq!(
+            verdict.vanished,
+            vec![
+                "live_connect_and_list_tabs".to_owned(),
+                "live_selected_tab_is_marked".to_owned()
+            ]
+        );
+        assert!(verdict.genuine.is_empty());
+        assert!(!verdict.has_genuine_failures());
+    }
+
+    /// The same output with the browser still up is a real failure — the
+    /// forgiveness is conditional on evidence, not on the error text.
+    #[test]
+    fn test_173_connection_refused_with_the_browser_up_is_a_genuine_failure() {
+        let verdict = classify_failures(CONNECTION_REFUSED_OUTPUT, true, true);
+        assert_eq!(verdict.genuine.len(), 2);
+        assert!(verdict.vanished.is_empty());
+        assert!(verdict.has_genuine_failures());
+    }
+
+    /// Folded in from iter-170: a 30 s Firefox-launch budget spent against a
+    /// fully loaded machine is an unmet precondition, and must be told apart
+    /// from a product failure — even though it still fails the sweep.
+    #[test]
+    fn test_173_launch_timeout_is_classified_separately_from_a_real_failure() {
+        let stdout = "\
+running 2 tests
+test live_123_daemon_autostart_and_registry::live_daemon_autostart_tabless ... FAILED
+test live_140_eval::live_eval_returns_number ... FAILED
+
+failures:
+
+---- live_123_daemon_autostart_and_registry::live_daemon_autostart_tabless stdout ----
+thread 'main' panicked at crates/ff-rdp-cli/tests/common/mod.rs:1008:
+RawFirefox: /Applications/Firefox.app/Contents/MacOS/firefox (pid 43844) never opened debug port 64638 within 30s (raise FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS)
+
+---- live_140_eval::live_eval_returns_number stdout ----
+thread 'main' panicked at crates/ff-rdp-cli/tests/live/live_140_eval.rs:22:
+assertion `left == right` failed
+  left: 3
+ right: 4
+
+failures:
+    live_123_daemon_autostart_and_registry::live_daemon_autostart_tabless
+    live_140_eval::live_eval_returns_number
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored
+";
+        let verdict = classify_failures(stdout, true, false);
+        assert_eq!(
+            verdict.launch_timeout,
+            vec![
+                "live_123_daemon_autostart_and_registry::live_daemon_autostart_tabless".to_owned()
+            ]
+        );
+        assert_eq!(
+            verdict.genuine,
+            vec!["live_140_eval::live_eval_returns_number".to_owned()],
+            "a real assertion failure must stay a real failure"
+        );
+        assert!(verdict.has_genuine_failures());
+    }
+
+    /// A launch timeout names its own cause, so it wins over the weaker
+    /// "the browser is gone" inference even on a preexisting-tier target.
+    #[test]
+    fn test_173_launch_timeout_wins_over_the_vanished_inference() {
+        let stdout = "\
+failures:
+
+---- t stdout ----
+never opened debug port 6000 within 30s
+
+failures:
+    t
+";
+        let verdict = classify_failures(stdout, false, true);
+        assert_eq!(verdict.launch_timeout, vec!["t".to_owned()]);
+        assert!(verdict.vanished.is_empty());
+    }
+
+    /// A phase that fails without naming a single test (a compile error, or a
+    /// harness panic before the first test) attributes nothing — `run()` uses
+    /// that to keep failing the sweep rather than forgiving a blank verdict.
+    #[test]
+    fn test_173_a_phase_with_no_failure_blocks_attributes_nothing() {
+        let verdict = classify_failures("error[E0433]: failed to resolve\n", false, true);
+        assert_eq!(verdict, FailureVerdict::default());
+        assert!(!verdict.has_genuine_failures());
+    }
+
+    /// AC3: the accounting stays conserved — the two new tiers are carved out
+    /// of `executed`, never added on top of it.
+    #[test]
+    fn test_173_summary_total_conserves_every_tier() {
+        let s = SweepSummary {
+            executed: 10,
+            skipped: 3,
+            preexisting: 2,
+            vanished: 7,
+            launch_timeout: 1,
+        };
+        assert_eq!(s.total(), 23);
+        let all_executed = SweepSummary {
+            executed: 18,
+            skipped: 3,
+            preexisting: 2,
+            vanished: 0,
+            launch_timeout: 0,
+        };
+        assert_eq!(
+            all_executed.total(),
+            s.total(),
+            "moving tests between tiers must not change the total — that is what \
+             makes `executed` impossible to inflate"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // phase_command
     // -----------------------------------------------------------------------
 
