@@ -220,7 +220,7 @@ impl DocumentStatusTracker {
             id = res.resource_id,
             cause = %res.cause_type,
             url = %res.url,
-            "iter169: network resource"
+            "navigate: network-event resource observed"
         );
         if res.cause_type == "document" {
             self.docs
@@ -233,7 +233,7 @@ impl DocumentStatusTracker {
         tracing::debug!(
             id = upd.resource_id,
             status = ?upd.status,
-            "iter169: network update"
+            "navigate: network-event update observed"
         );
         if let Some(ref s) = upd.status
             && let Ok(code) = s.parse::<u16>()
@@ -774,6 +774,47 @@ fn extract_document_event<'a>(
     }
 }
 
+/// The longest any grace window in this module may wait, in milliseconds
+/// (iter-166's value, frozen by iter-169).
+///
+/// iter-166 raised the post-commit window from iter-138's 300 ms to 2 000 ms
+/// and measured the residual failure rate at 1 run in 12. iter-169 then
+/// measured *why* the residual cases failed — a blocking round-trip inside
+/// the wait loop was reading the status update off the wire and discarding it
+/// (see [`with_event_replay`]) — so more waiting could never have helped.
+/// Raising this constant is therefore the wrong fix for any future
+/// `no_status_reported`; it is asserted by `unit_169_grace_budget_is_capped`
+/// so a well-meant bump has to argue with a test first.
+const MAX_STATUS_GRACE_MS: u64 = 2000;
+
+/// How long the post-commit grace loop may keep waiting for the main
+/// document's HTTP status, given the reason it does not have one yet.
+///
+/// The budget is re-derived on every pass rather than fixed up front, because
+/// the reason itself changes as events arrive: a wait that starts out
+/// `NoDocumentRequest` becomes `NoStatusReported` the moment the document's
+/// `network-event` lands, and that is exactly when the longer budget should
+/// apply.
+///
+/// * [`StatusUnknown::NotObserved`] — nobody subscribed, so no amount of
+///   waiting can produce a status. Zero, rather than spinning out a window on
+///   a condition that can never become true.
+/// * [`StatusUnknown::NoStatusReported`] — the document's request has been
+///   identified and it committed, so its response line exists and the update
+///   carrying it is merely late. Worth waiting materially longer for; the
+///   loop exits the instant it lands, so this costs nothing in the common
+///   case.
+/// * everything else ([`StatusUnknown::NoDocumentRequest`], or no reason yet)
+///   — the `network-event` may still be in flight, but nothing guarantees one
+///   is coming, so keep iter-138's short window.
+fn status_grace_budget_ms(reason: Option<StatusUnknown>) -> u64 {
+    match reason {
+        Some(StatusUnknown::NotObserved) => 0,
+        Some(StatusUnknown::NoStatusReported) => MAX_STATUS_GRACE_MS,
+        _ => 300,
+    }
+}
+
 /// `requested_url` (iter-130 Theme A) pushed the parameter count to 8; the
 /// function is already heavily documented per-parameter above and splitting
 /// it would obscure the single event-drain loop it implements.
@@ -1298,11 +1339,7 @@ fn wait_for_doc_complete(
         if status.is_some() {
             break;
         }
-        let budget_ms = match reason {
-            Some(StatusUnknown::NotObserved) => 0,
-            Some(StatusUnknown::NoStatusReported) => 2000,
-            _ => 300,
-        };
+        let budget_ms = status_grace_budget_ms(reason);
         if grace_start.elapsed() >= Duration::from_millis(budget_ms) {
             break;
         }
@@ -2940,6 +2977,74 @@ mod tests {
             wait_level: WaitLevel::Complete,
             wait_strategy: WaitStrategy::Events,
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-169 Theme A/B
+    // -----------------------------------------------------------------------
+
+    /// AC: "no grace window in `navigate.rs` is longer than the 2000 ms
+    /// iter-166 set — the fix must be in delivery, not in waiting."
+    ///
+    /// iter-169 measured that the residual `no_status_reported` failures were
+    /// caused by a blocking round-trip discarding the status update, not by
+    /// the wait being too short (30 cold-start runs: the one failure sat out
+    /// the full 2 034 ms). Widening the window can therefore only make the
+    /// command slower, never more correct — so pin the ceiling here.
+    #[test]
+    fn unit_169_grace_budget_is_capped() {
+        for reason in [
+            None,
+            Some(StatusUnknown::NotObserved),
+            Some(StatusUnknown::NoDocumentRequest),
+            Some(StatusUnknown::NoStatusReported),
+        ] {
+            let budget = status_grace_budget_ms(reason);
+            assert!(
+                budget <= MAX_STATUS_GRACE_MS,
+                "grace budget for {reason:?} is {budget}ms, above the {MAX_STATUS_GRACE_MS}ms \
+                 ceiling iter-166 set — fix the delivery, not the wait"
+            );
+        }
+        // The three distinct budgets, spelled out so a silent reshuffle of the
+        // match arms fails here rather than in a live sweep.
+        assert_eq!(status_grace_budget_ms(Some(StatusUnknown::NotObserved)), 0);
+        assert_eq!(
+            status_grace_budget_ms(Some(StatusUnknown::NoDocumentRequest)),
+            300
+        );
+        assert_eq!(
+            status_grace_budget_ms(Some(StatusUnknown::NoStatusReported)),
+            MAX_STATUS_GRACE_MS
+        );
+    }
+
+    /// Theme B: the `--no-wait` envelope fragment names the reason it has no
+    /// status instead of leaving both keys off (which is what made a `reload`
+    /// indistinguishable from `navigate`'s meaningful `null`).
+    #[test]
+    fn unit_169_not_observed_status_carries_both_keys() {
+        let map = not_observed_status();
+        assert_eq!(map.get("status"), Some(&Value::Null));
+        assert_eq!(
+            map.get("status_reason").and_then(Value::as_str),
+            Some("not_observed")
+        );
+    }
+
+    /// The wire strings are part of the CLI's contract — a rename would
+    /// silently break every caller matching on them.
+    #[test]
+    fn unit_169_status_reason_wire_strings_are_stable() {
+        assert_eq!(StatusUnknown::NotObserved.as_str(), "not_observed");
+        assert_eq!(
+            StatusUnknown::NoDocumentRequest.as_str(),
+            "no_document_request"
+        );
+        assert_eq!(
+            StatusUnknown::NoStatusReported.as_str(),
+            "no_status_reported"
+        );
     }
 
     // -----------------------------------------------------------------------
