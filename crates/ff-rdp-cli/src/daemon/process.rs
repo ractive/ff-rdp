@@ -75,6 +75,150 @@ pub fn is_process_alive(pid: u32) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Process identity (iter-171)
+// ---------------------------------------------------------------------------
+
+/// An opaque, OS-supplied token that identifies *one particular incarnation*
+/// of a PID: the process's creation time.
+///
+/// [`is_process_alive`] answers "does some process hold this PID right now",
+/// which is a strictly weaker question than "is the process that wrote this
+/// PID down still running". PIDs are recycled — measured on this project's
+/// macOS dev machine at ~229 allocations/second under spawn-heavy load
+/// against a `PID_MAX` of 99 999, i.e. a full wrap in roughly seven minutes
+/// of saturated spawning, well inside one ~40-minute live sweep. Once a PID
+/// is reused, every `kill(pid, 0)`-based ownership check in the codebase
+/// silently starts answering about the *wrong process*.
+///
+/// Pairing the PID with this token turns liveness into an identity check: the
+/// pair `(pid, start_token)` is unique for the lifetime of a boot, because a
+/// recycled PID necessarily has a later creation time. Callers persist the
+/// token next to the PID (see `util::profile_dir`'s owner markers) and compare
+/// it back before trusting the PID.
+///
+/// Returns `None` when the process does not exist, when the OS refuses the
+/// query (a PID owned by another user), or on a platform with no supported
+/// source for the value. `None` is *not* evidence of death — callers must fall
+/// back to [`is_process_alive`] alone, which is exactly the pre-iter-171
+/// behaviour.
+///
+/// Per-platform source:
+/// - macOS/iOS: `proc_pidinfo(PROC_PIDTBSDINFO)` → `pbi_start_tvsec`/`_tvusec`.
+/// - Linux/Android: `/proc/<pid>/stat` field 22 (`starttime`, in clock ticks
+///   since boot) — read as text, no FFI.
+/// - Windows: `GetProcessTimes` → the creation `FILETIME`.
+/// - Anything else: `None`.
+pub fn process_start_token(pid: u32) -> Option<String> {
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+        let size = c_int_from(std::mem::size_of::<libc::proc_bsdinfo>())?;
+        // SAFETY: `proc_pidinfo` writes at most `size` bytes into the buffer we
+        // pass, and `size` is exactly `size_of::<proc_bsdinfo>()`. The pointer
+        // comes from a live, correctly-aligned `MaybeUninit<proc_bsdinfo>` that
+        // outlives the call. The only side effect is filling that buffer; a
+        // non-existent or inaccessible PID is reported through the return
+        // value, which we check against the full struct size before reading.
+        #[allow(clippy::cast_possible_wrap)]
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast::<libc::c_void>(),
+                size,
+            )
+        };
+        if written != size {
+            return None;
+        }
+        // SAFETY: `proc_pidinfo` returned exactly `size_of::<proc_bsdinfo>()`
+        // bytes written, so the buffer is fully initialised.
+        let info = unsafe { info.assume_init() };
+        Some(format!(
+            "{}.{:06}",
+            info.pbi_start_tvsec, info.pbi_start_tvusec
+        ))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        // Field 22 of /proc/<pid>/stat is `starttime`. Fields 1 and 2 are the
+        // PID and the comm, and comm is parenthesised and may itself contain
+        // spaces and ')' — so split after the LAST ')' rather than tokenising
+        // the whole line.
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let after_comm = &stat[stat.rfind(')')? + 1..];
+        // After the comm, field 3 is `state`; `starttime` is field 22, i.e.
+        // the 20th whitespace-separated token of this remainder.
+        let starttime = after_comm.split_whitespace().nth(19)?;
+        (!starttime.is_empty()).then(|| starttime.to_owned())
+    }
+
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+        use windows_sys::Win32::System::Threading::{
+            GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        // SAFETY: `OpenProcess` only returns a handle (or NULL); we close it on
+        // every path below.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return None;
+        }
+        let mut creation = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut exit = creation;
+        let mut kernel = creation;
+        let mut user = creation;
+        // SAFETY: `handle` is a valid handle we just opened, and all four
+        // out-pointers reference live, initialised `FILETIME` locals that
+        // outlive the call.
+        let ok = unsafe {
+            GetProcessTimes(
+                handle,
+                &raw mut creation,
+                &raw mut exit,
+                &raw mut kernel,
+                &raw mut user,
+            )
+        };
+        // SAFETY: `handle` is the valid handle opened above and is not used
+        // again after this call.
+        unsafe { CloseHandle(handle) };
+        if ok == 0 {
+            return None;
+        }
+        let ticks =
+            (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
+        (ticks != 0).then(|| ticks.to_string())
+    }
+
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "linux",
+        target_os = "android",
+        windows
+    )))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// `usize` → `c_int` without an `as` cast, so an implausibly large struct size
+/// yields `None` instead of a silently truncated FFI argument.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn c_int_from(n: usize) -> Option<libc::c_int> {
+    libc::c_int::try_from(n).ok()
+}
+
+// ---------------------------------------------------------------------------
 // Process signaling
 // ---------------------------------------------------------------------------
 
