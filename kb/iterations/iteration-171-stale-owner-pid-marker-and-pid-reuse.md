@@ -2,7 +2,7 @@
 title: "Iteration 171: a leaked profile dir's owner-PID marker outlives its process, so PID reuse makes dead profiles read as live"
 type: iteration
 date: 2026-08-16
-status: planned
+status: done
 branch: iter-171/stale-owner-pid-marker
 depends_on: [iteration-168-livefirefox-drop-does-not-wait-for-exit]
 first_call_sites: []
