@@ -66,11 +66,42 @@ fn spawn_lock_filename(port: u16) -> String {
     format!("daemon.{port}.spawn.lock")
 }
 
+/// Return the registry *write*-lock filename for a given Firefox `port`
+/// (e.g. `daemon.6000.write.lock`) — iter-172.
+///
+/// A sibling of the published record, never the record itself. See
+/// [`acquire_registry_write_lock_in`] for why that distinction is the whole
+/// point of this file existing.
+fn write_lock_filename(port: u16) -> String {
+    format!("daemon.{port}.write.lock")
+}
+
 // ---------------------------------------------------------------------------
 // Base-dir helpers (accept an explicit directory for testability)
 // ---------------------------------------------------------------------------
 
-/// Read `<dir>/daemon.<port>.json`, returning `None` if the file does not exist.
+/// Read `<dir>/daemon.<port>.json`, returning `None` if the file does not
+/// exist **or is empty**.
+///
+/// iter-172: a zero-byte record is *absence of a record*, not corruption, and
+/// must read as `Ok(None)` rather than
+/// `EOF while parsing a value at line 1 column 0`. Two producers of such a
+/// file exist:
+///
+/// * pre-iter-172 builds of ff-rdp, whose [`write_registry_in`] took its
+///   exclusive lock by opening the **published** path with `create(true)` —
+///   so an empty `daemon.<port>.json` existed from lock-open until the
+///   `rename`. That window is closed by the writer fix below, but a file left
+///   behind by an older build (or by an older build killed mid-write) sits in
+///   `~/.ff-rdp/` forever, and while it did, *every* invocation on that port
+///   failed the daemon lookup and silently degraded to `route: "direct"`.
+/// * any external truncation (`: > daemon.<port>.json`, a filesystem that
+///   surfaced a zero-length file after an unclean shutdown).
+///
+/// Deliberately narrow: only a *zero-length* file is absence. Non-empty bytes
+/// that do not parse are still an error — see
+/// `read_corrupt_json_returns_error` — because those really are corruption
+/// and silently ignoring them would hide a genuine problem.
 pub(crate) fn read_registry_in(dir: &Path, port: u16) -> Result<Option<DaemonInfo>> {
     let path = dir.join(registry_filename(port));
     if !path.exists() {
@@ -78,6 +109,9 @@ pub(crate) fn read_registry_in(dir: &Path, port: u16) -> Result<Option<DaemonInf
     }
     let contents = fs::read_to_string(&path)
         .with_context(|| format!("reading registry at {}", path.display()))?;
+    if contents.trim().is_empty() {
+        return Ok(None);
+    }
     let info: DaemonInfo = serde_json::from_str(&contents)
         .with_context(|| format!("parsing registry at {}", path.display()))?;
     validate_registry(&info)
@@ -107,9 +141,14 @@ fn validate_registry(info: &DaemonInfo) -> Result<()> {
 /// Write `info` to `<dir>/daemon.<port>.json` atomically using write-then-rename.
 ///
 /// The file is keyed by `info.firefox_port` so writes for one port never
-/// overwrite another port's record (iter-123 Theme B).  An exclusive file lock
-/// is acquired on the target path (creating it if necessary) before writing, so
-/// concurrent writers do not corrupt the file.
+/// overwrite another port's record (iter-123 Theme B).  Writers are serialized
+/// against each other by an exclusive lock on the **sibling**
+/// `daemon.<port>.write.lock` — see [`acquire_registry_write_lock_in`] for why
+/// the lock must not live on the published path (iter-172).
+///
+/// The published record therefore only ever comes into existence via the
+/// `rename` below, so a concurrent reader sees either no file at all or a
+/// complete one — never a zero-byte record.
 pub(crate) fn write_registry_in(dir: &Path, info: &DaemonInfo) -> Result<()> {
     fs::create_dir_all(dir)
         .with_context(|| format!("creating registry directory {}", dir.display()))?;
@@ -118,16 +157,9 @@ pub(crate) fn write_registry_in(dir: &Path, info: &DaemonInfo) -> Result<()> {
     let registry_path = dir.join(&filename);
     let tmp_path = dir.join(format!("{filename}.tmp"));
 
-    // Acquire an exclusive lock on the registry file (creates it if absent).
-    let lock_file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&registry_path)
-        .with_context(|| format!("opening lock file {}", registry_path.display()))?;
-    lock_file
-        .lock_exclusive()
-        .with_context(|| format!("locking registry file {}", registry_path.display()))?;
+    // Serialize concurrent writers on a sibling lock file. Held until the end
+    // of this function, i.e. across the tmp write *and* the rename.
+    let _write_lock = acquire_registry_write_lock_in(dir, info.firefox_port)?;
 
     // Write to a .tmp file then rename for atomicity.
     let json = serde_json::to_string_pretty(info).context("serializing DaemonInfo to JSON")?;
@@ -157,7 +189,7 @@ pub(crate) fn write_registry_in(dir: &Path, info: &DaemonInfo) -> Result<()> {
         )
     })?;
 
-    // Lock is released when `lock_file` is dropped here.
+    // Lock is released when `_write_lock` is dropped here.
     Ok(())
 }
 
@@ -257,20 +289,66 @@ pub fn log_path() -> Result<PathBuf> {
 // Spawn serialization lock (iter-100 Theme D)
 // ---------------------------------------------------------------------------
 
-/// An exclusive advisory file lock held across the daemon
-/// check→spawn→register sequence (iter-100 Theme D).
+/// An exclusive advisory file lock held for the lifetime of this guard
+/// (iter-100 Theme D; generalized over two lock files in iter-172).
 ///
 /// The lock is released automatically when this guard is dropped (the
-/// underlying file handle is closed).  Holding it for the *whole* sequence —
-/// not just the registry write — is what prevents two racing CLI invocations
-/// from both observing "no daemon", both spawning one, and orphaning the
-/// loser: the second invocation blocks on [`acquire_spawn_lock`] until the
-/// first has finished registering, then re-reads the registry and reuses the
-/// winner instead of spawning a second daemon.
-pub(crate) struct SpawnLock {
+/// underlying file handle is closed).  Two distinct lock files use it:
+/// `daemon.<port>.spawn.lock` ([`acquire_spawn_lock`]) and
+/// `daemon.<port>.write.lock` ([`acquire_registry_write_lock_in`]).
+pub(crate) struct FileLock {
     // Kept alive purely for its lock; the `flock`/`LockFile` is released on
     // drop.  Never read directly.
     _file: fs::File,
+}
+
+/// Open `path` (creating it if absent, owner-only on Unix) and take a blocking
+/// exclusive advisory lock on it.
+///
+/// `what` names the lock in error context, e.g. `"spawn lock"`.
+fn acquire_file_lock(path: &Path, what: &str) -> Result<FileLock> {
+    let mut opts = fs::OpenOptions::new();
+    opts.create(true).truncate(false).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts
+        .open(path)
+        .with_context(|| format!("opening {what} file {}", path.display()))?;
+    file.lock_exclusive()
+        .with_context(|| format!("acquiring {what} {}", path.display()))?;
+    Ok(FileLock { _file: file })
+}
+
+/// Acquire the **per-port registry write lock**, blocking until it is
+/// available (iter-172).
+///
+/// Serializes concurrent [`write_registry_in`] calls without ever touching the
+/// published `daemon.<port>.json`.
+///
+/// **Why a sibling file.** Through iter-171 the writer took its lock by
+/// opening the published record itself with `create(true)`. That published a
+/// **zero-byte** `daemon.<port>.json` the instant a write started, and content
+/// only appeared at the closing `rename`. Any reader polling in that window
+/// parsed zero bytes and got
+/// `EOF while parsing a value at line 1 column 0`, which the autostart path
+/// treated as a terminal failure: it abandoned the wait and silently ran the
+/// command over a *direct* connection after the caller had explicitly asked
+/// for the daemon. That reddened `live_128_meta_route`,
+/// `live_134_meta_route_all_commands` and `live_123_daemon_autostart_tabless`
+/// across three separate live sweeps, and it also mis-*classified* the
+/// failure: `classify_registry_wait_failure` re-reads the registry, hit the
+/// same empty file, and reported "spawn died before the registry write" for a
+/// daemon that was perfectly alive.
+///
+/// [`acquire_spawn_lock_in`] had already reached the same conclusion for the
+/// spawn lock ("so the lock lifetime is independent of registry write/rename
+/// churn"); this is that treatment applied to the writer, which is where the
+/// zero-byte file actually came from.
+pub(crate) fn acquire_registry_write_lock_in(dir: &Path, port: u16) -> Result<FileLock> {
+    acquire_file_lock(&dir.join(write_lock_filename(port)), "registry write lock")
 }
 
 /// Acquire the **per-port** daemon spawn lock, blocking until it is available.
@@ -286,28 +364,21 @@ pub(crate) struct SpawnLock {
 /// targeting *different* Firefox instances no longer serialize behind one
 /// global lock (or collide on a single record) — a spawn for port 6000 never
 /// blocks a spawn for port 6001.
-pub(crate) fn acquire_spawn_lock(port: u16) -> Result<SpawnLock> {
+pub(crate) fn acquire_spawn_lock(port: u16) -> Result<FileLock> {
     acquire_spawn_lock_in(&registry_dir()?, port)
 }
 
 /// [`acquire_spawn_lock`] against an explicit directory (testable).
-pub(crate) fn acquire_spawn_lock_in(dir: &Path, port: u16) -> Result<SpawnLock> {
+///
+/// Holding it for the *whole* check→spawn→register sequence — not just the
+/// registry write — is what prevents two racing CLI invocations from both
+/// observing "no daemon", both spawning one, and orphaning the loser: the
+/// second invocation blocks here until the first has finished registering,
+/// then re-reads the registry and reuses the winner.
+pub(crate) fn acquire_spawn_lock_in(dir: &Path, port: u16) -> Result<FileLock> {
     fs::create_dir_all(dir)
         .with_context(|| format!("creating registry directory {}", dir.display()))?;
-    let lock_path = dir.join(spawn_lock_filename(port));
-    let mut opts = fs::OpenOptions::new();
-    opts.create(true).truncate(false).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let file = opts
-        .open(&lock_path)
-        .with_context(|| format!("opening spawn lock file {}", lock_path.display()))?;
-    file.lock_exclusive()
-        .with_context(|| format!("acquiring spawn lock {}", lock_path.display()))?;
-    Ok(SpawnLock { _file: file })
+    acquire_file_lock(&dir.join(spawn_lock_filename(port)), "spawn lock")
 }
 
 // ---------------------------------------------------------------------------
@@ -329,6 +400,30 @@ fn parse_spawn_lock_port(filename: &str) -> Option<u16> {
         .ok()
 }
 
+/// Parse the Firefox port out of a `daemon.<PORT>.write.lock` filename
+/// (iter-172's registry write lock — see [`acquire_registry_write_lock_in`]).
+///
+/// Same exact-suffix discipline as [`parse_spawn_lock_port`]: the published
+/// record `daemon.<port>.json`, the iter-131 throttle file and the `.tmp`
+/// write-ahead file must never match.
+fn parse_write_lock_port(filename: &str) -> Option<u16> {
+    filename
+        .strip_prefix("daemon.")?
+        .strip_suffix(".write.lock")?
+        .parse()
+        .ok()
+}
+
+/// Parse the Firefox port out of either per-port lock filename.
+///
+/// The GC below sweeps both; a `.write.lock` left behind by a daemon that has
+/// since exited is exactly as much dead weight in `~/.ff-rdp/` as a stale
+/// `.spawn.lock`, and iter-172 would otherwise have introduced a second class
+/// of file that accumulates forever (dogfood-62 #9 for the first class).
+fn parse_lock_port(filename: &str) -> Option<u16> {
+    parse_spawn_lock_port(filename).or_else(|| parse_write_lock_port(filename))
+}
+
 /// Whether the spawn lock for `port` is stale: no live process currently
 /// claims it via `daemon.<port>.json`.
 ///
@@ -346,14 +441,16 @@ fn spawn_lock_is_stale(dir: &Path, port: u16) -> bool {
     }
 }
 
-/// Sweep `<dir>/daemon.*.spawn.lock` files whose owning daemon is provably
-/// gone, so `~/.ff-rdp/` doesn't accumulate zero-byte lock files forever
-/// (dogfood-62 #9: ~50 stale locks observed, never cleaned up before this).
+/// Sweep `<dir>/daemon.*.spawn.lock` and `<dir>/daemon.*.write.lock` files
+/// whose owning daemon is provably gone, so `~/.ff-rdp/` doesn't accumulate
+/// zero-byte lock files forever (dogfood-62 #9: ~50 stale locks observed,
+/// never cleaned up before this).
 ///
 /// Deliberately narrow and defensive:
-/// - Only filenames matching the exact `daemon.<PORT>.spawn.lock` pattern
-///   are touched (see [`parse_spawn_lock_port`]) — `daemon.<port>.json` and
-///   `daemon.<port>.throttle.json` (iter-131) are never candidates.
+/// - Only filenames matching the exact `daemon.<PORT>.spawn.lock` or
+///   `daemon.<PORT>.write.lock` pattern are touched (see [`parse_lock_port`])
+///   — `daemon.<port>.json` and `daemon.<port>.throttle.json` (iter-131) are
+///   never candidates.
 /// - "Stale" (per [`spawn_lock_is_stale`]) is only a pre-filter. Before
 ///   actually deleting, this takes a non-blocking `try_lock_exclusive()` on
 ///   the candidate file. If that fails, some other process currently holds
@@ -372,7 +469,7 @@ pub(crate) fn gc_stale_spawn_locks_in(dir: &Path) {
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
-        let Some(port) = parse_spawn_lock_port(&name) else {
+        let Some(port) = parse_lock_port(&name) else {
             continue;
         };
         if !spawn_lock_is_stale(dir, port) {
