@@ -917,9 +917,18 @@ With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_no
     #[command(long_about = "Reload the page.
 
 Without --wait-idle, the command blocks until the reload commits — same
-{committed_url, ready_state, elapsed_ms} envelope as `navigate`/`back`/
-`forward` (iter-130), so all four navigation verbs are interchangeable for a
-caller that just wants to know where the page landed.
+{committed_url, ready_state, elapsed_ms, status, status_reason} envelope as
+`navigate`/`back`/`forward` (iter-130, completed by iter-169), so all four
+navigation verbs are interchangeable for a caller that just wants to know
+where the page landed and what the server said.
+
+`status` is the main document's HTTP status; it is null exactly when
+`status_reason` is not, and `status_reason` names which case it was:
+`not_observed` (--no-wait, or --wait-idle, neither of which correlates a
+document request), `no_document_request` (nothing was fetched — a BFCache
+restore, a data:/about: URL, a same-document navigation), or
+`no_status_reported` (the request was identified but Firefox never reported a
+status for it).
 
 With --wait-idle, the command instead blocks until network activity has been
 idle for --idle-ms (default 500) or the --reload-timeout expires (default
@@ -942,36 +951,43 @@ Examples:
   ff-rdp reload --wait-idle
   ff-rdp reload --hard --wait-idle --idle-ms 1000 --reload-timeout 30000
 
-Output (plain):    {\"results\": {\"action\": \"reload\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
-Output (--no-wait): {\"results\": {\"action\": \"reload\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
-Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requests_observed\": M[, \"force\": true]}, \"total\": 1, \"meta\": {...}}")]
+Output (plain):    {\"results\": {\"action\": \"reload\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N, \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
+Output (--no-wait): {\"results\": {\"action\": \"reload\", \"status\": null, \"status_reason\": \"not_observed\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
+Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requests_observed\": M, \"status\": null, \"status_reason\": \"not_observed\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}")]
     Reload(ReloadArgs),
     /// Go back in history
     #[command(long_about = "Navigate back in browser history.
 
 Blocks until the navigation commits, returning the same navigate-style
-envelope as `navigate`/`forward`/`reload` (iter-130) — a caller doesn't need
-a follow-up `eval location.href` to know where `back` landed.
+envelope as `navigate`/`forward`/`reload` (iter-130, completed by iter-169) —
+a caller doesn't need a follow-up `eval location.href` to know where `back`
+landed, nor a follow-up `network` call to know what the server said.
+
+A history traversal served from BFCache issues no request at all, which is
+reported honestly as `status: null` with `status_reason:
+\"no_document_request\"` rather than as an unexplained null.
 
 Pass --no-wait to dispatch and return immediately without waiting for the
 navigation to commit (iter-138 Theme E) — the same escape hatch `navigate`
 already has.
 
-Output:              {\"results\": {\"action\": \"back\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}
-Output (--no-wait): {\"results\": {\"action\": \"back\"}, \"total\": 1, \"meta\": {...}}")]
+Output:              {\"results\": {\"action\": \"back\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N, \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"}, \"total\": 1, \"meta\": {...}}
+Output (--no-wait): {\"results\": {\"action\": \"back\", \"status\": null, \"status_reason\": \"not_observed\"}, \"total\": 1, \"meta\": {...}}")]
     Back(BackForwardArgs),
     /// Go forward in history
     #[command(long_about = "Navigate forward in browser history.
 
 Blocks until the navigation commits, returning the same navigate-style
-envelope as `navigate`/`back`/`reload` (iter-130).
+envelope as `navigate`/`back`/`reload` (iter-130, completed by iter-169),
+including the main document's `status` and the `status_reason` that explains
+a null one.
 
 Pass --no-wait to dispatch and return immediately without waiting for the
 navigation to commit (iter-138 Theme E) — the same escape hatch `navigate`
 already has.
 
-Output:              {\"results\": {\"action\": \"forward\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}
-Output (--no-wait): {\"results\": {\"action\": \"forward\"}, \"total\": 1, \"meta\": {...}}")]
+Output:              {\"results\": {\"action\": \"forward\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N, \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"}, \"total\": 1, \"meta\": {...}}
+Output (--no-wait): {\"results\": {\"action\": \"forward\", \"status\": null, \"status_reason\": \"not_observed\"}, \"total\": 1, \"meta\": {...}}")]
     Forward(BackForwardArgs),
     /// Inspect a remote JavaScript object by its grip actor ID
     #[command(long_about = "Inspect a remote JavaScript object by its grip actor ID.

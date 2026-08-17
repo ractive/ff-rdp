@@ -1094,11 +1094,64 @@ tell apart, which is the [[iteration-160-envelope-honesty]] class of problem in
 its milder form. Adding a sibling key keeps `status` byte-for-byte compatible
 for every consumer that already reads it.
 
-**Not in scope**: `back`/`forward`/`reload` still emit
-`{committed_url, ready_state, elapsed_ms}` with no `status` key at all — they
-never subscribe to `network-event`. Filed as carry-over rather than widened
-here; iter-138 Theme A deliberately covers `navigate` only.
+**~~Not in scope~~ — closed by iter-169** (see DEC-041): `back`/`forward`/
+`reload` used to emit `{committed_url, ready_state, elapsed_ms}` with no
+`status` key at all. They now subscribe to `network-event` like `navigate` and
+carry the same `status`/`status_reason` pair on every path.
 
 **Applies to**: `crates/ff-rdp-cli/src/commands/navigate.rs`,
 `crates/ff-rdp-cli/src/cli/args.rs`,
 `crates/ff-rdp-cli/tests/live/live_166_navigate_document_status.rs`.
+
+---
+
+## DEC-041: every blocking round-trip issued from inside a navigation wait loop must replay what it swallows
+
+**Decision** (iter-169): any call that resolves through `recv_reply_from`
+(`evaluate_js_async`, `getTarget`, …) made from *inside*
+`wait_for_doc_complete`'s drain loop goes through `with_event_replay`, which
+installs a temporary transport event sink for the duration of the call and
+replays everything it captured through `ResourceCommand::dispatch_event`. All
+four navigation verbs now also report `status` and `status_reason` on every
+path, including `--no-wait` (`not_observed`).
+
+**Why**: `recv_reply_from` reads raw packets off the socket until it finds its
+own reply and forwards every *other* packet it reads to the transport's event
+sink — dropping it outright when no sink is installed, which is the case inside
+that loop. `navigate`'s `Both` strategy issues a blocking `getTarget` the
+instant `dom-loading` arrives, which is within milliseconds of Firefox emitting
+the main document's response line. Measured on Firefox 153, 30 cold-start
+`navigate https://example.com` runs: 29 delivered two `resources-updated-array`
+entries for the document, the first carrying `status: "200"`; the one failure
+delivered only the second, then sat out the full 2 034 ms grace window waiting
+for an update that had already been read and discarded. With the fix, the same
+round-trips are measured swallowing **69 packets across 30 runs** (up to 7 in a
+single call) — all of them previously lost — and the failure does not recur
+(30/30).
+
+**Why not a longer wait**: iter-166 had already raised the window from 300 ms
+to 2 000 ms. The measurement above shows the update never arrives *again*, so
+no budget can help. `MAX_STATUS_GRACE_MS` is now a named constant pinned by
+`unit_169_grace_budget_is_capped` so a future `no_status_reported` cannot be
+"fixed" by waiting longer without arguing with a test.
+
+**Why the risk was previously judged acceptable**: `ReadyStateProbe::
+poll_enabled`'s doc comment named this exact race and called it narrow, trading
+it for the FF152 `dom-complete`-never-fires fast path. That trade is no longer
+necessary — replaying costs one channel per round-trip and keeps the fast path.
+`probe_same_document_commit_safe` (iter-138) had already solved it for one of
+the five call sites; iter-169 generalises that solution rather than inventing a
+second one.
+
+**Why `back`/`forward`/`reload` now subscribe rather than emitting a canned
+`not_observed`**: iter-130 Theme B promised all four verbs the same envelope,
+and `reload` is the verb most likely to be used to re-check a page that was
+failing — a real status is what makes that useful. Measured cost on a live
+`reload`, see the iteration-169 plan. A BFCache-served `back` legitimately has
+no document request and reports `no_document_request`; that is information, not
+a failure.
+
+**Applies to**: `crates/ff-rdp-cli/src/commands/navigate.rs`,
+`crates/ff-rdp-cli/src/commands/nav_action.rs`,
+`crates/ff-rdp-cli/tests/live/live_169_nav_verb_status_parity.rs`,
+`crates/ff-rdp-cli/tests/e2e/nav_action.rs`.

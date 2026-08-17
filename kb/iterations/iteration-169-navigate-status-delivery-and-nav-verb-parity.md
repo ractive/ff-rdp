@@ -112,6 +112,63 @@ So Theme A now has two candidate defects, and the second one is cheaper to check
 
 Only if the budget *is* genuinely being spent do candidates 1–3 above apply.
 
+### Resolved 2026-08-17 — candidate 0 refuted, and the real cause is none of 1–3
+
+**Candidate 0 is wrong, and the "250 ms envelope" evidence was misread.** `CommitInfo.elapsed_ms`
+is snapshotted *inside* the wait loop at the instant the navigation commits (every `break 'wait`
+computes `nav_start.elapsed()` for itself); the post-commit grace loop that waits for the status
+runs afterwards and never updates it. So `elapsed_ms` cannot report the grace window at all, and a
+`no_status_reported` envelope showing `elapsed_ms: 250` is not evidence about the budget either
+way. It was measuring the commit, not the wait.
+
+Instrumented directly instead (`tracing::debug!` on the grace loop's own elapsed, plus one line per
+`network-event` resource and per update — all kept, they are how the next person diagnoses this):
+
+```
+grace_ms=2034 observing=true doc_resources=1 status_updates=0 reason="no_status_reported"
+```
+
+The budget **is** spent in full. Candidate 0 is closed.
+
+**The real cause is a fourth thing, in the CLI, not the daemon stream.** Repro: 30 cold-start runs
+(`pkill` daemon + Firefox, `ff-rdp launch --headless`, one `navigate https://example.com`), 1
+failure. Per-frame trace, passing run vs failing run:
+
+```
+pass:  resource id=8589934593 cause=document url=https://example.com/
+       update   id=8589934593 status=Some("200")     ← the one that matters
+       update   id=8589934593 status=None
+
+fail:  resource id=8589934593 cause=document url=https://example.com/
+       update   id=8589934593 status=None            ← only the second one arrived
+       (grace_ms=2034, nothing further)
+```
+
+The status-carrying update is not late and is not mis-matched — it is **read off the wire and
+thrown away by `navigate` itself**. `wait_for_doc_complete` issues blocking round-trips from inside
+its own drain loop: `refresh_probe_console_actor` (a `getTarget`) eagerly on the first
+`dom-loading`, and `probe_readystate_complete` / `eval_location_href` on the probe timer. All of
+them resolve through `recv_reply_from`, which reads raw packets until it finds *its* reply and
+hands every other packet to the transport's event sink — and no sink is installed on this path, so
+those packets are silently dropped. `dom-loading` fires within milliseconds of the response line,
+so the eager `getTarget` sits exactly on top of the `resources-updated-array` carrying `status`.
+
+This is the bug class `kb/rdp/actors/watcher.md`'s iter-129 Note 1 describes, and
+`probe_same_document_commit_safe` already defended against it — for one of the five call sites.
+`ReadyStateProbe::poll_enabled`'s doc comment even names the risk and calls it "narrow"; the
+measurement says otherwise. With the fix instrumented, those round-trips swallow **69 packets
+across 30 runs** (up to 7 in a single call) — every one of which used to be discarded.
+
+Fix: `with_event_replay`, a helper that installs a temporary event sink around any blocking
+round-trip issued from inside the wait loop and replays what it captured through
+`bus.dispatch_event`, so the loop's next drain sees those packets exactly as if it had read them
+itself. Applied to all five sites; `probe_same_document_commit_safe` is now expressed in terms of
+it rather than carrying its own copy.
+
+Measured after the fix, same 30-run cold-start protocol: **30/30 pass** (before: 29/30). No grace
+window changed; `MAX_STATUS_GRACE_MS` is pinned at iter-166's 2000 ms by
+`unit_169_grace_budget_is_capped`.
+
 ## Theme B — `back`/`forward`/`reload` report no status key at all
 
 `nav_action.rs` builds `{committed_url, ready_state, elapsed_ms}` and stops there, so

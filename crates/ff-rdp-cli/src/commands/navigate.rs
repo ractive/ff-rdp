@@ -108,10 +108,16 @@ impl WaitAfterNav<'_> {
 /// `status_reason`, which is `null` exactly when `status` is non-`null`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StatusUnknown {
-    /// This route never subscribed to `network-event`, so no HTTP status could
-    /// have been observed no matter what the server sent: `back`/`forward`/
-    /// `reload` (iter-138 Theme A covers `navigate` only), `--no-wait`, and
-    /// the pure-`readystate` wait strategy.
+    /// This route never correlated the committed document's request, so no
+    /// HTTP status could have been reported no matter what the server sent:
+    /// `--no-wait` (returns before any resource can arrive), the
+    /// pure-`readystate` wait strategy (never subscribes to `network-event`),
+    /// and `reload --wait-idle` (streams network events but only counts them,
+    /// against a quiescence deadline rather than a document).
+    ///
+    /// iter-169 removed `back`/`forward`/`reload` from this list — their
+    /// commit-wait path now subscribes to `network-event` like `navigate` and
+    /// reports a real status.
     NotObserved,
     /// Network events *were* observed, but none of them was the committed
     /// document's own request — a `data:`/`about:` URL, a bfcache restore, or
