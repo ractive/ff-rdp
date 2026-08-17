@@ -795,15 +795,22 @@ mod tests {
     }
 
     /// The payoff: a record that becomes readable *after* an unreadable read
-    /// is picked up, instead of the whole autostart being abandoned. This is
-    /// the sequence the old writer produced on every single write — empty file
-    /// first, real record at the `rename`.
+    /// is picked up, instead of the whole autostart being abandoned — the
+    /// shape the old writer produced on every single write (unusable file
+    /// first, real record at the `rename`).
+    ///
+    /// Deliberately plants *unparseable bytes* rather than the zero-byte file
+    /// the old writer actually left: an empty record now reads as `Ok(None)`
+    /// (see `registry::read_registry_in`), so planting one would exercise the
+    /// "not yet registered" arm and never reach the retry this test is about.
+    /// The zero-byte case is covered by
+    /// `registry::tests::read_zero_byte_registry_is_treated_as_absent` and by
+    /// `live_172_zero_byte_registry_does_not_downgrade_to_direct`.
     #[test]
     fn unit_172_wait_for_registry_recovers_after_a_bad_read() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("daemon.6000.json");
-        // Start from the exact byte sequence the pre-iter-172 writer published.
-        std::fs::write(&path, []).expect("plant empty");
+        std::fs::write(&path, b"{ truncated").expect("plant unreadable");
 
         let write_dir = dir.path().to_path_buf();
         let writer = std::thread::spawn(move || {

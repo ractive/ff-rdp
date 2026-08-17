@@ -368,14 +368,59 @@ to stderr, so **all eighteen existing call sites gained the diagnostic without b
 `live_160_envelope_honesty` (the test whose cause could not be established) puts it directly in its
 panic message. This is the general form of the fix iter-169 applied to `live_158`.
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
-- [ ] The Theme A reproduction is recorded, including the decision if it does not reproduce
-- [ ] An empty or truncated registry file no longer ends the autostart wait early — asserted by a
+- [x] The Theme A reproduction is recorded, including the decision if it does not reproduce
+      [2026-08-17: reproduced deterministically — the probe on `main` reports
+      `published path exists=true len=0`, and the same planted record gives `route: "direct"` on
+      `main` vs `route: "daemon"` here]
+- [x] An empty or truncated registry file no longer ends the autostart wait early — asserted by a
       test that fails on `main`
-- [ ] `live_128_meta_route` passes in a contended dual-gate sweep
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
+      [`unit_172_wait_for_registry_keeps_polling_an_unreadable_record` asserts elapsed ≥ the full
+      budget; `main` returns in ~0 ms. Plus `read_zero_byte_registry_is_treated_as_absent` and
+      `a_blocked_writer_never_publishes_an_empty_record`]
+- [x] `live_128_meta_route` passes in a contended dual-gate sweep
+      [2026-08-17: passed in `executed=277`, both gates, CLI tier 2320 s — as did
+      `live_134_meta_route_all_commands`, `live_123_daemon_autostart_tabless` and
+      `live_160_ref_click_asserts_handler_effect`]
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
       clean, plus a dual-gate live sweep
+
+## Live sweep (2026-08-17)
+
+```text
+FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
+LIVE_SWEEP_SUMMARY executed=277 skipped=0 preexisting=0 total=277   -> 276 passed / 1 failed
+  ff-rdp-cli  live tier : 267 passed / 1 failed   (2320.36 s)
+  ff-rdp-core      tier :   9 passed / 0 failed   (1 + 3 + 3 + 2)
+```
+
+Hand-started Firefox on port 6000 (`/tmp/ff-rdp-sweep-profile-6000`), orphan check clean before
+the run (`pgrep -f 'ff-rdp/profiles'` → 0). Nothing external interfered with this run.
+
+`executed=277` against the baseline-of-record's `executed=275` on `main` at 21e777a: **+2, exactly
+the two `live_172_*` tests this PR adds.** No test was lost.
+
+All four tests of this plan's symptom set passed:
+
+```text
+live_128_network_output_fidelity::live_128_meta_route                         ok
+live_134_meta_route_all_commands::live_134_meta_route_all_commands            ok
+live_123_daemon_autostart_and_registry::live_daemon_autostart_tabless         ok
+live_160_envelope_honesty::live_160_ref_click_asserts_handler_effect          ok
+live_172_zero_byte_registry::live_172_zero_byte_registry_does_not_downgrade_to_direct   ok
+live_172_zero_byte_registry::live_172_published_record_is_complete_and_lock_is_a_sibling ok
+```
+
+## Carry-over
+
+| # | Item | Where it came from | Disposition |
+|---|---|---|---|
+| 1 | `live_109_throttle_block::live_throttle_slow3g_slows_fetch` FAILED — `baseline=409ms throttled=779ms` (1.90×) against a `>= 2.0×` assertion | this sweep, the only non-green line | **file** — [[iteration-177-slow3g-assertion-has-two-percent-headroom]] (`check-iteration-plan: OK`). Re-ran isolated and idle: 378 ms / 775 ms = **2.05×**, i.e. the assertion has ~2 % headroom on a *good* run. The throttled figure moved 0.5 % across a 2320 s load swing; the baseline moved 8 %. Not a throttling regression, and not dismissible as "environmental" |
+| 2 | `live_128_meta_route`, `live_134_meta_route_all_commands`, `live_123_daemon_autostart_tabless` — failed in iters 168 and 170's sweeps, **passed this run** | this plan's symptom set | **closed in this PR** — the sibling write lock plus the zero-byte read. Not resting on the green run: the mechanism was confirmed by probe on `main` and by the planted-record before/after, and `live_172_zero_byte_registry_does_not_downgrade_to_direct` fails on `main` |
+| 3 | `live_160_ref_click_asserts_handler_effect` — failed in iter-171's sweep, **passed this run** | this plan, folded in as cause-unknown | **no plan, with a stated reason.** Its cause was never established and this iteration did not establish it either (see Theme A §6): the failure mode is *reachable* from this defect but a Firefox launch stall under load produces an identical `None`. One green run is not evidence. What has changed is that it can no longer fail silently — `with_daemon_or_reason` now prints `meta.route` / `meta.daemon_fallback`. **If it fails again, the printed reason attributes it, and it needs its own plan** |
+| 4 | `xtask live-sweep` classifies any live source containing the bare substring `firefox_port` as needing a pre-existing Firefox on port 6000, so a CLI test that merely reads the registry field is silently moved into the wrong tier | hit while writing `live_172_published_record_is_complete_and_lock_is_a_sibling`; caught by `test_158_real_core_targets_are_preexisting` | **fold** — added as Theme D + a fifth AC to [[iteration-173-live-sweep-port-6000-firefox-does-not-survive]], which owns sweep classification. Worked around here by not naming the field, with a comment saying why |
+| 5 | `ff-rdp daemon stop` on port 6000 reported `stopped Firefox (pid 64823) but port 6000 is still listening after 8 s`, while the hand-started browser that actually owned 6000 (pid 62618) was untouched and still serving | observed during the Theme A repro | **no plan, with a stated reason.** The message is accurate and the behaviour is the designed one (`live_90`/`live_158` assert that `daemon stop` also stops the Firefox the daemon recorded); it named a PID it had recorded, declined to escalate further, and told the operator to run `lsof`. Nothing measured is left to act on. **If it is ever shown to signal a Firefox ff-rdp did not launch, that is an [[iteration-110-post-batch-live-sweep]]-class product defect and needs its own plan** |
 
 ## Out of scope
 
