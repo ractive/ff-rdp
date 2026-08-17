@@ -84,7 +84,12 @@ pub fn run(cli: &Cli, action: NavAction) -> Result<(), AppError> {
         // wait entirely, mirroring `navigate --no-wait`.
         let packet = build_packet(action);
         ctx.transport_mut().send(&packet).map_err(AppError::from)?;
-        json!({})
+        // iter-169 Theme B: `--no-wait` returns before any resource can
+        // arrive, so it cannot have observed a status — but it must still
+        // emit both keys, or `--jq '.results.status'` is a bare `null` whose
+        // cause the caller cannot see. `not_observed` is exactly what that
+        // variant was introduced to say.
+        serde_json::Value::Object(super::navigate::not_observed_status())
     } else {
         // `reload`'s target URL is knowable ahead of time (the current page,
         // reloaded) — capture it so `needs_href_fallback` can tell a genuine

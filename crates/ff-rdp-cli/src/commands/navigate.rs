@@ -135,6 +135,25 @@ impl StatusUnknown {
     }
 }
 
+/// The `{status, status_reason}` pair for a route that never looked at the
+/// network at all (iter-169 Theme B).
+///
+/// `back`/`forward`/`reload` used to omit both keys entirely, so
+/// `--jq '.results.status'` returned `null` on a `reload` for a reason no
+/// caller could see — indistinguishable from `navigate`'s meaningful `null`.
+/// Every path of all four verbs now emits both keys; the ones that genuinely
+/// cannot observe a status (`--no-wait`, which returns before any resource can
+/// arrive) say so with `not_observed` rather than staying silent.
+pub(crate) fn not_observed_status() -> serde_json::Map<String, Value> {
+    let mut map = serde_json::Map::new();
+    map.insert("status".to_owned(), Value::Null);
+    map.insert(
+        "status_reason".to_owned(),
+        Value::String(StatusUnknown::NotObserved.as_str().to_owned()),
+    );
+    map
+}
+
 /// Canonicalise a URL before comparing a *requested* (or *committed*) URL
 /// against the URL Firefox reports on a `network-event` resource.
 ///
@@ -499,16 +518,68 @@ fn probe_same_document_commit_safe(
         // without touching `transport`.
         return None;
     }
+    with_event_replay(transport, bus_arc, |t| {
+        probe_same_document_commit(t, console_actor, pre_href)
+    })
+}
+
+/// Run a **blocking RDP round-trip** from inside the navigation wait loop
+/// without losing the watcher events that happen to be on the wire while it
+/// runs (iter-169 Theme A — the defect this iteration fixes).
+///
+/// # The bug this exists to prevent
+///
+/// `evaluate_js_async` and `getTarget` both resolve through
+/// `recv_reply_from`, which reads raw packets off `transport` until it finds
+/// its own reply and hands every *other* packet it reads to the transport's
+/// event sink — or drops it on the floor when no sink is installed. Inside
+/// `wait_for_doc_complete` no sink is installed, so every such call was a
+/// window in which a `resources-updated-array` could be read and discarded.
+///
+/// That window is not theoretical, and it is not narrow. `navigate`'s
+/// `Both` strategy issues a blocking `getTarget`
+/// ([`refresh_probe_console_actor`]) the instant `dom-loading` arrives —
+/// which is, to within a few milliseconds, when Firefox emits the main
+/// document's response line. Measured on Firefox 153, 30 cold-start
+/// `navigate https://example.com` runs (see the iteration-169 plan): 29 runs
+/// delivered two updates for the document's resource, the first carrying
+/// `status: "200"`; the one failing run delivered only the second, and then
+/// sat out the full 2 034 ms grace window waiting for an update that had
+/// already been read and thrown away. `status_reason` said
+/// `no_status_reported` — truthfully, from the tracker's point of view, and
+/// misleadingly from the caller's.
+///
+/// # How it works
+///
+/// Install a temporary sink for the duration of `f`, then replay everything
+/// it captured through `bus_arc.dispatch_event` in arrival order, so the wait
+/// loop's next top-of-loop drain observes those packets exactly as if it had
+/// read them off the wire itself. The previous sink (if any) is restored
+/// afterwards, so nesting is safe.
+///
+/// Every blocking round-trip issued from inside the wait loop must go through
+/// this. [`probe_same_document_commit_safe`] already did (iter-138 hardening
+/// for the same bug class); the console-actor refresh, the readystate probe
+/// and the `location.href` fallbacks did not.
+fn with_event_replay<T>(
+    transport: &mut RdpTransport,
+    bus_arc: &Arc<Mutex<ResourceCommand>>,
+    f: impl FnOnce(&mut RdpTransport) -> T,
+) -> T {
     let (tx, rx) = std::sync::mpsc::channel::<Value>();
     let prev_sink = transport.swap_event_sink(Some(tx));
-    let result = probe_same_document_commit(transport, console_actor, pre_href);
+    let result = f(transport);
     transport.swap_event_sink(prev_sink);
 
-    // Replay anything the eval swallowed, in delivery order, so the main
-    // loop's next top-of-loop drain observes it exactly as if it had read it
-    // directly off the wire itself.
+    // Replay anything the round-trip swallowed, in delivery order, so the
+    // main loop's next top-of-loop drain observes it exactly as if it had
+    // read it directly off the wire itself.
     let captured: Vec<Value> = rx.try_iter().collect();
     if !captured.is_empty() {
+        tracing::debug!(
+            packets = captured.len(),
+            "navigate: replaying events swallowed by a blocking round-trip"
+        );
         let mut bus = bus_arc
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -834,11 +905,23 @@ fn wait_for_doc_complete(
                         // BFCache-restored back), and only pays for a fresh
                         // `getTarget` if that first eval comes back empty
                         // (stale actor).
+                        //
+                        // iter-169 Theme A: this blocking `getTarget` fires
+                        // at the exact moment Firefox emits the main
+                        // document's response line, and before this
+                        // iteration it dropped whatever it read while
+                        // scanning for its reply — losing the
+                        // `resources-updated-array` that carries `status`
+                        // outright. `with_event_replay` captures and replays
+                        // those packets instead; see its doc comment for the
+                        // measurement.
                         if !probe_refreshed
                             && let Some(p) = probe.as_deref_mut()
                             && ((wait_level == WaitLevel::Complete && p.poll_enabled)
                                 || needs_href_fallback(&url, requested_url))
-                            && refresh_probe_console_actor(transport, p)
+                            && with_event_replay(transport, bus_arc, |t| {
+                                refresh_probe_console_actor(t, p)
+                            })
                         {
                             probe_refreshed = true;
                         }
@@ -858,9 +941,15 @@ fn wait_for_doc_complete(
                             // well-formed `url` looks — it may be a subframe's.
                             let committed_url =
                                 if must_reresolve_href(probe.as_deref(), &url, requested_url) {
-                                    probe.as_ref().map_or_else(String::new, |p| {
-                                        eval_location_href(transport, &p.console_actor)
-                                    })
+                                    match probe.as_deref() {
+                                        Some(p) => {
+                                            let actor = p.console_actor.clone();
+                                            with_event_replay(transport, bus_arc, |t| {
+                                                eval_location_href(t, &actor)
+                                            })
+                                        }
+                                        None => String::new(),
+                                    }
                                 } else {
                                     url
                                 };
@@ -899,9 +988,15 @@ fn wait_for_doc_complete(
                             // for `trust_event_url: false` probes.
                             let committed_url =
                                 if must_reresolve_href(probe.as_deref(), &eff_url, requested_url) {
-                                    probe.as_ref().map_or_else(String::new, |p| {
-                                        eval_location_href(transport, &p.console_actor)
-                                    })
+                                    match probe.as_deref() {
+                                        Some(p) => {
+                                            let actor = p.console_actor.clone();
+                                            with_event_replay(transport, bus_arc, |t| {
+                                                eval_location_href(t, &actor)
+                                            })
+                                        }
+                                        None => String::new(),
+                                    }
                                 } else {
                                     eff_url
                                 };
@@ -946,9 +1041,15 @@ fn wait_for_doc_complete(
                         // unmodified because it looks like a perfectly valid
                         // (non-empty, non-"about:blank") URL.
                         if must_reresolve_href(probe.as_deref(), &committed, requested_url) {
-                            let mut href = probe.as_ref().map_or_else(String::new, |p| {
-                                eval_location_href(transport, &p.console_actor)
-                            });
+                            let mut href = match probe.as_deref() {
+                                Some(p) => {
+                                    let actor = p.console_actor.clone();
+                                    with_event_replay(transport, bus_arc, |t| {
+                                        eval_location_href(t, &actor)
+                                    })
+                                }
+                                None => String::new(),
+                            };
                             // iter-130 Theme A hardening (comparis.ch live-Firefox
                             // repro, not caught by any mock-based unit test): this
                             // `dom-complete` may be Firefox's transient
@@ -968,10 +1069,15 @@ fn wait_for_doc_complete(
                             // value below instead of being caught as ambiguous.
                             if needs_href_fallback(&href, requested_url)
                                 && let Some(p) = probe.as_deref_mut()
-                                && refresh_probe_console_actor(transport, p)
+                                && with_event_replay(transport, bus_arc, |t| {
+                                    refresh_probe_console_actor(t, p)
+                                })
                             {
                                 probe_refreshed = true;
-                                href = eval_location_href(transport, &p.console_actor);
+                                let actor = p.console_actor.clone();
+                                href = with_event_replay(transport, bus_arc, |t| {
+                                    eval_location_href(t, &actor)
+                                });
                             }
                             if needs_href_fallback(&href, requested_url) {
                                 // Still ambiguous after a fresh lookup — most
@@ -1062,11 +1168,23 @@ fn wait_for_doc_complete(
             // Fallback refresh: normally `dom-loading` already refreshed the
             // console actor above, but if the events stream is quiet (no
             // document-event delivered yet) this is the first opportunity.
-            if !probe_refreshed && refresh_probe_console_actor(transport, p) {
+            // iter-169 Theme A: every one of these three round-trips reads
+            // raw packets off the wire while scanning for its own reply, so
+            // each is wrapped so a `resources-updated-array` caught in the
+            // middle is replayed into the bus rather than dropped.
+            if !probe_refreshed
+                && with_event_replay(transport, bus_arc, |t| refresh_probe_console_actor(t, p))
+            {
                 probe_refreshed = true;
             }
-            if probe_readystate_complete(transport, &p.console_actor, p.pre_epoch) {
-                let mut committed = eval_location_href(transport, &p.console_actor);
+            let probe_actor = p.console_actor.clone();
+            let probe_epoch = p.pre_epoch;
+            if with_event_replay(transport, bus_arc, |t| {
+                probe_readystate_complete(t, &probe_actor, probe_epoch)
+            }) {
+                let mut committed = with_event_replay(transport, bus_arc, |t| {
+                    eval_location_href(t, &probe_actor)
+                });
                 // iter-130 Theme A hardening (comparis.ch live-Firefox repro,
                 // not caught by any mock-based unit test): a
                 // `readyState === 'complete'` reading whose resolved URL is a
@@ -1081,10 +1199,15 @@ fn wait_for_doc_complete(
                 // `refresh_probe_console_actor` re-resolves via `getTarget`,
                 // which returns the *current* docshell's actors.
                 if needs_href_fallback(&committed, requested_url)
-                    && refresh_probe_console_actor(transport, p)
+                    && with_event_replay(transport, bus_arc, |t| {
+                        refresh_probe_console_actor(t, p)
+                    })
                 {
                     probe_refreshed = true;
-                    committed = eval_location_href(transport, &p.console_actor);
+                    let fresh_actor = p.console_actor.clone();
+                    committed = with_event_replay(transport, bus_arc, |t| {
+                        eval_location_href(t, &fresh_actor)
+                    });
                 }
                 // Still ambiguous (empty — e.g. a torn-down transitional actor
                 // reporting noSuchActor — or a literal about:blank mismatch)
@@ -1475,11 +1598,30 @@ pub(crate) fn wait_for_navigation_commit(
         .map_err(AppError::from)?;
 
     let bus_arc = ctx.get_or_init_resource_command(watcher_actor.clone());
+    // iter-169 Theme B: subscribe to `NetworkEvent` alongside `DocumentEvent`,
+    // exactly as `run_core` does, so `back`/`forward`/`reload` report the main
+    // document's HTTP status instead of omitting the key. iter-130 Theme B
+    // promised all four navigation verbs the same envelope; until now the
+    // three history verbs delivered `{committed_url, ready_state, elapsed_ms}`
+    // and stopped, so `--jq '.results.status'` on a `reload` returned `null`
+    // for a reason no caller could see.
     let (sub_id, rx) = bus_arc
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .subscribe(ctx.transport_mut(), &[ResourceType::DocumentEvent])
+        .subscribe(
+            ctx.transport_mut(),
+            &[ResourceType::DocumentEvent, ResourceType::NetworkEvent],
+        )
         .map_err(|e| AppError::from(anyhow::anyhow!("document-event subscribe: {e:#}")))?;
+
+    // Same daemon-mode correction `run_core` carries: the daemon owns
+    // `network-event` centrally and does not forward it to a client that only
+    // issued `watchResources`, so real-time delivery needs an explicit stream
+    // request (see `DAEMON_OWNED_RESOURCE_NAMES` in `daemon/server.rs`).
+    if ctx.via_daemon {
+        crate::daemon::client::start_daemon_stream(ctx.transport_mut(), "network-event")
+            .map_err(AppError::from)?;
+    }
 
     let (_reserved_ms, events_budget) = split_wait_budget(cli_timeout);
     let nav_start = Instant::now();
@@ -1527,12 +1669,21 @@ pub(crate) fn wait_for_navigation_commit(
             nav_start,
             readystate_probe.as_mut(),
             requested_url,
-            // `back`/`forward`/`reload` subscribe to `DocumentEvent` only, so
-            // there is no HTTP status to be had here and the envelope says
-            // `not_observed` rather than a bare `null` (iter-166).
-            false,
+            // iter-169 Theme B: these three verbs now subscribe to
+            // `NetworkEvent` too (see the `subscribe` call above), so a
+            // missing status here means the same thing it means for
+            // `navigate` — the server or the document produced none — rather
+            // than "we never looked".
+            true,
         )
     });
+
+    // Revert the daemon to buffering for `network-event` (best-effort: a
+    // failure just leaves it streaming a little longer, it does not
+    // invalidate the navigation result — same policy as `run_core`).
+    if ctx.via_daemon {
+        let _ = crate::daemon::client::stop_daemon_stream(ctx.transport_mut(), "network-event");
+    }
 
     // Flush any pending `unwatchResources` from dead-channel pruning, then
     // unsubscribe/unwatch regardless of outcome so Firefox cleans up
@@ -1571,6 +1722,13 @@ pub(crate) fn wait_for_navigation_commit(
         "committed_url": commit_info.committed_url,
         "ready_state": commit_info.ready_state,
         "elapsed_ms": commit_info.elapsed_ms,
+        // iter-169 Theme B: both keys, always, on every one of the four
+        // navigation verbs. `status_reason` is non-null exactly when `status`
+        // is null, so a caller can tell "the server sent no status" from "no
+        // request was made" (a BFCache-restored `back`) from "we never
+        // looked".
+        "status": commit_info.http_status,
+        "status_reason": commit_info.status_reason.map(StatusUnknown::as_str),
     }))
 }
 
