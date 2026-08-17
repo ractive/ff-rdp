@@ -368,6 +368,91 @@ const KEYWORDS_BEFORE_REGEX: &[&str] = &[
     "await",
 ];
 
+/// Keywords that can only be followed by a *block* `{`, never by an object
+/// literal (iter-170 Theme C).
+///
+/// These are the block-introducing keywords whose `{` is not already preceded
+/// by a `)` (which [`brace_opens_block`] handles on its own): `do {}`,
+/// `else {}`, `try {}`, `finally {}`. `return {a:1}` and `typeof {}` are
+/// deliberately absent — those braces are object literals.
+const KEYWORDS_BEFORE_BLOCK: &[&str] = &["do", "else", "try", "finally"];
+
+/// What a `{` opened, as far as this scanner is willing to commit (iter-170
+/// Theme C).
+///
+/// Only used to answer one question: does the `/` after the matching `}` start
+/// a regular-expression literal ([`slash_starts_regex`])? `Unknown` is the
+/// deliberate third state — an unbalanced `}`, or a `{` in a position this
+/// scanner will not judge — and it keeps iter-167's answer (division), which
+/// is the direction that only ever adds a spurious boundary.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BraceKind {
+    /// A statement block: `if (x) {}`, `{ … }`, a function body.
+    Block,
+    /// An object literal: `({a: 1})`, `f({})`, `x = {}`.
+    ObjectLiteral,
+    /// A `${…}` interpolation inside a template literal, whose `}` returns the
+    /// scanner to template-literal state (iter-170 Theme B).
+    Interpolation,
+    /// Not judged — treated exactly as iter-167 treated every `}`.
+    Unknown,
+}
+
+/// Whether the `{` whose preceding significant character is `prev_significant`
+/// (at `prev_idx` in `chars`) opens a statement block rather than an object
+/// literal (iter-170 Theme C).
+///
+/// Conservative by construction: it answers `true` only for positions where a
+/// *statement* can start and an object literal cannot, and `false` for
+/// everything else — so the fallback is iter-167's unconditional
+/// "`}` divides", whose failure mode only ever adds a boundary.
+///
+/// - Nothing before it, or `;`, or `{` — a statement position; JS itself parses
+///   a leading `{` as a block, not an object literal.
+/// - `)` — `if (…) {`, `for (…) {`, `while (…) {`, `catch (…) {`,
+///   `function f(…) {`. There is no valid JS in which an object literal
+///   directly follows `)`.
+/// - `}` — whatever the `{` it closed was: a block's `}` leaves a statement
+///   position, an object literal's does not.
+/// - `do` / `else` / `try` / `finally` ([`KEYWORDS_BEFORE_BLOCK`]), excluding a
+///   dotted property access (`obj.try {`) for the same reason
+///   [`slash_starts_regex`] excludes one.
+///
+/// `=>` is intentionally *not* here: `x => {}` is a block body, but calling it
+/// one would make `/` after it a regex, and this scanner has no need to take
+/// that risk for a form nobody divides.
+fn brace_opens_block(
+    chars: &[(usize, char)],
+    prev_significant: Option<char>,
+    prev_idx: Option<usize>,
+    prev_brace: BraceKind,
+) -> bool {
+    let Some(prev) = prev_significant else {
+        return true;
+    };
+    match prev {
+        ';' | '{' | ')' => return true,
+        '}' => return prev_brace == BraceKind::Block,
+        _ => {}
+    }
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    if !is_ident(prev) {
+        return false;
+    }
+    let Some(end) = prev_idx else {
+        return false;
+    };
+    let mut start = end;
+    while start > 0 && is_ident(chars[start - 1].1) {
+        start -= 1;
+    }
+    if start > 0 && chars[start - 1].1 == '.' {
+        return false;
+    }
+    let word: String = chars[start..=end].iter().map(|&(_, c)| c).collect();
+    KEYWORDS_BEFORE_BLOCK.contains(&word.as_str())
+}
+
 /// Whether the `/` whose preceding significant character is `prev_significant`
 /// (at `prev_idx` in `chars`) starts a regular-expression literal rather than
 /// a division operator (iter-167 Theme B).
@@ -380,11 +465,20 @@ const KEYWORDS_BEFORE_REGEX: &[&str] = &[
 /// an operator/`(`/`,`/`;`/`=`, nothing is there to divide, so the `/` opens
 /// a regex.
 ///
-/// The one genuinely ambiguous case is `}`, which ends both an object
-/// literal (`{}` / 2 — division) and a block (`if (x) {} /re/` — regex).
-/// Real tokenizers need parser feedback to tell those apart; this one calls
-/// it division, which fails *safe*: a mis-scanned regex leaves extra
-/// boundaries, and extra boundaries only ever cost a wrap, never a crash.
+/// The `}` case needs one extra bit of context, supplied by `prev_brace`
+/// (iter-170 Theme C): `}` ends both an object literal (`({a:1}) / 2` —
+/// division) and a block (`if (x) {} /re/` — regex), and until iter-170 this
+/// function called it division unconditionally. That was *not* fail-safe as
+/// iter-167 assumed: measured on live Firefox, `const n = 1; if (n) {}
+/// /a;b/.test("a;b")` scanned the regex as a division, reported the `;`
+/// inside it as a top-level boundary, and the wrap emitted
+/// `unterminated regular expression literal`. [`top_level_statement_boundaries`]
+/// now records what each `{` opened ([`brace_opens_block`]) and passes the
+/// kind of the most recently closed one here, so a block's `}` is followed by
+/// a regex (which is also what the JS grammar says) and an object literal's
+/// by a division. When the kind is unknown — an unbalanced `}`, or a `{`
+/// whose position this scanner will not commit on — `prev_brace` is
+/// [`BraceKind::Unknown`] and the old division answer stands.
 ///
 /// A dotted property access (`obj.in`, `obj.new`, …) is excluded from the
 /// keyword match even though the word matches: every reserved word is a
@@ -395,6 +489,7 @@ fn slash_starts_regex(
     chars: &[(usize, char)],
     prev_significant: Option<char>,
     prev_idx: Option<usize>,
+    prev_brace: BraceKind,
 ) -> bool {
     let Some(prev) = prev_significant else {
         // Nothing before it: a leading `/` cannot be a division.
@@ -403,10 +498,14 @@ fn slash_starts_regex(
     if !is_statement_end_char(prev) {
         return true;
     }
+    if prev == '}' {
+        // iter-170: a block's `}` ends a statement, so the `/` after it opens
+        // a regex; an object literal's `}` ends an expression, so it divides.
+        return prev_brace == BraceKind::Block;
+    }
     let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
     if !is_ident(prev) {
-        // `)`, `]`, `}` or a closing quote — treat as division (see the `}`
-        // note above).
+        // `)`, `]` or a closing quote — all end an expression, so divide.
         return false;
     }
     let Some(end) = prev_idx else {
@@ -536,13 +635,32 @@ fn push_boundary(boundaries: &mut Vec<usize>, at: usize) {
 ///   strings as well as regex literals, so `"a\";b"` no longer ends its
 ///   string at the escaped quote.
 ///
+/// # iter-170: `${…}` interpolation and the `}` ambiguity
+///
+/// iter-167 left two gaps open and called both fail-safe. Measured on live
+/// Firefox (2026-08-17, `kb/iterations/iteration-170-*`) neither was:
+///
+/// - **`${…}` interpolation** was skipped as opaque template text, so
+///   `` const s = `a${"`"}b`; s `` closed its template at the interpolated
+///   backtick, opened double-quote state on the `"` after it, and swallowed
+///   the script's real top-level `;`. With no boundary to split on, the
+///   iter-165 wrap emitted an IIFE with no `return` and the value silently
+///   became `undefined`. The interpolation is now *re-entered*: `${` pushes a
+///   [`BraceKind::Interpolation`] brace and restores full code state (strings,
+///   regex literals, comments, nesting), and its matching `}` returns the
+///   scanner to the template.
+/// - **A `/` after `}`** was always read as division, so
+///   `const n = 1; if (n) {} /a;b/.test("a;b")` reported the `;` *inside* the
+///   regex as a top-level boundary and the wrap emitted
+///   `unterminated regular expression literal`. Each `{` is now classified by
+///   [`brace_opens_block`] and the kind of the most recently closed brace is
+///   handed to [`slash_starts_regex`].
+///
 /// Still not a JS tokenizer, and deliberately so (all code stays in Rust and
-/// this repo has no JS parser dependency). Known remaining gaps: `${…}`
-/// interpolation inside a template literal is skipped as opaque text rather
-/// than re-entered, and a `/` after `}` is always read as division because
-/// telling an object literal from a block needs parser feedback. Both fail
-/// safe — the worst outcome is a boundary the scanner should not have
-/// reported, which costs a wrap, never a crash.
+/// this repo has no JS parser dependency). The remaining known gap is that a
+/// block's closing `}` is not itself treated as a statement boundary, so
+/// `if (n) {} expr` (no `;`, no newline) is still scanned as one statement —
+/// which costs a wrap, never a crash, and is filed as iteration 171.
 fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
     #[derive(Clone, Copy, PartialEq)]
     enum Str {
@@ -557,6 +675,11 @@ fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
     let mut depth: i32 = 0;
     let mut prev_significant: Option<char> = None;
     let mut prev_significant_idx: Option<usize> = None;
+    // iter-170: what each currently-open `{` opened, and what the most
+    // recently *closed* one was. Only ever consulted while
+    // `prev_significant` is `}`, so the last-closed brace is that `}`.
+    let mut braces: Vec<BraceKind> = Vec::new();
+    let mut prev_brace = BraceKind::Unknown;
     let chars: Vec<(usize, char)> = body.char_indices().collect();
     let n = chars.len();
     let mut i = 0;
@@ -569,6 +692,24 @@ fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
             // iter-167: a backslash escapes the next character, so `"a\";b"`
             // stays one string instead of ending at the escaped quote.
             if c == '\\' {
+                i += 2;
+                continue;
+            }
+            // iter-170: `${` inside a template literal opens an ordinary code
+            // context, not more template text. Re-enter it with full state;
+            // the `}` arm below restores template state when this brace pops.
+            if state == Str::Template && c == '$' && chars.get(i + 1).map(|&(_, c)| c) == Some('{')
+            {
+                braces.push(BraceKind::Interpolation);
+                depth += 1;
+                state = Str::None;
+                // An interpolation holds an *expression*, never a statement,
+                // so `(` is the right stand-in: `slash_starts_regex` reads a
+                // `/` after it as a regex (`${/re/.test(s)}`) and
+                // `brace_opens_block` reads a `{` after it as an object
+                // literal (`${ {a:1}.a }`), both of which are correct here.
+                prev_significant = Some('(');
+                prev_significant_idx = Some(i + 1);
                 i += 2;
                 continue;
             }
@@ -622,7 +763,7 @@ fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
                 i = after;
                 continue;
             }
-            if slash_starts_regex(&chars, prev_significant, prev_significant_idx)
+            if slash_starts_regex(&chars, prev_significant, prev_significant_idx, prev_brace)
                 && let Some(end) = scan_regex_literal(&chars, i)
             {
                 // A regex literal is a complete primary expression, like a
@@ -642,8 +783,32 @@ fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
             '\'' => state = Str::Single,
             '"' => state = Str::Double,
             '`' => state = Str::Template,
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            '(' | '[' => depth += 1,
+            '{' => {
+                depth += 1;
+                braces.push(
+                    if brace_opens_block(&chars, prev_significant, prev_significant_idx, prev_brace)
+                    {
+                        BraceKind::Block
+                    } else {
+                        BraceKind::ObjectLiteral
+                    },
+                );
+            }
+            ')' | ']' => depth = depth.saturating_sub(1),
+            '}' => {
+                depth = depth.saturating_sub(1);
+                prev_brace = braces.pop().unwrap_or(BraceKind::Unknown);
+                if prev_brace == BraceKind::Interpolation {
+                    // Back inside the template literal this `${` interrupted.
+                    // `prev_significant` is deliberately left alone: the next
+                    // significant character is the template's own closing
+                    // backtick, which the string arm records.
+                    state = Str::Template;
+                    i += 1;
+                    continue;
+                }
+            }
             ';' if depth == 0 => push_boundary(&mut boundaries, byte_idx + c.len_utf8()),
             '\n' if depth == 0 => {
                 if let Some(at) = asi_boundary_after(&chars, i + 1, prev_significant) {
@@ -2095,6 +2260,156 @@ mod tests {
             &script[boundaries[0]..],
             "x",
             "the boundary must land on the statement after the comment"
+        );
+    }
+
+    // ── iter-170: `${…}` interpolation and the `}` ambiguity ─────────────────
+
+    /// AC: `unit_170_interpolation_is_scanned`.
+    ///
+    /// The headline defect. Measured against a live Firefox (2026-08-17):
+    /// ``eval --stringify 'const s = `a${"`"}b`; s'`` returned
+    /// `{"type":"undefined"}` instead of ``a`b``. The interpolated backtick
+    /// closed the template, the `"` after it opened double-quote state, and
+    /// the script's real top-level `;` was swallowed as string content — so no
+    /// boundary was reported, the iter-165 wrap had nothing to auto-return,
+    /// and the value was silently lost.
+    #[test]
+    fn unit_170_interpolation_is_scanned() {
+        // A backtick, a quote and a `;` inside an interpolation are all
+        // interior to the template literal: none of them ends it, and none is
+        // a top-level boundary.
+        for script in [
+            r#"`a${"`"}b`"#,
+            r#"`a${'`'}b`"#,
+            r#"`a${"x;y"}b`"#,
+            r#"`a${ ";" }b`"#,
+            "`a${ `n${1}m` }b`",
+            r#"`v=${JSON.stringify({a:";"})}`"#,
+            // A regex, a comment and a nested object literal inside the
+            // interpolation are code, and are now scanned as code.
+            r#"`m=${/a;b/.test("a;b")}`"#,
+            "`m=${ 1 /* a; b */ + 2 }`",
+            "`m=${ {a: 1}.a }`",
+        ] {
+            assert!(
+                top_level_statement_boundaries(script).is_empty(),
+                "{script:?} is one template-literal expression, got {:?}",
+                top_level_statement_boundaries(script)
+            );
+        }
+
+        // The whole point: the real top-level `;` after the template is still
+        // found, so the wrap can auto-return the trailing expression.
+        let script = r#"const s = `a${"`"}b`; s"#;
+        let boundaries = top_level_statement_boundaries(script);
+        assert_eq!(
+            boundaries,
+            vec![r#"const s = `a${"`"}b`;"#.len()],
+            "the `;` after the template is a real boundary, got {boundaries:?}"
+        );
+        assert!(
+            declares_at_top_level(script),
+            "the `const` must still be seen"
+        );
+        assert!(
+            build_script(script, true, true).contains("return (\ns\n)"),
+            "the trailing `s` must be auto-returned, not silently dropped: {}",
+            build_script(script, true, true)
+        );
+
+        // A `;` *inside* an interpolation is never a top-level boundary, even
+        // though it now sits in a re-entered code context.
+        assert!(
+            top_level_statement_boundaries("`a${ (()=>{let q=1; return q})() }b`").is_empty(),
+            "an interpolation's own `;` is nested, not top-level"
+        );
+    }
+
+    /// iter-170 Theme C: a `/` after a *block*'s `}` opens a regex literal; a
+    /// `/` after an *object literal*'s `}` is a division.
+    ///
+    /// Measured on `main` (2026-08-17):
+    /// `eval --stringify 'const n = 1; if (n) {} /a;b/.test("a;b")'` failed
+    /// with `unterminated regular expression literal`, because the `/` was
+    /// scanned as a division and the `;` inside the regex was reported as a
+    /// top-level boundary.
+    #[test]
+    fn unit_170_brace_kind_decides_regex_after_close() {
+        // Block `}` then a regex: the regex's `;` must not be a boundary, so
+        // the only boundary is the real one after `const n = 1;`.
+        for script in [
+            r#"const n = 1; if (n) {} /a;b/.test("a;b")"#,
+            "const n = 1; while (n) {} /a;b/.source",
+            "const n = 1; try {} finally {} /a;b/.source",
+            "const n = 1; { } /a;b/.source",
+        ] {
+            let boundaries = top_level_statement_boundaries(script);
+            assert_eq!(
+                boundaries,
+                vec!["const n = 1;".len()],
+                "{script:?}: the `;` inside the regex must not be a boundary, got {boundaries:?}"
+            );
+        }
+
+        // Object-literal `}` then a division: unchanged from iter-167, and the
+        // direction that must not regress — reading this `/` as a regex would
+        // swallow the following `;`.
+        let script = "const o = {v: 8}; o.v / 2; o.v / 4";
+        let boundaries = top_level_statement_boundaries(script);
+        assert_eq!(
+            boundaries,
+            vec!["const o = {v: 8};".len(), "const o = {v: 8}; o.v / 2;".len()],
+            "division after an object literal must keep both boundaries, got {boundaries:?}"
+        );
+        for script in ["({a: 1}) / 2", "x = {} / 2", "f({}) / 2", "(() => {}) / 2"] {
+            assert!(
+                top_level_statement_boundaries(script).is_empty(),
+                "{script:?} is a single division expression, got {:?}",
+                top_level_statement_boundaries(script)
+            );
+        }
+
+        // An unbalanced `}` leaves the brace kind unknown, which keeps
+        // iter-167's answer (division) rather than guessing.
+        assert!(
+            !slash_starts_regex(
+                &"} / 2".char_indices().collect::<Vec<_>>(),
+                Some('}'),
+                Some(0),
+                BraceKind::Unknown
+            ),
+            "an unknown brace kind must fall back to division"
+        );
+    }
+
+    /// iter-170: the whole reason gap 1 was worth fixing — the emitted script
+    /// stops losing the value, and gap 2's emitted script stops being invalid
+    /// JavaScript. Both are checked on `build_script` output rather than on
+    /// boundaries alone, because the boundary list is only the input to the
+    /// wrap that the user actually sees.
+    #[test]
+    fn unit_170_wrapped_scripts_are_valid_and_return_a_value() {
+        // Gap 2: the split used to fall inside the regex literal, emitting
+        // `… {} /a;` + `return (b/.test("a;b"))`.
+        let gap2 = r#"const n = 1; if (n) {} /a;b/.test("a;b")"#;
+        let built = build_script(gap2, true, true);
+        assert!(
+            !built.contains("/a;\n"),
+            "the regex literal must not be split across the wrap: {built}"
+        );
+        assert!(
+            built.contains(r#"/a;b/.test("a;b")"#),
+            "the regex must survive the wrap intact: {built}"
+        );
+
+        // Gap 1: the template used to end at the interpolated backtick, so the
+        // trailing `s` was never recognized as the last statement.
+        let gap1 = r#"const s = `a${"`"}b`; s"#;
+        let built = build_script(gap1, false, true);
+        assert!(
+            built.contains("return (\ns\n)"),
+            "the trailing expression must be auto-returned: {built}"
         );
     }
 }
