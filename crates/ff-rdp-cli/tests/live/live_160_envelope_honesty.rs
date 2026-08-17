@@ -57,13 +57,18 @@ fn stop_daemon(port: u16) {
 /// Bring up Firefox with a running daemon, panicking on failure (iter-158
 /// Theme D: an `Option` here made every caller `return`, which libtest
 /// reports as `ok`).
+/// iter-172: report *why* the daemon did not start. This test was the sole
+/// failure of iteration-171's live sweep and its message said only "the proxy
+/// daemon did not start", which was not enough evidence to attribute it to
+/// iteration-172's zero-byte-registry defect or to anything else.
 fn firefox_with_daemon(test: &str) -> LiveFirefox {
     let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
+    if let Err(reason) = ff.with_daemon_or_reason() {
+        panic!(
+            "{test}: the proxy daemon did not start for Firefox on port {}: {reason}",
+            ff.port()
+        );
+    }
     ff
 }
 

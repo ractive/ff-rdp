@@ -689,8 +689,32 @@ impl LiveFirefox {
     /// Start the daemon for this Firefox instance and return its proxy port.
     ///
     /// Mirrors the `start_daemon_for` logic from `live_daemon_watch_targets.rs`.
-    /// Returns `None` if the daemon doesn't start within a reasonable timeout.
+    /// Returns `None` if the daemon doesn't start within a reasonable timeout —
+    /// in which case the reason is printed to stderr by
+    /// [`Self::with_daemon_or_reason`], which libtest surfaces when the caller's
+    /// assertion then fails.
     pub fn with_daemon(&self) -> Option<u16> {
+        match self.with_daemon_or_reason() {
+            Ok(port) => Some(port),
+            Err(reason) => {
+                eprintln!("LiveFirefox: the proxy daemon did not start: {reason}");
+                None
+            }
+        }
+    }
+
+    /// [`Self::with_daemon`] with the failure reason instead of a bare `None`
+    /// (iter-172).
+    ///
+    /// Every live test that asserts "the proxy daemon did not start" used to
+    /// print exactly that and nothing else, so a reader had no way to tell a
+    /// product defect from an unmet precondition. `ff-rdp` already knows why:
+    /// when autostart gives up it records the cause in `meta.daemon_fallback`
+    /// and reports `meta.route == "direct"`. The trigger `eval` below asks for
+    /// `--verbose` purely so that block is present, and this function hands it
+    /// to the caller. iter-169 fixed the same shape in `live_158`; the
+    /// iteration-172 carry-over made it general.
+    pub fn with_daemon_or_reason(&self) -> Result<u16, String> {
         // Trigger daemon startup: an `eval` call without --no-daemon causes
         // auto-start. `tabs` does NOT work here — `tabs.rs` connects to
         // Firefox directly via `RdpConnection::connect` and never goes
@@ -704,15 +728,24 @@ impl LiveFirefox {
                 &self.port.to_string(),
                 "--timeout",
                 "5000",
+                "--verbose",
                 "eval",
                 "1",
             ])
             .output()
-            .ok()?;
+            .map_err(|e| format!("could not spawn ff-rdp to trigger autostart: {e}"))?;
 
         if !out.status.success() {
-            return None;
+            return Err(format!(
+                "the autostart trigger `eval 1` exited {}: stdout={} stderr={}",
+                out.status,
+                String::from_utf8_lossy(&out.stdout).trim(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
         }
+        // Keep whatever the CLI said about the route so a later timeout can
+        // name the cause rather than shrugging.
+        let route_note = daemon_route_note(&out.stdout);
 
         // iter-164 (defect 2): poll for the registry entry instead of sleeping
         // a fixed 500 ms. At load average 18.6 the daemon had not registered
@@ -734,10 +767,33 @@ impl LiveFirefox {
                 .ok()?;
             let status_json = serde_json::from_slice::<serde_json::Value>(&status.stdout).ok()?;
             daemon_port_from_status(&status_json)
+        })
+        .ok_or_else(|| {
+            format!(
+                "`daemon status` never reported a running daemon for Firefox port {port} \
+                 within {}s ({DAEMON_READY_TIMEOUT_ENV}); the autostart trigger said: {route_note}",
+                daemon_ready_timeout().as_secs()
+            )
         })?;
 
         eprintln!("LiveFirefox: daemon proxy port={daemon_port}");
-        Some(daemon_port)
+        Ok(daemon_port)
+    }
+}
+
+/// Summarise what an `ff-rdp --verbose` envelope says about how it connected —
+/// `meta.route` plus `meta.daemon_fallback` when autostart degraded (iter-172).
+///
+/// Split out from [`LiveFirefox::with_daemon_or_reason`] so the extraction is
+/// unit-testable without a live Firefox.
+pub fn daemon_route_note(stdout: &[u8]) -> String {
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(stdout) else {
+        return "(the trigger command emitted no JSON envelope)".to_owned();
+    };
+    let route = json["meta"]["route"].as_str().unwrap_or("(no meta.route)");
+    match json["meta"]["daemon_fallback"].as_str() {
+        Some(reason) => format!("route={route}, daemon_fallback={reason:?}"),
+        None => format!("route={route}, no meta.daemon_fallback recorded"),
     }
 }
 
