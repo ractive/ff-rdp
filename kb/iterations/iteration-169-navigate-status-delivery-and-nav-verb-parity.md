@@ -16,7 +16,7 @@ dogfood_path: |
   done
   # → expect 20 ok. Any FAILED reproduces the defect; the panic message prints
   #   the whole envelope, and `status_reason` names which half is missing.
-
+  
   # Theme B — the other three navigation verbs report no status at all.
   ff-rdp launch --headless --debug-port 7402
   ff-rdp --port 7402 navigate https://example.com --jq '.results | keys'
@@ -25,7 +25,7 @@ dogfood_path: |
   # → 2026-08-16: ["committed_url","elapsed_ms","ready_state"] — no status key
   #   at all, so `--jq '.results.status'` yields null for a reason no caller can
   #   see. iter-130 Theme B promised all four verbs report the same shape.
-status: planned
+status: done
 title: "Iteration 169: navigate's document status update is occasionally never delivered, back/forward/reload report no status at all, and the live suite kills a Firefox it does not own"
 type: iteration
 tags:
