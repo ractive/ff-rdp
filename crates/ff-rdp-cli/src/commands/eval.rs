@@ -377,6 +377,11 @@ const KEYWORDS_BEFORE_REGEX: &[&str] = &[
 /// deliberately absent — those braces are object literals.
 const KEYWORDS_BEFORE_BLOCK: &[&str] = &["do", "else", "try", "finally"];
 
+/// Keywords that continue the construct a just-closed block belongs to, so the
+/// `}` before them does NOT end a statement (iter-170 Theme C):
+/// `if {} else {}`, `try {} catch {} finally {}`, `do {} while (x)`.
+const KEYWORDS_CONTINUING_BLOCK: &[&str] = &["else", "catch", "finally", "while"];
+
 /// What a `{` opened, as far as this scanner is willing to commit (iter-170
 /// Theme C).
 ///
@@ -576,6 +581,51 @@ fn asi_boundary_after(
     let prev = prev_significant?;
     let &(next_byte, next) = chars.get(j)?;
     (is_statement_end_char(prev) && !is_continuation_start_char(next)).then_some(next_byte)
+}
+
+/// The byte offset of the statement that starts right after a top-level
+/// block's closing `}` at `from`, if there is one (iter-170 Theme C).
+///
+/// A block statement is self-terminating: `if (n) {} expr` is two statements
+/// with no `;` and no newline between them, and until iter-170 the scanner had
+/// no way to know, because it could not tell a block's `}` from an object
+/// literal's. Now that [`brace_opens_block`] classifies them, the boundary is
+/// derivable — which is what makes the dogfood line
+/// `const n = 1; if (n) {} /a;b/.test("a;b")` return `true` instead of
+/// `undefined`.
+///
+/// Suppressed, in the fail-safe direction (no boundary, i.e. exactly the
+/// pre-170 answer), when what follows cannot start a statement:
+///
+/// - an [`is_continuation_start_char`] — `,`, `;`, `.`, an operator, a closing
+///   bracket. `/` is the one exception: after a *block*'s `}` a `/` opens a
+///   regex literal, which is a new statement (that is the whole point of
+///   [`slash_starts_regex`]'s `}` case) — unless it opens a comment, which is
+///   trivia and whose trailing newline the ASI arm handles.
+/// - `(`, `[` or a backtick — a call, an index or a tagged template applied to
+///   whatever preceded, e.g. the `!function(){}()` IIFE form.
+/// - a [`KEYWORDS_CONTINUING_BLOCK`] keyword — `else`, `catch`, `finally`,
+///   `while`.
+fn block_boundary_after(chars: &[(usize, char)], from: usize) -> Option<usize> {
+    let mut j = from;
+    while j < chars.len() && chars[j].1.is_whitespace() {
+        j += 1;
+    }
+    let &(byte, next) = chars.get(j)?;
+    let is_comment = next == '/' && matches!(chars.get(j + 1).map(|&(_, c)| c), Some('/' | '*'));
+    if is_comment || matches!(next, '(' | '[' | '`') {
+        return None;
+    }
+    if next != '/' && is_continuation_start_char(next) {
+        return None;
+    }
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    let mut k = j;
+    while k < chars.len() && is_ident(chars[k].1) {
+        k += 1;
+    }
+    let word: String = chars[j..k].iter().map(|&(_, c)| c).collect();
+    (!KEYWORDS_CONTINUING_BLOCK.contains(&word.as_str())).then_some(byte)
 }
 
 /// Append `at` to `boundaries` unless it is already the last entry.
@@ -807,6 +857,14 @@ fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
                     state = Str::Template;
                     i += 1;
                     continue;
+                }
+                // iter-170: a block statement terminates itself — no `;` and no
+                // newline are needed after it.
+                if prev_brace == BraceKind::Block
+                    && depth == 0
+                    && let Some(at) = block_boundary_after(&chars, i + 1)
+                {
+                    push_boundary(&mut boundaries, at);
                 }
             }
             ';' if depth == 0 => push_boundary(&mut boundaries, byte_idx + c.len_utf8()),
@@ -2336,8 +2394,9 @@ mod tests {
     /// top-level boundary.
     #[test]
     fn unit_170_brace_kind_decides_regex_after_close() {
-        // Block `}` then a regex: the regex's `;` must not be a boundary, so
-        // the only boundary is the real one after `const n = 1;`.
+        // Block `}` then a regex: the `;` *inside* the regex must not be a
+        // boundary, and the two real boundaries are the `;` after
+        // `const n = 1` and the block-terminated start of the regex statement.
         for script in [
             r#"const n = 1; if (n) {} /a;b/.test("a;b")"#,
             "const n = 1; while (n) {} /a;b/.source",
@@ -2345,10 +2404,12 @@ mod tests {
             "const n = 1; { } /a;b/.source",
         ] {
             let boundaries = top_level_statement_boundaries(script);
+            let regex_at = script.find("/a;b/").expect("the regex is in every case");
             assert_eq!(
                 boundaries,
-                vec!["const n = 1;".len()],
-                "{script:?}: the `;` inside the regex must not be a boundary, got {boundaries:?}"
+                vec!["const n = 1;".len(), regex_at],
+                "{script:?}: expected the `;` boundary and the block-terminated \
+                 regex statement, got {boundaries:?}"
             );
         }
 
@@ -2359,7 +2420,10 @@ mod tests {
         let boundaries = top_level_statement_boundaries(script);
         assert_eq!(
             boundaries,
-            vec!["const o = {v: 8};".len(), "const o = {v: 8}; o.v / 2;".len()],
+            vec![
+                "const o = {v: 8};".len(),
+                "const o = {v: 8}; o.v / 2;".len()
+            ],
             "division after an object literal must keep both boundaries, got {boundaries:?}"
         );
         for script in ["({a: 1}) / 2", "x = {} / 2", "f({}) / 2", "(() => {}) / 2"] {
@@ -2381,6 +2445,64 @@ mod tests {
             ),
             "an unknown brace kind must fall back to division"
         );
+    }
+
+    /// iter-170 Theme C, second half: a block statement terminates itself, so
+    /// the token after its `}` starts a new top-level statement even with no
+    /// `;` and no newline. Only decidable once [`brace_opens_block`] exists —
+    /// before iter-170 the scanner could not tell `if (x) {} y` from
+    /// `({a:1}) / 2`.
+    #[test]
+    fn unit_170_block_close_ends_a_statement() {
+        for (script, expected_tail) in [
+            ("if (n) {} foo()", "foo()"),
+            ("function f() {} f()", "f()"),
+            ("for (const a of xs) {} done()", "done()"),
+            ("if (n) { const y = 1 } y2()", "y2()"),
+            ("{ } bare", "bare"),
+        ] {
+            let boundaries = top_level_statement_boundaries(script);
+            assert_eq!(
+                boundaries.len(),
+                1,
+                "{script:?}: expected exactly one block boundary, got {boundaries:?}"
+            );
+            assert_eq!(
+                &script[boundaries[0]..],
+                expected_tail,
+                "{script:?}: the boundary must land on the statement after the block"
+            );
+        }
+
+        // Suppressed: nothing after the block can start a statement, so the
+        // scanner keeps its pre-170 answer rather than inventing a split.
+        for script in [
+            "if (n) {} else {}",
+            "try {} catch (e) {}",
+            "try {} finally {}",
+            "do {} while (n)",
+            // The IIFE forms: `(`/`[`/backtick continue the preceding value.
+            "!function () {}()",
+            "const f = function () {}",
+            "const f = function () {}, g = 2",
+            "if (n) {} // trailing note",
+            "if (n) {} /* trailing note */",
+            // Object literals are unaffected — their `}` ends an expression.
+            "const o = {v: 8}",
+            "x = {a: 1}",
+        ] {
+            assert!(
+                top_level_statement_boundaries(script).is_empty(),
+                "{script:?} must not gain a boundary, got {:?}",
+                top_level_statement_boundaries(script)
+            );
+        }
+
+        // The rule must not turn a block-scoped declaration into a top-level
+        // one — `eval --help` promises `if (1) { const z = 2 }` skips the wrap.
+        assert!(!declares_at_top_level("if (1) { const z = 2 }"));
+        assert!(!declares_at_top_level("for (const a of xs) {}"));
+        assert!(!declares_at_top_level("if (1) { const z = 2 } foo()"));
     }
 
     /// iter-170: the whole reason gap 1 was worth fixing — the emitted script
