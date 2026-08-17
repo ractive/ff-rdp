@@ -117,6 +117,32 @@ pub(crate) const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
 /// `cat <profile>/.ff-rdp-owner-test` names the exact test function.
 pub(crate) const OWNER_TEST_MARKER: &str = ".ff-rdp-owner-test";
 
+/// Sibling marker recording the owning process's *identity*, not just its PID
+/// (iter-171).
+///
+/// Holds the opaque start token
+/// [`crate::daemon::process::process_start_token`] returns for the PID in
+/// [`OWNER_PID_MARKER`], written at the same moment. The PID marker outlives
+/// the process it names — a leaked profile directory keeps it forever — and
+/// `kill(pid, 0)` cannot tell "the Firefox that wrote this" from "whatever
+/// process holds that PID now". Once the OS recycles the PID, the dead
+/// profile reads as live-owned: the age-gated `profiles prune` and `launch`'s
+/// own orphan sweep both skip it *permanently*, and iter-110's kill-scoping
+/// gate would authorise signalling a process ff-rdp never spawned.
+///
+/// Comparing the recorded token against the live PID's current token closes
+/// that gap, because a recycled PID necessarily has a later start time. See
+/// [`owner_liveness`] for how the comparison is graded, including what happens
+/// when the token is absent (every pre-iter-171 profile) or unobtainable.
+///
+/// Deliberately a **sibling file** rather than a second line inside
+/// [`OWNER_PID_MARKER`]: three out-of-crate readers parse that file with
+/// `read_to_string(..).trim().parse::<u32>()` (the live suite's `live_96`,
+/// `live_151` and `live_168` all duplicate the constant locally), and a
+/// two-line body would make every one of them silently stop matching — which
+/// for `live_96` means its precondition quietly stops firing.
+pub(crate) const OWNER_START_MARKER: &str = ".ff-rdp-owner-start";
+
 /// Env var the live-test harness sets on every `ff-rdp launch` spawned via
 /// `LiveFirefox` (see `tests/common/mod.rs`'s identically-named constant —
 /// duplicated rather than imported because this crate ships no `[lib]`
@@ -194,11 +220,18 @@ pub(crate) fn latest_profile_activity(dir: &Path, dir_mtime: SystemTime) -> Syst
 // ---------------------------------------------------------------------------
 
 /// Write the owner-PID marker ([`OWNER_PID_MARKER`]) holding `pid` into the
-/// managed profile directory `dir`.
+/// managed profile directory `dir`, plus the [`OWNER_START_MARKER`] identity
+/// token for that PID when the OS will supply one (iter-171).
 ///
 /// Called by `launch` immediately after spawning the Firefox that owns `dir`,
 /// so [`profile_is_owned_by_live_process`] can later confirm the profile is
 /// still in use before any age-based prune deletes it.
+///
+/// The identity token is captured **before** the PID marker is written, so the
+/// pair can never describe two different incarnations of `pid`. If the token
+/// cannot be obtained (the process already exited, an unsupported platform),
+/// only the PID marker is written and the profile behaves exactly as a
+/// pre-iter-171 one — see [`owner_liveness`].
 ///
 /// Warn-not-fail: a write failure is logged at `warn` and swallowed. The
 /// marker is a hint that *strengthens* the prune heuristics — losing it only
@@ -206,12 +239,34 @@ pub(crate) fn latest_profile_activity(dir: &Path, dir_mtime: SystemTime) -> Syst
 /// Only ever call this for a managed (`ff-rdp-profile-*`) directory ff-rdp
 /// created for itself; a user `--profile` dir must never receive a marker.
 pub(crate) fn write_owner_pid_marker(dir: &Path, pid: u32) {
+    let start_token = crate::daemon::process::process_start_token(pid);
+
     let marker = dir.join(OWNER_PID_MARKER);
     if let Err(e) = std::fs::write(&marker, format!("{pid}\n")) {
         tracing::warn!(
             "write_owner_pid_marker: could not write {}: {e}",
             marker.display()
         );
+        // Without the PID marker the start token identifies nothing, and a
+        // stray token file would only confuse a later reader.
+        return;
+    }
+
+    match start_token {
+        Some(token) => {
+            let start_marker = dir.join(OWNER_START_MARKER);
+            if let Err(e) = std::fs::write(&start_marker, format!("{token}\n")) {
+                tracing::warn!(
+                    "write_owner_pid_marker: could not write {}: {e}",
+                    start_marker.display()
+                );
+            }
+        }
+        None => tracing::debug!(
+            "write_owner_pid_marker: no start token available for pid {pid} — {} will fall back \
+             to bare PID liveness",
+            dir.display()
+        ),
     }
 }
 
@@ -242,8 +297,63 @@ pub(crate) fn read_owner_test_marker(dir: &Path) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
-/// Returns `true` iff `dir` carries an [`OWNER_PID_MARKER`] whose PID parses
-/// and names a process that is currently alive.
+/// How a managed profile directory's owner markers grade against the live
+/// process table (iter-171).
+///
+/// Before iter-171 this was a bare `bool` from `kill(pid, 0)`, which conflates
+/// two genuinely different answers — "a process holds that PID" and "the
+/// process that wrote that PID is still running". The distinction matters
+/// because the two consumers want opposite fallbacks when identity cannot be
+/// established, so the ambiguity has to survive as far as the caller instead of
+/// being collapsed at the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OwnerLiveness {
+    /// No [`OWNER_PID_MARKER`], or it does not parse as a PID. Callers fall
+    /// back to the iter-96 mtime heuristic (every pre-iter-97 profile).
+    Unmarked,
+    /// The recorded PID is gone — or, the case iter-171 adds, it is alive but
+    /// is provably a *different* process than the one that wrote the marker,
+    /// because the live PID's start token disagrees with the recorded one.
+    /// Either way the profile is abandoned.
+    Dead,
+    /// The recorded PID is alive and nothing contradicts its identity: either
+    /// the recorded start token matches the live process's, or no token was
+    /// recorded at all (a pre-iter-171 profile, or a launch on a platform with
+    /// no start-time source — there is simply nothing to check against).
+    Live,
+    /// The recorded PID is alive and an [`OWNER_START_MARKER`] *was* recorded,
+    /// but the OS declined to disclose the live process's start time — a PID
+    /// owned by another user, typically. Identity is neither confirmed nor
+    /// refuted, so the caller picks the direction its own blast radius
+    /// demands: prune keeps the directory, the kill-scoping gate refuses.
+    Unverified,
+}
+
+/// Grade `dir`'s owner markers against the live process table.
+///
+/// Pure lookup, no side effects. The [`OwnerLiveness`] variants document what
+/// each outcome means; the interesting one is [`OwnerLiveness::Dead`] for a PID
+/// that *is* alive — that is the PID-reuse false positive this iteration
+/// exists to close.
+pub(crate) fn owner_liveness(dir: &Path) -> OwnerLiveness {
+    let Some(pid) = read_owner_pid_marker(dir) else {
+        return OwnerLiveness::Unmarked;
+    };
+    if !crate::daemon::process::is_process_alive(pid) {
+        return OwnerLiveness::Dead;
+    }
+    let Some(recorded) = read_owner_start_marker(dir) else {
+        // Pre-iter-171 profile, or the token was unobtainable at launch.
+        return OwnerLiveness::Live;
+    };
+    match crate::daemon::process::process_start_token(pid) {
+        Some(current) if current == recorded => OwnerLiveness::Live,
+        Some(_) => OwnerLiveness::Dead,
+        None => OwnerLiveness::Unverified,
+    }
+}
+
+/// Returns `true` iff `dir`'s owner markers say a live process still owns it.
 ///
 /// This is the positive ownership signal the prune paths consult *before* the
 /// iter-96 mtime heuristics: a live owner always wins, so a still-running
@@ -251,18 +361,27 @@ pub(crate) fn read_owner_test_marker(dir: &Path) -> Option<String> {
 ///
 /// A missing or unparsable marker returns `false` — the caller then falls
 /// back to the mtime heuristic, so pre-97 profiles (no marker) behave exactly
-/// as before. A PID-reuse false positive errs toward *keeping* the directory
-/// (the safe direction); the mtime heuristic still reclaims it once the
-/// recycled PID dies.
+/// as before.
+///
+/// iter-171: a marker whose PID is alive but whose recorded start token
+/// disagrees is a *recycled* PID, and now returns `false` — before, the dead
+/// profile read as live-owned and the age-gated prune skipped it forever.
+/// [`OwnerLiveness::Unverified`] still returns `true`: for a deletion path the
+/// unresolvable case must err toward keeping the directory.
 pub(crate) fn profile_is_owned_by_live_process(dir: &Path) -> bool {
-    let marker = dir.join(OWNER_PID_MARKER);
-    let Ok(contents) = std::fs::read_to_string(&marker) else {
-        return false;
-    };
-    let Ok(pid) = contents.trim().parse::<u32>() else {
-        return false;
-    };
-    crate::daemon::process::is_process_alive(pid)
+    matches!(
+        owner_liveness(dir),
+        OwnerLiveness::Live | OwnerLiveness::Unverified
+    )
+}
+
+/// Read back the identity token recorded in `dir`'s [`OWNER_START_MARKER`], if
+/// any. `None` for a pre-iter-171 profile, an empty file, or an unreadable one
+/// — all of which mean "identity was never recorded", never "identity failed".
+fn read_owner_start_marker(dir: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(dir.join(OWNER_START_MARKER)).ok()?;
+    let trimmed = contents.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 /// Read and parse the owner PID recorded in `dir`'s [`OWNER_PID_MARKER`], if
@@ -300,6 +419,15 @@ fn read_owner_pid_marker(dir: &Path) -> Option<u32> {
 /// `false` (do not kill). The cost of a false negative is a leftover foreign
 /// process the user can stop themselves; the cost of a false positive is
 /// killing the user's browser — always err toward not killing.
+///
+/// iter-171 tightened this the same way: a marker naming `pid` only authorises
+/// a kill if the profile's recorded start token still matches that PID's. A
+/// leaked profile directory keeps its marker forever, so once the OS recycles
+/// the PID the stale marker would otherwise hand this gate a signed permission
+/// slip for an unrelated process — exactly the outcome the gate exists to
+/// prevent. [`OwnerLiveness::Unverified`] therefore also refuses here (the
+/// opposite of what the prune paths do with it), because "cannot confirm"
+/// must never mean "go ahead and kill".
 pub(crate) fn pid_is_ff_rdp_spawned(pid: u32) -> bool {
     let Ok(root) = secure_profile_root() else {
         return false;
@@ -319,7 +447,9 @@ fn pid_is_ff_rdp_spawned_under(root: &Path, pid: u32) -> bool {
         if !is_managed_profile_path(&path) {
             continue;
         }
-        if read_owner_pid_marker(&path) == Some(pid) {
+        if read_owner_pid_marker(&path) == Some(pid)
+            && owner_liveness(&path) == OwnerLiveness::Live
+        {
             return true;
         }
     }
@@ -489,17 +619,23 @@ pub fn prune_orphan_profiles(
         // under the threshold. Remove dead-owner profiles immediately,
         // regardless of age — `max_entries` below still bounds how many a
         // single `launch` will reclaim.
-        match read_owner_pid_marker(&path) {
-            Some(pid) if crate::daemon::process::is_process_alive(pid) => {
+        //
+        // iter-171: "dead" now includes a marker whose PID is *alive* but
+        // whose recorded start token disagrees — a recycled PID. Grading that
+        // case as alive is how a leaked directory became permanently
+        // unreclaimable: the age gate below never runs for a live owner, so
+        // the profile survived every future sweep.
+        match owner_liveness(&path) {
+            OwnerLiveness::Live | OwnerLiveness::Unverified => {
                 tracing::debug!(
-                    "prune_orphan_profiles: keeping {} — owner PID {pid} is alive",
+                    "prune_orphan_profiles: keeping {} — owner PID is alive",
                     path.display()
                 );
                 continue;
             }
-            Some(pid) => {
+            OwnerLiveness::Dead => {
                 tracing::debug!(
-                    "prune_orphan_profiles: owner PID {pid} for {} is dead — removing immediately",
+                    "prune_orphan_profiles: owner of {} is gone — removing immediately",
                     path.display()
                 );
                 match std::fs::remove_dir_all(&path) {
@@ -511,7 +647,7 @@ pub fn prune_orphan_profiles(
                 }
                 continue;
             }
-            None => {
+            OwnerLiveness::Unmarked => {
                 // No marker (pre-97 profile, or the marker write failed) —
                 // fall back to the mtime heuristic below.
             }

@@ -700,6 +700,36 @@ pub(crate) fn run_with_hooks(
         ))
     })?;
 
+    // iter-171: mark ownership *here*, the instant the PID exists — not after
+    // the port probe below, which can legitimately spend tens of seconds under
+    // contention (iter-158). If the caller is killed inside that window (a
+    // live sweep interrupted mid-test, Ctrl-C, a CI timeout), the profile
+    // directory is already on disk and Firefox is already running, so an
+    // unmarked directory means a leaked profile nobody can attribute or
+    // reclaim. The iter-168 postmortem hit exactly this: four abandoned
+    // profiles, none of which named an owner.
+    //
+    // See `should_write_owner_marker` — a `--profile <path>` dir the user owns
+    // never receives a marker. Warn-not-fail inside the helpers: a marker
+    // write must never fail a launch.
+    if should_write_owner_marker(profile)
+        && let Some(dir) = profile_path.as_deref()
+    {
+        crate::util::profile_dir::write_owner_pid_marker(dir, child.id());
+
+        // iter-151 Theme A: if the caller identifies itself (the live-test
+        // harness sets this env var on every `ff-rdp launch` it spawns — see
+        // `tests/common/mod.rs`), record it alongside the owner PID so a
+        // leaked profile can be traced back to the exact test that spawned
+        // it, instead of a bisection hunt across ~200 live tests. Absent for
+        // a normal interactive `ff-rdp launch` — no marker is written.
+        if let Ok(test_name) = std::env::var(crate::util::profile_dir::SPAWNING_TEST_ENV)
+            && !test_name.trim().is_empty()
+        {
+            crate::util::profile_dir::write_owner_test_marker(dir, test_name.trim());
+        }
+    }
+
     // Wait briefly to catch immediately-crashing launches (bad flags, missing
     // libraries, etc.).
     std::thread::sleep(Duration::from_millis(500));
@@ -732,31 +762,10 @@ pub(crate) fn run_with_hooks(
                 return Err(e);
             }
 
-            // iter-97 Theme A: drop an owner-PID marker into the managed temp
-            // profile so the prune paths can positively confirm this Firefox
-            // is still alive before any age-based deletion. Only managed
-            // (auto-created) profiles get the marker — a `--profile <path>`
-            // dir the user owns must never receive one (see
-            // `should_write_owner_marker`). Warn-not-fail (handled inside the
-            // helper): a marker write must never fail the launch.
-            if should_write_owner_marker(profile)
-                && let Some(dir) = profile_path.as_deref()
-            {
-                crate::util::profile_dir::write_owner_pid_marker(dir, pid);
-
-                // iter-151 Theme A: if the caller identifies itself (the
-                // live-test harness sets this env var on every `LiveFirefox`
-                // launch — see `tests/common/mod.rs`), record it alongside
-                // the owner PID so a leaked profile can be traced back to
-                // the exact test that spawned it, instead of a bisection
-                // hunt across ~200 live tests. Absent for a normal
-                // interactive `ff-rdp launch` — no marker is written.
-                if let Ok(test_name) = std::env::var(crate::util::profile_dir::SPAWNING_TEST_ENV)
-                    && !test_name.trim().is_empty()
-                {
-                    crate::util::profile_dir::write_owner_test_marker(dir, test_name.trim());
-                }
-            }
+            // iter-97 Theme A wrote the owner markers here, after the port
+            // probe; iter-171 moved them up to immediately after the spawn so
+            // an interrupted launch still leaves an attributable profile —
+            // see the write site above `try_wait`. Nothing to do here.
 
             // Write the shared daemon record so `daemon stop` and
             // `launch --replace` can find and terminate this instance.
