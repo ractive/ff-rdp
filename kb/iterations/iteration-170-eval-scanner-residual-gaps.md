@@ -77,11 +77,70 @@ actually type.
   swallows text — would be worse than the current behaviour, because that failure is not safe.
   Record the decision either way.
 
+## Theme A measurement (2026-08-17, live Firefox on port 7502, `main` @ `07a9c03`)
+
+Every line of `dogfood_path` was run, plus five variants added to separate "reproduces" from
+"reproduces only under `--stringify`" and to pin the behaviour that must NOT regress.
+
+```text
+$ ff-rdp --port 7502 eval --stringify 'const s = `a${"`"}b`; s'
+  expected  a`b
+  actual    {"results":{"type":"undefined"}}          <- GAP 1 REPRODUCES
+
+$ ff-rdp --port 7502 eval 'const s = `a${"`"}b`; s'    # no --stringify
+  expected  a`b
+  actual    {"results":{"type":"undefined"}}          <- GAP 1 REPRODUCES
+
+$ ff-rdp --port 7502 eval --stringify '`a${"`"}b`'     # bare expression
+  expected  a`b
+  actual    {"results":"a`b"}                          <- ok (luck: no declaration, no wrap)
+
+$ ff-rdp --port 7502 eval --stringify 'const s = `x${ ";" }y`; s'
+  expected  x;y
+  actual    {"results":"x;y"}                          <- ok already
+
+$ ff-rdp --port 7502 eval --stringify 'const t = `v=${JSON.stringify({a:";"})}`; t'
+  expected  v={"a":";"}
+  actual    {"results":"v={\"a\":\";\"}"}              <- ok already
+
+$ ff-rdp --port 7502 eval --stringify 'const n = 1; if (n) {} /a;b/.test("a;b")'
+  expected  true
+  actual    {"error":"unterminated regular expression literal","error_type":"User"}
+                                                       <- GAP 2 REPRODUCES
+
+$ ff-rdp --port 7502 eval --stringify $'const n = 1; if (n) {}\n/a;b/.test("a;b")'
+  expected  true
+  actual    {"error":"unterminated regular expression literal","error_type":"User"}
+                                                       <- GAP 2 REPRODUCES
+
+$ ff-rdp --port 7502 eval --stringify 'const o = {v:8}; o.v / 2'
+  expected  4
+  actual    {"results":4}                              <- ok; must not regress
+```
+
+**Gap 1 reproduces.** The inner backtick closes the template, the following `"` opens double-quote
+state, and the rest of the script — including the real top-level `;` — is swallowed as string
+content. No boundary is reported, so `wrap_statements_in_iife` finds nothing to auto-return and
+emits `(function(){ … })()` with no `return`. The script evaluates, but its value is lost.
+
+**Gap 2 reproduces.** The `/` after `}` is scanned as division, so the regex is never entered and
+its `;` is reported as a top-level boundary. The wrap splits the script into `… if (n) {} /a;` and
+`b/.test("a;b")`, and the emitted JS is a SyntaxError. A newline before the regex does not help:
+`/` is an [`is_continuation_start_char`], so the newline is not an ASI boundary either.
+
+**Correction to this plan's premise.** The prose above says "Both fail *safe* by construction: the
+worst outcome is a boundary the scanner should not have reported, which costs at most a wrap."
+That is wrong, and the measurement is the evidence. Gap 1 costs the *value* — a silent
+`{"type":"undefined"}`, which iter-142 Theme E named the worst failure mode of this whole wrap
+("an agent gets `{"type":"undefined"}` with no indication anything went wrong"). Gap 2 costs a
+user-visible SyntaxError, the exact symptom iter-167 set out to eliminate. Neither is fail-safe,
+so closing this iteration obsolete was not available.
+
 ## Tasks
 
 ### A. Measure
-- [ ] Run every line of `dogfood_path` against a live Firefox and paste the actual output here
-- [ ] State explicitly, per gap, whether it reproduces
+- [x] Run every line of `dogfood_path` against a live Firefox and paste the actual output here
+- [x] State explicitly, per gap, whether it reproduces
 
 ### B. Template interpolation
 - [ ] Re-enter `${…}` in `top_level_statement_boundaries` with full nested state
