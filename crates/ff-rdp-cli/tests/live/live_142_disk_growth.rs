@@ -19,7 +19,9 @@
 use std::process::Command;
 use std::time::Duration;
 
-use crate::common::{FirefoxGuard, ff_rdp_bin, kill_pid, live_tests_enabled};
+use crate::common::{
+    FirefoxGuard, ff_rdp_bin, ff_rdp_launch_command, kill_pid, live_tests_enabled,
+};
 
 /// Attempt to bind `:0` to discover a free port.
 fn free_port() -> Option<u16> {
@@ -50,7 +52,7 @@ fn free_port() -> Option<u16> {
 /// `common::LiveFirefox::headless_on_random_port`.
 fn launch_headless() -> (FirefoxGuard, u16, serde_json::Value) {
     let port = free_port().expect("bind 127.0.0.1:0 to discover a free port");
-    let out = Command::new(ff_rdp_bin())
+    let out = ff_rdp_launch_command()
         .args(["launch", "--headless", "--debug-port", &port.to_string()])
         // iter-151 Theme A: identify the spawning test on the owner-test
         // marker — see `common::SPAWNING_TEST_ENV`'s doc comment.
@@ -222,7 +224,7 @@ fn live_142_throttle_json_gc() {
         eprintln!("live_142_throttle_json_gc: no free port — skipping");
         return;
     };
-    let out = Command::new(ff_rdp_bin())
+    let out = ff_rdp_launch_command()
         .env("FF_RDP_HOME", home.path())
         .args(["launch", "--headless", "--debug-port", &port.to_string()])
         // iter-151 Theme A: identify the spawning test — see

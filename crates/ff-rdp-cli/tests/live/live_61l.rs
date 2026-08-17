@@ -28,6 +28,8 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::time::Duration;
 
+use crate::common::ff_rdp_launch_command;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -77,7 +79,7 @@ impl LiveFirefox {
     /// Launch headless Firefox with additional parent-environment overrides.
     fn launch_with_env(env_pairs: &[(&str, &str)]) -> Self {
         let port = free_port();
-        let mut cmd = Command::new(ff_rdp_bin());
+        let mut cmd = ff_rdp_launch_command();
         cmd.args(["launch", "--headless", "--debug-port", &port.to_string()]);
         for (k, v) in env_pairs {
             cmd.env(k, v);

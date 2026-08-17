@@ -48,10 +48,37 @@ pub const SPAWNING_TEST_ENV: &str = "FF_RDP_LIVE_TEST_NAME";
 /// `"unknown"` when no thread name is set (e.g. code calling this outside
 /// the test harness), which is still strictly more useful than no marker at
 /// all.
-fn current_test_name() -> String {
+pub fn current_test_name() -> String {
     std::thread::current()
         .name()
         .map_or_else(|| "unknown".to_owned(), str::to_owned)
+}
+
+/// A [`Command`] for the `ff-rdp` binary, pre-tagged with
+/// [`SPAWNING_TEST_ENV`] so any managed profile the launch creates records
+/// which test asked for it (iter-171).
+///
+/// **Use this for every `ff-rdp launch` a live test spawns directly.** Only
+/// `LiveFirefox` set the env var before iter-171, so the ~20 suites that call
+/// `ff-rdp launch` through a bare `Command` produced profiles whose owner-test
+/// marker was simply never requested. That is why the four orphans the
+/// iteration-168 postmortem chased all read `spawned by unknown test` — not,
+/// as first assumed, because the marker failed to survive a kill.
+///
+/// The name is read off the current thread, so call this **on the test's own
+/// thread**. A worker thread spawned by the test has no name and would tag the
+/// profile `unknown`; those callers want
+/// [`ff_rdp_launch_command_for`] with a name captured beforehand.
+pub fn ff_rdp_launch_command() -> Command {
+    ff_rdp_launch_command_for(&current_test_name())
+}
+
+/// [`ff_rdp_launch_command`] with an explicit owner name, for launches issued
+/// from a worker thread (whose thread name is not the test's).
+pub fn ff_rdp_launch_command_for(test_name: &str) -> Command {
+    let mut cmd = Command::new(ff_rdp_bin());
+    cmd.env(SPAWNING_TEST_ENV, test_name);
+    cmd
 }
 
 /// True when live Firefox tests are enabled (`FF_RDP_LIVE_TESTS=1`).

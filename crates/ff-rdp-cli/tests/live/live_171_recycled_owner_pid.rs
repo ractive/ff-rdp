@@ -27,7 +27,7 @@
 
 use std::process::Command;
 
-use crate::common::{ff_rdp_bin, kill_pid_and_wait, live_tests_enabled};
+use crate::common::{ff_rdp_bin, ff_rdp_launch_command, kill_pid_and_wait, live_tests_enabled};
 
 /// Owner-PID marker written inside every ff-rdp-managed profile dir; mirrors
 /// the product's private `util::profile_dir::OWNER_PID_MARKER`, duplicated for
@@ -66,12 +66,8 @@ fn live_171_recycled_owner_pid_no_longer_reads_as_live() {
     }
 
     let port = 7171;
-    let launch = Command::new(ff_rdp_bin())
+    let launch = ff_rdp_launch_command()
         .args(["launch", "--headless", "--debug-port", &port.to_string()])
-        .env(
-            crate::common::SPAWNING_TEST_ENV,
-            "live_171_recycled_owner_pid_no_longer_reads_as_live",
-        )
         .output()
         .expect("live_171: could not spawn `ff-rdp launch`");
     assert!(

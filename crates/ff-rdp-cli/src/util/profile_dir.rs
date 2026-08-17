@@ -447,8 +447,7 @@ fn pid_is_ff_rdp_spawned_under(root: &Path, pid: u32) -> bool {
         if !is_managed_profile_path(&path) {
             continue;
         }
-        if read_owner_pid_marker(&path) == Some(pid)
-            && owner_liveness(&path) == OwnerLiveness::Live
+        if read_owner_pid_marker(&path) == Some(pid) && owner_liveness(&path) == OwnerLiveness::Live
         {
             return true;
         }
@@ -1264,10 +1263,7 @@ mod tests {
 
         assert_eq!(owner_liveness(&dir), OwnerLiveness::Live);
         assert!(profile_is_owned_by_live_process(&dir));
-        assert!(pid_is_ff_rdp_spawned_under(
-            root.path(),
-            std::process::id()
-        ));
+        assert!(pid_is_ff_rdp_spawned_under(root.path(), std::process::id()));
 
         let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
         assert!(
@@ -1339,10 +1335,7 @@ mod tests {
         let dir = seed_fake_profile(root.path(), &"f".repeat(16), Duration::from_secs(1));
         write_owner_pid_marker(&dir, std::process::id());
         assert!(profile_is_owned_by_live_process(&dir));
-        assert!(pid_is_ff_rdp_spawned_under(
-            root.path(),
-            std::process::id()
-        ));
+        assert!(pid_is_ff_rdp_spawned_under(root.path(), std::process::id()));
     }
 
     /// AC: `unit_prune_orphan_profiles_bounded_by_max` — 60 stale dirs seeded,

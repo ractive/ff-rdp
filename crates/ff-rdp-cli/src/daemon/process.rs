@@ -193,8 +193,7 @@ pub fn process_start_token(pid: u32) -> Option<String> {
         if ok == 0 {
             return None;
         }
-        let ticks =
-            (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
+        let ticks = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
         (ticks != 0).then(|| ticks.to_string())
     }
 

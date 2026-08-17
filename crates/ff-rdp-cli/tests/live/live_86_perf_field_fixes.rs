@@ -17,7 +17,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::common::live_tests_enabled;
-use crate::common::{FirefoxGuard, LiveFirefox, base_args, ff_rdp_bin};
+use crate::common::{FirefoxGuard, LiveFirefox, base_args, ff_rdp_bin, ff_rdp_launch_command};
 
 // ---------------------------------------------------------------------------
 // Theme A — daemon stop frees port
@@ -115,7 +115,7 @@ fn live_launch_replace_handles_stuck_prior() {
     );
 
     // Launch with --replace targeting the same port.
-    let out = Command::new(ff_rdp_bin())
+    let out = ff_rdp_launch_command()
         .args([
             "launch",
             "--headless",

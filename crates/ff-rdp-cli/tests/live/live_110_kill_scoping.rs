@@ -13,10 +13,9 @@
 //! points `ff-rdp launch --replace` at its port, and asserts the browser is
 //! still alive afterward — a foreign process is never killed.
 
-use std::process::Command;
 use std::time::Duration;
 
-use crate::common::{RawFirefox, ff_rdp_bin, live_tests_enabled, pid_alive};
+use crate::common::{RawFirefox, ff_rdp_launch_command, live_tests_enabled, pid_alive};
 
 /// AC: `live_110_replace_never_kills_foreign_firefox` — a Firefox launched
 /// outside ff-rdp (no owner-PID marker) survives an `ff-rdp launch --replace`
@@ -42,7 +41,7 @@ fn live_110_replace_never_kills_foreign_firefox() {
     // Provoke the port-owner kill path: --replace on the exact port the foreign
     // Firefox holds. With no daemon record / registry / owner marker for this
     // PID, ff-rdp reaches the step-3 fallback — which must now REFUSE.
-    let output = Command::new(ff_rdp_bin())
+    let output = ff_rdp_launch_command()
         .args([
             "launch",
             "--replace",

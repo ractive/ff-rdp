@@ -16,7 +16,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::common::live_tests_enabled;
-use crate::common::{LiveFirefox, ff_rdp_bin};
+use crate::common::{LiveFirefox, ff_rdp_bin, ff_rdp_launch_command};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -26,7 +26,7 @@ use crate::common::{LiveFirefox, ff_rdp_bin};
 ///
 /// Returns `None` if the launch fails or the port is not reachable within 10 s.
 fn launch_on_port(port: u16) -> Option<u32> {
-    let out = Command::new(ff_rdp_bin())
+    let out = ff_rdp_launch_command()
         .args(["launch", "--headless", "--debug-port", &port.to_string()])
         .output()
         .ok()?;
@@ -164,7 +164,7 @@ fn live_launch_replace_handles_prior_instance() {
     // killing (asserted below via `new_pid != prior_pid`), and this guard's
     // `Drop` at function end is the safety net if any assertion in between
     // panics first.
-    let out = Command::new(ff_rdp_bin())
+    let out = ff_rdp_launch_command()
         .args([
             "launch",
             "--headless",
@@ -301,7 +301,7 @@ fn pre_fix_repro_daemon_state_sharing_red_then_green() {
     );
 
     // 4. Follow-up launch on the same port must succeed.
-    let relaunch_out = Command::new(ff_rdp_bin())
+    let relaunch_out = ff_rdp_launch_command()
         .args(["launch", "--headless", "--debug-port", &port.to_string()])
         .output()
         .expect("pre_fix_repro_daemon_state_sharing_red_then_green: relaunch spawn failed");
