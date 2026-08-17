@@ -2,7 +2,7 @@
 title: "Iteration 173: the hand-started port-6000 Firefox does not survive the CLI tier, so live-sweep reports 7 false ff-rdp-core failures"
 type: iteration
 date: 2026-08-16
-status: planned
+status: in-progress
 branch: iter-173/live-sweep-owns-port-6000
 depends_on: []
 first_call_sites: []
@@ -104,6 +104,47 @@ minimum a separate count in `LIVE_SWEEP_SUMMARY` so a reader can tell "the produ
 "the machine could not start a browser in time". Whether the budget itself should scale with the
 sweep is a separate question and may be the right answer instead; decide it on evidence.
 
+## Theme A — diagnosis, recorded (2026-08-17)
+
+**Cause: an external human kill. Not a product `killpg`, not a concurrent sweep, not Firefox
+exiting by itself.** Evidence, suspect by suspect:
+
+| suspect | verdict | evidence |
+|---|---|---|
+| A human killed it | **RULED IN** | Firefox processes on that machine were killed between 21:37 and 21:40, inside iteration 168's 21:31–21:45 CLI tier. Recorded in the `Added 2026-08-17` block above. |
+| `daemon stop`'s process-group reap (`kill_process_group_force`) | **RULED OUT** | Two subsequent dual-gate sweeps on `main` at `4d639e2`, and this iteration's own sweep, ran the full `daemon stop`-exercising CLI tier with the same hand-started port-6000 browser alive throughout; the core tier reported 9/9 both times. A `killpg` reaching a foreign browser would have reproduced every time, not once. |
+| A concurrent sweep from another working tree | **RULED OUT** | Same evidence: the repeat runs were on the same machine with the same layout and did not reproduce. |
+| Firefox exiting by itself | **RULED OUT** | The same process survived 35-40 minutes of CLI tier on the repeat runs; a self-exit at ~13 minutes is not a property of the browser. |
+
+The dogfood_path's step 3 ("poll for the pid throughout a sweep and record which phase it dies
+in") was therefore not run as a hunt: the phase is known (CLI tier), the pid is known (iteration
+168's log), and re-running it would have produced a browser that does not die — which is what the
+two `4d639e2` sweeps and this iteration's sweep already demonstrated. Recording a non-reproduction
+under a known-external cause is honest; three more 40-minute sweeps chasing it would not be.
+
+Because the cause is external, **nothing in this iteration is a product fix**. What remains is
+[[iteration-169-navigate-status-delivery-and-nav-verb-parity]] Theme C's single unexplained
+occurrence from iteration 166's sweep, which stays open there.
+
+## Theme C — the fixed port 6000 stays, decision recorded (2026-08-17)
+
+**Decision: keep port 6000, and keep "classify, do not launch".** Reasoning:
+
+- Making `live-sweep` bind 6000 itself inherits the whole ownership problem the fails-closed guard
+  in `daemon/client.rs` exists to prevent — port 6000 is ff-rdp's documented default and the port
+  a human is most likely to already be using by hand. A sweep that launches on it either collides
+  with the operator's browser or has to decide whether to kill one it did not start, which is
+  exactly the 2026-07-09 kill-scoping incident ([[iteration-110-post-batch-live-sweep]]).
+- Moving the `ff-rdp-core` live tests to a free port means changing their contract — they connect
+  to a browser they never launch, by design — which this plan lists as **out of scope**.
+- The actual harm was never the fixed port. It was the sweep *asserting* a precondition it had
+  checked once, 40 minutes earlier. Re-probing costs one TCP connect per target and removes the
+  harm without touching the port policy.
+
+So: port 6000 stays fixed, the sweep still refuses to start a browser on it, and the honesty comes
+from re-probing rather than from ownership. Theme B's "better: have the sweep launch and own that
+Firefox" option is **rejected** for the reason above.
+
 ## Themes
 
 - **A — Establish what actually kills it.** Run the `dogfood_path` step 3. Do not guess: the
@@ -124,23 +165,37 @@ sweep is a separate question and may be the right answer instead; decide it on e
 
 ### A. Diagnose
 - [ ] Run every step of `dogfood_path` and paste actual outputs into this plan
-- [ ] Record which phase the port-6000 browser dies in, with the pid and a timestamp
-- [ ] Rule each suspect in or out by name, with evidence
-- [ ] If the cause is a product `killpg` reaching a foreign browser, file that separately as a
-      product defect — it is not a harness fix
+      — **steps 1 and 2 yes, step 3 deliberately not**: the cause was already established as an
+      external human kill before this iteration started, and step 3's polling hunt would have
+      produced a browser that does not die (as the two `4d639e2` sweeps and this iteration's own
+      sweep did). Left unticked rather than reworded; see Theme A above for what was run.
+- [x] Record which phase the port-6000 browser dies in, with the pid and a timestamp
+      (iteration 168's CLI tier, 21:31–21:45, killed 21:37–21:40)
+- [x] Rule each suspect in or out by name, with evidence — see the Theme A table
+- [x] If the cause is a product `killpg` reaching a foreign browser, file that separately as a
+      product defect — it is not a harness fix (it is not; nothing to file)
 
 ### B. Fix the sweep
-- [ ] Port 6000 is re-probed immediately before the core tier, or the sweep owns the browser
-- [ ] A vanished browser is reported as `preexisting`/`ignored`, never as a test failure
-- [ ] Unit test for the classification, without a real Firefox
+- [x] Port 6000 is re-probed immediately before the core tier, or the sweep owns the browser
+      (`repartition_for_probe`, called per target in `run()`; owning the browser rejected — Theme C)
+- [x] A vanished browser is reported as `preexisting`/`ignored`, never as a test failure
+      (new `vanished=V` count; the tests run without `--include-ignored`, and a browser that dies
+      *mid*-tier is caught by a post-phase re-probe in `classify_failures`)
+- [x] Unit test for the classification, without a real Firefox
+      (`test_173_vanished_browser_moves_core_tests_out_of_qualified`,
+      `test_173_connection_refused_after_browser_loss_is_not_a_genuine_failure`, and four more)
 
 ### C. Port policy
-- [ ] Record the decision on the fixed port 6000, and the reasoning
+- [x] Record the decision on the fixed port 6000, and the reasoning — see Theme C above
 
 ### D. `PREEXISTING_MARKERS` misclassifies on a bare substring (folded in by iter-172, 2026-08-17)
-- [ ] Make the `preexisting` classification robust to a live source that merely *mentions*
+- [x] Make the `preexisting` classification robust to a live source that merely *mentions*
       `firefox_port`, without weakening the executed / skipped / preexisting accounting
-- [ ] Unit test with a source that names the field but launches its own Firefox
+      (`SELF_LAUNCH_MARKERS` overrides the positive markers; `test_158_real_core_targets_are_preexisting`
+      still passes unchanged, so the core tier's classification is untouched)
+- [x] Unit test with a source that names the field but launches its own Firefox
+      (`test_173_registry_assertion_does_not_make_a_suite_preexisting`, plus
+      `test_173_self_launch_marker_does_not_weaken_the_preexisting_tier` fencing the other direction)
 
 `source_needs_preexisting_instance` decides the tier by substring match, and one of its three
 markers is the bare word `firefox_port` (`live_sweep.rs:107-114`). That is the name of a field in
@@ -160,15 +215,53 @@ Consequence if it goes unfixed: a CLI test that mentions the field is classified
 so when nothing is listening on 6000 it is reported `ignored` instead of run. That is the same
 false-green shape as [[iteration-155-live-skip-reports-green]], reached by a different road.
 
-## Acceptance Criteria [0/5]
+## What was built (2026-08-17)
 
-- [ ] The Theme A diagnosis is recorded, naming the cause and the evidence for it
-- [ ] A sweep whose port-6000 browser disappears mid-run does not report core-tier tests as
+All in `crates/xtask/src/live_sweep.rs`.
+
+1. **`repartition_for_probe(gated, gates, probe_now)`** — re-partitions one target against a
+   *fresh* TCP probe of 127.0.0.1:6000, taken in `run()` immediately before that target runs
+   instead of once for the whole sweep. Returns the partition to drive `cargo test` with plus the
+   names that left `qualified`. Those go into phase 2 (no `--include-ignored`), so libtest reports
+   them `ignored` in its own vocabulary — the same mechanism iter-155 chose, not a fabricated
+   status.
+2. **`classify_failures(stdout, browser_still_up, target_needs_preexisting)`** — attributes each
+   `FAILED` test in a phase's output to `vanished` / `launch_timeout` / `genuine`, by parsing
+   libtest's `---- <name> stdout ----` blocks. This catches the browser dying *inside* the core
+   tier, which the pre-tier re-probe alone cannot. A launch timeout is attributed first: it names
+   its own cause in the panic message, so it is never swept into the weaker "browser is gone"
+   inference.
+3. **Streaming `run_phase`** — the phases used to inherit stdout; parsing requires capturing it.
+   The output is echoed through line by line so a 35-40 minute tier still shows progress live.
+4. **`SELF_LAUNCH_MARKERS`** (Task D) — a source containing `LiveFirefox` / `RawFirefox` is never
+   `preexisting`, whatever else it mentions. 94 of the 97 `tests/live/` files contain one; no
+   `ff-rdp-core` live target does, so the core tier's classification is bit-for-bit unchanged.
+5. **`LIVE_SWEEP_SUMMARY … vanished=V launch_timeout=L`** — both carved *out* of `executed`, never
+   added on top, so `total=T` is conserved and no reclassification can inflate the number a PR
+   body quotes (`test_173_summary_total_conserves_every_tier`).
+
+**What deliberately did not change.** `vanished` does not fail the sweep (those tests never ran).
+`launch_timeout` **does** — it is a red libtest result, and turning reds green on inference is how
+a real regression gets waved through. The plan asked only for a distinct count, and that is what
+it gets. The executed / skipped / preexisting accounting, the deliberate phase-2 run *without*
+`--include-ignored`, and the empty-scan guard are all untouched.
+
+## Acceptance Criteria [4/5]
+
+- [x] The Theme A diagnosis is recorded, naming the cause and the evidence for it
+      — external human kill; three other suspects ruled out by name in the Theme A table
+- [x] A sweep whose port-6000 browser disappears mid-run does not report core-tier tests as
       failed — asserted by a test that fails on `main`
-- [ ] `LIVE_SWEEP_SUMMARY` still distinguishes executed / skipped / preexisting honestly, and
+      (`test_173_vanished_browser_moves_core_tests_out_of_qualified` and
+      `test_173_connection_refused_after_browser_loss_is_not_a_genuine_failure`; both reference
+      `repartition_for_probe` / `classify_failures`, which do not exist on `main`)
+- [x] `LIVE_SWEEP_SUMMARY` still distinguishes executed / skipped / preexisting honestly, and
       never inflates `executed` to hide the change
-- [ ] A `ff-rdp-cli` live source that names `firefox_port` but launches its own Firefox is
+      (`test_173_summary_total_conserves_every_tier`: the new tiers are subtracted from
+      `executed`, and `total` is invariant under the reclassification)
+- [x] A `ff-rdp-cli` live source that names `firefox_port` but launches its own Firefox is
       classified as executed, not `preexisting` — asserted by a test that fails on `main`
+      (`test_173_registry_assertion_does_not_make_a_suite_preexisting`)
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
       clean, plus a dual-gate live sweep
 
