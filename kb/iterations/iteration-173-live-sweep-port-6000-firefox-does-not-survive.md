@@ -2,7 +2,7 @@
 title: "Iteration 173: the hand-started port-6000 Firefox does not survive the CLI tier, so live-sweep reports 7 false ff-rdp-core failures"
 type: iteration
 date: 2026-08-16
-status: in-progress
+status: in-review
 branch: iter-173/live-sweep-owns-port-6000
 depends_on: []
 first_call_sites: []
@@ -246,7 +246,7 @@ a real regression gets waved through. The plan asked only for a distinct count, 
 it gets. The executed / skipped / preexisting accounting, the deliberate phase-2 run *without*
 `--include-ignored`, and the empty-scan guard are all untouched.
 
-## Acceptance Criteria [4/5]
+## Acceptance Criteria [5/5]
 
 - [x] The Theme A diagnosis is recorded, naming the cause and the evidence for it
       — external human kill; three other suspects ruled out by name in the Theme A table
@@ -262,8 +262,42 @@ it gets. The executed / skipped / preexisting accounting, the deliberate phase-2
 - [x] A `ff-rdp-cli` live source that names `firefox_port` but launches its own Firefox is
       classified as executed, not `preexisting` — asserted by a test that fails on `main`
       (`test_173_registry_assertion_does_not_make_a_suite_preexisting`)
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
       clean, plus a dual-gate live sweep
+      [2026-08-17, `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1` + hand-started Firefox on
+      6000 → `LIVE_SWEEP_SUMMARY executed=277 skipped=0 preexisting=0 vanished=0
+      launch_timeout=0 total=277`, **277 passed / 0 failed**, exit 0; CLI tier 268/268 in
+      2267.62 s, core tier 9/9]
+
+## Live sweep, 2026-08-17
+
+```
+FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
+LIVE_SWEEP_SUMMARY executed=277 skipped=0 preexisting=0 vanished=0 launch_timeout=0 total=277
+```
+
+277 passed / 0 failed, exit 0. 22:21:12 → 22:59:15 (38 min). Both gates set; a hand-started
+headless Firefox (`/tmp/ff-rdp-sweep-profile-6000`) held port 6000 for the whole run and was
+still there afterwards — same pid set before and after, `pgrep -f 'ff-rdp/profiles'` empty both
+times.
+
+- `ff-rdp-cli --test live`: 268 qualified, **268 passed; 0 failed** in 2267.62 s.
+- `ff-rdp-core`: 9 qualified across 4 binaries, **9 passed; 0 failed**. That includes all seven
+  tests this plan was filed about — `live_129_frame_targets_enumerated`,
+  `live_single_target_per_browsing_context`, `live_cache_disable_via_target_config`,
+  `live_network_set_cookie_longstring`, `live_unwatch_targets_does_not_hang`,
+  `live_connect_and_list_tabs`, `live_selected_tab_is_marked` — all `ok`.
+
+`executed` rose from the batch baseline's 275 to 277. That is **not** an improvement in coverage
+measurement: it is iter-172's two new registry tests, which this iteration's Task D also un-hid
+from the `preexisting` bucket. Nothing was removed from the corpus.
+
+**What this sweep did not exercise.** `vanished=0 launch_timeout=0` means the new runtime paths
+never fired: nothing failed, and the browser did not die. The re-probe ran (once per
+`ff-rdp-core` target, four times) and found the browser present each time, which is the
+no-op branch. The classification itself is covered only by the six deterministic unit tests. A
+live end-to-end demonstration would need a 38-minute sweep plus a deliberately timed kill; see
+the carry-over row.
 
 ## Out of scope
 
@@ -276,3 +310,24 @@ it gets. The executed / skipped / preexisting accounting, the deliberate phase-2
 - [[iteration-155-live-skip-reports-green]] — why `live-sweep` exists at all
 - [[iteration-110-post-batch-live-sweep]] — an ff-rdp operation must never signal a Firefox it did not
   launch; relevant if Theme A finds a product `killpg` behind this
+
+## Carry-over (2026-08-17)
+
+Built line by line from `sweep.log`. **Every line of that log is green** — 277 `ok`, zero
+`FAILED`, zero `panicked`, zero `error[`, exit 0 — so there is no row sourced from a non-green
+sweep line. The rows below come from the other three sources the closing procedure names: ACs left
+unticked, items that passed *this* run but failed a previous one, and findings stated in the plan
+prose.
+
+| # | item | source | disposition |
+|---|---|---|---|
+| 1 | Task A's first box — "run every step of `dogfood_path`" — left **unticked**. Steps 1 and 2 were run; step 3 (poll for the pid through a sweep to find what kills the browser) was deliberately not run as a hunt. | AC/task left unticked | **no plan, with a stated reason.** The cause was established as an external human kill before this iteration began (Theme A table, three other suspects ruled out by name), and step 3 against a browser that does not die produces a non-reproduction, which is what this sweep and the two `4d639e2` sweeps already are. The box is left empty rather than reworded. *What would change this: a port-6000 browser dying in a sweep on a machine where no human touched it.* |
+| 2 | `live_160_envelope_honesty::live_160_ref_click_asserts_handler_effect` — **passed this run**; failed iter-168's and iter-171's sweeps. | passed now, failed before | **no plan, with a stated reason**, carrying forward iter-172's rule verbatim: its cause was never established, one green run is not evidence, but `with_daemon_or_reason` now prints `meta.route` / `meta.daemon_fallback`, so **if it fails again the printed reason attributes it and it needs its own plan**. Nothing measured is left to act on today. |
+| 3 | `live_123_daemon_autostart_and_registry::live_daemon_autostart_tabless` launch timeout — **passed this run**; failed iter-170's sweep with `never opened debug port … within 30s`. | passed now, failed before | **closed in this PR, for the reporting half only.** A launch timeout now lands in `launch_timeout=L` with an explicit stderr line naming the tests, instead of being indistinguishable from a product failure (`classify_failures`, `test_173_launch_timeout_is_classified_separately_from_a_real_failure`). The *budget* is untouched — see row 4. |
+| 4 | "Whether the launch budget itself should scale with the sweep is a separate question and may be the right answer instead; decide it on evidence." | plan prose, iter-170 fold-in | **no plan, with a stated reason.** The evidence available today argues against changing it: `launch_timeout=0` across 277 tests in a 38-minute serial sweep on this machine. Raising a timeout with no failing measurement to point at is guessing. *What would change this: any sweep reporting `launch_timeout>0` — the count now exists precisely so that evidence is collectable — at which point it needs its own plan.* |
+| 5 | Theme B's stronger option: "better: have the sweep launch and own that Firefox", which would also remove the manual setup step `iteration-close` asks every iteration to perform by hand. | plan prose | **closed in this PR** — **rejected**, with the reasoning recorded in Theme C and DEC-043. Binding port 6000 inherits the ownership problem the fails-closed guard in `daemon/client.rs` exists to prevent (the 2026-07-09 kill-scoping incident). The manual setup step therefore stays. |
+| 6 | The `vanished` and `launch_timeout` runtime paths **never fired in this sweep** (`vanished=0 launch_timeout=0`): nothing failed and the browser did not die, so only the re-probe's no-op branch executed live. | plan prose (live-sweep section) | **no plan, with a stated reason.** The classification is covered by six deterministic unit tests over real captured libtest output, which is the level the ACs asked for; a live demonstration costs a 38-minute sweep plus a deliberately timed `kill` of the operator's browser, and would prove nothing the unit tests do not. *What would change this: a future sweep reporting `vanished>0` whose numbers look wrong — that is a bug in this iteration's code and needs its own plan.* |
+| 7 | The single unexplained port-6000 death from iteration 166's sweep — not the iteration-168 one, which Theme A attributes. | plan prose (`Added 2026-08-17` block) | **already filed** — it is [[iteration-169-navigate-status-delivery-and-nav-verb-parity]] Theme C and stays open there. Not duplicated here. |
+
+Nothing external interfered with this sweep: the port-6000 Firefox held the port throughout with
+an unchanged pid set, and `pgrep -f 'ff-rdp/profiles'` was empty both before and after.
