@@ -283,9 +283,15 @@ fn live_158_stop_reaches_orphaned_children() {
         .output()
         .expect("spawn `ff-rdp launch`");
     let json = parse_json("launch for the orphan test", &out.stdout);
+    // iter-169: print stdout as well. ff-rdp reports failures as a JSON error
+    // envelope on **stdout** (that is the whole point of the JSON-only output
+    // rule), so the previous stderr-only message rendered as a bare
+    // `launch failed: ` — which is exactly what iteration 169's sweep got,
+    // leaving the one failure in 272 undiagnosable.
     assert!(
         out.status.success(),
-        "launch failed: {}",
+        "launch on port {port} failed\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
     let pid = u32::try_from(json["results"]["pid"].as_u64().expect("results.pid"))
