@@ -1,0 +1,133 @@
+---
+title: "Iteration 171: the eval scanner refuses to judge three brace positions"
+type: iteration
+date: 2026-08-17
+status: planned
+branch: iter-171/eval-scanner-brace-positions
+depends_on:
+  - iteration-170-eval-scanner-residual-gaps
+first_call_sites: []
+dogfood_path: |
+  # Carry-over from iter-170, filed before that PR merged. iter-170 taught
+  # `top_level_statement_boundaries` to classify each `{` it opens, but
+  # `brace_opens_block` deliberately commits only where a statement can start
+  # AND an object literal cannot: nothing before the `{`, or `;`, `{`, `)`, or
+  # one of do/else/try/finally. Three positions are left in the conservative
+  # `ObjectLiteral` bucket even though they are really blocks:
+  #
+  #   1. an arrow function body   `const f = () => { … }`
+  #   2. a class body             `class K { … }`
+  #   3. a labelled block         `outer: { … }`
+  #
+  # For each, a `/` after the closing `}` reads as division and the `}` does
+  # not end a statement. THESE ARE PREDICTIONS FROM READING THE CODE — none has
+  # been run. Run them FIRST and record the real output. iter-170's own premise
+  # (that iter-167's two gaps failed safe) was disproved by exactly this step,
+  # and iter-164 and iter-166 were both closed obsolete the same way.
+  ff-rdp launch --headless --debug-port 7503
+  ff-rdp --port 7503 navigate https://example.com
+
+  # 1 — arrow body. Predicted: the `/` reads as division, the regex is never
+  #     entered, its `;` becomes a top-level boundary, and the wrap splits
+  #     inside the literal (the iter-170 gap-2 symptom, one form along).
+  ff-rdp --port 7503 eval --stringify 'const f = () => {}; f() /a;b/.test("a;b")'
+  ff-rdp --port 7503 eval --stringify 'const g = () => {} /a;b/.test("a;b")'
+
+  # 2 — class body. Predicted: no boundary after `}`, so the trailing
+  #     expression is not auto-returned and the value is silently undefined.
+  ff-rdp --port 7503 eval --stringify 'class K { m(){ return 9 } } new K().m()'
+  # Compare: with an explicit `;` after the class this already works today —
+  ff-rdp --port 7503 eval --stringify 'class K { m(){ return 9 } } ; new K().m()'
+
+  # 3 — labelled block.
+  ff-rdp --port 7503 eval --stringify 'const n = 1; outer: { break outer } n'
+
+  # Must NOT regress — the divisions the conservative bucket protects:
+  ff-rdp --port 7503 eval --stringify 'const o = {v:8}; o.v / 2'
+  ff-rdp --port 7503 eval --stringify 'const r = !function(){ return 1 }(); r'
+tags:
+  - iteration
+  - eval
+---
+
+# Iteration 171: the `eval` scanner refuses to judge three brace positions
+
+Carry-over from [[iteration-170-eval-scanner-residual-gaps]], filed before that PR merged.
+
+iter-170 gave `top_level_statement_boundaries` a `BraceKind` stack (`Block` / `ObjectLiteral` /
+`Interpolation` / `Unknown`) and used it for three answers the scanner previously guessed at: it
+re-enters `${…}` as real code, it decides `/`-after-`}` from what the matching `{` opened, and it
+treats a top-level block's `}` as the end of its own statement. See DEC-042.
+
+`brace_opens_block` is deliberately narrow. It answers `Block` only for positions where a statement
+can start **and** an object literal cannot — nothing before the `{`, or `;`, `{`, `)`, or one of
+`do`/`else`/`try`/`finally` — and `ObjectLiteral` for everything else, which reproduces iter-167's
+unconditional "`}` divides" exactly. That leaves three positions judged wrong-but-safely: an arrow
+function's `{` body (preceded by `>`), a `class` body (preceded by an identifier), and a labelled
+block (preceded by `:`).
+
+Whether any of them is *reachable* from input a caller would type is unmeasured, which is the whole
+point of Theme A.
+
+## Themes
+
+- **A — Measure, and be willing to close this obsolete.** Run the `dogfood_path` and record real
+  output per input. This is the third iteration in a row on this scanner whose premise was written
+  from code reading; iter-170's measurement disproved iter-167's "both gaps fail safe" claim, and
+  iter-164 and iter-166 were both closed obsolete when measurement disproved theirs. If none of the
+  three positions produces a wrong value or invalid JavaScript, close this iteration obsolete and
+  say so.
+- **B — Arrow bodies.** `=>` is unambiguous: the `{` after it is always a block. The reason
+  iter-170 did not commit is that it had no case forcing the question, not that the question is
+  hard. If Theme A shows it matters, `brace_opens_block` gains a two-character lookback for `=>`.
+- **C — Class bodies and labelled blocks.** Both are preceded by an identifier-ish token, so both
+  need the same word-lookback `brace_opens_block` already does for `do`/`else`/`try`/`finally` —
+  `class`/`extends` for one, and for a label, "an identifier followed by `:` at statement
+  position", which is the one genuinely ambiguous case (`{a: 1}` looks the same from the right).
+  A label may be the case to leave alone; record the decision either way.
+
+## Tasks
+
+### A. Measure
+- [ ] Run every line of `dogfood_path` against a live Firefox and paste the actual output here
+- [ ] State explicitly, per position, whether it reproduces and with what symptom
+
+### B. Arrow bodies
+- [ ] If it reproduces: `brace_opens_block` recognizes `=>` before the `{`
+- [ ] Unit test: a regex after an arrow body, and a division after an object literal, in one script
+
+### C. Class bodies and labelled blocks
+- [ ] If they reproduce: extend the word lookback, or record why a label stays unjudged
+
+## Acceptance Criteria [0/3]
+
+- [ ] Each of the three positions is either fixed with a live test, or left as-is with the reason
+      recorded here — **no position is silently dropped**
+- [ ] `const o = {v:8}; o.v / 2` → 4 and `const r = !function(){ return 1 }(); r` → false still
+      hold on a live browser (the A/B comparison in iter-170's plan is the template)
+- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+
+## Design notes
+
+The scanner must not become a JS parser (DEC-039, iter-167 and iter-170 design notes). The rule
+iter-170 arrived at is the one to keep: commit only where JS admits no object literal at all, and
+leave everything else in the bucket that reproduces the previous behaviour.
+
+iter-170's lesson applies directly here — "fails safe" reasoned about at the level of the boundary
+list is not evidence. A spurious boundary can land inside a literal (SyntaxError) and a missing one
+can leave the wrap with nothing to auto-return (silent `undefined`). Any claim of that shape needs
+the two-binary A/B comparison, not an argument.
+
+## Out of scope
+
+- Replacing the wrap machinery with a real parser or a WASM JS tokenizer — rejected in iter-167 and
+  again in iter-170 for a policy reason that has not changed.
+- Re-litigating DEC-039 or DEC-042.
+
+## References
+
+- [[iteration-170-eval-scanner-residual-gaps]] — the brace classification this builds on, and its
+  36-script A/B comparison
+- [[iteration-167-eval-statement-scanner-is-not-a-tokenizer]] — the scanner's regex/comment/escape
+  handling
+- [[decision-log]] — DEC-042

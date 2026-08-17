@@ -2,7 +2,7 @@
 title: "Iteration 170: eval's scanner still cannot see into ${} or past a }"
 type: iteration
 date: 2026-08-16
-status: planned
+status: in-review
 branch: iter-170/eval-scanner-residual-gaps
 depends_on:
   - iteration-167-eval-statement-scanner-is-not-a-tokenizer
@@ -143,19 +143,60 @@ so closing this iteration obsolete was not available.
 - [x] State explicitly, per gap, whether it reproduces
 
 ### B. Template interpolation
-- [ ] Re-enter `${…}` in `top_level_statement_boundaries` with full nested state
-- [ ] Unit tests: a backtick, a quote and a `;` inside an interpolation
+- [x] Re-enter `${…}` in `top_level_statement_boundaries` with full nested state
+- [x] Unit tests: a backtick, a quote and a `;` inside an interpolation
 
 ### C. The `}` ambiguity
-- [ ] Decide: heuristic or leave as documented. Record the decision and its reasoning
+- [x] Decide: heuristic or leave as documented. Record the decision and its reasoning
 
-## Acceptance Criteria [0/3]
+## Theme C decision — heuristic, and one consequence the plan did not anticipate
 
-- [ ] unit_170_interpolation_is_scanned: a `` ` `` or `;` inside `${…}` does not end the template
-      literal or produce a boundary — **only if Theme A shows gap 1 reproduces**
-- [ ] The `}`-ambiguity decision is recorded (here if it stays as-is, in `kb/decision-log.md` if
-      the behaviour changes)
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+**Decided: heuristic** (DEC-042). Each `{` is classified when it is opened, by
+`brace_opens_block`, into `Block` / `ObjectLiteral` / `Interpolation` / `Unknown`, and the kind of
+the most recently closed brace is handed to `slash_starts_regex`. The classifier commits *only*
+where a statement can start and an object literal cannot — nothing before the `{`, or `;`, `{`,
+`)`, or one of `do`/`else`/`try`/`finally` — and answers `ObjectLiteral` everywhere else, which
+reproduces iter-167's unconditional "`}` divides" exactly. An arrow function's `{` body, a `class`
+body and a labelled block are all deliberately left in that conservative bucket. So the heuristic
+Theme C warned against — reading a division as a regex, which swallows text — is only reachable
+from four positions in which JS admits no object literal at all.
+
+**The consequence the plan did not anticipate.** Fixing the regex decision alone turned gap 2's
+SyntaxError into a *silent* `{"type":"undefined"}`, because `if (n) {} /a;b/.test("a;b")` was still
+scanned as a single statement beginning with `if`, and an `if` is not something the wrap can
+auto-return. Trading a loud wrong answer for a silent one is not an improvement, so a third change
+went in: a top-level block's `}` **ends its own statement** (`block_boundary_after`), suppressed
+after `(`, `[`, a backtick, any continuation character except `/`, a comment, and the
+`else`/`catch`/`finally`/`while` clause keywords. This is only decidable *because* the braces are
+now classified, which is why it belongs here and not in an earlier iteration.
+
+## Verification — 36 scripts through both binaries, same live Firefox
+
+`main` @ `07a9c03` and this branch, `eval --stringify`, identical browser (port 7502). Six rows
+changed, every one from a wrong answer to the right one; thirty are byte-identical.
+
+```text
+for (const a of [1,2]) {} 7                  undefined -> 7
+function f(){ return 5 } f()                 undefined -> 5
+let a = 1; function f(){ return a+1 } f()    undefined -> 2
+const s = `a${"`"}b`; s                      undefined -> a`b
+const n = 1; if (n) {} /a;b/.test("a;b")     SyntaxError -> true
+switch (1) { case 1: break; } 11             undefined -> 11
+```
+
+Unchanged, including the two rows the classification could most plausibly have broken:
+`const o = {v:8}; o.v / 2` → 4 and `!function(){ return 1 }()` → false. Also unchanged:
+`if (1) { 2 }`, `const x = 1; if (x) { 2 }` and `if (1) { const z = 2 }` all still yield
+`undefined`, which is the contract `eval --help` states.
+
+## Acceptance Criteria [3/3]
+
+- [x] unit_170_interpolation_is_scanned: a `` ` `` or `;` inside `${…}` does not end the template
+      literal or produce a boundary — **only if Theme A shows gap 1 reproduces** (it does; see the
+      Theme A table). Live half: `live_170_interpolation_is_scanned_as_code`.
+- [x] The `}`-ambiguity decision is recorded (here if it stays as-is, in `kb/decision-log.md` if
+      the behaviour changes) — behaviour changed, so DEC-042, plus the summary above.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 
@@ -163,6 +204,13 @@ The scanner must not become a JS parser — all code stays in Rust and this repo
 dependency (`kb/decision-log.md`, DEC-039 and iter-167's design notes). Any case the scanner
 cannot decide must fail safe: an unwrapped script evaluates as it always did, which is a working
 behaviour, while a wrongly-consumed one is a SyntaxError.
+
+**Lesson for the next iteration built on this scanner.** iter-167 asserted both of these gaps fail
+safe, and both assertions were wrong. The pattern is that "fails safe" was reasoned about at the
+level of the *boundary list* ("a spurious boundary only costs a wrap") without following it through
+to what the wrap then emits — where a spurious boundary can land inside a literal (SyntaxError) and
+a *missing* one can leave the wrap with nothing to auto-return (silent `undefined`). Any future
+claim of this shape needs the two-binary comparison above, not an argument.
 
 ## Out of scope
 
@@ -176,4 +224,6 @@ behaviour, while a wrongly-consumed one is a SyntaxError.
 
 - [[iteration-167-eval-statement-scanner-is-not-a-tokenizer]] — the fix that closed the other
   three gaps and documented these two
-- [[decision-log]] — DEC-039, including its iter-167 revisit note
+- [[iteration-171-eval-scanner-brace-positions]] — carry-over: the brace positions this iteration
+  deliberately did not commit on
+- [[decision-log]] — DEC-039, and DEC-042 which this iteration adds
