@@ -118,6 +118,33 @@ Everything else survives, including the tests that seemed most at risk: `live_11
 `live_158_launch_survives_contended_bind`, `live_151_residual_leak` and `live_171` all pass at
 `-j6`. **The predicted "serial group" is one test, not a class.**
 
+#### Corrected 2026-08-18, same night — the first `-j6` figure was a single run and was wrong
+
+The `-j6` row above (427 s, one failure) came from **one** run. Three further clean runs, each
+preceded by an orphan sweep and followed by a hung-browser check, gave:
+
+| run | wall | failures |
+|---|---|---|
+| clean 1 | 294 s | `live_62`, `live_96` |
+| clean 2 | 267 s | `live_62`, `live_96`, `live_throttle_slow3g` |
+| clean 3 | 256 s | `live_62`, `live_96`, `live_throttle_slow3g`, `live_159_frame_targets_survive_the_fix` |
+
+**No `-j6` run was failure-free.** The wall clock is better than the single run suggested (256–294 s
+on an idle machine, ~8× the serial baseline rather than 5.3×), and the failure picture is worse.
+The plan's own rule — never pick a concurrency from a single run — caught its own headline, which
+is the only reason this correction exists.
+
+`live_62_page_map_index::live_runner_page_map_resolution` failed 3/3 here and was recorded above as
+a second structural parallelism failure. **That was wrong.** Checked serially afterwards it fails
+**8/8 on `main` and 8/8 at `4d639e2` (pre-169)** on an idle machine, one test at a time — it is not
+a parallelism failure at all, and not a regression from this batch. Filed as
+[[iteration-179-live-62-runner-sees-no-network-events]]. `live_159` appeared once in three runs and
+is unclassified; `live_throttle_slow3g` is [[iteration-177-slow3g-assertion-has-two-percent-headroom]].
+
+So A3's claim stands, but narrowed: **`live_96` is the only test shown to be structurally
+incompatible with parallelism.** Whether a clean `-j6` run is achievable at all is unknown until
+179 and 177 are closed — which is a precondition for Theme C, not a side quest.
+
 ### A4. The profiles root is Spotlight-indexed, and that is not free
 
 Immediately after a `-j6` run, load average was **99** on a 10-core box, with `mds_stores` at
