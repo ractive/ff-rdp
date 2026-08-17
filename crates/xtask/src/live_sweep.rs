@@ -113,8 +113,40 @@ const PREEXISTING_MARKERS: &[&str] = &[
     "remote debugger enabled on port 6000",
 ];
 
+/// Markers that prove a source file **launches its own Firefox**, which
+/// overrides every [`PREEXISTING_MARKERS`] hit in the same file (iter-173
+/// Task D).
+///
+/// The positive markers are bare substrings, and one of them — `firefox_port`
+/// — is also the name of a field in `daemon.<port>.json`. Any `ff-rdp-cli`
+/// live test that reads the registry back and asserts on that field was
+/// therefore silently reclassified as needing a Firefox somebody else started
+/// on port 6000, even though it launches one itself. iter-172 hit this while
+/// writing `live_172_published_record_is_complete_and_lock_is_a_sibling`: the
+/// two new tests moved into the `preexisting` bucket and tripped
+/// `test_158_real_core_targets_are_preexisting`. The only workaround available
+/// then was for the test to avoid writing the word, which the next author
+/// would not know to do.
+///
+/// Consequence if left unfixed: a CLI test that merely mentions the field is
+/// classified `preexisting`, so with nothing listening on 6000 it is reported
+/// `ignored` instead of run — the same false-green shape as iter-155, reached
+/// by a different road.
+///
+/// These two launcher types are the only ways a live test in this workspace
+/// starts a browser (`common::LiveFirefox`, `common::RawFirefox`); no
+/// `ff-rdp-core` live target mentions either, and 94 of the 97 `tests/live/`
+/// files do.
+const SELF_LAUNCH_MARKERS: &[&str] = &["LiveFirefox", "RawFirefox"];
+
 /// Does this source file's live tests require a Firefox somebody else started?
+///
+/// A file that launches its own browser never does, whatever else it happens
+/// to mention — see [`SELF_LAUNCH_MARKERS`].
 pub fn source_needs_preexisting_instance(src: &str) -> bool {
+    if SELF_LAUNCH_MARKERS.iter().any(|m| src.contains(m)) {
+        return false;
+    }
     PREEXISTING_MARKERS.iter().any(|m| src.contains(m))
 }
 
@@ -456,24 +488,188 @@ pub fn partition(tests: &[GatedTest], gates: &EnvGates) -> Partition {
 /// gates are met but which need a Firefox on port 6000 that nobody started.
 /// Folding those into `executed` (the pre-158 behaviour) overstated what the
 /// sweep had actually exercised.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// iter-173 adds the two **unmet-precondition** tiers. Both were previously
+/// reported as failing tests, which is the same lie iter-155 was filed about
+/// with the sign flipped — red for a reason that has nothing to do with the
+/// code under test, in the one artifact every iteration pastes into its PR
+/// body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SweepSummary {
     pub executed: usize,
     pub skipped: usize,
     pub preexisting: usize,
+    /// Qualified at classification time, but the port-6000 Firefox was gone by
+    /// the time the tier actually ran (iter-173 Theme B). Never counted as
+    /// `executed` — the test did not reach a browser — and never as a failure.
+    pub vanished: usize,
+    /// Ran, but panicked because Firefox never opened its debug port within
+    /// the per-test launch budget under sweep load (iter-173, folded in from
+    /// iter-170). Moved out of `executed` because it never reached a browser;
+    /// still counted as a red so the sweep's exit status is not weakened.
+    pub launch_timeout: usize,
 }
 
 impl SweepSummary {
     pub fn total(&self) -> usize {
-        self.executed + self.skipped + self.preexisting
+        self.executed + self.skipped + self.preexisting + self.vanished + self.launch_timeout
     }
 }
 
+/// Classification-time summary: the two runtime tiers are necessarily `0`
+/// here, since nothing has run yet.
 pub fn summarize(part: &Partition) -> SweepSummary {
     SweepSummary {
         executed: part.qualified.len(),
         skipped: part.unqualified.len(),
         preexisting: part.preexisting.len(),
+        vanished: 0,
+        launch_timeout: 0,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// iter-173 — runtime re-classification
+// ---------------------------------------------------------------------------
+
+/// Re-partition one target against a **fresh** probe of [`PREEXISTING_PORT`],
+/// taken immediately before that target runs rather than once for the whole
+/// sweep. Returns the partition to actually drive `cargo test` with, plus the
+/// names that moved out of `qualified` because the browser went away.
+///
+/// Why: `EnvGates::from_process_env` probes port 6000 exactly once, at
+/// classification time. The `ff-rdp-cli` tier then runs for 35-40 minutes
+/// before the `ff-rdp-core` tier starts, and the core tests never launch a
+/// browser — they connect to whatever is on 6000. In iteration 168's sweep the
+/// browser was killed inside that window and all seven core tests were
+/// reported `FAILED` with `ConnectionRefused`. They are an unmet precondition,
+/// not a regression; re-running them against a fresh browser passed 7/7.
+///
+/// `probe_now == true` (or a target that needs no pre-existing instance) is a
+/// no-op returning the original partition, so the common case costs one TCP
+/// connect per target.
+pub fn repartition_for_probe(
+    gated: &[GatedTest],
+    gates: &EnvGates,
+    probe_now: bool,
+) -> (Partition, Vec<String>) {
+    if probe_now || !gates.preexisting_available {
+        // Nothing changed since classification (or the browser was already
+        // absent, in which case `partition` has already bucketed these).
+        return (partition(gated, gates), Vec::new());
+    }
+    let gone = EnvGates {
+        preexisting_available: false,
+        ..*gates
+    };
+    let repart = partition(gated, &gone);
+    let vanished = repart.preexisting.clone();
+    (repart, vanished)
+}
+
+/// Why a `cargo test` phase reported one or more `FAILED` tests.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FailureVerdict {
+    /// Failed, and the port-6000 browser they depend on is gone — an unmet
+    /// precondition discovered mid-tier.
+    pub vanished: Vec<String>,
+    /// Failed because Firefox never opened its debug port in time.
+    pub launch_timeout: Vec<String>,
+    /// Everything else: a real assertion or product error.
+    pub genuine: Vec<String>,
+}
+
+impl FailureVerdict {
+    /// Did anything fail for a reason that is actually about the code under
+    /// test?
+    pub fn has_genuine_failures(&self) -> bool {
+        !self.genuine.is_empty()
+    }
+}
+
+/// Markers that identify a launch-timeout panic in a captured libtest failure
+/// block. Both come from `crates/ff-rdp-cli/tests/common/mod.rs`'s bounded
+/// port wait (iter-113 Theme A); the env-var name is included because a future
+/// launcher may reword the prose but will still name the knob to raise.
+const LAUNCH_TIMEOUT_MARKERS: &[&str] =
+    &["never opened debug port", "FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS"];
+
+/// Attribute each `FAILED` test in one phase's libtest output to a cause.
+///
+/// `browser_still_up` is a **fresh** probe of [`PREEXISTING_PORT`] taken after
+/// the phase finished, and only means anything for a target whose tests need
+/// that browser (`target_needs_preexisting`) — which is why it is passed in
+/// rather than probed here: this function stays pure and unit-testable without
+/// a Firefox anywhere.
+///
+/// A launch timeout is attributed before a vanished browser: it names its own
+/// cause explicitly in the panic message, so it should not be swept into the
+/// weaker inference.
+pub fn classify_failures(
+    stdout: &str,
+    browser_still_up: bool,
+    target_needs_preexisting: bool,
+) -> FailureVerdict {
+    let mut verdict = FailureVerdict::default();
+    let browser_gone = target_needs_preexisting && !browser_still_up;
+    for (name, body) in failure_blocks(stdout) {
+        if LAUNCH_TIMEOUT_MARKERS.iter().any(|m| body.contains(m)) {
+            verdict.launch_timeout.push(name);
+        } else if browser_gone {
+            verdict.vanished.push(name);
+        } else {
+            verdict.genuine.push(name);
+        }
+    }
+    // A phase can fail without any per-test block (a compile error, a harness
+    // panic before the first test). Those names never appear above, and the
+    // caller must keep treating such a phase as failed — see `run()`.
+    verdict.vanished.sort();
+    verdict.launch_timeout.sort();
+    verdict.genuine.sort();
+    verdict
+}
+
+/// Split libtest's `failures:` detail section into `(test name, captured
+/// output)` pairs.
+///
+/// libtest prints each failing test's captured output under a
+/// `---- <name> stdout ----` header, then repeats the bare names in a
+/// `failures:` list. We key off the headers: they carry the panic message,
+/// which is what distinguishes a launch timeout from an assertion.
+fn failure_blocks(stdout: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    for line in stdout.lines() {
+        if let Some(name) = failure_block_header(line) {
+            if let Some(block) = current.take() {
+                out.push(block);
+            }
+            current = Some((name, String::new()));
+        } else if line.starts_with("----") || line.trim() == "failures:" {
+            // Any other `----` rule, or the trailing bare-name list, ends the
+            // block we were accumulating.
+            if let Some(block) = current.take() {
+                out.push(block);
+            }
+        } else if let Some((_, body)) = current.as_mut() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    if let Some(block) = current.take() {
+        out.push(block);
+    }
+    out
+}
+
+/// `---- some::test stdout ----` → `Some("some::test")`.
+fn failure_block_header(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("---- ")?;
+    let name = rest.strip_suffix(" stdout ----")?;
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_owned())
     }
 }
 
@@ -505,6 +701,57 @@ pub fn phase_command(
     Some(cmd)
 }
 
+/// One `cargo test` phase's result: libtest's exit status plus its stdout,
+/// which has already been echoed through to ours line by line.
+struct PhaseOutcome {
+    success: bool,
+    stdout: String,
+}
+
+/// Run one phase, streaming its stdout to ours as it arrives **and** keeping a
+/// copy for [`classify_failures`].
+///
+/// Streaming matters: the CLI tier runs for 35-40 minutes and a plain
+/// `output()` would show the operator nothing until it finished. stderr is
+/// inherited untouched (cargo's build progress lives there); libtest reprints
+/// each failing test's captured output on stdout, which is the part we parse.
+fn run_phase(cmd: &mut Command, what: &str) -> Result<PhaseOutcome> {
+    use std::io::{BufRead, BufReader, Write};
+
+    cmd.stdout(std::process::Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("failed to spawn {what}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("no stdout pipe for {what}"))?;
+
+    let mut captured = String::new();
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = reader
+            .read_line(&mut line)
+            .with_context(|| format!("reading stdout of {what}"))?;
+        if n == 0 {
+            break;
+        }
+        print!("{line}");
+        let _ = std::io::stdout().flush();
+        captured.push_str(&line);
+    }
+
+    let status = child
+        .wait()
+        .with_context(|| format!("waiting for {what}"))?;
+    Ok(PhaseOutcome {
+        success: status.success(),
+        stdout: captured,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // run()
 // ---------------------------------------------------------------------------
@@ -534,17 +781,41 @@ pub fn run(args: Args) -> Result<()> {
         );
     }
 
-    let mut total_executed = 0usize;
-    let mut total_skipped = 0usize;
-    let mut total_preexisting = 0usize;
+    let mut totals = SweepSummary::default();
     let mut overall_ok = true;
 
     for target in &targets {
-        let part = partition(&target.gated, &gates);
+        let needs_preexisting = target.gated.iter().any(|g| g.needs_preexisting);
+
+        // iter-173 Theme B: re-probe port 6000 immediately before this target,
+        // not once for the whole sweep. `default_targets` puts `ff-rdp-cli`
+        // first and it runs for 35-40 minutes; the browser the `ff-rdp-core`
+        // tier connects to may not have survived it.
+        let probe_now = if needs_preexisting && !args.dry_run && gates.preexisting_available {
+            preexisting_instance_available()
+        } else {
+            gates.preexisting_available
+        };
+        let (part, vanished_before_tier) = repartition_for_probe(&target.gated, &gates, probe_now);
+        if !vanished_before_tier.is_empty() {
+            eprintln!(
+                "live-sweep: the Firefox on 127.0.0.1:{PREEXISTING_PORT} was there at \
+                 classification time and is gone now — {} test(s) in -p {} --test {} will report \
+                 `ignored` (unmet precondition) rather than failing on ConnectionRefused",
+                vanished_before_tier.len(),
+                target.package,
+                target.test_name
+            );
+        }
+
         let summary = summarize(&part);
-        total_executed += summary.executed;
-        total_skipped += summary.skipped;
-        total_preexisting += summary.preexisting;
+        totals.skipped += summary.skipped;
+        // A vanished browser leaves the tests in `part.preexisting`; split
+        // that count back out so `preexisting` keeps meaning "nobody had
+        // started one when the sweep began".
+        totals.preexisting += summary.preexisting - vanished_before_tier.len();
+        totals.vanished += vanished_before_tier.len();
+        let mut executed = summary.executed;
 
         eprintln!(
             "live-sweep: -p {} --test {}: {} qualified (will run for real), {} will report \
@@ -557,19 +828,74 @@ pub fn run(args: Args) -> Result<()> {
         );
 
         if args.dry_run {
+            totals.executed += executed;
             continue;
         }
 
         if let Some(mut cmd) =
             phase_command(&target.package, &target.test_name, &part.qualified, true)
         {
-            let status = cmd.status().with_context(|| {
-                format!(
-                    "failed to spawn `cargo test -p {} --test {}` (phase 1: real run)",
-                    target.package, target.test_name
-                )
-            })?;
-            overall_ok &= status.success();
+            let what = format!(
+                "`cargo test -p {} --test {}` (phase 1: real run)",
+                target.package, target.test_name
+            );
+            let outcome = run_phase(&mut cmd, &what)?;
+            if !outcome.success {
+                // A failing phase is only forgiven for causes that are not
+                // about the code under test, and only when libtest actually
+                // named the tests — a compile error or a harness panic
+                // produces no failure blocks and must still fail the sweep.
+                let browser_still_up = if needs_preexisting {
+                    preexisting_instance_available()
+                } else {
+                    true
+                };
+                let verdict =
+                    classify_failures(&outcome.stdout, browser_still_up, needs_preexisting);
+                let attributed =
+                    verdict.vanished.len() + verdict.launch_timeout.len() + verdict.genuine.len();
+
+                if !verdict.vanished.is_empty() {
+                    eprintln!(
+                        "live-sweep: the Firefox on 127.0.0.1:{PREEXISTING_PORT} disappeared \
+                         during -p {} --test {} — counting {} test(s) as an unmet precondition, \
+                         NOT as failures: {}",
+                        target.package,
+                        target.test_name,
+                        verdict.vanished.len(),
+                        verdict.vanished.join(", ")
+                    );
+                }
+                if !verdict.launch_timeout.is_empty() {
+                    eprintln!(
+                        "live-sweep: {} test(s) in -p {} --test {} failed because Firefox never \
+                         opened its debug port within the launch budget (raise \
+                         FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS); the machine could not start a \
+                         browser in time — this is not a product failure: {}",
+                        verdict.launch_timeout.len(),
+                        target.package,
+                        target.test_name,
+                        verdict.launch_timeout.join(", ")
+                    );
+                }
+
+                executed =
+                    executed.saturating_sub(verdict.vanished.len() + verdict.launch_timeout.len());
+                totals.vanished += verdict.vanished.len();
+                totals.launch_timeout += verdict.launch_timeout.len();
+
+                // The sweep still exits non-zero for a launch timeout: it is a
+                // red libtest result, and turning reds green on inference is
+                // how a real regression gets waved through (iter-155). Only a
+                // vanished browser — whose tests never ran at all — is
+                // forgiven, and only when every failure is accounted for.
+                if verdict.has_genuine_failures()
+                    || !verdict.launch_timeout.is_empty()
+                    || attributed == 0
+                {
+                    overall_ok = false;
+                }
+            }
         }
 
         if let Some(mut cmd) = phase_command(
@@ -578,25 +904,28 @@ pub fn run(args: Args) -> Result<()> {
             &part.not_running(),
             false,
         ) {
-            let status = cmd.status().with_context(|| {
-                format!(
-                    "failed to spawn `cargo test -p {} --test {}` (phase 2: report ignored)",
-                    target.package, target.test_name
-                )
-            })?;
-            overall_ok &= status.success();
+            let what = format!(
+                "`cargo test -p {} --test {}` (phase 2: report ignored)",
+                target.package, target.test_name
+            );
+            let outcome = run_phase(&mut cmd, &what)?;
+            overall_ok &= outcome.success;
         }
+
+        totals.executed += executed;
     }
 
-    let grand_total = SweepSummary {
-        executed: total_executed,
-        skipped: total_skipped,
-        preexisting: total_preexisting,
-    }
-    .total();
+    let SweepSummary {
+        executed,
+        skipped,
+        preexisting,
+        vanished,
+        launch_timeout,
+    } = totals;
+    let grand_total = totals.total();
     println!(
-        "LIVE_SWEEP_SUMMARY executed={total_executed} skipped={total_skipped} \
-         preexisting={total_preexisting} total={grand_total}"
+        "LIVE_SWEEP_SUMMARY executed={executed} skipped={skipped} preexisting={preexisting} \
+         vanished={vanished} launch_timeout={launch_timeout} total={grand_total}"
     );
 
     if overall_ok {
