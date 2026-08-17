@@ -902,6 +902,13 @@ fn wait_for_doc_complete(
                     .and_then(|u| u.as_str())
                     .unwrap_or("")
                     .to_owned();
+                // iter-169: the counterpart to the `network-event` tracing in
+                // `DocumentStatusTracker`. Between the two, `RUST_LOG=debug`
+                // shows exactly which half of the wait is starved when a
+                // navigation verb burns its whole events budget — which is
+                // how iteration 174's `reload --no-daemon` defect was
+                // localised.
+                tracing::debug!(event = name, %url, "navigate: document-event observed");
 
                 match name {
                     "dom-loading" => {
