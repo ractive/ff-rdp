@@ -1217,3 +1217,25 @@ with a real parser stays rejected for the reason DEC-039 gave.
 **Applies to**: `crates/ff-rdp-cli/src/commands/eval.rs`,
 `crates/ff-rdp-cli/src/cli/args.rs`,
 `crates/ff-rdp-cli/tests/live/live_170_eval_scanner_braces.rs`.
+
+**Addendum (PR review, 2026-08-17)**: the trade-off paragraph above was wrong
+— the unsafe direction was reachable from a *fifth* position this iteration's
+own measurement never tried: a `function` *expression*'s body. `)` precedes
+`{` identically for a function declaration (`function f(){}`, statement
+position) and a function expression (`const f = function(){}`, expression
+position), and `brace_opens_block` originally classified both as `Block`
+uniformly. Live-tested regression: `main` (pre-iter-170) evaluates
+`const f = function(){} / 2` to `undefined`; this branch, pre-fix, threw
+`unterminated regular expression literal` on it — reading a division as a
+regex, exactly the failure this iteration's own text calls "worse than the
+current behaviour, because that failure is not safe." Fixed in the same PR by
+`function_keyword_is_declaration`, which walks back past a leading `async` to
+the same statement-start character classes `brace_opens_block` already uses,
+and forces a function *expression*'s body to `ObjectLiteral` (the pre-170
+answer) regardless of the `)` immediately before its `{`. Declarations
+(`function f(){}`, `async function f(){}`) are unaffected. New coverage:
+`unit_170_function_expression_body_is_not_a_statement_block`, three
+`live_170_brace_kind_decides_regex_and_boundary` cases. The "only reachable
+from four positions" trade-off claim above is superseded by this addendum,
+not corrected in place, per this repo's discipline against rewriting a claim
+to fit what was later found.

@@ -219,6 +219,15 @@ fn live_170_brace_kind_decides_regex_and_boundary() {
         // A block-scoped declaration must not become a top-level one
         // (`eval --help`: this shape skips the wrap entirely).
         ("if (1) { const z = 2 }", Value::Null),
+        // Review fix: a function *expression*'s `}` — reached at the same
+        // depth its `function` keyword was seen at — is not a statement
+        // block, so a `/` right after it must stay division. Measured live:
+        // this branch, pre-fix, threw `unterminated regular expression
+        // literal` on every one of these; `main` (pre-iter-170) evaluates
+        // them as `undefined` (a declaration has no completion value).
+        ("const fe1 = function(){} / 2", Value::Null),
+        ("const fe2 = function named(){} / 2", Value::Null),
+        ("const fe3 = async function(){} / 2", Value::Null),
     ];
 
     for (script, expected) in cases {

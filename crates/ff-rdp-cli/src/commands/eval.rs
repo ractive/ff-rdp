@@ -464,6 +464,61 @@ fn brace_opens_block(
     KEYWORDS_BEFORE_BLOCK.contains(&word.as_str())
 }
 
+/// Review fix (post-iter-170): whether a `function` keyword whose immediately
+/// preceding significant character is `prev_significant` (at `prev_idx`) is a
+/// *declaration* — i.e. [`brace_opens_block`] would call this a statement
+/// position — rather than an *expression* like `const f = function(){}` or
+/// `arr.map(function(x){})`.
+///
+/// A function expression's `{}` is still grammatically a block (not an object
+/// literal — [`brace_opens_block`]'s `)`-preceded rule is right about that),
+/// but unlike a declaration's block it does NOT end the enclosing *statement*:
+/// `const f = function(){} / 2` is one statement (a division), and treating
+/// its `}` as regex-permitting or self-terminating — which
+/// [`top_level_statement_boundaries`] used to do for every `)`-preceded `{`,
+/// declaration or not — turned this valid division into
+/// `unterminated regular expression literal`. Measured live: `main` (this
+/// branch pre-fix) throws on `const f = function(){} / 2`; `git show
+/// origin/main` (pre-iter-170) and this fix both evaluate it (division,
+/// `NaN`).
+///
+/// Skips back over a leading `async` so `async function foo(){}` at true
+/// statement position is still recognized as a declaration.
+fn function_keyword_is_declaration(
+    chars: &[(usize, char)],
+    prev_significant: Option<char>,
+    prev_idx: Option<usize>,
+    prev_brace: BraceKind,
+) -> bool {
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    if prev_significant == Some('c')
+        && let Some(end) = prev_idx
+    {
+        let mut start = end;
+        while start > 0 && is_ident(chars[start - 1].1) {
+            start -= 1;
+        }
+        if chars[start..=end]
+            .iter()
+            .map(|&(_, c)| c)
+            .eq("async".chars())
+        {
+            if start == 0 {
+                return brace_opens_block(chars, None, None, prev_brace);
+            }
+            let mut k = start - 1;
+            while chars[k].1.is_whitespace() {
+                if k == 0 {
+                    return brace_opens_block(chars, None, None, prev_brace);
+                }
+                k -= 1;
+            }
+            return brace_opens_block(chars, Some(chars[k].1), Some(k), prev_brace);
+        }
+    }
+    brace_opens_block(chars, prev_significant, prev_idx, prev_brace)
+}
+
 /// Whether the `/` whose preceding significant character is `prev_significant`
 /// (at `prev_idx` in `chars`) starts a regular-expression literal rather than
 /// a division operator (iter-167 Theme B).
@@ -747,6 +802,15 @@ fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
     // `prev_significant` is `}`, so the last-closed brace is that `}`.
     let mut braces: Vec<BraceKind> = Vec::new();
     let mut prev_brace = BraceKind::Unknown;
+    // Review fix (post-iter-170): depths at which a `function` keyword was
+    // seen in *expression* position (`function_keyword_is_declaration`
+    // false). Consulted only at the `{` that follows — if that `{` is
+    // reached at the same depth, it is this function's body, and must not be
+    // classified `Block` the way a declaration's body is (see
+    // `function_keyword_is_declaration`'s doc comment for the regression this
+    // closes).
+    let mut expr_function_depths: Vec<i32> = Vec::new();
+    let is_ident_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
     let chars: Vec<(usize, char)> = body.char_indices().collect();
     let n = chars.len();
     let mut i = 0;
@@ -846,15 +910,54 @@ fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
             // Otherwise it is a division operator; fall through.
         }
 
+        // Review fix (post-iter-170): recognize a `function` keyword at a
+        // fresh word boundary — but not a `.function` property/method access,
+        // which is never the keyword — so its body's `{` can be told apart
+        // from a declaration's at the point that `{` is reached. See
+        // `function_keyword_is_declaration`.
+        if state == Str::None
+            && c == 'f'
+            && (i == 0 || !is_ident_char(chars[i - 1].1))
+            && prev_significant != Some('.')
+            && chars
+                .get(i..i + 8)
+                .is_some_and(|w| w.iter().map(|&(_, ch)| ch).eq("function".chars()))
+            && chars.get(i + 8).is_none_or(|&(_, ch)| !is_ident_char(ch))
+            && !function_keyword_is_declaration(
+                &chars,
+                prev_significant,
+                prev_significant_idx,
+                prev_brace,
+            )
+        {
+            expr_function_depths.push(depth);
+        }
+
         match c {
             '\'' => state = Str::Single,
             '"' => state = Str::Double,
             '`' => state = Str::Template,
             '(' | '[' => depth += 1,
             '{' => {
+                // Review fix (post-iter-170): a function *expression*'s body,
+                // reached at the same depth its `function` keyword was seen
+                // at. Force `ObjectLiteral` — the pre-170 safe answer — no
+                // matter what `brace_opens_block` would say from the `)`
+                // immediately before this `{`, which cannot by itself tell a
+                // declaration's parameter list from an expression's.
+                let is_expr_function_body = expr_function_depths.last() == Some(&depth);
+                if is_expr_function_body {
+                    expr_function_depths.pop();
+                }
                 depth += 1;
                 braces.push(
-                    if brace_opens_block(&chars, prev_significant, prev_significant_idx, prev_brace)
+                    if !is_expr_function_body
+                        && brace_opens_block(
+                            &chars,
+                            prev_significant,
+                            prev_significant_idx,
+                            prev_brace,
+                        )
                     {
                         BraceKind::Block
                     } else {
@@ -2549,6 +2652,68 @@ mod tests {
         assert!(
             built.contains("return (\ns\n)"),
             "the trailing expression must be auto-returned: {built}"
+        );
+    }
+
+    /// Review fix (post-iter-170): a `function` *expression*'s `}` — reached
+    /// at the same depth its `function` keyword was seen at — must not be
+    /// classified the way a declaration's is. Before this fix,
+    /// `top_level_statement_boundaries` classified `)`-preceded `{` as
+    /// `Block` regardless of whether the enclosing `function` was a
+    /// declaration or an expression, so `const f = function(){} / 2` (one
+    /// division statement) gained a spurious boundary right at the `/` and
+    /// `eval --stringify 'const f = function(){} / 2'` threw
+    /// `unterminated regular expression literal` on a script that evaluates
+    /// fine unwrapped. Measured live against both `main` (pre-iter-170,
+    /// works) and this branch pre-fix (throws); this fix restores parity.
+    #[test]
+    fn unit_170_function_expression_body_is_not_a_statement_block() {
+        // No boundary at all: each is one statement (a division, or a
+        // division whose value is discarded as a declarator initializer).
+        for script in [
+            "const f = function(){} / 2",
+            "const f = function(){} / a/b",
+            "let f = function(){} / 2",
+            "const f = function named(){} / 2",
+            "const f = async function(){} / 2",
+            "const f = function* (){} / 2",
+        ] {
+            assert!(
+                top_level_statement_boundaries(script).is_empty(),
+                "{script:?} is one statement (division), got {:?}",
+                top_level_statement_boundaries(script)
+            );
+        }
+
+        // A callback argument's function-expression body must not gain a
+        // boundary from what follows the call either.
+        assert!(
+            top_level_statement_boundaries("arr.map(function(x) { return x; }) / 2").is_empty(),
+            "a callback's body must not be mistaken for a statement block"
+        );
+
+        // Declarations are unaffected — `function`/`async function` at true
+        // statement position still get the iter-170 self-terminating
+        // boundary and regex-permitting `/`.
+        for (script, expected_tail) in [
+            ("function f(){ return 5 } f()", "f()"),
+            ("async function f(){ return 5 } f()", "f()"),
+        ] {
+            let boundaries = top_level_statement_boundaries(script);
+            assert_eq!(
+                boundaries.len(),
+                1,
+                "{script:?}: a declaration's `}}` must still end its statement, got {boundaries:?}"
+            );
+            assert_eq!(&script[boundaries[0]..], expected_tail);
+        }
+
+        // The wrapped script must not become invalid JavaScript — this is
+        // the observable the live test checks against a real Firefox.
+        let built = build_script("const f = function(){} / 2", false, true);
+        assert!(
+            !built.contains("return (\n/"),
+            "a division must not be split into an unterminated regex: {built}"
         );
     }
 }

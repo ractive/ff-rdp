@@ -189,6 +189,44 @@ Unchanged, including the two rows the classification could most plausibly have b
 `if (1) { 2 }`, `const x = 1; if (x) { 2 }` and `if (1) { const z = 2 }` all still yield
 `undefined`, which is the contract `eval --help` states.
 
+## Review fix (2026-08-17): a function *expression*'s body was misclassified as a statement block
+
+PR review found a fifth position that reaches the unsafe direction Theme C's decision explicitly
+warned against and believed was closed off: `)` precedes `{` identically for a function
+*declaration* (`function f(){}`, a statement) and a function *expression* (`const f =
+function(){}`, a value), and `brace_opens_block` classified both as `Block` uniformly. Live-tested:
+`main` (pre-iter-170) evaluates `const f = function(){} / 2` to `undefined`; this branch, before
+this fix, threw `unterminated regular expression literal` on the exact same script —
+`eval --stringify 'const f = function(){} / 2'` — a plain division of a function value that had
+never been broken before. That is precisely the "reading a division as a regex, which swallows
+text" failure this plan's Theme C called worse than doing nothing.
+
+**Fix**: `function_keyword_is_declaration` — reuses `brace_opens_block`'s statement-start character
+classes on the token before a `function` keyword itself (walking back past a leading `async` so
+`async function foo(){}` at true statement position is unaffected), and forces a function
+expression's body to `ObjectLiteral` — the pre-170, safe answer — regardless of what
+`brace_opens_block` would otherwise say from the `)` immediately before its `{`. Declarations are
+untouched: `function f(){ return 5 } f()` and `async function f(){ return 5 } f()` still get the
+self-terminating boundary and the regex-permitting `/`.
+
+**New coverage**: `unit_170_function_expression_body_is_not_a_statement_block` (unit; covers plain,
+named, `async`, and a callback-argument body) and three new cases in
+`live_170_brace_kind_decides_regex_and_boundary` (`const fe1/fe2/fe3 = …function… / 2`), all
+verified against the live Firefox on port 6000 before and after the fix.
+
+**Not chased further**: the fix is scoped to the `function` keyword (plain, named, `async`,
+generator via the word-match alone since `*` doesn't affect the depth tracking). Arrow-function
+expression bodies (`() => {}`) are unaffected by this fix because they were never classified
+`Block` in the first place (DEC-042's own Theme C already left them in the conservative
+`ObjectLiteral` bucket — see iteration 171's brace-positions plan). A `function` keyword used only
+as a bare word is detected by a forward word-boundary scan with one deliberate gap: if "function"
+appears in expression position but is *not* actually followed by a matching `(...) {` (e.g. it was
+mid-scanned incorrectly for some construct this fix's author did not anticipate), the pushed marker
+is left on a depth-indexed stack and could, in principle, misclassify a later, unrelated `{}` at the
+same depth. That failure direction is `ObjectLiteral` (the safe fallback), not `Block`, so it costs
+at most a missed opportunity, not a new crash — consistent with this iteration's own safety
+contract. No live or unit input has been found that reaches this residual case.
+
 ## Acceptance Criteria [3/3]
 
 - [x] unit_170_interpolation_is_scanned: a `` ` `` or `;` inside `${…}` does not end the template
