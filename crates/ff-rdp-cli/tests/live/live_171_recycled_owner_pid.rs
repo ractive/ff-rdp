@@ -27,7 +27,9 @@
 
 use std::process::Command;
 
-use crate::common::{ff_rdp_bin, ff_rdp_launch_command, kill_pid_and_wait, live_tests_enabled};
+use crate::common::{
+    FirefoxGuard, ff_rdp_bin, ff_rdp_launch_command, kill_pid_and_wait, live_tests_enabled,
+};
 
 /// Owner-PID marker written inside every ff-rdp-managed profile dir; mirrors
 /// the product's private `util::profile_dir::OWNER_PID_MARKER`, duplicated for
@@ -84,6 +86,11 @@ fn live_171_recycled_owner_pid_no_longer_reads_as_live() {
         .as_u64()
         .and_then(|p| u32::try_from(p).ok())
         .expect("live_171: launch JSON must expose a numeric results.pid");
+    // Own the process from the moment we know its PID. Step 3 kills it deliberately, but any
+    // panic before that would otherwise leak a live Firefox holding a managed profile dir —
+    // which is precisely the failure mode this iteration exists to close. Killing an
+    // already-dead PID in the guard's drop is a no-op, so the deliberate kill stays authoritative.
+    let _guard = FirefoxGuard::new(pid);
     let profile_dir = std::path::PathBuf::from(
         results["profile_path"]
             .as_str()

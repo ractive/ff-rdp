@@ -105,8 +105,12 @@ pub(crate) const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
 /// Sibling marker recording *who* asked for the profile (iter-151 Theme A).
 ///
 /// Only ever written when [`SPAWNING_TEST_ENV`] is set in `launch`'s own
-/// environment — i.e. only when the live-test harness's `LiveFirefox` spawned
-/// this `launch` (see `tests/common/mod.rs`). A normal interactive `ff-rdp
+/// environment — i.e. only when the live-test harness spawned this `launch`.
+/// As of iter-171 that covers both routes: `LiveFirefox`, and every direct
+/// `ff-rdp launch` in the live suite, which now goes through the harness's
+/// `ff_rdp_launch_command()` rather than a bare `Command` (see
+/// `tests/common/mod.rs`). Before that, the ~20 direct call sites produced
+/// markers reading `spawned by unknown test`. A normal interactive `ff-rdp
 /// launch` never sets that env var, so this marker is simply absent for every
 /// real user profile.
 ///
@@ -141,10 +145,13 @@ pub(crate) const OWNER_TEST_MARKER: &str = ".ff-rdp-owner-test";
 /// `live_151` and `live_168` all duplicate the constant locally), and a
 /// two-line body would make every one of them silently stop matching — which
 /// for `live_96` means its precondition quietly stops firing.
-pub(crate) const OWNER_START_MARKER: &str = ".ff-rdp-owner-start";
+const OWNER_START_MARKER: &str = ".ff-rdp-owner-start";
 
-/// Env var the live-test harness sets on every `ff-rdp launch` spawned via
-/// `LiveFirefox` (see `tests/common/mod.rs`'s identically-named constant —
+/// Env var the live-test harness sets on every `ff-rdp launch` it spawns —
+/// both via `LiveFirefox` and, since iter-171, via `ff_rdp_launch_command()`
+/// for the direct call sites that previously used a bare `Command` and so
+/// recorded no test name at all (see `tests/common/mod.rs`'s
+/// identically-named constant —
 /// duplicated rather than imported because this crate ships no `[lib]`
 /// target for an integration-test binary to pull the constant from, the same
 /// reason that file already duplicates [`OWNER_PID_MARKER`] locally).
@@ -306,7 +313,7 @@ pub(crate) fn read_owner_test_marker(dir: &Path) -> Option<String> {
 /// established, so the ambiguity has to survive as far as the caller instead of
 /// being collapsed at the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OwnerLiveness {
+enum OwnerLiveness {
     /// No [`OWNER_PID_MARKER`], or it does not parse as a PID. Callers fall
     /// back to the iter-96 mtime heuristic (every pre-iter-97 profile).
     Unmarked,
@@ -334,7 +341,7 @@ pub(crate) enum OwnerLiveness {
 /// each outcome means; the interesting one is [`OwnerLiveness::Dead`] for a PID
 /// that *is* alive — that is the PID-reuse false positive this iteration
 /// exists to close.
-pub(crate) fn owner_liveness(dir: &Path) -> OwnerLiveness {
+fn owner_liveness(dir: &Path) -> OwnerLiveness {
     let Some(pid) = read_owner_pid_marker(dir) else {
         return OwnerLiveness::Unmarked;
     };
