@@ -132,7 +132,10 @@ The budget **is** spent in full. Candidate 0 is closed.
 
 **The real cause is a fourth thing, in the CLI, not the daemon stream.** Repro: 30 cold-start runs
 (`pkill` daemon + Firefox, `ff-rdp launch --headless`, one `navigate https://example.com`), 1
-failure. Per-frame trace, passing run vs failing run:
+failure. Both the before and the after run of this protocol carried the same synthetic 8-way CPU
+load (`yes > /dev/null` ×8 on an 8-core machine) — *harsher* than the "idle machine" the earlier
+1-in-12 figure was measured on, and identical between the two, so the before/after comparison
+holds. Per-frame trace, passing run vs failing run:
 
 ```
 pass:  resource id=8589934593 cause=document url=https://example.com/
