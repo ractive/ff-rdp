@@ -2,13 +2,13 @@
 title: "Iteration 173: the hand-started port-6000 Firefox does not survive the CLI tier, so live-sweep reports 7 false ff-rdp-core failures"
 type: iteration
 date: 2026-08-16
-status: in-review
+status: done
 branch: iter-173/live-sweep-owns-port-6000
 depends_on: []
 first_call_sites: []
 dogfood_path: |
   # Harness/tooling defect in `cargo run -p xtask -- live-sweep`.
-
+  
   # 1. Start a Firefox on the fixed port 6000 the ff-rdp-core tier requires,
   #    and confirm live-sweep classifies the core tier as qualified.
   firefox -no-remote -headless -profile /tmp/ff-rdp-6000 \
@@ -23,18 +23,23 @@ dogfood_path: |
   #   live_single_target_per_browsing_context, live_cache_disable_via_target_config,
   #   live_network_set_cookie_longstring, live_unwatch_targets_does_not_hang,
   #   live_connect_and_list_tabs, live_selected_tab_is_marked.
-
+  
   # 2. Confirm they are green when Firefox is actually present — restart it and
   #    re-run just the core binaries.
   #    → OBSERVED: 7/7 pass. The failures are entirely about the browser being
   #      gone, not about the tests.
-
+  
   # 3. Find out what kills it. Poll for the pid throughout a sweep and record
   #    which phase it dies in. Suspects to rule in or out, in order:
   #    `daemon stop`'s process-group reap (`kill_process_group_force` in
   #    crates/ff-rdp-cli/src/daemon/process.rs), a concurrent sweep from
   #    another working tree on the same machine, and Firefox exiting on its own.
-tags: [iteration, testing, live-tests, tooling, xtask]
+tags:
+  - iteration
+  - testing
+  - live-tests
+  - tooling
+  - xtask
 ---
 
 # Iteration 173: `live-sweep` depends on a port-6000 Firefox it neither owns nor re-checks
