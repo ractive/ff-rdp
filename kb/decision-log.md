@@ -1155,3 +1155,65 @@ a failure.
 `crates/ff-rdp-cli/src/commands/nav_action.rs`,
 `crates/ff-rdp-cli/tests/live/live_169_nav_verb_status_parity.rs`,
 `crates/ff-rdp-cli/tests/e2e/nav_action.rs`.
+
+## DEC-042: `eval`'s statement scanner classifies every `{` it meets, and refuses to guess on the rest
+
+**Decision** (iter-170): `top_level_statement_boundaries` now records what each
+`{` opened — `Block`, `ObjectLiteral`, `Interpolation` or `Unknown` — and uses
+that classification for three answers it previously guessed at or skipped:
+
+1. `${…}` inside a template literal is **re-entered** as ordinary code
+   (strings, regex literals, comments, nesting), not skipped as opaque text.
+   Its `}` returns the scanner to template state.
+2. A `/` after `}` opens a regex when the `{` opened a **block** and divides
+   when it opened an **object literal**, instead of always dividing.
+3. A top-level block's `}` **ends its own statement**, so no `;` and no
+   newline is needed after it.
+
+`brace_opens_block` commits only where a statement can start and an object
+literal cannot: nothing before the `{`, or `;`, `{`, `)`, or one of
+`do`/`else`/`try`/`finally` (excluding a dotted property access). Everything
+else — an arrow function's `{` body, a `class` body, a labelled block — stays
+`ObjectLiteral`, which reproduces iter-167's answer exactly.
+
+**Why**: iter-167 documented both gaps and asserted both fail safe — "the worst
+outcome is a boundary the scanner should not have reported, which costs at most
+a wrap". iter-170 measured that against live Firefox and neither did.
+``eval --stringify 'const s = `a${"`"}b`; s'`` returned `{"type":"undefined"}`
+(the interpolated backtick closed the template, the `"` after it opened string
+state, and the script's real `;` was swallowed, so the iter-165 wrap had
+nothing to auto-return) — the silent-`undefined` failure iter-142 Theme E named
+the worst mode of this wrap. `eval --stringify 'const n = 1; if (n) {}
+/a;b/.test("a;b")'` returned `unterminated regular expression literal` — the
+exact symptom iter-167 set out to eliminate, one form further along.
+
+**Why the third change, which the plan did not ask for**: fixing (2) alone
+turned that SyntaxError into a silent `undefined`, because `if (n) {} /re/.test(…)`
+was still scanned as one statement starting with `if`, and an `if` is not
+something the wrap can auto-return. Trading a loud wrong answer for a silent
+one is not an improvement. (3) is only decidable *because* of the
+classification, which is why it belongs in this iteration and not an earlier
+one. Suppressed after `(`, `[`, a backtick, any continuation character except
+`/`, a comment, and the `else`/`catch`/`finally`/`while` clause keywords.
+
+**Evidence**: 36 scripts run through both binaries against the same live
+Firefox (`kb/iterations/iteration-170-*`). Six rows changed, every one from a
+wrong answer to the right one — `for (const a of [1,2]) {} 7` → 7,
+`function f(){ return 5 } f()` → 5,
+`let a = 1; function f(){ return a+1 } f()` → 2,
+``const s = `a${"`"}b`; s`` → ``a`b``,
+`const n = 1; if (n) {} /a;b/.test("a;b")` → `true`,
+`switch (1) { case 1: break; } 11` → 11. Thirty rows byte-identical, including
+`const o = {v:8}; o.v / 2` → 4 and `!function(){ return 1 }()`, the two the
+classification could most plausibly have broken.
+
+**Trade-off**: three more pieces of JS grammar encoded in a scanner that is
+explicitly not a parser, and a `{`-classification whose wrong direction (block
+read as object) is silent. That direction is the safe one — it reproduces
+iter-167 — and the unsafe direction is only reachable from the four positions
+listed above, where JS admits no object literal at all. Replacing the scanner
+with a real parser stays rejected for the reason DEC-039 gave.
+
+**Applies to**: `crates/ff-rdp-cli/src/commands/eval.rs`,
+`crates/ff-rdp-cli/src/cli/args.rs`,
+`crates/ff-rdp-cli/tests/live/live_170_eval_scanner_braces.rs`.

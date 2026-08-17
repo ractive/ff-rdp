@@ -263,16 +263,22 @@ const STATEMENT_LEADING_KEYWORDS: &[&str] = &[
 /// Best-effort (not a JS parser) check for whether `script` is a single
 /// expression, safe to wrap as `return (<script>)` without a syntax error.
 ///
-/// Simplifications, all fail *safe* (degrade to the no-auto-return wrap
-/// path in [`wrap_top_level_await`], which still evaluates — it just won't
-/// surface a value unless the script has an explicit `return`):
+/// Simplifications. Each is meant to fail *safe* — degrade to the
+/// no-auto-return wrap path in [`wrap_top_level_await`], which still
+/// evaluates, it just won't surface a value unless the script has an explicit
+/// `return`. iter-170 measured that claim and found two of iter-167's
+/// simplifications did NOT hold to it (see
+/// [`top_level_statement_boundaries`]), so treat "fails safe" here as an
+/// intent that needs checking against a live browser, not a guarantee:
 ///
 /// - A `;`/newline inside a string, template literal, regex literal or
 ///   comment is tracked (see [`top_level_statement_boundaries`]) so those
 ///   don't false-positive as statement separators. The tracking is still
 ///   char-based rather than a real tokenizer — iter-167 closed the regex,
-///   comment and backslash-escape gaps, but `${…}` interpolation is skipped
-///   as opaque text and a `/` after `}` is always read as division.
+///   comment and backslash-escape gaps and iter-170 closed `${…}`
+///   interpolation and the `}` ambiguity, but an arrow function's `{` body
+///   and a `class` body are still classified as object literals, so a `/`
+///   after either reads as division.
 /// - Only a fixed, common prefix list is checked against statement-leading
 ///   keywords; more obscure statement forms (labelled statements, etc.)
 ///   are not recognized and would be (harmlessly) treated as expressions,
@@ -706,11 +712,22 @@ fn push_boundary(boundaries: &mut Vec<usize>, at: usize) {
 ///   [`brace_opens_block`] and the kind of the most recently closed brace is
 ///   handed to [`slash_starts_regex`].
 ///
+/// Classifying braces also makes a third boundary derivable for the first
+/// time: a block statement terminates itself, so the token after a top-level
+/// block's `}` starts a new statement with no `;` and no newline between them
+/// ([`block_boundary_after`]). Without it the gap-2 script above stopped
+/// being a SyntaxError but returned `undefined` — the failure iter-142 Theme E
+/// named the worst of this wrap — because `if (n) {} /a;b/.test("a;b")` was
+/// still one statement beginning with `if`, and an `if` is not something the
+/// wrap can auto-return.
+///
 /// Still not a JS tokenizer, and deliberately so (all code stays in Rust and
-/// this repo has no JS parser dependency). The remaining known gap is that a
-/// block's closing `}` is not itself treated as a statement boundary, so
-/// `if (n) {} expr` (no `;`, no newline) is still scanned as one statement —
-/// which costs a wrap, never a crash, and is filed as iteration 171.
+/// this repo has no JS parser dependency). Known remaining gaps, all in the
+/// fail-safe direction (a missing boundary leaves the pre-170 answer):
+/// [`brace_opens_block`] does not commit on an arrow function's `{` body, a
+/// `class` body or a labelled block, so each is treated as an object literal
+/// — a `/` after one reads as division and no statement boundary follows it.
+/// Filed as [[iteration-171-eval-scanner-brace-positions]].
 fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
     #[derive(Clone, Copy, PartialEq)]
     enum Str {
@@ -2339,7 +2356,7 @@ mod tests {
         // a top-level boundary.
         for script in [
             r#"`a${"`"}b`"#,
-            r#"`a${'`'}b`"#,
+            r"`a${'`'}b`",
             r#"`a${"x;y"}b`"#,
             r#"`a${ ";" }b`"#,
             "`a${ `n${1}m` }b`",
