@@ -1,9 +1,9 @@
 ---
-title: "Iteration 171: the eval scanner refuses to judge three brace positions"
+title: "Iteration 176: the eval scanner refuses to judge three brace positions"
 type: iteration
 date: 2026-08-17
 status: planned
-branch: iter-171/eval-scanner-brace-positions
+branch: iter-176/eval-scanner-brace-positions
 depends_on:
   - iteration-170-eval-scanner-residual-gaps
 first_call_sites: []
@@ -50,7 +50,7 @@ tags:
   - eval
 ---
 
-# Iteration 171: the `eval` scanner refuses to judge three brace positions
+# Iteration 176: the `eval` scanner refuses to judge three brace positions
 
 Carry-over from [[iteration-170-eval-scanner-residual-gaps]], filed before that PR merged.
 

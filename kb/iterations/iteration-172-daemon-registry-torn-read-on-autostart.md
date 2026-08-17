@@ -107,6 +107,34 @@ daemon silently did not.
 It passes in isolation; it failed at the tail of a 14-minute contended tier. Contention widens the
 window but does not create it.
 
+## Observed again — iteration 171's live sweep (2026-08-17)
+
+A fourth test in the same failure class, folded in by iter-171's carry-over sweep:
+
+```text
+FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
+LIVE_SWEEP_SUMMARY executed=275 skipped=0 preexisting=0 total=275  -> 274 passed / 1 failed
+
+live_160_envelope_honesty::live_160_ref_click_asserts_handler_effect   FAILED
+  live_160_ref_click_asserts_handler_effect: the proxy daemon did not start for
+  Firefox on port 63690
+```
+
+Passes in isolation on an idle machine in 8.88 s, after a CLI tier that took 2313 s — the same
+load-dependence as the other three.
+
+**Its cause is NOT confirmed to be this plan's.** The assertion prints only "the proxy daemon did
+not start"; it never surfaces `meta.daemon_fallback`, so there is no evidence either way about the
+zero-byte registry read. It is filed here because it is the same *class* (daemon autostart failing
+under sweep load), not because the mechanism is established. **Theme A must confirm or reject it
+explicitly rather than assuming it in** — assuming it in is exactly how iterations 172 and 173 got
+filed against a contaminated sweep in the first place.
+
+That gap is itself a carry-over: a live test that cannot say *why* the daemon did not start sends
+the next reader hunting. iter-169 fixed the same shape in `live_158` (the assertion printed
+`stderr` while ff-rdp writes errors to `stdout`). Whatever Theme C does about reporting should make
+every daemon-start assertion in the live suite print the fallback reason it already has in hand.
+
 ## Why this is not iteration 164
 
 [[iteration-164-two-failures-the-158-sweep-uncovered]] fixed the *harness* half — `with_daemon`
