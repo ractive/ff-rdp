@@ -197,6 +197,12 @@ impl DocumentStatusTracker {
 
     /// Record a `network-event` resource, keeping only document loads.
     fn note_resource(&mut self, res: &ff_rdp_core::NetworkResource) {
+        tracing::debug!(
+            id = res.resource_id,
+            cause = %res.cause_type,
+            url = %res.url,
+            "iter169: network resource"
+        );
         if res.cause_type == "document" {
             self.docs
                 .push((res.resource_id, canonical_doc_url(&res.url)));
@@ -205,6 +211,11 @@ impl DocumentStatusTracker {
 
     /// Record a `network-event` update, keeping only the status-carrying ones.
     fn note_update(&mut self, upd: &ff_rdp_core::NetworkResourceUpdate) {
+        tracing::debug!(
+            id = upd.resource_id,
+            status = ?upd.status,
+            "iter169: network update"
+        );
         if let Some(ref s) = upd.status
             && let Ok(code) = s.parse::<u16>()
         {
@@ -1209,6 +1220,8 @@ fn wait_for_doc_complete(
         status_updates = tracker.statuses.len(),
         reason = reason.map_or("none", StatusUnknown::as_str),
         committed_url = %commit_info.committed_url,
+        docs = ?tracker.docs,
+        statuses = ?tracker.statuses,
         "navigate: document status resolved"
     );
     commit_info.http_status = status;
