@@ -7,7 +7,7 @@ branch: iter-179/runner-network-buffer-empty
 depends_on: []
 first_call_sites: []
 dogfood_path: |
-  # Product-or-harness boundary defect, surfaced while measuring iteration 178.
+  # Product-or-harness boundary defect, surfaced while measuring iteration 180.
   # It reproduces SERIALLY on an idle machine — do not chase it as a
   # parallelism artifact, which is what it first looked like.
 
@@ -44,7 +44,7 @@ tags: [iteration, network, runner, live-tests, flaky]
 # Iteration 179: the runner's network buffer is empty when `assert_network` reads it
 
 Found 2026-08-18 while taking measurements for
-[[iteration-178-live-sweep-cost-and-parallelism]]. It first appeared as a parallel-only failure
+[[iteration-180-live-sweep-cost-and-parallelism]]. It first appeared as a parallel-only failure
 and is not one.
 
 ## What was observed
@@ -83,10 +83,10 @@ assertion it makes.
 
 ## Why it looked like a parallelism failure, and why that matters
 
-It was first seen failing 3/3 across `-j6` runs during iteration 178's measurements, alongside
+It was first seen failing 3/3 across `-j6` runs during iteration 180's measurements, alongside
 `live_96` (which *is* structurally parallel-incompatible). The obvious inference — "a second test
 that cannot run in parallel" — was wrong, and only checking it serially disproved it.
-[[iteration-178-live-sweep-cost-and-parallelism]] A3 has been corrected accordingly.
+[[iteration-180-live-sweep-cost-and-parallelism]] A3 has been corrected accordingly.
 
 ## Themes
 
@@ -140,13 +140,13 @@ that cannot run in parallel" — was wrong, and only checking it serially dispro
 - **Relaxing or `#[ignore]`-ing the assertion to make the suite green.** The precondition-loudness
   rule from [[iteration-146-live-suite-reliability]] Theme B applies: a detector that gets softened
   because it fired is worse than no detector.
-- **Parallel execution of the live tier** — [[iteration-178-live-sweep-cost-and-parallelism]].
+- **Parallel execution of the live tier** — [[iteration-180-live-sweep-cost-and-parallelism]].
 - **`live_96`'s global prune precondition**, which *is* structurally parallel-incompatible and is
-  handled in 178.
+  handled in 180.
 
 ## References
 
-- [[iteration-178-live-sweep-cost-and-parallelism]] — the measurement session this surfaced in
+- [[iteration-180-live-sweep-cost-and-parallelism]] — the measurement session this surfaced in
 - [[iteration-169-navigate-status-delivery-and-nav-verb-parity]] — the first stderr/stdout fix
 - [[iteration-164-two-failures-the-158-sweep-uncovered]] — prior art on network-event subscription
   being destroyed by an adjacent call
