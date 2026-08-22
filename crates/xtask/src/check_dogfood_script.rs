@@ -316,29 +316,41 @@ mod tests {
     #[cfg(unix)]
     fn xtask_check_dogfood_script_smoke() {
         // Happy path: script exits 0 AND writes the sentinel.
+        //
+        // iter-179: the iteration number here used to be the constant 99, which
+        // made `run_script` derive the sentinel path `/tmp/ff-rdp-iter-99-dogfood-ok`
+        // — one fixed path shared by every concurrent `cargo test -p xtask` on the
+        // machine. `run_script`'s own stale-sentinel pre-clean then deleted the file
+        // a parallel run had just written, and that run failed at the existence
+        // assertion while its script had reported success. Observed on 2026-08-22
+        // under load. Deriving the number from the pid gives each run its own path
+        // without touching the production contract, which legitimately keys the
+        // sentinel to the iteration number.
+        let iter_num = std::process::id();
+        let sentinel = PathBuf::from(format!("/tmp/ff-rdp-iter-{iter_num}-dogfood-ok"));
+
         let dir = TempDir::new().unwrap();
         let plan_path = write_plan(
             &dir,
-            "iteration-99-smoke.md",
+            &format!("iteration-{iter_num}-smoke.md"),
             "dogfood_script: smoke.dogfood.sh\n",
         );
         write_script(
             &dir,
             "smoke.dogfood.sh",
-            "touch /tmp/ff-rdp-iter-99-dogfood-ok",
+            &format!("touch {}", sentinel.display()),
         );
 
-        // Pre-clean sentinel in case a prior run left it.
-        let _ = std::fs::remove_file("/tmp/ff-rdp-iter-99-dogfood-ok");
-
+        // No pre-clean needed: `run_script` removes a stale sentinel itself, and
+        // with a pid-derived path there is no other writer to race.
         let result = run_inner(&plan_path, true);
         assert!(result.is_ok(), "expected success, got: {result:?}");
         assert!(
-            std::path::Path::new("/tmp/ff-rdp-iter-99-dogfood-ok").exists(),
-            "sentinel should exist after successful run"
+            sentinel.exists(),
+            "sentinel {} should exist after successful run",
+            sentinel.display()
         );
-        // Clean up.
-        let _ = std::fs::remove_file("/tmp/ff-rdp-iter-99-dogfood-ok");
+        let _ = std::fs::remove_file(&sentinel);
     }
 
     #[test]

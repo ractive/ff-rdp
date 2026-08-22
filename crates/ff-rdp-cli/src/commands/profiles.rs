@@ -225,9 +225,7 @@ fn select_prune_targets(root: &Path, older_than: Option<Duration>) -> Vec<Manage
                                 &entry.path,
                                 mtime,
                             );
-                            now.duration_since(newest)
-                                .ok()
-                                .is_some_and(|age| age >= threshold)
+                            now.duration_since(newest).is_ok_and(|age| age >= threshold)
                         });
                     stale.then_some(entry)
                 }

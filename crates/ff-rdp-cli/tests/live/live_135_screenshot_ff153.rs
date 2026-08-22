@@ -55,7 +55,7 @@ fn navigate(port: u16, url: &str, test: &str) {
     assert!(
         nav.status.success(),
         "{test}: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 }
 
@@ -170,7 +170,7 @@ fn live_135_screenshot_full_page_taller() {
         assert!(
             out.status.success(),
             "{TEST}: screenshot {extra:?} exited non-zero — {}",
-            String::from_utf8_lossy(&out.stderr)
+            crate::common::output_note(&out)
         );
         parse_results(&out, TEST)
     };

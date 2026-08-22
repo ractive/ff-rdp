@@ -126,8 +126,8 @@ fn live_index_local_fixture() {
 
     assert!(
         out.status.success(),
-        "live_index_local_fixture: ff-rdp index failed — stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        "live_index_local_fixture: ff-rdp index failed — {}",
+        crate::common::output_note(&out)
     );
 
     // Validate output against schema.
@@ -242,14 +242,20 @@ fn live_runner_page_map_resolution() {
         .output()
         .expect("ff-rdp run");
 
+    // iter-179 Theme A: `ff-rdp run` reports a failed step as a JSON envelope on
+    // STDOUT, so the pre-179 message here — which interpolated only `stderr` —
+    // shipped empty. It hid the step-4 envelope's
+    // `diagnostics.events_in_buffer: 0`, the single fact that distinguishes "the
+    // POST did not match" from "no network events were captured at all".
     let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout_note = crate::common::output_note(&out);
     assert!(
         out.status.success(),
-        "live_runner_page_map_resolution: ff-rdp run exited with non-zero status — stderr: {stderr}"
+        "live_runner_page_map_resolution: ff-rdp run exited with non-zero status — {stdout_note}"
     );
     assert!(
         !stderr.contains("not yet implemented"),
-        "live_runner_page_map_resolution: unexpected 'not yet implemented' error — stderr: {stderr}"
+        "live_runner_page_map_resolution: unexpected 'not yet implemented' error — {stdout_note}"
     );
 }
 

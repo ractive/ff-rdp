@@ -68,8 +68,8 @@ fn profile_root() -> String {
         .expect("live_168_adjacent_tests_leave_no_live_owner: profiles list spawn failed");
     assert!(
         out.status.success(),
-        "live_168_adjacent_tests_leave_no_live_owner: profiles list must succeed — stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "live_168_adjacent_tests_leave_no_live_owner: profiles list must succeed — {}",
+        crate::common::output_note(&out)
     );
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect(
         "live_168_adjacent_tests_leave_no_live_owner: profiles list stdout is not valid JSON",

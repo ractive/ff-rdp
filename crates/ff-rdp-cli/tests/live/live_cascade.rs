@@ -49,7 +49,7 @@ fn live_cascade_returns_matched_rules() {
     assert!(
         nav.status.success(),
         "live_cascade_returns_matched_rules: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Run cascade h1 --prop color.
@@ -60,8 +60,8 @@ fn live_cascade_returns_matched_rules() {
         .expect("ff-rdp cascade");
     assert!(
         out.status.success(),
-        "live_cascade_returns_matched_rules: cascade failed — stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "live_cascade_returns_matched_rules: cascade failed — {}",
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -161,8 +161,8 @@ fn live_cascade_returns_matched_rules_external_css() {
     assert!(
         nav.status.success(),
         "live_cascade_returns_matched_rules_external_css: navigate must succeed so cascade \
-         operates on the intended fixture — stderr={}",
-        String::from_utf8_lossy(&nav.stderr)
+         operates on the intended fixture — {}",
+        crate::common::output_note(&nav)
     );
 
     // Brief sleep to allow @import to resolve.
@@ -176,8 +176,8 @@ fn live_cascade_returns_matched_rules_external_css() {
         .expect("ff-rdp cascade");
     assert!(
         out.status.success(),
-        "live_cascade_returns_matched_rules_external_css: cascade failed — stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "live_cascade_returns_matched_rules_external_css: cascade failed — {}",
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);

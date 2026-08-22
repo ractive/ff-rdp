@@ -33,7 +33,7 @@ fn navigate(port: u16) {
     assert!(
         nav.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 }
 
@@ -73,7 +73,7 @@ fn live_screenshot_ff151_produces_valid_png() {
     assert!(
         out.status.success(),
         "screenshot failed (Theme B regression — screenshotActor not found): {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -134,7 +134,7 @@ fn live_screenshot_ff151_cli() {
         result.status.success(),
         "screenshot -o {} failed (Theme B): {}",
         out_path.display(),
-        String::from_utf8_lossy(&result.stderr)
+        crate::common::output_note(&result)
     );
 
     let bytes = std::fs::read(&out_path)

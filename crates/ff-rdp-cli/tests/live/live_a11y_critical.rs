@@ -21,8 +21,8 @@ fn run_a11y_critical(port: u16) -> serde_json::Value {
         .expect("ff-rdp a11y --critical");
     assert!(
         out.status.success(),
-        "a11y --critical failed: stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "a11y --critical failed: {}",
+        crate::common::output_note(&out)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     serde_json::from_str(stdout.trim())
@@ -40,7 +40,7 @@ fn navigate(port: u16, url: &str) {
     assert!(
         out.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 }
 

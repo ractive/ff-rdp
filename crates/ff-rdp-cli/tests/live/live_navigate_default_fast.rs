@@ -70,10 +70,11 @@ fn live_navigate_default_fast_no_budget_exhaustion() {
     let elapsed = start.elapsed().as_millis();
     let stderr = String::from_utf8_lossy(&out.stderr);
 
-    assert!(out.status.success(), "navigate failed: {stderr}");
+    let stdout_note = crate::common::output_note(&out);
+    assert!(out.status.success(), "navigate failed: {stdout_note}");
     assert!(
         !stderr.contains("no remaining budget"),
-        "Theme C regression: 'no remaining budget' appeared in stderr: {stderr}"
+        "Theme C regression: 'no remaining budget' appeared in stderr: {stdout_note}"
     );
     assert!(
         elapsed < 10_000,
@@ -113,7 +114,7 @@ fn live_navigate_global_timeout_flag_accepted() {
     assert!(
         out.status.success(),
         "navigate with --timeout failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 }
 
@@ -154,12 +155,12 @@ fn live_navigate_default_fast() {
         .expect("ff-rdp navigate failed");
     let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "navigate failed: {stderr}");
+    let stdout_note = crate::common::output_note(&out);
+    assert!(out.status.success(), "navigate failed: {stdout_note}");
     assert!(
         elapsed_ms < TIMEOUT_MS / 2,
         "default navigate must return in < timeout/2 ({}ms); took {elapsed_ms}ms — \
-         the events-budget burn (iter-122) has regressed. stderr: {stderr}",
+         the events-budget burn (iter-122) has regressed. {stdout_note}",
         TIMEOUT_MS / 2
     );
 }
@@ -197,8 +198,11 @@ fn live_navigate_elapsed_matches_wall() {
         .expect("ff-rdp navigate failed");
     let measured_wall_ms = i128::try_from(start.elapsed().as_millis()).unwrap_or(i128::MAX);
 
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "navigate failed: {stderr}");
+    assert!(
+        out.status.success(),
+        "navigate failed: {}",
+        crate::common::output_note(&out)
+    );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim())
@@ -256,8 +260,11 @@ fn live_navigate_spa_committed_url() {
         .output()
         .expect("ff-rdp navigate failed");
 
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "navigate failed: {stderr}");
+    assert!(
+        out.status.success(),
+        "navigate failed: {}",
+        crate::common::output_note(&out)
+    );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim())

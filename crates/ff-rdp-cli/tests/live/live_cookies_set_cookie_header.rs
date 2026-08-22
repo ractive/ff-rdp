@@ -67,7 +67,7 @@ fn live_cookies_set_cookie_header_visible_after_navigate() {
     assert!(
         nav.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // `cookies` takes no `list` subcommand (that syntax predates a CLI
@@ -81,7 +81,7 @@ fn live_cookies_set_cookie_header_visible_after_navigate() {
     assert!(
         out.status.success(),
         "cookies failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);

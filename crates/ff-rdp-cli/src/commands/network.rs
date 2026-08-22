@@ -952,27 +952,61 @@ pub(crate) fn build_canonical_network(
     obj
 }
 
-/// Return buffered network events as a JSON array.
+/// The route a [`run_get_events_with_route`] drain took. `"daemon"` reads the
+/// daemon's standing buffer; `"direct"` arms a watcher for the duration of that
+/// call only. The distinction decides whether an empty result means "nothing
+/// happened" or "the watcher was not armed yet" — see the fn docs.
+pub type NetworkDrainRoute = &'static str;
+
+/// Direct-mode default drain window, in ms, when the caller passes no timeout.
+/// Public so the runner can report the window it actually got without
+/// hard-coding a second copy that could drift (iter-179).
+pub const DEFAULT_DRAIN_MS: u64 = 500;
+
+/// Drain buffered network events as a JSON array, together with the route taken
+/// (iter-179).
 ///
-/// Used by the script runner's `assert_network` step.
-/// `drain_timeout_ms` controls how long to drain in direct mode (default: 500ms).
-pub fn run_get_events(
+/// Used by the script runner's `assert_network` step. `drain_timeout_ms`
+/// controls how long to drain in direct mode (default [`DEFAULT_DRAIN_MS`]).
+///
+/// # The direct-mode subscription window
+///
+/// In **daemon** mode the daemon holds a standing `network-event` subscription,
+/// so this call reads a buffer that has been filling since the daemon started
+/// watching — requests that completed before this call are still in it.
+///
+/// In **direct** mode there is no standing subscription. This function arms the
+/// watcher itself, drains for `drain_timeout_ms`, and unwatches. Firefox's
+/// `watchResources` delivers events that occur *while watching*; it does not
+/// replay history. **A request that completed before this call was made is
+/// therefore invisible, and the drain returns zero events rather than a partial
+/// buffer.**
+///
+/// That is the whole explanation for iteration 179's
+/// `assert_network … diagnostics.events_in_buffer: 0`: the playbook's `click`
+/// step fired a single POST, the following `assert_network` step opened a fresh
+/// connection and armed the watcher, and on a loaded machine that arming lost
+/// the race with the response. With exactly one request in flight, losing the
+/// race produces **zero**, never a partial count — which is why the zero looked
+/// like a broken subscription and was not one.
+pub fn run_get_events_with_route(
     cli: &Cli,
     drain_timeout_ms: Option<u64>,
-) -> Result<Vec<serde_json::Value>, crate::error::AppError> {
+) -> Result<(Vec<serde_json::Value>, NetworkDrainRoute), crate::error::AppError> {
     use super::network_events::{build_network_entries, drain_network_from_daemon, merge_updates};
     use ff_rdp_core::{TabActor, WatcherActor};
     use std::time::Duration;
 
     let mut ctx = super::connect_tab::connect_and_get_target(cli)?;
 
+    let route: NetworkDrainRoute = if ctx.via_daemon { "daemon" } else { "direct" };
     let entries = if ctx.via_daemon {
         let (resources, updates) = drain_network_from_daemon(ctx.transport_mut())?;
         let update_map = merge_updates(updates);
         build_network_entries(&resources, &update_map)
     } else {
         // Direct mode: subscribe, drain briefly, unsubscribe.
-        let drain_ms = drain_timeout_ms.unwrap_or(500);
+        let drain_ms = drain_timeout_ms.unwrap_or(DEFAULT_DRAIN_MS);
         let tab_actor = ctx.target_tab_actor().clone();
         let watcher_actor = TabActor::get_watcher(ctx.transport_mut(), &tab_actor)
             .map_err(crate::error::AppError::from)?;
@@ -1019,7 +1053,7 @@ pub fn run_get_events(
         })
         .collect();
 
-    Ok(json_entries)
+    Ok((json_entries, route))
 }
 
 /// Stream network events in real time.

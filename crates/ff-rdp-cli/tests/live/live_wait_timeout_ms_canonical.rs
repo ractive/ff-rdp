@@ -43,7 +43,7 @@ fn live_wait_timeout_ms_canonical_flag() {
     assert!(
         nav.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Canonical flag should work without any deprecation warning.
@@ -56,7 +56,7 @@ fn live_wait_timeout_ms_canonical_flag() {
     assert!(
         out_new.status.success(),
         "wait --timeout-ms failed: {}",
-        String::from_utf8_lossy(&out_new.stderr)
+        crate::common::output_note(&out_new)
     );
 
     // The old spelling --wait-timeout must also work (hidden alias).
@@ -69,7 +69,7 @@ fn live_wait_timeout_ms_canonical_flag() {
     assert!(
         out_old.status.success(),
         "wait --wait-timeout (legacy alias) failed: {}",
-        String::from_utf8_lossy(&out_old.stderr)
+        crate::common::output_note(&out_old)
     );
 
     eprintln!("live_wait_timeout_ms_canonical_flag: PASS");

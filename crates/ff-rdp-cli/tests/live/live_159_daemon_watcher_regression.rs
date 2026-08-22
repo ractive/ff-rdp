@@ -167,7 +167,7 @@ fn live_159_daemon_watcher_captures_plain_navigate() {
         }
         panic!(
             "plain daemon navigate must succeed: {}",
-            String::from_utf8_lossy(&nav_out.stderr)
+            crate::common::output_note(&nav_out)
         );
     }
 
@@ -190,7 +190,7 @@ fn live_159_daemon_watcher_captures_plain_navigate() {
     assert!(
         net_out.status.success(),
         "network --source watcher must succeed: {}",
-        String::from_utf8_lossy(&net_out.stderr)
+        crate::common::output_note(&net_out)
     );
 
     let json = parse_json(&net_out);
@@ -256,7 +256,7 @@ fn live_159_watcher_result_is_uncontaminated() {
         }
         panic!(
             "plain daemon navigate must succeed: {}",
-            String::from_utf8_lossy(&nav_out.stderr)
+            crate::common::output_note(&nav_out)
         );
     }
 
@@ -301,7 +301,7 @@ fn live_159_network_default_source_is_watcher() {
         }
         panic!(
             "plain daemon navigate must succeed: {}",
-            String::from_utf8_lossy(&nav_out.stderr)
+            crate::common::output_note(&nav_out)
         );
     }
 
@@ -379,7 +379,7 @@ fn live_159_daemon_direct_watcher_parity() {
         }
         panic!(
             "plain daemon navigate must succeed: {}",
-            String::from_utf8_lossy(&nav_out.stderr)
+            crate::common::output_note(&nav_out)
         );
     }
     let mut net = daemon_args(port);
@@ -410,7 +410,7 @@ fn live_159_daemon_direct_watcher_parity() {
     assert!(
         direct_out.status.success(),
         "direct navigate --with-network must succeed: {}",
-        String::from_utf8_lossy(&direct_out.stderr)
+        crate::common::output_note(&direct_out)
     );
     let direct_json = parse_json(&direct_out);
     let network = &direct_json["results"]["network"];
@@ -476,7 +476,7 @@ fn live_159_frame_targets_survive_the_fix() {
         }
         panic!(
             "daemon navigate to the frame fixture must succeed: {}",
-            String::from_utf8_lossy(&nav_out.stderr)
+            crate::common::output_note(&nav_out)
         );
     }
 
@@ -574,7 +574,7 @@ fn live_159_with_network_returns_on_idle() {
     assert!(
         out.status.success(),
         "navigate --with-network must succeed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
     let json = parse_json(&out);
     let entries = json["results"]["network"]["entries"]
@@ -625,13 +625,13 @@ fn live_159_with_network_and_auto_consent_together() {
     assert_ne!(
         out.status.code(),
         Some(2),
-        "clap must accept --with-network together with --auto-consent; stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        "clap must accept --with-network together with --auto-consent; {}",
+        crate::common::output_note(&out)
     );
     assert!(
         out.status.success(),
         "the combined invocation must succeed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 
     let json = parse_json(&out);

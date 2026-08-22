@@ -67,8 +67,8 @@ fn live_daemon_stop_frees_port() {
 
     assert!(
         stop.status.success(),
-        "live_daemon_stop_frees_port: daemon stop returned non-zero — stderr={}",
-        String::from_utf8_lossy(&stop.stderr)
+        "live_daemon_stop_frees_port: daemon stop returned non-zero — {}",
+        crate::common::output_note(&stop)
     );
 
     // The port must be closed within 3 s (daemon already waited up to 3 s).
@@ -190,7 +190,7 @@ fn live_lcp_note_no_headless_text_in_vitals() {
     assert!(
         nav.status.success(),
         "live_lcp_note_no_headless_text_in_vitals: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let out = Command::new(ff_rdp_bin())
@@ -201,7 +201,7 @@ fn live_lcp_note_no_headless_text_in_vitals() {
     assert!(
         out.status.success(),
         "live_lcp_note_no_headless_text_in_vitals: perf vitals failed — {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -247,7 +247,7 @@ fn live_lcp_note_mentions_firefox_limitation_in_audit() {
     assert!(
         nav.status.success(),
         "live_lcp_note_mentions_firefox_limitation_in_audit: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let out = Command::new(ff_rdp_bin())
@@ -258,7 +258,7 @@ fn live_lcp_note_mentions_firefox_limitation_in_audit() {
     assert!(
         out.status.success(),
         "live_lcp_note_mentions_firefox_limitation_in_audit: perf audit failed — {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -323,7 +323,7 @@ fn live_render_blocking_excludes_favicon() {
     assert!(
         out.status.success(),
         "live_render_blocking_excludes_favicon: perf audit failed — {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -400,8 +400,8 @@ fn live_jq_missing_path_silent_default() {
     // Must exit 0 (no error).
     assert!(
         out.status.success(),
-        "live_jq_missing_path_silent_default: FAIL — exited non-zero\nstderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "live_jq_missing_path_silent_default: FAIL — exited non-zero\n{}",
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);

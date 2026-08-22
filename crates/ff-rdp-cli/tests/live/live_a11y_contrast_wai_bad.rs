@@ -71,7 +71,7 @@ fn live_a11y_contrast_low_contrast_fixture_detects_failures() {
     assert!(
         nav.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let out = Command::new(ff_rdp_bin())
@@ -83,7 +83,7 @@ fn live_a11y_contrast_low_contrast_fixture_detects_failures() {
     assert!(
         out.status.success(),
         "a11y contrast failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -122,7 +122,7 @@ fn contrast_json(port: u16, url: &str, extra_args: &[&str]) -> serde_json::Value
     assert!(
         nav.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let mut args = base_args(port);
@@ -136,7 +136,7 @@ fn contrast_json(port: u16, url: &str, extra_args: &[&str]) -> serde_json::Value
     assert!(
         out.status.success(),
         "a11y contrast failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 
     serde_json::from_slice(&out.stdout).expect("a11y contrast output is not valid JSON")

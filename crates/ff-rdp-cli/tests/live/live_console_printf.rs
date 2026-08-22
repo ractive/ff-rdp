@@ -95,7 +95,7 @@ fn live_console_printf_e2e() {
     assert!(
         nav.status.success(),
         "live_console_printf_e2e: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Unique per-run marker so cache pollution across repeated runs / other
@@ -121,7 +121,7 @@ fn live_console_printf_e2e() {
     assert!(
         eval_out.status.success(),
         "live_console_printf_e2e: eval exited non-zero — {}",
-        String::from_utf8_lossy(&eval_out.stderr)
+        crate::common::output_note(&eval_out)
     );
 
     // Give Firefox time to buffer the console message before we read it back.
@@ -137,7 +137,7 @@ fn live_console_printf_e2e() {
     assert!(
         console_out.status.success(),
         "live_console_printf_e2e: console command exited non-zero — {}",
-        String::from_utf8_lossy(&console_out.stderr)
+        crate::common::output_note(&console_out)
     );
 
     let json = parse_json(&console_out);

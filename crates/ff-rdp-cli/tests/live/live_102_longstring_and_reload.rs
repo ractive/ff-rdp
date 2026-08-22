@@ -101,14 +101,14 @@ fn live_dom_text_longstring_roundtrip() {
     assert!(
         nav.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let out = run(ff.port(), &["page-text"]);
     assert!(
         out.status.success(),
         "page-text failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let json: serde_json::Value =
@@ -149,7 +149,7 @@ fn live_cookie_longstring_value() {
     assert!(
         nav.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Set a large cookie value via JS.  A single cookie's `name=value` pair is
@@ -164,7 +164,7 @@ fn live_cookie_longstring_value() {
     assert!(
         ev.status.success(),
         "eval set-cookie failed: {}",
-        String::from_utf8_lossy(&ev.stderr)
+        crate::common::output_note(&ev)
     );
     let ev_json: serde_json::Value =
         serde_json::from_str(String::from_utf8_lossy(&ev.stdout).trim())
@@ -178,7 +178,7 @@ fn live_cookie_longstring_value() {
     assert!(
         out.status.success(),
         "cookies failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let json: serde_json::Value =
@@ -243,14 +243,14 @@ fn live_computed_longstring_value() {
     assert!(
         nav.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let out = run(ff.port(), &["computed", "#target", "--all"]);
     assert!(
         out.status.success(),
         "computed failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let json: serde_json::Value =
@@ -300,7 +300,7 @@ fn live_reload_force_with_watched_resources() {
     assert!(
         nav.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Hard reload while a console watch is active in the same session: the
@@ -312,7 +312,7 @@ fn live_reload_force_with_watched_resources() {
     assert!(
         out.status.success(),
         "reload --hard failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim())
@@ -333,7 +333,7 @@ fn live_reload_force_with_watched_resources() {
     assert!(
         follow.status.success(),
         "follow-up page-text after reload --hard failed (stream desync?): {}",
-        String::from_utf8_lossy(&follow.stderr)
+        crate::common::output_note(&follow)
     );
     let ftext = String::from_utf8_lossy(&follow.stdout);
     let fjson: serde_json::Value =

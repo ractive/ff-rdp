@@ -78,7 +78,7 @@ fn live_grip_release_no_leak() {
     assert!(
         title.status.success(),
         "daemon eval after grip loop failed — daemon may have become unresponsive: {}",
-        String::from_utf8_lossy(&title.stderr)
+        crate::common::output_note(&title)
     );
 
     // Shut down the daemon.

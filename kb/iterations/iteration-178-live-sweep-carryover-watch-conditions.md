@@ -1,24 +1,28 @@
 ---
-title: "Iteration 178: four watch-conditions carried over from iteration 173's live-sweep fix — no plan currently owns them"
+title: "Iteration 178: six watch-conditions carried over from live-sweep runs — no plan currently owns them"
 type: iteration
 date: 2026-08-17
 status: planned
 branch: iter-178/live-sweep-carryover-watch-conditions
 depends_on:
   - iteration-173-live-sweep-port-6000-firefox-does-not-survive
+  - iteration-179-live-62-runner-sees-no-network-events
 first_call_sites: []
 dogfood_path: |
-  # This plan has no code to run yet — it exists to hold four trigger
-  # conditions from iteration 173's carry-over sweep until one of them fires.
+  # This plan has no code to run yet — it exists to hold six trigger
+  # conditions from live-sweep carry-over until one of them fires.
   # The dogfood step, until then, is simply reading the sweep output for the
   # signal each row below names.
   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
-  # Check the LIVE_SWEEP_SUMMARY line's launch_timeout and vanished counts,
-  # and grep the log for live_160_envelope_honesty::live_160_ref_click_asserts_handler_effect.
+  # Check the LIVE_SWEEP_SUMMARY line's launch_timeout and vanished counts, and
+  # grep the log for these two test names:
+  #   live_160_envelope_honesty::live_160_ref_click_asserts_handler_effect
+  #   live_104_security_pwa::live_manifest_fetch_canonical
+  #   live_145_error_envelope_completeness::live_145_click_element_not_found_unchanged
 tags: [iteration, testing, live-tests, tooling, carry-over]
 ---
 
-# Iteration 178: watch-conditions carried over from iteration 173
+# Iteration 178: watch-conditions carried over from live-sweep runs
 
 Iteration 173 ([[iteration-173-live-sweep-port-6000-firefox-does-not-survive]]) fixed
 `live-sweep`'s classification of unmet preconditions (a vanished port-6000 browser, a Firefox
@@ -29,7 +33,11 @@ iteration currently watching for the trigger. Iteration 173 was the last iterati
 nothing folds these forward automatically — this plan is that fold, filed so the trigger
 conditions are not silently lost.
 
-This plan intentionally does **not** prescribe a fix for any of the four items — none of them has
+A fifth and a sixth condition were added by
+[[iteration-179-live-62-runner-sees-no-network-events]]'s carry-over sweep on 2026-08-22
+(`live_104` and `live_145`, conditions 5 and 6 below) — same shape, same reason for being here.
+
+This plan intentionally does **not** prescribe a fix for any of the six items — none of them has
 enough evidence yet to design one. It exists to be the place a future iteration starts from once
 the evidence arrives.
 
@@ -88,15 +96,78 @@ not the browser actually dying).
 list Theme A used (`daemon stop`'s `kill_process_group_force`, a concurrent sweep from another
 working tree, Firefox self-exit) plus any new candidate the evidence points at.
 
+### 5. `live_104_security_pwa::live_manifest_fetch_canonical` — daemon starved past a 20 s budget under sweep load
+Failed [[iteration-179-live-62-runner-sees-no-network-events]]'s sweep (2026-08-22, gates
+`FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`, `executed=277 skipped=0 preexisting=0
+vanished=0 launch_timeout=0 total=277`, 267 passed / 1 failed). It was the sweep's **only**
+failure. Verbatim:
+
+```text
+manifest must exit 0 (no-manifest is not an error): status=Some(124) stdout={"error":"daemon did
+not respond within the timeout after auth — the daemon may be overloaded or the connection is
+stale.\nhint: run `ff-rdp daemon stop` then retry, or use --no-daemon.","error_type":"Timeout"}
+stderr=
+```
+
+Four things are already ruled out, so this is filed as a watch condition rather than a hunt:
+
+- **Not the internet.** The test makes no external request — the page and the manifest are both
+  `data:` URLs (`live_104_security_pwa.rs:145`). Nothing leaves the machine.
+- **Not daemon startup.** `if ff.with_daemon().is_none() { return; }` makes a missing daemon a
+  skip, not a failure. The daemon started, then stopped answering.
+- **Not a manifest/PWA defect.** None of the assertions about manifest content fired. The test
+  already tolerates Firefox declining the `data:` manifest (it accepts a populated `errors`
+  array), and the failure is upstream of all of that — a `--timeout 20000` CLI call returning
+  `status=124` with `error_type: "Timeout"`. Nothing about `ManifestActor` is implicated.
+- **Not iteration 179's arming race.** This test is daemon-routed, and the daemon holds a standing
+  subscription; 179's defect is specific to the per-step `direct` route.
+
+What is left is a fixed time budget losing to machine load — the same family as
+[[iteration-177-slow3g-assertion-has-two-percent-headroom]] (2 % margin over a 2.0x threshold) and
+[[iteration-179-live-62-runner-sees-no-network-events]] (a 2000 ms watcher-arming window). Load
+averages sampled in the same command that recorded `SWEEP_EXIT=1` were 52.41 / 53.69 / 49.51.
+
+**The caveat worth not rounding off:** unlike 177's 2 % margin, 20 seconds is *not* a marginal
+budget. Blowing it means the daemon went unanswered for 20+ seconds straight. That is either a
+much heavier contention profile than the load average suggests, or a genuine daemon-responsiveness
+defect that only contention exposes. One observation cannot tell those apart, which is precisely
+why this is a watch condition and not yet a plan.
+
+**Trigger**: this test fails again in any `live-sweep`, **or** it fails once at a 1-minute load
+average below ~30 (which would remove contention as the explanation and make it a defect).
+**Action then**: file a plan against daemon responsiveness under contention — not against
+`manifest`. Capture the daemon's own timing (how long the call was outstanding, and whether the
+daemon process was runnable) rather than only the client-side `Timeout` envelope, since the client
+envelope cannot distinguish "starved" from "wedged". Two observations would also make it worth
+asking whether the 20 s budget in the test is the right knob at all.
+
 ## Out of scope
 
-- Designing a fix for any of the four items above ahead of its trigger. Every fix here needs
+- Designing a fix for any of the five items above ahead of its trigger. Every fix here needs
   evidence this plan does not yet have.
 - [[iteration-169-navigate-status-delivery-and-nav-verb-parity]] Theme C's single unexplained
   port-6000 death from iteration 166's sweep — that is a fifth, pre-existing watch condition, but
   it already has an owning plan and is not duplicated here.
 
-## Acceptance Criteria [0/4]
+### 6. `live_145_error_envelope_completeness::live_145_click_element_not_found_unchanged` — 21.9 s under `-j6`, green serially
+Failed during [[iteration-179-live-62-runner-sees-no-network-events]]'s `-j6` load experiment on
+2026-08-22 (`FAIL [21.934s] (123/279)`), and **passed** in the serial sweep the same hour. It is
+here for the reason the carry-over procedure names explicitly: *one green run is not evidence a
+load-sensitive defect is fixed.*
+
+Unlike condition 5, almost nothing is ruled out yet — the `-j6` run was a load generator, not a
+measurement, so no envelope was captured and the bound it exceeded has not even been identified.
+Recording it as a watch condition is therefore the honest ceiling on what one observation
+supports; hunting it now would mean inventing the evidence.
+
+**Trigger**: this test fails in any `live-sweep`, or fails again under `-j6` **with its failure
+message captured** (Theme A of iteration 179 means the message will now carry `stdout`, so one
+more occurrence should be enough to classify it).
+**Action then**: identify the bound it exceeds before proposing any change to it, per
+[[iteration-177-slow3g-assertion-has-two-percent-headroom]]'s method — a bound raised without a
+measured distribution is the same defect one notch further out.
+
+## Acceptance Criteria [0/6]
 
 - [ ] Watch condition 1 (`live_160` intermittent failure) has either fired (and been forked into
       its own plan per the action above) or has not fired since this plan was filed
@@ -106,6 +177,11 @@ working tree, Firefox self-exit) plus any new candidate the evidence points at.
       forked into its own plan) or has not fired since this plan was filed
 - [ ] Watch condition 4 (an unprovoked port-6000 death) has either fired (and the polling hunt run)
       or has not fired since this plan was filed
+- [ ] Watch condition 5 (`live_104` daemon timeout) has either fired a second time (and been forked
+      into its own plan per the action above) or has not fired since this plan was filed
+- [ ] Watch condition 6 (`live_145` under load) has either fired with its message captured (and
+      been forked into its own plan per the action above) or has not fired since this plan was
+      filed
 
 None of these boxes can be ticked by inspection alone — each requires either a live-sweep run that
 observes the trigger and forks a follow-up plan, or a deliberate decision that this plan is
@@ -115,8 +191,10 @@ premature "done" this repo's discipline rules exist to prevent.
 
 ## References
 
-- [[iteration-173-live-sweep-port-6000-firefox-does-not-survive]] — source of all four watch
-  conditions, and the carry-over sweep that filed this plan
+- [[iteration-173-live-sweep-port-6000-firefox-does-not-survive]] — source of watch conditions
+  1-4, and the carry-over sweep that filed this plan
+- [[iteration-179-live-62-runner-sees-no-network-events]] — source of watch conditions 5 and 6,
+  and the iteration whose Theme A made condition 5's failure message readable in the first place
 - [[iteration-172-daemon-registry-torn-read-on-autostart]] — added the
   `meta.route`/`meta.daemon_fallback` diagnostic that watch condition 1 depends on
 - [[iteration-170-eval-scanner-residual-gaps]] — original iteration where the launch-timeout

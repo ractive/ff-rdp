@@ -116,7 +116,7 @@ fn live_144_no_consent_o_matic_tab_leak() {
     assert!(
         out.status.success(),
         "{TEST}: tabs failed — {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
     let json = parse_json(&out, TEST);
     let titles: Vec<String> = json["results"]
@@ -173,7 +173,7 @@ fn live_144_bbc_cmp_dismissed() {
     assert!(
         out.status.success(),
         "{TEST}: consent accept failed — {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
     let json = parse_json(&out, TEST);
     assert_eq!(
@@ -247,7 +247,7 @@ fn live_144_full_page_no_duplicate_header() {
     assert!(
         nav.status.success(),
         "{TEST}: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let out = Command::new(ff_rdp_bin())
@@ -258,7 +258,7 @@ fn live_144_full_page_no_duplicate_header() {
     assert!(
         out.status.success(),
         "{TEST}: screenshot --full-page failed — {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
     let json = parse_json(&out, TEST);
     let b64 = json["results"]["base64"]

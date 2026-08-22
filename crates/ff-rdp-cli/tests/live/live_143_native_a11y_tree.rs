@@ -42,8 +42,8 @@ fn run_a11y(port: u16, extra: &[&str]) -> Value {
         .expect("ff-rdp a11y");
     assert!(
         out.status.success(),
-        "ff-rdp a11y {extra:?} failed: stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "ff-rdp a11y {extra:?} failed: {}",
+        crate::common::output_note(&out)
     );
     parse_json(&out)
 }

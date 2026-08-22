@@ -38,7 +38,7 @@ fn live_perf_vitals_lcp_unavailable_when_lcp_missing() {
     assert!(
         nav.status.success(),
         "perf_vitals_emits_unavailable_when_lcp_missing: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let out = Command::new(ff_rdp_bin())
@@ -48,8 +48,8 @@ fn live_perf_vitals_lcp_unavailable_when_lcp_missing() {
         .expect("ff-rdp perf vitals");
     assert!(
         out.status.success(),
-        "perf_vitals_emits_unavailable_when_lcp_missing: perf vitals failed — stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "perf_vitals_emits_unavailable_when_lcp_missing: perf vitals failed — {}",
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);

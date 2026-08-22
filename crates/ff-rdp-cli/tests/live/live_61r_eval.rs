@@ -70,8 +70,8 @@ fn live_eval_on_hn() {
 
     assert!(
         out.status.success(),
-        "live_eval_on_hn: eval exited non-zero — stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        "live_eval_on_hn: eval exited non-zero — {}",
+        crate::common::output_note(&out)
     );
 
     let json = parse_json(&out);

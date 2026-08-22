@@ -69,7 +69,7 @@ fn live_screenshot_full_page() {
     assert!(
         nav.status.success(),
         "live_screenshot_full_page: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Inject a 5 000 px tall document body via eval.
@@ -85,7 +85,7 @@ fn live_screenshot_full_page() {
     assert!(
         setup.status.success(),
         "live_screenshot_full_page: body setup eval failed — {}",
-        String::from_utf8_lossy(&setup.stderr)
+        crate::common::output_note(&setup)
     );
 
     // Take a full-page screenshot in base64 mode so we don't need a temp file.
@@ -97,8 +97,8 @@ fn live_screenshot_full_page() {
 
     assert!(
         out.status.success(),
-        "live_screenshot_full_page: screenshot exited non-zero — stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        "live_screenshot_full_page: screenshot exited non-zero — {}",
+        crate::common::output_note(&out)
     );
 
     let json = parse_json(&out);
@@ -161,7 +161,7 @@ fn live_screenshot_dpr_string_accepted() {
     assert!(
         nav.status.success(),
         "navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let out = Command::new(ff_rdp_bin())
@@ -173,14 +173,15 @@ fn live_screenshot_dpr_string_accepted() {
     assert!(
         out.status.success(),
         "live_screenshot_dpr_string_accepted: screenshot exited non-zero — \
-         Firefox spec validator may have rejected dpr; stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+         Firefox spec validator may have rejected dpr; {}",
+        crate::common::output_note(&out)
     );
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !stderr.contains("invalid type") && !stderr.contains("validator"),
-        "stderr mentions a validator error: {stderr}"
+        "stderr mentions a validator error: {}",
+        crate::common::output_note(&out)
     );
 
     let json = parse_json(&out);
@@ -232,7 +233,7 @@ fn live_screenshot_full_page_dpr2() {
     assert!(
         nav.status.success(),
         "live_screenshot_full_page_dpr2: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Set DPR=2 via Services.prefs.  This only works if the eval goes through
@@ -269,7 +270,7 @@ fn live_screenshot_full_page_dpr2() {
     assert!(
         setup.status.success(),
         "live_screenshot_full_page_dpr2: body setup eval failed — {}",
-        String::from_utf8_lossy(&setup.stderr)
+        crate::common::output_note(&setup)
     );
 
     // Take a full-page screenshot.
@@ -281,8 +282,8 @@ fn live_screenshot_full_page_dpr2() {
 
     assert!(
         out.status.success(),
-        "live_screenshot_full_page_dpr2: screenshot exited non-zero — stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        "live_screenshot_full_page_dpr2: screenshot exited non-zero — {}",
+        crate::common::output_note(&out)
     );
 
     let json = parse_json(&out);

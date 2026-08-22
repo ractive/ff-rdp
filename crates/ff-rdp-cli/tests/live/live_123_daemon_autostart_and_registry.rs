@@ -263,7 +263,8 @@ fn live_daemon_warning_text_parity() {
         assert!(
             text_stderr.contains(wtype) || text_stderr.contains("warning:"),
             "warning '{wtype}' present in JSON output must also surface in --format text stderr; \
-             got stderr: {text_stderr}"
+             got {}",
+            crate::common::output_note(&text_out)
         );
     }
     eprintln!(

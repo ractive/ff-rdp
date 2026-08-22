@@ -166,7 +166,7 @@ fn live_158_launch_reports_effective_wait_bound() {
     assert!(
         flag_out.status.success(),
         "launch --launch-timeout 45 failed: {}",
-        String::from_utf8_lossy(&flag_out.stderr)
+        crate::common::output_note(&flag_out)
     );
     assert_eq!(
         flag_json["meta"]["launch_wait_secs"].as_u64(),
@@ -187,7 +187,7 @@ fn live_158_launch_reports_effective_wait_bound() {
     assert!(
         env_out.status.success(),
         "launch with FF_RDP_LAUNCH_TIMEOUT_SECS=40 failed: {}",
-        String::from_utf8_lossy(&env_out.stderr)
+        crate::common::output_note(&env_out)
     );
     assert_eq!(
         env_json["meta"]["launch_wait_secs"].as_u64(),
@@ -225,7 +225,7 @@ fn live_158_replace_repeats_cleanly() {
     assert!(
         first.status.success(),
         "the initial launch failed: {}",
-        String::from_utf8_lossy(&first.stderr)
+        crate::common::output_note(&first)
     );
 
     for round in 1..=3u8 {
@@ -469,7 +469,7 @@ fn live_158_harness_reports_a_working_launch() {
     assert!(
         out.status.success(),
         "tabs failed against the launched instance: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
     let json = parse_json("tabs", &out.stdout);
     assert!(

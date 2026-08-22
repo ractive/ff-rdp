@@ -73,7 +73,7 @@ fn navigate(port: u16, url: &str) {
     assert!(
         nav.status.success(),
         "navigate to {url} failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 }
 
@@ -144,14 +144,14 @@ fn live_141_console_text_bounded() {
     assert!(
         eval.status.success(),
         "eval failed: {}",
-        String::from_utf8_lossy(&eval.stderr)
+        crate::common::output_note(&eval)
     );
 
     let out = run(port, &["console", "--level", "error", "--format", "text"]);
     assert!(
         out.status.success(),
         "console --format text failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
 
@@ -237,7 +237,7 @@ fn live_141_index_single_json_document() {
     assert!(
         out.status.success(),
         "index failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -455,7 +455,7 @@ fn live_141_text_empty_result_keeps_metadata() {
     assert!(
         out.status.success(),
         "a11y contrast --format text failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
 

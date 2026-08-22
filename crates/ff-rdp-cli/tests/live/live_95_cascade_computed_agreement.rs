@@ -63,7 +63,7 @@ fn live_cascade_inherited_or_default_note_fires_on_h1_color() {
     assert!(
         nav.status.success(),
         "live_cascade_inherited_or_default_note_fires_on_h1_color: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Run cascade h1 --prop color.
@@ -75,7 +75,7 @@ fn live_cascade_inherited_or_default_note_fires_on_h1_color() {
     assert!(
         cascade_out.status.success(),
         "live_cascade_inherited_or_default_note_fires_on_h1_color: cascade failed — {}",
-        String::from_utf8_lossy(&cascade_out.stderr)
+        crate::common::output_note(&cascade_out)
     );
 
     let cascade_stdout = String::from_utf8_lossy(&cascade_out.stdout);
@@ -109,7 +109,7 @@ fn live_cascade_inherited_or_default_note_fires_on_h1_color() {
     assert!(
         computed_out.status.success(),
         "live_cascade_inherited_or_default_note_fires_on_h1_color: computed failed — {}",
-        String::from_utf8_lossy(&computed_out.stderr)
+        crate::common::output_note(&computed_out)
     );
 
     let computed_stdout = String::from_utf8_lossy(&computed_out.stdout);
@@ -184,7 +184,7 @@ fn pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does()
     assert!(
         nav.status.success(),
         "pre_fix_repro: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let cases = [
@@ -203,7 +203,7 @@ fn pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does()
         assert!(
             cascade_out.status.success(),
             "pre_fix_repro ({selector}, {prop}): cascade failed — {}",
-            String::from_utf8_lossy(&cascade_out.stderr)
+            crate::common::output_note(&cascade_out)
         );
         let cascade_stdout = String::from_utf8_lossy(&cascade_out.stdout);
         let cascade_json: serde_json::Value = serde_json::from_str(cascade_stdout.trim())
@@ -233,7 +233,7 @@ fn pre_fix_repro_cascade_prop_populates_computed_when_standalone_computed_does()
         assert!(
             computed_out.status.success(),
             "pre_fix_repro ({selector}, {prop}): computed failed — {}",
-            String::from_utf8_lossy(&computed_out.stderr)
+            crate::common::output_note(&computed_out)
         );
         let computed_stdout = String::from_utf8_lossy(&computed_out.stdout);
         let computed_json: serde_json::Value = serde_json::from_str(computed_stdout.trim())

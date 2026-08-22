@@ -86,7 +86,7 @@ fn live_dom_stats_perf_audit_parity_images_without_lazy() {
     assert!(
         nav.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let dom_out = Command::new(ff_rdp_bin())
@@ -97,7 +97,7 @@ fn live_dom_stats_perf_audit_parity_images_without_lazy() {
     assert!(
         dom_out.status.success(),
         "dom stats failed: {}",
-        String::from_utf8_lossy(&dom_out.stderr)
+        crate::common::output_note(&dom_out)
     );
 
     let perf_out = Command::new(ff_rdp_bin())
@@ -108,7 +108,7 @@ fn live_dom_stats_perf_audit_parity_images_without_lazy() {
     assert!(
         perf_out.status.success(),
         "perf audit failed: {}",
-        String::from_utf8_lossy(&perf_out.stderr)
+        crate::common::output_note(&perf_out)
     );
 
     let dom_json: serde_json::Value =

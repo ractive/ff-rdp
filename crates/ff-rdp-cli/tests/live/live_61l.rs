@@ -259,7 +259,7 @@ fn live_screenshot_full_page() {
     assert!(
         shot.status.success(),
         "screenshot --full-page failed: {}",
-        String::from_utf8_lossy(&shot.stderr)
+        crate::common::output_note(&shot)
     );
 
     let json = parse_json(&shot);
@@ -561,7 +561,7 @@ fn live_eval_basic() {
     assert!(
         output.status.success(),
         "basic eval should succeed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        crate::common::output_note(&output)
     );
     let json = parse_json(&output);
     assert_eq!(json["results"], "Basic Test");
@@ -601,7 +601,7 @@ fn live_navigate_invalidates_console_actor() {
     assert!(
         eval1.status.success(),
         "eval after first navigate should succeed: {}",
-        String::from_utf8_lossy(&eval1.stderr)
+        crate::common::output_note(&eval1)
     );
     let j1 = parse_json(&eval1);
     assert_eq!(j1["results"], "Page One");
@@ -629,8 +629,8 @@ fn live_navigate_invalidates_console_actor() {
     assert!(
         eval2.status.success(),
         "eval after second navigate must succeed (consoleActor refresh broken)\n\
-         stderr: {}",
-        String::from_utf8_lossy(&eval2.stderr)
+         {}",
+        crate::common::output_note(&eval2)
     );
     let j2 = parse_json(&eval2);
     assert_eq!(
@@ -695,7 +695,7 @@ fn live_eval_chrome_csp_bypass() {
     assert!(
         nav.status.success(),
         "live_eval_chrome_csp_bypass: navigate failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Eval a simple expression — must succeed via the CSP-safe page-await path

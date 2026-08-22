@@ -83,8 +83,8 @@ fn run_a11y_json(port: u16, extra: &[&str], force_restore_failure: bool) -> Valu
     let out = run_a11y(port, extra, force_restore_failure);
     assert!(
         out.status.success(),
-        "ff-rdp a11y {extra:?} (force_restore_failure={force_restore_failure}) failed: stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "ff-rdp a11y {extra:?} (force_restore_failure={force_restore_failure}) failed: {}",
+        crate::common::output_note(&out)
     );
     parse_json(&out)
 }

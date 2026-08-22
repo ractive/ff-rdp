@@ -2,7 +2,7 @@
 title: "Iteration 179: live_62's runner assertion sees an empty network buffer, and now fails 8/8 on a machine where it used to pass"
 type: iteration
 date: 2026-08-18
-status: planned
+status: done
 branch: iter-179/runner-network-buffer-empty
 depends_on: []
 first_call_sites: []
@@ -10,7 +10,7 @@ dogfood_path: |
   # Product-or-harness boundary defect, surfaced while measuring iteration 180.
   # It reproduces SERIALLY on an idle machine — do not chase it as a
   # parallelism artifact, which is what it first looked like.
-
+  
   # 1. Reproduce. FAILED 8/8 on 2026-08-18 under sustained load; PASSED 4/4 on
   #    2026-08-22 on the same machine, same commit, idle. So run this FIRST and
   #    expect either outcome — see "Re-measured 2026-08-22" below before
@@ -18,12 +18,12 @@ dogfood_path: |
   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 \
     cargo test -q -p ff-rdp-cli --test live -- --ignored --exact \
     live_62_page_map_index::live_runner_page_map_resolution
-
+  
   # 1b. If it passes, load the machine and try again — that is the actual
   #     experiment now. Compare load averages, not just pass/fail.
   uptime   # 2026-08-18 (failing): 15.55 97.57 184.24 — sustained 15-min load 184
            # 2026-08-22 (passing):  6.55  6.38   7.32
-
+  
   # 2. See the real error. The assertion prints ONLY stderr, and ff-rdp writes
   #    errors to STDOUT, so the panic message is empty as shipped. Patch it to
   #    print stdout (Theme A does this permanently) and the step-4 envelope is:
@@ -33,7 +33,7 @@ dogfood_path: |
   #     "elapsed_ms":3025,"diagnostics":{"events_in_buffer":0}}
   #    Note events_in_buffer=0 — not "no MATCHING event", but no events AT ALL,
   #    on a run whose step 1 navigate reported a 200.
-
+  
   # 3. Rule out what has already been ruled out (2026-08-18), before re-deriving:
   #    - not this batch's code: 8/8 failures at main 788f362 AND 8/8 at 4d639e2
   #      (pre-169), built in a separate worktree
@@ -42,11 +42,16 @@ dogfood_path: |
   #    - not a Firefox update: bundle mtime Aug 12, BuildID 20260810162159,
   #      matching the browser that was running when it last passed
   #    - not the fixture server's port: FixtureServer binds 127.0.0.1:0
-
+  
   # 4. The open question this iteration must answer: does `ff-rdp run` buffer
   #    network events at all on this path, and if so when does buffering start
   #    relative to the click that triggers the POST?
-tags: [iteration, network, runner, live-tests, flaky]
+tags:
+  - iteration
+  - network
+  - runner
+  - live-tests
+  - flaky
 ---
 
 # Iteration 179: the runner's network buffer is empty when `assert_network` reads it
@@ -121,6 +126,129 @@ Theme A (the stderr/stdout diagnosability bug) is **unaffected by any of this** 
 defect in the test's failure reporting whether or not the assertion ever fires again, and it is the
 reason none of the above was visible without patching the test by hand.
 
+## Findings, measured 2026-08-22 during implementation
+
+### The load hypothesis is confirmed by experiment, not by correlation
+
+Same commit, same machine, same binary, within one hour:
+
+| condition | load average (1/5/15) | result |
+|---|---|---|
+| idle | 8.56 / 6.70 / 7.20 → 10.14 / 7.21 / 7.37 | **4/4 PASS** |
+| under a `-j6` nextest sweep | 137.80 / 39.82 / 18.95 → 220.08 / 77.99 / 34.38 | **8/8 FAIL** |
+
+The load generator was [[iteration-180-live-sweep-cost-and-parallelism]]'s sweep, exactly as this
+plan's step 1b proposed. Every one of the eight failures reported `events_in_buffer: 0` — never a
+partial count. So the flip in Theme C is machine load, and the "some unknown state changed"
+framing above is superseded.
+
+### `events_in_buffer: 0` is explained, and zero is the only value it could have been
+
+`ff-rdp run` opens a **fresh connection per step**. `execute_assert_network` calls
+`network::run_get_events_with_route`, which on the **direct** route arms the `network-event`
+watcher *when the step starts*, drains for the step's `timeout`, and unwatches. Firefox's
+`watchResources` delivers what happens while watching; it does not replay history. So a request
+that completed before the arming is never delivered.
+
+The playbook has **exactly one** request in flight (the `POST /api/auth/sign-in` the `click`
+triggers). Losing the arming race therefore loses *all* of it. A partial buffer was never
+possible, which is precisely why the zero looked like a broken subscription and was not one. The
+plan's own caveat — "a pure timeout on a busy machine would more plausibly show a partial buffer" —
+was a reasonable inference and is wrong for N=1.
+
+The **daemon** route does not have this defect: it holds a standing subscription and buffers
+across steps.
+
+### What was shipped, and what was deliberately not
+
+Shipped: Theme A in full, plus product diagnostics that make the failure self-explaining. The
+panic message below is the real one from a loaded run, with no hand-patching — compare it with the
+empty string this plan opened on:
+
+```text
+live_runner_page_map_resolution: ff-rdp run exited with non-zero status — status=Some(1) stdout=
+{"step":1,"verb":"navigate","ok":true,...,"status":200,...}
+{"step":2,"verb":"type","ok":true,...}
+{"step":3,"verb":"click","ok":true,"results":{"clicked":true,...}}
+{"step":4,"verb":"assert_network","ok":false,"error":"assert_network: no matching network request
+ found (...)","elapsed_ms":3018,"diagnostics":{"events_in_buffer":0,"route":"direct",
+ "drain_window_ms":2000,"empty_buffer_hint":"direct route: `run` opens a fresh connection per step
+ and arms the network watcher only when this step starts, ..."}}
+```
+
+**Not shipped: the fix for the race.** Giving `run` a playbook-scoped subscription means making a
+deliberately per-step-stateless runner hold state across steps, and it must not disturb the daemon
+path. That is [[iteration-181-playbook-scoped-network-subscription]], filed before this PR merges.
+`live_62` is therefore left exactly as it is — still red under load. Softening it was forbidden by
+this plan's own "Out of scope", and routing it through the daemon would have made it green while
+no longer exercising the route that has the defect.
+
+### Theme A demonstrated itself, unplanned, within hours of landing
+
+The closing live sweep produced exactly one failure, and it was **not** `live_62` — it was
+`live_104_security_pwa::live_manifest_fetch_canonical`, an unrelated test nobody was watching.
+Its failure message, verbatim:
+
+```text
+manifest must exit 0 (no-manifest is not an error): status=Some(124) stdout={"error":"daemon did
+not respond within the timeout after auth — the daemon may be overloaded or the connection is
+stale.\nhint: run `ff-rdp daemon stop` then retry, or use --no-daemon.","error_type":"Timeout"}
+stderr=
+```
+
+Read the two ends of that line. `stderr=` is **empty**. The entire diagnosis — a daemon timeout,
+not a manifest bug — comes from `stdout`, which the message only carries because this file was one
+of the 198 sites Theme A converted in this branch (`live_104_security_pwa.rs` was last touched by
+commit `8dd1a53`; it holds two `output_note` call sites).
+
+Before this branch, that same failure would have printed:
+
+```text
+manifest must exit 0 (no-manifest is not an error):
+```
+
+— and stopped. Empty, undiagnosable, and the evening would have gone to guessing at
+`ManifestActor` instead of reading `"Timeout"` off the first line. The diagnosis took one read.
+
+This was not manufactured for the plan: an unplanned failure, in a test outside this iteration's
+scope, on the first sweep after the change. It is the strongest evidence in the iteration that
+Theme A was worth doing — and the reason the guard
+(`crates/ff-rdp-cli/tests/iter_179_harness_stdout_evidence.rs`) exists rather than a one-time
+cleanup. The failure itself is dispositioned as watch condition 5 in
+[[iteration-178-live-sweep-carryover-watch-conditions]]; it is a fixed-time-budget-versus-load
+failure, the same family as this iteration's own, and nothing to do with manifests.
+
+### The closing sweep
+
+Gates: `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`, with a hand-started port-6000 Firefox so
+no tier was left unrun.
+
+```text
+LIVE_SWEEP_SUMMARY executed=277 skipped=0 preexisting=0 vanished=0 launch_timeout=0 total=277
+```
+
+`skipped=0 preexisting=0` is the point: nothing was excluded, so the pass count is over the whole
+corpus rather than a shrunken one. 267 passed / 1 failed in the CLI tier (11 filtered out by the
+sweep's own non-live filter), and 9/9 across the four `ff-rdp-core` tiers.
+
+**`live_62_page_map_index::live_runner_page_map_resolution` passed in this sweep** — as did its two
+siblings. That is consistent with, not contrary to, this plan's finding: the sweep ran at a
+1-minute load average of roughly 20-25, while the `-j6` generator that reproduced the failure 8/8
+ran at 137-220. It is evidence about *where* the threshold sits, and it is **not** evidence the
+defect is fixed. It is not fixed; see "Not shipped" above.
+
+### Theme A, counted
+
+| tier | offending invocations | disposition |
+|---|---|---|
+| `crates/ff-rdp-cli/tests/live/` | **198** across 60 files (186 rewritten mechanically to `common::output_note`, 12 by hand) | **fixed here** |
+| `crates/ff-rdp-core/tests/` | **0** — scanned, none found | nothing to do; the guard covers it so it stays that way |
+| `crates/ff-rdp-cli/tests/e2e/` | **246** | [[iteration-182-e2e-tier-stdout-evidence]] — separate `support` module, and 444 edits in one PR is not reviewable |
+
+`crates/ff-rdp-cli/tests/iter_179_harness_stdout_evidence.rs` is the guard that stops a fourth
+instance: it parses every `assert!`/`assert_eq!`/`assert_ne!`/`panic!` invocation in the live trees
+(balanced across lines, string-literal aware) and fails if one names `stderr` without `stdout`.
+
 ## Why it looked like a parallelism failure, and why that matters
 
 It was first seen failing 3/3 across `-j6` runs during iteration 180's measurements, alongside
@@ -149,31 +277,56 @@ that cannot run in parallel" — was wrong, and only checking it serially dispro
 
 ## Tasks
 
-### A. Diagnosability [0/2]
-- [ ] `live_62`'s runner assertion prints stdout as well as stderr
-- [ ] Every other live assertion that prints only `stderr` from an ff-rdp invocation is found and
-      fixed, with the count recorded here
+### A. Diagnosability [2/2]
+- [x] `live_62`'s runner assertion prints stdout as well as stderr
+- [x] Every other live assertion that prints only `stderr` from an ff-rdp invocation is found and
+      fixed, with the count recorded here — **198** in the live tiers; 246 more in the e2e tier,
+      split to [[iteration-182-e2e-tier-stdout-evidence]]
 
-### B. The empty buffer [0/3]
-- [ ] Record when `ff-rdp run` subscribes to network events, and for how long
-- [ ] Record whether `events_in_buffer` is ever non-zero in this playbook, at any step
-- [ ] Fix, or record that the runner's contract is per-step and the test's expectation is wrong —
-      either is an acceptable outcome, but say which
+### B. The empty buffer [3/3]
+- [x] Record when `ff-rdp run` subscribes to network events, and for how long — **direct route:
+      armed when the `assert_network` step starts, dropped when it ends, window = the step's
+      `timeout` (2000 ms here). Daemon route: standing subscription, buffers across steps.**
+- [x] Record whether `events_in_buffer` is ever non-zero in this playbook, at any step — **no.
+      It is 1 on a passing run and 0 on every one of the 8 failing runs; there is only one
+      request, so it can only ever be 1 or 0.**
+- [x] Fix, or record that the runner's contract is per-step and the test's expectation is wrong —
+      either is an acceptable outcome, but say which — **recorded: the contract is per-step on the
+      direct route, and the test's expectation is a race by construction. The fix is
+      [[iteration-181-playbook-scoped-network-subscription]], not this PR.**
 
-### C. The flip [0/2]
-- [ ] Reproduce on a second machine, or establish that it is specific to this one
-- [ ] Name the state that changed, or record explicitly that it could not be found
+### C. The flip [1/2]
+- [ ] Reproduce on a second machine, or establish that it is specific to this one — **not done.
+      Only one machine was available to this run. What was established instead is that the
+      variable is machine *load*, which is reproducible on demand here; whether another machine
+      shows the same threshold is untested.**
+- [x] Name the state that changed, or record explicitly that it could not be found — **machine
+      load. 4/4 PASS at 15-min load ~7; 8/8 FAIL at 1-min load 138–220 under a `-j6` sweep.**
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [3/4]
 
-- [ ] The failure message alone is enough to diagnose the next occurrence, without patching the
-      test to see it
-- [ ] `events_in_buffer: 0` is explained — either the subscription window is wrong (fix it) or the
-      test asserts something `run` never promised (fix the test, and say so in the plan)
+- [x] The failure message alone is enough to diagnose the next occurrence, without patching the
+      test to see it — demonstrated twice on real, unpatched failures: on `live_62` under the load
+      generator (the `events_in_buffer`/`route`/`empty_buffer_hint` envelope quoted above), and
+      unplanned on `live_104` in the closing sweep, where an empty `stderr=` and a populated
+      `stdout={"error_type":"Timeout"}` settled the diagnosis in one read
+- [x] `events_in_buffer: 0` is explained — either the subscription window is wrong (fix it) or the
+      test asserts something `run` never promised (fix the test, and say so in the plan) —
+      **the test asserts something the direct route never promised. Saying so is this plan's
+      "Findings" section; fixing it is [[iteration-181-playbook-scoped-network-subscription]].**
 - [ ] `live_62_page_map_index::live_runner_page_map_resolution` passes 10/10 serially on the
       machine where it currently fails 8/8, with the run recorded
-- [ ] If the cause is environmental and cannot be pinned, that is stated plainly rather than the
-      test being relaxed until it goes green
+
+      **Left unticked deliberately.** The premise is now known to be wrong: the test does not
+      "currently fail 8/8" in a fixed sense — it passes 4/4 idle and fails 8/8 under load, on the
+      same commit within one hour. There is no machine state on which 10/10 would mean anything.
+      Making it pass under load requires the product fix in
+      [[iteration-181-playbook-scoped-network-subscription]], and this PR does not contain it.
+      Every way to tick this box from here — running the playbook through the daemon, widening the
+      step timeout, retrying — would be the softening this plan's "Out of scope" forbids.
+- [x] If the cause is environmental and cannot be pinned, that is stated plainly rather than the
+      test being relaxed until it goes green — it *was* pinned (load), the mechanism is named
+      (the direct-route arming race), and the test is untouched
 
 ## Out of scope
 
