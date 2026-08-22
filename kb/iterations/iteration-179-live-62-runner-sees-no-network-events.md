@@ -178,6 +178,60 @@ path. That is [[iteration-181-playbook-scoped-network-subscription]], filed befo
 this plan's own "Out of scope", and routing it through the daemon would have made it green while
 no longer exercising the route that has the defect.
 
+### Theme A demonstrated itself, unplanned, within hours of landing
+
+The closing live sweep produced exactly one failure, and it was **not** `live_62` — it was
+`live_104_security_pwa::live_manifest_fetch_canonical`, an unrelated test nobody was watching.
+Its failure message, verbatim:
+
+```text
+manifest must exit 0 (no-manifest is not an error): status=Some(124) stdout={"error":"daemon did
+not respond within the timeout after auth — the daemon may be overloaded or the connection is
+stale.\nhint: run `ff-rdp daemon stop` then retry, or use --no-daemon.","error_type":"Timeout"}
+stderr=
+```
+
+Read the two ends of that line. `stderr=` is **empty**. The entire diagnosis — a daemon timeout,
+not a manifest bug — comes from `stdout`, which the message only carries because this file was one
+of the 198 sites Theme A converted in this branch (`live_104_security_pwa.rs` was last touched by
+commit `8dd1a53`; it holds two `output_note` call sites).
+
+Before this branch, that same failure would have printed:
+
+```text
+manifest must exit 0 (no-manifest is not an error):
+```
+
+— and stopped. Empty, undiagnosable, and the evening would have gone to guessing at
+`ManifestActor` instead of reading `"Timeout"` off the first line. The diagnosis took one read.
+
+This was not manufactured for the plan: an unplanned failure, in a test outside this iteration's
+scope, on the first sweep after the change. It is the strongest evidence in the iteration that
+Theme A was worth doing — and the reason the guard
+(`crates/ff-rdp-cli/tests/iter_179_harness_stdout_evidence.rs`) exists rather than a one-time
+cleanup. The failure itself is dispositioned as watch condition 5 in
+[[iteration-178-live-sweep-carryover-watch-conditions]]; it is a fixed-time-budget-versus-load
+failure, the same family as this iteration's own, and nothing to do with manifests.
+
+### The closing sweep
+
+Gates: `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`, with a hand-started port-6000 Firefox so
+no tier was left unrun.
+
+```text
+LIVE_SWEEP_SUMMARY executed=277 skipped=0 preexisting=0 vanished=0 launch_timeout=0 total=277
+```
+
+`skipped=0 preexisting=0` is the point: nothing was excluded, so the pass count is over the whole
+corpus rather than a shrunken one. 267 passed / 1 failed in the CLI tier (11 filtered out by the
+sweep's own non-live filter), and 9/9 across the four `ff-rdp-core` tiers.
+
+**`live_62_page_map_index::live_runner_page_map_resolution` passed in this sweep** — as did its two
+siblings. That is consistent with, not contrary to, this plan's finding: the sweep ran at a
+1-minute load average of roughly 20-25, while the `-j6` generator that reproduced the failure 8/8
+ran at 137-220. It is evidence about *where* the threshold sits, and it is **not** evidence the
+defect is fixed. It is not fixed; see "Not shipped" above.
+
 ### Theme A, counted
 
 | tier | offending invocations | disposition |
@@ -247,7 +301,10 @@ that cannot run in parallel" — was wrong, and only checking it serially dispro
 ## Acceptance Criteria [3/4]
 
 - [x] The failure message alone is enough to diagnose the next occurrence, without patching the
-      test to see it — demonstrated on a real loaded failure; see the envelope quoted above
+      test to see it — demonstrated twice on real, unpatched failures: on `live_62` under the load
+      generator (the `events_in_buffer`/`route`/`empty_buffer_hint` envelope quoted above), and
+      unplanned on `live_104` in the closing sweep, where an empty `stderr=` and a populated
+      `stdout={"error_type":"Timeout"}` settled the diagnosis in one read
 - [x] `events_in_buffer: 0` is explained — either the subscription window is wrong (fix it) or the
       test asserts something `run` never promised (fix the test, and say so in the plan) —
       **the test asserts something the direct route never promised. Saying so is this plan's

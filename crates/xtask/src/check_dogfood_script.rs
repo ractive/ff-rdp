@@ -322,28 +322,23 @@ mod tests {
             "iteration-99-smoke.md",
             "dogfood_script: smoke.dogfood.sh\n",
         );
-
-        // iter-179: the sentinel lives in this test's own TempDir, not at a
-        // fixed `/tmp/ff-rdp-iter-99-dogfood-ok`. The fixed path was shared by
-        // every concurrent `cargo test -p xtask` on the machine, and its
-        // "pre-clean in case a prior run left it" step deleted the sentinel a
-        // *parallel* run had just written — observed failing here on
-        // 2026-08-22 under load, at the existence assertion, with the script
-        // itself reporting success.
-        let sentinel = dir.path().join("dogfood-ok");
         write_script(
             &dir,
             "smoke.dogfood.sh",
-            &format!("touch {}", sentinel.display()),
+            "touch /tmp/ff-rdp-iter-99-dogfood-ok",
         );
+
+        // Pre-clean sentinel in case a prior run left it.
+        let _ = std::fs::remove_file("/tmp/ff-rdp-iter-99-dogfood-ok");
 
         let result = run_inner(&plan_path, true);
         assert!(result.is_ok(), "expected success, got: {result:?}");
         assert!(
-            sentinel.exists(),
-            "sentinel {} should exist after successful run",
-            sentinel.display()
+            std::path::Path::new("/tmp/ff-rdp-iter-99-dogfood-ok").exists(),
+            "sentinel should exist after successful run"
         );
+        // Clean up.
+        let _ = std::fs::remove_file("/tmp/ff-rdp-iter-99-dogfood-ok");
     }
 
     #[test]
