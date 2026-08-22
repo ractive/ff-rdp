@@ -117,4 +117,4 @@ This affects **every** `assert_network` user on the direct route, not just `live
 ## References
 
 - [[iteration-179-live-62-runner-sees-no-network-events]] — the diagnosis this fix implements
-- [[iteration-180-live-sweep-cost-and-parallelism]] — source of the `-j6` load generator
+- [[iteration-188-live-sweep-cost-and-parallelism]] — source of the `-j6` load generator

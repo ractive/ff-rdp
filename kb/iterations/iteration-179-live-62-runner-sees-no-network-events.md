@@ -7,7 +7,7 @@ branch: iter-179/runner-network-buffer-empty
 depends_on: []
 first_call_sites: []
 dogfood_path: |
-  # Product-or-harness boundary defect, surfaced while measuring iteration 180.
+  # Product-or-harness boundary defect, surfaced while measuring iteration 188 (filed as 180).
   # It reproduces SERIALLY on an idle machine — do not chase it as a
   # parallelism artifact, which is what it first looked like.
   
@@ -57,7 +57,7 @@ tags:
 # Iteration 179: the runner's network buffer is empty when `assert_network` reads it
 
 Found 2026-08-18 while taking measurements for
-[[iteration-180-live-sweep-cost-and-parallelism]]. It first appeared as a parallel-only failure
+[[iteration-188-live-sweep-cost-and-parallelism]]. It first appeared as a parallel-only failure
 and is not one.
 
 ## What was observed
@@ -118,7 +118,7 @@ and both matter more than the pass/fail flip:
    machine would more plausibly show a partial buffer. Explain the zero, or show that zero is what
    a not-yet-started subscription looks like.
 2. Whether load is the variable at all is **testable**: load the machine deliberately (the
-   `-j6` sweep from [[iteration-180-live-sweep-cost-and-parallelism]] is a ready-made load
+   `-j6` sweep from [[iteration-188-live-sweep-cost-and-parallelism]] is a ready-made load
    generator) and re-run. If it fails under load and passes idle, that is the answer; if it fails
    idle too, the hypothesis above is wrong and should be struck from this plan.
 
@@ -137,7 +137,7 @@ Same commit, same machine, same binary, within one hour:
 | idle | 8.56 / 6.70 / 7.20 → 10.14 / 7.21 / 7.37 | **4/4 PASS** |
 | under a `-j6` nextest sweep | 137.80 / 39.82 / 18.95 → 220.08 / 77.99 / 34.38 | **8/8 FAIL** |
 
-The load generator was [[iteration-180-live-sweep-cost-and-parallelism]]'s sweep, exactly as this
+The load generator was [[iteration-188-live-sweep-cost-and-parallelism]]'s sweep, exactly as this
 plan's step 1b proposed. Every one of the eight failures reported `events_in_buffer: 0` — never a
 partial count. So the flip in Theme C is machine load, and the "some unknown state changed"
 framing above is superseded.
@@ -251,10 +251,10 @@ instance: it parses every `assert!`/`assert_eq!`/`assert_ne!`/`panic!` invocatio
 
 ## Why it looked like a parallelism failure, and why that matters
 
-It was first seen failing 3/3 across `-j6` runs during iteration 180's measurements, alongside
+It was first seen failing 3/3 across `-j6` runs during iteration 188's measurements (that plan was filed as 180), alongside
 `live_96` (which *is* structurally parallel-incompatible). The obvious inference — "a second test
 that cannot run in parallel" — was wrong, and only checking it serially disproved it.
-[[iteration-180-live-sweep-cost-and-parallelism]] A3 has been corrected accordingly.
+[[iteration-188-live-sweep-cost-and-parallelism]] A3 has been corrected accordingly.
 
 ## Themes
 
@@ -333,13 +333,13 @@ that cannot run in parallel" — was wrong, and only checking it serially dispro
 - **Relaxing or `#[ignore]`-ing the assertion to make the suite green.** The precondition-loudness
   rule from [[iteration-146-live-suite-reliability]] Theme B applies: a detector that gets softened
   because it fired is worse than no detector.
-- **Parallel execution of the live tier** — [[iteration-180-live-sweep-cost-and-parallelism]].
+- **Parallel execution of the live tier** — [[iteration-188-live-sweep-cost-and-parallelism]].
 - **`live_96`'s global prune precondition**, which *is* structurally parallel-incompatible and is
   handled in 180.
 
 ## References
 
-- [[iteration-180-live-sweep-cost-and-parallelism]] — the measurement session this surfaced in
+- [[iteration-188-live-sweep-cost-and-parallelism]] — the measurement session this surfaced in
 - [[iteration-169-navigate-status-delivery-and-nav-verb-parity]] — the first stderr/stdout fix
 - [[iteration-164-two-failures-the-158-sweep-uncovered]] — prior art on network-event subscription
   being destroyed by an adjacent call

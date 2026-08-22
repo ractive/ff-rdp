@@ -1,10 +1,10 @@
 ---
-title: "Iteration 180: the live sweep spends half its wall clock on Firefox cold starts and runs them one at a time"
+title: "Iteration 188: the live sweep spends half its wall clock on Firefox cold starts and runs them one at a time"
 type: iteration
 date: 2026-08-18
 status: planned
-branch: iter-180/live-sweep-parallelism
-depends_on: []
+branch: iter-188/live-sweep-parallelism
+depends_on: [kb/iterations/iteration-181-playbook-scoped-network-subscription.md]
 first_call_sites: []
 dogfood_path: |
   # Harness/tooling economics. Theme A is ALREADY MEASURED (2026-08-18, results
@@ -40,7 +40,25 @@ dogfood_path: |
 tags: [iteration, testing, live-tests, tooling, xtask, performance]
 ---
 
-# Iteration 180: the live sweep is cold-start bound and serial
+# Iteration 188: the live sweep is cold-start bound and serial
+
+> **Renumbered from 180 on 2026-08-23. The number carries a dependency, not just an identity.**
+>
+> This plan makes the live sweep parallel. [[iteration-181-playbook-scoped-network-subscription]]
+> fixes the `assert_network` arming race that parallelism *triggers* — measured in
+> [[iteration-179-live-62-runner-sees-no-network-events]], where `live_62` passed 4/4 at load ~7
+> and failed 8/8 at load 138–220 under a `-j6` sweep.
+>
+> Running this before 181 would red-line `live_62` on every subsequent iteration's closing sweep,
+> and `new-ralph-loop` executes ranges in ascending numeric order and stops on first failure. As
+> 180 it sorted *before* 181 and there was no single range that ordered the two correctly. At 188
+> it sorts after, so `181 188` runs the fix before the amplifier.
+>
+> **Do not run this iteration until 181 has merged.** If you are reading this because a loop
+> reached it early, stop and check that 181 is `done`. Inbound links in
+> [[iteration-179-live-62-runner-sees-no-network-events]], 181 and
+> [[iteration-186-launch-records-leak-one-file-per-port]] were repointed; iteration 179's merged
+> PR body (#212) still says 180 and was left alone.
 
 Every iteration pays a full live sweep before its PR ([[iteration-155-live-skip-reports-green]]
 established why a `cargo test-live` pass count is not a substitute). That sweep now takes **38

@@ -103,7 +103,7 @@ the leak. This is not new machinery.
 - [ ] It is wired into `launch`, matching how 142 wired the throttle-file GC
 - [ ] It sweeps `record_base_dir()`, and honours `FF_RDP_HOME` the way `daemon_record` already
       does — note that `secure_profile_root()` does **not**, which
-      [[iteration-180-live-sweep-cost-and-parallelism]] records as an inconsistency
+      [[iteration-188-live-sweep-cost-and-parallelism]] records as an inconsistency
 
 ### B. Staleness [0/2]
 - [ ] The staleness test is written down with its pid-recycling risk stated
