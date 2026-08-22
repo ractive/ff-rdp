@@ -49,6 +49,9 @@ pub struct MockRdpServer {
     close_after_followups: bool,
     /// Per-method invocation counters, exposed via [`MockRdpServer::call_counter`].
     call_counters: HashMap<String, Arc<AtomicUsize>>,
+    /// Every request packet the server read, in order, exposed via
+    /// [`MockRdpServer::request_log`].
+    request_log: Arc<Mutex<Vec<Value>>>,
 }
 
 impl MockRdpServer {
@@ -65,7 +68,22 @@ impl MockRdpServer {
             handlers: Vec::new(),
             close_after_followups: false,
             call_counters: HashMap::new(),
+            request_log: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// A handle to every request packet this server reads, in wire order.
+    ///
+    /// `call_counter` answers "was this method called?"; this answers "with
+    /// what arguments?" — which is what iter-174 needed: `getWatcher` was
+    /// being called on every route, but only the daemon's carried
+    /// `isServerTargetSwitchingEnabled: true`, and without that flag Firefox
+    /// never delivers the content-process `dom-*` document events. A counter
+    /// cannot see that difference; the packet can.
+    ///
+    /// Take the handle before moving the server into its serving thread.
+    pub fn request_log(&self) -> Arc<Mutex<Vec<Value>>> {
+        Arc::clone(&self.request_log)
     }
 
     /// Return (creating if necessary) an `Arc<AtomicUsize>` that the server
@@ -215,6 +233,11 @@ impl MockRdpServer {
             if let Some(counter) = self.call_counters.get(method) {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
+
+            self.request_log
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(request.clone());
 
             let handler = self.handlers.iter().find(|(m, _)| m == method);
 
