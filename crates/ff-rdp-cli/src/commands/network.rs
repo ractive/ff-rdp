@@ -952,13 +952,9 @@ pub(crate) fn build_canonical_network(
     obj
 }
 
-/// Return buffered network events as a JSON array.
-///
-/// Used by the script runner's `assert_network` step.
-/// `drain_timeout_ms` controls how long to drain in direct mode (default: 500ms).
-/// The route a [`run_get_events`] drain took. `"daemon"` reads the daemon's
-/// standing buffer; `"direct"` arms a watcher for the duration of this call
-/// only. The distinction decides whether an empty result means "nothing
+/// The route a [`run_get_events_with_route`] drain took. `"daemon"` reads the
+/// daemon's standing buffer; `"direct"` arms a watcher for the duration of that
+/// call only. The distinction decides whether an empty result means "nothing
 /// happened" or "the watcher was not armed yet" — see the fn docs.
 pub type NetworkDrainRoute = &'static str;
 
@@ -967,8 +963,11 @@ pub type NetworkDrainRoute = &'static str;
 /// hard-coding a second copy that could drift (iter-179).
 pub const DEFAULT_DRAIN_MS: u64 = 500;
 
-/// Drain buffered network events, returning them together with the route taken
+/// Drain buffered network events as a JSON array, together with the route taken
 /// (iter-179).
+///
+/// Used by the script runner's `assert_network` step. `drain_timeout_ms`
+/// controls how long to drain in direct mode (default [`DEFAULT_DRAIN_MS`]).
 ///
 /// # The direct-mode subscription window
 ///
