@@ -182,7 +182,8 @@ no longer exercising the route that has the defect.
 
 | tier | offending invocations | disposition |
 |---|---|---|
-| `crates/ff-rdp-cli/tests/live/` + `crates/ff-rdp-core/tests/` | **198** across 60 files (186 rewritten mechanically to `common::output_note`, 12 by hand) | **fixed here** |
+| `crates/ff-rdp-cli/tests/live/` | **198** across 60 files (186 rewritten mechanically to `common::output_note`, 12 by hand) | **fixed here** |
+| `crates/ff-rdp-core/tests/` | **0** — scanned, none found | nothing to do; the guard covers it so it stays that way |
 | `crates/ff-rdp-cli/tests/e2e/` | **246** | [[iteration-182-e2e-tier-stdout-evidence]] — separate `support` module, and 444 edits in one PR is not reviewable |
 
 `crates/ff-rdp-cli/tests/iter_179_harness_stdout_evidence.rs` is the guard that stops a fourth
