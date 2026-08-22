@@ -48,7 +48,7 @@ fn rust_files(root: &Path) -> Vec<PathBuf> {
 /// mock-server tier, it has its own `support` module rather than the live
 /// `common` one, and iteration 179 measured 246 further sites there — a
 /// separate, larger mechanical change that
-/// [[iteration-181-e2e-tier-stdout-evidence]] carries. Widening this array is
+/// [[iteration-182-e2e-tier-stdout-evidence]] carries. Widening this array is
 /// all that is needed once that lands.
 fn scanned_roots() -> Vec<PathBuf> {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR"))

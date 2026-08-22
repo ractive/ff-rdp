@@ -1119,7 +1119,13 @@ fn execute_assert_network(
 
 /// Why a `direct`-route drain can come back with **zero** events — not a
 /// partial buffer — after a step that demonstrably issued a request (iter-179).
-const EMPTY_DIRECT_BUFFER_HINT: &str = "direct route: `run` opens a fresh connection per step and      arms the network watcher only when this step starts, so a request that completed before then      is never delivered — with a single request in flight that loses the race as zero events, not      a partial count. Raise this step's `timeout`, insert a `wait` before it, or run against the      daemon (which holds a standing subscription and buffers across steps).";
+const EMPTY_DIRECT_BUFFER_HINT: &str = concat!(
+    "direct route: `run` opens a fresh connection per step and arms the network watcher only ",
+    "when this step starts, so a request that completed before then is never delivered. With a ",
+    "single request in flight, losing that race shows up as zero events, not a partial count. ",
+    "Fixes, best first: run against the daemon (it holds a standing subscription and buffers ",
+    "across steps); raise this step's `timeout`; or assert on a page effect instead.",
+);
 
 /// The `diagnostics` payload for a failed `assert_network` (iter-179).
 ///
