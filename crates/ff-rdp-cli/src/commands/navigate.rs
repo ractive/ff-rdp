@@ -1608,7 +1608,8 @@ pub(crate) fn wait_for_navigation_commit(
 ) -> Result<serde_json::Value, AppError> {
     let tab_actor = ctx.target_tab_actor().clone();
     let watcher_actor =
-        TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+        TabActor::get_watcher_with_options(ctx.transport_mut(), &tab_actor, Some(true))
+            .map_err(AppError::from)?;
 
     // Best-effort freshness epoch, same pattern as run_core's pre_nav_epoch:
     // a failed/exceptional eval disables the freshness guard (0.0) rather
