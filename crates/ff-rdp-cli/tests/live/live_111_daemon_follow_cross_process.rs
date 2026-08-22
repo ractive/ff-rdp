@@ -284,7 +284,7 @@ fn live_daemon_follow_survives_cross_process_nav() {
         collected,
         follow_out
             .as_ref()
-            .map(|o| crate::common::output_note(&o).into_owned())
+            .map(crate::common::output_note)
             .unwrap_or_default(),
     );
 

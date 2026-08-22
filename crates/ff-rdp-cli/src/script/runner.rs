@@ -1067,7 +1067,7 @@ fn execute_assert_network(
     default_timeout_ms: Option<u64>,
 ) -> Result<Value, AppError> {
     // Use the network command to get buffered events.
-    use crate::commands::network::run_get_events;
+    use crate::commands::network::run_get_events_with_route;
 
     // Note: api_route targets are resolved to url_contains+method by
     // resolve_page_map_targets before reaching here, so step.api_route is
@@ -1075,7 +1075,7 @@ fn execute_assert_network(
 
     // Use step timeout, then script default, then CLI default.
     let effective_timeout = step.timeout.or(default_timeout_ms);
-    let events = run_get_events(cli, effective_timeout)?;
+    let (events, route) = run_get_events_with_route(cli, effective_timeout)?;
 
     let matched = events.iter().any(|e| {
         let url = e.get("url").and_then(Value::as_str).unwrap_or("");
@@ -1103,11 +1103,47 @@ fn execute_assert_network(
     } else {
         let desc = build_network_assert_desc(step);
         // E6: return structured diagnostics payload instead of embedding in the string.
+        // iter-179: `events_in_buffer` alone cannot be acted on. An empty buffer
+        // on the `direct` route is ambiguous between "the request never
+        // happened" and "the watcher was armed after it completed" — and the
+        // second is a race this runner has by construction, because every step
+        // opens its own connection and `assert_network` arms its watcher only
+        // when it runs. Name the route, the window, and the race, so the next
+        // reader does not have to re-derive it (as iteration 179 did).
         Err(AppError::Diagnostics {
             message: format!("assert_network: no matching network request found ({desc})"),
-            payload: json!({"events_in_buffer": events.len()}),
+            payload: network_assert_diagnostics(events.len(), route, effective_timeout),
         })
     }
+}
+
+/// Why a `direct`-route drain can come back with **zero** events — not a
+/// partial buffer — after a step that demonstrably issued a request (iter-179).
+const EMPTY_DIRECT_BUFFER_HINT: &str = "direct route: `run` opens a fresh connection per step and      arms the network watcher only when this step starts, so a request that completed before then      is never delivered — with a single request in flight that loses the race as zero events, not      a partial count. Raise this step's `timeout`, insert a `wait` before it, or run against the      daemon (which holds a standing subscription and buffers across steps).";
+
+/// The `diagnostics` payload for a failed `assert_network` (iter-179).
+///
+/// Split out from [`execute_assert_network`] so the branch that matters — the
+/// empty-buffer hint — is unit-testable without Firefox, a daemon, or a
+/// network stack.
+fn network_assert_diagnostics(
+    events_in_buffer: usize,
+    route: crate::commands::network::NetworkDrainRoute,
+    effective_timeout: Option<u64>,
+) -> Value {
+    let mut payload = json!({
+        "events_in_buffer": events_in_buffer,
+        "route": route,
+        "drain_window_ms": effective_timeout
+            .unwrap_or(crate::commands::network::DEFAULT_DRAIN_MS),
+    });
+    // Only the direct route can lose the arming race; the daemon holds a
+    // standing subscription, so an empty buffer there really does mean nothing
+    // was captured and the hint would be a lie.
+    if events_in_buffer == 0 && route == "direct" {
+        payload["empty_buffer_hint"] = json!(EMPTY_DIRECT_BUFFER_HINT);
+    }
+    payload
 }
 
 fn build_network_assert_desc(step: &AssertNetworkStep) -> String {
@@ -1305,6 +1341,61 @@ mod tests {
             "cycle detection call_stack should contain the absolute path"
         );
         let _ = call_stack; // suppress unused warning
+    }
+
+    // -----------------------------------------------------------------
+    // iter-179 — assert_network's empty-buffer diagnostics
+    // -----------------------------------------------------------------
+
+    /// The case that opened iteration 179: zero events on the direct route.
+    /// The payload must name the route, the window it actually waited, and the
+    /// arming race — `events_in_buffer: 0` on its own sent a reader four days
+    /// down the wrong path (a "broken subscription") in 2026-08-18.
+    #[test]
+    fn unit_179_empty_direct_buffer_carries_the_race_hint() {
+        let d = network_assert_diagnostics(0, "direct", Some(2000));
+        assert_eq!(d["events_in_buffer"], 0);
+        assert_eq!(d["route"], "direct");
+        assert_eq!(d["drain_window_ms"], 2000);
+        let hint = d["empty_buffer_hint"].as_str().expect("hint present");
+        assert!(
+            hint.contains("arms the network watcher only when this step starts"),
+            "{hint}"
+        );
+        assert!(hint.contains("zero events, not"), "{hint}");
+    }
+
+    /// The daemon holds a standing subscription, so an empty buffer there is
+    /// not the arming race and must not be blamed on it.
+    #[test]
+    fn unit_179_empty_daemon_buffer_is_not_blamed_on_the_race() {
+        let d = network_assert_diagnostics(0, "daemon", Some(2000));
+        assert_eq!(d["route"], "daemon");
+        assert!(
+            d.get("empty_buffer_hint").is_none(),
+            "the direct-mode race hint must not appear on the daemon route: {d}"
+        );
+    }
+
+    /// A non-empty buffer is an ordinary no-match: the events arrived, none
+    /// matched the predicate. The hint would be misleading.
+    #[test]
+    fn unit_179_non_empty_buffer_reports_the_count_without_the_hint() {
+        let d = network_assert_diagnostics(7, "direct", Some(2000));
+        assert_eq!(d["events_in_buffer"], 7);
+        assert!(d.get("empty_buffer_hint").is_none(), "{d}");
+    }
+
+    /// With no step or script timeout the runner still reports the window it
+    /// really used, rather than omitting the field or printing 0.
+    #[test]
+    fn unit_179_default_drain_window_is_reported_not_omitted() {
+        let d = network_assert_diagnostics(0, "direct", None);
+        assert_eq!(
+            d["drain_window_ms"],
+            crate::commands::network::DEFAULT_DRAIN_MS,
+            "the reported window must track network::DEFAULT_DRAIN_MS, not a second copy"
+        );
     }
 
     #[test]
