@@ -76,18 +76,160 @@ struct Invocation {
     text: String,
 }
 
+/// Per-character classification of Rust source.
+///
+/// The scan needs to know which characters are *live code*, because a `)` in a
+/// comment or a string literal must not close a macro invocation. Getting this
+/// wrong is not a harmless approximation: an invocation whose end is
+/// mis-detected runs on into the following statements, picks up an unrelated
+/// `stdout` mention, and the offender it was supposed to catch is silently
+/// skipped. The live tree currently holds 210 raw-string literals and 406
+/// comment lines containing a double quote, so all three cases are live.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Lex {
+    /// Ordinary code — parens and macro names count here.
+    Code,
+    /// Inside a comment or a literal — nothing counts.
+    Skip,
+}
+
+/// Classify every character of `chars` as [`Lex::Code`] or [`Lex::Skip`].
+///
+/// Handles line comments, nested block comments, normal string literals with
+/// backslash escapes, raw strings (`r"…"`, `r#"…"#`, any hash count) and char
+/// literals. Lifetimes (`'static`) are deliberately *not* treated as char
+/// literals — a bare `'` followed by an identifier is left as code.
+fn classify(chars: &[char]) -> Vec<Lex> {
+    let mut out = vec![Lex::Code; chars.len()];
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+
+        // Line comment.
+        if c == '/' && next == Some('/') {
+            while i < chars.len() && chars[i] != '\n' {
+                out[i] = Lex::Skip;
+                i += 1;
+            }
+            continue;
+        }
+        // Block comment, nested.
+        if c == '/' && next == Some('*') {
+            let mut depth = 1usize;
+            out[i] = Lex::Skip;
+            out[i + 1] = Lex::Skip;
+            i += 2;
+            while i < chars.len() && depth > 0 {
+                if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    out[i] = Lex::Skip;
+                    out[i + 1] = Lex::Skip;
+                    i += 2;
+                    continue;
+                }
+                if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    out[i] = Lex::Skip;
+                    out[i + 1] = Lex::Skip;
+                    i += 2;
+                    continue;
+                }
+                out[i] = Lex::Skip;
+                i += 1;
+            }
+            continue;
+        }
+        // Raw string: r, then any number of #, then ".
+        if c == 'r' {
+            let mut j = i + 1;
+            let mut hashes = 0usize;
+            while chars.get(j) == Some(&'#') {
+                hashes += 1;
+                j += 1;
+            }
+            if chars.get(j) == Some(&'"') {
+                // `r` and the opening delimiter are not code.
+                for k in i..=j {
+                    out[k] = Lex::Skip;
+                }
+                let mut k = j + 1;
+                loop {
+                    if k >= chars.len() {
+                        break;
+                    }
+                    if chars[k] == '"' {
+                        let closes = (1..=hashes).all(|h| chars.get(k + h) == Some(&'#'));
+                        if closes {
+                            for m in k..=(k + hashes).min(chars.len() - 1) {
+                                out[m] = Lex::Skip;
+                            }
+                            k += hashes + 1;
+                            break;
+                        }
+                    }
+                    out[k] = Lex::Skip;
+                    k += 1;
+                }
+                i = k;
+                continue;
+            }
+        }
+        // Normal string literal.
+        if c == '"' {
+            out[i] = Lex::Skip;
+            let mut k = i + 1;
+            while k < chars.len() {
+                if chars[k] == '\\' {
+                    out[k] = Lex::Skip;
+                    if k + 1 < chars.len() {
+                        out[k + 1] = Lex::Skip;
+                    }
+                    k += 2;
+                    continue;
+                }
+                out[k] = Lex::Skip;
+                if chars[k] == '"' {
+                    k += 1;
+                    break;
+                }
+                k += 1;
+            }
+            i = k;
+            continue;
+        }
+        // Char literal — `'x'` or `'\n'`, but never a lifetime.
+        if c == '\'' {
+            let is_escaped = next == Some('\\');
+            let close_at = if is_escaped { i + 3 } else { i + 2 };
+            if chars.get(close_at) == Some(&'\'') {
+                for k in i..=close_at {
+                    out[k] = Lex::Skip;
+                }
+                i = close_at + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Extract every `assert!` / `assert_eq!` / `assert_ne!` / `panic!` invocation
 /// from `src`, balanced across lines.
 ///
-/// Parenthesis depth is tracked outside string literals only, so a `)` inside a
-/// message (`"… (CSP still blocking?)"`) does not truncate the invocation and
-/// hide the rest of its arguments from the scan.
+/// Both the macro-name search and the parenthesis counting run only over
+/// [`Lex::Code`] characters, so neither a `)` inside a message
+/// (`"… (CSP still blocking?)"`) nor a commented-out `assert!(` can throw the
+/// scan off.
 fn panic_invocations(src: &str) -> Vec<Invocation> {
-    let bytes: Vec<char> = src.chars().collect();
+    let chars: Vec<char> = src.chars().collect();
+    let lex = classify(&chars);
+
     // Precompute the 1-based line number of every character index.
-    let mut line_of = Vec::with_capacity(bytes.len());
+    let mut line_of = Vec::with_capacity(chars.len());
     let mut line = 1usize;
-    for &c in &bytes {
+    for &c in &chars {
         line_of.push(line);
         if c == '\n' {
             line += 1;
@@ -96,12 +238,16 @@ fn panic_invocations(src: &str) -> Vec<Invocation> {
 
     let mut out = Vec::new();
     let mut i = 0usize;
-    while i < bytes.len() {
+    while i < chars.len() {
+        if lex[i] != Lex::Code {
+            i += 1;
+            continue;
+        }
         let Some(open) = PANIC_MACROS.iter().find_map(|needle| {
             let n: Vec<char> = needle.chars().collect();
-            if i + n.len() <= bytes.len() && bytes[i..i + n.len()] == n[..] {
+            if i + n.len() <= chars.len() && chars[i..i + n.len()] == n[..] {
                 // `debug_assert!` / `xyz_assert!` must not match `assert!(`.
-                let prev_ok = i == 0 || !(bytes[i - 1].is_alphanumeric() || bytes[i - 1] == '_');
+                let prev_ok = i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
                 prev_ok.then_some(i + n.len())
             } else {
                 None
@@ -114,21 +260,9 @@ fn panic_invocations(src: &str) -> Vec<Invocation> {
         let start_line = line_of[i];
         let mut j = open;
         let mut depth = 1usize;
-        let mut in_str = false;
-        let mut escaped = false;
-        while j < bytes.len() && depth > 0 {
-            let c = bytes[j];
-            if in_str {
-                if escaped {
-                    escaped = false;
-                } else if c == '\\' {
-                    escaped = true;
-                } else if c == '"' {
-                    in_str = false;
-                }
-            } else {
-                match c {
-                    '"' => in_str = true,
+        while j < chars.len() && depth > 0 {
+            if lex[j] == Lex::Code {
+                match chars[j] {
                     '(' => depth += 1,
                     ')' => depth -= 1,
                     _ => {}
@@ -138,11 +272,91 @@ fn panic_invocations(src: &str) -> Vec<Invocation> {
         }
         out.push(Invocation {
             line: start_line,
-            text: bytes[i..j.min(bytes.len())].iter().collect(),
+            text: chars[i..j.min(chars.len())].iter().collect(),
         });
         i = open;
     }
     out
+}
+
+/// The lexer is the load-bearing part of this guard, so pin it against the
+/// three shapes that would otherwise produce silent false negatives.
+#[test]
+fn unit_179_lexer_ignores_parens_in_comments_strings_and_raw_strings() {
+    // A `)` in a line comment must not close the invocation early — if it did,
+    // the `stdout` on the following line would be missed and this would be
+    // reported as an offender.
+    let src = r###"
+fn f() {
+    assert!(
+        ok, // a stray ) in a comment
+        "stderr: {}", note(&out.stdout)
+    );
+}
+"###;
+    let invs = panic_invocations(src);
+    assert_eq!(invs.len(), 1, "expected exactly one invocation");
+    assert!(invs[0].text.contains("stdout"), "{}", invs[0].text);
+
+    // A raw string holding an unbalanced paren must not unbalance the scan.
+    let src = r###"
+fn f() {
+    assert!(x, "stderr {}", r#"unbalanced ( paren"#);
+    let after_stdout = 1;
+}
+"###;
+    let invs = panic_invocations(src);
+    assert_eq!(invs.len(), 1);
+    assert!(
+        !invs[0].text.contains("after_stdout"),
+        "the invocation ran past its own closing paren: {}",
+        invs[0].text
+    );
+
+    // A commented-out macro is not an invocation at all.
+    let src = "fn f() {\n    // assert!(nope, \"stderr\");\n    let x = 1;\n}\n";
+    assert!(panic_invocations(src).is_empty(), "{src}");
+}
+
+/// Does this invocation report `stderr` without reporting `stdout`?
+///
+/// `output_note` carries both streams by construction, so it satisfies the rule
+/// without the literal word `stdout` appearing at the call site.
+fn is_offender(text: &str) -> bool {
+    text.contains("stderr") && !text.contains("stdout") && !text.contains("output_note(")
+}
+
+/// Positive control. Without this, any bug that made the scan return nothing —
+/// a mis-resolved root, a lexer that swallows every invocation — would present
+/// as a clean pass, which is the exact failure mode this file exists to
+/// prevent elsewhere.
+#[test]
+fn unit_179_the_scan_actually_flags_a_known_offender() {
+    let bad = r###"
+fn f() {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "run failed — stderr: {stderr}");
+}
+"###;
+    let invs = panic_invocations(bad);
+    assert_eq!(invs.len(), 1, "expected one invocation in the fixture");
+    assert!(
+        is_offender(&invs[0].text),
+        "the known-bad shape must be flagged: {}",
+        invs[0].text
+    );
+
+    // …and the two accepted repairs must both clear it.
+    let with_stdout = r#"assert!(ok, "failed — stdout={stdout} stderr={stderr}");"#;
+    assert!(!is_offender(&panic_invocations(with_stdout)[0].text));
+
+    let with_note = r#"assert!(ok, "failed — {}", crate::common::output_note(&out));"#;
+    let inv = &panic_invocations(with_note)[0].text;
+    assert!(inv.contains("stderr") || !inv.contains("stderr"));
+    assert!(
+        !is_offender(inv),
+        "output_note must satisfy the rule: {inv}"
+    );
 }
 
 /// AC `unit_179_no_assertion_reports_stderr_without_stdout`: every panic
@@ -163,12 +377,7 @@ fn unit_179_no_assertion_reports_stderr_without_stdout() {
             };
             for inv in panic_invocations(&src) {
                 scanned += 1;
-                // `output_note` carries both streams by construction, so it
-                // satisfies the rule without the literal word appearing here.
-                if inv.text.contains("stderr")
-                    && !inv.text.contains("stdout")
-                    && !inv.text.contains("output_note(")
-                {
+                if is_offender(&inv.text) {
                     let head: String = inv.text.chars().take(120).collect();
                     offenders.push(format!(
                         "{}:{}: {}",
