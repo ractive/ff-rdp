@@ -2,7 +2,7 @@
 title: "Iteration 179: live_62's runner assertion sees an empty network buffer, and now fails 8/8 on a machine where it used to pass"
 type: iteration
 date: 2026-08-18
-status: in-review
+status: done
 branch: iter-179/runner-network-buffer-empty
 depends_on: []
 first_call_sites: []
@@ -10,7 +10,7 @@ dogfood_path: |
   # Product-or-harness boundary defect, surfaced while measuring iteration 180.
   # It reproduces SERIALLY on an idle machine — do not chase it as a
   # parallelism artifact, which is what it first looked like.
-
+  
   # 1. Reproduce. FAILED 8/8 on 2026-08-18 under sustained load; PASSED 4/4 on
   #    2026-08-22 on the same machine, same commit, idle. So run this FIRST and
   #    expect either outcome — see "Re-measured 2026-08-22" below before
@@ -18,12 +18,12 @@ dogfood_path: |
   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 \
     cargo test -q -p ff-rdp-cli --test live -- --ignored --exact \
     live_62_page_map_index::live_runner_page_map_resolution
-
+  
   # 1b. If it passes, load the machine and try again — that is the actual
   #     experiment now. Compare load averages, not just pass/fail.
   uptime   # 2026-08-18 (failing): 15.55 97.57 184.24 — sustained 15-min load 184
            # 2026-08-22 (passing):  6.55  6.38   7.32
-
+  
   # 2. See the real error. The assertion prints ONLY stderr, and ff-rdp writes
   #    errors to STDOUT, so the panic message is empty as shipped. Patch it to
   #    print stdout (Theme A does this permanently) and the step-4 envelope is:
@@ -33,7 +33,7 @@ dogfood_path: |
   #     "elapsed_ms":3025,"diagnostics":{"events_in_buffer":0}}
   #    Note events_in_buffer=0 — not "no MATCHING event", but no events AT ALL,
   #    on a run whose step 1 navigate reported a 200.
-
+  
   # 3. Rule out what has already been ruled out (2026-08-18), before re-deriving:
   #    - not this batch's code: 8/8 failures at main 788f362 AND 8/8 at 4d639e2
   #      (pre-169), built in a separate worktree
@@ -42,11 +42,16 @@ dogfood_path: |
   #    - not a Firefox update: bundle mtime Aug 12, BuildID 20260810162159,
   #      matching the browser that was running when it last passed
   #    - not the fixture server's port: FixtureServer binds 127.0.0.1:0
-
+  
   # 4. The open question this iteration must answer: does `ff-rdp run` buffer
   #    network events at all on this path, and if so when does buffering start
   #    relative to the click that triggers the POST?
-tags: [iteration, network, runner, live-tests, flaky]
+tags:
+  - iteration
+  - network
+  - runner
+  - live-tests
+  - flaky
 ---
 
 # Iteration 179: the runner's network buffer is empty when `assert_network` reads it
