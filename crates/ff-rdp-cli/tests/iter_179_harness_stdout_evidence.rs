@@ -150,9 +150,7 @@ fn classify(chars: &[char]) -> Vec<Lex> {
             }
             if chars.get(j) == Some(&'"') {
                 // `r` and the opening delimiter are not code.
-                for k in i..=j {
-                    out[k] = Lex::Skip;
-                }
+                out[i..=j].fill(Lex::Skip);
                 let mut k = j + 1;
                 loop {
                     if k >= chars.len() {
@@ -161,9 +159,7 @@ fn classify(chars: &[char]) -> Vec<Lex> {
                     if chars[k] == '"' {
                         let closes = (1..=hashes).all(|h| chars.get(k + h) == Some(&'#'));
                         if closes {
-                            for m in k..=(k + hashes).min(chars.len() - 1) {
-                                out[m] = Lex::Skip;
-                            }
+                            out[k..=(k + hashes).min(chars.len() - 1)].fill(Lex::Skip);
                             k += hashes + 1;
                             break;
                         }
@@ -203,9 +199,7 @@ fn classify(chars: &[char]) -> Vec<Lex> {
             let is_escaped = next == Some('\\');
             let close_at = if is_escaped { i + 3 } else { i + 2 };
             if chars.get(close_at) == Some(&'\'') {
-                for k in i..=close_at {
-                    out[k] = Lex::Skip;
-                }
+                out[i..=close_at].fill(Lex::Skip);
                 i = close_at + 1;
                 continue;
             }
@@ -286,25 +280,25 @@ fn unit_179_lexer_ignores_parens_in_comments_strings_and_raw_strings() {
     // A `)` in a line comment must not close the invocation early — if it did,
     // the `stdout` on the following line would be missed and this would be
     // reported as an offender.
-    let src = r###"
+    let src = r#"
 fn f() {
     assert!(
         ok, // a stray ) in a comment
         "stderr: {}", note(&out.stdout)
     );
 }
-"###;
+"#;
     let invs = panic_invocations(src);
     assert_eq!(invs.len(), 1, "expected exactly one invocation");
     assert!(invs[0].text.contains("stdout"), "{}", invs[0].text);
 
     // A raw string holding an unbalanced paren must not unbalance the scan.
-    let src = r###"
+    let src = r##"
 fn f() {
     assert!(x, "stderr {}", r#"unbalanced ( paren"#);
     let after_stdout = 1;
 }
-"###;
+"##;
     let invs = panic_invocations(src);
     assert_eq!(invs.len(), 1);
     assert!(
@@ -332,12 +326,12 @@ fn is_offender(text: &str) -> bool {
 /// prevent elsewhere.
 #[test]
 fn unit_179_the_scan_actually_flags_a_known_offender() {
-    let bad = r###"
+    let bad = r#"
 fn f() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "run failed — stderr: {stderr}");
 }
-"###;
+"#;
     let invs = panic_invocations(bad);
     assert_eq!(invs.len(), 1, "expected one invocation in the fixture");
     assert!(
@@ -352,7 +346,6 @@ fn f() {
 
     let with_note = r#"assert!(ok, "failed — {}", crate::common::output_note(&out));"#;
     let inv = &panic_invocations(with_note)[0].text;
-    assert!(inv.contains("stderr") || !inv.contains("stderr"));
     assert!(
         !is_offender(inv),
         "output_note must satisfy the rule: {inv}"
