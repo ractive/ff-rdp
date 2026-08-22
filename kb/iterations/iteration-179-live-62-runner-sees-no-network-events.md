@@ -11,10 +11,18 @@ dogfood_path: |
   # It reproduces SERIALLY on an idle machine — do not chase it as a
   # parallelism artifact, which is what it first looked like.
 
-  # 1. Reproduce. Expect FAILED (measured 8/8 on 2026-08-18).
+  # 1. Reproduce. FAILED 8/8 on 2026-08-18 under sustained load; PASSED 4/4 on
+  #    2026-08-22 on the same machine, same commit, idle. So run this FIRST and
+  #    expect either outcome — see "Re-measured 2026-08-22" below before
+  #    concluding anything from a green run.
   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 \
     cargo test -q -p ff-rdp-cli --test live -- --ignored --exact \
     live_62_page_map_index::live_runner_page_map_resolution
+
+  # 1b. If it passes, load the machine and try again — that is the actual
+  #     experiment now. Compare load averages, not just pass/fail.
+  uptime   # 2026-08-18 (failing): 15.55 97.57 184.24 — sustained 15-min load 184
+           # 2026-08-22 (passing):  6.55  6.38   7.32
 
   # 2. See the real error. The assertion prints ONLY stderr, and ff-rdp writes
   #    errors to STDOUT, so the panic message is empty as shipped. Patch it to
@@ -80,6 +88,38 @@ runner's network buffer is empty, on a run whose step-1 navigate itself reported
 machine changed in some way none of the checks above captures. **That unknown is this iteration's
 subject** — a test that flips from 0/8 to 8/8 without a code change is worth more than the
 assertion it makes.
+
+### Re-measured 2026-08-22 — it passes 4/4, and the difference is machine load
+
+Same commit, same machine, four days later, nothing rebuilt: **4/4 PASS**.
+
+| date | result | load average (1/5/15 min) | context |
+|---|---|---|---|
+| 2026-08-17 | passed (2 full sweeps) | idle | iterations 171 and 173 sweeps |
+| 2026-08-18 | **failed 8/8**, and 8/8 at `4d639e2` | **15.55 / 97.57 / 184.24** | immediately after six back-to-back `-j6` sweeps, with Spotlight indexing GBs of fresh profile dirs |
+| 2026-08-22 | **passed 4/4** | **6.55 / 6.38 / 7.32** | idle machine |
+
+**The leading hypothesis is therefore no longer "the subscription is broken".** It is that
+`assert_network`'s wait is time-bounded (the failing envelope spent `elapsed_ms: 3025` before
+giving up) and that under sustained load the events do not arrive inside it. That would put this in
+the same class as [[iteration-177-slow3g-assertion-has-two-percent-headroom]] and the launch
+timeouts [[iteration-173-live-sweep-port-6000-firefox-does-not-survive]] reclassified: a
+time-bounded assertion with no margin, not a broken code path.
+
+**This is correlation, not proof, and Theme B must not assume it.** Two things are still unexplained
+and both matter more than the pass/fail flip:
+
+1. `events_in_buffer: 0` means **zero** events, not "the POST was late" — a pure timeout on a busy
+   machine would more plausibly show a partial buffer. Explain the zero, or show that zero is what
+   a not-yet-started subscription looks like.
+2. Whether load is the variable at all is **testable**: load the machine deliberately (the
+   `-j6` sweep from [[iteration-180-live-sweep-cost-and-parallelism]] is a ready-made load
+   generator) and re-run. If it fails under load and passes idle, that is the answer; if it fails
+   idle too, the hypothesis above is wrong and should be struck from this plan.
+
+Theme A (the stderr/stdout diagnosability bug) is **unaffected by any of this** — it is a real
+defect in the test's failure reporting whether or not the assertion ever fires again, and it is the
+reason none of the above was visible without patching the test by hand.
 
 ## Why it looked like a parallelism failure, and why that matters
 
