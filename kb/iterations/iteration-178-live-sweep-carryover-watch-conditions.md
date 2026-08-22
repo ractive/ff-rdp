@@ -1,5 +1,5 @@
 ---
-title: "Iteration 178: five watch-conditions carried over from live-sweep runs — no plan currently owns them"
+title: "Iteration 178: six watch-conditions carried over from live-sweep runs — no plan currently owns them"
 type: iteration
 date: 2026-08-17
 status: planned
@@ -9,7 +9,7 @@ depends_on:
   - iteration-179-live-62-runner-sees-no-network-events
 first_call_sites: []
 dogfood_path: |
-  # This plan has no code to run yet — it exists to hold five trigger
+  # This plan has no code to run yet — it exists to hold six trigger
   # conditions from live-sweep carry-over until one of them fires.
   # The dogfood step, until then, is simply reading the sweep output for the
   # signal each row below names.
@@ -18,6 +18,7 @@ dogfood_path: |
   # grep the log for these two test names:
   #   live_160_envelope_honesty::live_160_ref_click_asserts_handler_effect
   #   live_104_security_pwa::live_manifest_fetch_canonical
+  #   live_145_error_envelope_completeness::live_145_click_element_not_found_unchanged
 tags: [iteration, testing, live-tests, tooling, carry-over]
 ---
 
@@ -32,10 +33,11 @@ iteration currently watching for the trigger. Iteration 173 was the last iterati
 nothing folds these forward automatically — this plan is that fold, filed so the trigger
 conditions are not silently lost.
 
-A fifth condition was added by [[iteration-179-live-62-runner-sees-no-network-events]]'s carry-over
-sweep on 2026-08-22 (`live_104`, condition 5 below) — same shape, same reason for being here.
+A fifth and a sixth condition were added by
+[[iteration-179-live-62-runner-sees-no-network-events]]'s carry-over sweep on 2026-08-22
+(`live_104` and `live_145`, conditions 5 and 6 below) — same shape, same reason for being here.
 
-This plan intentionally does **not** prescribe a fix for any of the five items — none of them has
+This plan intentionally does **not** prescribe a fix for any of the six items — none of them has
 enough evidence yet to design one. It exists to be the place a future iteration starts from once
 the evidence arrives.
 
@@ -147,7 +149,25 @@ asking whether the 20 s budget in the test is the right knob at all.
   port-6000 death from iteration 166's sweep — that is a fifth, pre-existing watch condition, but
   it already has an owning plan and is not duplicated here.
 
-## Acceptance Criteria [0/5]
+### 6. `live_145_error_envelope_completeness::live_145_click_element_not_found_unchanged` — 21.9 s under `-j6`, green serially
+Failed during [[iteration-179-live-62-runner-sees-no-network-events]]'s `-j6` load experiment on
+2026-08-22 (`FAIL [21.934s] (123/279)`), and **passed** in the serial sweep the same hour. It is
+here for the reason the carry-over procedure names explicitly: *one green run is not evidence a
+load-sensitive defect is fixed.*
+
+Unlike condition 5, almost nothing is ruled out yet — the `-j6` run was a load generator, not a
+measurement, so no envelope was captured and the bound it exceeded has not even been identified.
+Recording it as a watch condition is therefore the honest ceiling on what one observation
+supports; hunting it now would mean inventing the evidence.
+
+**Trigger**: this test fails in any `live-sweep`, or fails again under `-j6` **with its failure
+message captured** (Theme A of iteration 179 means the message will now carry `stdout`, so one
+more occurrence should be enough to classify it).
+**Action then**: identify the bound it exceeds before proposing any change to it, per
+[[iteration-177-slow3g-assertion-has-two-percent-headroom]]'s method — a bound raised without a
+measured distribution is the same defect one notch further out.
+
+## Acceptance Criteria [0/6]
 
 - [ ] Watch condition 1 (`live_160` intermittent failure) has either fired (and been forked into
       its own plan per the action above) or has not fired since this plan was filed
@@ -159,6 +179,9 @@ asking whether the 20 s budget in the test is the right knob at all.
       or has not fired since this plan was filed
 - [ ] Watch condition 5 (`live_104` daemon timeout) has either fired a second time (and been forked
       into its own plan per the action above) or has not fired since this plan was filed
+- [ ] Watch condition 6 (`live_145` under load) has either fired with its message captured (and
+      been forked into its own plan per the action above) or has not fired since this plan was
+      filed
 
 None of these boxes can be ticked by inspection alone — each requires either a live-sweep run that
 observes the trigger and forks a follow-up plan, or a deliberate decision that this plan is
@@ -170,8 +193,8 @@ premature "done" this repo's discipline rules exist to prevent.
 
 - [[iteration-173-live-sweep-port-6000-firefox-does-not-survive]] — source of watch conditions
   1-4, and the carry-over sweep that filed this plan
-- [[iteration-179-live-62-runner-sees-no-network-events]] — source of watch condition 5, and the
-  iteration whose Theme A made its failure message readable in the first place
+- [[iteration-179-live-62-runner-sees-no-network-events]] — source of watch conditions 5 and 6,
+  and the iteration whose Theme A made condition 5's failure message readable in the first place
 - [[iteration-172-daemon-registry-torn-read-on-autostart]] — added the
   `meta.route`/`meta.daemon_fallback` diagnostic that watch condition 1 depends on
 - [[iteration-170-eval-scanner-residual-gaps]] — original iteration where the launch-timeout

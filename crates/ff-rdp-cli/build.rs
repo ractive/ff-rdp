@@ -85,6 +85,5 @@ fn git_is_dirty() -> bool {
     Command::new("git")
         .args(["status", "--porcelain"])
         .output()
-        .ok()
-        .is_some_and(|out| out.status.success() && !out.stdout.is_empty())
+        .is_ok_and(|out| out.status.success() && !out.stdout.is_empty())
 }
