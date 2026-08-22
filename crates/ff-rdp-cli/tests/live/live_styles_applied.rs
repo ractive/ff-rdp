@@ -64,7 +64,7 @@ fn live_styles_applied_returns_real_rules() {
     assert!(
         nav.status.success(),
         "live_styles_applied_returns_real_rules: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Run styles p --applied.
@@ -75,8 +75,8 @@ fn live_styles_applied_returns_real_rules() {
         .expect("ff-rdp styles p --applied");
     assert!(
         out.status.success(),
-        "live_styles_applied_returns_real_rules: styles failed — stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "live_styles_applied_returns_real_rules: styles failed — {}",
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);

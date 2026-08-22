@@ -228,7 +228,7 @@ fn pre_fix_repro_cascade_empty_rules_includes_inherited_note() {
     assert!(
         cascade.status.success(),
         "cascade command failed: {}",
-        String::from_utf8_lossy(&cascade.stderr)
+        crate::common::output_note(&cascade)
     );
 
     let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&cascade.stdout))

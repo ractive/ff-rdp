@@ -64,7 +64,7 @@ fn pre_fix_repro_navigate_second_call_waits_for_new_commit() {
         nav_a.status.success(),
         "pre_fix_repro_navigate_second_call_waits_for_new_commit: \
          first navigate failed — {}",
-        String::from_utf8_lossy(&nav_a.stderr)
+        crate::common::output_note(&nav_a)
     );
 
     // Navigate to PAGE_B (second call in same tab).
@@ -77,7 +77,7 @@ fn pre_fix_repro_navigate_second_call_waits_for_new_commit() {
         nav_b.status.success(),
         "pre_fix_repro_navigate_second_call_waits_for_new_commit: \
          second navigate failed — {}",
-        String::from_utf8_lossy(&nav_b.stderr)
+        crate::common::output_note(&nav_b)
     );
 
     let results = parse_results(&nav_b);
@@ -101,7 +101,7 @@ fn pre_fix_repro_navigate_second_call_waits_for_new_commit() {
         eval_out.status.success(),
         "pre_fix_repro_navigate_second_call_waits_for_new_commit: \
          eval failed — {}",
-        String::from_utf8_lossy(&eval_out.stderr)
+        crate::common::output_note(&eval_out)
     );
 
     let eval_s = String::from_utf8_lossy(&eval_out.stdout);
@@ -138,7 +138,7 @@ fn live_run_navigate_parity() {
     assert!(
         nav.status.success(),
         "live_run_navigate_parity: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // run must also succeed.  `ff-rdp run` consumes a script file: write a
@@ -188,7 +188,7 @@ fn live_index_navigate_parity() {
     assert!(
         nav.status.success(),
         "live_index_navigate_parity: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // index --depth 0 must also succeed.
@@ -200,6 +200,6 @@ fn live_index_navigate_parity() {
     assert!(
         index.status.success(),
         "live_index_navigate_parity: index --depth 0 failed — {}",
-        String::from_utf8_lossy(&index.stderr)
+        crate::common::output_note(&index)
     );
 }

@@ -88,7 +88,7 @@ fn navigate(port: u16, url: &str) {
     assert!(
         out.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 }
 
@@ -333,7 +333,7 @@ fn e2e_emulate_one_shot_lifetime_warning() {
     assert!(
         one_shot.status.success(),
         "emulate --no-daemon must succeed: {}",
-        String::from_utf8_lossy(&one_shot.stderr)
+        crate::common::output_note(&one_shot)
     );
     let one_shot_json: Value =
         serde_json::from_slice(&one_shot.stdout).expect("one-shot emulate output is JSON");

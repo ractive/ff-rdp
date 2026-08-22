@@ -124,8 +124,8 @@ fn live_daemon_stop_after_launch_frees_port() {
     assert!(
         stop.status.success(),
         "live_daemon_stop_after_launch_frees_port: daemon stop returned non-zero — \
-         stderr={}",
-        String::from_utf8_lossy(&stop.stderr)
+         {}",
+        crate::common::output_note(&stop)
     );
 
     let port_freed = wait_port_free(port, Duration::from_secs(4));
@@ -309,8 +309,8 @@ fn pre_fix_repro_daemon_state_sharing_red_then_green() {
     assert!(
         relaunch_out.status.success(),
         "pre_fix_repro_daemon_state_sharing_red_then_green: FAIL — follow-up launch \
-         returned non-zero\nstderr={}",
-        String::from_utf8_lossy(&relaunch_out.stderr)
+         returned non-zero\n{}",
+        crate::common::output_note(&relaunch_out)
     );
 
     let relaunch_json: serde_json::Value =

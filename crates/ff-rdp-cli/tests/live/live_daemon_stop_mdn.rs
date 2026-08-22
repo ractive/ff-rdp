@@ -135,8 +135,8 @@ fn live_daemon_stop_on_mdn_headless() {
     assert!(
         stop_out.status.success(),
         "live_daemon_stop_on_mdn_headless: FAIL — daemon stop returned non-zero — \
-         stderr={}",
-        String::from_utf8_lossy(&stop_out.stderr)
+         {}",
+        crate::common::output_note(&stop_out)
     );
 
     // Port must be free immediately (or within a short poll window).

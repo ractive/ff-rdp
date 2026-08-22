@@ -52,7 +52,7 @@ fn live_cascade_explains_pico_dialog() {
     assert!(
         out.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 
     // 1) cascade — must list ≥ 2 rules with distinct stylesheets.
@@ -69,8 +69,8 @@ fn live_cascade_explains_pico_dialog() {
         .expect("ff-rdp cascade");
     assert!(
         out.status.success(),
-        "cascade failed: stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "cascade failed: {}",
+        crate::common::output_note(&out)
     );
     let cascade: Value = serde_json::from_slice(&out.stdout).expect("cascade JSON");
     let entry = &cascade["results"][0];

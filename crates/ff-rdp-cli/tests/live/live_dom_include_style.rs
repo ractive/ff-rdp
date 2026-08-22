@@ -32,7 +32,7 @@ fn dom_include_style_attaches_computed_values() {
     assert!(
         out.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 
     let mut args = base_args(ff.port());
@@ -48,8 +48,8 @@ fn dom_include_style_attaches_computed_values() {
         .expect("ff-rdp dom --include-style");
     assert!(
         out.status.success(),
-        "dom --include-style failed: stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "dom --include-style failed: {}",
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);

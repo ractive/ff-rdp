@@ -42,14 +42,21 @@ fn rust_files(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The test trees this scan covers.
+/// The test trees this scan covers: the two live tiers.
+///
+/// `crates/ff-rdp-cli/tests/e2e/` is deliberately **not** scanned. It is the
+/// mock-server tier, it has its own `support` module rather than the live
+/// `common` one, and iteration 179 measured 246 further sites there — a
+/// separate, larger mechanical change that
+/// [[iteration-181-e2e-tier-stdout-evidence]] carries. Widening this array is
+/// all that is needed once that lands.
 fn scanned_roots() -> Vec<PathBuf> {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("crates/ff-rdp-cli has a parent")
         .to_path_buf();
     vec![
-        crates.join("ff-rdp-cli/tests"),
+        crates.join("ff-rdp-cli/tests/live"),
         crates.join("ff-rdp-core/tests"),
     ]
 }
@@ -156,7 +163,12 @@ fn unit_179_no_assertion_reports_stderr_without_stdout() {
             };
             for inv in panic_invocations(&src) {
                 scanned += 1;
-                if inv.text.contains("stderr") && !inv.text.contains("stdout") {
+                // `output_note` carries both streams by construction, so it
+                // satisfies the rule without the literal word appearing here.
+                if inv.text.contains("stderr")
+                    && !inv.text.contains("stdout")
+                    && !inv.text.contains("output_note(")
+                {
                     let head: String = inv.text.chars().take(120).collect();
                     offenders.push(format!(
                         "{}:{}: {}",
@@ -170,9 +182,9 @@ fn unit_179_no_assertion_reports_stderr_without_stdout() {
     }
 
     assert!(
-        scanned >= 500,
+        scanned >= 1200,
         "the scan must actually reach the assertions: only {scanned} panic-macro \
-         invocations found across the test trees"
+         invocations found across the live test trees"
     );
     assert!(
         offenders.is_empty(),

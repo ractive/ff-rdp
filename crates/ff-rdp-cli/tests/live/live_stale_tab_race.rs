@@ -79,7 +79,7 @@ fn live_stale_tab_race_no_such_actor_after_navigate() {
     assert!(
         nav1.status.success(),
         "navigate 1 failed: {}",
-        String::from_utf8_lossy(&nav1.stderr)
+        crate::common::output_note(&nav1)
     );
 
     // Sanity check: confirm we actually landed on site A before racing the
@@ -92,7 +92,7 @@ fn live_stale_tab_race_no_such_actor_after_navigate() {
     assert!(
         text1.status.success(),
         "page-text after navigate 1 failed: {}",
-        String::from_utf8_lossy(&text1.stderr)
+        crate::common::output_note(&text1)
     );
     let text1_json: serde_json::Value =
         serde_json::from_str(String::from_utf8_lossy(&text1.stdout).trim())
@@ -115,7 +115,7 @@ fn live_stale_tab_race_no_such_actor_after_navigate() {
     assert!(
         nav2.status.success(),
         "navigate 2 failed: {}",
-        String::from_utf8_lossy(&nav2.stderr)
+        crate::common::output_note(&nav2)
     );
 
     // dom stats after re-navigate — must not use a stale actor ID.
@@ -126,13 +126,14 @@ fn live_stale_tab_race_no_such_actor_after_navigate() {
         .expect("dom stats failed");
 
     let stderr = String::from_utf8_lossy(&stats.stderr);
+    let stdout_note = crate::common::output_note(&stats);
     assert!(
         stats.status.success(),
-        "Theme I regression: dom stats failed after cross-site double-navigate: {stderr}"
+        "Theme I regression: dom stats failed after cross-site double-navigate: {stdout_note}"
     );
     assert!(
         !stderr.contains("No such actor"),
-        "Theme I regression: 'No such actor' in stderr — stale tab cache bug: {stderr}"
+        "Theme I regression: 'No such actor' in stderr — stale tab cache bug: {stdout_note}"
     );
 
     eprintln!("live_stale_tab_race_no_such_actor_after_navigate: PASS");

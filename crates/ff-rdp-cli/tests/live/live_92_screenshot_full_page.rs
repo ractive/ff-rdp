@@ -71,7 +71,7 @@ fn pre_fix_repro_screenshot_full_page_taller_than_viewport() {
         nav.status.success(),
         "pre_fix_repro_screenshot_full_page_taller_than_viewport: \
          navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Query scrollHeight and DPR via eval.
@@ -87,7 +87,7 @@ fn pre_fix_repro_screenshot_full_page_taller_than_viewport() {
         scroll_eval.status.success(),
         "pre_fix_repro_screenshot_full_page_taller_than_viewport: \
          scrollHeight eval failed — {}",
-        String::from_utf8_lossy(&scroll_eval.stderr)
+        crate::common::output_note(&scroll_eval)
     );
 
     let eval_json = {
@@ -124,7 +124,7 @@ fn pre_fix_repro_screenshot_full_page_taller_than_viewport() {
         out.status.success(),
         "pre_fix_repro_screenshot_full_page_taller_than_viewport: \
          screenshot --full-page exited non-zero — {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 
     let results = parse_results_json(&out);
@@ -190,7 +190,7 @@ fn live_screenshot_full_page_md5_differs_from_viewport() {
         nav.status.success(),
         "live_screenshot_full_page_md5_differs_from_viewport: \
          navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Viewport capture.
@@ -203,7 +203,7 @@ fn live_screenshot_full_page_md5_differs_from_viewport() {
         viewport_out.status.success(),
         "live_screenshot_full_page_md5_differs_from_viewport: \
          viewport screenshot failed — {}",
-        String::from_utf8_lossy(&viewport_out.stderr)
+        crate::common::output_note(&viewport_out)
     );
 
     // Full-page capture.
@@ -216,7 +216,7 @@ fn live_screenshot_full_page_md5_differs_from_viewport() {
         full_page_out.status.success(),
         "live_screenshot_full_page_md5_differs_from_viewport: \
          full-page screenshot failed — {}",
-        String::from_utf8_lossy(&full_page_out.stderr)
+        crate::common::output_note(&full_page_out)
     );
 
     let vp_b64 = {

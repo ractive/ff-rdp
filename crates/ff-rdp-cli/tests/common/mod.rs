@@ -797,6 +797,30 @@ pub fn daemon_route_note(stdout: &[u8]) -> String {
     }
 }
 
+/// Both output streams of a finished `ff-rdp` invocation, formatted for a
+/// panic message (iter-179).
+///
+/// `ff-rdp` is a JSON-on-stdout tool: its **error envelopes go to stdout**, and
+/// stderr is usually empty. A failure message built from `out.stderr` alone
+/// therefore ships with nothing after the colon — which is exactly how
+/// iteration 179 lost the `diagnostics.events_in_buffer: 0` field that was the
+/// most informative fact about `live_62`'s failure. Three iterations have now
+/// fixed one instance of this each (169, 172, 179); `output_note` is the shared
+/// form so there is no fourth, and
+/// `tests/iter_179_harness_stdout_evidence.rs` fails the build if a live
+/// assertion goes back to naming only `stderr`.
+///
+/// Both streams are trimmed and included unconditionally — an empty one is
+/// itself evidence (it says the tool wrote nothing there).
+pub fn output_note(out: &std::process::Output) -> String {
+    format!(
+        "status={:?} stdout={} stderr={}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).trim(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    )
+}
+
 /// Env var overriding [`daemon_ready_timeout`] (iter-164).
 pub const DAEMON_READY_TIMEOUT_ENV: &str = "FF_RDP_TEST_DAEMON_READY_TIMEOUT_S";
 

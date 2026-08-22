@@ -61,7 +61,7 @@ fn live_snapshot_max_depth_truncates_tree() {
     assert!(
         nav.status.success(),
         "snapshot_max_depth_truncates_tree: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Run snapshot --max-depth 2.
@@ -72,8 +72,8 @@ fn live_snapshot_max_depth_truncates_tree() {
         .expect("ff-rdp snapshot --max-depth 2");
     assert!(
         out.status.success(),
-        "snapshot_max_depth_truncates_tree: snapshot failed — stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "snapshot_max_depth_truncates_tree: snapshot failed — {}",
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);

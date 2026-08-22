@@ -54,7 +54,7 @@ fn live_screenshot_bulk_fallback_then_eval() {
     assert!(
         nav.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Take a --bulk screenshot.  `--bulk` is now a boolean flag (the bulk path

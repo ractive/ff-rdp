@@ -54,7 +54,7 @@ fn live_styles_applied_dedupe_no_duplicate_actor_ids() {
     assert!(
         nav.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let out = Command::new(ff_rdp_bin())
@@ -66,7 +66,7 @@ fn live_styles_applied_dedupe_no_duplicate_actor_ids() {
     assert!(
         out.status.success(),
         "styles applied failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);

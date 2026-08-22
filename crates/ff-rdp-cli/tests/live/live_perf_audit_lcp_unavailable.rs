@@ -92,7 +92,7 @@ fn live_perf_audit_lcp_unavailable() {
     assert!(
         nav.status.success(),
         "live_perf_audit_lcp_unavailable: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let perf_out = Command::new(ff_rdp_bin())
@@ -103,7 +103,7 @@ fn live_perf_audit_lcp_unavailable() {
     assert!(
         perf_out.status.success(),
         "live_perf_audit_lcp_unavailable: perf audit failed — {}",
-        String::from_utf8_lossy(&perf_out.stderr)
+        crate::common::output_note(&perf_out)
     );
 
     let perf_json: serde_json::Value =
@@ -170,7 +170,7 @@ fn live_perf_audit_vitals_lcp_parity() {
     assert!(
         nav.status.success(),
         "live_perf_audit_vitals_lcp_parity: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let vitals_out = Command::new(ff_rdp_bin())
@@ -181,7 +181,7 @@ fn live_perf_audit_vitals_lcp_parity() {
     assert!(
         vitals_out.status.success(),
         "live_perf_audit_vitals_lcp_parity: perf vitals failed — {}",
-        String::from_utf8_lossy(&vitals_out.stderr)
+        crate::common::output_note(&vitals_out)
     );
 
     let audit_out = Command::new(ff_rdp_bin())
@@ -192,7 +192,7 @@ fn live_perf_audit_vitals_lcp_parity() {
     assert!(
         audit_out.status.success(),
         "live_perf_audit_vitals_lcp_parity: perf audit failed — {}",
-        String::from_utf8_lossy(&audit_out.stderr)
+        crate::common::output_note(&audit_out)
     );
 
     let vitals_json: serde_json::Value =

@@ -130,7 +130,7 @@ fn live_cookies_surfaces_js_readable_cookie() {
     assert!(
         nav.status.success(),
         "live_cookies_surfaces_js_readable_cookie: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Run cookies with the document-cookie fallback enabled.
@@ -141,8 +141,8 @@ fn live_cookies_surfaces_js_readable_cookie() {
         .expect("ff-rdp cookies --include-document-cookie");
     assert!(
         out.status.success(),
-        "live_cookies_surfaces_js_readable_cookie: cookies failed — stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "live_cookies_surfaces_js_readable_cookie: cookies failed — {}",
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -234,7 +234,7 @@ fn live_cookies_default_surfaces_js_readable_cookie() {
     assert!(
         nav.status.success(),
         "live_cookies_default_surfaces_js_readable_cookie: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Run cookies WITHOUT --include-document-cookie — this is the key difference
@@ -246,8 +246,8 @@ fn live_cookies_default_surfaces_js_readable_cookie() {
         .expect("ff-rdp cookies (no flags)");
     assert!(
         out.status.success(),
-        "live_cookies_default_surfaces_js_readable_cookie: cookies failed — stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "live_cookies_default_surfaces_js_readable_cookie: cookies failed — {}",
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -357,7 +357,7 @@ fn live_cookies_httponly_enumerated() {
     assert!(
         nav.status.success(),
         "live_cookies_httponly_enumerated: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let out = Command::new(ff_rdp_bin())
@@ -367,8 +367,8 @@ fn live_cookies_httponly_enumerated() {
         .expect("ff-rdp cookies");
     assert!(
         out.status.success(),
-        "live_cookies_httponly_enumerated: cookies failed — stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "live_cookies_httponly_enumerated: cookies failed — {}",
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -454,7 +454,7 @@ fn live_cookies_storage_only_nonempty() {
     assert!(
         nav.status.success(),
         "live_cookies_storage_only_nonempty: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let out = Command::new(ff_rdp_bin())
@@ -464,8 +464,8 @@ fn live_cookies_storage_only_nonempty() {
         .expect("ff-rdp cookies --storage-only");
     assert!(
         out.status.success(),
-        "live_cookies_storage_only_nonempty: cookies failed — stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "live_cookies_storage_only_nonempty: cookies failed — {}",
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);

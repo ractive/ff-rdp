@@ -279,12 +279,12 @@ fn live_daemon_follow_survives_cross_process_nav() {
         "post-navigation event (sentinel {sentinel:?} in a follow-stream url) was not delivered \
          on the still-open daemon --follow stream after the top-level target switch; the iter-101 \
          purge path may have stranded the watcher subscription.\ncollected {} line(s): {:#?}\n\
-         follow stderr: {}",
+         follow {}",
         collected.len(),
         collected,
         follow_out
             .as_ref()
-            .map(|o| String::from_utf8_lossy(&o.stderr).into_owned())
+            .map(|o| crate::common::output_note(&o).into_owned())
             .unwrap_or_default(),
     );
 

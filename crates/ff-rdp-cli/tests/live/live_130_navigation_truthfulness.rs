@@ -139,7 +139,7 @@ fn live_130_back_forward_envelope() {
     assert!(
         nav_a.status.success(),
         "live_130_back_forward_envelope: navigate A failed — {}",
-        String::from_utf8_lossy(&nav_a.stderr)
+        crate::common::output_note(&nav_a)
     );
 
     let nav_b = Command::new(ff_rdp_bin())
@@ -150,7 +150,7 @@ fn live_130_back_forward_envelope() {
     assert!(
         nav_b.status.success(),
         "live_130_back_forward_envelope: navigate B failed — {}",
-        String::from_utf8_lossy(&nav_b.stderr)
+        crate::common::output_note(&nav_b)
     );
 
     // back → lands on A.
@@ -162,7 +162,7 @@ fn live_130_back_forward_envelope() {
     assert!(
         back.status.success(),
         "live_130_back_forward_envelope: back failed — {}",
-        String::from_utf8_lossy(&back.stderr)
+        crate::common::output_note(&back)
     );
     let back_results = parse_results(&back);
     assert_eq!(
@@ -192,7 +192,7 @@ fn live_130_back_forward_envelope() {
     assert!(
         fwd.status.success(),
         "live_130_back_forward_envelope: forward failed — {}",
-        String::from_utf8_lossy(&fwd.stderr)
+        crate::common::output_note(&fwd)
     );
     let fwd_results = parse_results(&fwd);
     assert_eq!(
@@ -245,7 +245,7 @@ fn live_130_reload_envelope() {
     assert!(
         nav.status.success(),
         "live_130_reload_envelope: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let reload = Command::new(ff_rdp_bin())
@@ -256,7 +256,7 @@ fn live_130_reload_envelope() {
     assert!(
         reload.status.success(),
         "live_130_reload_envelope: reload failed — {}",
-        String::from_utf8_lossy(&reload.stderr)
+        crate::common::output_note(&reload)
     );
 
     let results = parse_results(&reload);
@@ -319,7 +319,7 @@ fn live_130_perf_no_silent_zero() {
     assert!(
         nav.status.success(),
         "live_130_perf_no_silent_zero: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let reload = Command::new(ff_rdp_bin())
@@ -330,7 +330,7 @@ fn live_130_perf_no_silent_zero() {
     assert!(
         reload.status.success(),
         "live_130_perf_no_silent_zero: reload failed — {}",
-        String::from_utf8_lossy(&reload.stderr)
+        crate::common::output_note(&reload)
     );
 
     // Immediately query perf summary — the exact race window Theme C guards.
@@ -342,7 +342,7 @@ fn live_130_perf_no_silent_zero() {
     assert!(
         summary.status.success(),
         "live_130_perf_no_silent_zero: perf summary failed — {}",
-        String::from_utf8_lossy(&summary.stderr)
+        crate::common::output_note(&summary)
     );
 
     let results = parse_results(&summary);

@@ -64,7 +64,7 @@ fn navigate(port: u16, url: &str) {
     assert!(
         nav.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 }
 
@@ -93,8 +93,8 @@ fn pre_fix_repro_responsive_media_queries_do_not_flip() {
         .expect("ff-rdp responsive");
     assert!(
         out.status.success(),
-        "responsive (non-strict) must exit 0; stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "responsive (non-strict) must exit 0; {}",
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -150,8 +150,8 @@ fn live_responsive_self_check_reports_mismatch() {
     assert!(
         !out.status.success(),
         "responsive --strict must exit non-zero when media queries do not flip; \
-         stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+         {}",
+        crate::common::output_note(&out)
     );
 
     // The envelope is still emitted on stdout with matches == false.
@@ -192,8 +192,8 @@ fn pre_fix_repro_cascade_winner_ignores_media_context() {
         .expect("ff-rdp cascade");
     assert!(
         out.status.success(),
-        "cascade must exit 0; stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "cascade must exit 0; {}",
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);

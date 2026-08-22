@@ -47,7 +47,7 @@ fn live_cascade_real_site_cli() {
     assert!(
         nav.status.success(),
         "navigate https://tennis-sepp.ch failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let out = Command::new(ff_rdp_bin())
@@ -58,7 +58,7 @@ fn live_cascade_real_site_cli() {
     assert!(
         out.status.success(),
         "cascade failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);

@@ -200,7 +200,7 @@ fn live_145_click_js_exception_envelope() {
     assert!(
         click.stderr.is_empty(),
         "JSON-only output: nothing may go to stderr on this failure path; got: {}",
-        String::from_utf8_lossy(&click.stderr)
+        crate::common::output_note(&click)
     );
     let json = parse_json(&click);
     assert_eq!(
@@ -267,7 +267,7 @@ fn live_145_click_frame_scan_js_exception_envelope() {
     assert!(
         click.stderr.is_empty(),
         "JSON-only output: nothing may go to stderr on this failure path; got: {}",
-        String::from_utf8_lossy(&click.stderr)
+        crate::common::output_note(&click)
     );
     let json = parse_json(&click);
     assert_eq!(

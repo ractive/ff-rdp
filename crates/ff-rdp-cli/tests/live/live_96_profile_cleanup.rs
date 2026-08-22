@@ -116,8 +116,8 @@ fn pre_fix_repro_daemon_stop_removes_active_profile() {
     assert!(
         stop_out.status.success(),
         "pre_fix_repro_daemon_stop_removes_active_profile: daemon stop returned non-zero — \
-         stderr={}",
-        String::from_utf8_lossy(&stop_out.stderr)
+         {}",
+        crate::common::output_note(&stop_out)
     );
 
     let removed = wait_path_gone(&profile_path, Duration::from_secs(5));
@@ -171,8 +171,8 @@ fn live_daemon_stop_profile_path_matches_launch_json() {
     assert!(
         stop_out.status.success(),
         "live_daemon_stop_profile_path_matches_launch_json: daemon stop returned non-zero — \
-         stderr={}",
-        String::from_utf8_lossy(&stop_out.stderr)
+         {}",
+        crate::common::output_note(&stop_out)
     );
 
     let stop_json: serde_json::Value = serde_json::from_slice(&stop_out.stdout)
@@ -290,8 +290,8 @@ fn live_profiles_prune_removes_all_when_no_firefox_running() {
     assert!(
         list_out.status.success(),
         "live_profiles_prune_removes_all_when_no_firefox_running: profiles list must succeed — \
-         stderr={}",
-        String::from_utf8_lossy(&list_out.stderr)
+         {}",
+        crate::common::output_note(&list_out)
     );
     let list_json: serde_json::Value = serde_json::from_slice(&list_out.stdout).expect(
         "live_profiles_prune_removes_all_when_no_firefox_running: profiles list stdout is not valid JSON",
@@ -345,8 +345,8 @@ fn live_profiles_prune_removes_all_when_no_firefox_running() {
     assert!(
         prune_out.status.success(),
         "live_profiles_prune_removes_all_when_no_firefox_running: profiles prune --all must \
-         succeed — stderr={}",
-        String::from_utf8_lossy(&prune_out.stderr)
+         succeed — {}",
+        crate::common::output_note(&prune_out)
     );
 
     for dir in &seeded {

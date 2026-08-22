@@ -174,7 +174,7 @@ fn live_manifest_fetch_canonical() {
         assert!(
             out.status.success(),
             "navigate failed: {}",
-            String::from_utf8_lossy(&out.stderr)
+            crate::common::output_note(&out)
         );
     };
     let manifest = || {
@@ -186,7 +186,7 @@ fn live_manifest_fetch_canonical() {
         assert!(
             out.status.success(),
             "manifest must exit 0 (no-manifest is not an error): {}",
-            String::from_utf8_lossy(&out.stderr)
+            crate::common::output_note(&out)
         );
         parse_json(&out)
     };

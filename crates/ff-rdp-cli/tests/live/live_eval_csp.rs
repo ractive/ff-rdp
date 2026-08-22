@@ -108,7 +108,7 @@ fn pre_fix_repro_eval_works_on_strict_csp_site() {
     assert!(
         nav.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     let out = Command::new(ff_rdp_bin())
@@ -119,8 +119,8 @@ fn pre_fix_repro_eval_works_on_strict_csp_site() {
 
     assert!(
         out.status.success(),
-        "eval exited non-zero (CSP still blocking?) — stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        "eval exited non-zero (CSP still blocking?) — {}",
+        crate::common::output_note(&out)
     );
 
     let json = parse_json(&out.stdout, &out.stderr);
@@ -176,8 +176,8 @@ fn live_eval_returns_window_scroll_y_on_csp_site() {
 
     assert!(
         out.status.success(),
-        "eval exited non-zero — stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        "eval exited non-zero — {}",
+        crate::common::output_note(&out)
     );
 
     let json = parse_json(&out.stdout, &out.stderr);
@@ -245,7 +245,7 @@ fn live_eval_script_error_still_surfaces() {
     assert!(
         out.stderr.is_empty(),
         "JSON-only output: nothing may go to stderr; got: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
 }
 
@@ -292,8 +292,8 @@ fn live_eval_works_on_real_mdn() {
 
     assert!(
         out.status.success(),
-        "eval exited non-zero on MDN (CSP still blocking?) — stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        "eval exited non-zero on MDN (CSP still blocking?) — {}",
+        crate::common::output_note(&out)
     );
 
     let json = parse_json(&out.stdout, &out.stderr);

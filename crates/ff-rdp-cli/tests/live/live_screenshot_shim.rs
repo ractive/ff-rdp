@@ -80,7 +80,7 @@ fn live_screenshot_unchanged_after_shim() {
     assert!(
         nav.status.success(),
         "live_screenshot_unchanged_after_shim: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Inject a 1 200 px tall blue body.
@@ -98,7 +98,7 @@ fn live_screenshot_unchanged_after_shim() {
     assert!(
         setup.status.success(),
         "live_screenshot_unchanged_after_shim: body setup eval failed — {}",
-        String::from_utf8_lossy(&setup.stderr)
+        crate::common::output_note(&setup)
     );
 
     // Take a full-page screenshot in base64 mode.
@@ -114,8 +114,8 @@ fn live_screenshot_unchanged_after_shim() {
     assert!(
         out.status.success(),
         "live_screenshot_unchanged_after_shim: screenshot exited non-zero \
-         (ScreenshotArgsExt shim may have broken the request) — stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+         (ScreenshotArgsExt shim may have broken the request) — {}",
+        crate::common::output_note(&out)
     );
 
     let json = parse_json(&out);
@@ -200,7 +200,7 @@ fn live_screenshot_no_args_on_firefox_151() {
     assert!(
         nav.status.success(),
         "live_screenshot_no_args_on_firefox_151: navigate failed — {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 
     // Write screenshot to a temp file.
@@ -216,8 +216,8 @@ fn live_screenshot_no_args_on_firefox_151() {
 
     assert!(
         out.status.success(),
-        "live_screenshot_no_args_on_firefox_151: screenshot exited non-zero — stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        "live_screenshot_no_args_on_firefox_151: screenshot exited non-zero — {}",
+        crate::common::output_note(&out)
     );
 
     assert!(

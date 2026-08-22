@@ -88,7 +88,7 @@ fn live_network_default_watcher() {
     assert!(
         nav_output.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&nav_output.stderr)
+        crate::common::output_note(&nav_output)
     );
 
     // Query the network buffer.  Use `--detail` so `results` is the per-entry
@@ -103,7 +103,7 @@ fn live_network_default_watcher() {
     assert!(
         net_output.status.success(),
         "network failed: {}",
-        String::from_utf8_lossy(&net_output.stderr)
+        crate::common::output_note(&net_output)
     );
 
     let json = parse_json(&net_output);
@@ -179,7 +179,7 @@ fn live_network_detail_headers() {
     assert!(
         net_output.status.success(),
         "network --detail --headers failed: {}",
-        String::from_utf8_lossy(&net_output.stderr)
+        crate::common::output_note(&net_output)
     );
 
     let json = parse_json(&net_output);
@@ -316,7 +316,7 @@ fn live_console_tail() {
     assert!(
         console_output.status.success(),
         "console failed: {}",
-        String::from_utf8_lossy(&console_output.stderr)
+        crate::common::output_note(&console_output)
     );
 
     let json = parse_json(&console_output);

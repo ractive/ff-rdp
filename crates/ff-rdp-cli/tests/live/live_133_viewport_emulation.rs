@@ -49,7 +49,7 @@ fn navigate(port: u16, url: &str) {
     assert!(
         nav.status.success(),
         "navigate to {url} failed: {}",
-        String::from_utf8_lossy(&nav.stderr)
+        crate::common::output_note(&nav)
     );
 }
 

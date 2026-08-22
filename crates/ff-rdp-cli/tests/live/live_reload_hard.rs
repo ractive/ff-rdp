@@ -87,7 +87,7 @@ fn live_reload_hard_bypasses_cache() {
     assert!(
         out.status.success(),
         "navigate failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        crate::common::output_note(&out)
     );
     let initial = counter.load(Ordering::SeqCst);
     assert!(
@@ -104,8 +104,8 @@ fn live_reload_hard_bypasses_cache() {
         .expect("ff-rdp reload --hard");
     assert!(
         out.status.success(),
-        "reload --hard failed: stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "reload --hard failed: {}",
+        crate::common::output_note(&out)
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);

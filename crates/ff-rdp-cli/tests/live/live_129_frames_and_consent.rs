@@ -390,7 +390,7 @@ fn live_129_scroll_lock_warning() {
     assert!(
         scroll.status.success(),
         "scroll bottom must still succeed (not error) on a locked page: {}",
-        String::from_utf8_lossy(&scroll.stderr)
+        crate::common::output_note(&scroll)
     );
     let json = parse_json(&scroll);
     assert!(

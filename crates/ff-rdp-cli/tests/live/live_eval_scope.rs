@@ -95,8 +95,8 @@ fn live_eval_in_frame() {
 
     assert!(
         out.status.success(),
-        "live_eval_in_frame: eval --frame exited non-zero — stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        "live_eval_in_frame: eval --frame exited non-zero — {}",
+        crate::common::output_note(&out)
     );
 
     let json = parse_json(&out);
