@@ -1322,7 +1322,7 @@ pub fn decode_png(bytes: &[u8]) -> DecodedImage {
         png::ColorType::Rgba => buf,
         png::ColorType::Rgb => {
             let mut out = Vec::with_capacity(buf.len() / 3 * 4);
-            for chunk in buf.chunks_exact(3) {
+            for chunk in buf.as_chunks::<3>().0 {
                 out.extend_from_slice(chunk);
                 out.push(255);
             }
