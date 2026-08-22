@@ -49,6 +49,20 @@ Carry-over from [[iteration-179-live-62-runner-sees-no-network-events]]'s qualit
 The false-PASS direction is the serious one: this gate exists to prove a dogfood script really
 executed, and a leftover file makes it say yes without anything having run.
 
+
+### It is not a Windows portability bug — do not "fix" it as one
+
+`PathBuf::from(format!("/tmp/ff-rdp-iter-{n}-dogfood-ok"))` looks like a cross-platform defect
+and is not one: `run_script` is `#[cfg(unix)]`, and its `#[cfg(not(unix))]` twin returns SKIP, so
+this path never executes on Windows. Verified during 179's review, after 179's own reviewer
+initially flagged it as a portability issue.
+
+What is left once that is set aside is still real, and is the defect this plan owns: a hardcoded
+absolute path where `std::env::temp_dir()` belongs, and — the part that actually bites — the
+false PASS. Iteration 179's `17ae94c` fixed only the *test fixture* by deriving the path from the
+pid. The production contract at `crates/xtask/src/check_dogfood_script.rs:244` is untouched and
+can still report PASS off a sentinel a concurrent run wrote.
+
 ## Themes
 
 - **A — Per-run sentinel.** Pass the expected sentinel path *into* the script (an env var the
