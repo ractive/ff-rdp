@@ -227,9 +227,47 @@ untrusted sources.
 - `assert_no_console_errors`: checks the console buffer for error-level
   messages; filterable via `ignore_patterns`.
 - `assert_network`: scans buffered network events for a matching entry.
-  On failure the `diagnostics` object is `{"events_in_buffer": <N>}`
-  (since iter-61c).  Respects `default_timeout_ms` if no step-level
-  `timeout` is set.
+  On failure the `diagnostics` object carries `events_in_buffer`, `route`
+  and `drain_window_ms`, plus an `empty_buffer_hint` when the buffer was
+  empty on the `direct` route (iter-179; before that it was
+  `{"events_in_buffer": <N>}` alone, since iter-61c).  Respects
+  `default_timeout_ms` if no step-level `timeout` is set.  **Read the
+  subscription-window section below before relying on it.**
+
+### `assert_network`'s subscription window
+
+`assert_network` sees a different buffer depending on how `run` reached
+Firefox, and the difference is the difference between a reliable assertion
+and a race:
+
+| route | what the buffer contains |
+|-------|--------------------------|
+| `daemon` | Everything since the daemon started watching. The daemon holds a **standing** `network-event` subscription, so requests that completed during earlier steps are still there. |
+| `direct` | Only what arrives **while this step runs.** `run` opens a fresh connection per step; `assert_network` arms the watcher when it starts and unwatches when it finishes. Firefox's `watchResources` does not replay history. |
+
+So on the `direct` route this shape is a **race by construction**:
+
+```json
+{"click":  {"selector": "button[type=submit]"}},
+{"assert_network": {"url_contains": "/api/auth/sign-in", "status": 200}}
+```
+
+The `click` fires the request; the next step then has to connect and arm its
+watcher before the response lands. On an idle machine it usually wins. Under
+sustained load it can lose — and when it loses with a **single** request in
+flight, the result is `events_in_buffer: 0`, not a partial count. A zero here
+therefore does **not** mean the subscription is broken; iteration 179 spent
+four days establishing exactly that.
+
+To make the assertion deterministic, pick one:
+
+- **Run against the daemon** (`ff-rdp daemon start`, or let autostart do it) —
+  the standing subscription removes the race entirely. This is the
+  recommended fix.
+- **Raise the step `timeout`**, which widens the drain window — this helps
+  only if the request has not already completed.
+- **Assert on a page effect instead** (`assert_text`, `assert_url`), which is
+  not time-boxed against an event stream at all.
 
 ## Password-shaped selectors
 
