@@ -45,6 +45,24 @@ clippy passes. CLAUDE.md's three gates (`cargo fmt`, `cargo clippy`, `cargo test
 though local green implies CI green; a toolchain skew (stable moved 1.97 → 1.98 between when this
 machine last updated and when CI ran) breaks that silently, with no local signal.
 
+## The durable item is the detection gap, not the three lints
+
+Stated plainly, because it is easy to file this as "fix three lints" and miss the point: by the
+time anyone reads this plan the three lints are already fixed (on iter-179's branch, and on `main`
+once #212 merges). **The item worth an iteration is that clippy in CI tracks stable, so a
+toolchain release can red-line `main` with no code change at all, and nothing in this repo notices
+until the next PR happens to run.**
+
+The timeline is the argument. Stable released 1.98.0 on 2026-08-18. No PR ran CI between then and
+2026-08-22. `main` was red that entire window and nobody could have known. The first PR to run
+(#212, an `assert_network` iteration with no relationship to any of it) absorbed the whole cost:
+one failed CI run, and an evening's diagnosis that concluded the branch was innocent.
+
+Compounding it: the local gate **disagreed with CI on identical code**. `cargo clippy --workspace
+--all-targets -- -D warnings` exited 0 on the contributor machine (1.97) while CI failed (1.98).
+CLAUDE.md presents its three gates as though local green implies CI green. That is not true across
+a toolchain boundary, and there is currently no local signal that a boundary was crossed.
+
 ## Scope
 
 Land the same three one-line fixes directly on `main`, verified against clippy 1.98 (or whatever
@@ -66,19 +84,25 @@ above rather than trusting this note by the time this plan runs.
       exits 0 on the toolchain CI currently runs
 - [ ] MSRV gate (`msrv` CI job, or local equivalent) still passes after the change
 
-### B. Close the toolchain-skew gap, if cheaply possible [0/1]
-- [ ] Investigate whether `rust-toolchain.toml` (pinning the exact stable version this repo
-      builds with) would have caught this before CI did, and either add one or record explicitly
-      why not — a pin trades "always current" for "always reproducible locally", which is a real
-      tradeoff, not a free fix; decide deliberately rather than defaulting
+### B. Close the detection gap — the actual point of this iteration [0/3]
+- [ ] Decide whether `rust-toolchain.toml` (pinning the exact stable version this repo builds
+      with) is the right answer, and either add one or record explicitly why not. A pin trades
+      "always current" for "always reproducible locally" — a real tradeoff, not a free fix. It
+      would have made local and CI agree, which is the failure that cost the most time here
+- [ ] Decide whether CI should run clippy on a **scheduled** job (e.g. weekly) as well as per-PR,
+      so a toolchain release that red-lines `main` is discovered by the schedule rather than by
+      whichever unlucky PR runs first. Note the cost honestly: a cron job that fails on green
+      code is its own kind of noise
+- [ ] If CLAUDE.md's "run these three in order" section still implies local green means CI green,
+      correct it — one sentence noting the toolchain boundary is enough
 
 ## Acceptance Criteria [0/2]
 
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` exits 0 on `main` at HEAD, on the
       toolchain version CI is running at merge time
-- [ ] Task B's investigation is recorded either way — a `rust-toolchain.toml` added, or a stated
-      reason not to (e.g. "MSRV policy already forces contributors to test on multiple versions,
-      so pinning stable would just add a second toolchain most contributors don't otherwise need")
+- [ ] Each of Task B's three decisions is recorded with its reasoning, whichever way it went — the
+      plan is not done because the lints are green; it is done when the *next* toolchain bump has a
+      named path to being noticed by something other than an unrelated PR
 
 ## Out of scope
 
