@@ -2269,7 +2269,42 @@ pub fn run_core(
             Err(e) => Err(e),
         };
 
-        Some(reclassify_timeout_as_neterror(&mut ctx, url, result)?)
+        let commit = reclassify_timeout_as_neterror(&mut ctx, url, result)?;
+
+        // iter-174: the same check on the SUCCESS path, gated on "no HTTP
+        // status was observed".
+        //
+        // `reclassify_timeout_as_neterror` only fires on a `Timeout`, and
+        // before iter-174 that was enough on the direct route *by accident*:
+        // no `dom-complete` ever arrived, so a bad-DNS `navigate` always timed
+        // out and got reclassified. With the events path working, the commit
+        // now succeeds — and a neterror document is indistinguishable from a
+        // real one by URL, because Firefox reports the FAILED url from both
+        // `location.href` and the `document-event`s (measured: `dom-loading`
+        // url = `https://…invalid/`, never `about:neterror`; see
+        // `check_real_tab_url_for_neterror`'s doc comment for why only
+        // `listTabs` sees the truth).
+        //
+        // This is not a direct-route quirk: the **daemon** route has always
+        // returned `exit 0` with a success envelope for a DNS failure here,
+        // and `live_61l::live_navigate_dnsfail` never caught it because that
+        // suite is direct-only. One check fixes both routes.
+        //
+        // Gated on `http_status.is_none()` rather than run unconditionally: a
+        // navigation whose response line was observed reached a server and
+        // cannot be a neterror, so the common path keeps its round-trip count.
+        // A neterror never produces one — the request failed before any
+        // response.
+        let commit = if commit.http_status.is_none() {
+            match check_real_tab_url_for_neterror(&mut ctx, url) {
+                Some(nav_err) => return Err(nav_err),
+                None => commit,
+            }
+        } else {
+            commit
+        };
+
+        Some(commit)
     };
 
     // Theme K: invalidate the cached consoleActor after any navigate so the

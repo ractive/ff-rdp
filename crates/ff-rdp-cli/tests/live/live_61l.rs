@@ -365,15 +365,23 @@ fn live_locale_pin_launch_sets_lang_env() {
 /// # iter-106 Theme B — plain `navigate` now classifies a DNS failure
 ///
 /// On a DNS-resolution failure Firefox loads `about:neterror?e=dnsNotFound&…`.
-/// That document never reaches the awaited `dom-complete` / `readyState ===
-/// 'complete'` state, so the plain `navigate` wait (`run_core`) used to exhaust
-/// its budget and return a generic `readyState did not reach 'complete'`
-/// [`AppError::Timeout`] (exit 124) — masking the real cause.  `run_with_network`
-/// already checked `listTabs` for an `about:neterror` landing; `run_core` did
-/// not.  iter-106 adds `reclassify_timeout_as_neterror` to `run_core`, so a
-/// bad-DNS `navigate` now surfaces `AppError::Navigation { DnsFail }` —
-/// rendered "DNS resolution failed", `error_type: "nav_dns_fail"`, exit 7.
+/// `run_with_network` checked `listTabs` for that landing; `run_core` did not,
+/// so a bad-DNS `navigate` surfaced a generic timeout (exit 124) instead of the
+/// real cause. iter-106 added `reclassify_timeout_as_neterror` to `run_core`,
+/// which turns that timeout into `AppError::Navigation { DnsFail }` —
+/// "DNS resolution failed", `error_type: "nav_dns_fail"`, exit 7.
 /// The `FF_RDP_ALLOW_KNOWN_FAILING_DNSFAIL` gate is removed.
+///
+/// **iter-174 correction:** this comment used to claim the neterror document
+/// "never reaches dom-complete". Measured on FF154, it does — `dom-loading`,
+/// `dom-interactive` and `dom-complete` all fire, all carrying the *failed*
+/// URL rather than `about:neterror`. iter-106's reclassification worked here
+/// only because the direct route received no document events at all and so
+/// always timed out. Once iter-174 fixed that, the commit succeeded and this
+/// test went red; `run_core` now also checks `listTabs` on the success path
+/// when no HTTP status was observed. `live_174_dns_failure_exits_nav_dns_fail_both_routes`
+/// is the daemon-parity half — the daemon route had been exiting 0 here all
+/// along, which this direct-only suite could not see.
 #[test]
 #[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_navigate_dnsfail() {

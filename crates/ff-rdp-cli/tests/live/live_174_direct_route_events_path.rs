@@ -28,6 +28,17 @@
 //! fallback path structurally cannot produce (it correlates no document
 //! request, so it reports `status_reason: "not_observed"`).
 //!
+//! A second defect fell out of the fix and is fixed here too: with the events
+//! path working, a bad-DNS `navigate` no longer times out, so the neterror
+//! reclassification that only ran on `AppError::Timeout` stopped firing.
+//! Firefox reports the **failed** URL from `location.href` *and* from every
+//! `document-event` (measured: `dom-loading` url =
+//! `https://…invalid/`, never `about:neterror`), so only `listTabs` can tell
+//! the two apart. `run_core` now runs that check on the success path when no
+//! HTTP status was observed. The daemon route had been returning `exit 0` with
+//! a success envelope for a DNS failure all along — `live_61l::live_navigate_dnsfail`
+//! is direct-only and never looked.
+//!
 //! daemon-parity: every assertion below runs on both routes —
 //! `live_174_nav_verbs_resolve_from_events_direct` is the `--no-daemon` leg and
 //! `live_174_nav_verbs_resolve_from_events_daemon` the proxied one, because the
@@ -206,6 +217,58 @@ fn exercise_events_path(global: &[String], route: &str) {
         "{label}: forward must land on {url_b}, got {results}"
     );
     assert_resolved_from_events(&results, &label);
+}
+
+/// A DNS failure must exit 7 (`nav_dns_fail`) on **both** routes.
+///
+/// Direct: this is a regression guard for the fix — before iteration 174 it
+/// passed only because the events wait timed out and
+/// `reclassify_timeout_as_neterror` caught it on the way out.
+/// Daemon: this never passed before iteration 174. `navigate` to a
+/// non-resolving host returned `exit 0` with
+/// `{"committed_url": "https://…invalid/", "ready_state": "complete"}` — a
+/// success envelope for a page that never loaded.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_174_dns_failure_exits_nav_dns_fail_both_routes() {
+    if !live_tests_enabled() {
+        eprintln!("live_174_dns_failure_exits_nav_dns_fail_both_routes: set FF_RDP_LIVE_TESTS=1");
+        return;
+    }
+    if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
+        eprintln!(
+            "live_174_dns_failure_exits_nav_dns_fail_both_routes: requires real DNS; set \
+             FF_RDP_LIVE_NETWORK_TESTS=1 to run"
+        );
+        return;
+    }
+    let ff = LiveFirefox::headless_on_random_port();
+    let port = ff.port();
+    assert!(
+        ff.with_daemon().is_some(),
+        "live_174_dns_failure_exits_nav_dns_fail_both_routes: the proxy daemon did \
+         not start for Firefox on port {port}"
+    );
+
+    const BAD: &str = "https://this-domain-totally-does-not-exist-174-zzz.invalid";
+    for (route, global) in [("direct", direct_args(port)), ("daemon", daemon_args(port))] {
+        let out = Command::new(ff_rdp_bin())
+            .args(&global)
+            .args(["navigate", BAD])
+            .output()
+            .unwrap_or_else(|e| panic!("{route}: spawn ff-rdp navigate {BAD}: {e}"));
+        let all = combined(&out);
+        assert!(
+            !out.status.success(),
+            "{route}: navigate to a non-resolving host must not exit 0 — a success \
+             envelope here is a page that never loaded being reported as loaded. Got: {all}"
+        );
+        assert!(
+            all.contains("nav_dns_fail"),
+            "{route}: the failure must be classified, not a bare timeout. Got: {all}"
+        );
+    }
+    stop_daemon(port);
 }
 
 /// AC: "`ff-rdp --no-daemon --timeout 30000 reload` on a static localhost page
