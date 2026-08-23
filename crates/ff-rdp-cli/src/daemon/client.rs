@@ -941,6 +941,19 @@ pub(crate) struct StopDeps {
     /// Directory holding the per-port launch records. `None` means the real
     /// `daemon_record::record_base_dir()` (`~/.ff-rdp`).
     pub(crate) record_dir: Option<std::path::PathBuf>,
+    /// Directory holding the per-port daemon registry entries. `None` means the
+    /// real [`registry::registry_dir`].
+    ///
+    /// iter-192: added so the *registry* branch of
+    /// [`stop_daemon_and_build_result_with`] — the recycled-PID refusal at the
+    /// bottom of this file — is reachable from a unit test. iter-191 shipped
+    /// that branch with no direct coverage precisely because there was no way
+    /// to plant a registry entry without writing to the user's real
+    /// `~/.ff-rdp`; the alternative on the table was `std::env::set_var`, which
+    /// this codebase avoids (see `util/profile_dir.rs`'s `resolve_profile_root`
+    /// split, which exists for the same reason). `read_registry_in` /
+    /// `remove_registry_in` already existed, so only the wiring was missing.
+    pub(crate) registry_dir: Option<std::path::PathBuf>,
     /// Ownership check applied to a launch record's PID before any signal is
     /// sent to it (iter-191) — see [`RecordOwnerCheck`].
     pub(crate) record_pid_is_ours: RecordOwnerCheck,
@@ -961,6 +974,7 @@ impl StopDeps {
         Self {
             hooks: EscalationHooks::real(),
             record_dir: None,
+            registry_dir: None,
             record_pid_is_ours: crate::daemon_record::record_pid_is_ours,
         }
     }
@@ -976,6 +990,22 @@ impl StopDeps {
         let _ = match &self.record_dir {
             Some(dir) => crate::daemon_record::remove_in(dir, port),
             None => crate::daemon_record::remove(port),
+        };
+    }
+
+    /// Read the daemon registry entry for `port`, honouring [`Self::registry_dir`].
+    fn read_registry(&self, port: u16) -> Result<Option<registry::DaemonInfo>> {
+        match &self.registry_dir {
+            Some(dir) => registry::read_registry_in(dir, port),
+            None => registry::read_registry(port),
+        }
+    }
+
+    /// Remove the daemon registry entry for `port`, honouring [`Self::registry_dir`].
+    fn remove_registry(&self, port: u16) {
+        let _ = match &self.registry_dir {
+            Some(dir) => registry::remove_registry_in(dir, port),
+            None => registry::remove_registry(port),
         };
     }
 }
@@ -1104,7 +1134,8 @@ fn stop_daemon_and_build_result_with(
     // Keyed by the target `port` so `daemon stop` only ever acts on the daemon
     // the caller addressed, even when that differs from `cli.port` (iter-123
     // Theme B).
-    let Some(info) = registry::read_registry(port)
+    let Some(info) = deps
+        .read_registry(port)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
     else {
         // No daemon running — report success (idempotent).
@@ -1114,7 +1145,7 @@ fn stop_daemon_and_build_result_with(
     let firefox_port = info.firefox_port;
 
     if !process::is_process_alive(info.pid) {
-        registry::remove_registry(firefox_port).ok();
+        deps.remove_registry(firefox_port);
         return Ok(json!({"stopped": true, "reason": "already dead"}));
     }
 
@@ -1233,7 +1264,7 @@ fn stop_daemon_and_build_result_with(
     };
 
     // 4. Clean up the daemon registry regardless of process state.
-    registry::remove_registry(firefox_port).ok();
+    deps.remove_registry(firefox_port);
 
     if !port_free {
         return Err(AppError::User(escalation_msg));
@@ -1664,6 +1695,7 @@ mod tests {
         let deps = StopDeps {
             hooks: recording_hooks_live_parent(),
             record_dir: Some(dir.path().to_path_buf()),
+            registry_dir: None,
             record_pid_is_ours: |_rec| false,
         };
         let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"]).expect("parse cli");
@@ -1716,6 +1748,7 @@ mod tests {
         let deps = StopDeps {
             hooks: recording_hooks_live_parent(),
             record_dir: Some(dir.path().to_path_buf()),
+            registry_dir: None,
             record_pid_is_ours: |_rec| false,
         };
         let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"]).expect("parse cli");
@@ -1754,6 +1787,7 @@ mod tests {
         let deps = StopDeps {
             hooks: recording_hooks_live_parent(),
             record_dir: Some(dir.path().to_path_buf()),
+            registry_dir: None,
             record_pid_is_ours: |_rec| true,
         };
         let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"]).expect("parse cli");
@@ -1803,6 +1837,7 @@ mod tests {
                 wait_port_closed: |_port, _timeout| false,
             },
             record_dir: Some(dir.path().to_path_buf()),
+            registry_dir: None,
             // These two tests are about record *lifetime*, not ownership —
             // the record they plant genuinely describes this process, so the
             // iter-191 identity gate is stubbed open to keep them focused.
@@ -1861,6 +1896,7 @@ mod tests {
                 wait_port_closed: |_port, _timeout| true,
             },
             record_dir: Some(dir.path().to_path_buf()),
+            registry_dir: None,
             // These two tests are about record *lifetime*, not ownership —
             // the record they plant genuinely describes this process, so the
             // iter-191 identity gate is stubbed open to keep them focused.
