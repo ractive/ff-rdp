@@ -31,11 +31,18 @@
 //! `daemon/registry.rs`): when set, the file is written to
 //! `$FF_RDP_HOME/.ff-rdp/launch-record.json`.
 //!
-//! ## Staleness
+//! ## Staleness and reclamation (iter-186)
 //!
 //! [`read`] / [`read_in`] perform a PID-liveness check on every read.
 //! If the recorded PID is no longer running the record is treated as absent
 //! and the file is removed so the stale entry does not block a future launch.
+//!
+//! That read-triggered removal is *not* a garbage collector, and iter-142's
+//! per-port split turned that into a leak: one file per launch, nothing
+//! sweeping them (4040 files / 17 MB measured on the dev machine over ten
+//! days). [`gc_stale_launch_records_in`] is the actual reclamation path,
+//! swept on every `launch`; its section comment explains why keying
+//! reclamation on the port could never work.
 //!
 //! ## Atomicity
 //!
@@ -197,6 +204,117 @@ pub fn write(rec: &DaemonRecord) -> Result<()> {
 /// (idempotent).
 pub fn remove(port: u16) -> Result<()> {
     remove_in(&record_base_dir()?, port)
+}
+
+// ---------------------------------------------------------------------------
+// Stale launch-record GC (iter-186)
+// ---------------------------------------------------------------------------
+//
+// ## Why the lazy, read-triggered reaper never fired
+//
+// [`read_in`] does delete a record whose pid is dead — but only as a side
+// effect of *reading that same port again*. Ports come from an ephemeral
+// `bind(127.0.0.1:0)`, so the chance that a later run asks for the exact port
+// a dead record is filed under is negligible. Measured on the dev machine
+// 2026-08-23: 4040 `launch-record.*.json` files spanning ten days, with
+// essentially no repeated port numbers among them. A lazy reaper keyed on a
+// value that never recurs is not a slow reaper; it is not a reaper. The file
+// count could only ever go up.
+//
+// So: do not reintroduce reclamation keyed on the port. Reclamation has to be
+// a sweep over the whole directory, driven by an event that actually happens
+// (every `launch`) — which is exactly what iter-142 did for
+// `daemon.<port>.throttle.json` after the same mistake, and what
+// [`gc_stale_launch_records_in`] below does for launch records.
+//
+// ## What "stale" means here, and the pid-recycling risk
+//
+// Stale == the recorded pid is not alive. No age gate, matching iter-142's
+// precedent ("a dead-owner profile is reclaimed immediately regardless of
+// age") and `throttle_state::gc_stale_throttle_states_in`: a record for a
+// dead process is dead weight the instant that process exits, and 142 already
+// established that an age gate is precisely what stops a same-day workload
+// from ever being reclaimed.
+//
+// Pid recycling can push the liveness check either way, and the two
+// directions are not symmetric:
+//
+// - A recycled pid can make a *stale* record look live. It then survives this
+//   sweep and is collected by a later one. Cost: one 212-byte file, for one
+//   more launch. Harmless.
+// - The dangerous direction — removing a *live* daemon's record — needs
+//   `is_process_alive` to report false for a running process, which it does
+//   not do (`kill(pid, 0)` on unix, `OpenProcess` on Windows). Pid recycling
+//   cannot produce it.
+//
+// That asymmetry is why pid liveness alone is a safe test here; it is the same
+// argument `registry::spawn_lock_is_stale` makes for spawn locks.
+
+/// Parse the Firefox port out of a `launch-record.<PORT>.json` filename.
+///
+/// Returns `None` for everything else that shares `~/.ff-rdp/` —
+/// `daemon.<port>.json`, `daemon.<port>.throttle.json`,
+/// `daemon.<port>.spawn.lock`, `daemon.log` — and, importantly, for the
+/// `launch-record.<port>.json.tmp` files [`write_in`] renames from: a `.tmp`
+/// belongs to a write that is in flight right now and must never be swept.
+fn parse_launch_record_port(filename: &str) -> Option<u16> {
+    filename
+        .strip_prefix("launch-record.")?
+        .strip_suffix(".json")?
+        .parse()
+        .ok()
+}
+
+/// Sweep `<dir>/launch-record.*.json` files whose recorded pid is no longer
+/// alive, so `~/.ff-rdp/` stops growing by one file per launch.
+///
+/// Mirrors the shape of `throttle_state::gc_stale_throttle_states_in` and is
+/// deliberately narrow and defensive:
+///
+/// - Only exact `launch-record.<PORT>.json` filenames are candidates (see
+///   [`parse_launch_record_port`]).
+/// - A file that cannot be read or parsed is left alone rather than removed:
+///   an I/O or parse error is not proof of staleness.
+/// - Every error is swallowed. This is opportunistic housekeeping riding along
+///   on the `launch` path; it must never become a reason a launch fails.
+///
+/// The removal is done here rather than by delegating to [`read_in`] so the
+/// sweep reads each file exactly once, by path, and does not depend on
+/// `read_in` keeping its stale-entry side effect.
+pub(crate) fn gc_stale_launch_records_in(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if parse_launch_record_port(&name).is_none() {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(contents) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(rec) = serde_json::from_str::<DaemonRecord>(&contents) else {
+            continue;
+        };
+        if !process::is_process_alive(rec.pid) {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
+/// [`gc_stale_launch_records_in`] against the real record directory.
+///
+/// Uses [`record_base_dir`], so the sweep honours `FF_RDP_HOME` exactly the
+/// way the writer does and a test can point both at a tempdir. (Note that
+/// `util::profile_dir::secure_profile_root` does *not* honour `FF_RDP_HOME` —
+/// an inconsistency recorded by iteration 188, not changed here.)
+pub(crate) fn gc_stale_launch_records() {
+    if let Ok(dir) = record_base_dir() {
+        gc_stale_launch_records_in(&dir);
+    }
 }
 
 // ---------------------------------------------------------------------------

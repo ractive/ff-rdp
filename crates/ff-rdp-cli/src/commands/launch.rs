@@ -697,6 +697,13 @@ pub(crate) fn run_with_hooks(
     crate::daemon::registry::gc_stale_spawn_locks();
     crate::daemon::registry::gc_legacy_spawn_lock();
     crate::daemon::throttle_state::gc_stale_throttle_states();
+    // iter-186: launch records were the one `~/.ff-rdp/` file class this
+    // sweep still missed. `daemon_record::remove_in` only runs on a *clean*
+    // daemon stop, and `read_in`'s stale-entry removal is keyed on reading
+    // the same ephemeral port again — which essentially never happens, so it
+    // reclaimed nothing at all. Same placement, same best-effort contract as
+    // the three sweeps above; see `daemon_record`'s GC section comment.
+    crate::daemon_record::gc_stale_launch_records();
 
     // iter-133 Theme A: parse --window-size up front so a malformed value
     // fails fast, before any port-collision check or Firefox spawn.
