@@ -8,7 +8,8 @@
 //!
 //! ACs (see kb/iterations/iteration-109-network-throttle-block.md):
 //!   - live_throttle_slow3g_slows_fetch: a timed in-page fetch under slow-3g
-//!     takes measurably longer than baseline (≥2×).
+//!     takes measurably longer than baseline. The assertion is *additive*, not
+//!     a ratio — see iteration 177 and the comment on the test itself.
 //!   - live_block_url_pattern: a request matching the blocked pattern is
 //!     reported failed/blocked in `network` output while other requests succeed.
 //!
@@ -22,9 +23,27 @@
 
 use std::process::Command;
 
+use ff_rdp_core::ThrottleProfile;
 use serde_json::Value;
 
 use crate::common::{LiveFirefox, ff_rdp_bin, live_network_tests_enabled, live_tests_enabled};
+
+/// Samples taken on each side of the throttled/baseline comparison.
+///
+/// Odd, so the median is a real sample. Five is enough for the median to
+/// survive the connection-reuse regime: roughly one fetch in five completes
+/// ~260 ms faster than its neighbours because it rides an already-open
+/// connection, and that regime shift is present *both* throttled and
+/// un-throttled (iteration 177 measured it on both sides).
+const FETCH_SAMPLES: usize = 5;
+
+/// Fraction of the profile's declared round-trip latency that the throttled
+/// fetch must actually pay, over and above baseline.
+///
+/// Iteration 177 measured the real delta at 400–420 ms against slow-3g's
+/// declared 400 ms, idle and under load, so half of the declared figure is a
+/// floor with ~100% headroom rather than the ~2% the old ratio assertion had.
+const MIN_LATENCY_FRACTION: f64 = 0.5;
 
 /// Build daemon-path args (no `--no-daemon`): commands share the persistent
 /// daemon connection, so throttling/blocking set by one command is visible to
@@ -99,10 +118,38 @@ fn time_fetch_ms(port: u16, url: &str) -> f64 {
         .unwrap_or_else(|| panic!("fetch timing not a number: {v}"))
 }
 
+/// Take [`FETCH_SAMPLES`] timed fetches of `url` and return them **sorted**
+/// together with their median.
+///
+/// The median — not the minimum — is the estimator: iteration 177 measured a
+/// bimodal distribution (fresh connection vs. reused connection, ~260 ms
+/// apart) on both the throttled and the un-throttled side, and a `min` over
+/// two samples picks whichever mode it happens to hit. Comparing a
+/// fresh-connection baseline against a reused-connection throttled sample is
+/// what actually produced the reds this test was seeing.
+fn fetch_ms_samples(port: u16, url: &str) -> (Vec<f64>, f64) {
+    let mut samples: Vec<f64> = (0..FETCH_SAMPLES)
+        .map(|_| time_fetch_ms(port, url))
+        .collect();
+    samples.sort_by(f64::total_cmp);
+    let median = samples[FETCH_SAMPLES / 2];
+    (samples, median)
+}
+
+/// Render timing samples for the failure message: `368,371,374,459,801`.
+fn fmt_ms(samples: &[f64]) -> String {
+    samples
+        .iter()
+        .map(|ms| format!("{ms:.0}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// `live_throttle_slow3g_slows_fetch`:
 ///
-/// A timed in-page fetch under `throttle slow-3g` takes measurably longer than
-/// the un-throttled baseline (≥2×). `throttle off` restores full speed.
+/// A timed in-page fetch under `throttle slow-3g` pays at least half of the
+/// profile's declared round-trip latency on top of the un-throttled baseline.
+/// `throttle off` restores full speed.
 #[test]
 #[ignore = "requires Firefox + network access — set FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1"]
 fn live_throttle_slow3g_slows_fetch() {
@@ -132,11 +179,10 @@ fn live_throttle_slow3g_slows_fetch() {
     // example.com's own document is same-origin here.
     let target = "https://example.com/";
 
-    // Baseline: median-ish of a couple of samples to dampen jitter.
-    let base_a = time_fetch_ms(port, target);
-    let base_b = time_fetch_ms(port, target);
-    let baseline = base_a.min(base_b);
-    eprintln!("baseline fetch: a={base_a:.0}ms b={base_b:.0}ms → {baseline:.0}ms");
+    // Baseline: median of FETCH_SAMPLES samples (see `fetch_ms_samples`).
+    let (base_samples, baseline) = fetch_ms_samples(port, target);
+    let base_list = fmt_ms(&base_samples);
+    eprintln!("baseline fetch: [{base_list}] → median {baseline:.0}ms");
 
     // Apply slow-3g throttling; the envelope must echo the active profile.
     let applied = run_json(port, &["throttle", "slow-3g"]);
@@ -149,17 +195,29 @@ fn live_throttle_slow3g_slows_fetch() {
         "daemon-path envelope must NOT carry a lifetime warning: {applied}"
     );
 
-    // Throttled: worst of a couple of samples (throttling should dominate any
-    // network jitter, so take the min throttled time — still expected ≥2×).
-    let thr_a = time_fetch_ms(port, target);
-    let thr_b = time_fetch_ms(port, target);
-    let throttled = thr_a.min(thr_b);
-    eprintln!("throttled fetch: a={thr_a:.0}ms b={thr_b:.0}ms → {throttled:.0}ms");
+    // Throttled: same estimator on the same target.
+    let (thr_samples, throttled) = fetch_ms_samples(port, target);
+    let thr_list = fmt_ms(&thr_samples);
+    eprintln!("throttled fetch: [{thr_list}] → median {throttled:.0}ms");
 
+    // iter-177: assert the *additive* cost of the profile's declared
+    // round-trip latency, not a ratio.
+    //
+    // The old assertion was `throttled >= baseline * 2.0`, which multiplies
+    // every baseline error by two: on the machine where this was diagnosed the
+    // idle ratio was 2.05, so a baseline 3% slower than usual reddened the test
+    // while the throttled figure had not moved at all. Throttling is additive —
+    // slow-3g injects a fixed round-trip latency — so the delta is what is
+    // actually reproducible, and a baseline error costs it 1:1 instead of 2:1.
+    let declared_latency_ms = ThrottleProfile::Slow3g.latency_ms() as f64;
+    let required_delta = declared_latency_ms * MIN_LATENCY_FRACTION;
+    let delta = throttled - baseline;
     assert!(
-        throttled >= baseline * 2.0,
-        "under slow-3g the fetch must take at least 2x baseline: \
-         baseline={baseline:.0}ms throttled={throttled:.0}ms"
+        delta >= required_delta,
+        "under slow-3g the fetch must pay at least {required_delta:.0}ms more than baseline \
+         (half of the profile's declared {declared_latency_ms:.0}ms round-trip latency), \
+         but paid {delta:.0}ms: baseline median={baseline:.0}ms [{base_list}] \
+         throttled median={throttled:.0}ms [{thr_list}]"
     );
 
     // Restore full speed.
