@@ -433,3 +433,60 @@ network buffer therefore starts each `network-event` epoch at the oldest
 `network-events.js`'s `#onTopBrowsingContextWillNavigate` destroys the previous
 document's request actors and the daemon prunes them on the matching
 `resources-destroyed-array`.
+
+### `isServerTargetSwitchingEnabled` also gates the three `dom-*` events (iter-174)
+
+iter-129 established that the flag gates `target-available-form` delivery.
+iter-174 measured a second, larger consequence: **without the flag the
+content-process `document-event` watcher never runs at all**, so
+`dom-loading` / `dom-interactive` / `dom-complete` are never emitted — on any
+connection, for any navigation verb.
+
+What still works without it, and is exactly why this looked healthy for four
+iterations:
+
+| resource / event | emitted from | arrives without the flag? |
+|---|---|---|
+| `will-navigate` (`document-event`) | parent process (`WatcherActor`) | **yes** |
+| `network-event` (+ `resources-updated-array`) | parent process (`WatcherActor`) | **yes** |
+| `dom-loading` / `dom-interactive` / `dom-complete` | content process, per target | **no** |
+
+`watchTargets("frame")` and `watchResources(["document-event", …])` are both
+accepted and acked, and the parent-process half of the stream flows normally.
+The wire trace of a `reload` on a direct connection (FF154, static localhost
+page) is the whole story:
+
+```text
+→ watchTargets  {targetType:"frame"}            ← ack, and NO target-available-form
+→ watchResources ["document-event","network-event"] ← ack
+→ reload
+← document-event  will-navigate                 (from watcher, parent process)
+← network-event   cause=document                (from watcher, parent process)
+… 21 s of nothing …
+```
+
+Consequence for ff-rdp: any wait that resolves on `dom-complete` must obtain
+its watcher with `getWatcher {isServerTargetSwitchingEnabled: true}`. The
+daemon's `establish_watcher` always did; the direct route did not, so
+`reload --no-daemon` took 21 011 ms where the daemon took 111 ms, and
+`navigate --no-daemon --wait-strategy events` (which has no readystate
+fallback) timed out unconditionally. `navigate`'s default `Both` strategy hid
+it: its interleaved `document.readyState` poll answered at ~300 ms and nobody
+asked which half had produced the answer.
+
+Diagnostic shortcut, should this recur: `RUST_LOG=debug … 2>&1 | grep
+"document-event observed"`. `will-navigate` alone — with `network-event`s
+still flowing — is this defect, not a dead connection.
+
+The fix lives in `navigate.rs::get_navigation_watcher`, deliberately scoped to
+the two navigation waits rather than to `connect_and_get_target`: the flag also
+moves top-level target delivery onto the watcher, so callers that hold a target
+actor across a navigation must re-resolve it (`refresh_console_actor`), which
+those two already did. Suites that subscribe to other content-process
+resources on a direct connection (`console --follow`'s `console-message`, and
+whatever `click.rs` / `emulate.rs` subscribe to) were **not** audited by
+iter-174 — that audit is
+`kb/iterations/iteration-189-content-process-resources-on-the-direct-route.md`,
+which claims no defect, only an open question. Plain `console` (no `--follow`)
+is known-good on the direct route: it primes via `startListeners` on the legacy
+target actor, measured working during iter-174.

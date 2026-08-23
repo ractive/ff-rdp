@@ -2,8 +2,8 @@
 title: "Iteration 174: on a direct connection `reload`/`back`/`forward` never receive dom-loading/dom-complete, so every one burns its whole events budget"
 type: iteration
 date: 2026-08-17
-status: planned
-branch: iter-174/direct-route-nav-verbs-see-no-document-events
+status: done
+branch: iter-174/direct-route-reload-dom-complete
 depends_on:
   - iteration-169-navigate-status-delivery-and-nav-verb-parity
 first_call_sites: []
@@ -11,17 +11,17 @@ dogfood_path: |
   # Found by iteration 169 while adding `status`/`status_reason` to the three
   # history verbs; PRE-EXISTING, reproduced on `main` at 86262f0 with a binary
   # built from a clean worktree, so it is not caused by that iteration.
-
+  
   ff-rdp launch --headless --debug-port 7402
   python3 -m http.server 8099 &   # any static origin will do
-
+  
   # 1. The daemon route — fast, and reports the status.
   ff-rdp --port 7402 --timeout 30000 navigate http://127.0.0.1:8099/
   ff-rdp --port 7402 --timeout 30000 reload --jq '.results'
   # → 2026-08-17, main@86262f0:
   #   {"action":"reload","committed_url":"http://127.0.0.1:8099/",
   #    "ready_state":"complete","elapsed_ms":112}
-
+  
   # 2. The same reload with --no-daemon — 21 seconds, on a static localhost page.
   ff-rdp --port 7402 --no-daemon --timeout 30000 reload --jq '.results'
   # → 2026-08-17, main@86262f0:
@@ -29,7 +29,7 @@ dogfood_path: |
   #    "ready_state":"complete","elapsed_ms":21029}
   #   21 029 ms is exactly `split_wait_budget(30000).1` — the events phase was
   #   exhausted and `wait_for_readystate_complete` supplied the answer.
-
+  
   # 3. Which events actually arrive (iteration 169 added this tracing):
   RUST_LOG=debug ff-rdp --port 7402 --no-daemon --timeout 8000 reload 2>&1 \
     | grep "document-event observed"
@@ -39,13 +39,17 @@ dogfood_path: |
   # → daemon:  event="dom-loading"     url=http://127.0.0.1:8099/
   #            event="dom-interactive" url=http://127.0.0.1:8099/
   #            event="dom-complete"    url=
-
+  
   # 4. `back`/`forward` are worse: on a direct connection they can exhaust the
   #    readystate fallback too and exit 124.
   ff-rdp --port 7402 --no-daemon --timeout 30000 back
   # → {"error":"navigate: document.readyState did not reach 'complete' (with
   #    fresh navigation) within 30078ms …","error_type":"Timeout"}
-tags: [iteration, navigate, daemon-parity, carry-over]
+tags:
+  - iteration
+  - navigate
+  - daemon-parity
+  - carry-over
 ---
 
 # Iteration 174: on a direct connection the three history verbs never receive `dom-loading`/`dom-complete`
@@ -98,24 +102,100 @@ bounded `elapsed_ms`.
 
 Rule out (1) before touching (3); it is one command.
 
-## Scope
+## Measured 2026-08-22 — it is candidate (1), the prelude, and it covers all four verbs
 
-- [ ] measure which of the three candidates it is, and record the measurement here before fixing
-- [ ] `reload --no-daemon` on a static localhost page resolves from the **events** path, not the
+Run on FF154, `main` @ `7d457af`, a static `python3 -m http.server` origin, binary built from
+this worktree. The plan's own step 1 settled it in one command:
+
+```text
+ff-rdp --port 7402 --no-daemon --timeout 30000 reload
+  → elapsed_ms 21011                                        (reproduces the plan's 21029)
+ff-rdp --port 7402 --no-daemon --timeout 30000 navigate <url> --wait-strategy events
+  → {"error":"navigate: page did not fire dom-complete within the timeout …"} after 30.0 s
+```
+
+`--wait-strategy events` has no readystate fallback, so it does not merely run slow — it fails
+outright. Per the plan's own rule ("if that also burns the budget, the defect is in the prelude
+and covers all four verbs, not three"), candidates (2) raw dispatch and (3) target switching are
+ruled out without being touched.
+
+### What the wire says
+
+`RUST_LOG=trace` on the failing `reload`, direct route:
+
+```text
+→ getTarget      (tabDescriptor)                ← frame form, consoleActor, etc.
+→ getWatcher     (no arguments)                 ← watcher11
+→ watchTargets   {targetType:"frame"}           ← bare ack, and NO target-available-form
+→ watchResources ["document-event","network-event"] ← bare ack
+→ reload         (raw)                          ← ack
+← document-event  will-navigate                 from watcher11
+← network-event   cause=document  url=…/b.html  from watcher11
+← resources-updated-array  status 304           from watcher11
+… 21 s of nothing, then the readystate fallback answers …
+```
+
+Every resource that arrives is emitted by the **parent** process. Every resource that is missing
+is emitted by the **content** process. That split is the whole diagnosis: `dom-loading`,
+`dom-interactive` and `dom-complete` come from the per-target `document-event` watcher that runs
+in the content process, and Firefox never instantiated a watcher-owned target for the top-level
+window global — hence no `target-available-form` either.
+
+### The one-word cause
+
+The direct route called `getWatcher` **without** `isServerTargetSwitchingEnabled: true`. The
+daemon's `establish_watcher` (`daemon/server.rs`) has always passed it. iteration 129 already
+documented that the flag gates `target-available-form` delivery
+(`kb/research/frame-targets.md`); what nobody had connected is that it therefore also gates every
+content-process resource, `document-event` included.
+
+### After
+
+Same machine, same page, `getWatcher {isServerTargetSwitchingEnabled: true}` on the direct route:
+
+| command (`--no-daemon`, `--timeout 30000`) | before | after |
+|---|---|---|
+| `reload` | `elapsed_ms 21011`, `status null / not_observed` | `elapsed_ms 115`, `status 304` |
+| `navigate --wait-strategy events` | timeout at 30 000 ms | `elapsed_ms 122`, `status 304` |
+| `navigate` (default `both`) | `elapsed_ms ~300` from the readystate poll | `elapsed_ms 108` from events |
+| `back` / `forward` | exit 0, `elapsed_ms 13` (see below) | exit 0, `elapsed_ms 6–10` |
+
+`RUST_LOG=debug … | grep "document-event observed"` after the fix, direct route:
+`will-navigate`, `dom-loading`, `dom-interactive`, `dom-complete` — the full cycle the daemon
+route always had.
+
+### One premise of this plan did not reproduce
+
+The plan's step 4 asserts `back`/`forward` "can exhaust the readystate fallback too and exit
+124". On this fixture they did **not**: on the unfixed binary `back --no-daemon` exited 0 in
+13 ms. A history traversal restored from BFCache is resolved by the iter-138 same-document /
+`location.href` path, which needs no `dom-complete`. So AC 3 is met after the fix, but it was
+not failing here beforehand — the exit-124 case the plan recorded must need a page BFCache
+declines, and this iteration did not reproduce or chase it. Recorded rather than reworded.
+
+## Scope [4/5]
+
+- [x] measure which of the three candidates it is, and record the measurement here before fixing
+- [x] `reload --no-daemon` on a static localhost page resolves from the **events** path, not the
       readystate fallback
 - [ ] `back`/`forward` `--no-daemon` no longer exit 124 on a page with history
-- [ ] a live test that bounds `elapsed_ms` on the direct route rather than merely asserting the
+      — **left unticked**: they exit 0 after the fix, but they also exited 0 *before* it on the
+      fixture used here (13 ms, BFCache path). Nothing was measured to be broken, so nothing can
+      be claimed fixed. See "One premise of this plan did not reproduce" above.
+- [x] a live test that bounds `elapsed_ms` on the direct route rather than merely asserting the
       key exists — the gap that let this survive four iterations
-- [ ] `live_169_nav_verb_status_parity`'s `expect_reload_status` parameter is deleted and the
+- [x] `live_169_nav_verb_status_parity`'s `expect_reload_status` parameter is deleted and the
       direct leg asserts `status == 200` like the daemon leg
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
-- [ ] the cause is named with the measurement that settled it, recorded in this plan before the fix
-- [ ] `ff-rdp --no-daemon --timeout 30000 reload` on a static localhost page reports
+- [x] the cause is named with the measurement that settled it, recorded in this plan before the fix
+- [x] `ff-rdp --no-daemon --timeout 30000 reload` on a static localhost page reports
       `elapsed_ms` under 2 000 ms, quoted in the PR body against the 21 029 ms measured here
-- [ ] `ff-rdp --no-daemon back` and `forward` exit 0 on a page with history, with a live test
-- [ ] the direct leg of `live_169_nav_verb_status_parity` asserts `status == 200` for `reload`,
+- [x] `ff-rdp --no-daemon back` and `forward` exit 0 on a page with history, with a live test
+      (`live_174_nav_verbs_resolve_from_events_{direct,daemon}`) — but read the "premise did not
+      reproduce" section: this AC was already true before the fix on this fixture
+- [x] the direct leg of `live_169_nav_verb_status_parity` asserts `status == 200` for `reload`,
       with `expect_reload_status` removed
 
 ## Notes

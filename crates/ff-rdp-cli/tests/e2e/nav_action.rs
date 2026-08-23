@@ -168,6 +168,65 @@ fn reload_outputs_json_envelope() {
     );
 }
 
+/// iter-174 regression guard: the direct route's `getWatcher` must carry
+/// `isServerTargetSwitchingEnabled: true`.
+///
+/// Without it Firefox instantiates no watcher-owned target for the top-level
+/// window global, so the content-process watcher that emits `dom-loading` /
+/// `dom-interactive` / `dom-complete` never runs. Everything still *looks*
+/// connected — `watchTargets("frame")` and `watchResources` are acked, and the
+/// parent-process resources (`will-navigate`, `network-event`) keep arriving —
+/// which is why `reload --no-daemon` spent 21 011 ms of a 30 000 ms budget
+/// waiting for an event that could not come, then answered from the
+/// `document.readyState` fallback with a correct-looking envelope.
+///
+/// This asserts the argument rather than the timing, because a mock server
+/// cannot reproduce Firefox's target lifecycle: `live_174_*` owns the
+/// behavioural half. Together they pin both ends — this one runs in CI without
+/// a browser, so the flag cannot be dropped silently again.
+#[test]
+fn reload_get_watcher_enables_server_target_switching() {
+    let server = nav_action_commit_server_reload();
+    let port = server.port();
+    let requests = server.request_log();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.push("reload".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = requests
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let get_watcher: Vec<&serde_json::Value> = requests
+        .iter()
+        .filter(|r| r.get("type").and_then(|t| t.as_str()) == Some("getWatcher"))
+        .collect();
+    assert_eq!(
+        get_watcher.len(),
+        1,
+        "reload must issue exactly one getWatcher, got {get_watcher:?}"
+    );
+    assert_eq!(
+        get_watcher[0]["isServerTargetSwitchingEnabled"],
+        serde_json::Value::Bool(true),
+        "iter-174: without this flag the three dom-* document events never \
+         arrive on a direct connection and every navigation verb burns its \
+         whole events budget. Packet: {}",
+        get_watcher[0]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // reload --wait-idle
 // ---------------------------------------------------------------------------

@@ -1563,6 +1563,57 @@ fn split_wait_budget(timeout_ms: u64) -> (u64, u64) {
     (reserved_ms, events_budget)
 }
 
+/// Resolve the tab's `WatcherActor`, requesting **server-side target
+/// switching** (iter-174).
+///
+/// Every navigation wait in this module depends on `document-event` resources
+/// (`dom-loading` / `dom-interactive` / `dom-complete`). Those are emitted by
+/// a content-process resource watcher that only exists on a target the
+/// **watcher** instantiated — and Firefox only instantiates one for the
+/// top-level window global when `getWatcher` was called with
+/// `isServerTargetSwitchingEnabled: true`
+/// (`devtools/shared/specs/descriptors/tab.js`; see also
+/// `kb/research/frame-targets.md`). Without the flag, `watchTargets("frame")`
+/// is accepted and acked, `watchResources(["document-event", ...])` is
+/// accepted and acked, and then **only parent-process resources are ever
+/// delivered** — `will-navigate` and `network-event` arrive, the three
+/// content-process `dom-*` events never do.
+///
+/// Measured on FF154, static localhost page, `main` @ `7d457af`
+/// (iteration-174's plan carries the full trace):
+///
+/// | route                                     | before   | after   |
+/// |-------------------------------------------|----------|---------|
+/// | `reload --no-daemon`                      | 21011 ms | 115 ms  |
+/// | `navigate --no-daemon --wait-strategy events` | timeout (30 s) | ~150 ms |
+///
+/// The 21 s is not a hang: it is `split_wait_budget(30000).1` burnt in full
+/// by a `dom-complete` that can never arrive, after which
+/// `wait_for_readystate_complete` polls `document.readyState` and produces a
+/// correct-looking envelope — which is why this survived four iterations
+/// unnoticed (`status: null, status_reason: "not_observed"` was the only
+/// visible symptom).
+///
+/// The daemon route was never affected: `daemon/server.rs`'s
+/// `establish_watcher` has always passed `Some(true)` here, which is exactly
+/// why the two routes diverged by ~190x on the same command.
+///
+/// The flag also moves top-level target delivery onto the watcher, so the
+/// actor obtained earlier from the descriptor's `getTarget` may be swapped
+/// out by a subsequent navigation. Every caller here already re-resolves via
+/// `refresh_console_actor` / `refresh_probe_console_actor` after the commit,
+/// so that is the pre-existing contract rather than a new requirement. It is
+/// deliberately NOT flipped on the generic `connect_and_get_target` path (see
+/// `TabActor::get_watcher_with_options`' own CAUTION) — only on the two
+/// navigation waits that consume `document-event`.
+fn get_navigation_watcher(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    tab_actor: &ff_rdp_core::ActorId,
+) -> Result<ff_rdp_core::ActorId, AppError> {
+    TabActor::get_watcher_with_options(ctx.transport_mut(), tab_actor, Some(true))
+        .map_err(AppError::from)
+}
+
 /// Wait for a navigation triggered by `dispatch` to commit, returning the same
 /// `{committed_url, ready_state, elapsed_ms}` envelope `navigate` produces
 /// (iter-130 Theme B — shared by `back`, `forward`, `reload` so all four
@@ -1607,8 +1658,9 @@ pub(crate) fn wait_for_navigation_commit(
     dispatch: impl FnOnce(&mut RdpTransport) -> Result<(), AppError>,
 ) -> Result<serde_json::Value, AppError> {
     let tab_actor = ctx.target_tab_actor().clone();
-    let watcher_actor =
-        TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+    // iter-174: `Some(true)` — without it the three `dom-*` document-events
+    // never arrive on a direct connection. See `get_navigation_watcher`.
+    let watcher_actor = get_navigation_watcher(ctx, &tab_actor)?;
 
     // Best-effort freshness epoch, same pattern as run_core's pre_nav_epoch:
     // a failed/exceptional eval disables the freshness guard (0.0) rather
@@ -1937,8 +1989,13 @@ pub fn run_core(
     // Get the watcher actor and subscribe to document-event resources before
     // sending navigateTo so we don't miss any events that arrive immediately
     // after the navigate (Firefox may dispatch dom-loading very quickly).
-    let watcher_actor =
-        TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+    //
+    // iter-174: this must request server-side target switching, or the
+    // `document-event` half of the wait is dead on a direct connection and
+    // only the `Both` strategy's `document.readyState` poll ever answers —
+    // `--wait-strategy events --no-daemon` timed out unconditionally. See
+    // `get_navigation_watcher`.
+    let watcher_actor = get_navigation_watcher(&mut ctx, &tab_actor)?;
 
     // iter-92 Theme B: capture navigationStart *before* dispatching navigateTo
     // so the readystate-poll path can reject a pre-existing "complete" state
@@ -2212,7 +2269,42 @@ pub fn run_core(
             Err(e) => Err(e),
         };
 
-        Some(reclassify_timeout_as_neterror(&mut ctx, url, result)?)
+        let commit = reclassify_timeout_as_neterror(&mut ctx, url, result)?;
+
+        // iter-174: the same check on the SUCCESS path, gated on "no HTTP
+        // status was observed".
+        //
+        // `reclassify_timeout_as_neterror` only fires on a `Timeout`, and
+        // before iter-174 that was enough on the direct route *by accident*:
+        // no `dom-complete` ever arrived, so a bad-DNS `navigate` always timed
+        // out and got reclassified. With the events path working, the commit
+        // now succeeds — and a neterror document is indistinguishable from a
+        // real one by URL, because Firefox reports the FAILED url from both
+        // `location.href` and the `document-event`s (measured: `dom-loading`
+        // url = `https://…invalid/`, never `about:neterror`; see
+        // `check_real_tab_url_for_neterror`'s doc comment for why only
+        // `listTabs` sees the truth).
+        //
+        // This is not a direct-route quirk: the **daemon** route has always
+        // returned `exit 0` with a success envelope for a DNS failure here,
+        // and `live_61l::live_navigate_dnsfail` never caught it because that
+        // suite is direct-only. One check fixes both routes.
+        //
+        // Gated on `http_status.is_none()` rather than run unconditionally: a
+        // navigation whose response line was observed reached a server and
+        // cannot be a neterror, so the common path keeps its round-trip count.
+        // A neterror never produces one — the request failed before any
+        // response.
+        let commit = if commit.http_status.is_none() {
+            match check_real_tab_url_for_neterror(&mut ctx, url) {
+                Some(nav_err) => return Err(nav_err),
+                None => commit,
+            }
+        } else {
+            commit
+        };
+
+        Some(commit)
     };
 
     // Theme K: invalidate the cached consoleActor after any navigate so the

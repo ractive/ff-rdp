@@ -20,10 +20,14 @@
 //! (CONTRIBUTING's daemon-parity rule). They use a **local** fixture server so
 //! the status assertion is against a response this test controls rather than
 //! a real origin: a `reload` of a 200 page must report 200, not merely "some
-//! number" — on the daemon route. The `--no-daemon` route asserts the
-//! key-presence invariant only, because a pre-existing defect filed as
-//! iteration 174 starves that route of `dom-complete`; see the comment on
-//! `exercise_nav_verbs`.
+//! number".
+//!
+//! iter-174: that last assertion now runs on **both** routes. It was
+//! daemon-only here because the direct route was starved of `dom-complete` and
+//! could only ever answer `not_observed` — the defect iteration 174 fixed by
+//! passing `isServerTargetSwitchingEnabled` on the direct route's
+//! `getWatcher`. The `expect_reload_status` parameter that carried that
+//! exemption is gone.
 //!
 //! daemon-parity: `live_169_nav_verbs_report_status_daemon` is the daemon leg
 //! (the mode every real invocation uses, and the one where `network-event`
@@ -134,7 +138,7 @@ fn fixture_routes() -> HashMap<String, FixtureRoute> {
 ///
 /// Returns without asserting anything only when the fixture server cannot
 /// bind — every other path asserts.
-fn exercise_nav_verbs(global: &[String], route: &str, expect_reload_status: bool) {
+fn exercise_nav_verbs(global: &[String], route: &str) {
     let Some(server) = FixtureServer::start(fixture_routes()) else {
         panic!("{route}: could not bind the local fixture server");
     };
@@ -154,27 +158,21 @@ fn exercise_nav_verbs(global: &[String], route: &str, expect_reload_status: bool
 
     // --- reload: a real request, so a real status ------------------------
     //
-    // `expect_reload_status` is false on the `--no-daemon` route, and that is
-    // not a shrug: iter-169 measured a **pre-existing** defect there, filed as
-    // iteration 174. On a direct connection a `reload` receives only
-    // `will-navigate` — `dom-loading`/`dom-interactive`/`dom-complete` never
-    // arrive — so the events wait burns the entire budget and falls back to
-    // the readystate poll, which by construction cannot have correlated a
-    // document request and honestly reports `not_observed`. Measured on `main`
-    // at 86262f0, i.e. before this iteration: `reload --no-daemon` took
-    // 21 029 ms against a 30 000 ms `--timeout`, the daemon route 112 ms. So
-    // asserting `200` here would be asserting iteration 174's fix, not this
-    // one's. The invariant below still holds on both routes and is what this
-    // iteration's AC actually asks for.
+    // iter-174: asserted on both routes now. Until that iteration the
+    // `--no-daemon` leg was exempt (`expect_reload_status: false`) because a
+    // direct connection received only `will-navigate` — the three `dom-*`
+    // events never arrived, so the events wait burnt its whole budget and the
+    // readystate fallback, which correlates no document request, answered
+    // `not_observed`. Measured before the fix: `reload --no-daemon`
+    // 21 029 ms against a 30 000 ms `--timeout`, versus 112 ms on the daemon
+    // route. A `not_observed` here is that regression coming back.
     let results = run_ok(global, &["reload"], &format!("{route}: reload"));
     assert_status_pair(&results, &format!("{route}: reload"));
-    if expect_reload_status {
-        assert_eq!(
-            results["status"],
-            Value::from(200),
-            "{route}: reload of a 200 page must report 200, got {results}"
-        );
-    }
+    assert_eq!(
+        results["status"],
+        Value::from(200),
+        "{route}: reload of a 200 page must report 200, got {results}"
+    );
 
     // --- back / forward --------------------------------------------------
     // A history traversal may be served from BFCache, in which case there is
@@ -219,7 +217,7 @@ fn live_169_nav_verbs_report_status_daemon() {
         ff.port()
     );
     let port = ff.port();
-    exercise_nav_verbs(&daemon_args(port), "daemon", true);
+    exercise_nav_verbs(&daemon_args(port), "daemon");
     stop_daemon(port);
 }
 
@@ -236,5 +234,5 @@ fn live_169_nav_verbs_report_status_direct() {
         return;
     }
     let ff = LiveFirefox::headless_on_random_port();
-    exercise_nav_verbs(&direct_args(ff.port()), "direct", false);
+    exercise_nav_verbs(&direct_args(ff.port()), "direct");
 }
