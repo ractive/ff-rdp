@@ -128,6 +128,12 @@ sub-script is not parsed until it executes, so a conservative arm is the only on
 precede the parent's `click`. A nested `run:` inherits the subscription and hands it back even
 when it bails.
 
+Review pass (2026-08-23): the eviction cap was reachable only through a live Firefox connection
+(`PlaybookNetworkWatch::arm`), so the 4096-request policy — real data loss beyond diagnostics —
+had no direct test. Pulled the pure logic into `evict_overflow_from(&mut Vec<NetworkResource>,
+&mut HashMap<...>, cap)` and unit-tested it directly: under cap, over cap (oldest-first, updates
+dropped with their resource), and the cap=0 degenerate case.
+
 `assert_network` now polls that buffer in 250 ms slices until it matches or the step `timeout`
 expires, so the timeout became a ceiling on waiting for an in-flight request rather than a window
 the request must land inside. Diagnostics gained `subscription: playbook | step | daemon`, and
@@ -182,7 +188,7 @@ Re-verified instead, in the resumed session:
 | Sweep failure `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` (`live_target_count: 0` vs theguardian.com) | **folded** into [[iteration-190-live-sweep-only-failures]] — see its "Folded in from iteration 181's closing sweep" section; it is a second instance of that plan's Theme B class |
 | Sweep `preexisting=9` — nine `ff-rdp-core` live tests wanted a port-6000 browser nobody had started, so they never executed | **no plan** — an unmet env precondition correctly classified as `ignored` (iter-173's mechanism working, `vanished=0`). If a later sweep reports `vanished>0` or the count drifts, that needs its own plan |
 | Between steps nothing reads the subscription socket, so events queue in the kernel receive buffer; a very long playbook against a very chatty page can fill it and push queueing back onto Firefox | **no plan** — nothing measured; the tradeoff and the rejected alternative (a short read timeout desyncs `recv_from`'s `read_exact` mid-frame) are documented in `network_watch.rs`'s module docs. A real playbook stalling or missing an event attributable to this needs its own plan |
-| The playbook buffer caps at 4096 requests and evicts oldest-first, so a long chatty run can now lose an old request | **closed in this PR** — evictions are counted and surfaced as `diagnostics.evicted_requests`, so a miss caused by eviction is never silent |
+| The playbook buffer caps at 4096 requests and evicts oldest-first, so a long chatty run can now lose an old request | **closed in this PR** — evictions are counted and surfaced as `diagnostics.evicted_requests`, so a miss caused by eviction is never silent; the eviction policy itself now has direct unit tests (`unit_181_evict_overflow_*`), added in review |
 | If arming the playbook subscription fails, `assert_network` falls back to per-step arming — iteration 179's race, restored for that run | **closed in this PR** — a stderr warning names the fallback and the diagnostics report `subscription: "step"` rather than `"playbook"` |
 | `live_62` passed 4/4 idle in iteration 179 and 8/8 FAIL under load; one green run is not proof | **closed in this PR** — it is the defect this iteration fixes, and it was measured under the same `-j6` generator that produced the 8/8 failure (8/8 PASS at load 145–223), then again 4/4 at load 27–29 |
 
