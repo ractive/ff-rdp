@@ -229,6 +229,28 @@ test result: FAILED. 1 passed; 4 failed
 ```
 
 
+### Closing sweeps (2026-08-23)
+
+Two full dual-gate runs, back to back, `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`:
+
+```
+sweep 1: LIVE_SWEEP_SUMMARY executed=282 skipped=0 preexisting=0 vanished=0 launch_timeout=0 total=282
+         272 passed / 1 failed — live_96_profile_cleanup::live_profiles_prune_removes_all_when_no_firefox_running
+sweep 2: LIVE_SWEEP_SUMMARY executed=282 skipped=0 preexisting=0 vanished=0 launch_timeout=0 total=282
+         272 passed / 1 failed — live_61r_eval::live_eval_on_hn
+```
+
+Different single failure each time, both green when re-run in isolation, and both filed as
+[[iteration-190-live-sweep-only-failures]]. Sweep 1's failure was **self-inflicted**: the
+port-6000 browser started for the `preexisting` tier was started with `ff-rdp launch`, which
+creates a managed profile owned by a live PID — exactly `live_96`'s documented precondition.
+Sweep 2 was re-run with a raw, unmanaged port-6000 Firefox and `live_96` passed.
+
+`live_175_failed_launch_leaves_no_profile_dir` and
+`live_175_successful_launch_keeps_its_profile_dir` executed and passed in **both** sweeps.
+Orphan check afterwards (`pgrep -f 'MacOS/firefox.*ff-rdp-profile'`): 0.
+
+
 ## Tasks
 
 ### A. Verify
@@ -236,12 +258,14 @@ test result: FAILED. 1 passed; 4 failed
       (steps 1 and 3 above; step 2's premise was wrong — see the enumeration)
 - [x] Enumerate which `launch` error paths leave the profile dir behind, by reading the code and
       forcing each one
-- [ ] Count unmarked dirs produced by one full live sweep — **not done**. The sweep on this
-      branch runs the fixed binary, so it measures the fix, not the defect, and a before/after
-      comparison would need a full `main` sweep as well. The 8 directories measured above came
-      from concurrent agents doing exactly what a sweep does, which answers the question the
-      count was for (does this fire in automated runs, or only interactively? — automated),
-      so the box stays unticked rather than reworded.
+- [ ] Count unmarked dirs produced by one full live sweep — **the defect-side number was never
+      measured**. Two full 282-test dual-gate sweeps on this branch produced **0** unmarked
+      directories (profile root afterwards: 1 directory, 0 unmarked), against 8 of 8 unmarked
+      before the fix. That is the *post*-fix figure; a sweep on `main` was never run, so
+      "how many does an unfixed sweep produce" is still unanswered and the box stays empty
+      rather than reworded. The question the count was *for* — does this fire in automated runs
+      or only interactively? — is answered by the 8 directories above, which concurrent agents
+      produced in a 2-minute window doing exactly what a sweep does: automated.
 
 ### B. Fix
 - [x] The chosen shape, with the rejected alternative recorded and its failure mode named
