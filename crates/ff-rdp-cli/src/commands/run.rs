@@ -103,6 +103,8 @@ pub fn run(cli: &Cli, opts: &RunCommandOpts<'_>) -> Result<(), AppError> {
         env_policy: EnvPolicy::from_names(opts.allow_env.iter().cloned()),
         allow_unsafe_script_paths: opts.allow_unsafe_script_paths,
         top_level_dir: None,
+        // Armed by the runner on the first script that needs it (iter-181).
+        network_watch: None,
     };
 
     let call_stack: Vec<PathBuf> = Vec::new();

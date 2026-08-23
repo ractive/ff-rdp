@@ -27,6 +27,7 @@ use super::recorder::FileRecorder;
 use super::vars::{
     EnvPolicy, VarContext, check_undefined_vars, collect_env_secrets, is_secret_name, substitute,
 };
+use crate::commands::network_watch::PlaybookNetworkWatch;
 use crate::page_map::PageMap;
 
 /// Maximum allowed depth of nested `run:` steps.
@@ -68,6 +69,16 @@ pub struct RunOptions<'a> {
     /// [`run_script_file`]. Sub-script paths are required to stay within
     /// this directory unless `allow_unsafe_script_paths` is set.
     pub top_level_dir: Option<PathBuf>,
+    /// The playbook-scoped `network-event` subscription, once armed (iter-181).
+    ///
+    /// Not a caller-supplied option: [`run_script`] arms it on the first
+    /// script that needs one and it then lives for the rest of the run, which
+    /// is what makes a request fired by step N visible to an `assert_network`
+    /// at step N+1. Threaded here because `RunOptions` is already the one
+    /// `&mut` the step loop and nested `run:` steps share. `None` means either
+    /// "no step needs it" or "the daemon route already has a standing
+    /// subscription" — see [`PlaybookNetworkWatch::arm`].
+    pub(crate) network_watch: Option<PlaybookNetworkWatch>,
 }
 
 impl Default for RunOptions<'_> {
@@ -84,6 +95,7 @@ impl Default for RunOptions<'_> {
             env_policy: EnvPolicy::default(),
             allow_unsafe_script_paths: false,
             top_level_dir: None,
+            network_watch: None,
         }
     }
 }
@@ -184,6 +196,34 @@ fn run_script(
 
     if opts.dry_run {
         return run_dry(script, vars, &mut out);
+    }
+
+    // iter-181: arm the playbook-scoped network subscription *before* the
+    // first step, so a request fired by step N is still in the buffer when an
+    // `assert_network` at step N+1 looks. Arming per step — what this replaces
+    // — is a race the runner loses under load, because `watchResources` does
+    // not replay history.
+    //
+    // A nested `run:` step shares `opts`, so an already-armed subscription is
+    // reused rather than duplicated, and the outer script's watcher keeps
+    // covering the sub-script's assertions.
+    if opts.network_watch.is_none() && script_needs_network_watch(script) {
+        match PlaybookNetworkWatch::arm(cli) {
+            Ok(Some(watch)) => opts.network_watch = Some(watch),
+            // Daemon route: it already holds a standing subscription.
+            Ok(None) => {}
+            Err(e) => {
+                // Degrading silently is how iteration 179 lost four days.
+                // Say so: `assert_network` still works via the old per-step
+                // drain, but it is a race again, and its diagnostics will
+                // report `subscription: "step"` to match.
+                // stderr-ok: (b) debug/diagnostic — the NDJSON on stdout is
+                // unchanged and each step still reports its own outcome.
+                eprintln!(
+                    "warning: could not arm the playbook-scoped network subscription ({e});                      `assert_network` steps fall back to per-step arming, which can miss a                      request that completed before the step started"
+                );
+            }
+        }
     }
 
     let total_start = Instant::now();
@@ -724,7 +764,9 @@ fn execute_step(
         Step::AssertText(s) => execute_assert_text(s, cli, default_timeout_ms),
         Step::AssertUrl(s) => execute_assert_url(s, cli),
         Step::AssertNoConsoleErrors(s) => execute_assert_no_console_errors(s, cli),
-        Step::AssertNetwork(s) => execute_assert_network(s, cli, default_timeout_ms),
+        Step::AssertNetwork(s) => {
+            execute_assert_network(s, cli, default_timeout_ms, opts.network_watch.as_mut())
+        }
         Step::Screenshot(s) => execute_screenshot(s, cli),
         Step::Eval(s) => execute_eval(s, cli),
         Step::Run(s) => execute_run(s, script_path, cli, opts, vars, call_stack),
@@ -1061,13 +1103,70 @@ fn execute_assert_no_console_errors(
     }
 }
 
+/// Whether this script should get a playbook-scoped network subscription
+/// (iter-181).
+///
+/// True for an obvious `assert_network` step, and **also** for a `run:` step:
+/// a sub-script is not parsed until its step executes, so the only way to have
+/// the watcher armed before the click that a sub-script's `assert_network`
+/// asserts on is to arm it whenever a sub-script might contain one. The cost of
+/// guessing wrong is one idle connection and one watcher for the duration of
+/// the run; the cost of guessing right is the whole point of the iteration.
+fn script_needs_network_watch(script: &Script) -> bool {
+    script
+        .steps
+        .iter()
+        .any(|s| matches!(s, Step::AssertNetwork(_) | Step::Run(_)))
+}
+
+/// Whether one drained network entry satisfies the step's predicate.
+///
+/// Every field is optional and an absent field matches anything — a step with
+/// no fields at all therefore matches any request, which is what the schema
+/// documents.
+fn network_event_matches(step: &AssertNetworkStep, event: &Value) -> bool {
+    let url = event.get("url").and_then(Value::as_str).unwrap_or("");
+    let status: Option<u16> = event
+        .get("status")
+        .and_then(Value::as_u64)
+        .and_then(|s| u16::try_from(s).ok());
+    let method = event.get("method").and_then(Value::as_str).unwrap_or("");
+
+    let url_ok = step
+        .url_contains
+        .as_deref()
+        .is_none_or(|pat| url.contains(pat));
+    let status_ok = step.status.is_none_or(|s| status == Some(s));
+    let method_ok = step
+        .method
+        .as_deref()
+        .is_none_or(|m| method.eq_ignore_ascii_case(m));
+
+    url_ok && status_ok && method_ok
+}
+
+/// Which subscription an `assert_network` step read from. Reported as
+/// `diagnostics.subscription` so a failure says *why* the buffer looked the
+/// way it did (iter-181).
+type NetworkSubscriptionKind = &'static str;
+
+/// Armed before the first step and held for the whole script (iter-181).
+const SUBSCRIPTION_PLAYBOOK: NetworkSubscriptionKind = "playbook";
+/// Armed by this step alone — the pre-181 behaviour, now only reached when
+/// arming the playbook subscription failed.
+const SUBSCRIPTION_STEP: NetworkSubscriptionKind = "step";
+/// The daemon's standing subscription, untouched by iteration 181.
+const SUBSCRIPTION_DAEMON: NetworkSubscriptionKind = "daemon";
+
 fn execute_assert_network(
     step: &AssertNetworkStep,
     cli: &Cli,
     default_timeout_ms: Option<u64>,
+    watch: Option<&mut crate::commands::network_watch::PlaybookNetworkWatch>,
 ) -> Result<Value, AppError> {
-    // Use the network command to get buffered events.
-    use crate::commands::network::run_get_events_with_route;
+    use crate::commands::network::{DEFAULT_DRAIN_MS, run_get_events_with_route};
+    use crate::commands::network_watch::wait_for_match;
+    use std::time::Duration;
 
     // Note: api_route targets are resolved to url_contains+method by
     // resolve_page_map_targets before reaching here, so step.api_route is
@@ -1075,79 +1174,124 @@ fn execute_assert_network(
 
     // Use step timeout, then script default, then CLI default.
     let effective_timeout = step.timeout.or(default_timeout_ms);
-    let (events, route) = run_get_events_with_route(cli, effective_timeout)?;
 
-    let matched = events.iter().any(|e| {
-        let url = e.get("url").and_then(Value::as_str).unwrap_or("");
-        let status: Option<u16> = e
-            .get("status")
-            .and_then(Value::as_u64)
-            .and_then(|s| u16::try_from(s).ok());
-        let method = e.get("method").and_then(Value::as_str).unwrap_or("");
-
-        let url_ok = step
-            .url_contains
-            .as_deref()
-            .is_none_or(|pat| url.contains(pat));
-        let status_ok = step.status.is_none_or(|s| status == Some(s));
-        let method_ok = step
-            .method
-            .as_deref()
-            .is_none_or(|m| method.eq_ignore_ascii_case(m));
-
-        url_ok && status_ok && method_ok
-    });
+    let (events, matched, route, subscription, evicted) = if let Some(watch) = watch {
+        // iter-181: the buffer has been filling since before the first step,
+        // so a request that completed during an earlier step is already in it.
+        // The wait is only for a request still in flight.
+        let deadline =
+            Instant::now() + Duration::from_millis(effective_timeout.unwrap_or(DEFAULT_DRAIN_MS));
+        let (events, matched) =
+            wait_for_match(watch, deadline, &|e| network_event_matches(step, e))?;
+        (
+            events,
+            matched,
+            "direct",
+            SUBSCRIPTION_PLAYBOOK,
+            watch.evicted(),
+        )
+    } else {
+        // Daemon route (standing subscription), or the fallback after arming
+        // failed — the runner warned on stderr in that case.
+        let (events, route) = run_get_events_with_route(cli, effective_timeout)?;
+        let matched = events.iter().any(|e| network_event_matches(step, e));
+        let subscription = if route == "daemon" {
+            SUBSCRIPTION_DAEMON
+        } else {
+            SUBSCRIPTION_STEP
+        };
+        (events, matched, route, subscription, 0)
+    };
 
     if matched {
         Ok(json!({"asserted": true, "matched": true}))
     } else {
         let desc = build_network_assert_desc(step);
         // E6: return structured diagnostics payload instead of embedding in the string.
-        // iter-179: `events_in_buffer` alone cannot be acted on. An empty buffer
-        // on the `direct` route is ambiguous between "the request never
-        // happened" and "the watcher was armed after it completed" — and the
-        // second is a race this runner has by construction, because every step
-        // opens its own connection and `assert_network` arms its watcher only
-        // when it runs. Name the route, the window, and the race, so the next
-        // reader does not have to re-derive it (as iteration 179 did).
+        // iter-179: `events_in_buffer` alone cannot be acted on — an empty
+        // buffer is ambiguous between "the request never happened" and "the
+        // watcher was armed too late". iter-181 removed the second cause on
+        // the default path, so the payload now also names *which* subscription
+        // was read, and the hint differs accordingly.
         Err(AppError::Diagnostics {
             message: format!("assert_network: no matching network request found ({desc})"),
-            payload: network_assert_diagnostics(events.len(), route, effective_timeout),
+            payload: network_assert_diagnostics(
+                events.len(),
+                route,
+                subscription,
+                effective_timeout,
+                evicted,
+            ),
         })
     }
 }
 
-/// Why a `direct`-route drain can come back with **zero** events — not a
+/// Why a **step-scoped** `direct` drain can come back with zero events — not a
 /// partial buffer — after a step that demonstrably issued a request (iter-179).
-const EMPTY_DIRECT_BUFFER_HINT: &str = concat!(
-    "direct route: `run` opens a fresh connection per step and arms the network watcher only ",
-    "when this step starts, so a request that completed before then is never delivered. With a ",
+///
+/// Since iteration 181 this path is only reached when the playbook-scoped
+/// subscription could not be armed, so the hint names that first: the fix is to
+/// find out why arming failed, not to restructure the playbook.
+const EMPTY_STEP_BUFFER_HINT: &str = concat!(
+    "step-scoped subscription (the playbook-scoped one could not be armed — see the warning on ",
+    "stderr): `run` opens a fresh connection per step and arms the network watcher only when ",
+    "this step starts, so a request that completed before then is never delivered. With a ",
     "single request in flight, losing that race shows up as zero events, not a partial count. ",
-    "Fixes, best first: run against the daemon (it holds a standing subscription and buffers ",
-    "across steps); raise this step's `timeout`; or assert on a page effect instead.",
+    "Fixes, best first: rerun so the playbook-scoped subscription arms (it makes step N's ",
+    "request visible at step N+1); run against the daemon, which holds a standing ",
+    "subscription; raise this step's `timeout`; or assert on a page effect instead.",
 );
 
-/// The `diagnostics` payload for a failed `assert_network` (iter-179).
+/// Why a **playbook-scoped** drain can come back with zero events (iter-181).
 ///
-/// Split out from [`execute_assert_network`] so the branch that matters — the
-/// empty-buffer hint — is unit-testable without Firefox, a daemon, or a
+/// This one is not ambiguous, and saying so is the point: the watcher was armed
+/// before the first step of the script, so zero means no `network-event`
+/// resource arrived at all during the run — not that the subscription was late.
+const EMPTY_PLAYBOOK_BUFFER_HINT: &str = concat!(
+    "playbook-scoped subscription: the network watcher was armed before this script's first ",
+    "step and has been buffering ever since, so zero events means no network request was ",
+    "observed during the run at all — this is not the pre-181 arming race. Check that the page ",
+    "really issues the request (`ff-rdp network follow`), that it was not issued before `run` ",
+    "started, and that it is not served from the HTTP cache.",
+);
+
+/// The `diagnostics` payload for a failed `assert_network` (iter-179, iter-181).
+///
+/// Split out from [`execute_assert_network`] so the branch that matters — which
+/// empty-buffer hint applies — is unit-testable without Firefox, a daemon, or a
 /// network stack.
 fn network_assert_diagnostics(
     events_in_buffer: usize,
     route: crate::commands::network::NetworkDrainRoute,
+    subscription: NetworkSubscriptionKind,
     effective_timeout: Option<u64>,
+    evicted: usize,
 ) -> Value {
     let mut payload = json!({
         "events_in_buffer": events_in_buffer,
         "route": route,
+        "subscription": subscription,
         "drain_window_ms": effective_timeout
             .unwrap_or(crate::commands::network::DEFAULT_DRAIN_MS),
     });
-    // Only the direct route can lose the arming race; the daemon holds a
-    // standing subscription, so an empty buffer there really does mean nothing
-    // was captured and the hint would be a lie.
-    if events_in_buffer == 0 && route == "direct" {
-        payload["empty_buffer_hint"] = json!(EMPTY_DIRECT_BUFFER_HINT);
+    // Only report eviction when it actually happened — a `0` on every failure
+    // would train readers to ignore the field that matters.
+    if evicted > 0 {
+        payload["evicted_requests"] = json!(evicted);
+    }
+    // The daemon holds a standing subscription, so an empty buffer there is
+    // neither the arming race nor a playbook-scoped guarantee; blaming either
+    // would be a lie.
+    if events_in_buffer == 0 {
+        match subscription {
+            SUBSCRIPTION_PLAYBOOK => {
+                payload["empty_buffer_hint"] = json!(EMPTY_PLAYBOOK_BUFFER_HINT);
+            }
+            SUBSCRIPTION_STEP => {
+                payload["empty_buffer_hint"] = json!(EMPTY_STEP_BUFFER_HINT);
+            }
+            _ => {}
+        }
     }
     payload
 }
@@ -1235,9 +1379,19 @@ fn execute_run(
         env_policy: opts.env_policy.clone(),
         allow_unsafe_script_paths: opts.allow_unsafe_script_paths,
         top_level_dir: opts.top_level_dir.clone(),
+        // iter-181: hand the playbook-scoped subscription down rather than
+        // letting the sub-script arm a second one. Its `assert_network` then
+        // also sees requests fired by the parent's earlier steps, which is the
+        // whole reason the subscription is playbook-scoped.
+        network_watch: opts.network_watch.take(),
     };
 
-    run_script_file(&sub_path, cli, &mut sub_opts, call_stack)?;
+    let result = run_script_file(&sub_path, cli, &mut sub_opts, call_stack);
+    // Take it back whether the sub-script passed or failed. A bailing
+    // sub-script must not silently drop the subscription — and with it the
+    // buffered history — for the rest of the parent script.
+    opts.network_watch = sub_opts.network_watch.take();
+    result?;
     Ok(json!({"ran": step.path}))
 }
 
@@ -1350,18 +1504,20 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // iter-179 — assert_network's empty-buffer diagnostics
+    // iter-179 / iter-181 — assert_network's empty-buffer diagnostics
     // -----------------------------------------------------------------
 
-    /// The case that opened iteration 179: zero events on the direct route.
-    /// The payload must name the route, the window it actually waited, and the
-    /// arming race — `events_in_buffer: 0` on its own sent a reader four days
-    /// down the wrong path (a "broken subscription") in 2026-08-18.
+    /// The case that opened iteration 179: zero events on the direct route
+    /// with a **step-scoped** subscription. Since iteration 181 this path is
+    /// only reached when arming the playbook subscription failed, so the hint
+    /// still has to explain the race — but it now leads with the fact that the
+    /// race is no longer the default.
     #[test]
     fn unit_179_empty_direct_buffer_carries_the_race_hint() {
-        let d = network_assert_diagnostics(0, "direct", Some(2000));
+        let d = network_assert_diagnostics(0, "direct", SUBSCRIPTION_STEP, Some(2000), 0);
         assert_eq!(d["events_in_buffer"], 0);
         assert_eq!(d["route"], "direct");
+        assert_eq!(d["subscription"], "step");
         assert_eq!(d["drain_window_ms"], 2000);
         let hint = d["empty_buffer_hint"].as_str().expect("hint present");
         assert!(
@@ -1369,14 +1525,19 @@ mod tests {
             "{hint}"
         );
         assert!(hint.contains("zero events, not"), "{hint}");
+        assert!(
+            hint.contains("could not be armed"),
+            "the step-scoped hint must say this path is now the fallback: {hint}"
+        );
     }
 
     /// The daemon holds a standing subscription, so an empty buffer there is
     /// not the arming race and must not be blamed on it.
     #[test]
     fn unit_179_empty_daemon_buffer_is_not_blamed_on_the_race() {
-        let d = network_assert_diagnostics(0, "daemon", Some(2000));
+        let d = network_assert_diagnostics(0, "daemon", SUBSCRIPTION_DAEMON, Some(2000), 0);
         assert_eq!(d["route"], "daemon");
+        assert_eq!(d["subscription"], "daemon");
         assert!(
             d.get("empty_buffer_hint").is_none(),
             "the direct-mode race hint must not appear on the daemon route: {d}"
@@ -1387,7 +1548,7 @@ mod tests {
     /// matched the predicate. The hint would be misleading.
     #[test]
     fn unit_179_non_empty_buffer_reports_the_count_without_the_hint() {
-        let d = network_assert_diagnostics(7, "direct", Some(2000));
+        let d = network_assert_diagnostics(7, "direct", SUBSCRIPTION_PLAYBOOK, Some(2000), 0);
         assert_eq!(d["events_in_buffer"], 7);
         assert!(d.get("empty_buffer_hint").is_none(), "{d}");
     }
@@ -1396,12 +1557,137 @@ mod tests {
     /// really used, rather than omitting the field or printing 0.
     #[test]
     fn unit_179_default_drain_window_is_reported_not_omitted() {
-        let d = network_assert_diagnostics(0, "direct", None);
+        let d = network_assert_diagnostics(0, "direct", SUBSCRIPTION_PLAYBOOK, None, 0);
         assert_eq!(
             d["drain_window_ms"],
             crate::commands::network::DEFAULT_DRAIN_MS,
             "the reported window must track network::DEFAULT_DRAIN_MS, not a second copy"
         );
+    }
+
+    /// A playbook-scoped empty buffer must **not** repeat the arming-race
+    /// story. The watcher was armed before step 1, so zero really does mean
+    /// "no request was seen" — telling the reader to blame the race here would
+    /// send them down exactly the wrong path iteration 179 spent four days on.
+    #[test]
+    fn unit_181_empty_playbook_buffer_does_not_blame_the_arming_race() {
+        let d = network_assert_diagnostics(0, "direct", SUBSCRIPTION_PLAYBOOK, Some(2000), 0);
+        assert_eq!(d["subscription"], "playbook");
+        let hint = d["empty_buffer_hint"].as_str().expect("hint present");
+        assert!(
+            hint.contains("armed before this script's first"),
+            "{hint}"
+        );
+        assert!(
+            !hint.contains("only when this step starts"),
+            "the playbook hint must not repeat the step-scoped race: {hint}"
+        );
+    }
+
+    /// Eviction is reported only when it happened — a `0` on every failure
+    /// would train readers to skip the one field that explains a vanished
+    /// request.
+    #[test]
+    fn unit_181_evicted_requests_reported_only_when_non_zero() {
+        let none = network_assert_diagnostics(10, "direct", SUBSCRIPTION_PLAYBOOK, Some(500), 0);
+        assert!(none.get("evicted_requests").is_none(), "{none}");
+        let some = network_assert_diagnostics(10, "direct", SUBSCRIPTION_PLAYBOOK, Some(500), 3);
+        assert_eq!(some["evicted_requests"], 3);
+    }
+
+    // -----------------------------------------------------------------
+    // iter-181 — when the playbook subscription is armed
+    // -----------------------------------------------------------------
+
+    /// Parse a script from JSON step literals, so these tests pin the same
+    /// shape a user writes rather than a hand-built AST.
+    fn script_with(steps: Value) -> Script {
+        let src = json!({"version": 1, "steps": steps}).to_string();
+        super::super::format::parse_script_str(&src, ScriptFormat::Json).expect("script parses")
+    }
+
+    /// The obvious case: a script that asserts on the network gets a
+    /// subscription armed before its first step.
+    #[test]
+    fn unit_181_assert_network_step_arms_the_subscription() {
+        let script = script_with(json!([
+            {"wait": {"ms": 10}},
+            {"assert_network": {"url_contains": "/api"}}
+        ]));
+        assert!(script_needs_network_watch(&script));
+    }
+
+    /// A `run:` step counts too. The sub-script is not parsed until it
+    /// executes, so waiting to see its `assert_network` would arm the watcher
+    /// after the parent's click had already fired the request — the exact race
+    /// this iteration removes.
+    #[test]
+    fn unit_181_run_step_arms_the_subscription_conservatively() {
+        let script = script_with(json!([{"run": {"path": "sub.json"}}]));
+        assert!(script_needs_network_watch(&script));
+    }
+
+    /// A script with neither must not pay for a connection and a watcher it
+    /// will never read.
+    #[test]
+    fn unit_181_script_without_network_steps_arms_nothing() {
+        let script = script_with(json!([
+            {"navigate": {"url": "https://example.com"}},
+            {"assert_url": {"equals": "https://example.com/"}}
+        ]));
+        assert!(!script_needs_network_watch(&script));
+    }
+
+    // -----------------------------------------------------------------
+    // iter-181 — the match predicate, shared by both subscription paths
+    // -----------------------------------------------------------------
+
+    fn event(method: &str, url: &str, status: u64) -> Value {
+        json!({"method": method, "url": url, "status": status})
+    }
+
+    fn assert_network_step(spec: Value) -> AssertNetworkStep {
+        serde_json::from_value(spec).expect("assert_network step parses")
+    }
+
+    /// All three fields together, matching and not.
+    #[test]
+    fn unit_181_match_requires_every_specified_field() {
+        let step = assert_network_step(
+            json!({"url_contains": "/api/auth/sign-in", "status": 200, "method": "post"}),
+        );
+        assert!(network_event_matches(
+            &step,
+            &event("POST", "http://x/api/auth/sign-in", 200)
+        ));
+        // Wrong status.
+        assert!(!network_event_matches(
+            &step,
+            &event("POST", "http://x/api/auth/sign-in", 500)
+        ));
+        // Wrong method.
+        assert!(!network_event_matches(
+            &step,
+            &event("GET", "http://x/api/auth/sign-in", 200)
+        ));
+        // Wrong URL.
+        assert!(!network_event_matches(
+            &step,
+            &event("POST", "http://x/api/other", 200)
+        ));
+    }
+
+    /// A request still in flight has no `status` yet. A step that asks for one
+    /// must not match it — otherwise the playbook-scoped wait would return the
+    /// moment the request was *issued* rather than answered.
+    #[test]
+    fn unit_181_in_flight_request_without_status_does_not_match() {
+        let step = assert_network_step(json!({"url_contains": "/api", "status": 200}));
+        let in_flight = json!({"method": "GET", "url": "http://x/api"});
+        assert!(!network_event_matches(&step, &in_flight));
+        // …but a step that does not pin a status matches it immediately.
+        let no_status = assert_network_step(json!({"url_contains": "/api"}));
+        assert!(network_event_matches(&no_status, &in_flight));
     }
 
     #[test]
