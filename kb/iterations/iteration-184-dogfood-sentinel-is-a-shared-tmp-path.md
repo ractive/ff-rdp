@@ -2,7 +2,7 @@
 title: "Iteration 184: check-dogfood-script's sentinel is a fixed /tmp path, so two runs of the same iteration race each other"
 type: iteration
 date: 2026-08-22
-status: planned
+status: in-review
 branch: iter-184/dogfood-sentinel-shared-tmp-path
 depends_on: []
 first_call_sites: []
@@ -74,18 +74,43 @@ can still report PASS off a sentinel a concurrent run wrote.
 
 ## Tasks
 
-### A. Contract [0/2]
-- [ ] The sentinel path is unique per run and communicated to the script
-- [ ] A stale sentinel from a previous run cannot satisfy a later run
+### A. Contract [2/2]
+- [x] The sentinel path is unique per run and communicated to the script —
+      `run_script` now creates a private directory per invocation
+      (`tempfile::Builder` with prefix `ff-rdp-iter-<N>-dogfood-`) and exports its
+      `dogfood-ok` path to the script as `FF_RDP_DOGFOOD_SENTINEL`
+      (`crates/xtask/src/check_dogfood_script.rs`). `tempfile` moved from
+      `[dev-dependencies]` to `[dependencies]` in `crates/xtask/Cargo.toml`.
+- [x] A stale sentinel from a previous run cannot satisfy a later run — the gate no
+      longer pre-cleans; a freshly created private directory has nothing to clean, and
+      the gate bails if the sentinel somehow already exists. Covered by
+      `xtask_check_dogfood_script_stale_sentinel_does_not_pass`.
 
-### B. Migration [0/2]
-- [ ] Every checked-in `*.dogfood.sh` writes the new sentinel
-- [ ] A script still writing the old fixed path fails the gate rather than passing it
+### B. Migration [2/2]
+- [x] Every checked-in `*.dogfood.sh` writes the new sentinel — all 16 scripts under
+      `kb/iterations/` and all 6 pre-existing lint fixtures under
+      `tools/tests/lint-dogfood-script/` now assign
+      `SENTINEL="${FF_RDP_DOGFOOD_SENTINEL:?...}"`; `bash tools/lint-dogfood-script.sh
+      kb/iterations/*.dogfood.sh` exits 0.
+- [x] A script still writing the old fixed path fails the gate rather than passing it —
+      new `fixed-sentinel-path` lint rule in `tools/lint-dogfood-script.sh`, fixture
+      `tools/tests/lint-dogfood-script/fixed-sentinel-path-bad.sh`, test
+      `unit_lint_dogfood_script_flags_fixed_sentinel_path`. Second line of defence: such
+      a script writes nothing at `$FF_RDP_DOGFOOD_SENTINEL`, so the run stage FAILs too.
 
-## Acceptance Criteria [0/2]
+## Acceptance Criteria [2/2]
 
-- [ ] Four concurrent `cargo test -p xtask --bins` runs all pass, repeatedly
-- [ ] A hand-planted stale sentinel does not make the gate report success
+- [x] Four concurrent `cargo test -p xtask --bins` runs all pass, repeatedly —
+      5 rounds x 4 concurrent runs (20 processes) on 2026-08-23, all
+      `91 passed; 0 failed`, no panics. The suite now also contains
+      `xtask_check_dogfood_script_concurrent_runs_do_not_collide`, which runs 8 gate
+      invocations for the same iteration number in parallel threads in-process.
+- [x] A hand-planted stale sentinel does not make the gate report success — verified
+      end to end with the real binary on 2026-08-23, both directions:
+      an unmigrated script + planted `/tmp/ff-rdp-iter-99-dogfood-ok` fails at the lint
+      stage (`[fixed-sentinel-path]`), and a lint-clean script that writes nothing fails
+      at the run stage with *"script succeeded but wrote no sentinel at
+      $FF_RDP_DOGFOOD_SENTINEL=..."* while the planted file is present.
 
 ## References
 
