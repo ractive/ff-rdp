@@ -1574,10 +1574,7 @@ mod tests {
         let d = network_assert_diagnostics(0, "direct", SUBSCRIPTION_PLAYBOOK, Some(2000), 0);
         assert_eq!(d["subscription"], "playbook");
         let hint = d["empty_buffer_hint"].as_str().expect("hint present");
-        assert!(
-            hint.contains("armed before this script's first"),
-            "{hint}"
-        );
+        assert!(hint.contains("armed before this script's first"), "{hint}");
         assert!(
             !hint.contains("only when this step starts"),
             "the playbook hint must not repeat the step-scoped race: {hint}"
@@ -1601,7 +1598,7 @@ mod tests {
 
     /// Parse a script from JSON step literals, so these tests pin the same
     /// shape a user writes rather than a hand-built AST.
-    fn script_with(steps: Value) -> Script {
+    fn script_with(steps: &Value) -> Script {
         let src = json!({"version": 1, "steps": steps}).to_string();
         super::super::format::parse_script_str(&src, ScriptFormat::Json).expect("script parses")
     }
@@ -1610,7 +1607,7 @@ mod tests {
     /// subscription armed before its first step.
     #[test]
     fn unit_181_assert_network_step_arms_the_subscription() {
-        let script = script_with(json!([
+        let script = script_with(&json!([
             {"wait": {"timeout": 10}},
             {"assert_network": {"url_contains": "/api"}}
         ]));
@@ -1623,7 +1620,7 @@ mod tests {
     /// this iteration removes.
     #[test]
     fn unit_181_run_step_arms_the_subscription_conservatively() {
-        let script = script_with(json!([{"run": {"path": "sub.json"}}]));
+        let script = script_with(&json!([{"run": {"path": "sub.json"}}]));
         assert!(script_needs_network_watch(&script));
     }
 
@@ -1631,7 +1628,7 @@ mod tests {
     /// will never read.
     #[test]
     fn unit_181_script_without_network_steps_arms_nothing() {
-        let script = script_with(json!([
+        let script = script_with(&json!([
             {"navigate": {"url": "https://example.com"}},
             {"assert_url": {"equals": "https://example.com/"}}
         ]));

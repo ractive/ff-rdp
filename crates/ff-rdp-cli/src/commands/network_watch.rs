@@ -166,11 +166,8 @@ impl Drop for PlaybookNetworkWatch {
     /// script — because it is a `Drop`, not a call the runner has to remember.
     fn drop(&mut self) {
         let watcher = self.watcher_actor.clone();
-        let _ = WatcherActor::unwatch_resources(
-            self.ctx.transport_mut(),
-            &watcher,
-            &["network-event"],
-        );
+        let _ =
+            WatcherActor::unwatch_resources(self.ctx.transport_mut(), &watcher, &["network-event"]);
     }
 }
 
@@ -188,7 +185,7 @@ pub(crate) fn wait_for_match(
 ) -> Result<(Vec<Value>, bool), AppError> {
     loop {
         let entries = watch.entries();
-        if entries.iter().any(|e| predicate(e)) {
+        if entries.iter().any(predicate) {
             return Ok((entries, true));
         }
         let now = Instant::now();

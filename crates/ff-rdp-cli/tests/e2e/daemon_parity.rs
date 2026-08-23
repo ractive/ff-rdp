@@ -466,8 +466,7 @@ fn daemon_run_assert_network_uses_the_standing_subscription() {
         .lines()
         .find(|l| l.contains("\"verb\":\"assert_network\""))
         .unwrap_or_else(|| panic!("no assert_network step line in: {miss_stdout}"));
-    let miss_step: serde_json::Value =
-        serde_json::from_str(miss_line).expect("step line is JSON");
+    let miss_step: serde_json::Value = serde_json::from_str(miss_line).expect("step line is JSON");
     let diagnostics = &miss_step["diagnostics"];
     assert_eq!(
         diagnostics["route"], "daemon",
