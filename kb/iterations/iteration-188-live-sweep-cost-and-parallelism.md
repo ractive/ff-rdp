@@ -262,3 +262,11 @@ convention its siblings already follow is the same shape as
 - [[iteration-173-live-sweep-port-6000-firefox-does-not-survive]] — the accounting this must preserve
 - [[iteration-171-stale-owner-pid-marker-and-pid-reuse]] — the owner-test tagging that named A3's culprits
 - [[iteration-174-direct-route-reload-never-sees-dom-complete]] — the 21 s stall visible in A1's tail
+- [[iteration-196-frame-cap-lock-has-no-readers]] — a *different* parallelism-induced flake, found
+  during iteration 187's quality gates: `transport::tests::` under `--test-threads=16` (libtest's
+  in-process concurrency), not this plan's nextest-per-process concurrency. Read it before Theme C
+  if the CLI tier's chosen concurrency ever pushes `cargo test --workspace` itself to run hotter —
+  the two flakes look similar (both "red under load, green serial") but have unrelated causes.
+- [[iteration-195-check-iteration-plan-fails-on-85-of-222-plans]] — unrelated to sweep cost, filed
+  alongside 196 from the same PR's carry-over sweep; listed here only so both land in the same
+  numeric neighborhood as a reader of this plan works forward from it.
