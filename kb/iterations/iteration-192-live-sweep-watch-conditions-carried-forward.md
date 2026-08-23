@@ -67,6 +67,72 @@ and has its own plan: [[iteration-191-stale-launch-record-recycled-pid-kill]].
 | 11 | The canary does not alert on failure — it relies on GitHub's default scheduled-failure notification reaching one maintainer | two consecutive scheduled runs fail on the same cause with no intervening fix | not yet observed | Folded from iteration 194. Check with `gh run list --workflow=toolchain-watch.yml --limit=10 --json conclusion,createdAt` |
 | 12 | [[iteration-191-stale-launch-record-recycled-pid-kill]]'s registry-path fix (`daemon stop`'s `Recycled`-PID refusal inside `stop_daemon_and_build_result_with`, the ~50 lines gating the direct kill and the `firefox_pid.unwrap_or(info.pid)` fallback) shipped with no direct unit or live test — only the launch-record branch (`stop_prior_instance_with`) got the three dedicated `unit_191_*` tests and a `live_110` phase B | a live sweep or a real incident exercises the registry-path refusal (correctly or incorrectly) with a captured message, or `StopDeps` grows a `registry_dir` override that makes the branch unit-testable the way `record_dir` already does for the launch record | not yet observed (found during PR #224 review, 2026-08-23) | Iteration 191's own ACs scoped test coverage to `stop_prior_instance_with` only; branch 2 was decided and written up (`DEC-045`) but `registry::read_registry`/`write_registry` read `registry_dir()` directly rather than through an injectable dir like `daemon_record::read_in`'s, so a unit test today would need `std::env::set_var` — a pattern this codebase deliberately avoids (`util/profile_dir.rs`'s `resolve_profile_root` split exists for exactly that reason) — or a small `StopDeps` refactor first. The logic was reviewed by hand at merge time and reads correct; this row exists so an actual incident, or the refactor, is what closes it, not inspection |
 
+## The 2026-08-24 observation
+
+**Two** sweeps were run, both with gates `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1` and a
+raw `firefox -no-remote --start-debugger-server 6000 --headless` up *before* each run (so the
+`preexisting` tier folds into `executed` and `vanished` is observable at all). Sweep A ran against
+the tree as it stood at the start of this iteration; sweep B ran against the tree this PR actually
+ships, so the numbers below correspond to the diff rather than to something adjacent to it.
+
+```text
+A  LIVE_SWEEP_SUMMARY executed=285 skipped=0 preexisting=0 vanished=0 launch_timeout=0 total=285
+B  LIVE_SWEEP_SUMMARY executed=285 skipped=0 preexisting=0 vanished=0 launch_timeout=0 total=285
+```
+
+285 passed / 0 failed in each, and `passed + failed == executed == 285` both times — the
+reconciliation the `iteration-close` skill demands (five of eight sweeps on 2026-08-23 failed it,
+with nine tests producing no verdict). **This is the first fully-green sweep in this line**: 178's
+had one failure, `live_110_kill_scoping::live_110_replace_never_kills_foreign_firefox`, which
+[[iteration-191-stale-launch-record-recycled-pid-kill]] fixed and which passes in both runs here.
+All six watched tests — `live_160`, `live_104`, `live_145`, `live_109`, `live_137`, `live_110` —
+report `ok` in both.
+
+### The load exposure conditions 6 and 7 were waiting for
+
+[[iteration-188-live-sweep-cost-and-parallelism]] has landed, so the 276-test CLI suite now runs at
+`--test-threads=6`. 192 inherited a prediction from its own "Out of scope" section — *"if it lands,
+conditions 6 and 7 get their load experiment for free and honestly"* — and that is exactly what
+happened. Sampling the 1-minute load average every 10 s across both runs:
+
+| | samples | load range | above 100 | above 190 |
+|---|---|---|---|---|
+| A | 34 | 4.35 – 224.94 | 30 | 16 |
+| B | 30 | 10.98 – 347.96 | 27 | 24 |
+
+Condition 6 asked for a `-j6` run; the sweep *is* one now. Condition 7's original observation was
+an unattributed setup failure at load ~190; 40 of these 64 samples sit above that, peaking at
+347.96. Both tests passed. No synthetic spinner was run — 177, 178 and 192 all declined to
+manufacture load to close a checkbox, and iter-188 made doing so unnecessary.
+
+This does **not** close either condition. One green run is not evidence a load-sensitive defect is
+fixed. What changed is narrower and still worth writing down: their load-sensitive arms are no
+longer *untested*, they are *routinely exercised and not firing*, which is why
+[[iteration-203-live-sweep-watch-conditions-third-holder]] restates their triggers without the
+"under `-j6`" / "under contended load" qualifiers instead of copying them forward verbatim.
+
+### Condition 4's polling hunt
+
+64 pid samples across the two sweeps, every one `alive=1 listen=1`. The port-6000 browser survived
+a run that peaked at load 347.96. Second and third clean negatives, on one machine.
+
+### What the canary check turned up
+
+Conditions 10 and 11 both rest on `toolchain-watch.yml` running weekly. Checking it produced
+something neither row anticipated: **its entire run history is one `workflow_dispatch` on
+2026-08-23.** The cron (`0 4 * * 1`) has never fired. The workflow landed in iter-185 (`63b25a4`)
+and its first scheduled run was due 2026-08-24 04:00 UTC — still six hours in the future when this
+was observed at 2026-08-23 22:14 UTC, so the benign reading is simply "not due yet", and
+`live.yml`'s cron has fired every Monday since 2026-07-13, which shows the mechanism works here.
+
+But condition 11's trigger is *two consecutive scheduled runs failing*, and there have been zero.
+That trigger is not merely unfired, it is **structurally unobservable** until at least 2026-08-31.
+And condition 10 was accepted in iter-185 on the strength of the canary bounding exposure to seven
+days — a bound nobody has yet watched hold unattended. Filed as condition 13 in 203, together with
+the observation that `live.yml`'s scheduled runs land 46 min – 3 h 26 min after their nominal
+03:00 UTC, which makes toolchain-watch's "one hour after `live.yml` so they do not contend"
+comment optimistic.
+
 ## Out of scope
 
 - Designing a fix for any of the seven ahead of its trigger. Every one of them still lacks the
@@ -82,27 +148,29 @@ and has its own plan: [[iteration-191-stale-launch-record-recycled-pid-kill]].
 
 - [x] Watch condition 1 (`live_160` intermittent failure) has either fired (and been forked into
       its own plan per 178's action) or has not fired since this plan was filed
-      [2026-08-24: `ok` — third consecutive pass (173, 178, 192); not fired, carried to 203]
+      [2026-08-24: `ok` in both sweeps — third and fourth consecutive passes (173, 178, 192×2); not
+      fired, carried to 203]
 - [x] Watch condition 2 (launch-timeout budget) has either fired (and been forked into its own
       plan) or has not fired since this plan was filed
-      [2026-08-24: `launch_timeout=0` at a peak 1-min load of 224.94 — the condition's own worst
-      case did not reproduce it; not fired, carried to 203]
+      [2026-08-24: `launch_timeout=0` in both sweeps, at a peak 1-min load of 347.96 — the
+      condition's own worst case did not reproduce it; not fired, carried to 203]
 - [x] Watch condition 3 (vanished/launch_timeout numbers look wrong) has either fired (and been
       forked into its own plan) or has not fired since this plan was filed
-      [2026-08-24: `vanished=0 launch_timeout=0`, and `285 passed + 0 failed == executed=285`, so
+      [2026-08-24: `vanished=0 launch_timeout=0` in both sweeps, and `285 passed + 0 failed ==
+      executed=285` each time, so
       the reconciliation the iteration-close skill demands holds. Both counts zero again, so once
       more **only the no-op branches ran** — the live-coverage gap in the condition's heading is
       still untouched. Not fired, carried to 203]
 - [x] Watch condition 4 (an unprovoked port-6000 death) has either fired (and the polling hunt run)
       or has not fired since this plan was filed
-      [2026-08-24: 34 pid samples at 10 s across the whole sweep, all `alive=1 listen=1`, under a
-      load range of 4.35–224.94. Second clean negative, and under far heavier contention than
-      178's. Not fired, carried to 203]
+      [2026-08-24: 64 pid samples at 10 s across the two sweeps, all `alive=1 listen=1`, under a
+      load range of 4.35–347.96. Second and third clean negatives, under far heavier contention
+      than 178's. Not fired, carried to 203]
 - [x] Watch condition 5 (`live_104` daemon timeout) has either fired again (and been forked into
       its own plan) or has not fired since this plan was filed
       [2026-08-24: `ok`. The second arm ("fails once at a 1-minute load average below ~30") was
       again never exercised, because it needs a *failure*. Worth recording that it passed at loads
-      up to 224.94, which weakens the starvation hypothesis more than 178's 4.4–28.1 range did.
+      up to 347.96, which weakens the starvation hypothesis more than 178's 4.4–28.1 range did.
       Not fired, carried to 203]
 - [x] Watch condition 6 (`live_145` under load) has either fired with its message captured (and
       been forked into its own plan) or has not fired since this plan was filed
@@ -114,9 +182,10 @@ and has its own plan: [[iteration-191-stale-launch-record-recycled-pid-kill]].
 - [x] Watch condition 7 (`live_109_throttle_block` setup failure under load) has either fired again
       with a captured message (and been forked into its own plan) or has not fired since this plan
       was filed
-      [2026-08-24: `ok`. The original observation was an unattributed setup failure at load ~190;
-      this sweep spent 16 of its 34 samples above 190, peaking at 224.94, and the test passed. No
-      synthetic spinner was run, per the condition's own instruction. Not fired, carried to 203]
+      [2026-08-24: `ok` in both sweeps. The original observation was an unattributed setup failure
+      at load ~190; 40 of the 64 samples sit above 190, peaking at 347.96, and the test passed
+      each time. No synthetic spinner was run, per the condition's own instruction. Not fired,
+      carried to 203]
 - [ ] Watch condition 8 (`live_137_consent_accept_via_daemon` under sweep load) has been forked
       into its own plan, or a second observation has confirmed the poll-timing diagnosis
       — **deliberately left unticked.** `live_137_consent_accept_via_daemon` passed this sweep,
