@@ -210,6 +210,52 @@ pub fn process_start_token(pid: u32) -> Option<String> {
     }
 }
 
+/// How a persisted `(pid, start_token)` pair compares against whatever process
+/// holds that PID *now* (iter-191).
+///
+/// Every artefact ff-rdp writes down a PID in — the launch record, the daemon
+/// registry, a profile's owner marker — is read back later to decide whether a
+/// signal may be sent. `kill(pid, 0)` cannot answer that question: it reports
+/// that *some* process holds the number, not that it is the one the artefact
+/// was written for. This enum is the graded answer callers need instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PidIdentity {
+    /// The live PID is the same incarnation the token was captured from.
+    Confirmed,
+    /// The live PID is demonstrably a *different* incarnation: a token was
+    /// recorded, the OS supplied one now, and they disagree. The only way that
+    /// happens is PID reuse, so the process holding the number is unrelated to
+    /// whatever wrote the record.
+    Recycled,
+    /// Nothing can be concluded — no token was recorded (an artefact written
+    /// by a pre-iter-191 binary, or a platform with no supported source), or
+    /// the OS declined to supply one for this PID now.
+    ///
+    /// **Not a synonym for [`Self::Confirmed`].** Callers about to send a
+    /// signal must treat it as "unproven" and consult a second source of
+    /// ownership proof (or refuse); callers merely reporting state may treat
+    /// it as the pre-iter-191 bare-liveness answer.
+    Unknown,
+}
+
+/// Compare `recorded_token` — a [`process_start_token`] captured when the
+/// artefact naming `pid` was written — against the token `pid` reports now.
+///
+/// See [`PidIdentity`] for how each outcome must be read. This function makes
+/// no liveness claim of its own: a dead PID yields no token and so grades
+/// [`PidIdentity::Unknown`], which is why callers pair it with
+/// [`is_process_alive`] rather than replacing that check.
+pub fn pid_identity(pid: u32, recorded_token: Option<&str>) -> PidIdentity {
+    let Some(recorded) = recorded_token else {
+        return PidIdentity::Unknown;
+    };
+    match process_start_token(pid) {
+        Some(live) if live == recorded => PidIdentity::Confirmed,
+        Some(_) => PidIdentity::Recycled,
+        None => PidIdentity::Unknown,
+    }
+}
+
 /// `usize` → `c_int` without an `as` cast, so an implausibly large struct size
 /// yields `None` instead of a silently truncated FFI argument.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -704,6 +750,45 @@ mod tests {
         );
     }
 
+    /// AC (iter-191): `pid_identity` grades the three cases the kill paths
+    /// depend on — matching token, disagreeing token, and no token at all.
+    ///
+    /// The middle case is the one the 2026-08-23 sweep failure needed and did
+    /// not have: a live PID whose recorded token disagrees is *positively*
+    /// someone else, and `Unknown` must stay distinguishable from `Confirmed`
+    /// so callers can decide for themselves whether "cannot prove" is good
+    /// enough (it never is, before a signal).
+    #[test]
+    fn unit_191_pid_identity_grades_match_mismatch_and_absence() {
+        let pid = std::process::id();
+        let live = process_start_token(pid);
+
+        assert_eq!(
+            pid_identity(pid, None),
+            PidIdentity::Unknown,
+            "no recorded token ⇒ nothing can be concluded"
+        );
+
+        if let Some(token) = live {
+            assert_eq!(
+                pid_identity(pid, Some(&token)),
+                PidIdentity::Confirmed,
+                "this process's own token must confirm its own PID"
+            );
+            assert_eq!(
+                pid_identity(pid, Some("0.000000")),
+                PidIdentity::Recycled,
+                "a token that disagrees with the live process means the PID was reused"
+            );
+        }
+
+        assert_eq!(
+            pid_identity(999_999_999, Some("0.000000")),
+            PidIdentity::Unknown,
+            "a PID with no live process supplies no token to compare against"
+        );
+    }
+
     /// AC (iter-171): the token actually *distinguishes* processes — two
     /// concurrently-live PIDs must not share a token. This is the property
     /// that makes `(pid, token)` a usable identity: if the token were, say, a
@@ -756,6 +841,7 @@ mod tests {
             firefox_port: WAIT_PORT,
             started_at: "2026-08-17T00:00:00Z".to_owned(),
             auth_token: "a".repeat(64),
+            start_token: None,
         }
     }
 

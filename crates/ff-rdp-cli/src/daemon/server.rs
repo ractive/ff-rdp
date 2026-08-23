@@ -719,6 +719,10 @@ pub(crate) fn run_daemon(
         firefox_port,
         started_at: chrono::Utc::now().to_rfc3339(),
         auth_token: auth_token.clone(),
+        // iter-191: record which incarnation of this PID the registry
+        // describes, so a `daemon stop` reading a stale registry cannot
+        // signal a process that merely inherited the number.
+        start_token: crate::daemon::process::process_start_token(std::process::id()),
     };
     registry::write_registry(&info).context("writing registry")?;
     eprintln!("daemon: listening on port {proxy_port}, PID {}", info.pid);

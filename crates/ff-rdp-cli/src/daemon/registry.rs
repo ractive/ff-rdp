@@ -41,6 +41,21 @@ pub struct DaemonInfo {
     /// connect — defeating DNS-rebinding attacks from browser tabs or
     /// sandboxed processes that can reach localhost TCP but cannot read $HOME.
     pub(crate) auth_token: String,
+    /// `process_start_token` for [`Self::pid`], captured when the daemon
+    /// published this registry (iter-191).
+    ///
+    /// Same purpose as `DaemonRecord::start_token`, and recorded here for the
+    /// same reason: `daemon stop` signals `info.pid` directly when the
+    /// shutdown RPC does not land, and `started_at` is a wall-clock string
+    /// that cannot distinguish "our daemon" from "whatever the OS reissued
+    /// this PID to".
+    ///
+    /// `#[serde(default)]`, so a registry written by a pre-iter-191 daemon
+    /// keeps parsing — and, unlike the launch record, an absent token here is
+    /// **not** treated as a refusal. See `stop_daemon_and_build_result_with`
+    /// for that deliberate asymmetry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) start_token: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -555,6 +570,7 @@ mod tests {
             firefox_port: SAMPLE_PORT,
             started_at: "2026-04-06T12:00:00Z".to_owned(),
             auth_token: "a".repeat(64),
+            start_token: None,
         }
     }
 
@@ -697,6 +713,7 @@ mod tests {
             firefox_port: SAMPLE_PORT,
             started_at: "2026-04-07T00:00:00Z".to_owned(),
             auth_token: "b".repeat(64),
+            start_token: None,
         };
         write_registry_in(dir.path(), &updated).expect("second write");
 
@@ -1001,6 +1018,7 @@ mod tests {
             firefox_port: port,
             started_at: "2026-04-06T12:00:00Z".to_owned(),
             auth_token: "a".repeat(64),
+            start_token: None,
         }
     }
 

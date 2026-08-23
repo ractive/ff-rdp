@@ -93,6 +93,19 @@ in time, which reports `Firefox (pid N) did not open debug port P within Ss`.
 Keeping the two apart matters: pre-iter-158 both printed "is the port already
 in use?", which sent users hunting for a process that did not exist.
 
+`--replace` stops the instance already on that port and relaunches — but only
+one ff-rdp itself started. It will refuse rather than signal a process it
+cannot prove it spawned, and since iter-191 that proof is an identity check,
+not a liveness check: the `launch-record.<port>.json` it consults records the
+owning process's OS start token alongside its PID, and a record whose PID the
+OS has since handed to something else is rejected with *"ff-rdp did not launch
+… Refusing to stop a process ff-rdp does not own"*. Before that, a leaked
+record from an earlier run was enough to aim SIGTERM and SIGKILL at whatever
+process happened to inherit the number. The refused record is left on disk —
+it is the ownership trail, and the launch-record sweep below is what reclaims
+it. If the refusal is wrong (the port really is held by your own stale
+instance), stop it yourself or pick another port with `--debug-port`.
+
 `launch` waits **30 s** by default for that port to open. Raise it with
 `--launch-timeout <secs>` or `FF_RDP_LAUNCH_TIMEOUT_SECS` (the flag wins; a
 malformed env value falls back to 30 s rather than failing the launch). The

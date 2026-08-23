@@ -846,6 +846,16 @@ pub(crate) fn run_with_hooks(
                 headless,
                 launched_at: chrono::Utc::now(),
                 profile_dir: profile_path.clone().unwrap_or_default(),
+                // iter-191: capture *which incarnation* of `pid` this record
+                // describes, not just the number. Every later reader that is
+                // about to signal `pid` compares this back (see
+                // `daemon_record::record_pid_is_ours`); without it a record
+                // that outlives its Firefox hands the next `launch --replace`
+                // a kill permit for whatever process the OS reissued the PID
+                // to. `None` here (unsupported platform, or the process
+                // already gone) degrades to the owner-PID marker check, the
+                // pre-iter-191 fallback.
+                start_token: crate::daemon::process::process_start_token(pid),
             };
             if let Err(e) = crate::daemon_record::write(&daemon_rec) {
                 // stderr-ok: (b) warn-and-continue — launch still succeeds,

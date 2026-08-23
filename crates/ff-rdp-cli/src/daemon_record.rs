@@ -75,6 +75,69 @@ pub struct DaemonRecord {
     pub headless: bool,
     pub launched_at: DateTime<Utc>,
     pub profile_dir: PathBuf,
+    /// [`process::process_start_token`] for [`Self::pid`], captured when this
+    /// record was written (iter-191).
+    ///
+    /// `pid` alone cannot survive PID reuse, and this record is read back on a
+    /// path that *sends signals*: `launch --replace` and `daemon stop` both
+    /// treat a port-matching, PID-alive record as permission to SIGTERM and
+    /// then SIGKILL the process group derived from it. On 2026-08-23 a record
+    /// written seven days earlier named a PID the OS had since handed to an
+    /// unrelated desktop application, and `launch --replace` signalled it —
+    /// see [`record_pid_is_ours`] for the check that now stands in the way.
+    ///
+    /// `None` on two ordinary paths, both of which fall back to the owner-PID
+    /// marker instead of failing: a record written by a pre-iter-191 binary
+    /// (the field is `serde(default)`, so those files keep parsing), and a
+    /// platform where the OS supplies no start token at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_token: Option<String>,
+}
+
+/// Whether `rec.pid` still identifies the process this record was written for
+/// — the question `kill(pid, 0)` cannot answer (iter-191).
+///
+/// Call this before signalling a PID that came out of a launch record.
+/// `is_process_alive(rec.pid)` establishes only that *some* process holds the
+/// number; a record that outlived its Firefox (a crash between `launch` and
+/// cleanup, or one of the per-port records iter-186's GC reclaims) names a
+/// number the OS is free to reissue, and the signals that follow are
+/// group-wide (`kill(-pid, SIGTERM)`), so trusting it can take out an
+/// unrelated application and everything in its process group.
+///
+/// Two sources of proof, in order:
+///
+/// 1. [`DaemonRecord::start_token`] against the PID's current start token —
+///    an exact identity comparison ([`process::pid_identity`]). This is the
+///    only source that works for a user-supplied `--profile` directory, which
+///    deliberately never receives an owner-PID marker.
+/// 2. Failing that (no token recorded, or the OS will not supply one now),
+///    [`crate::util::profile_dir::pid_is_ff_rdp_spawned`] — the same
+///    fails-closed marker gate iter-110 Theme A0 put in front of the
+///    port-owner kill path. No marker ⇒ not ours.
+///
+/// Fails closed by construction: every outcome that is not positive proof
+/// returns `false`, because "cannot confirm" must never authorise a kill.
+pub fn record_pid_is_ours(rec: &DaemonRecord) -> bool {
+    record_pid_is_ours_with(
+        rec,
+        process::pid_identity,
+        crate::util::profile_dir::pid_is_ff_rdp_spawned,
+    )
+}
+
+/// [`record_pid_is_ours`] with both proof sources injected, so the decision
+/// table can be unit-tested without a real recycled PID.
+fn record_pid_is_ours_with(
+    rec: &DaemonRecord,
+    identity: fn(u32, Option<&str>) -> process::PidIdentity,
+    pid_is_ff_rdp_spawned: fn(u32) -> bool,
+) -> bool {
+    match identity(rec.pid, rec.start_token.as_deref()) {
+        process::PidIdentity::Confirmed => true,
+        process::PidIdentity::Recycled => false,
+        process::PidIdentity::Unknown => pid_is_ff_rdp_spawned(rec.pid),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +399,7 @@ mod tests {
             headless: true,
             launched_at: Utc::now(),
             profile_dir: PathBuf::from("/tmp/ff-rdp-test-profile"),
+            start_token: None,
         }
     }
 
@@ -365,6 +429,82 @@ mod tests {
         );
     }
 
+    /// AC (iter-191): the ownership decision table. Every outcome that is not
+    /// positive proof must return `false` — "cannot confirm" never authorises
+    /// a kill.
+    #[test]
+    fn unit_191_record_pid_is_ours_decision_table() {
+        let rec_with_token = DaemonRecord {
+            start_token: Some("t".to_owned()),
+            ..sample_record()
+        };
+        let rec_without_token = DaemonRecord {
+            start_token: None,
+            ..sample_record()
+        };
+
+        // 1. Token matches ⇒ ours, regardless of any marker. This is the case
+        //    a user-supplied `--profile` launch depends on: that directory
+        //    deliberately never receives an owner-PID marker, so the marker
+        //    fallback alone would refuse to stop ff-rdp's own Firefox.
+        assert!(record_pid_is_ours_with(
+            &rec_with_token,
+            |_pid, _tok| process::PidIdentity::Confirmed,
+            |_pid| false,
+        ));
+
+        // 2. Token disagrees ⇒ the PID was reused. Not ours even if some
+        //    managed profile happens to name it.
+        assert!(!record_pid_is_ours_with(
+            &rec_with_token,
+            |_pid, _tok| process::PidIdentity::Recycled,
+            |_pid| true,
+        ));
+
+        // 3. No token (a pre-iter-191 record, or a platform that supplies
+        //    none) ⇒ fall back to the iter-110 owner-PID marker gate.
+        assert!(record_pid_is_ours_with(
+            &rec_without_token,
+            |_pid, _tok| process::PidIdentity::Unknown,
+            |_pid| true,
+        ));
+        assert!(!record_pid_is_ours_with(
+            &rec_without_token,
+            |_pid, _tok| process::PidIdentity::Unknown,
+            |_pid| false,
+        ));
+    }
+
+    /// A record written by a pre-iter-191 binary has no `start_token` key at
+    /// all. It must keep parsing — the field is `serde(default)` — and grade
+    /// as token-less rather than failing the read, which would make every
+    /// leaked record unreadable instead of merely untrusted.
+    #[test]
+    fn unit_191_record_without_start_token_still_parses() {
+        let legacy = r#"{
+            "pid": 65225,
+            "port": 51371,
+            "headless": true,
+            "launched_at": "2026-08-16T20:32:13.855708Z",
+            "profile_dir": "/tmp/does-not-exist"
+        }"#;
+        let rec: DaemonRecord = serde_json::from_str(legacy).expect("legacy record must parse");
+        assert_eq!(rec.pid, 65225);
+        assert_eq!(rec.start_token, None);
+
+        // And a record carrying one round-trips through the on-disk form.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rec = DaemonRecord {
+            start_token: Some("12345.678901".to_owned()),
+            ..sample_record()
+        };
+        write_in(dir.path(), &rec).expect("write");
+        let read_back = read_in(dir.path(), rec.port)
+            .expect("read ok")
+            .expect("present");
+        assert_eq!(read_back.start_token.as_deref(), Some("12345.678901"));
+    }
+
     /// A record with a dead PID returns None and removes the file.
     #[test]
     fn unit_daemon_record_stale_pid_returns_none_and_removes_file() {
@@ -376,6 +516,7 @@ mod tests {
             headless: false,
             launched_at: Utc::now(),
             profile_dir: PathBuf::from("/tmp/stale"),
+            start_token: None,
         };
 
         // Bypass the normal write_in (which doesn't check PID) by writing JSON directly.
@@ -440,6 +581,7 @@ mod tests {
             headless: false,
             launched_at: Utc::now(),
             profile_dir: PathBuf::from("/tmp/updated"),
+            start_token: None,
         };
         write_in(dir.path(), &updated).expect("second write");
 
@@ -464,6 +606,7 @@ mod tests {
             headless: true,
             launched_at: Utc::now(),
             profile_dir: PathBuf::from("/tmp/profile-a"),
+            start_token: None,
         };
         let rec_b = DaemonRecord {
             pid: std::process::id(),
@@ -471,6 +614,7 @@ mod tests {
             headless: true,
             launched_at: Utc::now(),
             profile_dir: PathBuf::from("/tmp/profile-b"),
+            start_token: None,
         };
 
         write_in(dir.path(), &rec_a).expect("write a");
@@ -520,6 +664,7 @@ mod tests {
             headless: true,
             launched_at: Utc::now(),
             profile_dir: PathBuf::from("/tmp/ff-rdp-planted"),
+            start_token: None,
         };
         fs::write(
             dir.join(record_filename(port)),
