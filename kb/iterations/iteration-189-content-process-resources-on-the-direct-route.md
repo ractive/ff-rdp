@@ -100,6 +100,13 @@ would be equally quiet.
 - [ ] every content-process subscriber measured on both routes
 - [ ] the result — defect or clean — recorded in `kb/rdp/actors/watcher.md` under the iter-174
       section, replacing its "were not audited" sentence
+- [ ] **folded in from iteration 174's carry-over:** the `iteration-close` skill tells you to start
+      a Firefox on port 6000 so the sweep's `preexisting` tier executes, and
+      `live_96_profile_cleanup::live_profiles_prune_removes_all_when_no_firefox_running` then fails
+      its precondition on exactly that browser (measured twice in iteration 174; the test passes in
+      1.20 s once it exits). Following the documented procedure guarantees one red test. Decide
+      which side gives: the test scoping its precondition to profiles it owns, or the skill naming
+      the conflict. This is not "environmental" — both instructions are ours.
 
 ## Acceptance Criteria [0/3]
 
