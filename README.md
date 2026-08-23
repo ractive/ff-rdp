@@ -475,7 +475,11 @@ ff-rdp --no-daemon eval "1+1"
   redirected, profiles still landing in the real per-user path. Unset, the
   profiles root resolves as before: `$XDG_STATE_HOME` (Linux), else
   `~/Library/Application Support` (macOS) / `%LOCALAPPDATA%` (Windows), plus
-  `ff-rdp/profiles`.
+  `ff-rdp/profiles`. **`$FF_RDP_HOME` must be a directory only you can
+  write.** ff-rdp trusts an owner-PID marker found under it to decide
+  whether a Firefox process is safe to kill; a directory another account can
+  write to (or rename/replace) lets that account plant a marker and get
+  ff-rdp to authorise a kill on its behalf.
 - `ff-rdp profiles list` / `ff-rdp profiles prune` inspect and reclaim the
   profile directory explicitly; `ff-rdp doctor` warns when the profile store
   grows past 100 entries or 1 GiB. `profiles prune --all` skips the age gate

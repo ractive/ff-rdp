@@ -570,9 +570,20 @@ fn ownership_scan_roots() -> Vec<PathBuf> {
 /// chose and ff-rdp does not fully control — if it turned out
 /// group-or-world-writable, another same-machine account could plant a
 /// marker file naming an arbitrary PID and get ff-rdp to authorise a kill
-/// against it. Refusing to trust a writable-by-others root keeps iter-110's
-/// "never signal a process we did not spawn" guarantee intact regardless of
-/// what `$FF_RDP_HOME` points at.
+/// against it. Refusing to trust a root that this process does not own, or
+/// that others can write, closes that direct planting attack.
+///
+/// **This does not close a substitution attack one level up.** If
+/// `$FF_RDP_HOME` or `$FF_RDP_HOME/ff-rdp` is itself writable by another
+/// account, that account can `rename()` the vetted leaf away and replace it
+/// with a directory it owns at a mode that passes both checks below —
+/// `root_is_trustworthy` only ever inspects the leaf it is handed, it does
+/// not walk the chain up to the override base. Vetting the whole chain is
+/// deliberately out of scope here: **`$FF_RDP_HOME` must itself be a
+/// directory only the invoking user can write**, the same precondition the
+/// README's `FF_RDP_HOME` paragraph states for the operator choosing a
+/// value for it. iter-110's "never signal a process we did not spawn"
+/// guarantee holds given that precondition, not unconditionally.
 ///
 /// Checks **ownership**, not only mode bits: a root at mode `0o755` owned by
 /// a *different* account passes a bits-only test (nothing in `0o022`) but is

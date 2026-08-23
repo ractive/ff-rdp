@@ -105,6 +105,14 @@ live owner-PID marker; report any as a named finding" — without:
   which is a different property.
 - Fixing anything the check might find on a real machine (that would be a fresh leak investigation,
   not this plan).
+- **Walking the whole `$FF_RDP_HOME` chain in `root_is_trustworthy`.** Iteration 188's PR review
+  (`profile_dir.rs`'s `root_is_trustworthy`) added an ownership+mode check on the profile root
+  itself but does not vet `$FF_RDP_HOME` or `$FF_RDP_HOME/ff-rdp` above it — a writable parent lets
+  another account `rename()` the vetted leaf away and substitute one it owns that still passes.
+  Documented as a precondition instead ("`$FF_RDP_HOME` must itself be a directory only you can
+  write" — `profile_dir.rs`'s doc comment and `README.md`'s `FF_RDP_HOME` bullet). Noted here as the
+  tracking location per that review's own suggestion; pick this up if a task ever needs the
+  precondition enforced rather than merely documented.
 
 ## References
 
