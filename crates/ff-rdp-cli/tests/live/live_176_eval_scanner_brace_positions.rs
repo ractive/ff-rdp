@@ -183,6 +183,19 @@ fn live_176_arrow_class_and_label_bodies_are_blocks() {
             Value::Bool(true),
         ),
         ("class K extends Object {} K.name", Value::from("K")),
+        // Review fix: a namespaced superclass (`extends Ns.Base`, the shape
+        // `extends React.Component` and `extends stream.Writable` take) hit
+        // the same silent-`undefined` defect as the bare-identifier case
+        // above, because the dotted-property guard that (correctly) excludes
+        // `obj.try {` fired before the class/`extends` lookback ever ran.
+        // Fixed alongside the bare-identifier case; pinned here since the
+        // first landing of this position's tests only ever covered
+        // `extends Object`.
+        (
+            "const NS = {Base: class { m(){ return 9 } }}; \
+             class K extends NS.Base {} new K().m()",
+            Value::from(9),
+        ),
         // Position 3 — a labelled block. `missing ) in parenthetical` on main.
         ("const n = 1; outer: { break outer } n", Value::from(1)),
         (

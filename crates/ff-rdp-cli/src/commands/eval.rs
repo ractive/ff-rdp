@@ -471,23 +471,46 @@ fn brace_opens_block(
     while start > 0 && is_ident(chars[start - 1].1) {
         start -= 1;
     }
-    if start > 0 && chars[start - 1].1 == '.' {
-        return false;
-    }
     let word: String = chars[start..=end].iter().map(|&(_, c)| c).collect();
-    if KEYWORDS_BEFORE_BLOCK.contains(&word.as_str()) {
-        return true;
+    // iter-170: a dotted property access whose tail happens to spell a
+    // keyword (`obj.try {`) is not the keyword itself.
+    let dotted = start > 0 && chars[start - 1].1 == '.';
+    if !dotted {
+        if KEYWORDS_BEFORE_BLOCK.contains(&word.as_str()) {
+            return true;
+        }
+        // iter-176 Theme C: an anonymous class body, `class { … }`.
+        if word == "class" {
+            return true;
+        }
     }
-    // iter-176 Theme C: an anonymous class body, `class { … }`.
-    if word == "class" {
-        return true;
+    // iter-176 Theme C: `class K {`, `class K extends B {` and — a namespaced
+    // superclass — `class K extends Ns.B {` all put an identifier, or the
+    // tail of a dotted member-expression chain, before the `{`. Walk back
+    // over the whole `ident(.ident)*` chain (a single identifier is a chain
+    // of one) so a namespaced superclass reaches the same lookback a bare one
+    // does — review fix: the first landing of this check stopped at `dotted`
+    // above and never found `extends` behind `Foo.Bar {`, misclassifying the
+    // exact silent-`undefined` shape this iteration exists to fix, for the
+    // common `class C extends Some.Namespace.Class {}` pattern. Both `class`
+    // and `extends` are reserved words, so whatever immediately precedes
+    // either can only be a class name or a superclass — there is no object
+    // literal in that position.
+    let mut chain_start = start;
+    while chain_start > 0 && chars[chain_start - 1].1 == '.' {
+        let dot = chain_start - 1;
+        let mut k = dot;
+        while k > 0 && is_ident(chars[k - 1].1) {
+            k -= 1;
+        }
+        if k == dot {
+            // A `.` with no identifier before it (e.g. a malformed chain, or
+            // `..`) — stop rather than loop forever.
+            break;
+        }
+        chain_start = k;
     }
-    // iter-176 Theme C: `class K {` and `class K extends B {` put an
-    // *identifier* before the `{`, so the keyword is one word further back.
-    // Both `class` and `extends` are reserved words, so an identifier
-    // preceded by either can only be a class name or a superclass — there is
-    // no object literal in that position.
-    let Some((prev_word_start, prev_word_end)) = word_before(chars, start) else {
+    let Some((prev_word_start, prev_word_end)) = word_before(chars, chain_start) else {
         return false;
     };
     if prev_word_start > 0 && chars[prev_word_start - 1].1 == '.' {
@@ -2929,12 +2952,25 @@ mod tests {
     /// `undefined` where Firefox returns `9` — a silent wrong value, not an
     /// error, which is the failure mode iter-142 Theme E named the worst of
     /// this wrap.
+    ///
+    /// Review fix: the first landing of this test only ever exercised a bare
+    /// superclass identifier (`extends Object`). A *namespaced* superclass —
+    /// `class K extends Foo.Bar {}`, the shape a real `extends React.Component`
+    /// or `extends stream.Writable` takes — reproduced the exact defect this
+    /// test exists to catch, because the dotted-property guard that correctly
+    /// excludes `obj.try {` fired before the class/`extends` lookback ever ran.
+    /// `class K extends Foo.Bar {} K.name` failed this test (`boundaries: []`,
+    /// not `[len]`) until `brace_opens_block` learned to walk the whole
+    /// `ident(.ident)*` chain. See `crates/ff-rdp-cli/src/commands/eval.rs`'s
+    /// `brace_opens_block` doc comment and iteration-176's plan.
     #[test]
     fn unit_176_class_declaration_body_is_a_block() {
         for (script, expected_tail) in [
             ("class K { m(){ return 9 } } new K().m()", "new K().m()"),
             ("class K {} K.name", "K.name"),
             ("class K extends Object {} K.name", "K.name"),
+            ("class K extends Foo.Bar {} K.name", "K.name"),
+            ("class K extends Foo.Bar.Baz {} K.name", "K.name"),
             ("class K {} /a;b/.source", "/a;b/.source"),
         ] {
             let boundaries = top_level_statement_boundaries(script);
@@ -2969,6 +3005,26 @@ mod tests {
             vec!["const o = {class: {a: 1}};".len()],
             "an object key named `class` must not be read as the keyword"
         );
+
+        // Review fix regression guard: the dotted-property exclusion this
+        // iteration's chain walk shares with iter-170's `obj.try {` guard
+        // must still fire — a property access whose tail spells a keyword
+        // (`do`/`else`/`try`/`finally`/`class`) is not the keyword, whether
+        // or not the chain that precedes it is ultimately walked back.
+        for script in ["obj.try {}", "obj.class {}", "ns.obj.try {}"] {
+            let chars: Vec<(usize, char)> = script.char_indices().collect();
+            let brace_idx = chars.iter().position(|&(_, c)| c == '{').unwrap();
+            let prev_idx = brace_idx - 2; // the last identifier char before ` {`
+            assert!(
+                !brace_opens_block(
+                    &chars,
+                    Some(chars[prev_idx].1),
+                    Some(prev_idx),
+                    BraceKind::Unknown
+                ),
+                "{script:?}: a dotted property access must not be read as a keyword or class body"
+            );
+        }
     }
 
     /// iter-176 Theme C, second half: a labelled block, `outer: { … }`.
