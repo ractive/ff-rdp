@@ -2,15 +2,16 @@
 title: "Iteration 188: the live sweep spends half its wall clock on Firefox cold starts and runs them one at a time"
 type: iteration
 date: 2026-08-18
-status: planned
+status: done
 branch: iter-188/live-sweep-parallelism
-depends_on: [kb/iterations/iteration-181-playbook-scoped-network-subscription.md]
+depends_on:
+  - kb/iterations/iteration-181-playbook-scoped-network-subscription.md
 first_call_sites: []
 dogfood_path: |
   # Harness/tooling economics. Theme A is ALREADY MEASURED (2026-08-18, results
   # in this plan). Re-run these only to confirm on another machine; do not
   # re-derive them before starting Theme B.
-
+  
   # 1. Cold-start cost of one headless Firefox, the term that dominates.
   for i in 1 2 3 4 5; do
     p=$((7800+i))
@@ -18,26 +19,32 @@ dogfood_path: |
     ff-rdp --port $p daemon stop
   done
   # → MEASURED 2026-08-18: 5.64 s +/- 0.02 s, five runs, idle machine.
-
+  
   # 2. How many cold starts a sweep pays.
   grep -rhoE 'LiveFirefox::(headless_on_random_port(_with_args)?|launch(_with_env)?|try_headless_on_random_port|try_launch)' \
     crates/ff-rdp-cli/tests/live/ | wc -l
   # → MEASURED: 201 launch call sites. 201 x 5.64 s = 1134 s of a 2280 s
   #   CLI tier, i.e. ~50% of the sweep is Firefox starting up.
-
+  
   # 3. Does parallel execution actually pay, and what breaks? cargo-nextest
   #    runs each test in its own process and reports per-test timings, which
   #    libtest on stable cannot (--report-time is nightly-only).
   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 \
     cargo nextest run -p ff-rdp-cli --test live --run-ignored all -jN --no-fail-fast
   # → MEASURED, see the table in this plan. -j6 is the knee.
-
+  
   # 4. Where the CPU actually goes while a sweep runs. Watch for Spotlight.
   uptime; ps -eo pcpu,pid,comm | sort -rn | head -8
   # → MEASURED right after a -j6 run: load average 99 on a 10-core box, with
   #   mds_stores at 45.9% and mds at 20.7% — Spotlight indexing the profile
   #   directories the tests just wrote.
-tags: [iteration, testing, live-tests, tooling, xtask, performance]
+tags:
+  - iteration
+  - testing
+  - live-tests
+  - tooling
+  - xtask
+  - performance
 ---
 
 # Iteration 188: the live sweep is cold-start bound and serial
