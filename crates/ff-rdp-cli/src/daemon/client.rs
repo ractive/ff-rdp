@@ -2478,8 +2478,8 @@ mod tests {
             log_call("wait_port_closed");
             false
         };
-        let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "daemon", "stop"])
-            .expect("parse cli");
+        let cli =
+            <Cli as clap::Parser>::try_parse_from(["ff-rdp", "daemon", "stop"]).expect("parse cli");
 
         let err = stop_daemon_and_build_result_with(&cli, port, &deps)
             .expect_err("a held port must fail the stop");
@@ -2512,11 +2512,10 @@ mod tests {
         plant_registry(dir.path(), port, None);
 
         let deps = registry_stop_deps(dir.path());
-        let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "daemon", "stop"])
-            .expect("parse cli");
+        let cli =
+            <Cli as clap::Parser>::try_parse_from(["ff-rdp", "daemon", "stop"]).expect("parse cli");
 
-        stop_daemon_and_build_result_with(&cli, port, &deps)
-            .expect("a freed port succeeds");
+        stop_daemon_and_build_result_with(&cli, port, &deps).expect("a freed port succeeds");
 
         let log = take_call_log();
         assert!(
@@ -2550,11 +2549,10 @@ mod tests {
         plant_registry(dir.path(), port, Some(&token));
 
         let deps = registry_stop_deps(dir.path());
-        let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "daemon", "stop"])
-            .expect("parse cli");
+        let cli =
+            <Cli as clap::Parser>::try_parse_from(["ff-rdp", "daemon", "stop"]).expect("parse cli");
 
-        stop_daemon_and_build_result_with(&cli, port, &deps)
-            .expect("a freed port succeeds");
+        stop_daemon_and_build_result_with(&cli, port, &deps).expect("a freed port succeeds");
 
         let log = take_call_log();
         assert!(
@@ -2580,8 +2578,8 @@ mod tests {
         );
 
         let deps = registry_stop_deps(dir.path());
-        let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "daemon", "stop"])
-            .expect("parse cli");
+        let cli =
+            <Cli as clap::Parser>::try_parse_from(["ff-rdp", "daemon", "stop"]).expect("parse cli");
         stop_daemon_and_build_result_with(&cli, port, &deps).expect("a freed port succeeds");
 
         assert!(
@@ -2591,5 +2589,4 @@ mod tests {
             "the stop must remove the registry entry from the overridden dir"
         );
     }
-
 }
