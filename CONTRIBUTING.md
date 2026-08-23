@@ -14,8 +14,9 @@ Never skip a step. Never commit code that fails any of these.
 
 ### A local pass is not a CI pass
 
-The gates above are necessary, not sufficient. CI's `fmt`/`clippy` jobs use
-`dtolnay/rust-toolchain@stable`, which resolves to whatever stable is current
+The gates above are necessary, not sufficient. CI's `fmt`/`clippy` jobs use a
+SHA-pinned `dtolnay/rust-toolchain` on the `stable` channel — the *action* is
+pinned, the *toolchain* is not, so it resolves to whatever stable is current
 *on the day the job runs*; your machine uses whatever stable was current when
 you last ran `rustup update`. When a new stable lands in between, clippy gains
 lints, and `cargo clippy --workspace --all-targets -- -D warnings` exits 0 for
