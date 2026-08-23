@@ -65,6 +65,7 @@ and has its own plan: [[iteration-191-stale-launch-record-recycled-pid-kill]].
 | 9 | ~~Starting the port-6000 browser with `ff-rdp launch` breaks `live_96`~~ **RESOLVED 2026-08-23** | — | Fired 4x (iters 174, 175, 177, 186) | Not a test-vs-skill conflict. `.claude/skills/iteration-close/SKILL.md` buried the raw-browser command inside a bullet explaining the `preexisting` counter; it now states it as a setup step with the reason. Closed, not carried. See [[iteration-189-content-process-resources-on-the-direct-route]] for the withdrawn mis-diagnosis. |
 | 10 | Nothing lints `main` immediately after a merge — two individually-green PRs can merge into a lint-red `main`, and `ci.yml` is `pull_request`-only | a merge-introduced red `main` survives a full weekly canary cycle uncaught | not yet observed | Folded from iteration 194. Accepted in iter-185 rather than fixed: the weekly canary bounds exposure to 7 days, and `push: [main]` would double CI cost per merge without having caught the original incident (zero commits involved). DEC-044 |
 | 11 | The canary does not alert on failure — it relies on GitHub's default scheduled-failure notification reaching one maintainer | two consecutive scheduled runs fail on the same cause with no intervening fix | not yet observed | Folded from iteration 194. Check with `gh run list --workflow=toolchain-watch.yml --limit=10 --json conclusion,createdAt` |
+| 12 | [[iteration-191-stale-launch-record-recycled-pid-kill]]'s registry-path fix (`daemon stop`'s `Recycled`-PID refusal inside `stop_daemon_and_build_result_with`, the ~50 lines gating the direct kill and the `firefox_pid.unwrap_or(info.pid)` fallback) shipped with no direct unit or live test — only the launch-record branch (`stop_prior_instance_with`) got the three dedicated `unit_191_*` tests and a `live_110` phase B | a live sweep or a real incident exercises the registry-path refusal (correctly or incorrectly) with a captured message, or `StopDeps` grows a `registry_dir` override that makes the branch unit-testable the way `record_dir` already does for the launch record | not yet observed (found during PR #224 review, 2026-08-23) | Iteration 191's own ACs scoped test coverage to `stop_prior_instance_with` only; branch 2 was decided and written up (`DEC-045`) but `registry::read_registry`/`write_registry` read `registry_dir()` directly rather than through an injectable dir like `daemon_record::read_in`'s, so a unit test today would need `std::env::set_var` — a pattern this codebase deliberately avoids (`util/profile_dir.rs`'s `resolve_profile_root` split exists for exactly that reason) — or a small `StopDeps` refactor first. The logic was reviewed by hand at merge time and reads correct; this row exists so an actual incident, or the refactor, is what closes it, not inspection |
 
 ## Out of scope
 
@@ -77,7 +78,7 @@ and has its own plan: [[iteration-191-stale-launch-record-recycled-pid-kill]].
 - The `live_110` failure and the stale-record kill path — [[iteration-191-stale-launch-record-recycled-pid-kill]].
 - The `~/.ff-rdp` launch-record leak — [[iteration-186-launch-records-leak-one-file-per-port]].
 
-## Acceptance Criteria [1/11]
+## Acceptance Criteria [1/12]
 
 - [ ] Watch condition 1 (`live_160` intermittent failure) has either fired (and been forked into
       its own plan per 178's action) or has not fired since this plan was filed
@@ -108,6 +109,10 @@ and has its own plan: [[iteration-191-stale-launch-record-recycled-pid-kill]].
       checked against `gh run list --workflow=toolchain-watch.yml` history
 - [ ] Watch condition 11 (a red canary unnoticed for a week) has either fired (and been forked into
       its own plan) or has not fired — checked against consecutive canary run conclusions
+- [ ] Watch condition 12 (iter-191's registry-path recycled-PID refusal has no direct test) has
+      either been given direct coverage (a `StopDeps` registry-dir override plus a unit test, or a
+      live test analogous to `live_110`'s phase B) or has not caused an incident since this plan
+      was filed
 - [ ] Whoever closes this plan has decided, explicitly, whether the still-open conditions get a
       successor holder or are dropped with a written reason — the one question 178 could not answer
       for itself, and the reason this file exists at all
