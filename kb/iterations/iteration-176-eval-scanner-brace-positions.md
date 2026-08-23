@@ -195,6 +195,40 @@ rather than papered over.
       arrow body followed by `,`).
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
+## Closing live sweep (2026-08-23)
+
+Gates: `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`
+
+```
+LIVE_SWEEP_SUMMARY executed=275 skipped=0 preexisting=9 vanished=0 launch_timeout=0 total=284
+ff-rdp-cli --test live: 274 passed / 1 failed, 762.99s
+```
+
+Both new tests executed and passed:
+
+```
+test live_176_eval_scanner_brace_positions::live_176_arrow_class_and_label_bodies_are_blocks ... ok
+test live_176_eval_scanner_brace_positions::live_176_object_literals_and_expressions_still_divide ... ok
+```
+
+The single failure — `live_96_profile_cleanup::live_profiles_prune_removes_all_when_no_firefox_running`
+— is a pre-existing leaked Firefox, not sweep load and not this diff. See the carry-over table.
+
+**An earlier attempt at this sweep was killed by the agent harness at test ~140** (not by a person,
+and not mid-Firefox by choice). Its numbers are discarded, not quoted; the run above is a complete
+re-run from a clean start.
+
+## Carry-over
+
+| # | item | disposition |
+|---|------|-------------|
+| 1 | Sweep failure `live_96_profile_cleanup::live_profiles_prune_removes_all_when_no_firefox_running` — precondition violated by pid 79010, an ff-rdp-managed profile owned by a live process attributed to `live_160_envelope_honesty::live_160_selector_diagnostics_survive`, started ~5 h before the sweep. Failed identically in isolation, so it is the orphan, not load. `kill 79010` then re-run → `live_96_profile_cleanup`: 3 passed / 0 failed. | **fold** — folded into [[iteration-190-live-sweep-only-failures]] as a third mechanism for the same test, with the two follow-ups it implies (does that live test really leak, and should a sweep name a pre-dating orphan in one line). Validated with `check-iteration-plan`. |
+| 2 | First sweep attempt killed by the harness at ~test 140, leaving orphaned browsers behind. | **closed in this PR** — numbers discarded rather than quoted, sweep re-run from scratch, and the one orphan it left was identified by PID and terminated before the re-run's failure was diagnosed. |
+| 3 | Accepted divergence: `const g = () => {} /re/.test(s)` with no line terminator is now accepted where Firefox rejects it. | **no plan, with a stated reason** — nothing measured is left to act on: the divergence only ever accepts input Firefox rejects, and removing it would break the valid newline form. It is recorded in the DEC-042 addendum, in `top_level_statement_boundaries`' doc comment, and in "Accepted divergence" above. If a caller ever reports a *valid* script whose value changed because of it, that needs its own plan. |
+| 4 | Stale-marker residual on `expr_body_depths`: a `class` keyword in expression position never followed by a `{` at the same depth could misclassify a later `{}` — the same unreached residual `function_keyword_is_declaration` already carries. | **no plan, with a stated reason** — unreached by any live or unit input, and in the safe (pre-170) direction. Documented on `top_level_statement_boundaries`. If a measurement ever produces a matching input, it needs its own plan. |
+| 5 | Labels nested inside a non-block brace (`{ outer: {…} }`) stay unjudged. | **no plan, with a stated reason** — deliberate, in the fail-safe direction (a missing boundary, never a spurious one), and stated in "Why the label is judgeable after all". A measured case that produces a wrong value would change that. |
+| 6 | Plan's dogfood lines 1a/1b predicted an arrow-body defect on input that is invalid JavaScript in Firefox itself. | **closed in this PR** — recorded in the Theme A table as *not* defects, with Firefox's own error for each, rather than being quietly reused as evidence. The arrow position was confirmed reachable by a different line (1c) that the plan did not write. |
+
 ## Design notes
 
 The scanner must not become a JS parser (DEC-039, iter-167 and iter-170 design notes). The rule
