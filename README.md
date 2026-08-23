@@ -443,11 +443,21 @@ ff-rdp --no-daemon eval "1+1"
   stays a pure age query.
 - Every `ff-rdp launch` also sweeps `~/.ff-rdp/` housekeeping files: stale
   per-port spawn locks, the per-port registry write locks (iter-172), the
-  legacy port-less `daemon.spawn.lock` name, and
+  legacy port-less `daemon.spawn.lock` name,
   `daemon.<port>.throttle.json` state files whose recorded daemon PID is no
-  longer alive (iter-142). Previously this only ran on the rare
-  daemon-autostart path, so a session that reused an already-running daemon
-  never triggered it at all.
+  longer alive (iter-142), and `launch-record.<port>.json` files whose
+  recorded PID is no longer alive (iter-186). Previously this only ran on the
+  rare daemon-autostart path, so a session that reused an already-running
+  daemon never triggered it at all.
+- Launch records needed their own sweep because nothing else reclaimed them.
+  `daemon stop` deletes the record only on a **clean** stop, and reading a
+  record with a dead PID deletes it only when *that same port* is read again —
+  and ports come from an ephemeral `bind(:0)`, so that port essentially never
+  recurs. Measured on one dev machine: 4803 records / 20 MB accumulated over
+  ten days; the first launch carrying the iter-186 sweep took that to 14
+  files / 1.0 MB, and three further launches left it at 13, 13, 13. A record
+  whose PID is still alive is never removed, so a running instance's record
+  survives a sweep that happens while it is up.
 - The daemon registry `daemon.<port>.json` is only ever published by an atomic
   `rename`, and the lock that serializes writers lives in a **sibling**
   `daemon.<port>.write.lock` (iter-172). Locking the published path itself —
