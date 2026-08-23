@@ -2,7 +2,7 @@
 title: "Iteration 174: on a direct connection `reload`/`back`/`forward` never receive dom-loading/dom-complete, so every one burns its whole events budget"
 type: iteration
 date: 2026-08-17
-status: in-review
+status: done
 branch: iter-174/direct-route-reload-dom-complete
 depends_on:
   - iteration-169-navigate-status-delivery-and-nav-verb-parity
