@@ -1295,6 +1295,14 @@ measured binding its debug port at 7 s under load, and the previous hardcoded
 spawn, `launch` fails immediately naming that process and PID instead of
 waiting out the bound.
 
+When `launch` FAILS after creating its temporary profile — spawn error, Firefox
+exiting immediately, the debug port never opening — it removes that profile
+directory again (iter-175), so a failed launch costs no disk. A directory passed
+via --profile is yours and is never removed. `launch` also reclaims temporary
+profiles left by *earlier* failed launches: an unmarked one holding nothing but
+`user.js` proves no Firefox ever opened it, so it goes without waiting out
+FF_RDP_PROFILE_PRUNE_DAYS.
+
 Examples:
   ff-rdp launch                          # launch with temp profile on port 6000
   ff-rdp launch --headless               # headless mode (no visible window)
@@ -2767,6 +2775,12 @@ logged as a warning and its basename is listed under `removed_live` in the outpu
 Pass --dry-run to preview without touching disk: `would_remove` is populated and `removed` stays
 empty, and every listed directory still exists afterwards. On a real run it's the other way round:
 `removed` is populated and `would_remove` stays empty.
+
+This subcommand is a pure age query and stays one: it never reclaims anything early. The two
+'provably abandoned regardless of age' rules — a marker naming a dead owner (iter-142), and an
+unmarked directory holding nothing but `user.js`, i.e. a launch that died before Firefox ever
+opened it (iter-175) — belong to the automatic sweep `ff-rdp launch` runs, so `ff-rdp launch`
+is what reclaims those. Use --all here if you want everything gone now.
 
 Duration grammar for --older-than: <N>d, <N>h, <N>m, <N>s, or a bare number of seconds
 (e.g. 7d, 24h, 30m, 45s, 3600). Individual removal failures (permission error, a directory
