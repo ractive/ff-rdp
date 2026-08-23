@@ -36,11 +36,15 @@ const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
 /// re-deriving the platform rules here (dogfooding `profiles list`, and the
 /// only way a test can be sure it is looking at the same directory `launch`
 /// writes into).
-fn profile_root() -> PathBuf {
-    let out = std::process::Command::new(ff_rdp_bin())
-        .args(["profiles", "list"])
-        .output()
-        .expect("`ff-rdp profiles list` must run");
+/// `home` scopes the lookup to an isolated `$FF_RDP_HOME` (iter-188 Theme B);
+/// `None` asks for the real per-user root.
+fn profile_root(home: Option<&Path>) -> PathBuf {
+    let mut cmd = std::process::Command::new(ff_rdp_bin());
+    cmd.args(["profiles", "list"]);
+    if let Some(home) = home {
+        cmd.env("FF_RDP_HOME", home);
+    }
+    let out = cmd.output().expect("`ff-rdp profiles list` must run");
     assert!(
         out.status.success(),
         "`ff-rdp profiles list` failed; stdout: {}; stderr: {}",
@@ -97,7 +101,19 @@ fn live_175_failed_launch_leaves_no_profile_dir() {
         return;
     }
 
-    let root = profile_root();
+    // iter-188 Theme C: this assertion is about the *whole root* — "no
+    // directory appeared that nobody owns" — which is a global property, and
+    // the sweep now runs the tier concurrently. `has_live_owner` below was
+    // written to survive that, but it cannot: a sibling test's `launch` that
+    // has created its profile and not yet written the owner-PID marker (the
+    // marker is written after the spawn) is indistinguishable from the leak
+    // this test hunts, and iteration 188's first parallel sweep failed here
+    // for exactly that reason. Giving the launch its own `$FF_RDP_HOME`
+    // removes the ambiguity instead of loosening the assertion: in this root
+    // the only process that can create a profile is this test's own launch,
+    // so *any* survivor is the defect.
+    let home = tempfile::tempdir().expect("tempdir for FF_RDP_HOME");
+    let root = profile_root(Some(home.path()));
     let before = managed_profiles(&root);
 
     // A port nothing is listening on, so the pre-spawn occupancy check passes
@@ -112,6 +128,7 @@ fn live_175_failed_launch_leaves_no_profile_dir() {
             "--launch-timeout",
             "0",
         ])
+        .env("FF_RDP_HOME", home.path())
         .output()
         .expect("`ff-rdp launch` must run");
 
@@ -158,8 +175,11 @@ fn live_175_successful_launch_keeps_its_profile_dir() {
         return;
     }
 
+    // Deliberately the *real* root: this direction identifies its profile by
+    // the owning PID, which is unique per test, so it is already safe under a
+    // concurrent tier and is worth keeping on the path a user actually uses.
     let ff = LiveFirefox::headless_on_random_port();
-    let root = profile_root();
+    let root = profile_root(None);
 
     let owned: Vec<PathBuf> = managed_profiles(&root)
         .into_iter()

@@ -467,6 +467,15 @@ ff-rdp --no-daemon eval "1+1"
   direct connection instead. A zero-byte record left behind by such a build is
   now read as "no daemon registered" rather than as a parse error, so the next
   invocation starts a daemon normally instead of degrading forever.
+- `FF_RDP_HOME` overrides the base directory for *all* of ff-rdp's per-user
+  state: the daemon registry and launch records under `$FF_RDP_HOME/.ff-rdp/`,
+  and (since iter-188) the temporary-profile root at
+  `$FF_RDP_HOME/ff-rdp/profiles/`. Before iter-188 the profiles root ignored
+  it, so setting the variable gave you a split state directory — registry
+  redirected, profiles still landing in the real per-user path. Unset, the
+  profiles root resolves as before: `$XDG_STATE_HOME` (Linux), else
+  `~/Library/Application Support` (macOS) / `%LOCALAPPDATA%` (Windows), plus
+  `ff-rdp/profiles`.
 - `ff-rdp profiles list` / `ff-rdp profiles prune` inspect and reclaim the
   profile directory explicitly; `ff-rdp doctor` warns when the profile store
   grows past 100 entries or 1 GiB. `profiles prune --all` skips the age gate

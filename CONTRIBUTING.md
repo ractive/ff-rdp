@@ -128,6 +128,24 @@ which dominates the iteration loop's wall-clock cost.
   machine-readable
   `LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K vanished=V launch_timeout=L total=T` line — quote
   `executed=N` in the PR body instead of the `cargo test` summary line. Add `--dry-run` to see the split without invoking `cargo test`.
+- **The sweep runs the self-launching tier in parallel** (iter-188). A headless Firefox cold start
+  costs 5.64 s +/- 0.02 on an idle 10-core machine, the `ff-rdp-cli` tier performs ~200 of them,
+  and only 8% of its tests finish in under 6 s — so roughly half of the old 38-minute serial sweep
+  was Firefox starting up with the machine otherwise idle. Phase 1 now passes
+  `--test-threads=<jobs>`, defaulting to 6 (the measured knee — at 8 workers four extra tests fail
+  from contention alone, and a gate that manufactures reds is worthless) capped by the machine's
+  own `available_parallelism`. Override with `cargo run -p xtask -- live-sweep --jobs N`;
+  `--jobs 1` reproduces the pre-188 serial sweep exactly. Targets whose tests connect to the
+  port-6000 Firefox stay serial regardless of `--jobs`: they share one browser nobody owns, and
+  the `vanished` inference above is written for a tier that runs one test at a time.
+- **A live test that asserts a global property of the machine must isolate itself**, because the
+  tier is now concurrent. `$FF_RDP_HOME` redirects *all* of ff-rdp's per-user state — the daemon
+  registry, the launch records and (since iter-188) the profiles root — so a test that needs "no
+  ff-rdp-managed Firefox is running anywhere" can own a root where that is true while sibling
+  tests run their own browsers. `live_96_profile_cleanup`'s
+  `live_profiles_prune_removes_all_when_no_firefox_running` is the worked example: it was the one
+  test measured as structurally incompatible with a parallel sweep, and it was fixed by giving it
+  its own root, **not** by weakening its precondition.
 - **`preexisting=K` is the third tier** (iter-158 Theme F). The `ff-rdp-core` live tests never
   launch Firefox — they connect to one somebody else started on the fixed default port 6000
   (`support::recording::firefox_port()`). Pre-158 `live-sweep` neither provided that instance nor
