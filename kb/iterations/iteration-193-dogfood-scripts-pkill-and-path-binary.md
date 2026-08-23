@@ -2,7 +2,7 @@
 title: "Iteration 193: checked-in dogfood scripts pkill other agents' Firefox and drive a bare `ff-rdp` from PATH"
 type: iteration
 date: 2026-08-23
-status: planned
+status: in-review
 branch: iter-193/dogfood-scripts-pkill-and-path-binary
 depends_on: [iteration-184-dogfood-sentinel-is-a-shared-tmp-path]
 first_call_sites: []
@@ -71,27 +71,71 @@ dared run it.
 
 ## Tasks
 
-### A. Scoped teardown [0/2]
-- [ ] Each script tears down only the browser it started
-- [ ] No remaining unscoped `pkill -f` in `kb/iterations/*.dogfood.sh`
+### A. Scoped teardown [2/2]
+- [x] Each script tears down only the browser it started — `dogfood_launch` records the port and
+      pid, `dogfood_teardown` (EXIT trap installed by `dogfood_init`) stops exactly those
+- [x] No remaining unscoped `pkill -f` in `kb/iterations/*.dogfood.sh` (14 → 0)
 
-### B. Binary under test [0/1]
-- [ ] No checked-in dogfood script resolves `ff-rdp` from PATH
+### B. Binary under test [1/1]
+- [x] No checked-in dogfood script resolves `ff-rdp` from PATH (14 → 0); every call goes through
+      `ffrdp`, which runs the binary `dogfood_init` built from this tree
 
-### C. Lint rules [0/2]
-- [ ] `unscoped-pkill` rule with a bad fixture and a passing good fixture
-- [ ] `path-binary` rule with a bad fixture and a passing good fixture
+### C. Lint rules [2/2]
+- [x] `unscoped-pkill` rule with a bad fixture (`unscoped-pkill-bad.sh`) and a passing good
+      fixture (`unscoped-pkill-good.sh`)
+- [x] `path-binary` rule with a bad fixture (`path-binary-bad.sh`) and a passing good fixture
+      (`path-binary-good.sh`)
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
-- [ ] `unit_lint_dogfood_script_flags_unscoped_pkill`: a fixture containing
+- [x] `unit_lint_dogfood_script_flags_unscoped_pkill`: a fixture containing
       `pkill -f 'firefox.*ff-rdp-profile'` fails the linter, naming the rule
-- [ ] `unit_lint_dogfood_script_flags_path_binary`: a fixture invoking a bare `ff-rdp` fails the
+- [x] `unit_lint_dogfood_script_flags_path_binary`: a fixture invoking a bare `ff-rdp` fails the
       linter, naming the rule
-- [ ] One migrated script is executed for real via
+- [x] One migrated script is executed for real via
       `FF_RDP_LIVE_TESTS=1 cargo run -p xtask -- check-dogfood-script <plan>` while a second
-      unrelated Firefox is running, and that second browser is still alive afterwards
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+      unrelated Firefox is running, and that second browser is still alive afterwards.
+      Done on 2026-08-24 with a control Firefox launched on port 6000 into the *shared*
+      user-level profile root (`ff-rdp-profile-*`, i.e. the exact process the old
+      `pkill -f 'firefox.*ff-rdp-profile'` matched — confirmed with `pgrep` before the run), plus
+      the user's own Firefox. Six migrated scripts were executed: 90, 92, 96, 97, 98, 103. All
+      reported `check-dogfood-script: OK`; the control browser and the user's browser were both
+      still alive afterwards, `~/Library/Application Support/ff-rdp/profiles` was byte-for-byte
+      unchanged across the two `profiles prune --all` scripts (96, 97), and no private per-run
+      `$FF_RDP_HOME` or Firefox was left behind.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+
+## Outcome
+
+Sixteen scripts now share `kb/iterations/dogfood-lib.sh`. `dogfood_init` does three things,
+each of which removes one way a run could reach outside itself:
+
+1. `$FF_RDP_HOME` is pointed at a private per-run directory. Profile root, daemon registry and
+   connection records all follow that override. This was not in the plan and turned out to be
+   load-bearing: iterations 96 and 97 run `profiles prune --all`, which before this change swept
+   the shared user-level root and deleted profiles belonging to whatever Firefox another agent
+   had running — a wider blast radius than the `pkill` this plan was written about.
+2. `dogfood_free_port` replaces the hardcoded 6000/6001/6003. A run that adopts a port it did
+   not open cannot tell its own browser from a sibling's, however careful its teardown is.
+3. `trap dogfood_teardown EXIT` stops the recorded ports and then the recorded pids, and removes
+   the private home. `dogfood_on_exit` exists so a script needing extra cleanup does not install
+   a second `trap … EXIT` and silently replace the teardown — 93 needed exactly that.
+
+Also folded in, same family, not in the plan: 87 and 91 (the two scripts that had neither defect)
+wrote to fixed `/tmp/iter87-*.out` / `/tmp/iter91-run*.out` paths, which are shared between
+concurrent runs in the same way the pre-184 sentinel was. Both now use a per-run `mktemp -d`.
+
+Rationale is recorded as `[[decision-log]]` DEC-046.
+
+### Observed during the live sweep, not fixed here
+
+Iteration 97's Theme C (`profiles prune --all` must list a live-owner profile in `removed_live`)
+failed on its first live run and passed on the second, with no code change in between —
+`removed_live` came back empty, which means `profile_is_owned_by_live_process` read the launched
+Firefox as not-live at that moment. A hand repro of the same sequence outside the gate passed.
+This is a pre-existing flake in that script's Theme C assertion, not a regression from this
+iteration's migration (nothing here touches the liveness markers), and it is left unfixed and
+unreworded rather than softened into an assertion that would always pass.
 
 ## Out of scope
 

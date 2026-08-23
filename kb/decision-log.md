@@ -1508,3 +1508,80 @@ than prose.
 `crates/ff-rdp-cli/src/daemon/client.rs`,
 `crates/ff-rdp-cli/src/daemon/server.rs`,
 `crates/ff-rdp-cli/src/commands/launch.rs`.
+
+## DEC-046: a dogfood script owns only what it started, and runs only what this tree built
+
+**Date**: 2026-08-24 (iter-193)
+
+**Decision**: every checked-in `kb/iterations/*.dogfood.sh` sources
+`kb/iterations/dogfood-lib.sh`, calls `dogfood_init`, takes a port from
+`dogfood_free_port`, launches through `dogfood_launch`, and drives the CLI
+through `ffrdp`. `pkill`/`killall` and a bare `ff-rdp` are both rejected by
+`tools/lint-dogfood-script.sh` (`unscoped-pkill`, `path-binary`), each with an
+explicit `# allow-…: <reason>` escape hatch.
+
+**Why**: the sixteen scripts were written by copying the previous one, so a
+single bad opening line propagated to fourteen of them:
+
+```sh
+pkill -f 'firefox.*ff-rdp-profile' || true
+```
+
+That pattern is not scoped to the run. On a machine where several agents share
+one working tree — the normal case in this project's loop — it kills every
+`ff-rdp-profile` Firefox on the host, including ones another agent or the user
+started. It is also self-matching: built from the literal `ff-rdp-profile`, it
+matches the checking process's own command line, so a paired `pgrep` reports
+phantoms (the documented safe form anchors on the process path,
+`MacOS/firefox.*ff-rdp-profile`).
+
+The price was already paid. Iteration 184 changed the dogfood sentinel contract
+and could not execute a single migrated script to prove the migration worked,
+because running one would have terminated four sibling agents' browsers. A gate
+nobody dares run is worth what it is exercised, which was nothing.
+
+The second half is the same false-PASS shape one layer up. Fourteen scripts
+invoked a bare `ff-rdp`, resolved from `$PATH`. A months-old install answers
+just as readily as the branch build, and the gate reports PASS for a binary
+that has never seen the diff.
+
+**Mechanism**: `dogfood_init` does three things that together make a script
+safe to run next to anything else.
+
+1. `$FF_RDP_HOME` is pointed at a private per-run directory. Profile root,
+   daemon registry and connection records all follow that override, so nothing
+   this run creates is visible to a sibling and — the part that matters for
+   iterations 96 and 97 — `profiles prune --all` can only reach profiles this
+   run made. Those two scripts previously swept the shared user-level root.
+2. `dogfood_free_port` hands out a port nothing is listening on, replacing the
+   hardcoded 6000/6001/6003. A run that adopts a port it did not open cannot
+   tell its own browser from a sibling's, however careful its teardown is.
+3. `trap dogfood_teardown EXIT` stops the recorded ports (`daemon stop`) and
+   then the recorded pids (TERM, escalating to KILL), and removes the private
+   home. Extra cleanup registers via `dogfood_on_exit`; a second `trap … EXIT`
+   would silently replace the teardown, so the library provides the hook rather
+   than leaving each script to rediscover the hazard.
+
+**Alternatives rejected**: keeping `pkill` but anchoring the pattern on
+`MacOS/firefox` fixes the self-match and nothing else — it is still every
+Firefox on the host. Per-script inline helpers instead of a shared library was
+how the defect spread in the first place. `cargo run -p ff-rdp-cli --` on every
+call is the most literal reading of "run the binary under test", but a script
+makes dozens of calls and several sit inside timing assertions (iteration 85
+budgets a navigate under 3000 ms), so it would measure cargo; `dogfood_init`
+builds once and `ffrdp` executes the result, which is equally branch-faithful
+and cannot resolve to something else.
+
+**Enforcement**: `unit_lint_dogfood_script_flags_unscoped_pkill` and
+`unit_lint_dogfood_script_flags_path_binary` pin the two rules against bad
+fixtures; `unit_lint_dogfood_script_scoped_teardown_passes` and
+`unit_lint_dogfood_script_binary_under_test_passes` pin the good forms, so the
+rules stay actionable rather than merely prohibitive.
+`unit_lint_dogfood_script_checked_in_scripts_stay_clean` lints every checked-in
+script on every `cargo test` — a sweep, not a spot check, because the defect
+reached fourteen files by copy-paste and would again.
+
+**Applies to**: `kb/iterations/dogfood-lib.sh`,
+`kb/iterations/*.dogfood.sh`, `tools/lint-dogfood-script.sh`,
+`tools/tests/lint-dogfood-script/`,
+`crates/xtask/tests/lint_dogfood_script.rs`.

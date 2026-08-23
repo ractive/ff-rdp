@@ -330,6 +330,36 @@ Requirements:
   sentinel left behind by a crashed run satisfied a later run whose script never wrote one
   (false PASS — in the one gate whose entire job is to prove the script really executed).
   A script still assigning a hardcoded path fails the `fixed-sentinel-path` lint rule.
+- The script **must** source `kb/iterations/dogfood-lib.sh` and call `dogfood_init`:
+
+  ```sh
+  # shellcheck source=kb/iterations/dogfood-lib.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/dogfood-lib.sh"
+
+  SENTINEL="${FF_RDP_DOGFOOD_SENTINEL:?...}"
+  rm -f "$SENTINEL"
+
+  dogfood_init                  # private $FF_RDP_HOME, builds the CLI, installs teardown
+  PORT="$(dogfood_free_port)"   # a port nobody else is on
+  dogfood_launch "$PORT"        # records the port + pid so teardown can reach them
+  ffrdp --port "$PORT" navigate https://example.com
+  ```
+
+  `ffrdp` runs the binary built from *this* working tree. A bare `ff-rdp` resolves from
+  `$PATH` and can certify a months-old install rather than the branch under test — the
+  `path-binary` lint rule rejects it. A script that deliberately installs its own binary
+  first may mark the line `# allow-path-binary: <reason>`.
+- The script **must tear down only the browser it started.** `dogfood_launch` records the
+  port and pid; `dogfood_teardown` (wired to an EXIT trap by `dogfood_init`) stops exactly
+  those. `pkill` and `killall` are rejected by the `unscoped-pkill` lint rule: until
+  iter-193 every checked-in script opened with `pkill -f 'firefox.*ff-rdp-profile'`, which
+  on a machine where several agents share one working tree terminates browsers the script
+  never started — the reason iter-184 could change the dogfood contract but not execute a
+  single migrated script to prove the change worked. Where a pattern match is genuinely
+  unavoidable, anchor it on the process path (`MacOS/firefox.*ff-rdp-profile`, which does
+  not match the checker's own command line) and mark the line
+  `# allow-unscoped-pkill: <reason>`. Extra cleanup goes through `dogfood_on_exit <fn>`,
+  never a second `trap … EXIT` — that would silently replace the teardown.
 - The gate is silently skipped if `FF_RDP_LIVE_TESTS` is not set to `"1"`.
 - Plans with no `dogfood_script` field are also skipped (pass) — existing iterations
   without the field continue to work.
