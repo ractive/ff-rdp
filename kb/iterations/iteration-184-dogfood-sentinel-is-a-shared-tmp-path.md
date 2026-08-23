@@ -2,7 +2,7 @@
 title: "Iteration 184: check-dogfood-script's sentinel is a fixed /tmp path, so two runs of the same iteration race each other"
 type: iteration
 date: 2026-08-22
-status: in-review
+status: done
 branch: iter-184/dogfood-sentinel-shared-tmp-path
 depends_on: []
 first_call_sites: []
@@ -10,26 +10,30 @@ dogfood_path: |
   # Tooling defect in the discipline gate itself. Found while running
   # iteration 179's quality gates on a machine with several agents sharing one
   # working tree.
-
+  
   # 1. Read the contract. The sentinel path is derived from the iteration
   #    number alone — no PID, no run id, no temp dir:
   #      crates/xtask/src/check_dogfood_script.rs:244
   #      let sentinel = PathBuf::from(format!("/tmp/ff-rdp-iter-{iter_num}-dogfood-ok"));
   #    Every concurrent `check-dogfood-script` for the same N therefore shares
   #    one file, and the gate's own pre-clean deletes it.
-
+  
   # 2. Reproduce the observable symptom — the unit test that exercises the gate
   #    inherits the same fixed path and loses the race:
   #      thread 'check_dogfood_script::tests::xtask_check_dogfood_script_smoke'
   #      panicked: sentinel should exist after successful run
   #    Observed 2026-08-22 under load; passes when run alone.
   for i in 1 2 3 4; do cargo test -q -p xtask --bins & done; wait
-
+  
   # 3. Note what iteration 179 tried and reverted: pointing only the TEST at a
   #    TempDir does not work, because `run_inner` computes the expected path
   #    itself. The gate's contract has to change, and any dogfood script that
   #    writes the sentinel changes with it.
-tags: [iteration, xtask, tooling, discipline-gates]
+tags:
+  - iteration
+  - xtask
+  - tooling
+  - discipline-gates
 ---
 
 # Iteration 184: give the dogfood sentinel a per-run identity
