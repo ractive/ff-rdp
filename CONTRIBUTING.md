@@ -253,8 +253,23 @@ cargo run -p xtask -- check-dogfood-script kb/iterations/iteration-NN-slug.md
 ```
 
 Requirements:
-- The script **must** write the sentinel file `/tmp/ff-rdp-iter-<N>-dogfood-ok` before
-  exiting 0 (where `N` is the iteration number extracted from the plan filename).
+- The gate picks a **fresh sentinel path for every run** and passes it to the script in
+  the `FF_RDP_DOGFOOD_SENTINEL` environment variable. The script **must** read that
+  variable and write the file it names before exiting 0:
+
+  ```sh
+  SENTINEL="${FF_RDP_DOGFOOD_SENTINEL:?set by check-dogfood-script; run this script via: cargo run -p xtask -- check-dogfood-script <plan.md>}"
+  rm -f "$SENTINEL"
+  # ... the actual dogfood steps ...
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$SENTINEL"
+  ```
+
+  Before iter-184 the path was the fixed `/tmp/ff-rdp-iter-<N>-dogfood-ok`, derived from
+  the iteration number alone. That made it shared state: two concurrent gate runs for the
+  same iteration deleted each other's sentinel during their pre-clean (false FAIL), and a
+  sentinel left behind by a crashed run satisfied a later run whose script never wrote one
+  (false PASS — in the one gate whose entire job is to prove the script really executed).
+  A script still assigning a hardcoded path fails the `fixed-sentinel-path` lint rule.
 - The gate is silently skipped if `FF_RDP_LIVE_TESTS` is not set to `"1"`.
 - Plans with no `dogfood_script` field are also skipped (pass) — existing iterations
   without the field continue to work.

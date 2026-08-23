@@ -22,7 +22,7 @@ for candidate in "$REPO_ROOT/target/debug/ff-rdp" "$REPO_ROOT/target/release/ff-
 done
 unset candidate SCRIPT_DIR
 
-SENTINEL=/tmp/ff-rdp-iter-93-dogfood-ok
+SENTINEL="${FF_RDP_DOGFOOD_SENTINEL:?set by check-dogfood-script; run this script via: cargo run -p xtask -- check-dogfood-script <plan.md>}"
 rm -f "$SENTINEL"
 
 FIXTURE_PORT_FILE=/tmp/ff-rdp-iter93-port.txt

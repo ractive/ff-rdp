@@ -15,7 +15,10 @@
 #   unanchored-grep         grep -qi '<token>' for deny-listed tokens (false positives)
 #   bool-flag-positional    boolean flag followed by a quoted value instead of --jq <expr>
 #   missing-set-euo-pipefail  script must have 'set -euo pipefail' after shebang/comments
-#   missing-sentinel-pattern  script must have SENTINEL=, rm -f, and date > "$SENTINEL"
+#   fixed-sentinel-path       SENTINEL= assigned a hardcoded path instead of the
+#                             per-run path the gate exports as FF_RDP_DOGFOOD_SENTINEL
+#   missing-sentinel-pattern  script must read SENTINEL from FF_RDP_DOGFOOD_SENTINEL,
+#                             and have rm -f and date > "$SENTINEL"
 #   shellcheck-clean        runs shellcheck if available; surfaces SC2086/SC2046/SC2155
 set -euo pipefail
 
@@ -102,9 +105,20 @@ lint_file() {
     file_errors=$((file_errors + 1))
   fi
 
+  # --- Rule: fixed-sentinel-path ---
+  # Pre-iter-184 scripts assigned SENTINEL a hardcoded /tmp path derived from the
+  # iteration number. That path was shared by every concurrent run of the gate for
+  # the same iteration, so runs deleted each other's sentinel (false FAIL) and a
+  # sentinel left by a crashed run satisfied a later one (false PASS). Such a
+  # script must fail the gate loudly rather than quietly writing the wrong file.
+  if grep -qE '^[[:space:]]*SENTINEL=["'"'"']?/' "$file"; then
+    echo "${file}: [fixed-sentinel-path] SENTINEL is assigned a hardcoded absolute path. Since iter-184 check-dogfood-script picks a fresh path per run and passes it in \$FF_RDP_DOGFOOD_SENTINEL; use SENTINEL=\"\${FF_RDP_DOGFOOD_SENTINEL:?...}\"" >&2
+    file_errors=$((file_errors + 1))
+  fi
+
   # --- Rule: missing-sentinel-pattern ---
-  if ! grep -qE '^SENTINEL=/tmp/ff-rdp-iter-[0-9]+-dogfood-ok' "$file"; then
-    echo "${file}: [missing-sentinel-pattern] missing SENTINEL=/tmp/ff-rdp-iter-<N>-dogfood-ok assignment" >&2
+  if ! grep -qE '^SENTINEL="\$\{FF_RDP_DOGFOOD_SENTINEL' "$file"; then
+    echo "${file}: [missing-sentinel-pattern] missing SENTINEL=\"\${FF_RDP_DOGFOOD_SENTINEL:?...}\" assignment (the gate supplies a per-run path in that variable)" >&2
     file_errors=$((file_errors + 1))
   fi
   if ! grep -qF 'rm -f "$SENTINEL"' "$file"; then

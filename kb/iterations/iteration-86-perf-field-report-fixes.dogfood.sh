@@ -6,7 +6,7 @@
 #   FF_RDP_LIVE_TESTS=1 bash kb/iterations/iteration-86-*.dogfood.sh
 set -euo pipefail
 
-SENTINEL=/tmp/ff-rdp-iter-86-dogfood-ok
+SENTINEL="${FF_RDP_DOGFOOD_SENTINEL:?set by check-dogfood-script; run this script via: cargo run -p xtask -- check-dogfood-script <plan.md>}"
 rm -f "$SENTINEL"
 
 # Clean slate — daemon stop is itself under test, don't start with a stuck Firefox

@@ -24,6 +24,13 @@ impl Args {
     }
 }
 
+/// Environment variable through which the gate tells the dogfood script where to
+/// write its sentinel. Set fresh for every invocation (iter-184); scripts must
+/// read it rather than hardcoding a path. `cfg(unix)` because the whole
+/// script-execution path is: the non-unix `run_script` returns SKIP.
+#[cfg(unix)]
+const SENTINEL_ENV: &str = "FF_RDP_DOGFOOD_SENTINEL";
+
 /// The ff-rdp-specific `.dogfood.sh` linter, rehosted here in iter-162a when
 /// `check-iteration-ready` — its only non-test caller — was deleted.
 const LINT_DOGFOOD_SCRIPT_PATH: &str = "tools/lint-dogfood-script.sh";
@@ -241,12 +248,35 @@ pub fn run_inner(plan: &Path, force: bool) -> Result<()> {
 
 #[cfg(unix)]
 fn run_script(script_path: &std::path::Path, iter_num: u32) -> Result<()> {
-    let sentinel = PathBuf::from(format!("/tmp/ff-rdp-iter-{iter_num}-dogfood-ok"));
+    // The sentinel path is chosen fresh for this invocation and handed to the
+    // script through `FF_RDP_DOGFOOD_SENTINEL`.
+    //
+    // Until iter-184 it was `/tmp/ff-rdp-iter-<N>-dogfood-ok`, derived from the
+    // iteration number alone, which made it shared state between every gate run
+    // for the same iteration on the machine:
+    //   * two concurrent runs raced — one run's "remove the stale sentinel"
+    //     pre-clean deleted the file the other had just written, and that run
+    //     then reported FAIL for a script that had succeeded;
+    //   * a sentinel left behind by a crashed or killed earlier run satisfied a
+    //     later run whose script never wrote one — a false PASS in the exact
+    //     gate whose only job is to prove the script really executed.
+    // A per-run directory removes both: no other run can see this path, and a
+    // directory created moments ago cannot hold a stale file.
+    let run_dir = tempfile::Builder::new()
+        .prefix(&format!("ff-rdp-iter-{iter_num}-dogfood-"))
+        .tempdir()
+        .context("failed to create per-run sentinel directory")?;
+    let sentinel = run_dir.path().join("dogfood-ok");
 
-    // Pre-clean: remove any stale sentinel.
+    // Assert rather than pre-clean. "Nothing to clean" is the property that
+    // makes a false PASS impossible; deleting a file here would mean the path
+    // was not private after all.
     if sentinel.exists() {
-        std::fs::remove_file(&sentinel)
-            .with_context(|| format!("failed to remove stale sentinel {:?}", sentinel))?;
+        anyhow::bail!(
+            "check-dogfood-script: FAIL (per-run sentinel {:?} already exists — \
+             the run directory is not private)",
+            sentinel
+        );
     }
 
     // Run the script with bash.  Pass the script path as an OsStr to avoid
@@ -255,6 +285,7 @@ fn run_script(script_path: &std::path::Path, iter_num: u32) -> Result<()> {
         .arg("-euo")
         .arg("pipefail")
         .arg(script_path)
+        .env(SENTINEL_ENV, &sentinel)
         .status()
         .with_context(|| format!("failed to invoke bash for {:?}", script_path))?;
 
@@ -265,8 +296,11 @@ fn run_script(script_path: &std::path::Path, iter_num: u32) -> Result<()> {
 
     if !sentinel.exists() {
         anyhow::bail!(
-            "check-dogfood-script: FAIL (missing sentinel {:?} after script succeeded)",
-            sentinel
+            "check-dogfood-script: FAIL (script succeeded but wrote no sentinel at \
+             ${SENTINEL_ENV}={}; a script still writing the pre-iter-184 fixed path \
+             /tmp/ff-rdp-iter-<N>-dogfood-ok must be migrated to \
+             SENTINEL=\"${{{SENTINEL_ENV}:?...}}\")",
+            sentinel.display()
         );
     }
 
@@ -312,45 +346,102 @@ mod tests {
         path
     }
 
+    /// A lint-clean dogfood script body that writes the sentinel the gate
+    /// hands it. `tail` is appended verbatim, so a caller can undo the write.
+    fn sentinel_script_body(tail: &str) -> String {
+        format!(
+            "set -euo pipefail\n\
+             SENTINEL=\"${{FF_RDP_DOGFOOD_SENTINEL:?not set}}\"\n\
+             rm -f \"$SENTINEL\"\n\
+             date -u > \"$SENTINEL\"\n\
+             {tail}\n"
+        )
+    }
+
     #[test]
     #[cfg(unix)]
     fn xtask_check_dogfood_script_smoke() {
-        // Happy path: script exits 0 AND writes the sentinel.
+        // Happy path: script exits 0 AND writes the sentinel the gate named in
+        // FF_RDP_DOGFOOD_SENTINEL.
         //
-        // iter-179: the iteration number here used to be the constant 99, which
-        // made `run_script` derive the sentinel path `/tmp/ff-rdp-iter-99-dogfood-ok`
-        // — one fixed path shared by every concurrent `cargo test -p xtask` on the
-        // machine. `run_script`'s own stale-sentinel pre-clean then deleted the file
-        // a parallel run had just written, and that run failed at the existence
-        // assertion while its script had reported success. Observed on 2026-08-22
-        // under load. Deriving the number from the pid gives each run its own path
-        // without touching the production contract, which legitimately keys the
-        // sentinel to the iteration number.
-        let iter_num = std::process::id();
-        let sentinel = PathBuf::from(format!("/tmp/ff-rdp-iter-{iter_num}-dogfood-ok"));
+        // Before iter-184 this test had to derive its iteration number from the
+        // pid, because `run_script` computed the sentinel path from the number
+        // alone — one fixed `/tmp` path shared by every concurrent
+        // `cargo test -p xtask` on the machine, where one run's stale-sentinel
+        // pre-clean deleted the file another had just written. The gate now picks
+        // a private path per run, so a fixed number here is safe again.
+        let dir = TempDir::new().unwrap();
+        let plan_path = write_plan(
+            &dir,
+            "iteration-99-smoke.md",
+            "dogfood_script: smoke.dogfood.sh\n",
+        );
+        write_script(&dir, "smoke.dogfood.sh", &sentinel_script_body(""));
+
+        let result = run_inner(&plan_path, true);
+        assert!(result.is_ok(), "expected success, got: {result:?}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn xtask_check_dogfood_script_concurrent_runs_do_not_collide() {
+        // AC 1: concurrent gate runs for the *same* iteration must all pass.
+        // Pre-iter-184 they shared `/tmp/ff-rdp-iter-99-dogfood-ok`, so each
+        // run's pre-clean could delete a sibling's freshly written sentinel and
+        // that sibling then failed its existence check.
+        let dir = TempDir::new().unwrap();
+        let plan_path = write_plan(
+            &dir,
+            "iteration-99-concurrent.md",
+            "dogfood_script: concurrent.dogfood.sh\n",
+        );
+        write_script(&dir, "concurrent.dogfood.sh", &sentinel_script_body(""));
+
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| run_inner(&plan_path, true)))
+                .collect();
+            for handle in handles {
+                let result = handle.join().expect("worker thread panicked");
+                assert!(result.is_ok(), "concurrent run failed: {result:?}");
+            }
+        });
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn xtask_check_dogfood_script_stale_sentinel_does_not_pass() {
+        // AC 2: a sentinel planted at the pre-iter-184 fixed path — exactly what
+        // a crashed earlier run used to leave behind — must not satisfy a run
+        // whose script writes nothing. This is the false-PASS direction, the
+        // serious one: the gate's only job is to prove the script really ran.
+        let stale = PathBuf::from(format!(
+            "/tmp/ff-rdp-iter-99-dogfood-ok-stale-{}",
+            std::process::id()
+        ));
+        std::fs::write(&stale, "planted by a previous run").unwrap();
 
         let dir = TempDir::new().unwrap();
         let plan_path = write_plan(
             &dir,
-            &format!("iteration-{iter_num}-smoke.md"),
-            "dogfood_script: smoke.dogfood.sh\n",
+            "iteration-99-stale.md",
+            "dogfood_script: stale.dogfood.sh\n",
         );
+        // Lint-clean, but it removes the sentinel again before exiting 0, so the
+        // gate has nothing but the planted file to go on.
         write_script(
             &dir,
-            "smoke.dogfood.sh",
-            &format!("touch {}", sentinel.display()),
+            "stale.dogfood.sh",
+            &sentinel_script_body("rm -f \"$SENTINEL\""),
         );
 
-        // No pre-clean needed: `run_script` removes a stale sentinel itself, and
-        // with a pid-derived path there is no other writer to race.
         let result = run_inner(&plan_path, true);
-        assert!(result.is_ok(), "expected success, got: {result:?}");
+        let _ = std::fs::remove_file(&stale);
+        let err = result.expect_err("stale sentinel must not make the gate pass");
         assert!(
-            sentinel.exists(),
-            "sentinel {} should exist after successful run",
-            sentinel.display()
+            err.to_string().contains("wrote no sentinel"),
+            "unexpected failure reason: {err}"
         );
-        let _ = std::fs::remove_file(&sentinel);
     }
 
     #[test]
