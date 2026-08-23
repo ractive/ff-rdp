@@ -24,6 +24,26 @@ const PORT_FREE_WAIT_BOUND: Duration = Duration::from_secs(8);
 ///
 /// The message embeds the actual bound from `PORT_FREE_WAIT_BOUND` so that
 /// changing the constant keeps error text in sync automatically.
+/// The refusal emitted when a launch record names a PID ff-rdp cannot prove
+/// it spawned (iter-191).
+///
+/// Deliberately the same shape — and the same two load-bearing phrases, "did
+/// not launch" and "does not own" — as the port-owner branch's iter-110
+/// refusal in [`stop_prior_instance_with`]. Both say the same thing ("that
+/// process is not mine, so I will not signal it"); only the artefact that
+/// failed to prove ownership differs, and `live_110_kill_scoping` asserts on
+/// exactly those phrases regardless of which branch produced them.
+pub(crate) fn unowned_record_pid_msg(pid: u32, port: u16) -> String {
+    format!(
+        "port {port} is in use by PID {pid}, which ff-rdp's launch record for this port names \
+         — but that record is stale: the PID no longer identifies the process ff-rdp launched \
+         (its recorded start token does not match the live process, and no owner-PID marker \
+         names it either), so ff-rdp did not launch whatever holds that PID now. Refusing to \
+         stop a process ff-rdp does not own — stop it yourself, run `ff-rdp doctor`, or pass \
+         --port to use a different port."
+    )
+}
+
 pub(crate) fn port_still_listening_msg(pid: u32, port: u16) -> String {
     format!(
         "stopped Firefox (pid {pid}) but port {port} is still listening after {} s — \
@@ -921,7 +941,19 @@ pub(crate) struct StopDeps {
     /// Directory holding the per-port launch records. `None` means the real
     /// `daemon_record::record_base_dir()` (`~/.ff-rdp`).
     pub(crate) record_dir: Option<std::path::PathBuf>,
+    /// Ownership check applied to a launch record's PID before any signal is
+    /// sent to it (iter-191) — see [`RecordOwnerCheck`].
+    pub(crate) record_pid_is_ours: RecordOwnerCheck,
 }
+
+/// Does this launch record's PID still name the process ff-rdp launched?
+///
+/// Injected rather than called directly so the "record matches the port, its
+/// PID is alive, the PID is not ours" case is unit-testable without waiting
+/// for the OS to actually recycle a PID onto this test binary. Production
+/// wiring is [`crate::daemon_record::record_pid_is_ours`]; its doc comment
+/// carries the reasoning and the 2026-08-23 observation behind it.
+pub(crate) type RecordOwnerCheck = fn(&crate::daemon_record::DaemonRecord) -> bool;
 
 impl StopDeps {
     /// Production dependencies.
@@ -929,6 +961,7 @@ impl StopDeps {
         Self {
             hooks: EscalationHooks::real(),
             record_dir: None,
+            record_pid_is_ours: crate::daemon_record::record_pid_is_ours,
         }
     }
 
@@ -1001,6 +1034,16 @@ fn stop_daemon_and_build_result_with(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon record: {e}")))?
     {
         Some(rec) if rec.port == port => {
+            // iter-191: the same identity gate `stop_prior_instance_with`
+            // applies. `read_in` filtered dead PIDs, which is a liveness test,
+            // not an identity one — this path reads the *same* artefact and
+            // sends the *same* group-wide signals, so a stale record here
+            // authorises the same kill against a recycled PID. `daemon stop`
+            // refusing is strictly better than `daemon stop` killing a
+            // stranger; the record survives for iter-186's GC.
+            if !(deps.record_pid_is_ours)(&rec) {
+                return Err(AppError::User(unowned_record_pid_msg(rec.pid, port)));
+            }
             // Live instance found via DaemonRecord and matches --port — kill it.
             let (stopped, port_free, escalation_msg) =
                 stop_pid_with_full_escalation(rec.pid, Some(rec.port), &deps.hooks, None);
@@ -1114,11 +1157,40 @@ fn stop_daemon_and_build_result_with(
         }
     }
 
+    // iter-191, the scope item this iteration owed an answer on: is the
+    // registry path safe from the same recycled-PID defect as the launch
+    // record? **No — the RPC handshake above gates nothing.** `rpc_ok` is
+    // never consulted before the direct kill below, so a registry whose PID
+    // the OS has reissued gets that stranger signalled exactly as branch 1
+    // did. What differs is the exposure and therefore the remedy:
+    //
+    // * `daemon.<port>.json` is removed on every clean daemon stop and is
+    //   not subject to iter-186's one-file-per-ephemeral-port leak, so the
+    //   stale population is orders of magnitude smaller;
+    // * `info.pid` is the *proxy daemon's own* PID, and the escalation runs
+    //   with `port: None`, so it cannot even reach the port-wait/tree-kill
+    //   steps — the blast radius is the pid-level signals alone.
+    //
+    // So this path refuses only on positive disproof (`Recycled`), where the
+    // launch record refuses on anything short of positive proof. An absent
+    // token — every registry written by a pre-iter-191 daemon — keeps the
+    // old behaviour rather than stranding a running daemon that `daemon stop`
+    // would then be unable to stop.
+    let daemon_pid_recycled =
+        process::pid_identity(info.pid, info.start_token.as_deref()) == process::PidIdentity::Recycled;
+    if daemon_pid_recycled {
+        tracing::warn!(
+            "daemon stop: registry for port {firefox_port} names pid {} but that PID has since \
+             been reused by an unrelated process — not signalling it",
+            info.pid
+        );
+    }
+
     // 2. If the proxy daemon is still alive, SIGTERM then SIGKILL it directly
     //    — this only stops the proxy, not Firefox (see note above). `None` for
     //    the port: the proxy never binds the Firefox debug port, so there is
     //    nothing for the ladder to wait on here (iter-158 Theme C).
-    if process::is_process_alive(info.pid) {
+    if !daemon_pid_recycled && process::is_process_alive(info.pid) {
         let _ = stop_pid_with_full_escalation(info.pid, None, &deps.hooks, None);
     }
 
@@ -1128,9 +1200,26 @@ fn stop_daemon_and_build_result_with(
     //    the tree kill. Escalate against the real Firefox PID when known;
     //    escalating against the daemon PID (the pre-iter-142 behaviour) can
     //    never free the port, since the daemon never held it.
-    let escalation_target = firefox_pid.unwrap_or(info.pid);
-    let (_, port_free, escalation_msg) =
-        stop_pid_with_full_escalation(escalation_target, Some(firefox_port), &deps.hooks, None);
+    // iter-191: the `unwrap_or` fallback is the one place a *recycled* daemon
+    // PID would reach the full ladder (port wait + tree kill). When the
+    // registry PID is disproven there is nothing here ff-rdp may signal, so
+    // fall through to the port check alone.
+    let escalation_target = match (firefox_pid, daemon_pid_recycled) {
+        (Some(pid), _) => Some(pid),
+        (None, false) => Some(info.pid),
+        (None, true) => None,
+    };
+    let (port_free, escalation_msg) = match escalation_target {
+        Some(target) => {
+            let (_, port_free, msg) =
+                stop_pid_with_full_escalation(target, Some(firefox_port), &deps.hooks, None);
+            (port_free, msg)
+        }
+        None => (
+            (deps.hooks.wait_port_closed)(firefox_port, PORT_FREE_WAIT_BOUND),
+            port_still_listening_msg(info.pid, firefox_port),
+        ),
+    };
 
     // 4. Clean up the daemon registry regardless of process state.
     registry::remove_registry(firefox_port).ok();
@@ -1189,6 +1278,27 @@ pub(crate) fn stop_prior_instance_with(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon record: {e}")))?
     {
         Some(rec) if rec.port == port && (deps.hooks.is_alive)(rec.pid) => {
+            // iter-191: `is_alive` above says only that *some* process holds
+            // `rec.pid` — not that it is the Firefox this record was written
+            // for. A record that outlived its browser (a crash between
+            // `launch` and cleanup; one of the per-port records iter-186
+            // reclaims) names a number the OS is free to reissue, and
+            // everything below this point signals a process *group* derived
+            // from it. On 2026-08-23 that fired for real: a record from seven
+            // days earlier named a PID then held by an unrelated desktop app,
+            // and `launch --replace` sent it SIGTERM and SIGKILL. Nothing died
+            // only because that PID happened not to be a group leader — which
+            // `launch`'s own children always are, and which Windows does not
+            // even model (`kill_process_group` there is a plain
+            // `kill_process`). Prove identity before signalling, and refuse
+            // exactly as the port-owner branch below does when the proof is
+            // missing.
+            if !(deps.record_pid_is_ours)(&rec) {
+                // Leave the record in place: iter-158 Theme B — a failed stop
+                // must not destroy its own ownership proof, and this stop
+                // never started. iter-186's GC is what reclaims it.
+                return Err(AppError::User(unowned_record_pid_msg(rec.pid, port)));
+            }
             let (stopped, port_free, _escalation_msg) =
                 stop_pid_with_full_escalation(rec.pid, Some(rec.port), &deps.hooks, None);
             if !port_free {
@@ -1526,6 +1636,10 @@ mod tests {
                 wait_port_closed: |_port, _timeout| false,
             },
             record_dir: Some(dir.path().to_path_buf()),
+            // These two tests are about record *lifetime*, not ownership —
+            // the record they plant genuinely describes this process, so the
+            // iter-191 identity gate is stubbed open to keep them focused.
+            record_pid_is_ours: |_rec| true,
         };
         let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"]).expect("parse cli");
 
@@ -1580,6 +1694,10 @@ mod tests {
                 wait_port_closed: |_port, _timeout| true,
             },
             record_dir: Some(dir.path().to_path_buf()),
+            // These two tests are about record *lifetime*, not ownership —
+            // the record they plant genuinely describes this process, so the
+            // iter-191 identity gate is stubbed open to keep them focused.
+            record_pid_is_ours: |_rec| true,
         };
         let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"]).expect("parse cli");
 

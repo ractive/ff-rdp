@@ -802,6 +802,7 @@ mod tests {
             firefox_port: WAIT_PORT,
             started_at: "2026-08-17T00:00:00Z".to_owned(),
             auth_token: "a".repeat(64),
+            start_token: None,
         }
     }
 
