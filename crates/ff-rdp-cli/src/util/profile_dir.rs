@@ -36,30 +36,69 @@ use std::time::{Duration, SystemTime};
 
 use crate::error::AppError;
 
+/// Environment variable that overrides the per-user base directory the
+/// profile root is resolved under (iter-188 Theme B).
+///
+/// The same variable, spelled the same way and meaning the same thing, is
+/// already honoured by [`crate::daemon::registry::registry_dir`] and
+/// [`crate::daemon_record::record_base_dir`], both of which document it as
+/// ff-rdp's test-isolation convention.  This module used to be the one
+/// component that ignored it, so a user (or a live test) who set it got a
+/// *split* state directory: registry and launch records redirected, profiles
+/// still landing in the real `~/Library/Application Support/ff-rdp/profiles`.
+pub const HOME_OVERRIDE_ENV: &str = "FF_RDP_HOME";
+
+/// Pure resolution behind [`secure_profile_root`]: turn an override and the
+/// two `dirs` candidates into the profile-root path, without touching the
+/// filesystem or the process environment.
+///
+/// Split out so both branches (override set / unset) are unit-testable
+/// without a Firefox, without `std::env::set_var` — which is process-global
+/// and visible to every other test thread — and without writing into the
+/// developer's real state directory.
+fn resolve_profile_root(
+    home_override: Option<PathBuf>,
+    state: Option<PathBuf>,
+    data_local: Option<PathBuf>,
+) -> Result<PathBuf, AppError> {
+    let base = home_override.or(state).or(data_local).ok_or_else(|| {
+        AppError::User(
+            "no per-user state or data directory available — cannot create \
+             a secure Firefox profile root.  Set $FF_RDP_HOME, $XDG_STATE_HOME or $HOME."
+                .to_owned(),
+        )
+    })?;
+    Ok(base.join("ff-rdp").join("profiles"))
+}
+
 /// Resolve (and create, mode 0700 on Unix) the per-user root directory under
 /// which ff-rdp drops ephemeral Firefox profile sub-directories.
 ///
 /// Resolution order:
-/// 1. `dirs::state_dir()` — `$XDG_STATE_HOME` on Linux, falls back to
+/// 1. `$FF_RDP_HOME` ([`HOME_OVERRIDE_ENV`]) — an explicit base directory,
+///    the same override `registry_dir()` and `record_base_dir()` honour, and
+///    documented in the same terms: set it and *all* of ff-rdp's per-user
+///    state follows, rather than only two thirds of it.
+/// 2. `dirs::state_dir()` — `$XDG_STATE_HOME` on Linux, falls back to
 ///    `~/.local/state` when unset.  `None` on macOS / Windows.
-/// 2. `dirs::data_local_dir()` — `~/Library/Application Support` on macOS,
+/// 3. `dirs::data_local_dir()` — `~/Library/Application Support` on macOS,
 ///    `%LOCALAPPDATA%` on Windows.
 ///
-/// The chosen base is joined with `ff-rdp/profiles`.  The full path is
+/// The chosen base is joined with `ff-rdp/profiles` — the suffix is the same
+/// in every branch, so an overridden tree has exactly the layout of a real
+/// one, and never collides with the `.ff-rdp/` registry directory the two
+/// sibling resolvers place under the same override.  The full path is
 /// created with `create_dir_all`; on Unix, the leaf is then chmod'd to
 /// `0o700` (the recursive parents are left alone — they already exist with
 /// user-default modes).
 pub fn secure_profile_root() -> Result<PathBuf, AppError> {
-    let base = dirs::state_dir()
-        .or_else(dirs::data_local_dir)
-        .ok_or_else(|| {
-            AppError::User(
-                "no per-user state or data directory available — cannot create \
-                 a secure Firefox profile root.  Set $XDG_STATE_HOME or $HOME."
-                    .to_owned(),
-            )
-        })?;
-    let root = base.join("ff-rdp").join("profiles");
+    let root = resolve_profile_root(
+        std::env::var_os(HOME_OVERRIDE_ENV)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from),
+        dirs::state_dir(),
+        dirs::data_local_dir(),
+    )?;
 
     std::fs::create_dir_all(&root).map_err(|e| {
         AppError::User(format!(
@@ -956,6 +995,73 @@ pub fn prune_orphan_profiles(
 mod tests {
     use super::*;
 
+    // -----------------------------------------------------------------
+    // iter-188 Theme B — `$FF_RDP_HOME` resolution
+    // -----------------------------------------------------------------
+
+    /// AC: `FF_RDP_HOME` resolves the profiles root — the override wins over
+    /// both `dirs` candidates, and keeps the `ff-rdp/profiles` suffix so an
+    /// isolated tree has the same shape as the real one.
+    #[test]
+    fn resolve_profile_root_prefers_the_home_override() {
+        let root = resolve_profile_root(
+            Some(PathBuf::from("/isolated/base")),
+            Some(PathBuf::from("/xdg/state")),
+            Some(PathBuf::from("/local/share")),
+        )
+        .expect("override branch must resolve");
+        assert_eq!(root, PathBuf::from("/isolated/base/ff-rdp/profiles"));
+    }
+
+    /// AC: with no override, resolution is exactly what it was before
+    /// iter-188 — `state_dir()` first, `data_local_dir()` as the fallback.
+    #[test]
+    fn resolve_profile_root_without_override_is_unchanged() {
+        let state_first = resolve_profile_root(
+            None,
+            Some(PathBuf::from("/xdg/state")),
+            Some(PathBuf::from("/local/share")),
+        )
+        .expect("state branch must resolve");
+        assert_eq!(state_first, PathBuf::from("/xdg/state/ff-rdp/profiles"));
+
+        let data_local_fallback =
+            resolve_profile_root(None, None, Some(PathBuf::from("/local/share")))
+                .expect("data_local branch must resolve");
+        assert_eq!(
+            data_local_fallback,
+            PathBuf::from("/local/share/ff-rdp/profiles")
+        );
+    }
+
+    /// With nothing at all to resolve against, the error names every knob a
+    /// user can turn — including the new one.
+    #[test]
+    fn resolve_profile_root_error_names_the_override() {
+        let err = resolve_profile_root(None, None, None).expect_err("no base must be an error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(HOME_OVERRIDE_ENV),
+            "error must name {HOME_OVERRIDE_ENV}, got: {msg}"
+        );
+    }
+
+    /// The override is a *directory* substitution, not a home-directory
+    /// substitution: it does not acquire the `.ff-rdp/` component the
+    /// registry and launch-record resolvers add, so the two trees stay
+    /// distinguishable under one `$FF_RDP_HOME`.
+    #[test]
+    fn resolve_profile_root_does_not_collide_with_the_registry_dir() {
+        let home = PathBuf::from("/isolated/base");
+        let profiles = resolve_profile_root(Some(home.clone()), None, None)
+            .expect("override branch must resolve");
+        assert!(
+            !profiles.starts_with(home.join(".ff-rdp")),
+            "profiles root {} must not sit inside the registry dir",
+            profiles.display()
+        );
+    }
+
     /// AC: `secure_profile_root_mode_0700` — the resolved directory exists,
     /// sits under `dirs::state_dir()` or `data_local_dir()`, and has mode
     /// `0o700` on Unix.
@@ -966,7 +1072,16 @@ mod tests {
 
         let root = secure_profile_root().expect("secure profile root must resolve");
         assert!(root.is_dir(), "expected a directory at {}", root.display());
-        let expected_base = dirs::state_dir().or_else(dirs::data_local_dir).unwrap();
+        // iter-188 Theme B: `$FF_RDP_HOME` now wins over both `dirs`
+        // candidates, so the expected base has to follow the same order the
+        // resolver uses — otherwise this test would fail for anyone who
+        // exports the override in their own shell.
+        let expected_base = std::env::var_os(HOME_OVERRIDE_ENV)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(dirs::state_dir)
+            .or_else(dirs::data_local_dir)
+            .unwrap();
         assert!(
             root.starts_with(&expected_base),
             "profile root {} must be under {}",
@@ -988,7 +1103,12 @@ mod tests {
     fn secure_profile_root_windows_per_user() {
         let root = secure_profile_root().expect("secure profile root must resolve");
         assert!(root.is_dir(), "expected a directory at {}", root.display());
-        let local_appdata = dirs::data_local_dir().expect("LOCALAPPDATA must be defined");
+        // iter-188 Theme B: `$FF_RDP_HOME` wins over `%LOCALAPPDATA%`.
+        let local_appdata = std::env::var_os(HOME_OVERRIDE_ENV)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(dirs::data_local_dir)
+            .expect("LOCALAPPDATA must be defined");
         assert!(
             root.starts_with(&local_appdata),
             "profile root {} must be under {}",
