@@ -688,7 +688,7 @@ impl Drop for ManagedProfileGuard {
 /// ten minutes covers a pre-iter-175 binary running alongside a current one,
 /// and is still far inside the time a real Firefox takes to write `prefs.js`
 /// (a second or two after startup).
-const FAILED_LAUNCH_GRACE: Duration = Duration::from_secs(10 * 60);
+const FAILED_LAUNCH_GRACE: Duration = Duration::from_mins(10);
 
 /// Returns `true` iff `dir` is a managed profile directory that a launch
 /// created but Firefox never opened (iter-175 Theme C).

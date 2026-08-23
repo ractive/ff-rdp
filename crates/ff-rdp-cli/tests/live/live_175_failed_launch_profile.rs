@@ -23,7 +23,9 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::common::{LiveFirefox, ff_rdp_bin, ff_rdp_launch_command, live_tests_enabled, pid_alive};
+use crate::common::{
+    LiveFirefox, ff_rdp_bin, ff_rdp_launch_command, live_tests_enabled, pid_alive,
+};
 
 /// Duplicated from `src/util/profile_dir.rs` — this crate ships no `[lib]`
 /// target for an integration test to import the constant from, which is why
@@ -41,7 +43,8 @@ fn profile_root() -> PathBuf {
         .expect("`ff-rdp profiles list` must run");
     assert!(
         out.status.success(),
-        "`ff-rdp profiles list` failed: {}",
+        "`ff-rdp profiles list` failed; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
     let json: serde_json::Value =
@@ -117,10 +120,13 @@ fn live_175_failed_launch_leaves_no_profile_dir() {
         "--launch-timeout 0 must fail the launch; stdout: {}",
         String::from_utf8_lossy(&out.stdout)
     );
+    // ff-rdp writes its error envelope to stdout (iter-179), so look there
+    // first and quote both streams when the assertion fails.
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
-        stderr.contains("did not open debug port"),
-        "expected the port-deadline error, got: {stderr}"
+        stdout.contains("did not open debug port") || stderr.contains("did not open debug port"),
+        "expected the port-deadline error; stdout: {stdout}; stderr: {stderr}"
     );
 
     let after = managed_profiles(&root);
