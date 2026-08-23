@@ -1487,6 +1487,21 @@ reproduces this against an otherwise empty directory. It also does not remove
 the offending record on refusal: a failed stop must not destroy its own
 ownership proof (iter-158 Theme B), and iter-186's sweep is what reclaims it.
 
+**Coverage, added iter-192**: iter-191 tested only the record side. The three
+`unit_191_*` tests exercise `stop_prior_instance_with`, and `live_110` phase B
+covers it live; the registry side shipped on hand review alone, because a unit
+test would have had to write into the real `~/.ff-rdp`. That gap was carried as
+iteration 192's watch condition 12 and closed there: `StopDeps` gained a
+`registry_dir` override — `registry::read_registry_in` / `remove_registry_in`
+already existed, so only the wiring was missing and neither `std::env::set_var`
+nor a larger refactor was needed — and four `unit_192_*` tests now pin the
+asymmetry this decision rests on. `Recycled` sends no signal and its refusal
+message never claims a stop happened; `Unknown` (a pre-iter-191 registry) and
+`Confirmed` both still signal, which is what proves the token *comparison*
+gates rather than a token's mere presence. Both sides of the "record fails
+closed, registry fails open" rule are therefore now executable claims rather
+than prose.
+
 **Applies to**: `crates/ff-rdp-cli/src/daemon/process.rs`,
 `crates/ff-rdp-cli/src/daemon_record.rs`,
 `crates/ff-rdp-cli/src/daemon/registry.rs`,

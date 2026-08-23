@@ -102,3 +102,12 @@ has landed. The `~/.ff-rdp` file growth is owned by iteration 186.
 
 - [[iteration-184-dogfood-sentinel-is-a-shared-tmp-path]] — where this surfaced, and why its own
   live verification stopped at the gate rather than the scripts
+- [[iteration-203-live-sweep-watch-conditions-third-holder]] condition 14 — three hand-started
+  port-6000 Firefoxes from earlier iterations were found still alive at the start of iteration 192,
+  left behind by the `iteration-close` skill's "start one, never told to stop it" instruction. Not
+  the same defect as this plan's (that one is a checked-in script's blanket `pkill`; this is a
+  skill instruction with no matching teardown step), but the same family — a process this run
+  didn't start, still running, because nothing scoped its lifetime to the run that started it.
+  Worth a shared glance when doing Theme A here. iteration 192's carry-over sweep (2026-08-24)
+  reviewed this plan and placed no other items here — the rest of 192's carry-over is domain-
+  specific to the live-sweep watch conditions and landed entirely in 203
