@@ -628,15 +628,24 @@ mod tests {
     /// Filename parsing table — the sweep's entire safety boundary.
     #[test]
     fn unit_parse_launch_record_port_matches_only_exact_shape() {
-        assert_eq!(parse_launch_record_port("launch-record.6000.json"), Some(6000));
+        assert_eq!(
+            parse_launch_record_port("launch-record.6000.json"),
+            Some(6000)
+        );
         assert_eq!(parse_launch_record_port("launch-record.1.json"), Some(1));
-        assert_eq!(parse_launch_record_port("launch-record.65535.json"), Some(65535));
+        assert_eq!(
+            parse_launch_record_port("launch-record.65535.json"),
+            Some(65535)
+        );
 
         // Out of u16 range, non-numeric, wrong prefix/suffix, in-flight tmp.
         assert_eq!(parse_launch_record_port("launch-record.65536.json"), None);
         assert_eq!(parse_launch_record_port("launch-record.abc.json"), None);
         assert_eq!(parse_launch_record_port("launch-record.json"), None);
-        assert_eq!(parse_launch_record_port("launch-record.6000.json.tmp"), None);
+        assert_eq!(
+            parse_launch_record_port("launch-record.6000.json.tmp"),
+            None
+        );
         assert_eq!(parse_launch_record_port("daemon.6000.json"), None);
         assert_eq!(parse_launch_record_port("daemon.6000.throttle.json"), None);
         assert_eq!(parse_launch_record_port("daemon.log"), None);
@@ -670,7 +679,8 @@ mod tests {
 
         let count = launch_record_count(dir.path());
         assert_eq!(
-            count, 2,
+            count,
+            2,
             "after {LAUNCHES} launches the directory must hold only the live \
              instance's record plus the most recent launch's own (got {count}); \
              unbounded growth would give {}",
@@ -681,5 +691,4 @@ mod tests {
             "the live instance's record must survive all {LAUNCHES} sweeps"
         );
     }
-
 }

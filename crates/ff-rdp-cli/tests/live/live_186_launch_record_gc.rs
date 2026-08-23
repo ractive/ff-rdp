@@ -155,9 +155,10 @@ fn live_186_launch_record_gc_collects_dead_spares_live() {
     // in for a concurrent daemon whose record must not be touched.
     let live_path = plant_record(&record_dir, 19101, std::process::id());
 
-    let Some((_guard, port, pid)) =
-        launch_under_home(home.path(), "live_186_launch_record_gc_collects_dead_spares_live")
-    else {
+    let Some((_guard, port, pid)) = launch_under_home(
+        home.path(),
+        "live_186_launch_record_gc_collects_dead_spares_live",
+    ) else {
         return;
     };
 
@@ -198,6 +199,8 @@ fn live_186_launch_record_gc_collects_dead_spares_live() {
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_186_launch_record_growth_bounded() {
+    const LAUNCHES: usize = 3;
+
     if !live_tests_enabled() {
         return;
     }
@@ -206,7 +209,6 @@ fn live_186_launch_record_growth_bounded() {
     let record_dir = home.path().join(".ff-rdp");
     std::fs::create_dir_all(&record_dir).expect("create record dir");
 
-    const LAUNCHES: usize = 3;
     for i in 0..LAUNCHES {
         let Some((guard, port, pid)) =
             launch_under_home(home.path(), "live_186_launch_record_growth_bounded")
