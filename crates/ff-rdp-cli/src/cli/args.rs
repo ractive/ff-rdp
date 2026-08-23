@@ -1422,7 +1422,18 @@ Examples:
   ff-rdp run login.yaml --vars email=user@example.com --vars password=secret
   ff-rdp run login.json --dry-run
   ff-rdp run login.json --continue-on-failure
-  ff-rdp run login.json --record session.json")]
+  ff-rdp run login.json --record session.json
+
+NETWORK ASSERTIONS (iter-181): when a script contains an `assert_network` (or a
+`run:` step that might), `run` opens one extra connection before the first step
+and holds a `network-event` subscription on it for the whole playbook.  A
+request fired by step N is therefore still visible to an `assert_network` at
+step N+1, and a step `timeout` bounds only how long it waits for a request
+still in flight.  If that subscription cannot be armed, `run` says so on stderr
+and each assertion falls back to per-step arming, which can miss a request that
+completed before the step started; the step's `diagnostics.subscription` then
+reads `step` rather than `playbook`.  Under the daemon nothing changes — it
+already holds a standing subscription.")]
     Run(RunArgs),
 
     /// Record browser commands to a replayable script

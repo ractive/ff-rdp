@@ -956,6 +956,12 @@ pub(crate) fn build_canonical_network(
 /// daemon's standing buffer; `"direct"` arms a watcher for the duration of that
 /// call only. The distinction decides whether an empty result means "nothing
 /// happened" or "the watcher was not armed yet" — see the fn docs.
+///
+/// Since iteration 181 the script runner normally does **not** come through
+/// here on the direct route: it holds a playbook-scoped subscription instead
+/// (see [`crate::commands::network_watch`]). This path remains the daemon
+/// route's drain, and the direct route's fallback when arming that
+/// subscription failed.
 pub type NetworkDrainRoute = &'static str;
 
 /// Direct-mode default drain window, in ms, when the caller passes no timeout.
@@ -989,6 +995,13 @@ pub const DEFAULT_DRAIN_MS: u64 = 500;
 /// the race with the response. With exactly one request in flight, losing the
 /// race produces **zero**, never a partial count — which is why the zero looked
 /// like a broken subscription and was not one.
+///
+/// Iteration 181 removed that race from the script runner's default path by
+/// arming one subscription for the whole playbook
+/// ([`crate::commands::network_watch::PlaybookNetworkWatch`]). Everything above
+/// still describes **this** function, which the runner now reaches only when
+/// that arming failed — and its `assert_network` diagnostics say so, with
+/// `subscription: "step"`.
 pub fn run_get_events_with_route(
     cli: &Cli,
     drain_timeout_ms: Option<u64>,

@@ -144,13 +144,14 @@
         },
         "assert_network": {
           "type": "object",
-          "description": "Assert a network request matching criteria occurred.",
+          "description": "Assert a network request matching criteria occurred. Since iter-181 `run` holds one network-event subscription for the whole playbook, so a request fired by an earlier step is still visible here.",
           "additionalProperties": false,
           "properties": {
             "url_contains": { "type": "string" },
             "status": { "type": "integer" },
             "method": { "type": "string" },
-            "api_route": { "type": "string", "description": "Page-map API route ref (iter-62)." }
+            "api_route": { "type": "string", "description": "Page-map API route ref (iter-62)." },
+            "timeout": { "type": "integer", "minimum": 1, "description": "Milliseconds to wait for a request that is still in flight (default 500). Not a window the request must complete inside — a request already in the playbook buffer matches immediately. Falls back to the script's `default_timeout_ms`." }
           }
         },
         "screenshot": {

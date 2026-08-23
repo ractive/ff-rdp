@@ -227,47 +227,78 @@ untrusted sources.
 - `assert_no_console_errors`: checks the console buffer for error-level
   messages; filterable via `ignore_patterns`.
 - `assert_network`: scans buffered network events for a matching entry.
-  On failure the `diagnostics` object carries `events_in_buffer`, `route`
-  and `drain_window_ms`, plus an `empty_buffer_hint` when the buffer was
-  empty on the `direct` route (iter-179; before that it was
-  `{"events_in_buffer": <N>}` alone, since iter-61c).  Respects
-  `default_timeout_ms` if no step-level `timeout` is set.  **Read the
-  subscription-window section below before relying on it.**
+  On failure the `diagnostics` object carries `events_in_buffer`, `route`,
+  `subscription` and `drain_window_ms`, plus an `empty_buffer_hint` (whose
+  wording depends on `subscription`) when the buffer was empty, and
+  `evicted_requests` when the playbook buffer overflowed.  History:
+  `{"events_in_buffer": <N>}` alone since iter-61c, `route` +
+  `drain_window_ms` + hint in iter-179, `subscription` + `evicted_requests`
+  in iter-181.  Respects `default_timeout_ms` if no step-level `timeout` is
+  set — but see the next section for what that timeout now bounds.
 
 ### `assert_network`'s subscription window
 
-`assert_network` sees a different buffer depending on how `run` reached
-Firefox, and the difference is the difference between a reliable assertion
-and a race:
-
-| route | what the buffer contains |
-|-------|--------------------------|
-| `daemon` | Everything since the daemon started watching. The daemon holds a **standing** `network-event` subscription, so requests that completed during earlier steps are still there. |
-| `direct` | Only what arrives **while this step runs.** `run` opens a fresh connection per step; `assert_network` arms the watcher when it starts and unwatches when it finishes. Firefox's `watchResources` does not replay history. |
-
-So on the `direct` route this shape is a **race by construction**:
+Since **iteration 181**, `run` holds **one** `network-event` subscription for
+the whole playbook. It is armed before the first step and buffers everything it
+sees until the run ends, so a request fired by step N is still there when step
+N+1 asserts on it:
 
 ```json
 {"click":  {"selector": "button[type=submit]"}},
 {"assert_network": {"url_contains": "/api/auth/sign-in", "status": 200}}
 ```
 
-The `click` fires the request; the next step then has to connect and arm its
-watcher before the response lands. On an idle machine it usually wins. Under
-sustained load it can lose — and when it loses with a **single** request in
-flight, the result is `events_in_buffer: 0`, not a partial count. A zero here
-therefore does **not** mean the subscription is broken; iteration 179 spent
-four days establishing exactly that.
+This shape is now deterministic on **both** routes. The step `timeout` is a
+*ceiling* on how long the assertion waits for a request that is still in
+flight — not a window the request has to complete inside. If the response
+already landed during the `click`, the assertion returns immediately.
 
-To make the assertion deterministic, pick one:
+| route | what the buffer contains | `diagnostics.subscription` |
+|-------|--------------------------|----------------------------|
+| `direct` | Everything since the playbook's first step. `run` still opens a fresh connection per step, but the subscription is on a separate connection that stays open for the whole run. | `playbook` |
+| `daemon` | Everything since the daemon started watching — a standing subscription that predates the playbook. Unchanged by iteration 181. | `daemon` |
+| `direct`, degraded | Only what arrives while this step runs. Reached **only** when arming the playbook subscription failed, in which case `run` prints a warning on stderr. | `step` |
 
-- **Run against the daemon** (`ff-rdp daemon start`, or let autostart do it) —
-  the standing subscription removes the race entirely. This is the
-  recommended fix.
-- **Raise the step `timeout`**, which widens the drain window — this helps
-  only if the request has not already completed.
-- **Assert on a page effect instead** (`assert_text`, `assert_url`), which is
-  not time-boxed against an event stream at all.
+The subscription is armed when a script contains an `assert_network` step, and
+also when it contains a `run:` step — a sub-script is not parsed until it
+executes, so the conservative choice is the only one that can have the watcher
+armed before the parent's `click`. A nested `run:` inherits the parent's
+subscription rather than arming a second one, in both directions: the
+sub-script sees the parent's earlier requests, and the parent keeps the buffer
+when the sub-script returns or bails.
+
+#### The race this replaced (iterations 179 and 181)
+
+Before 181, `assert_network` armed its watcher when the step started and
+unwatched when it finished. Firefox's `watchResources` does not replay history,
+so the `click`-then-assert shape above was a race between the arming sequence
+(connect → `getWatcher` → `watchResources`) and the response. Idle, the arming
+usually won; loaded, it lost — and because such a playbook has exactly **one**
+request in flight, losing produced `events_in_buffer: 0` rather than a partial
+count. Iteration 179 measured it: 4/4 pass at 15-minute load ~7, 8/8 fail with
+a zero buffer at 1-minute load 138–220. A zero there never meant the
+subscription was broken; establishing that took four days.
+
+`subscription: "step"` in the diagnostics means you are on that old path
+because arming failed. Fix the arming (the stderr warning says why) rather than
+restructuring the playbook around it.
+
+#### Buffer bounds
+
+A subscription armed for the whole run has no natural end, so it keeps at most
+4096 requests and drops the **oldest** beyond that — `assert_network` asks
+about what just happened, never about the first page load. When eviction has
+happened, a failed assertion reports `evicted_requests: <N>`, so "not found"
+is never silently "found, then evicted".
+
+#### If an assertion still comes back empty
+
+With `subscription: "playbook"`, `events_in_buffer: 0` means no network event
+was observed during the whole run. Check, in order:
+
+- The page really issues the request — `ff-rdp network follow` shows it live.
+- The request was not issued *before* `run` started.
+- It was not served from the HTTP cache (no request, no event).
 
 ## Password-shaped selectors
 

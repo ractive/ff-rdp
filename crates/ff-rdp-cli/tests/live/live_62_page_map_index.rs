@@ -33,14 +33,23 @@ const INDEX_HTML: &str = "<!DOCTYPE html><html><head><title>Fixture Home</title>
 /// (`input[type=email]`, `input[type=password]`, `button[type=submit]`).
 ///
 /// The submit handler prevents the default navigation and fires the
-/// `POST /api/auth/sign-in` request after a short delay. The delay matters:
-/// `assert_network` (direct mode, which these tests always use via
-/// `base_args`'s `--no-daemon`) only starts watching `network-event`
-/// resources when the `assert_network` step itself runs — it does not see
-/// requests that completed before that point. Firing immediately on submit
-/// risks the request completing before the `click` step returns and the
-/// runner reaches `assert_network`; delaying it keeps the request inside the
-/// watcher's drain window instead.
+/// `POST /api/auth/sign-in` request **immediately**, and that is the point of
+/// the test since iteration 181.
+///
+/// Before 181 the fetch was deliberately delayed by 150 ms, because
+/// `assert_network` on the direct route (which these tests always take, via
+/// `base_args`'s `--no-daemon`) armed its `network-event` watcher only when the
+/// `assert_network` step itself started — so a request that completed while the
+/// `click` step was still finishing was never delivered. The delay was papering
+/// over a race, and under load it stopped working: iteration 179 measured 8/8
+/// failures with `events_in_buffer: 0` under a `-j6` load generator.
+///
+/// Iteration 181 gives `run` a playbook-scoped subscription, armed before the
+/// script's first step. Firing the fetch with no delay means the request has
+/// almost certainly completed before the runner reaches `assert_network`, so
+/// this test now passes **only** if that buffer really does carry step N's
+/// request into step N+1. Re-adding a delay here would make the test green
+/// again without exercising the fix.
 const LOGIN_HTML: &str = "<!DOCTYPE html><html><head><title>Sign in</title></head><body>\
 <form>\
 <input type=\"email\">\
@@ -50,9 +59,7 @@ const LOGIN_HTML: &str = "<!DOCTYPE html><html><head><title>Sign in</title></hea
 <script>\
 document.querySelector('form').addEventListener('submit', function(e) {\
   e.preventDefault();\
-  setTimeout(function() {\
-    fetch('/api/auth/sign-in', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});\
-  }, 150);\
+  fetch('/api/auth/sign-in', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});\
 });\
 </script>\
 </body></html>";
@@ -212,10 +219,12 @@ fn live_runner_page_map_resolution() {
     let map_path = map_dir.path().join("page-map.json");
     std::fs::write(&map_path, map_json.to_string()).expect("write page-map.json");
 
-    // Script that uses all three target forms. `assert_network` gets a
-    // generous 2000ms drain timeout so the fixture's 150ms-delayed fetch
-    // (see LOGIN_HTML's doc comment) has ample room inside the direct-mode
-    // watcher's window.
+    // Script that uses all three target forms. `assert_network` keeps a 2000ms
+    // timeout, but since iteration 181 that is a ceiling on how long it waits
+    // for a request still in flight — not a window the request has to land
+    // inside. The fixture fires its fetch with no delay (see LOGIN_HTML), so
+    // the assertion is served from the playbook-scoped buffer, usually without
+    // waiting at all.
     let script = serde_json::json!({
         "version": 1,
         "base_url": base_url,
