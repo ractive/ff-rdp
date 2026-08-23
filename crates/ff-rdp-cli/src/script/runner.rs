@@ -1611,7 +1611,7 @@ mod tests {
     #[test]
     fn unit_181_assert_network_step_arms_the_subscription() {
         let script = script_with(json!([
-            {"wait": {"ms": 10}},
+            {"wait": {"timeout": 10}},
             {"assert_network": {"url_contains": "/api"}}
         ]));
         assert!(script_needs_network_watch(&script));

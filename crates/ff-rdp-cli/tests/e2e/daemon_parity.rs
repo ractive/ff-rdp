@@ -353,6 +353,147 @@ fn daemon_network_shows_summary() {
 }
 
 // ---------------------------------------------------------------------------
+// iter-181: `run`'s playbook-scoped subscription must not touch this route
+// ---------------------------------------------------------------------------
+
+/// Iteration 181 gave `ff-rdp run` a playbook-scoped `network-event`
+/// subscription so that a request fired by step N is visible to an
+/// `assert_network` at step N+1 on the **direct** route. The daemon route never
+/// had that defect — it holds a standing subscription that already buffers
+/// across steps — and arming a second watcher there would duplicate events and
+/// change what `route: "daemon"` reports.
+///
+/// This test pins that it did not happen. It runs a playbook whose only step is
+/// an `assert_network`, through the daemon, and checks both halves:
+///
+/// - the passing assertion is served from the daemon's standing buffer;
+/// - the failing assertion's diagnostics still say `route: "daemon"`, and say
+///   `subscription: "daemon"` — not `"playbook"` — with no direct-route hint
+///   attached.
+#[test]
+fn daemon_run_assert_network_uses_the_standing_subscription() {
+    let _guard = daemon_test_mutex().lock().expect("daemon test mutex");
+    let home = isolated_home();
+
+    let server = network_daemon_server();
+    let mock_port = server.port();
+    let mock_handle = std::thread::spawn(move || server.serve_one());
+
+    let mut daemon = start_daemon(mock_port, home.path());
+    let _proxy_port = wait_for_daemon_ready(mock_port, Duration::from_secs(5), home.path());
+
+    let script_dir = tempfile::tempdir().expect("temp dir");
+
+    // Step matches the recorded fixture's navigation request
+    // (`GET https://example.com/` → 200).
+    let hit_path = script_dir.path().join("hit.json");
+    std::fs::write(
+        &hit_path,
+        serde_json::json!({
+            "version": 1,
+            "steps": [
+                {"assert_network": {"url_contains": "example.com", "status": 200, "method": "GET"}}
+            ]
+        })
+        .to_string(),
+    )
+    .expect("write hit.json");
+
+    // Poll until the daemon's reader thread has buffered the watchResources
+    // followups, the same way `daemon_network_shows_summary` does — a fixed
+    // sleep is what made this class of test flaky before.
+    let poll_timeout = Duration::from_secs(10);
+    let poll_start = Instant::now();
+    let hit_stdout = loop {
+        let mut args = daemon_args(mock_port);
+        args.extend(["run".to_owned(), hit_path.display().to_string()]);
+        let output = Command::new(ff_rdp_bin())
+            .env("FF_RDP_HOME", home.path())
+            .args(&args)
+            .output()
+            .expect("failed to spawn ff-rdp");
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        if output.status.success() {
+            break stdout;
+        }
+        assert!(
+            poll_start.elapsed() < poll_timeout,
+            "daemon did not buffer events within {poll_timeout:?}; stdout: {stdout}; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+
+    // Now the failing shape, to read the diagnostics.
+    let miss_path = script_dir.path().join("miss.json");
+    std::fs::write(
+        &miss_path,
+        serde_json::json!({
+            "version": 1,
+            "steps": [
+                {"assert_network": {"url_contains": "/no-such-request", "timeout": 300}}
+            ]
+        })
+        .to_string(),
+    )
+    .expect("write miss.json");
+
+    let mut args = daemon_args(mock_port);
+    args.extend(["run".to_owned(), miss_path.display().to_string()]);
+    let miss = Command::new(ff_rdp_bin())
+        .env("FF_RDP_HOME", home.path())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    let miss_stdout = String::from_utf8_lossy(&miss.stdout).to_string();
+
+    daemon.kill();
+    let _ = mock_handle.join();
+
+    // The passing run: step 1 ok.
+    let step_line = hit_stdout
+        .lines()
+        .find(|l| l.contains("\"verb\":\"assert_network\""))
+        .unwrap_or_else(|| panic!("no assert_network step line in: {hit_stdout}"));
+    let step: serde_json::Value = serde_json::from_str(step_line).expect("step line is JSON");
+    assert_eq!(
+        step["ok"], true,
+        "assert_network should match the daemon's buffered request: {step_line}"
+    );
+
+    // The failing run: diagnostics prove which subscription answered.
+    let miss_line = miss_stdout
+        .lines()
+        .find(|l| l.contains("\"verb\":\"assert_network\""))
+        .unwrap_or_else(|| panic!("no assert_network step line in: {miss_stdout}"));
+    let miss_step: serde_json::Value =
+        serde_json::from_str(miss_line).expect("step line is JSON");
+    let diagnostics = &miss_step["diagnostics"];
+    assert_eq!(
+        diagnostics["route"], "daemon",
+        "the daemon route must still report itself as `daemon`: {miss_line}"
+    );
+    assert_eq!(
+        diagnostics["subscription"], "daemon",
+        "iter-181's playbook subscription must not be armed on the daemon route: {miss_line}"
+    );
+    // The count itself is not the pin here: the passing run above already
+    // consumed the daemon's buffer (`drain` advances the daemon's read
+    // position), so this second run legitimately sees zero. What matters is
+    // that an empty buffer on the daemon route is still **not** blamed on the
+    // direct-route arming race — the daemon holds a standing subscription, so
+    // that hint would be a lie however empty the buffer is.
+    assert!(
+        diagnostics["events_in_buffer"].is_u64(),
+        "events_in_buffer must always be reported: {miss_line}"
+    );
+    assert!(
+        diagnostics.get("empty_buffer_hint").is_none(),
+        "the daemon route must carry no direct-route hint: {miss_line}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // iter-101 Theme E: error-shape / exit-code parity, daemon vs --no-daemon
 // ---------------------------------------------------------------------------
 
