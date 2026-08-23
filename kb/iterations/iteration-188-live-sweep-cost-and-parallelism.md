@@ -201,6 +201,94 @@ convention its siblings already follow is the same shape as
   Theme B pointing it at an unindexed path) against one without. If the difference is inside the
   noise band from A2, **say so and close this theme** rather than shipping a superstition.
 
+## Outcome — implemented 2026-08-23
+
+### B. `FF_RDP_HOME` now resolves the profiles root, and that had a consequence
+
+`secure_profile_root()` resolves `$FF_RDP_HOME` first, then `dirs::state_dir()`, then
+`dirs::data_local_dir()`, and the pure part (`resolve_profile_root`) is unit-tested on both
+branches without touching the process environment or the developer's real state directory.
+`profiles list`, `profiles prune` and `launch`'s orphan sweep all read the same resolver, so they
+agree by construction; `tests/e2e/profiles.rs` pins that from the outside (no Firefox needed),
+including that `prune --all` under one `$FF_RDP_HOME` cannot reach into another's root.
+
+**The override broke `launch --replace`, and the first parallel sweep caught it.**
+`daemon/client.rs:1089` only treats the process listening on the port as stoppable when
+`pid_is_ff_rdp_spawned()` finds an owner-PID marker for it — and that scan used the *single*
+resolved root. Under an isolated `$FF_RDP_HOME`, a Firefox launched under the default home no
+longer had a marker anywhere ff-rdp was looking, so `firefox_pid` came back `None`, the escalation
+ladder ran against the proxy daemon instead, and the command failed with
+`port … is still listening after 8 s`. `live_153_replace_double_envelope` failed 3/3 — **serially
+as well as in the sweep**, which is how it was distinguished from the load-induced failures around
+it (revert `profile_dir.rs` to `origin/main` → green; restore → red).
+
+The fix is an asymmetry, written down at `ownership_scan_roots()`: **writes stay scoped to the
+configured root** (that is what makes the override an isolation tool), **the read-only ownership
+proof spans both roots**. Widening the read cannot authorise a kill ff-rdp was not already
+entitled to make — both roots only ever hold profiles ff-rdp itself created, each still gated on a
+live owner-PID marker and a matching start token — so iteration 110's "never signal a process we
+did not spawn" is unchanged.
+
+### C. The sweep runs the CLI tier concurrently
+
+`live-sweep --jobs N` (default: 6, capped by `available_parallelism()`) passes
+`--test-threads=N` to phase 1. Targets whose tests need the port-6000 Firefox stay serial
+regardless — they share one browser nobody owns, and iteration 173's vanished-browser inference is
+written for a tier that runs one test at a time. Phase 2 (the deliberate run *without*
+`--include-ignored`) is untouched, and every tier of the summary is unchanged: each measured run
+below printed `total=286` with `executed`/`skipped`/`preexisting`/`vanished`/`launch_timeout`
+conserved.
+
+**libtest, not nextest.** nextest would add process-per-test isolation, per-test timings and — the
+part that turned out to matter — per-test timeouts. It was declined because every accounting
+guarantee in `live_sweep.rs` (`classify_failures`, `failure_blocks`, the five tiers) is written
+against libtest's failure prose, and re-deriving them against a second format is exactly how a
+gate starts lying about what passed. That trade is now recorded honestly rather than assumed:
+see the hang below and [[iteration-197-live-sweep-has-no-per-test-timeout]].
+
+### A3 was wrong: `live_96` was not the only structurally-incompatible test
+
+`live_175_failed_launch_profile::live_175_failed_launch_leaves_no_profile_dir` scans the whole
+real profile root for directories that appeared without a live owner. Its `has_live_owner` filter
+was written to survive a shared root, and cannot: `launch` writes the owner-PID marker *after* the
+spawn, so a sibling test's in-flight launch is indistinguishable from the leak this test hunts. It
+failed on the first parallel sweep. Both it and `live_96` are fixed the same way — each gets its
+own `$FF_RDP_HOME`, so the global property each asserts is one it actually controls. **No
+assertion was weakened**; `live_96`'s precondition is still the loud, named-PID one iteration 146
+Theme B made it, and `live_175`'s is now stronger (in its own root, *any* survivor is the defect).
+
+### Measured sweeps (2026-08-23, 10-core / 32 GB machine, NOT idle — Chrome and other agents running)
+
+All with `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1` and a hand-started port-6000 Firefox.
+
+| run | jobs | wall | summary | failures |
+|---|---|---|---|---|
+| 1 | 6 | **282 s** | `executed=286 skipped=0 preexisting=0 vanished=0 launch_timeout=0 total=286` | `live_175` (structural, fixed here), `live_153` ×3 (regression from Theme B, fixed here), `live_145` |
+| 2 | 6 | **285 s** | same shape, `total=286` | `live_153` ×3 (fix not yet in), `live_137` |
+| 3 | 4 | **hung** | none printed | `live_158_launch_survives_contended_bind` never returned after 276/277 tests |
+
+282 s against the 2280 s serial baseline is **8.1×** — better than Theme A's nextest estimate of
+5.3×, and in line with its corrected 256-294 s band.
+
+**Run 3 hung and had to be abandoned.** libtest printed
+`test live_158_launch_survives_contended_bind has been running for over 60 seconds` and then waited
+indefinitely; the log was still frozen 50 minutes later, holding four Firefox processes open, and
+the run ended on its outer harness timeout with no `LIVE_SWEEP_SUMMARY` at all. libtest has no
+per-test timeout of any kind, so **one hung test hangs the whole sweep, forever** — which for an
+unattended loop is worse than a red. Filed as
+[[iteration-197-live-sweep-has-no-per-test-timeout]], which is also where the nextest question is
+re-opened with this evidence.
+
+### D. Indexing — not measured, not acted on
+
+Theme D's A/B (profiles root indexed vs not) was **not run**. The theme asked for a comparison
+against the run-to-run noise band, and this machine could not supply a quiet one: three of the
+runs above carried failures or a hang that dominate any indexing signal, and the box was not idle.
+Rather than publish a superstition — which the theme explicitly forbids — it is left open and
+unticked. The cheap version for whoever picks it up: `$FF_RDP_HOME` now points the profiles root
+anywhere, and `/private/tmp` is unindexed on macOS (`mdfind -onlyin /private/tmp` returns nothing
+for a file seeded there), so the A/B is one env var, not an `mdutil` change.
+
 ## Tasks
 
 ### A. Measure [4/4]
@@ -209,25 +297,38 @@ convention its siblings already follow is the same shape as
 - [x] Wall clock and failure set at several concurrencies
 - [x] Where the CPU goes during a run
 
-### B. Product override [0/3]
-- [ ] `secure_profile_root()` honours `FF_RDP_HOME`, matching `registry_dir()`'s documented
+### B. Product override [3/3]
+- [x] `secure_profile_root()` honours `FF_RDP_HOME`, matching `registry_dir()`'s documented
       convention, with the resolution order recorded in its doc comment
-- [ ] Unit tests for both branches (set and unset), not requiring Firefox
-- [ ] `profiles list`/`prune` and `launch`'s orphan sweep all agree on the overridden root
+- [x] Unit tests for both branches (set and unset), not requiring Firefox
+      [`resolve_profile_root_prefers_the_home_override`,
+      `resolve_profile_root_without_override_is_unchanged`, plus the error-message and
+      no-collision-with-`.ff-rdp/` cases]
+- [x] `profiles list`/`prune` and `launch`'s orphan sweep all agree on the overridden root — all
+      three call `secure_profile_root()`; `tests/e2e/profiles.rs` asserts it end-to-end
 
-### C. Parallel sweep [0/4]
+### C. Parallel sweep [3/4]
 - [ ] A concurrency chosen from **three clean runs**, not one, with the failure set at that
       concurrency empty apart from known-open plans
-- [ ] `live-sweep` runs the CLI tier in parallel, preserving `executed`/`skipped`/`preexisting`/
+      — SEE THE RUN TABLE. Three runs happened, but only two of them completed at `--jobs 6`
+      and the third (at 4) hung, so this box does not get ticked on a technicality. The
+      concurrency of 6 is justified by wall clock and by the failure set at 4 being a superset of
+      the one at 6, not by three completed runs at 6.
+- [x] `live-sweep` runs the CLI tier in parallel, preserving `executed`/`skipped`/`preexisting`/
       `vanished`/`launch_timeout` accounting and the deliberate run-*without*-`--include-ignored`
       phase from [[iteration-173-live-sweep-port-6000-firefox-does-not-survive]]
-- [ ] `live_96`'s prune precondition is satisfiable under parallelism — by isolation, not by
-      weakening the assertion
-- [ ] The new wall clock is recorded in this plan next to the 2280 s baseline
+      [every completed run printed `total=286` with all five tiers conserved]
+- [x] `live_96`'s prune precondition is satisfiable under parallelism — by isolation, not by
+      weakening the assertion [and so is `live_175`'s, which A3 missed]
+- [x] The new wall clock is recorded in this plan next to the 2280 s baseline [282 s / 285 s at
+      `--jobs 6` = 8.1×]
 
 ### D. Indexing [0/2]
 - [ ] A/B measurement of the sweep with and without the profiles root indexed
+      — not run; see "D. Indexing" above for why, and for the one-env-var recipe that makes it
+      cheap now that Theme B landed
 - [ ] Act on the result, or close the theme explicitly if the difference is inside the noise
+      — cannot close a theme on data that was never taken; left open deliberately
 
 ## Acceptance Criteria [0/5]
 
