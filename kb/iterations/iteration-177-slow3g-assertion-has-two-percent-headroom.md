@@ -2,7 +2,7 @@
 title: "Iteration 177: the slow-3g throttle assertion has ~2% headroom, so it reds on baseline jitter rather than on a throttling regression"
 type: iteration
 date: 2026-08-17
-status: in-review
+status: done
 branch: iter-177/slow3g-assertion-headroom
 depends_on: []
 first_call_sites: []
