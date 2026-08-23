@@ -2,14 +2,15 @@
 title: "Iteration 193: checked-in dogfood scripts pkill other agents' Firefox and drive a bare `ff-rdp` from PATH"
 type: iteration
 date: 2026-08-23
-status: in-review
+status: done
 branch: iter-193/dogfood-scripts-pkill-and-path-binary
-depends_on: [iteration-184-dogfood-sentinel-is-a-shared-tmp-path]
+depends_on:
+  - iteration-184-dogfood-sentinel-is-a-shared-tmp-path
 first_call_sites: []
 dogfood_path: |
   # Carry-over from iteration 184's close. 184 could not run any checked-in
   # dogfood script live, and the reason is the defect this plan owns.
-
+  
   # 1. Every checked-in script opens by killing every Firefox on the machine
   #    whose command line matches a pattern that is not scoped to this run:
   grep -n "pkill -f" kb/iterations/*.dogfood.sh
@@ -21,18 +22,22 @@ dogfood_path: |
   #    forbid. It is also the self-matching pattern shape those constraints call
   #    out: built from `ff-rdp-profile`, it matches the checker itself; the
   #    documented safe form is `MacOS/firefox.*ff-rdp-profile`.
-
+  
   # 2. Every checked-in script drives a bare `ff-rdp` off PATH:
   grep -c "^ff-rdp \|(ff-rdp " kb/iterations/*.dogfood.sh
   #    CLAUDE.md: "Dogfood steps must run via `cargo run -p ff-rdp-cli --` or a
   #    freshly installed binary, never a bare `ff-rdp` from PATH." A stale PATH
   #    binary makes the gate certify a build that is not the one under test —
   #    the same false-PASS shape 184 fixed one layer down.
-
+  
   # 3. Neither is linted, so nothing stops the next script from repeating both:
   bash tools/lint-dogfood-script.sh kb/iterations/iteration-98-*.dogfood.sh
   #    → exits 0 today
-tags: [iteration, tooling, dogfood, discipline-gates]
+tags:
+  - iteration
+  - tooling
+  - dogfood
+  - discipline-gates
 ---
 
 # Iteration 193: make a dogfood script safe to run on a shared machine
