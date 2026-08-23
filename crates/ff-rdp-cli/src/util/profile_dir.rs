@@ -693,13 +693,20 @@ const FAILED_LAUNCH_GRACE: Duration = Duration::from_secs(10 * 60);
 /// Returns `true` iff `dir` is a managed profile directory that a launch
 /// created but Firefox never opened (iter-175 Theme C).
 ///
-/// The evidence is that the directory contains nothing except the `user.js`
-/// ff-rdp itself wrote before the spawn. A Firefox that actually started
+/// The evidence is a directory holding *exactly* the `user.js` ff-rdp itself
+/// wrote before the spawn, and nothing else. A Firefox that actually started
 /// populates the profile within seconds — `prefs.js`, `times.json`,
-/// `*.sqlite`, `storage/` — so "only `user.js`" cannot describe a browser that
-/// ever ran against it. The check is self-contained: an owner marker is a
-/// directory entry too, so a marked directory fails it and is graded by
-/// [`owner_liveness`] instead.
+/// `*.sqlite`, `storage/` — so that fingerprint cannot describe a browser that
+/// ever ran against it. It is also the exact fingerprint iteration 171 found on
+/// all twenty leaked directories, and iteration 175 on all eight.
+///
+/// The check is self-contained: an owner marker is a directory entry too, so a
+/// marked directory fails it and is graded by [`owner_liveness`] instead.
+///
+/// An **empty** directory deliberately does not qualify. It is not something
+/// this failure mode produces — `build_command` writes `user.js` two statements
+/// after creating the directory — so treating it as proof would only widen the
+/// rule past the evidence for it.
 ///
 /// Errs toward `false` on any read failure — an unreadable directory is never
 /// "provably" anything.
@@ -707,6 +714,7 @@ fn profile_is_provably_failed_launch(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
+    let mut saw_user_js = false;
     for entry in entries {
         let Ok(entry) = entry else {
             return false;
@@ -714,8 +722,9 @@ fn profile_is_provably_failed_launch(dir: &Path) -> bool {
         if entry.file_name() != std::ffi::OsStr::new("user.js") {
             return false;
         }
+        saw_user_js = true;
     }
-    true
+    saw_user_js
 }
 
 // ---------------------------------------------------------------------------
@@ -1581,5 +1590,220 @@ mod tests {
         assert_eq!(summary.removed.len(), 50, "should stop after max_entries");
         let remaining = seeded.iter().filter(|d| d.exists()).count();
         assert_eq!(remaining, 10, "10 of 60 should remain after bounding at 50");
+    }
+
+    // -----------------------------------------------------------------
+    // iter-175: the profile dir a failed launch must not leave behind
+    // -----------------------------------------------------------------
+
+    /// Back-date every timestamp `prune_orphan_profiles` consults for `dir` —
+    /// the directory's own mtime and each top-level file's, since
+    /// [`latest_profile_activity`] takes the newest of the two.
+    fn backdate_profile(dir: &Path, age: Duration) {
+        let when = std::time::SystemTime::now()
+            .checked_sub(age)
+            .expect("age fits before now");
+        let ft = filetime::FileTime::from_system_time(when);
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let _ = filetime::set_file_mtime(entry.path(), ft);
+            }
+        }
+        filetime::set_file_mtime(dir, ft).expect("set_file_mtime on the dir");
+    }
+
+    /// AC 2 (mechanism half): an armed guard removes the managed directory it
+    /// owns as soon as it goes out of scope — which is what turns every early
+    /// `return Err` in `launch` into a cleanup.
+    #[test]
+    fn unit_175_guard_removes_managed_dir_on_drop() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"d".repeat(16), Duration::ZERO);
+        std::fs::write(dir.join("user.js"), b"// prefs").expect("seed user.js");
+
+        drop(ManagedProfileGuard::armed_under(
+            root.path().to_path_buf(),
+            &dir,
+        ));
+
+        assert!(
+            !dir.exists(),
+            "an armed guard must remove {} on drop",
+            dir.display()
+        );
+    }
+
+    /// The success path: `launch` disarms the guard once Firefox is confirmed
+    /// running, and the directory must then survive the guard's drop.
+    #[test]
+    fn unit_175_disarmed_guard_keeps_the_dir() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"e".repeat(16), Duration::ZERO);
+
+        let mut guard = ManagedProfileGuard::armed_under(root.path().to_path_buf(), &dir);
+        guard.disarm();
+        drop(guard);
+
+        assert!(
+            dir.exists(),
+            "a disarmed guard must leave {} alone",
+            dir.display()
+        );
+    }
+
+    /// The guard inherits `cleanup_profile_dir`'s two safety checks, so it can
+    /// never be pointed at a user's own directory: a non-managed basename is
+    /// refused even when it sits under the profile root.
+    #[test]
+    fn unit_175_guard_refuses_unmanaged_basename() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = root.path().join("my-own-firefox-profile");
+        std::fs::create_dir_all(&dir).expect("create the user's dir");
+
+        drop(ManagedProfileGuard::armed_under(
+            root.path().to_path_buf(),
+            &dir,
+        ));
+
+        assert!(
+            dir.exists(),
+            "the guard must refuse a non-managed basename: {}",
+            dir.display()
+        );
+    }
+
+    /// ...and a managed-looking basename *outside* the profile root is refused
+    /// too, so a caller cannot walk the guard out of its jail.
+    #[test]
+    fn unit_175_guard_refuses_path_outside_root() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let elsewhere = tempfile::tempdir().expect("second tempdir");
+        let dir = seed_fake_profile(elsewhere.path(), &"f".repeat(16), Duration::ZERO);
+
+        drop(ManagedProfileGuard::armed_under(
+            root.path().to_path_buf(),
+            &dir,
+        ));
+
+        assert!(
+            dir.exists(),
+            "the guard must refuse a path outside its root: {}",
+            dir.display()
+        );
+    }
+
+    /// Theme C: the fingerprint of a launch that died before Firefox ever
+    /// opened the profile — exactly one entry, `user.js`.
+    #[test]
+    fn unit_175_provably_failed_launch_fingerprint() {
+        let root = tempfile::tempdir().expect("tempdir");
+
+        let failed = seed_fake_profile(root.path(), &"g".repeat(16), Duration::ZERO);
+        std::fs::write(failed.join("user.js"), b"// prefs").expect("seed user.js");
+        assert!(
+            profile_is_provably_failed_launch(&failed),
+            "user.js and nothing else is the failed-launch fingerprint"
+        );
+
+        let opened = seed_fake_profile(root.path(), &"h".repeat(16), Duration::ZERO);
+        std::fs::write(opened.join("user.js"), b"// prefs").expect("seed user.js");
+        std::fs::write(opened.join("prefs.js"), b"// firefox was here").expect("seed prefs.js");
+        assert!(
+            !profile_is_provably_failed_launch(&opened),
+            "a profile Firefox populated is not provably failed"
+        );
+
+        let empty = seed_fake_profile(root.path(), &"i".repeat(16), Duration::ZERO);
+        assert!(
+            !profile_is_provably_failed_launch(&empty),
+            "an empty dir is not a fingerprint this failure mode produces"
+        );
+
+        let marked = seed_fake_profile(root.path(), &"j".repeat(16), Duration::ZERO);
+        std::fs::write(marked.join("user.js"), b"// prefs").expect("seed user.js");
+        std::fs::write(marked.join(OWNER_PID_MARKER), b"1\n").expect("seed marker");
+        assert!(
+            !profile_is_provably_failed_launch(&marked),
+            "a marked dir is graded by owner_liveness, not by this rule"
+        );
+    }
+
+    /// Theme C, the backfill: the eight directories already on disk when this
+    /// iteration was written — unmarked, `user.js`-only, minutes to days old —
+    /// are reclaimed by `launch`'s own sweep well inside the 7-day age gate.
+    #[test]
+    fn unit_175_prune_reclaims_unmarked_failed_launch_before_the_age_gate() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let leaked = seed_fake_profile(root.path(), &"k".repeat(16), Duration::ZERO);
+        std::fs::write(leaked.join("user.js"), b"// prefs").expect("seed user.js");
+        backdate_profile(&leaked, Duration::from_hours(1));
+
+        let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
+
+        assert_eq!(
+            summary.removed,
+            vec![leaked.clone()],
+            "an hour-old unmarked user.js-only dir must be reclaimed at a 7-day threshold"
+        );
+        assert!(!leaked.exists());
+    }
+
+    /// AC 3: the age gate is untouched for a directory that is merely *old*.
+    /// A populated unmarked profile inside the threshold still survives, and so
+    /// does a failed-launch dir that is younger than the race grace.
+    #[test]
+    fn unit_175_prune_does_not_loosen_the_age_gate_for_merely_old_dirs() {
+        let root = tempfile::tempdir().expect("tempdir");
+
+        let populated = seed_fake_profile(root.path(), &"l".repeat(16), Duration::ZERO);
+        std::fs::write(populated.join("user.js"), b"// prefs").expect("seed user.js");
+        std::fs::write(populated.join("prefs.js"), b"// firefox was here").expect("seed prefs.js");
+        backdate_profile(&populated, Duration::from_hours(24));
+
+        let just_created = seed_fake_profile(root.path(), &"m".repeat(16), Duration::ZERO);
+        std::fs::write(just_created.join("user.js"), b"// prefs").expect("seed user.js");
+
+        let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
+
+        assert!(
+            summary.removed.is_empty(),
+            "neither dir may be pruned, got {:?}",
+            summary.removed
+        );
+        assert!(
+            populated.exists(),
+            "a day-old unmarked profile Firefox actually used keeps the full 7-day gate"
+        );
+        assert!(
+            just_created.exists(),
+            "a launch still inside the race grace must not have its profile deleted"
+        );
+    }
+
+    /// Re-marking a profile (this process's PID before the spawn, Firefox's
+    /// PID after) must never leave the previous start token beside the new PID
+    /// — the tokens would disagree, the profile would grade `Dead`, and the
+    /// iter-142 rule would delete it out from under a running Firefox.
+    #[test]
+    fn unit_175_remarking_a_profile_clears_the_previous_start_token() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"n".repeat(16), Duration::ZERO);
+
+        // First claim: this live process, which does have a start token.
+        write_owner_pid_marker(&dir, std::process::id());
+        let first_token = read_owner_start_marker(&dir);
+
+        // Second claim: a PID that is certainly gone, so no token is available
+        // for it and the stale one must be cleared rather than left behind.
+        write_owner_pid_marker(&dir, u32::MAX);
+
+        assert_eq!(read_owner_pid_marker(&dir), Some(u32::MAX));
+        if first_token.is_some() {
+            assert_eq!(
+                read_owner_start_marker(&dir),
+                None,
+                "the previous owner's start token must not survive a re-mark"
+            );
+        }
     }
 }
