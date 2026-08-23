@@ -80,6 +80,7 @@ mod live_172_zero_byte_registry;
 mod live_174_direct_route_events_path;
 mod live_175_failed_launch_profile;
 mod live_176_eval_scanner_brace_positions;
+mod live_186_launch_record_gc;
 mod live_61l;
 mod live_61q_resource_bus;
 mod live_61r_eval;

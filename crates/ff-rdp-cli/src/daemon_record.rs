@@ -498,4 +498,188 @@ mod tests {
             "port 6101 record must survive removing port 6100's record"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Stale launch-record GC (iter-186)
+    // -----------------------------------------------------------------------
+
+    /// A PID astronomically unlikely to exist — the same sentinel the
+    /// stale-read test above uses.
+    const DEAD_PID: u32 = 999_999_999;
+
+    /// Write a launch record straight to disk, bypassing [`write_in`]'s
+    /// (nonexistent) liveness check — needed to plant a record for a pid that
+    /// is already dead.
+    fn plant_record(dir: &Path, port: u16, pid: u32) {
+        let rec = DaemonRecord {
+            pid,
+            port,
+            headless: true,
+            launched_at: Utc::now(),
+            profile_dir: PathBuf::from("/tmp/ff-rdp-planted"),
+        };
+        fs::write(
+            dir.join(record_filename(port)),
+            serde_json::to_string_pretty(&rec).expect("serialize planted record"),
+        )
+        .expect("write planted record");
+    }
+
+    fn launch_record_count(dir: &Path) -> usize {
+        fs::read_dir(dir)
+            .expect("read_dir")
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .into_string()
+                    .ok()
+                    .and_then(|n| parse_launch_record_port(&n))
+                    .is_some()
+            })
+            .count()
+    }
+
+    /// Task A: the sweep removes a record whose owning pid is dead.
+    /// Task B: a record whose pid is alive (this very test process) is never
+    /// removed — the failure mode that would break `daemon stop` for a
+    /// running instance.
+    #[test]
+    fn unit_gc_stale_launch_records_removes_dead_keeps_live() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        plant_record(dir.path(), 6000, DEAD_PID);
+        plant_record(dir.path(), 6001, std::process::id());
+
+        gc_stale_launch_records_in(dir.path());
+
+        assert!(
+            !dir.path().join(record_filename(6000)).exists(),
+            "a launch record whose pid is dead must be collected by the sweep"
+        );
+        assert!(
+            dir.path().join(record_filename(6001)).exists(),
+            "a launch record whose pid is alive must survive the sweep"
+        );
+    }
+
+    /// The sweep's filename match is scoped exactly to
+    /// `launch-record.<PORT>.json`. Everything else sharing `~/.ff-rdp/` is
+    /// left untouched — including `write_in`'s `.tmp`, which belongs to a
+    /// write that may be in flight right now.
+    #[test]
+    fn unit_gc_stale_launch_records_ignores_other_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        fs::write(dir.path().join("daemon.6000.json"), b"{}").expect("registry file");
+        fs::write(dir.path().join("daemon.6000.throttle.json"), b"{}").expect("throttle file");
+        fs::write(dir.path().join("daemon.6000.spawn.lock"), []).expect("lock file");
+        fs::write(dir.path().join("daemon.log"), b"log").expect("log file");
+        // The pre-iter-142 port-less name: not a `<PORT>` shape, so it is not
+        // a candidate. Left for a human rather than silently deleted.
+        fs::write(dir.path().join("launch-record.json"), b"{}").expect("legacy record");
+        fs::write(
+            dir.path().join(format!("{}.tmp", record_filename(6000))),
+            b"{}",
+        )
+        .expect("tmp file");
+
+        gc_stale_launch_records_in(dir.path());
+
+        for name in [
+            "daemon.6000.json",
+            "daemon.6000.throttle.json",
+            "daemon.6000.spawn.lock",
+            "daemon.log",
+            "launch-record.json",
+            "launch-record.6000.json.tmp",
+        ] {
+            assert!(
+                dir.path().join(name).exists(),
+                "{name} must survive the launch-record sweep untouched"
+            );
+        }
+    }
+
+    /// A record that cannot be parsed is left alone: an I/O or parse error is
+    /// not proof of staleness, and deleting on "I couldn't read it" would make
+    /// the sweep destructive under conditions it cannot distinguish.
+    #[test]
+    fn unit_gc_stale_launch_records_leaves_corrupt_record_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(record_filename(6000));
+        fs::write(&path, b"{ this is not json").expect("write corrupt record");
+
+        gc_stale_launch_records_in(dir.path());
+
+        assert!(
+            path.exists(),
+            "an unparsable launch record must be left alone, not deleted"
+        );
+    }
+
+    /// Housekeeping must never fail its caller: a missing directory is a
+    /// silent no-op, not an error.
+    #[test]
+    fn unit_gc_stale_launch_records_tolerates_missing_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        gc_stale_launch_records_in(&dir.path().join("does-not-exist"));
+    }
+
+    /// Filename parsing table — the sweep's entire safety boundary.
+    #[test]
+    fn unit_parse_launch_record_port_matches_only_exact_shape() {
+        assert_eq!(parse_launch_record_port("launch-record.6000.json"), Some(6000));
+        assert_eq!(parse_launch_record_port("launch-record.1.json"), Some(1));
+        assert_eq!(parse_launch_record_port("launch-record.65535.json"), Some(65535));
+
+        // Out of u16 range, non-numeric, wrong prefix/suffix, in-flight tmp.
+        assert_eq!(parse_launch_record_port("launch-record.65536.json"), None);
+        assert_eq!(parse_launch_record_port("launch-record.abc.json"), None);
+        assert_eq!(parse_launch_record_port("launch-record.json"), None);
+        assert_eq!(parse_launch_record_port("launch-record.6000.json.tmp"), None);
+        assert_eq!(parse_launch_record_port("daemon.6000.json"), None);
+        assert_eq!(parse_launch_record_port("daemon.6000.throttle.json"), None);
+        assert_eq!(parse_launch_record_port("daemon.log"), None);
+    }
+
+    /// Task C / AC 1 (unit half): the record count does not grow with the
+    /// launch count.
+    ///
+    /// Each iteration models one `launch`: sweep first (as
+    /// `commands::launch::run` does), then write the record for the instance
+    /// this launch starts. The instance's pid is dead by the time of the next
+    /// sweep — the killed/crashed/harness-abandoned case that `remove_in`
+    /// never covers, and that made `~/.ff-rdp/` reach 4040 files.
+    ///
+    /// Crucially, every port is distinct, exactly as an ephemeral `bind(:0)`
+    /// hands them out. That is the condition under which `read_in`'s
+    /// lazy-on-read reaping collects *nothing*: without this sweep the
+    /// assertion below would see `LAUNCHES + 1` files.
+    #[test]
+    fn unit_launch_record_count_stays_bounded_across_repeated_launches() {
+        const LAUNCHES: u16 = 50;
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // A concurrently-running instance, present for the whole run.
+        plant_record(dir.path(), 19000, std::process::id());
+
+        for i in 0..LAUNCHES {
+            gc_stale_launch_records_in(dir.path());
+            plant_record(dir.path(), 20000 + i, DEAD_PID);
+        }
+
+        let count = launch_record_count(dir.path());
+        assert_eq!(
+            count, 2,
+            "after {LAUNCHES} launches the directory must hold only the live \
+             instance's record plus the most recent launch's own (got {count}); \
+             unbounded growth would give {}",
+            LAUNCHES + 1
+        );
+        assert!(
+            dir.path().join(record_filename(19000)).exists(),
+            "the live instance's record must survive all {LAUNCHES} sweeps"
+        );
+    }
+
 }
