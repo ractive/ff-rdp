@@ -1,5 +1,5 @@
 ---
-title: "Iteration 178: six watch-conditions carried over from live-sweep runs — no plan currently owns them"
+title: "Iteration 178: seven watch-conditions carried over from live-sweep runs — no plan currently owns them"
 type: iteration
 date: 2026-08-17
 status: planned
@@ -7,18 +7,20 @@ branch: iter-178/live-sweep-carryover-watch-conditions
 depends_on:
   - iteration-173-live-sweep-port-6000-firefox-does-not-survive
   - iteration-179-live-62-runner-sees-no-network-events
+  - iteration-177-slow3g-assertion-has-two-percent-headroom
 first_call_sites: []
 dogfood_path: |
-  # This plan has no code to run yet — it exists to hold six trigger
+  # This plan has no code to run yet — it exists to hold seven trigger
   # conditions from live-sweep carry-over until one of them fires.
   # The dogfood step, until then, is simply reading the sweep output for the
   # signal each row below names.
   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
   # Check the LIVE_SWEEP_SUMMARY line's launch_timeout and vanished counts, and
-  # grep the log for these two test names:
+  # grep the log for these test names:
   #   live_160_envelope_honesty::live_160_ref_click_asserts_handler_effect
   #   live_104_security_pwa::live_manifest_fetch_canonical
   #   live_145_error_envelope_completeness::live_145_click_element_not_found_unchanged
+  #   live_109_throttle_block::live_throttle_slow3g_slows_fetch
 tags: [iteration, testing, live-tests, tooling, carry-over]
 ---
 
@@ -36,8 +38,10 @@ conditions are not silently lost.
 A fifth and a sixth condition were added by
 [[iteration-179-live-62-runner-sees-no-network-events]]'s carry-over sweep on 2026-08-22
 (`live_104` and `live_145`, conditions 5 and 6 below) — same shape, same reason for being here.
+A seventh was added by [[iteration-177-slow3g-assertion-has-two-percent-headroom]]'s carry-over
+sweep on 2026-08-23 (condition 7 below) — same shape again.
 
-This plan intentionally does **not** prescribe a fix for any of the six items — none of them has
+This plan intentionally does **not** prescribe a fix for any of the seven items — none of them has
 enough evidence yet to design one. It exists to be the place a future iteration starts from once
 the evidence arrives.
 
@@ -167,7 +171,27 @@ more occurrence should be enough to classify it).
 [[iteration-177-slow3g-assertion-has-two-percent-headroom]]'s method — a bound raised without a
 measured distribution is the same defect one notch further out.
 
-## Acceptance Criteria [0/6]
+### 7. `live_109_throttle_block::live_throttle_slow3g_slows_fetch` — one unattributed setup failure under a load average of ~190
+Surfaced during [[iteration-177-slow3g-assertion-has-two-percent-headroom]]'s Theme A
+under-load measurement on 2026-08-23: run 1 of 11 (10 `yes > /dev/null` spinners on a 10-core
+machine, load average ~190) failed **before printing any sample**, i.e. during Firefox launch or
+daemon start, not in the delivery-delay assertion this iteration added.
+
+Almost nothing is ruled in or out — the failure's message was not captured, and two further
+attempts at the same spinner count did not reproduce it. Iteration 177 recorded it as
+"unattributed startup flakiness" and explicitly did not claim it as evidence for or against that
+iteration's change (the assertion rewrite touches only how the *test* measures, not how Firefox or
+the daemon start up).
+
+**Trigger**: this test (or any other) fails during Firefox launch or daemon start — not during a
+timed measurement — with a captured error message, under contended load (synthetic spinners or a
+concurrent sweep).
+**Action then**: file a plan against launch/daemon-start robustness under heavy contention, using
+the captured message. Until a message is captured, this is indistinguishable from watch condition
+2 above (a fixed launch-timeout budget losing to load) and no separate hunt is warranted — do not
+invent a synthetic-load reproduction attempt merely to close this box.
+
+## Acceptance Criteria [0/7]
 
 - [ ] Watch condition 1 (`live_160` intermittent failure) has either fired (and been forked into
       its own plan per the action above) or has not fired since this plan was filed
@@ -182,6 +206,9 @@ measured distribution is the same defect one notch further out.
 - [ ] Watch condition 6 (`live_145` under load) has either fired with its message captured (and
       been forked into its own plan per the action above) or has not fired since this plan was
       filed
+- [ ] Watch condition 7 (`live_109_throttle_block` unattributed setup failure under load) has
+      either fired again with a captured message (and been forked into its own plan) or has not
+      fired since this plan was filed
 
 None of these boxes can be ticked by inspection alone — each requires either a live-sweep run that
 observes the trigger and forks a follow-up plan, or a deliberate decision that this plan is
@@ -201,3 +228,5 @@ premature "done" this repo's discipline rules exist to prevent.
   (watch condition 2) was first observed
 - [[iteration-169-navigate-status-delivery-and-nav-verb-parity]] — Theme C, the pre-existing fifth
   watch condition this plan does not duplicate
+- [[iteration-177-slow3g-assertion-has-two-percent-headroom]] — source of watch condition 7, and
+  the plan whose Theme A measurement surfaced it as a side effect
