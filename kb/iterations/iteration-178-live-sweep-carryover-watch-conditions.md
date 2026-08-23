@@ -2,7 +2,7 @@
 title: "Iteration 178: seven watch-conditions carried over from live-sweep runs — no plan currently owns them"
 type: iteration
 date: 2026-08-17
-status: planned
+status: in-progress
 branch: iter-178/live-sweep-carryover-watch-conditions
 depends_on:
   - iteration-173-live-sweep-port-6000-firefox-does-not-survive
@@ -21,7 +21,12 @@ dogfood_path: |
   #   live_104_security_pwa::live_manifest_fetch_canonical
   #   live_145_error_envelope_completeness::live_145_click_element_not_found_unchanged
   #   live_109_throttle_block::live_throttle_slow3g_slows_fetch
-tags: [iteration, testing, live-tests, tooling, carry-over]
+tags:
+  - iteration
+  - testing
+  - live-tests
+  - tooling
+  - carry-over
 ---
 
 # Iteration 178: watch-conditions carried over from live-sweep runs
