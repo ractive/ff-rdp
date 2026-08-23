@@ -2,7 +2,7 @@
 title: "Iteration 192: the live-sweep and toolchain watch conditions, carried forward past iteration 178's negative sweep"
 type: iteration
 date: 2026-08-23
-status: in-review
+status: done
 branch: iter-192/live-sweep-watch-conditions-carried-forward
 depends_on:
   - iteration-178-live-sweep-carryover-watch-conditions
@@ -22,7 +22,12 @@ dogfood_path: |
   #   firefox -no-remote -profile /tmp/ff-rdp-p6000 --start-debugger-server 6000 --headless
   #   (with devtools.debugger.remote-enabled / prompt-connection / chrome.enabled
   #    in that profile's user.js, or the debug port never opens)
-tags: [iteration, testing, live-tests, tooling, carry-over]
+tags:
+  - iteration
+  - testing
+  - live-tests
+  - tooling
+  - carry-over
 ---
 
 # Iteration 192: still watching, one sweep later
