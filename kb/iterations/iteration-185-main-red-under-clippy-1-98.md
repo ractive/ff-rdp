@@ -116,6 +116,26 @@ reasoning are in [[decision-log]] DEC-044; summarised:
    green implied CI green. Both now name the toolchain boundary, tell you to `rustup update
    stable` before quoting a clippy result, and point at `gh pr checks` as the authority.
 
+## How this was verified, and what was deliberately not run
+
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace -q` — all exit 0 on `rustc 1.98.0 (88d9e12ae 2026-08-18)`.
+- `actionlint` — exit 0 on `.github/workflows/toolchain-watch.yml` and on the workflow set as a
+  whole. This is as far as the canary can be validated before it merges: **scheduled workflows
+  only run from the default branch**, so the cron cannot fire from this branch. Syntax, action
+  refs and expressions are checked; the trigger itself is not, and that gap is a carry-over row.
+- All six xtask `check-*` gates exit 0 (`check-dogfood-script` needs `FF_RDP_LIVE_TESTS=1` even
+  when the plan has no `dogfood_script`, else it fails closed on an `iter-*` branch; with the gate
+  set it reports SKIP).
+- **No live sweep was run, on purpose.** The diff is one workflow file and three markdown files —
+  no `.rs`, no `Cargo.toml`, no product behaviour. `iteration-close`'s standing sweep policy is
+  scoped to iterations touching product source, and a 40-minute sweep here could only report on
+  code identical to `main`'s while risking contention with other Firefox work in flight. Stated
+  rather than silently skipped, and carried as a row.
+- The `dogfood_path`'s `cargo +1.95 build` step was not run locally (the 1.95 toolchain is not
+  installed on this machine). Since the diff contains no Rust and no manifest change, the MSRV
+  surface is byte-identical to `main`; the `msrv` CI job on this PR is the evidence quoted.
+
 ## Tasks
 
 ### A. Land the fix [2/2]
