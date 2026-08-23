@@ -14,6 +14,8 @@
 # Rules:
 #   unanchored-grep         grep -qi '<token>' for deny-listed tokens (false positives)
 #   bool-flag-positional    boolean flag followed by a quoted value instead of --jq <expr>
+#   unscoped-pkill            pkill/killall — kills processes this run did not start
+#   path-binary               bare `ff-rdp` resolved from $PATH instead of this tree
 #   missing-set-euo-pipefail  script must have 'set -euo pipefail' after shebang/comments
 #   fixed-sentinel-path       SENTINEL= assigned a hardcoded path instead of the
 #                             per-run path the gate exports as FF_RDP_DOGFOOD_SENTINEL
@@ -87,6 +89,45 @@ lint_file() {
           print file ":" lineno ": [bool-flag-positional] " flag " is a boolean flag but is followed by a quoted value. Did you mean --jq <expr>? Example: ff-rdp perf audit " flag " --jq '.results.field'" > "/dev/stderr"
           nerrors++
         }
+      }
+
+      # Comment-only lines cannot invoke anything, so the two rules below
+      # (which reason about command position) skip them.
+      is_comment = (line ~ /^[[:space:]]*#/)
+
+      # Rule: unscoped-pkill
+      # Detect: pkill / killall anywhere in a command.
+      #
+      # Until iter-193 every checked-in dogfood script opened with
+      # `pkill -f '"'"'firefox.*ff-rdp-profile'"'"'`. That pattern is not scoped to
+      # the run: on a machine where several agents share one working tree — the
+      # normal case in this project'"'"'s loop — it terminates browsers the script
+      # never started. It is also self-matching (built from the literal
+      # `ff-rdp-profile`, it matches the checker'"'"'s own command line), so the
+      # paired pgrep reports phantoms. The cost was concrete: iter-184 changed
+      # the dogfood contract and could not execute a single migrated script to
+      # prove the migration, because doing so would have killed four sibling
+      # agents'"'"' browsers.
+      if (!is_comment && line ~ /(^|[^[:alnum:]_.\/-])(pkill|killall)([[:space:]]|$)/ \
+          && line !~ /allow-unscoped-pkill:/) {
+        print file ":" lineno ": [unscoped-pkill] pkill/killall reaches processes this run did not start — on a shared working tree that kills a sibling agent'"'"'s Firefox. Tear down only what you launched: dogfood_launch records the port and pid, dogfood_teardown stops exactly those. If a pattern match is genuinely unavoidable, anchor it on the process path (MacOS/firefox.*ff-rdp-profile) so it cannot match the checker itself, and mark the line # allow-unscoped-pkill: <reason>" > "/dev/stderr"
+        nerrors++
+      }
+
+      # Rule: path-binary
+      # Detect: `ff-rdp` in command position — i.e. at line start, after a
+      # shell separator, or inside $( ) — optionally preceded by env
+      # assignments. `cargo run -p ff-rdp-cli --` and the `ffrdp` helper do not
+      # match (no bare `ff-rdp` token followed by whitespace at command
+      # position).
+      #
+      # A dogfood script that resolves `ff-rdp` from $PATH can certify a
+      # months-old build instead of the branch under test — the same false-PASS
+      # shape iter-184 fixed one layer down.
+      path_bin_pat = "(^|[;&|(){}`])[ \t]*([A-Za-z_][A-Za-z0-9_]*=[^ \t]*[ \t]+)*ff-rdp[ \t]"
+      if (!is_comment && line ~ path_bin_pat && line !~ /allow-path-binary:/) {
+        print file ":" lineno ": [path-binary] bare `ff-rdp` resolves from $PATH, so the gate can certify a build that is not the one under test. Drive the CLI through the `ffrdp` helper in kb/iterations/dogfood-lib.sh (or `cargo run -p ff-rdp-cli --`). A script that deliberately installs its own binary first may mark the line # allow-path-binary: <reason>" > "/dev/stderr"
+        nerrors++
       }
     }
     END { exit (nerrors > 0) ? 1 : 0 }

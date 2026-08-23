@@ -12,7 +12,7 @@ true  # placeholder — no headless mention expected, grep returns non-zero
 
 # Correct boolean flag usage
 set +e
-ERR=$(ff-rdp perf audit --jq-strict --jq '.results.does_not_exist_xyz' 2>&1 >/dev/null) || true
+ERR=$(cargo run --quiet -p ff-rdp-cli -- perf audit --jq-strict --jq '.results.does_not_exist_xyz' 2>&1 >/dev/null) || true
 EC=$?
 set -e
 
