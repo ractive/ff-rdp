@@ -1600,6 +1600,162 @@ mod tests {
         );
     }
 
+    /// Hooks whose kill steps are all recorded and whose target never dies —
+    /// used by the iter-191 tests, where the assertion is that *nothing* in
+    /// this set is ever called.
+    fn recording_hooks_live_parent() -> EscalationHooks {
+        EscalationHooks {
+            is_alive: |_pid| true,
+            kill_group_term: |_pid| log_call("kill_group_term"),
+            kill_group_kill: |_pid| log_call("kill_group_kill"),
+            kill_process_tree: |_pid, _pgid| log_call("kill_process_tree"),
+            get_pgid: |pid| Pgid::try_from(pid).ok(),
+            wait_port_closed: |_port, _timeout| {
+                log_call("wait_port_closed");
+                true
+            },
+        }
+    }
+
+    /// A launch record for `port` naming this process, planted in `dir`.
+    ///
+    /// The PID must be genuinely alive — `daemon_record::read_in` performs its
+    /// own liveness check and treats a dead PID as an absent record, which
+    /// would skip the branch under test entirely. This test binary is the
+    /// convenient live PID; every hook that could signal it is stubbed.
+    fn plant_live_record(dir: &std::path::Path, port: u16) {
+        let rec = crate::daemon_record::DaemonRecord {
+            pid: std::process::id(),
+            port,
+            headless: true,
+            launched_at: chrono::Utc::now(),
+            profile_dir: dir.join("profile"),
+            start_token: Some("token-from-a-process-that-is-long-gone".to_owned()),
+        };
+        crate::daemon_record::write_in(dir, &rec).expect("write record");
+    }
+
+    /// AC (iter-191): `launch --replace` finds a record that matches the port
+    /// and whose PID is alive, but that PID is not the process ff-rdp launched
+    /// — **no kill hook may run**.
+    ///
+    /// This is the 2026-08-23 sweep failure in unit form: a seven-day-old
+    /// `launch-record.<port>.json` named a PID the OS had reissued to an
+    /// unrelated desktop application, and this branch signalled its process
+    /// group without ever consulting an ownership proof.
+    #[test]
+    fn unit_191_replace_refuses_record_pid_that_is_not_ours() {
+        let _serialized = begin_call_log();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let port = 64_331u16;
+        plant_live_record(dir.path(), port);
+
+        let deps = StopDeps {
+            hooks: recording_hooks_live_parent(),
+            record_dir: Some(dir.path().to_path_buf()),
+            record_pid_is_ours: |_rec| false,
+        };
+        let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"]).expect("parse cli");
+
+        let err = stop_prior_instance_with(&cli, port, &deps)
+            .expect_err("an unowned record PID must not be stopped");
+
+        let log = take_call_log();
+        assert!(
+            !log.iter().any(|c| c.starts_with("kill_")),
+            "no signal may be sent to a PID ff-rdp cannot prove it spawned; log was {log:?}"
+        );
+
+        let AppError::User(msg) = err else {
+            panic!("expected a user-facing refusal, not an internal error");
+        };
+        // The exact phrases `live_110_replace_never_kills_foreign_firefox`
+        // asserts on, and the ones the port-owner branch already emits.
+        assert!(
+            msg.contains("did not launch"),
+            "refusal must say ff-rdp did not launch the process; got: {msg}"
+        );
+        assert!(
+            msg.contains("does not own"),
+            "refusal must say ff-rdp will not stop what it does not own; got: {msg}"
+        );
+        assert!(
+            !msg.contains("still in use after stopping the prior instance"),
+            "that message claims ff-rdp stopped something; nothing was stopped here. got: {msg}"
+        );
+
+        assert!(
+            crate::daemon_record::read_in(dir.path(), port)
+                .expect("read record")
+                .is_some(),
+            "a refused stop must leave the record for iter-186's GC (iter-158 Theme B)"
+        );
+    }
+
+    /// The same gate on `daemon stop`'s copy of the record branch: it reads
+    /// the same artefact and sends the same group-wide signals, so it must
+    /// refuse the same way rather than killing a stranger.
+    #[test]
+    fn unit_191_daemon_stop_refuses_record_pid_that_is_not_ours() {
+        let _serialized = begin_call_log();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let port = 64_332u16;
+        plant_live_record(dir.path(), port);
+
+        let deps = StopDeps {
+            hooks: recording_hooks_live_parent(),
+            record_dir: Some(dir.path().to_path_buf()),
+            record_pid_is_ours: |_rec| false,
+        };
+        let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"]).expect("parse cli");
+
+        let err = stop_daemon_and_build_result_with(&cli, port, &deps)
+            .expect_err("an unowned record PID must not be stopped");
+
+        let log = take_call_log();
+        assert!(
+            !log.iter().any(|c| c.starts_with("kill_")),
+            "no signal may be sent to a PID ff-rdp cannot prove it spawned; log was {log:?}"
+        );
+        assert!(
+            matches!(&err, AppError::User(m) if m.contains("does not own")),
+            "expected the ownership refusal; got: {err:?}"
+        );
+        assert!(
+            crate::daemon_record::read_in(dir.path(), port)
+                .expect("read record")
+                .is_some(),
+            "a refused stop must leave the record in place"
+        );
+    }
+
+    /// The counterpart to the two tests above: when the record *is* ours the
+    /// gate stays out of the way and the ladder runs. Without this, "refuse
+    /// everything" would pass the iter-191 assertions while breaking
+    /// `launch --replace` outright.
+    #[test]
+    fn unit_191_replace_still_stops_a_record_that_is_ours() {
+        let _serialized = begin_call_log();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let port = 64_333u16;
+        plant_live_record(dir.path(), port);
+
+        let deps = StopDeps {
+            hooks: recording_hooks_live_parent(),
+            record_dir: Some(dir.path().to_path_buf()),
+            record_pid_is_ours: |_rec| true,
+        };
+        let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"]).expect("parse cli");
+
+        let outcome = stop_prior_instance_with(&cli, port, &deps).expect("an owned record stops");
+        assert_eq!(outcome.pid, Some(std::process::id()));
+        let log = take_call_log();
+        assert!(
+            log.iter().any(|c| c.starts_with("kill_")),
+            "an owned record must still be signalled; log was {log:?}"
+        );
+    }
+
     /// AC `unit_158_record_survives_failed_stop`: a stop that leaves the port
     /// held must NOT delete the `DaemonRecord`. The record is the ownership
     /// proof; deleting it drops the next `launch --replace` into the raw

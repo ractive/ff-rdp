@@ -750,6 +750,45 @@ mod tests {
         );
     }
 
+    /// AC (iter-191): `pid_identity` grades the three cases the kill paths
+    /// depend on — matching token, disagreeing token, and no token at all.
+    ///
+    /// The middle case is the one the 2026-08-23 sweep failure needed and did
+    /// not have: a live PID whose recorded token disagrees is *positively*
+    /// someone else, and `Unknown` must stay distinguishable from `Confirmed`
+    /// so callers can decide for themselves whether "cannot prove" is good
+    /// enough (it never is, before a signal).
+    #[test]
+    fn unit_191_pid_identity_grades_match_mismatch_and_absence() {
+        let pid = std::process::id();
+        let live = process_start_token(pid);
+
+        assert_eq!(
+            pid_identity(pid, None),
+            PidIdentity::Unknown,
+            "no recorded token ⇒ nothing can be concluded"
+        );
+
+        if let Some(token) = live {
+            assert_eq!(
+                pid_identity(pid, Some(&token)),
+                PidIdentity::Confirmed,
+                "this process's own token must confirm its own PID"
+            );
+            assert_eq!(
+                pid_identity(pid, Some("0.000000")),
+                PidIdentity::Recycled,
+                "a token that disagrees with the live process means the PID was reused"
+            );
+        }
+
+        assert_eq!(
+            pid_identity(999_999_999, Some("0.000000")),
+            PidIdentity::Unknown,
+            "a PID with no live process supplies no token to compare against"
+        );
+    }
+
     /// AC (iter-171): the token actually *distinguishes* processes — two
     /// concurrently-live PIDs must not share a token. This is the property
     /// that makes `(pid, token)` a usable identity: if the token were, say, a

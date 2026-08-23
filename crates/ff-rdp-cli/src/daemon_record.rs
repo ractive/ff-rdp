@@ -429,6 +429,82 @@ mod tests {
         );
     }
 
+    /// AC (iter-191): the ownership decision table. Every outcome that is not
+    /// positive proof must return `false` — "cannot confirm" never authorises
+    /// a kill.
+    #[test]
+    fn unit_191_record_pid_is_ours_decision_table() {
+        let rec_with_token = DaemonRecord {
+            start_token: Some("t".to_owned()),
+            ..sample_record()
+        };
+        let rec_without_token = DaemonRecord {
+            start_token: None,
+            ..sample_record()
+        };
+
+        // 1. Token matches ⇒ ours, regardless of any marker. This is the case
+        //    a user-supplied `--profile` launch depends on: that directory
+        //    deliberately never receives an owner-PID marker, so the marker
+        //    fallback alone would refuse to stop ff-rdp's own Firefox.
+        assert!(record_pid_is_ours_with(
+            &rec_with_token,
+            |_pid, _tok| process::PidIdentity::Confirmed,
+            |_pid| false,
+        ));
+
+        // 2. Token disagrees ⇒ the PID was reused. Not ours even if some
+        //    managed profile happens to name it.
+        assert!(!record_pid_is_ours_with(
+            &rec_with_token,
+            |_pid, _tok| process::PidIdentity::Recycled,
+            |_pid| true,
+        ));
+
+        // 3. No token (a pre-iter-191 record, or a platform that supplies
+        //    none) ⇒ fall back to the iter-110 owner-PID marker gate.
+        assert!(record_pid_is_ours_with(
+            &rec_without_token,
+            |_pid, _tok| process::PidIdentity::Unknown,
+            |_pid| true,
+        ));
+        assert!(!record_pid_is_ours_with(
+            &rec_without_token,
+            |_pid, _tok| process::PidIdentity::Unknown,
+            |_pid| false,
+        ));
+    }
+
+    /// A record written by a pre-iter-191 binary has no `start_token` key at
+    /// all. It must keep parsing — the field is `serde(default)` — and grade
+    /// as token-less rather than failing the read, which would make every
+    /// leaked record unreadable instead of merely untrusted.
+    #[test]
+    fn unit_191_record_without_start_token_still_parses() {
+        let legacy = r#"{
+            "pid": 65225,
+            "port": 51371,
+            "headless": true,
+            "launched_at": "2026-08-16T20:32:13.855708Z",
+            "profile_dir": "/tmp/does-not-exist"
+        }"#;
+        let rec: DaemonRecord = serde_json::from_str(legacy).expect("legacy record must parse");
+        assert_eq!(rec.pid, 65225);
+        assert_eq!(rec.start_token, None);
+
+        // And a record carrying one round-trips through the on-disk form.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rec = DaemonRecord {
+            start_token: Some("12345.678901".to_owned()),
+            ..sample_record()
+        };
+        write_in(dir.path(), &rec).expect("write");
+        let read_back = read_in(dir.path(), rec.port)
+            .expect("read ok")
+            .expect("present");
+        assert_eq!(read_back.start_token.as_deref(), Some("12345.678901"));
+    }
+
     /// A record with a dead PID returns None and removes the file.
     #[test]
     fn unit_daemon_record_stale_pid_returns_none_and_removes_file() {
