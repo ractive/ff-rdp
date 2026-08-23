@@ -1,13 +1,28 @@
-//! Live tests for iter-96 Theme A (`daemon stop` profile cleanup) and
-//! Theme C (`ff-rdp profiles prune` manual cleanup).
+//! Live tests for iter-96 Theme A (`daemon stop` profile cleanup).
 //!
 //! Every `ff-rdp launch` (without `--profile`) creates a fresh profile dir
 //! under `secure_profile_root()` and never removed it — see
-//! `kb/iterations/iteration-96-profile-leak-cleanup.md`. Theme A's tests
-//! assert the fix: `daemon stop` removes the directory once the
+//! `kb/iterations/iteration-96-profile-leak-cleanup.md`. These tests assert
+//! the fix: `daemon stop` removes the directory once the
 //! SIGTERM→SIGKILL→killpg escalation ladder confirms Firefox is gone and the
-//! port is free. Theme C's test asserts the manual escape hatch: `ff-rdp
-//! profiles prune --all` removes every managed orphan directory on demand.
+//! port is free.
+//!
+//! Theme C's test (`ff-rdp profiles prune --all` removes every managed
+//! orphan directory on demand) used to live here too, seeded under the real
+//! per-user profile root with a named-PID precondition guarding against a
+//! dirty environment. iter-188 Theme C made the live tier run concurrently,
+//! which that global precondition could no longer satisfy, so the test was
+//! moved onto an isolated per-test `$FF_RDP_HOME` — at which point it no
+//! longer needed Firefox at all (the precondition can never fire in a root
+//! nothing else touches) and became a strict duplicate of
+//! `tests/e2e/profiles.rs::profiles_prune_is_scoped_to_ff_rdp_home`, which
+//! asserts the identical seed/prune/assert-removed sequence without paying
+//! for a live-tier slot. It was deleted here in favour of that e2e test
+//! (found in review of iteration 188's PR). What it does **not** replace:
+//! the whole-suite guarantee that a completed live-sweep run leaves no
+//! live-owned managed profile behind in the *real* per-user root — that
+//! guarantee currently has no test anywhere and is filed as
+//! `kb/iterations/iteration-202-live-sweep-lost-its-real-root-orphan-guarantee.md`.
 //!
 //! Run with:
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -16,9 +31,9 @@
 use std::process::Command;
 use std::time::Duration;
 
+use crate::common::LiveFirefox;
 use crate::common::ff_rdp_bin;
 use crate::common::live_tests_enabled;
-use crate::common::{LiveFirefox, pid_alive};
 
 /// Poll until the path at `path` no longer exists, or `timeout` elapses.
 fn wait_path_gone(path: &str, timeout: Duration) -> bool {
@@ -201,206 +216,4 @@ fn live_daemon_stop_profile_path_matches_launch_json() {
     );
 
     eprintln!("live_daemon_stop_profile_path_matches_launch_json: PASS — {launch_profile_path}");
-}
-
-/// Path to the owner-PID marker written inside every ff-rdp-managed profile
-/// dir (mirrors the product's private `util::profile_dir::OWNER_PID_MARKER`,
-/// unreachable from an integration-test binary — see
-/// `write_owner_pid_marker`/`read_owner_pid_marker` there).
-const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
-
-/// Path to the owner-test marker (iter-151 Theme A) — mirrors the product's
-/// private `util::profile_dir::OWNER_TEST_MARKER`, same duplication
-/// rationale as [`OWNER_PID_MARKER`] above.
-const OWNER_TEST_MARKER: &str = ".ff-rdp-owner-test";
-
-/// Scan `root` for `ff-rdp-profile-*` directories whose owner-PID marker
-/// names a still-alive process, returning `(dir, pid, spawning_test)` pairs.
-/// `spawning_test` is `None` for a profile with no owner-test marker (a
-/// normal interactive `ff-rdp launch`, or a pre-iter-151 profile).
-///
-/// iter-146 Theme B: unlike a `daemon status` check (the precondition this
-/// replaces), this also catches a Firefox instance launched via `ff-rdp
-/// launch` that never triggered daemon autostart — the exact gap the old
-/// precondition's own doc comment acknowledged and that made
-/// `live_profiles_prune_removes_all_when_no_firefox_running` order-dependent:
-/// it passed in isolation but failed late in a full sequential suite run
-/// with an opaque `left: 1 / right: 0`, because `prune --all` **correctly**
-/// refused to delete a profile some earlier test's Firefox still owned.
-///
-/// iter-151 Theme A: also reads [`OWNER_TEST_MARKER`] so the precondition
-/// message below names the culprit test directly instead of leaving the
-/// reader to bisect the full live suite.
-fn live_owned_profile_dirs(root: &str) -> Vec<(std::path::PathBuf, u32, Option<String>)> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter(|e| {
-            e.file_name()
-                .to_str()
-                .is_some_and(|n| n.starts_with("ff-rdp-profile-"))
-        })
-        .filter_map(|e| {
-            let marker = e.path().join(OWNER_PID_MARKER);
-            let pid: u32 = std::fs::read_to_string(&marker).ok()?.trim().parse().ok()?;
-            if !pid_alive(pid) {
-                return None;
-            }
-            let test_name = std::fs::read_to_string(e.path().join(OWNER_TEST_MARKER))
-                .ok()
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty());
-            Some((e.path(), pid, test_name))
-        })
-        .collect()
-}
-
-/// AC: `live_profiles_prune_removes_all_when_no_firefox_running`
-///
-/// Seeds orphan `ff-rdp-profile-*` directories directly under the real
-/// profile root (discovered via `ff-rdp profiles list`'s `results.path`),
-/// then runs `ff-rdp profiles prune --all` and asserts zero
-/// `ff-rdp-profile-*` entries remain under the root afterwards.
-///
-/// Requires no *running* ff-rdp-managed Firefox instance — `--all` removes
-/// every managed directory regardless of age, which would rip the profile
-/// out from under a live session. iter-146 Theme B: the precondition is now
-/// an explicit, named-PID assertion (`live_owned_profile_dirs`) rather than
-/// a `daemon status` skip check — the latter went silently blind to a
-/// directly-launched Firefox that never triggered daemon autostart, which
-/// is exactly the gap iter-146 Theme A's own leak exercised. This test still
-/// never kills anything itself; a live owner means the test environment
-/// isn't clean, which is worth failing loudly on rather than skipping quietly
-/// or reporting a bare `left: 1 / right: 0` at the very end.
-///
-/// iter-188 Theme C: the precondition asserts a *global* property — "no
-/// ff-rdp-managed Firefox is running anywhere under this root" — which cannot
-/// hold while sibling tests run their own browsers, so this was the one test
-/// measured as structurally incompatible with a parallel sweep (it failed at
-/// every concurrency, naming the concurrently-running tests that owned the
-/// live profiles). The fix is **isolation, not a weaker assertion**: every
-/// `ff-rdp` invocation below now runs under its own `$FF_RDP_HOME`, so the
-/// root it lists, seeds and prunes belongs to this test alone. The assertion
-/// is byte-for-byte the one iter-146 Theme B made loud, and it still fails
-/// hard — it simply now describes a root whose emptiness this test controls.
-/// Anything alive in *here* is a genuine leak from this test's own launches,
-/// which is a stronger signal than the old one, not a weaker one.
-#[test]
-#[ignore = "prunes an isolated per-test profile root — set FF_RDP_LIVE_TESTS=1"]
-fn live_profiles_prune_removes_all_when_no_firefox_running() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let home = tempfile::tempdir()
-        .expect("live_profiles_prune_removes_all_when_no_firefox_running: tempdir for FF_RDP_HOME");
-
-    let list_out = Command::new(ff_rdp_bin())
-        .args(["profiles", "list"])
-        .env("FF_RDP_HOME", home.path())
-        .output()
-        .expect(
-            "live_profiles_prune_removes_all_when_no_firefox_running: profiles list spawn failed",
-        );
-    assert!(
-        list_out.status.success(),
-        "live_profiles_prune_removes_all_when_no_firefox_running: profiles list must succeed — \
-         {}",
-        crate::common::output_note(&list_out)
-    );
-    let list_json: serde_json::Value = serde_json::from_slice(&list_out.stdout).expect(
-        "live_profiles_prune_removes_all_when_no_firefox_running: profiles list stdout is not valid JSON",
-    );
-    let root = list_json["results"]["path"]
-        .as_str()
-        .expect(
-            "live_profiles_prune_removes_all_when_no_firefox_running: \
-             profiles list JSON must expose results.path",
-        )
-        .to_owned();
-
-    // iter-146 Theme B: explicit, named precondition — see
-    // `live_owned_profile_dirs`'s doc comment for why this replaces the old
-    // `daemon status`-only skip check.
-    let live_owners = live_owned_profile_dirs(&root);
-    assert!(
-        live_owners.is_empty(),
-        "live_profiles_prune_removes_all_when_no_firefox_running: precondition violated — \
-         {} ff-rdp-managed profile dir(s) under {root} are still owned by a live process, so \
-         `prune --all` would rip a profile out from under it: {}. Rerun once these have \
-         exited (or in an isolated environment).",
-        live_owners.len(),
-        live_owners
-            .iter()
-            .map(|(dir, pid, test_name)| {
-                let who = test_name.as_deref().unwrap_or("unknown test");
-                format!("{} (pid {pid}, spawned by {who})", dir.display())
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-
-    // Seed a handful of orphan managed profile dirs directly on disk.
-    let seeded: Vec<std::path::PathBuf> = (0..3)
-        .map(|i| {
-            let dir = std::path::Path::new(&root).join(format!("ff-rdp-profile-{i:016}"));
-            std::fs::create_dir_all(&dir).expect(
-                "live_profiles_prune_removes_all_when_no_firefox_running: seed orphan profile dir",
-            );
-            dir
-        })
-        .collect();
-
-    let prune_out = Command::new(ff_rdp_bin())
-        .args(["profiles", "prune", "--all"])
-        .env("FF_RDP_HOME", home.path())
-        .output()
-        .expect(
-            "live_profiles_prune_removes_all_when_no_firefox_running: profiles prune spawn failed",
-        );
-    assert!(
-        prune_out.status.success(),
-        "live_profiles_prune_removes_all_when_no_firefox_running: profiles prune --all must \
-         succeed — {}",
-        crate::common::output_note(&prune_out)
-    );
-
-    for dir in &seeded {
-        assert!(
-            !dir.exists(),
-            "live_profiles_prune_removes_all_when_no_firefox_running: {} should have been removed",
-            dir.display()
-        );
-    }
-
-    let remaining: Vec<std::path::PathBuf> = std::fs::read_dir(&root).map_or_else(
-        |_| Vec::new(),
-        |entries| {
-            entries
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_str()
-                        .is_some_and(|n| n.starts_with("ff-rdp-profile-"))
-                })
-                .map(|e| e.path())
-                .collect()
-        },
-    );
-    // iter-146 Theme B: name what's left (and whether it has a live owner)
-    // instead of a bare count — this precondition-checked test now failing
-    // here means `prune --all` itself is broken, not stale suite state.
-    assert!(
-        remaining.is_empty(),
-        "live_profiles_prune_removes_all_when_no_firefox_running: expected zero \
-         ff-rdp-profile-* dirs under {root} after prune --all, found {}: {:?} (live owners \
-         among them: {:?})",
-        remaining.len(),
-        remaining,
-        live_owned_profile_dirs(&root)
-    );
-
-    eprintln!("live_profiles_prune_removes_all_when_no_firefox_running: PASS — root={root}");
 }

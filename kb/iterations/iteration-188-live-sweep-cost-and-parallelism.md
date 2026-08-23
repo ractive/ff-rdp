@@ -345,16 +345,24 @@ for a file seeded there), so the A/B is one env var, not an `mdutil` change.
       phase from [[iteration-173-live-sweep-port-6000-firefox-does-not-survive]]
       [every completed run printed `total=286` with all five tiers conserved]
 - [x] `live_96`'s prune precondition is satisfiable under parallelism — by isolation, not by
-      weakening the assertion [and so is `live_175`'s, which A3 missed]
+      weakening the assertion [and so is `live_175`'s, which A3 missed. **Updated in PR review**:
+      once isolated, `live_96`'s precondition could never fire (nothing else writes into a root
+      only its own launches touch), which made the test a strict duplicate of
+      `tests/e2e/profiles.rs::profiles_prune_is_scoped_to_ff_rdp_home`. It was deleted rather than
+      kept as dead weight in the live tier; the whole-suite real-root guarantee it stood in for is
+      unticked below and filed as
+      [[iteration-202-live-sweep-lost-its-real-root-orphan-guarantee]]. `live_175` is unaffected —
+      its isolated assertion still exercises a real launch and a real failure mode.]
 - [x] The new wall clock is recorded in this plan next to the 2280 s baseline [282 s / 285 s at
       `--jobs 6` = 8.1×]
 
 ### D. Indexing [0/2]
 - [ ] A/B measurement of the sweep with and without the profiles root indexed
       — not run; see "D. Indexing" above for why, and for the one-env-var recipe that makes it
-      cheap now that Theme B landed
+      cheap now that Theme B landed. Filed as [[iteration-199-spotlight-indexing-cost-of-the-profiles-root]].
 - [ ] Act on the result, or close the theme explicitly if the difference is inside the noise
-      — cannot close a theme on data that was never taken; left open deliberately
+      — cannot close a theme on data that was never taken; left open deliberately, owned by the
+      same filed plan
 
 ## Acceptance Criteria [5/5]
 
@@ -368,7 +376,14 @@ for a file seeded there), so the A/B is one env var, not an `mdutil` change.
 - [x] No test's assertion was weakened to make it pass in parallel; `live_96`'s precondition is as
       loud as [[iteration-146-live-suite-reliability]] Theme B made it [`live_96` and `live_175`
       each got their own `$FF_RDP_HOME`; both assertions are unchanged, and `live_175`'s is
-      strictly stronger in a root it owns]
+      strictly stronger in a root it owns. **Updated in PR review**: `live_96`'s isolated live test
+      was deleted as a duplicate of the e2e test that replaced its coverage — the seed/prune/
+      assert-removed assertion itself is unchanged, carried verbatim by
+      `tests/e2e/profiles.rs::profiles_prune_is_scoped_to_ff_rdp_home`. What is genuinely gone,
+      honestly: the whole-suite claim that a completed live sweep leaves no live-owned managed
+      profile in the *real* per-user root, which the old precondition stood in for but which
+      isolation made untestable from inside that one test. Filed as
+      [[iteration-202-live-sweep-lost-its-real-root-orphan-guarantee]] rather than left silent.]
 - [x] The chosen concurrency is backed by three clean runs recorded in this plan, and the failure
       set at that concurrency contains nothing that is not already an open plan
       [runs 4-6; failure set owned by [[iteration-198-live-tests-red-only-under-concurrency]].
@@ -382,11 +397,13 @@ for a file seeded there), so the A/B is one env var, not an `mdutil` change.
 - **Browser reuse across tests.** The measured floor says a test cannot go below ~5.6 s without it,
   so it is the larger prize — but it changes ownership lifetime, which is the subject of iterations
   151, 168 and 171, and it would invalidate their guarantees. It needs its own plan, after this one
-  establishes whether parallelism alone is enough.
+  establishes whether parallelism alone is enough. Filed as
+  [[iteration-200-live-firefox-reuse-across-tests]].
 - **Moving live tests onto recorded fixtures.** Discussed 2026-08-17: 141 fixtures and a
   `MockServerHandle` already exist, and only 3 e2e files consume them. That is a larger
   re-tiering — and it cannot catch what a live test catches when Firefox itself changes. Separate
-  plan; this one keeps every test live.
+  plan; this one keeps every test live. Filed as
+  [[iteration-201-live-tests-onto-recorded-fixtures]].
 - **Weakening the sweep's accounting to go faster.** [[iteration-155-live-skip-reports-green]] is
   the reason the sweep exists.
 - **`live_throttle_slow3g_slows_fetch`'s 2% threshold margin** — already
@@ -410,3 +427,12 @@ for a file seeded there), so the A/B is one env var, not an `mdutil` change.
 - [[iteration-195-check-iteration-plan-fails-on-85-of-222-plans]] — unrelated to sweep cost, filed
   alongside 196 from the same PR's carry-over sweep; listed here only so both land in the same
   numeric neighborhood as a reader of this plan works forward from it.
+- [[iteration-199-spotlight-indexing-cost-of-the-profiles-root]] — Theme D's A/B, filed unmeasured
+  from this iteration's own review/carry-over sweep (this machine never had a quiet window).
+- [[iteration-200-live-firefox-reuse-across-tests]] — the "Out of scope" browser-reuse lever, filed
+  from this iteration's own review/carry-over sweep now that parallelism alone is measured.
+- [[iteration-201-live-tests-onto-recorded-fixtures]] — the "Out of scope" fixture re-tiering
+  lever, filed from the same sweep.
+- [[iteration-202-live-sweep-lost-its-real-root-orphan-guarantee]] — the whole-suite real-root
+  orphan guarantee `live_96`'s deleted test used to stand in for, filed when the PR review that
+  deleted it noticed the guarantee itself was not replaced.

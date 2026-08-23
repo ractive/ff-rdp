@@ -107,6 +107,15 @@ pub struct Args {
     /// Defaults to the measured knee of 6, capped by the machine's own
     /// parallelism (see `default_jobs`). Pass `--jobs 1` to reproduce the
     /// pre-188 serial sweep.
+    ///
+    /// An explicit `--jobs` is **not** clamped to [`MAX_SWEEP_JOBS`] — that
+    /// cap only shapes the *default*. Passing `--jobs 8` or higher is a
+    /// deliberate escape hatch, not a recommendation: iteration 188 measured
+    /// 8 workers manufacturing four contention-only failures on a 10-core
+    /// machine that do not occur at 6 (see [`MAX_SWEEP_JOBS`]'s doc), so a
+    /// higher value trades the gate's "does not lie about what passed"
+    /// property for wall clock. Only reach for it with reason to believe the
+    /// box underneath is meaningfully bigger than the one that set the cap.
     #[arg(long, default_value_t = default_jobs())]
     pub jobs: usize,
 }
@@ -907,14 +916,17 @@ pub fn run(args: Args) -> Result<()> {
         totals.vanished += vanished_before_tier.len();
         let mut executed = summary.executed;
 
+        // Computed once so the number this prints and the number the real
+        // run below actually passes to libtest cannot drift apart.
+        let jobs = jobs_for_target(needs_preexisting, args.jobs);
+
         eprintln!(
             "live-sweep: -p {} --test {}: {} qualified (will run for real at \
-             --test-threads={}), {} will report `ignored` (env gate), {} will report `ignored` \
-             (no Firefox on {PREEXISTING_PORT})",
+             --test-threads={jobs}), {} will report `ignored` (env gate), {} will report \
+             `ignored` (no Firefox on {PREEXISTING_PORT})",
             target.package,
             target.test_name,
             summary.executed,
-            jobs_for_target(needs_preexisting, args.jobs),
             summary.skipped,
             summary.preexisting
         );
@@ -924,7 +936,6 @@ pub fn run(args: Args) -> Result<()> {
             continue;
         }
 
-        let jobs = jobs_for_target(needs_preexisting, args.jobs);
         if let Some(mut cmd) = phase_command(
             &target.package,
             &target.test_name,

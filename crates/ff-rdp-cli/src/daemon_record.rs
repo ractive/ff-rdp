@@ -90,13 +90,14 @@ fn record_filename(port: u16) -> String {
 
 /// Return the directory that contains the launch-record file.
 ///
-/// Respects `FF_RDP_HOME` for test isolation (same convention as
-/// `daemon/registry.rs`):
-/// - If set: `$FF_RDP_HOME/.ff-rdp/`
+/// Respects [`crate::util::HOME_OVERRIDE_ENV`] (`FF_RDP_HOME`) for test
+/// isolation (same convention as `daemon/registry.rs`, sharing the same
+/// reader as of iter-188):
+/// - If set (and non-empty): `$FF_RDP_HOME/.ff-rdp/`
 /// - Otherwise: `$HOME/.ff-rdp/` via `dirs::home_dir()`.
 pub fn record_base_dir() -> Result<PathBuf> {
-    let home = match std::env::var_os("FF_RDP_HOME") {
-        Some(h) => PathBuf::from(h),
+    let home = match crate::util::home_override() {
+        Some(h) => h,
         None => dirs::home_dir().context("could not determine home directory")?,
     };
     Ok(home.join(".ff-rdp"))
@@ -308,9 +309,11 @@ pub(crate) fn gc_stale_launch_records_in(dir: &Path) {
 /// [`gc_stale_launch_records_in`] against the real record directory.
 ///
 /// Uses [`record_base_dir`], so the sweep honours `FF_RDP_HOME` exactly the
-/// way the writer does and a test can point both at a tempdir. (Note that
-/// `util::profile_dir::secure_profile_root` does *not* honour `FF_RDP_HOME` —
-/// an inconsistency recorded by iteration 188, not changed here.)
+/// way the writer does and a test can point both at a tempdir. As of
+/// iteration 188 Theme B, `util::profile_dir::secure_profile_root` honours
+/// the same override through the same shared reader
+/// ([`crate::util::home_override`]) — the inconsistency this comment used to
+/// note is fixed, not merely recorded.
 pub(crate) fn gc_stale_launch_records() {
     if let Ok(dir) = record_base_dir() {
         gc_stale_launch_records_in(&dir);

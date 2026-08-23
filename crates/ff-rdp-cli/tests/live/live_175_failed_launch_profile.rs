@@ -153,15 +153,24 @@ fn live_175_failed_launch_leaves_no_profile_dir() {
         .cloned()
         .collect();
 
-    assert!(
-        leaked.is_empty(),
-        "iter-175: a launch that failed waiting for the debug port left {} profile \
-         director{} behind under {}: {:?}",
-        leaked.len(),
-        if leaked.len() == 1 { "y" } else { "ies" },
-        root.display(),
-        leaked
-    );
+    if !leaked.is_empty() {
+        // `home` is a `TempDir` whose `Drop` deletes the isolated
+        // `$FF_RDP_HOME` — including whatever this test just proved leaked
+        // under it — as part of unwinding the panic below. Leak it
+        // deliberately on this path so the evidence survives the test
+        // process for diagnosis; the happy path above still cleans up
+        // normally when `home` goes out of scope at the end of the function.
+        let kept = home.keep();
+        panic!(
+            "iter-175: a launch that failed waiting for the debug port left {} profile \
+             director{} behind under {}: {:?} (evidence preserved at {})",
+            leaked.len(),
+            if leaked.len() == 1 { "y" } else { "ies" },
+            root.display(),
+            leaked,
+            kept.display()
+        );
+    }
 }
 
 /// The other direction, and the reason the guard is disarmed rather than

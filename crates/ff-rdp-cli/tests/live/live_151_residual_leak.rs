@@ -253,10 +253,14 @@ fn suite_check_enabled() -> bool {
 }
 
 /// Resolve the real profile root via `ff-rdp profiles list` — the same
-/// discovery `live_96_profile_cleanup.rs`'s
-/// `live_profiles_prune_removes_all_when_no_firefox_running` uses, rather
-/// than duplicating `secure_profile_root()`'s resolution logic (unreachable
-/// from an integration-test binary — see that module's doc comment).
+/// discovery `live_175_failed_launch_profile.rs`'s `profile_root()` helper
+/// uses, rather than duplicating `secure_profile_root()`'s resolution logic
+/// (unreachable from an integration-test binary — see that module's doc
+/// comment). `live_96_profile_cleanup.rs` used to be the canonical example
+/// here too, before its `$FF_RDP_HOME`-isolated
+/// `live_profiles_prune_removes_all_when_no_firefox_running` was deleted as
+/// a duplicate of `tests/e2e/profiles.rs` (iter-188 PR review) — see that
+/// module's current doc comment.
 fn profile_root() -> Option<String> {
     let out = Command::new(ff_rdp_bin())
         .args(["profiles", "list"])

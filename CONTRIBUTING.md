@@ -142,10 +142,18 @@ which dominates the iteration loop's wall-clock cost.
   tier is now concurrent. `$FF_RDP_HOME` redirects *all* of ff-rdp's per-user state — the daemon
   registry, the launch records and (since iter-188) the profiles root — so a test that needs "no
   ff-rdp-managed Firefox is running anywhere" can own a root where that is true while sibling
-  tests run their own browsers. `live_96_profile_cleanup`'s
-  `live_profiles_prune_removes_all_when_no_firefox_running` is the worked example: it was the one
-  test measured as structurally incompatible with a parallel sweep, and it was fixed by giving it
-  its own root, **not** by weakening its precondition.
+  tests run their own browsers. `live_175_failed_launch_profile`'s
+  `live_175_failed_launch_leaves_no_profile_dir` is the worked example still in the live tier: it
+  was the second test measured as structurally incompatible with a parallel sweep, fixed by giving
+  it its own root, **not** by weakening its assertion. `live_96_profile_cleanup`'s
+  `live_profiles_prune_removes_all_when_no_firefox_running` — the *first* test measured
+  structurally incompatible — was isolated the same way at first, but once isolated its precondition
+  could never fire (nothing else writes into a root only this test's launches touch), so it had
+  become a strict duplicate of `tests/e2e/profiles.rs::profiles_prune_is_scoped_to_ff_rdp_home` and
+  was deleted rather than kept as dead weight in the live tier (found in review of this PR). The
+  whole-suite guarantee it used to stand in for — no live-owned managed profile survives in the
+  *real* per-user root after a sweep completes — is not asserted anywhere as of this iteration; see
+  `kb/iterations/iteration-202-live-sweep-lost-its-real-root-orphan-guarantee.md`.
 - **`preexisting=K` is the third tier** (iter-158 Theme F). The `ff-rdp-core` live tests never
   launch Firefox — they connect to one somebody else started on the fixed default port 6000
   (`support::recording::firefox_port()`). Pre-158 `live-sweep` neither provided that instance nor
