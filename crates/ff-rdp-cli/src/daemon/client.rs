@@ -1512,6 +1512,7 @@ mod tests {
             headless: true,
             launched_at: chrono::Utc::now(),
             profile_dir: dir.path().join("profile"),
+            start_token: None,
         };
 
         let deps = StopDeps {
@@ -1565,6 +1566,7 @@ mod tests {
             headless: true,
             launched_at: chrono::Utc::now(),
             profile_dir: dir.path().join("profile"),
+            start_token: None,
         };
         crate::daemon_record::write_in(dir.path(), &rec).expect("write record");
 
