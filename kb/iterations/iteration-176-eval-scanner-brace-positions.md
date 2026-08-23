@@ -86,11 +86,61 @@ point of Theme A.
   position", which is the one genuinely ambiguous case (`{a: 1}` looks the same from the right).
   A label may be the case to leave alone; record the decision either way.
 
+## Theme A measurement (2026-08-23, live Firefox, headless, port 7503)
+
+Binary: `cargo run -p ff-rdp-cli --` at `iter-176/eval-scanner-brace-positions` base (= `main`
+7d457af). **Ground truth** column is Firefox's own answer for the same source, obtained by handing
+the raw source to an indirect `eval` inside a single wrap-proof expression, so the wrap cannot
+influence it:
+
+```
+ff-rdp --port 7503 eval --stringify '(function(s){try{return "OK "+String(eval(s))}catch(e){return "ERR "+e.message}})("<source>")'
+```
+
+### The plan's predicted lines, as written
+
+| # | source | Firefox (ground truth) | ff-rdp on `main` | verdict |
+|---|--------|------------------------|------------------|---------|
+| 1a | `const f = () => {}; f() /a;b/.test("a;b")` | `ERR expected expression, got '.'` | `error: expected expression, got '.'` | **not a defect** — the source is invalid JS (a `/` after `)` is division), and ff-rdp reproduces Firefox's error verbatim. The plan predicted a wrap split; it does not happen. |
+| 1b | `const g = () => {} /a;b/.test("a;b")` | `ERR unexpected token: regular expression literal` | `error: unterminated regular expression literal` | **not a defect on valid input** — also invalid JS (an ArrowFunction is not a division operand and ASI needs a line terminator). Only the SyntaxError *text* differs. |
+| 2a | `class K { m(){ return 9 } } new K().m()` | `OK 9` | `{"type":"undefined"}` | **REPRODUCES — silent wrong value.** No boundary after the class `}`, so `new K().m()` is not the last statement and nothing is auto-returned. |
+| 2b | `class K { m(){ return 9 } } ; new K().m()` | — | `9` | works today, as the plan predicted |
+| 3 | `const n = 1; outer: { break outer } n` | `OK 1` | `error: missing ) in parenthetical` | **REPRODUCES — valid JS turned into a SyntaxError.** |
+| R1 | `const o = {v:8}; o.v / 2` | `OK 4` | `4` | must-not-regress baseline |
+| R2 | `const r = !function(){ return 1 }(); r` | — | `false` | must-not-regress baseline |
+
+### The line the plan did not think to write
+
+Positions 1–3 all reach the *same* defect once a newline (i.e. real ASI) is put where the plan put
+a bare space. All three of these are valid JS that Firefox evaluates to `true`:
+
+| # | source (`\n` is a real newline) | Firefox | ff-rdp on `main` |
+|---|--------|---------|------------------|
+| 1c | `const g = () => {}\n/a;b/.test("a;b")` | `OK true` | `error: unterminated regular expression literal` |
+| 2c | `class K { m(){ return 9 } }\n/a;b/.test("a;b")` | `OK true` | `error: unterminated regular expression literal` |
+| 3c | `const n = 1; outer: { break outer }\n/a;b/.test("a;b")` | `OK true` | `error: unterminated regular expression literal` |
+
+In each the `}` is classified `ObjectLiteral`, so the `/` reads as division, the `;` *inside* the
+regex becomes a top-level boundary, and the wrap splits mid-literal — iter-170's gap-2 symptom
+exactly, one position along.
+
+### Per-position conclusion
+
+- **Arrow body — reproduces (1c).** Not via the plan's own lines (1a/1b are invalid JS), but via the
+  ASI form. Fixed under Theme B.
+- **Class body — reproduces twice (2a silent `undefined`, 2c SyntaxError).** The strongest of the
+  three: 2a is a wrong *value*, not an error. Fixed under Theme C.
+- **Labelled block — reproduces twice (3 and 3c).** Valid JS, hard SyntaxError. Fixed under Theme C;
+  see "Why the label is judgeable after all" below.
+
+Not closed obsolete: every position produces a wrong value or turns valid JavaScript into invalid
+JavaScript on a live browser.
+
 ## Tasks
 
 ### A. Measure
-- [ ] Run every line of `dogfood_path` against a live Firefox and paste the actual output here
-- [ ] State explicitly, per position, whether it reproduces and with what symptom
+- [x] Run every line of `dogfood_path` against a live Firefox and paste the actual output here
+- [x] State explicitly, per position, whether it reproduces and with what symptom
 
 ### B. Arrow bodies
 - [ ] If it reproduces: `brace_opens_block` recognizes `=>` before the `{`
