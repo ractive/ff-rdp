@@ -8,10 +8,10 @@
 # Run manually:
 #   FF_RDP_LIVE_TESTS=1 bash kb/iterations/iteration-90-*.dogfood.sh
 #
-# Exit 0 on success; writes /tmp/ff-rdp-iter-90-dogfood-ok.
+# Exit 0 on success; writes the sentinel at $FF_RDP_DOGFOOD_SENTINEL.
 set -euo pipefail
 
-SENTINEL=/tmp/ff-rdp-iter-90-dogfood-ok
+SENTINEL="${FF_RDP_DOGFOOD_SENTINEL:?set by check-dogfood-script; run this script via: cargo run -p xtask -- check-dogfood-script <plan.md>}"
 rm -f "$SENTINEL"
 
 PORT=6090

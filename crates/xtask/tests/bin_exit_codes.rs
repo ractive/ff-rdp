@@ -43,21 +43,29 @@ fn write_script(dir: &TempDir, name: &str, body: &str) -> PathBuf {
 }
 
 /// Write a dogfood script that satisfies every `tools/lint-dogfood-script.sh`
-/// rule, writing the sentinel for `sentinel_iter`.
+/// rule and writes the per-run sentinel the gate names in
+/// `FF_RDP_DOGFOOD_SENTINEL` (iter-184; before that the path was hardcoded).
 ///
 /// Since iter-162a `check-dogfood-script` lints the script before running it,
 /// so any fixture that is meant to reach the execution stage has to lint clean.
-/// Pointing `sentinel_iter` at an iteration number other than the plan's is how
-/// a fixture stays lint-clean while still leaving the expected sentinel absent.
-fn write_clean_dogfood_script(dir: &TempDir, name: &str, sentinel_iter: u32) -> PathBuf {
+/// `keep_sentinel = false` writes the sentinel and then deletes it again: that
+/// is how a fixture stays lint-clean while still leaving the gate's sentinel
+/// absent at the point the gate looks for it.
+fn write_clean_dogfood_script(dir: &TempDir, name: &str, keep_sentinel: bool) -> PathBuf {
+    let tail = if keep_sentinel {
+        ""
+    } else {
+        "rm -f \"$SENTINEL\""
+    };
     write_script(
         dir,
         name,
         &format!(
             "set -euo pipefail\n\
-             SENTINEL=/tmp/ff-rdp-iter-{sentinel_iter}-dogfood-ok\n\
+             SENTINEL=\"${{FF_RDP_DOGFOOD_SENTINEL:?not set}}\"\n\
              rm -f \"$SENTINEL\"\n\
-             date -u > \"$SENTINEL\"\n"
+             date -u > \"$SENTINEL\"\n\
+             {tail}\n"
         ),
     )
 }
@@ -75,12 +83,9 @@ fn xtask_check_dogfood_script_missing_sentinel() {
         "iteration-98-no-sentinel.md",
         "dogfood_script: no-sentinel.dogfood.sh\n",
     );
-    // Lints clean, but writes a *different* iteration's sentinel, so the
-    // sentinel check-dogfood-script looks for (iter 98) is never created.
-    write_clean_dogfood_script(&dir, "no-sentinel.dogfood.sh", 9998);
-
-    // Pre-clean sentinel.
-    let _ = std::fs::remove_file("/tmp/ff-rdp-iter-98-dogfood-ok");
+    // Lints clean, but removes the sentinel again before exiting 0, so the
+    // path the gate handed it is empty when the gate checks.
+    write_clean_dogfood_script(&dir, "no-sentinel.dogfood.sh", false);
 
     let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
         .env("FF_RDP_LIVE_TESTS", "1")
@@ -106,7 +111,7 @@ fn live_check_dogfood_script_fails_without_ff_rdp_live_tests_on_iter_branch() {
     let dir = TempDir::new().unwrap();
     // Needs a dogfood_script field (and a lint-clean script) so we reach the
     // gate logic rather than tripping the lint sub-check first.
-    write_clean_dogfood_script(&dir, "fake.dogfood.sh", 95);
+    write_clean_dogfood_script(&dir, "fake.dogfood.sh", true);
     let plan_path = write_plan(
         &dir,
         "iteration-95-branch-test.md",
@@ -141,7 +146,7 @@ fn live_check_dogfood_script_fails_without_ff_rdp_live_tests_on_iter_branch() {
 #[test]
 fn live_check_dogfood_script_skips_on_main_without_ff_rdp_live_tests() {
     let dir = TempDir::new().unwrap();
-    write_clean_dogfood_script(&dir, "fake.dogfood.sh", 94);
+    write_clean_dogfood_script(&dir, "fake.dogfood.sh", true);
     let plan_path = write_plan(
         &dir,
         "iteration-94-main-test.md",

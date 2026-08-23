@@ -126,6 +126,27 @@ fn unit_lint_dogfood_script_requires_sentinel_pattern() {
     );
 }
 
+/// `unit_lint_dogfood_script_flags_fixed_sentinel_path`:
+/// A script still assigning the pre-iter-184 hardcoded `/tmp/ff-rdp-iter-<N>-dogfood-ok`
+/// path must fail the linter — that path is shared by every concurrent gate run
+/// for the same iteration, and the gate would never see the sentinel it named.
+#[test]
+fn unit_lint_dogfood_script_flags_fixed_sentinel_path() {
+    let (ok, combined) = run_linter("fixed-sentinel-path-bad.sh");
+    assert!(
+        !ok,
+        "expected lint FAIL for fixed-sentinel-path-bad.sh, got success.\noutput: {combined}"
+    );
+    assert!(
+        combined.contains("[fixed-sentinel-path]"),
+        "expected [fixed-sentinel-path] tag in output.\noutput: {combined}"
+    );
+    assert!(
+        combined.contains("FF_RDP_DOGFOOD_SENTINEL"),
+        "diagnostic must name the replacement variable.\noutput: {combined}"
+    );
+}
+
 /// A script that passes all rules must exit 0.
 #[test]
 fn unit_lint_dogfood_script_good_fixture_passes() {
