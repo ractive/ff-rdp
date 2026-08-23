@@ -2863,4 +2863,176 @@ mod tests {
             "a division must not be split into an unterminated regex: {built}"
         );
     }
+
+    // ── iter-176: the three brace positions iter-170 left unjudged ───────────
+
+    /// iter-176 Theme B: an arrow function's `{` body is a block, so a `/`
+    /// after its `}` opens a regex literal and the `}` ends the statement.
+    ///
+    /// Measured on `main` (2026-08-23): `eval --stringify` of
+    /// `const g = () => {}\n/a;b/.test("a;b")` — valid JavaScript that Firefox
+    /// evaluates to `true` — failed with
+    /// `unterminated regular expression literal`, because the arrow body's
+    /// `}` was bucketed `ObjectLiteral`, the `/` read as a division, and the
+    /// `;` *inside* the regex became a top-level boundary.
+    #[test]
+    fn unit_176_arrow_body_is_a_block() {
+        // The acceptance criterion's script: a regex after an arrow body AND
+        // a division after an object literal, in one script. The `;` inside
+        // the regex must not be a boundary and the `/` in `o.v / 2` must not
+        // open one.
+        let script = "const g = () => {}\n/a;b/.test(\"a;b\"); const o = {v:8}; o.v / 2";
+        let boundaries = top_level_statement_boundaries(script);
+        assert_eq!(
+            boundaries,
+            vec![
+                "const g = () => {}\n".len(),
+                "const g = () => {}\n/a;b/.test(\"a;b\");".len(),
+                "const g = () => {}\n/a;b/.test(\"a;b\"); const o = {v:8};".len(),
+            ],
+            "{script:?}: expected the regex statement and the two `;` boundaries, \
+             got {boundaries:?}"
+        );
+
+        // An arrow body is an *expression's* block: whatever follows it on the
+        // same statement must not be split off. `,` and `;` are already
+        // `is_continuation_start_char`, which is what suppresses the boundary.
+        for script in [
+            "const g = () => {}, h = 2",
+            "const g = async () => {}, h = 2",
+            "arr.map(x => { return x }) / 2",
+            "const g = (a, b) => { return a } , h = 2",
+        ] {
+            assert!(
+                top_level_statement_boundaries(script).is_empty(),
+                "{script:?} is one statement, got {:?}",
+                top_level_statement_boundaries(script)
+            );
+        }
+
+        // The lookback is for `=>` specifically, not for any `>`: a `>` that
+        // is part of `>>`/`>>>` must leave the brace unjudged.
+        let chars: Vec<(usize, char)> = "a >> {".char_indices().collect();
+        assert!(
+            !brace_opens_block(&chars, Some('>'), Some(3), BraceKind::Unknown),
+            "`>>` is not an arrow and must not be read as one"
+        );
+    }
+
+    /// iter-176 Theme C, first half: a `class` *declaration*'s body is a
+    /// block, so its `}` ends the declaration; a class *expression*'s body is
+    /// not, and may legally be divided (a ClassExpression is a
+    /// PrimaryExpression).
+    ///
+    /// Measured on `main` (2026-08-23):
+    /// `eval --stringify 'class K { m(){ return 9 } } new K().m()'` returned
+    /// `undefined` where Firefox returns `9` — a silent wrong value, not an
+    /// error, which is the failure mode iter-142 Theme E named the worst of
+    /// this wrap.
+    #[test]
+    fn unit_176_class_declaration_body_is_a_block() {
+        for (script, expected_tail) in [
+            ("class K { m(){ return 9 } } new K().m()", "new K().m()"),
+            ("class K {} K.name", "K.name"),
+            ("class K extends Object {} K.name", "K.name"),
+            ("class K {} /a;b/.source", "/a;b/.source"),
+        ] {
+            let boundaries = top_level_statement_boundaries(script);
+            assert_eq!(
+                boundaries.len(),
+                1,
+                "{script:?}: a class declaration's `}}` must end its statement, \
+                 got {boundaries:?}"
+            );
+            assert_eq!(&script[boundaries[0]..], expected_tail, "{script:?}");
+        }
+
+        // Class *expressions* keep the pre-176 (safe) answer: no boundary and
+        // a `/` after the `}` divides. Each of these is one statement.
+        for script in [
+            "const C = class {} / 2",
+            "const C = class K {} / 2",
+            "const C = class K extends Object {} / 2",
+            "f(class {}) / 2",
+            "const C = typeof class {} / 2",
+        ] {
+            assert!(
+                top_level_statement_boundaries(script).is_empty(),
+                "{script:?} is one statement (division), got {:?}",
+                top_level_statement_boundaries(script)
+            );
+        }
+
+        // `class` as a property name is never the keyword.
+        assert_eq!(
+            top_level_statement_boundaries("const o = {class: {a: 1}}; o.class.a / 2"),
+            vec!["const o = {class: {a: 1}};".len()],
+            "an object key named `class` must not be read as the keyword"
+        );
+    }
+
+    /// iter-176 Theme C, second half: a labelled block, `outer: { … }`.
+    ///
+    /// iter-170 left `:` unjudged because `{a: 1}` "looks the same from the
+    /// right". It stops looking the same one token further left — a label sits
+    /// where a *statement* can start, and no object key or ternary branch can.
+    ///
+    /// Measured on `main` (2026-08-23):
+    /// `eval --stringify 'const n = 1; outer: { break outer } n'` failed with
+    /// `missing ) in parenthetical` where Firefox returns `1`.
+    #[test]
+    fn unit_176_labelled_block_is_a_block() {
+        let script = "const n = 1; outer: { break outer } n";
+        assert_eq!(
+            top_level_statement_boundaries(script),
+            vec![
+                "const n = 1;".len(),
+                "const n = 1; outer: { break outer } ".len(),
+            ],
+            "{script:?}: the labelled block must terminate its own statement"
+        );
+
+        // At the very start of a script, and after a block's `}`.
+        for (script, expected_tail) in [
+            ("outer: { } 5", "5"),
+            ("if (1) {} outer: { } 5", "5"),
+            ("done: { break done } /a;b/.source", "/a;b/.source"),
+        ] {
+            let boundaries = top_level_statement_boundaries(script);
+            assert_eq!(
+                &script[*boundaries.last().expect("a boundary is expected")..],
+                expected_tail,
+                "{script:?}: got {boundaries:?}"
+            );
+        }
+
+        // The must-not-regress direction: every `:` that is NOT a label keeps
+        // the object-literal answer, so the `/` after the `}` still divides
+        // and the following `;` is still a boundary.
+        for script in [
+            "const o = {a: {b: 7}}; o.a.b / 2",
+            "const o = {a: 1, b: {c: 2}}; o.b.c / 2",
+            "const o = {1: {a: 2}}; o[1].a / 2",
+            "const x = c ? {a: 1} : {b: 2}; x.a / 2",
+            "const x = c ? y : {b: 2}; x.b / 2",
+        ] {
+            let boundaries = top_level_statement_boundaries(script);
+            let semi = script.find(';').expect("each case has one `;`") + 1;
+            assert_eq!(
+                boundaries,
+                vec![semi],
+                "{script:?}: only the `;` is a boundary, got {boundaries:?}"
+            );
+        }
+
+        // A `switch` body's `case`/`default` clauses are inside the switch's
+        // own brace, so only the switch's `}` terminates a statement.
+        let script = "switch (2) { case 1: {} default: {} } 42";
+        let boundaries = top_level_statement_boundaries(script);
+        assert_eq!(
+            boundaries,
+            vec!["switch (2) { case 1: {} default: {} } ".len()],
+            "{script:?}: only the switch's `}}` ends a statement, got {boundaries:?}"
+        );
+    }
 }
