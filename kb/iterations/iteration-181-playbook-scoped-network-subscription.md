@@ -155,6 +155,37 @@ playbook buffer really carries step N's request into step N+1.
 - Load reproduction, identical to the `dogfood_path` recipe: **8/8 PASS** at 1-minute load
   145 → 223. Iteration 179 measured **8/8 FAIL** with `events_in_buffer: 0` at load 138–220.
 
+## Closing verification (2026-08-23, resumed session)
+
+The closing live sweep quoted under **Measurements** was run at commit `2d66f38`, the last commit
+that touches product source on this branch; everything after it is docs. That sweep is the record
+for this PR. It was **not** re-run when the session resumed: four sibling `ff-rdp-profile` Firefox
+instances were live and the machine sat at load 31/49/78 from parallel agents, and
+`iteration-close` is explicit that a sweep taken under interference must not be treated as the
+record. Killing those browsers to clear the machine is forbidden by the same policy.
+
+Re-verified instead, in the resumed session:
+
+- `live_62_page_map_index::live_runner_page_map_resolution` — **4/4 PASS** at 1-minute load 27–29.
+  Weaker than the 8/8 at load 145–223 already recorded, but independent of the killed attempt.
+- `cargo fmt` clean, `cargo clippy --workspace --all-targets -- -D warnings` clean,
+  `cargo test --workspace -q` green (including
+  `daemon_parity::daemon_run_assert_network_uses_the_standing_subscription`).
+- All six xtask `check-*` gates exit 0: `check-iteration-plan`, `check-source-invariants`,
+  `check-firefox-refs`, `check-actor-kb-sync --since origin/main`, `check-live-test-layout`,
+  `check-dogfood-script` (SKIP — no `dogfood_script` field).
+
+## Carry-over
+
+| item | disposition |
+|---|---|
+| Sweep failure `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` (`live_target_count: 0` vs theguardian.com) | **folded** into [[iteration-190-live-sweep-only-failures]] — see its "Folded in from iteration 181's closing sweep" section; it is a second instance of that plan's Theme B class |
+| Sweep `preexisting=9` — nine `ff-rdp-core` live tests wanted a port-6000 browser nobody had started, so they never executed | **no plan** — an unmet env precondition correctly classified as `ignored` (iter-173's mechanism working, `vanished=0`). If a later sweep reports `vanished>0` or the count drifts, that needs its own plan |
+| Between steps nothing reads the subscription socket, so events queue in the kernel receive buffer; a very long playbook against a very chatty page can fill it and push queueing back onto Firefox | **no plan** — nothing measured; the tradeoff and the rejected alternative (a short read timeout desyncs `recv_from`'s `read_exact` mid-frame) are documented in `network_watch.rs`'s module docs. A real playbook stalling or missing an event attributable to this needs its own plan |
+| The playbook buffer caps at 4096 requests and evicts oldest-first, so a long chatty run can now lose an old request | **closed in this PR** — evictions are counted and surfaced as `diagnostics.evicted_requests`, so a miss caused by eviction is never silent |
+| If arming the playbook subscription fails, `assert_network` falls back to per-step arming — iteration 179's race, restored for that run | **closed in this PR** — a stderr warning names the fallback and the diagnostics report `subscription: "step"` rather than `"playbook"` |
+| `live_62` passed 4/4 idle in iteration 179 and 8/8 FAIL under load; one green run is not proof | **closed in this PR** — it is the defect this iteration fixes, and it was measured under the same `-j6` generator that produced the 8/8 failure (8/8 PASS at load 145–223), then again 4/4 at load 27–29 |
+
 ## Out of scope
 
 - **Relaxing `live_62`'s assertion**, `#[ignore]`-ing it, or routing it through the daemon purely
