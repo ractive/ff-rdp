@@ -2,7 +2,7 @@
 title: "Iteration 192: the live-sweep and toolchain watch conditions, carried forward past iteration 178's negative sweep"
 type: iteration
 date: 2026-08-23
-status: planned
+status: in-review
 branch: iter-192/live-sweep-watch-conditions-carried-forward
 depends_on:
   - iteration-178-live-sweep-carryover-watch-conditions
