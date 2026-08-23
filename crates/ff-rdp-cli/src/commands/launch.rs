@@ -522,6 +522,14 @@ pub(crate) struct LaunchHooks {
     pub(crate) probe_port: fn(&str, u16, Duration) -> PortWaitOutcome,
     /// Spawn the prepared Firefox command.
     pub(crate) spawn: fn(&mut std::process::Command) -> std::io::Result<std::process::Child>,
+    /// Locate the Firefox binary (iter-175).
+    ///
+    /// Injected so the failure paths *past* this point — the ones that create
+    /// a profile directory and then fail — are reachable in a unit test on a
+    /// machine with no Firefox installed. Without it every such test would be
+    /// gated on the real browser being present, which is exactly the reason
+    /// this leak went four iterations without a regression test.
+    pub(crate) locate_firefox: fn() -> Result<PathBuf, AppError>,
 }
 
 impl LaunchHooks {
@@ -532,6 +540,7 @@ impl LaunchHooks {
             find_listener: |port| port_owner::find_listener(port).ok().flatten(),
             probe_port: wait_for_port,
             spawn: std::process::Command::spawn,
+            locate_firefox: find_firefox,
         }
     }
 }
@@ -718,7 +727,7 @@ pub(crate) fn run_with_hooks(
         }
     }
 
-    let firefox = find_firefox()?;
+    let firefox = (hooks.locate_firefox)()?;
 
     let (mut cmd, profile_path) =
         build_command(&firefox, port, headless, profile, auto_consent, window_size)?;
@@ -1118,6 +1127,11 @@ mod tests {
                     "the spawn hook must never be reached",
                 ))
             },
+            locate_firefox: || {
+                Err(AppError::Internal(anyhow::anyhow!(
+                    "the firefox lookup must never be reached either"
+                )))
+            },
         };
 
         let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"])
@@ -1459,5 +1473,266 @@ mod tests {
             Err(AppError::User(_)) => { /* expected in offline/CI */ }
             Err(e) => panic!("unexpected error type: {e:?}"),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// iter-175: a launch that fails after creating its profile directory
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod iter_175_tests {
+    use super::*;
+    use std::process::Stdio;
+    use std::sync::Mutex;
+
+    /// The `--profile <path>` argument `build_command` put on the command the
+    /// spawn hook was handed. This is how a test learns *which* directory the
+    /// launch created without the (failing) call ever returning it.
+    fn profile_arg_of(cmd: &std::process::Command) -> Option<PathBuf> {
+        let mut args = cmd.get_args();
+        while let Some(arg) = args.next() {
+            if arg == "--profile" {
+                return args.next().map(PathBuf::from);
+            }
+        }
+        None
+    }
+
+    /// A child that is already gone by the time `run`'s 500 ms grace elapses —
+    /// stands in for a Firefox that dies on startup (bad flags, missing libs).
+    fn spawn_exiting_child() -> std::io::Result<std::process::Child> {
+        let mut cmd = if cfg!(windows) {
+            let mut c = std::process::Command::new("cmd");
+            c.arg("/c").arg("exit 3");
+            c
+        } else {
+            let mut c = std::process::Command::new("/bin/sh");
+            c.arg("-c").arg("exit 3");
+            c
+        };
+        cmd.stdout(Stdio::null()).stderr(Stdio::piped()).spawn()
+    }
+
+    /// A child that outlives the grace period but never binds a port — stands
+    /// in for the debug-port deadline branch, which kills the child and fails.
+    fn spawn_lingering_child() -> std::io::Result<std::process::Child> {
+        let mut cmd = if cfg!(windows) {
+            let mut c = std::process::Command::new("cmd");
+            c.arg("/c").arg("ping -n 31 127.0.0.1");
+            c
+        } else {
+            let mut c = std::process::Command::new("/bin/sh");
+            c.arg("-c").arg("sleep 30");
+            c
+        };
+        cmd.stdout(Stdio::null()).stderr(Stdio::piped()).spawn()
+    }
+
+    fn bare_launch_cli() -> Cli {
+        <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"])
+            .expect("a bare `launch` must parse")
+    }
+
+    fn managed_opts(port: u16) -> LaunchOpts<'static> {
+        LaunchOpts {
+            headless: true,
+            // `None` is the managed-profile case — the only one that ever
+            // creates (and so can leak) a directory of ours.
+            profile: None,
+            temp_profile: false,
+            debug_port: Some(port),
+            auto_consent: false,
+            replace: false,
+            window_size: None,
+            launch_timeout: Some(0),
+        }
+    }
+
+    /// AC 2 (`unit_175_failed_spawn_leaves_no_profile_dir`): `build_command`
+    /// creates the profile directory *before* the spawn, so a spawn that fails
+    /// used to return straight past it, leaving an `ff-rdp-profile-*` directory
+    /// with no owner marker for the seven-day mtime gate to sit on. Fails on
+    /// `main`, where the directory is still there after the error.
+    #[test]
+    fn unit_175_failed_spawn_leaves_no_profile_dir() {
+        static PROFILE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+        let hooks = LaunchHooks {
+            is_port_in_use: |_port| false,
+            find_listener: |_port| None,
+            probe_port: |_host, _port, _timeout| PortWaitOutcome::Opened,
+            spawn: |cmd| {
+                *PROFILE.lock().expect("profile slot") = profile_arg_of(cmd);
+                Err(std::io::Error::other("simulated spawn failure"))
+            },
+            locate_firefox: || Ok(PathBuf::from("/nonexistent/ff-rdp-fake-firefox")),
+        };
+
+        let err = run_with_hooks(&bare_launch_cli(), &managed_opts(7601), &hooks)
+            .expect_err("a failing spawn must fail the launch");
+        assert!(
+            matches!(&err, AppError::User(m) if m.contains("failed to start Firefox")),
+            "expected the spawn-failure message, got {err:?}"
+        );
+
+        let dir = PROFILE
+            .lock()
+            .expect("profile slot")
+            .clone()
+            .expect("build_command must have put --profile on the command");
+        assert!(
+            !dir.exists(),
+            "iter-175: a launch whose spawn failed must not leave its profile directory behind: {}",
+            dir.display()
+        );
+    }
+
+    /// AC 2, second error path: Firefox spawns but exits immediately. `run`
+    /// reports the exit status; the directory must not survive it.
+    #[test]
+    fn unit_175_immediate_exit_leaves_no_profile_dir() {
+        static PROFILE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+        let hooks = LaunchHooks {
+            is_port_in_use: |_port| false,
+            find_listener: |_port| None,
+            probe_port: |_host, _port, _timeout| PortWaitOutcome::Opened,
+            spawn: |cmd| {
+                *PROFILE.lock().expect("profile slot") = profile_arg_of(cmd);
+                spawn_exiting_child()
+            },
+            locate_firefox: || Ok(PathBuf::from("/nonexistent/ff-rdp-fake-firefox")),
+        };
+
+        let err = run_with_hooks(&bare_launch_cli(), &managed_opts(7602), &hooks)
+            .expect_err("a browser that exits immediately must fail the launch");
+        assert!(
+            matches!(&err, AppError::User(m) if m.contains("exited immediately")),
+            "expected the immediate-exit message, got {err:?}"
+        );
+
+        let dir = PROFILE
+            .lock()
+            .expect("profile slot")
+            .clone()
+            .expect("build_command must have put --profile on the command");
+        assert!(
+            !dir.exists(),
+            "iter-175: a Firefox that exited immediately must not leave a profile behind: {}",
+            dir.display()
+        );
+    }
+
+    /// AC 2, third error path: the child stays up but never opens the debug
+    /// port. `run` kills it and fails — and must reclaim the profile too.
+    #[test]
+    fn unit_175_port_wait_timeout_leaves_no_profile_dir() {
+        static PROFILE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+        let hooks = LaunchHooks {
+            is_port_in_use: |_port| false,
+            find_listener: |_port| None,
+            probe_port: |_host, _port, _timeout| PortWaitOutcome::TimedOut,
+            spawn: |cmd| {
+                *PROFILE.lock().expect("profile slot") = profile_arg_of(cmd);
+                spawn_lingering_child()
+            },
+            locate_firefox: || Ok(PathBuf::from("/nonexistent/ff-rdp-fake-firefox")),
+        };
+
+        let err = run_with_hooks(&bare_launch_cli(), &managed_opts(7603), &hooks)
+            .expect_err("a debug port that never opens must fail the launch");
+        assert!(
+            matches!(&err, AppError::User(m) if m.contains("did not open debug port")),
+            "expected the port-deadline message, got {err:?}"
+        );
+
+        let dir = PROFILE
+            .lock()
+            .expect("profile slot")
+            .clone()
+            .expect("build_command must have put --profile on the command");
+        assert!(
+            !dir.exists(),
+            "iter-175: a launch that timed out waiting for the debug port must not leave its \
+             profile behind: {}",
+            dir.display()
+        );
+    }
+
+    /// A user-supplied `--profile` directory is never ours to delete, however
+    /// the launch fails. The guard must stay disarmed for that whole branch.
+    #[test]
+    fn unit_175_user_profile_dir_survives_a_failed_launch() {
+        let user_profile = std::env::temp_dir().join(format!(
+            "ff-rdp-175-user-profile-{:?}",
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&user_profile);
+        std::fs::create_dir_all(&user_profile).expect("create the user's own profile dir");
+        let keeper = user_profile.join("keep-me.txt");
+        std::fs::write(&keeper, b"the user's data").expect("seed the user's profile dir");
+
+        let hooks = LaunchHooks {
+            is_port_in_use: |_port| false,
+            find_listener: |_port| None,
+            probe_port: |_host, _port, _timeout| PortWaitOutcome::Opened,
+            spawn: |_cmd| Err(std::io::Error::other("simulated spawn failure")),
+            locate_firefox: || Ok(PathBuf::from("/nonexistent/ff-rdp-fake-firefox")),
+        };
+
+        let profile_str = user_profile
+            .to_str()
+            .expect("temp dir path must be valid UTF-8")
+            .to_owned();
+        let opts = LaunchOpts {
+            profile: Some(&profile_str),
+            ..managed_opts(7604)
+        };
+        let _ = run_with_hooks(&bare_launch_cli(), &opts, &hooks)
+            .expect_err("a failing spawn must fail the launch");
+
+        assert!(
+            keeper.exists(),
+            "iter-175: a --profile directory the user supplied must survive a failed launch: {}",
+            user_profile.display()
+        );
+        let _ = std::fs::remove_dir_all(&user_profile);
+    }
+
+    /// The other half of the fix, for the case `Drop` cannot cover (SIGKILL, a
+    /// CI timeout): the directory carries an owner marker naming *this* process
+    /// from the moment `build_command` returns, so it can never be the
+    /// unattributable `user.js`-only directory iterations 171 and 175 found.
+    /// Fails on `main`, where no marker exists until after the spawn.
+    #[test]
+    fn unit_175_build_command_marks_profile_with_own_pid_before_spawn() {
+        let firefox = fake_firefox_for_175();
+        let (_cmd, profile_path) = build_command(&firefox, 6000, false, None, false, None)
+            .expect("build_command with a managed profile must succeed");
+        let _ = std::fs::remove_file(&firefox);
+
+        let dir = profile_path.expect("a managed launch must have a profile path");
+        let marker = dir.join(crate::util::profile_dir::OWNER_PID_MARKER);
+        let recorded = std::fs::read_to_string(&marker)
+            .unwrap_or_else(|e| panic!("owner marker {} must exist: {e}", marker.display()));
+        assert_eq!(
+            recorded.trim().parse::<u32>().ok(),
+            Some(std::process::id()),
+            "the pre-spawn marker must name the launching process itself"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Local copy of the outer module's `fake_firefox` helper — the two test
+    /// modules are siblings, and duplicating four lines beats making a test
+    /// fixture `pub(super)`.
+    fn fake_firefox_for_175() -> PathBuf {
+        let id = std::thread::current().id();
+        let name = format!("fake-firefox-175-{id:?}").replace(['(', ')', ' '], "-");
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, b"#!/bin/sh\nexit 0\n").expect("write the fake firefox");
+        path
     }
 }
