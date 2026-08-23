@@ -2,7 +2,7 @@
 title: "Iteration 185: main is red under clippy 1.98 — three one-line lints, none touched by iter-179"
 type: iteration
 date: 2026-08-22
-status: in-review
+status: done
 branch: iter-185/main-red-under-clippy-1-98
 depends_on: []
 first_call_sites: []
@@ -14,7 +14,12 @@ dogfood_path: |
   cargo clippy --workspace --all-targets -- -D warnings
   # Expect exit 0. Then confirm MSRV is unaffected:
   cargo +1.95 build --workspace 2>&1 | tail -5   # or: cargo msrv verify, if configured
-tags: [iteration, tooling, clippy, ci, maintenance]
+tags:
+  - iteration
+  - tooling
+  - clippy
+  - ci
+  - maintenance
 ---
 
 # Iteration 185: main is red under clippy 1.98
