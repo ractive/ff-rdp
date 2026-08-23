@@ -2,7 +2,7 @@
 title: "Iteration 187: nothing detects a duplicate iteration number, and it has happened three times in a week"
 type: iteration
 date: 2026-08-23
-status: in-review
+status: done
 branch: iter-187/iteration-number-uniqueness
 depends_on: []
 first_call_sites: []
