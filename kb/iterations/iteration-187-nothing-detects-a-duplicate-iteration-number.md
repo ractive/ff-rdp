@@ -149,9 +149,11 @@ already produces. No new subcommand, no new step.
 
 ### What the check now does
 
-The id is captured by `^iteration-([0-9]+[a-z]?)-.+\.md$`, so the character after the digits
-must be `-` (or a letter then `-`). That single anchor is what makes `162a`/`162b` distinct ids
-rather than two plans numbered 162, and the `.md` requirement is what excludes `.dogfood.sh`
+The id is captured by `^iteration-([0-9]+[a-z]*)-.+\.md$`, so the character after the digit/letter
+run must be `-`. That anchor is what makes `162a`/`162b` distinct ids rather than two plans
+numbered 162; the `*` (not `?`) is what keeps `iteration-61aa-*.md` from being silently exempted —
+see "Two things the plan did not anticipate" in the PR body. The `.md` requirement is what excludes
+`.dogfood.sh`
 sidecars. Candidates are collected from the plan's own directory **plus** the repository's
 `kb/iterations/` registry when that is a different directory — the registry, not whatever
 directory a file happens to sit in, is what owns iteration numbers, and that is what makes the
