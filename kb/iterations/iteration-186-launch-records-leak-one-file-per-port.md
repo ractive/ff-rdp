@@ -2,7 +2,7 @@
 title: "Iteration 186: launch records leak one file per port, and lazy reaping keyed on a random port never fires"
 type: iteration
 date: 2026-08-23
-status: in-review
+status: done
 branch: iter-186/launch-records-leak-per-port
 depends_on: []
 first_call_sites: []
