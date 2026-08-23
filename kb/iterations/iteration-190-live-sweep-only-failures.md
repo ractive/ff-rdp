@@ -78,11 +78,48 @@ not a disposition, so both get an iteration.
   real-world eval coverage), or an accepted retry. Check whether any other live test asserts on a
   third-party page's content the same way — if so, this is a class, not one test.
 
+## Folded in from iteration 176's closing sweep (2026-08-23)
+
+A **third** way into the same `live_96` failure, and the one with a real product defect behind it:
+a live test that leaks its own Firefox poisons every later sweep on that machine, permanently, until
+someone notices the process by hand.
+
+```
+FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1
+LIVE_SWEEP_SUMMARY executed=275 skipped=0 preexisting=9 vanished=0 launch_timeout=0 total=284
+274 passed / 1 failed — live_96_profile_cleanup::live_profiles_prune_removes_all_when_no_firefox_running
+
+  precondition violated — 1 ff-rdp-managed profile dir(s) ... still owned by a live process ...
+  ff-rdp-profile-yktWx82EW87KORBQ (pid 79010, spawned by
+  live_160_envelope_honesty::live_160_selector_diagnostics_survive)
+```
+
+Note the attribution: **not** `unknown test` (Theme A's operator-launch signature) but a named live
+test. `ps -o lstart` put pid 79010 at 04:23, roughly five hours before that sweep started, so it
+outlived its own test run by hours. It failed identically when `live_96` was re-run in isolation —
+so this is not sweep load, and not iteration 176's diff (which touches only `eval`'s statement
+scanner). `kill 79010` followed by a re-run gave `live_96_profile_cleanup`: 3 passed / 0 failed.
+
+Two things follow, and Theme A's chosen fix must address both or say why not:
+
+1. `live_160_selector_diagnostics_survive` (or whatever it delegates its browser lifetime to) can
+   leave a Firefox running after the test ends. That is the defect; iter-151 and iter-168 both
+   worked this seam.
+2. `live_96`'s failure is *correct* but reads as a flake, because nothing in the sweep output tells
+   the operator that a five-hour-old orphan is the cause. A sweep that begins by naming any
+   ff-rdp-managed profile whose owner PID predates the sweep would have said so in one line.
+   Related but distinct from `vanished` (iter-173), which is about the port-6000 browser leaving,
+   not about a test browser refusing to.
+
 ## Tasks
 
 ### A. live_96 versus the sweep setup
 - [ ] Reproduce: start the port-6000 browser with `ff-rdp launch`, run the sweep, confirm the
       precondition failure
+- [ ] Reproduce the folded-in variant too: leave a test-spawned Firefox alive, confirm `live_96`
+      fails with a *named* test as the owner and passes once that PID exits
+- [ ] Establish whether `live_160_selector_diagnostics_survive` really can leak its browser, or
+      whether pid 79010 came from an earlier interrupted sweep of that same test
 - [ ] Pick one of the three shapes above and record why the other two were rejected
 - [ ] If the answer is documentation, the raw-Firefox recipe (profile + devtools prefs written by
       hand) goes into `iteration-close`, not into a comment nobody reads
