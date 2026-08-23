@@ -2,7 +2,7 @@
 title: "Iteration 178: seven watch-conditions carried over from live-sweep runs — no plan currently owns them"
 type: iteration
 date: 2026-08-17
-status: in-progress
+status: done
 branch: iter-178/live-sweep-carryover-watch-conditions
 depends_on:
   - iteration-173-live-sweep-port-6000-firefox-does-not-survive
