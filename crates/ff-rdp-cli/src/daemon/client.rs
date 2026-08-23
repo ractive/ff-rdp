@@ -2405,4 +2405,191 @@ mod tests {
              port {port} freed by kill_process_tree(pgid={pgid})"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // iter-192 condition 12 — the registry path's recycled-PID refusal
+    //
+    // iter-191 landed the refusal below `stop_daemon_and_build_result_with`'s
+    // registry branch with *no* direct test: only the launch-record branch
+    // (`stop_prior_instance_with`) got `unit_191_*` coverage, because there
+    // was no way to plant a registry entry without writing to the real
+    // `~/.ff-rdp`. `StopDeps::registry_dir` (iter-192) closes that gap.
+    //
+    // All three tests below plant a registry naming **this test process** —
+    // the only conveniently live PID — and stub every signalling hook, so
+    // nothing is ever actually signalled. What varies is `start_token`, which
+    // is the sole input to the `PidIdentity` grading under test.
+    // -----------------------------------------------------------------------
+
+    /// A daemon registry entry for `port` naming this process, planted in `dir`.
+    ///
+    /// `proxy_port` is deliberately a port nothing listens on: `daemon_rpc`
+    /// reads the *real* registry (not `deps.registry_dir`) and so fails at its
+    /// own lookup long before any socket is opened, which is exactly the
+    /// `rpc_ok == false` path these tests need — the graceful shutdown not
+    /// landing is the precondition for the direct kill.
+    fn plant_registry(dir: &std::path::Path, port: u16, start_token: Option<&str>) {
+        let info = registry::DaemonInfo {
+            pid: std::process::id(),
+            proxy_port: 64_999,
+            firefox_host: "127.0.0.1".to_owned(),
+            firefox_port: port,
+            started_at: chrono::Utc::now().to_rfc3339(),
+            auth_token: "0".repeat(64),
+            start_token: start_token.map(str::to_owned),
+        };
+        registry::write_registry_in(dir, &info).expect("write registry");
+    }
+
+    fn registry_stop_deps(dir: &std::path::Path) -> StopDeps {
+        StopDeps {
+            hooks: recording_hooks_live_parent(),
+            // An empty record dir, so branch 1 finds nothing and the registry
+            // branch — the one under test — is the branch that runs.
+            record_dir: Some(dir.join("records")),
+            registry_dir: Some(dir.to_path_buf()),
+            record_pid_is_ours: |_rec| true,
+        }
+    }
+
+    /// The refusal itself: a registry whose `start_token` does not match the
+    /// token its PID reports now is **positively disproven** (`Recycled`), and
+    /// no signal may be sent to it.
+    ///
+    /// The launch-record branch refuses on anything short of positive proof;
+    /// this branch refuses only on positive disproof. That asymmetry is
+    /// deliberate (see the comment in `stop_daemon_and_build_result_with`) and
+    /// the next two tests pin the permissive side of it.
+    #[test]
+    fn unit_192_daemon_stop_refuses_recycled_registry_pid() {
+        let _serialized = begin_call_log();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let port = 64_401u16;
+        plant_registry(
+            dir.path(),
+            port,
+            Some("token-from-a-daemon-that-is-long-gone"),
+        );
+
+        let mut deps = registry_stop_deps(dir.path());
+        // The port never frees, so the refusal surfaces as an error rather
+        // than a silent success — the message is the artefact under test.
+        deps.hooks.wait_port_closed = |_port, _timeout| {
+            log_call("wait_port_closed");
+            false
+        };
+        let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "daemon", "stop"])
+            .expect("parse cli");
+
+        let err = stop_daemon_and_build_result_with(&cli, port, &deps)
+            .expect_err("a held port must fail the stop");
+
+        let log = take_call_log();
+        assert!(
+            !log.iter().any(|c| c.starts_with("kill_")),
+            "a disproven registry PID must not be signalled; log was {log:?}"
+        );
+        assert!(
+            matches!(&err, AppError::User(m)
+                if m.contains("has since been reused") && m.contains("does not own")),
+            "expected the recycled-PID refusal; got: {err:?}"
+        );
+        assert!(
+            matches!(&err, AppError::User(m) if !m.contains("stopped Firefox")),
+            "the message must not claim a stop happened — nothing was stopped; got: {err:?}"
+        );
+    }
+
+    /// The permissive side, arm 1: a registry written by a pre-iter-191 daemon
+    /// carries **no** `start_token`. That grades `Unknown`, not `Recycled`, and
+    /// must keep the old behaviour — refusing here would strand a running
+    /// daemon that `daemon stop` could then never stop.
+    #[test]
+    fn unit_192_daemon_stop_signals_registry_pid_with_no_token() {
+        let _serialized = begin_call_log();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let port = 64_402u16;
+        plant_registry(dir.path(), port, None);
+
+        let deps = registry_stop_deps(dir.path());
+        let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "daemon", "stop"])
+            .expect("parse cli");
+
+        stop_daemon_and_build_result_with(&cli, port, &deps)
+            .expect("a freed port succeeds");
+
+        let log = take_call_log();
+        assert!(
+            log.iter().any(|c| c.starts_with("kill_")),
+            "an untokened registry PID keeps the pre-191 behaviour and is signalled; \
+             log was {log:?}"
+        );
+    }
+
+    /// The permissive side, arm 2: a registry whose token *matches* grades
+    /// `Confirmed` and is signalled.
+    ///
+    /// Without this the refusal could be implemented as "refuse whenever a
+    /// token is present" and both other tests would still pass — this is the
+    /// one that proves the comparison, not merely the presence, is what gates.
+    #[test]
+    fn unit_192_daemon_stop_signals_confirmed_registry_pid() {
+        let _serialized = begin_call_log();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let port = 64_403u16;
+        let Some(token) = process::process_start_token(std::process::id()) else {
+            // No start token on this platform: `pid_identity` can only ever
+            // return `Unknown`, which the previous test already covers. Do not
+            // pretend to have proven the `Confirmed` arm.
+            eprintln!(
+                "unit_192_daemon_stop_signals_confirmed_registry_pid: \
+                 no process start token on this platform — Confirmed arm not exercised"
+            );
+            return;
+        };
+        plant_registry(dir.path(), port, Some(&token));
+
+        let deps = registry_stop_deps(dir.path());
+        let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "daemon", "stop"])
+            .expect("parse cli");
+
+        stop_daemon_and_build_result_with(&cli, port, &deps)
+            .expect("a freed port succeeds");
+
+        let log = take_call_log();
+        assert!(
+            log.iter().any(|c| c.starts_with("kill_")),
+            "a confirmed registry PID is ours and must be signalled; log was {log:?}"
+        );
+    }
+
+    /// The registry override must also carry the *removal*, not only the read
+    /// — otherwise a test planting a registry in a tempdir would still delete
+    /// the user's real `~/.ff-rdp/daemon.<port>.json` on its way out.
+    #[test]
+    fn unit_192_registry_dir_override_scopes_removal_too() {
+        let _serialized = begin_call_log();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let port = 64_404u16;
+        plant_registry(dir.path(), port, None);
+        assert!(
+            registry::read_registry_in(dir.path(), port)
+                .expect("read registry")
+                .is_some(),
+            "precondition: the planted registry is readable"
+        );
+
+        let deps = registry_stop_deps(dir.path());
+        let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "daemon", "stop"])
+            .expect("parse cli");
+        stop_daemon_and_build_result_with(&cli, port, &deps).expect("a freed port succeeds");
+
+        assert!(
+            registry::read_registry_in(dir.path(), port)
+                .expect("read registry")
+                .is_none(),
+            "the stop must remove the registry entry from the overridden dir"
+        );
+    }
+
 }
