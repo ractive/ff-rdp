@@ -492,10 +492,57 @@ fn read_owner_pid_marker(dir: &Path) -> Option<u32> {
 /// opposite of what the prune paths do with it), because "cannot confirm"
 /// must never mean "go ahead and kill".
 pub(crate) fn pid_is_ff_rdp_spawned(pid: u32) -> bool {
-    let Ok(root) = secure_profile_root() else {
-        return false;
+    ownership_scan_roots()
+        .iter()
+        .any(|root| pid_is_ff_rdp_spawned_under(root, pid))
+}
+
+/// Every root a profile ff-rdp created may be sitting under, for the
+/// **read-only** ownership check above (iter-188 Theme B).
+///
+/// Ownership deliberately spans both the `$FF_RDP_HOME`-overridden root *and*
+/// the default one, while creation and deletion stay scoped to whichever root
+/// the current invocation resolves. The asymmetry is the point:
+///
+/// - Scoping *writes* is what makes the override an isolation tool.
+/// - Scoping *ownership proof* the same way would make ff-rdp forget its own
+///   children across an override. That is not hypothetical: with the override
+///   honoured but ownership narrowed to one root, `launch --replace` under an
+///   isolated `$FF_RDP_HOME` stopped recognising the Firefox it had launched
+///   under the default home, so the port-owner branch in `daemon/client.rs`
+///   left `firefox_pid` as `None`, escalated against the proxy daemon instead,
+///   and failed with "port still listening after 8 s"
+///   (`live_153_replace_double_envelope`, 3/3 during iteration 188).
+///
+/// Widening the *read* cannot authorise a kill ff-rdp was not already entitled
+/// to make: both roots only ever contain profiles ff-rdp itself created, each
+/// still gated on a live owner-PID marker plus a matching start token. The
+/// iter-110 guarantee — never signal a process we did not spawn — is unchanged.
+fn ownership_scan_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut push = |root: Result<PathBuf, AppError>| {
+        if let Ok(root) = root
+            && !roots.contains(&root)
+        {
+            roots.push(root);
+        }
     };
-    pid_is_ff_rdp_spawned_under(&root, pid)
+    // The configured root first — under an override it is the one that
+    // actually holds this invocation's own profiles.
+    push(resolve_profile_root(
+        std::env::var_os(HOME_OVERRIDE_ENV)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from),
+        dirs::state_dir(),
+        dirs::data_local_dir(),
+    ));
+    // Then the default one, which an override hides.
+    push(resolve_profile_root(
+        None,
+        dirs::state_dir(),
+        dirs::data_local_dir(),
+    ));
+    roots
 }
 
 /// Root-parameterised core of [`pid_is_ff_rdp_spawned`] so the ownership gate
@@ -1044,6 +1091,29 @@ mod tests {
             msg.contains(HOME_OVERRIDE_ENV),
             "error must name {HOME_OVERRIDE_ENV}, got: {msg}"
         );
+    }
+
+    /// The ownership scan spans both roots under an override, and collapses
+    /// to one when there is none — the read-side asymmetry that keeps
+    /// `launch --replace` able to recognise a Firefox it launched under the
+    /// default home (iter-188; `live_153` regressed on exactly this).
+    #[test]
+    fn ownership_scan_roots_span_override_and_default() {
+        let roots = ownership_scan_roots();
+        assert!(
+            !roots.is_empty(),
+            "the ownership scan must have at least one root to look in"
+        );
+        let default = resolve_profile_root(None, dirs::state_dir(), dirs::data_local_dir())
+            .expect("the default root must resolve on a machine with a home directory");
+        assert!(
+            roots.contains(&default),
+            "the default root {} must always be scanned, override or not; got {roots:?}",
+            default.display()
+        );
+        let mut deduped = roots.clone();
+        deduped.dedup();
+        assert_eq!(deduped, roots, "the scan must not repeat a root");
     }
 
     /// The override is a *directory* substitution, not a home-directory
