@@ -143,3 +143,121 @@ fn launch_window_size_invalid_rejected() {
         "error must name the expected WxH form; stderr={stderr:?} stdout={stdout:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// iter-191: a stale launch record is not ownership proof
+// ---------------------------------------------------------------------------
+
+/// Spawn a harmless, long-lived child to stand in for the process a recycled
+/// PID belongs to. Returns the child handle so the test can both check that it
+/// survived and kill it afterwards.
+///
+/// Deliberately a *real* process rather than a made-up PID: the record is only
+/// consulted when its PID is alive (`daemon_record::read_in` drops dead ones),
+/// so a fabricated number would skip the branch under test entirely.
+fn spawn_sacrificial_child() -> std::process::Child {
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("sleep");
+        c.arg("30");
+        c
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/c", "timeout", "/t", "30", "/nobreak"]);
+        c
+    };
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sacrificial child")
+}
+
+/// AC (iter-191): `launch --replace` must not signal a PID that a stale launch
+/// record names but no longer identifies.
+///
+/// This is the 2026-08-23 live-sweep failure made deterministic, and the
+/// dogfood path from `kb/iterations/iteration-191-*.md` in test form: plant a
+/// `launch-record.<port>.json` naming a live process ff-rdp never launched
+/// (its recorded start token disagrees with that PID's real one, exactly as a
+/// recycled PID's would), occupy the port so the `--replace` stop path is
+/// actually reached, and require the refusal — not a kill.
+///
+/// `FF_RDP_HOME` scopes the planted record to a temp dir so the test never
+/// touches the developer's real `~/.ff-rdp`.
+#[test]
+fn launch_replace_refuses_stale_record_naming_a_foreign_pid() {
+    let home = tempfile::tempdir().expect("tempdir");
+
+    // Hold the port for the whole test: `launch` only takes the `--replace`
+    // stop path when the port is already in use. The listener never accepts,
+    // which is fine — `is_port_in_use` probes with a connect, and the kernel
+    // backlog completes it.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+
+    let mut victim = spawn_sacrificial_child();
+    let victim_pid = victim.id();
+
+    let dir = home.path().join(".ff-rdp");
+    std::fs::create_dir_all(&dir).expect("create .ff-rdp");
+    std::fs::write(
+        dir.join(format!("launch-record.{port}.json")),
+        format!(
+            r#"{{"pid": {victim_pid}, "port": {port}, "headless": true,
+                 "launched_at": "2026-08-16T20:32:13.855708Z",
+                 "profile_dir": "/tmp/ff-rdp-does-not-exist",
+                 "start_token": "0.000000"}}"#
+        ),
+    )
+    .expect("plant stale launch record");
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .env("FF_RDP_HOME", home.path())
+        .args([
+            "launch",
+            "--replace",
+            "--headless",
+            "--debug-port",
+            &port.to_string(),
+        ])
+        .output()
+        .expect("run ff-rdp launch --replace");
+
+    // THE assertion: the process the stale record pointed at is untouched.
+    assert!(
+        matches!(victim.try_wait(), Ok(None)),
+        "REGRESSION: launch --replace signalled pid {victim_pid}, which it only knew about \
+         through a stale launch record"
+    );
+
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !output.status.success(),
+        "launch --replace must fail rather than pretend it freed the port; got: {combined}"
+    );
+    assert!(
+        combined.contains("did not launch") || combined.contains("does not own"),
+        "refusal must explain ff-rdp will not stop an unowned process; got: {combined}"
+    );
+    assert!(
+        !combined.contains("still in use after stopping the prior instance"),
+        "nothing was stopped, so the post-stop message must not be used; got: {combined}"
+    );
+
+    // The record is the ownership trail — a refused stop must not delete it
+    // (iter-158 Theme B); iter-186's GC is what reclaims it.
+    assert!(
+        dir.join(format!("launch-record.{port}.json")).exists(),
+        "a refused stop must leave the launch record in place"
+    );
+
+    let _ = victim.kill();
+    let _ = victim.wait();
+    drop(listener);
+}
