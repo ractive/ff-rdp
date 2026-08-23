@@ -2,17 +2,21 @@
 title: "Iteration 200: can the live tier reuse one Firefox across several tests instead of paying a cold start each?"
 type: iteration
 date: 2026-08-23
-status: planned
+status: obsolete
 branch: iter-200/live-firefox-reuse
-depends_on: [kb/iterations/iteration-188-live-sweep-cost-and-parallelism.md, kb/iterations/iteration-151-residual-live-firefox-leak.md, kb/iterations/iteration-168-livefirefox-drop-does-not-wait-for-exit.md, kb/iterations/iteration-171-stale-owner-pid-marker-and-pid-reuse.md]
+depends_on:
+  - kb/iterations/iteration-188-live-sweep-cost-and-parallelism.md
+  - kb/iterations/iteration-151-residual-live-firefox-leak.md
+  - kb/iterations/iteration-168-livefirefox-drop-does-not-wait-for-exit.md
+  - kb/iterations/iteration-171-stale-owner-pid-marker-and-pid-reuse.md
 first_call_sites: []
 dogfood_path: |
   # This iteration starts as a design/measurement pass, not a rewrite. Before
   # writing a line of pooling code, establish the floor and the ceiling.
-
+  
   # 1. The floor without reuse (already measured, iter-188 A1): 5.64 s +/-
   #    0.02 per cold start, ~200 launch call sites in the CLI tier.
-
+  
   # 2. What a *shared-profile, shared-process* test actually costs once
   #    Firefox is already up — i.e. the part reuse would leave behind.
   ff-rdp launch --headless --debug-port 7900 --jq '.results.pid'
@@ -21,13 +25,20 @@ dogfood_path: |
   done
   ff-rdp --port 7900 daemon stop
   # → records the per-test floor once cold start is out of the picture.
-
+  
   # 3. Does reusing a profile change any test's observable result? Diff two
   #    runs of the same live test against a fresh profile vs a reused one:
   FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live live_129 -- --include-ignored --exact
   # then repeat pointed at a Firefox with prior navigation history/cookies and
   # compare — this is the question Task A must answer before Task B is safe.
-tags: [iteration, testing, live-tests, tooling, performance, design, carry-over]
+tags:
+  - iteration
+  - testing
+  - live-tests
+  - tooling
+  - performance
+  - design
+  - carry-over
 ---
 
 # Iteration 200: the larger prize iteration 188 declined to chase
@@ -129,3 +140,10 @@ publish a superstition; measure or say you didn't).
   redefine deliberately, not accidentally
 - [[iteration-171-stale-owner-pid-marker-and-pid-reuse]] — the single-owner marker scheme a pool
   must preserve or explicitly renegotiate
+
+## Closed as obsolete (2026-08-23)
+
+Filed as a carry-over from iteration 188's review. This is a **performance idea, not a defect** —
+nothing is broken and no test is failing on it. Closed during the post-run backlog prune to keep
+the open set to real defects. Re-open by setting `status: planned` if the sweep's wall clock
+becomes a constraint again.

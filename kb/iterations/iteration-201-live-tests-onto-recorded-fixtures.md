@@ -2,25 +2,34 @@
 title: "Iteration 201: which of the live tier's 200+ launch call sites could run against a recorded fixture instead?"
 type: iteration
 date: 2026-08-23
-status: planned
+status: obsolete
 branch: iter-201/live-tests-onto-recorded-fixtures
-depends_on: [kb/iterations/iteration-188-live-sweep-cost-and-parallelism.md, kb/iterations/iteration-09-live-fixture-recording.md]
+depends_on:
+  - kb/iterations/iteration-188-live-sweep-cost-and-parallelism.md
+  - kb/iterations/iteration-09-live-fixture-recording.md
 first_call_sites: []
 dogfood_path: |
   # Survey, not conversion. Nothing here changes what a test asserts.
-
+  
   # 1. Inventory: how many live tests already have a fixture-backed
   #    equivalent, and how many touch protocol surface no fixture covers yet.
   ls crates/ff-rdp-core/tests/fixtures/*.json | wc -l
   grep -rl "MockServerHandle" crates/ff-rdp-cli/tests/e2e/ | wc -l
   grep -rlE 'LiveFirefox::(headless_on_random_port|launch)' crates/ff-rdp-cli/tests/live/ | wc -l
-
+  
   # 2. For one concrete candidate test, run it live and note exactly which
   #    Firefox behaviors it depends on beyond "the RDP actor replies with the
   #    shape we expect" — DOM timing, real network, a real renderer quirk.
   #    Those are the tests fixtures cannot replace; the inventory in Task A
   #    must separate them from tests that only check envelope/protocol shape.
-tags: [iteration, testing, live-tests, tooling, fixtures, design, carry-over]
+tags:
+  - iteration
+  - testing
+  - live-tests
+  - tooling
+  - fixtures
+  - design
+  - carry-over
 ---
 
 # Iteration 201: the re-tiering iteration 188 declined to attempt
@@ -122,3 +131,10 @@ pilot and a written boundary rule — not a forced conversion to hit a wall-cloc
 - [[iteration-09-live-fixture-recording]] — built the recording infrastructure this plan reuses
 - [[iteration-155-live-skip-reports-green]] — why a live test exists at all; the boundary this plan
   must not cross
+
+## Closed as obsolete (2026-08-23)
+
+Filed as a carry-over from iteration 188's review. This is a **performance idea, not a defect** —
+nothing is broken and no test is failing on it. Closed during the post-run backlog prune to keep
+the open set to real defects. Re-open by setting `status: planned` if the sweep's wall clock
+becomes a constraint again.

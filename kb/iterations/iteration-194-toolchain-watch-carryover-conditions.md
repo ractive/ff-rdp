@@ -2,7 +2,7 @@
 title: "Iteration 194: two watch conditions carried out of iter-185's toolchain canary"
 type: iteration
 date: 2026-08-23
-status: planned
+status: obsolete
 branch: iter-194/toolchain-watch-carryover-conditions
 depends_on:
   - iteration-185-main-red-under-clippy-1-98
@@ -12,7 +12,7 @@ dogfood_path: |
   # "if this happens, act on it" triggers from iter-185's carry-over sweep.
   # Exercising it means checking whether either trigger has fired since
   # .github/workflows/toolchain-watch.yml started running weekly.
-
+  
   # Condition 1 — a merge-introduced lint-red `main` that survives a full
   # canary cycle. Compare the canary's weekly runs against merge history:
   gh run list --workflow=toolchain-watch.yml --limit=10
@@ -20,14 +20,19 @@ dogfood_path: |
   # If two green PRs merged back-to-back produced a red `main` and the next
   # scheduled canary run did NOT catch it (still green, or caught it late),
   # that is condition 1 firing.
-
+  
   # Condition 2 — a red canary going unnoticed for a week. Compare consecutive
   # canary run conclusions against whether anyone acted on a failure:
   gh run list --workflow=toolchain-watch.yml --limit=10 --json conclusion,createdAt
   # If a `failure` run is followed a week later by another `failure` run on
   # the same underlying cause (i.e. nobody fixed it in between), that is
   # condition 2 firing.
-tags: [iteration, tooling, ci, watch-condition, carry-over]
+tags:
+  - iteration
+  - tooling
+  - ci
+  - watch-condition
+  - carry-over
 ---
 
 # Iteration 194: still watching, no sweep yet
@@ -79,3 +84,12 @@ records that somebody looked — never that the condition was resolved.
 - `.github/workflows/toolchain-watch.yml` — the canary these conditions watch
 - [[iteration-192-live-sweep-watch-conditions-carried-forward]] — the precedent for how this repo
   folds open watch conditions forward instead of dropping them when a source plan closes
+
+## Closed as obsolete (2026-08-23)
+
+Both conditions were folded into
+[[iteration-192-live-sweep-watch-conditions-carried-forward]] as conditions 10 and 11 during the
+post-run backlog prune. Nothing is dropped — the triggers, the reasoning and the
+`gh run list --workflow=toolchain-watch.yml` check all moved verbatim. Four separate
+watch-condition registries (190, 192, 194, 198) was more filing than the conditions warranted;
+192 is now the single holder.

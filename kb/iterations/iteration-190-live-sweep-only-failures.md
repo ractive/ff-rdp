@@ -1,5 +1,5 @@
 ---
-title: "Iteration 190: two live tests that only fail under sweep conditions — live_96's precondition versus the sweep's own setup, and live_eval_on_hn's third-party dependency"
+title: "Iteration 190: live tests that assert on third-party page content, so a slow or changed site reds the sweep"
 type: iteration
 date: 2026-08-23
 status: planned
@@ -141,16 +141,24 @@ third-party-content assertions (`live_eval_on_hn` → news.ycombinator.com,
 
 ## Tasks
 
-### A. live_96 versus the sweep setup
-- [ ] Reproduce: start the port-6000 browser with `ff-rdp launch`, run the sweep, confirm the
-      precondition failure
-- [ ] Reproduce the folded-in variant too: leave a test-spawned Firefox alive, confirm `live_96`
-      fails with a *named* test as the owner and passes once that PID exits
-- [ ] Establish whether `live_160_selector_diagnostics_survive` really can leak its browser, or
-      whether pid 79010 came from an earlier interrupted sweep of that same test
-- [ ] Pick one of the three shapes above and record why the other two were rejected
-- [ ] If the answer is documentation, the raw-Firefox recipe (profile + devtools prefs written by
-      hand) goes into `iteration-close`, not into a comment nobody reads
+### A. live_96 versus the sweep setup — CLOSED 2026-08-23, scope removed
+
+The last box below was the answer, and it has been done: the raw-Firefox recipe is now a setup
+step in `.claude/skills/iteration-close/SKILL.md`, naming `ff-rdp launch` as the wrong form and
+citing the four occurrences (iters 174, 175, 177, 186). There was never a test-versus-skill
+conflict to adjudicate — `live_96` fails only against an ff-rdp-**managed** profile, which is
+exactly what `ff-rdp launch` creates and what the documented raw command does not.
+
+- [x] If the answer is documentation, the raw-Firefox recipe goes into `iteration-close`, not
+      into a comment nobody reads
+- ~~Reproduce by starting the port-6000 browser with `ff-rdp launch`~~ — reproduced four times
+  already, unintentionally; a fifth deliberate reproduction buys nothing
+- ~~Pick one of the three shapes and record why the other two were rejected~~ — moot, the
+  premise (a genuine conflict) was false
+- [ ] **Still open, and unrelated to the above:** establish whether
+      `live_160_selector_diagnostics_survive` can actually leak its browser, or whether pid 79010
+      (iteration 176) came from an earlier interrupted sweep of that same test. This is an orphan
+      question, not a `live_96` question
 
 ### B. live_eval_on_hn
 - [ ] Determine whether the empty title is a readiness gap on our side or the site not answering
@@ -164,6 +172,10 @@ third-party-content assertions (`live_eval_on_hn` → news.ycombinator.com,
 
 - [ ] Theme A has a landed decision, and a sweep run with a port-6000 browser present no longer
       fails `live_96` — demonstrated by an actual sweep, not by reasoning
+      **Half done 2026-08-23, deliberately left unticked.** The decision landed (documentation:
+      the raw-browser command is now a setup step in `iteration-close`), but **no sweep was run**
+      to demonstrate it, and this AC explicitly forbids closing on reasoning. Tick it when the
+      next dual-gate sweep starts its port-6000 browser the documented way and `live_96` passes
 - [ ] Theme B's mechanism is named from evidence (readiness vs. site), not guessed
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
       clean, plus a dual-gate live sweep

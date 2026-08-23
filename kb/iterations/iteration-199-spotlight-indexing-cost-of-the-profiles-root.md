@@ -2,36 +2,43 @@
 title: "Iteration 199: is Spotlight indexing the profiles root a measurable sweep cost, or a superstition?"
 type: iteration
 date: 2026-08-23
-status: planned
+status: obsolete
 branch: iter-199/spotlight-indexing-ab
-depends_on: [kb/iterations/iteration-188-live-sweep-cost-and-parallelism.md]
+depends_on:
+  - kb/iterations/iteration-188-live-sweep-cost-and-parallelism.md
 first_call_sites: []
 dogfood_path: |
   # This is a measurement iteration. The A/B is one env var now that iter-188
   # Theme B landed: FF_RDP_HOME can point the profiles root at an unindexed
   # path with no product change.
-
+  
   # 1. Confirm the indexed path is actually indexed, and the unindexed one isn't.
   mdutil -s / | head -3
   mkdir -p /private/tmp/ff-rdp-199-probe && touch /private/tmp/ff-rdp-199-probe/x
   mdfind -onlyin /private/tmp/ff-rdp-199-probe x
   # → expect: / enabled; the /private/tmp probe returns nothing.
-
+  
   # 2. A — indexed (today's default; do NOT set FF_RDP_HOME):
   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 \
     cargo run -p xtask -- live-sweep --jobs 6
   # repeat 3x on a quiet machine, record wall clock + failure set + `uptime`/`ps` snapshot
-
+  
   # 3. B — unindexed (profiles root under /private/tmp via FF_RDP_HOME):
   FF_RDP_HOME=/private/tmp/ff-rdp-199-home \
     FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 \
     cargo run -p xtask -- live-sweep --jobs 6
   # repeat 3x on the same quiet machine, same measurements
-
+  
   # → compare A's and B's wall-clock distributions against the run-to-run noise
   #   band iteration 188 already measured (256-342 s at --jobs 6). If B's mean
   #   sits inside that band, the theme is closed with "no measurable effect".
-tags: [iteration, testing, live-tests, tooling, performance, carry-over]
+tags:
+  - iteration
+  - testing
+  - live-tests
+  - tooling
+  - performance
+  - carry-over
 ---
 
 # Iteration 199: Theme D from iteration 188, actually measured this time
@@ -126,3 +133,10 @@ contributor's machine the way an env var is.
   measurement
 - [[iteration-197-live-sweep-has-no-per-test-timeout]] — a confound to avoid, not a subject here
 - [[iteration-198-live-tests-red-only-under-concurrency]] — same
+
+## Closed as obsolete (2026-08-23)
+
+Filed as a carry-over from iteration 188's review. This is a **performance idea, not a defect** —
+nothing is broken and no test is failing on it. Closed during the post-run backlog prune to keep
+the open set to real defects. Re-open by setting `status: planned` if the sweep's wall clock
+becomes a constraint again.

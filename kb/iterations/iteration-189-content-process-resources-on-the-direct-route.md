@@ -100,13 +100,20 @@ would be equally quiet.
 - [ ] every content-process subscriber measured on both routes
 - [ ] the result — defect or clean — recorded in `kb/rdp/actors/watcher.md` under the iter-174
       section, replacing its "were not audited" sentence
-- [ ] **folded in from iteration 174's carry-over:** the `iteration-close` skill tells you to start
-      a Firefox on port 6000 so the sweep's `preexisting` tier executes, and
-      `live_96_profile_cleanup::live_profiles_prune_removes_all_when_no_firefox_running` then fails
-      its precondition on exactly that browser (measured twice in iteration 174; the test passes in
-      1.20 s once it exits). Following the documented procedure guarantees one red test. Decide
-      which side gives: the test scoping its precondition to profiles it owns, or the skill naming
-      the conflict. This is not "environmental" — both instructions are ours.
+- ~~**folded in from iteration 174's carry-over:** the `iteration-close` skill tells you to start
+      a Firefox on port 6000 ... Following the documented procedure guarantees one red test.~~
+      **WITHDRAWN 2026-08-23 — the diagnosis was wrong.** There is no conflict between the test
+      and the skill. `live_96` fails only when the port-6000 browser was started with
+      `ff-rdp launch`, which creates an ff-rdp-*managed* profile — precisely the state the test
+      asserts is absent. Started the documented way (`firefox -no-remote
+      --start-debugger-server 6000 --headless`) the test passes. Iteration 175 reproduced this
+      and self-corrected; iterations 177 and 186 then made the same substitution, four occurrences
+      in total. The real defect was that the skill buried the raw-browser command inside a bullet
+      explaining a counter instead of stating it as a setup step — **fixed in
+      `.claude/skills/iteration-close/SKILL.md`, so nothing is carried forward here.**
+      Recorded rather than deleted because this entry is a worked example of the failure mode
+      `kb/discipline-rationale.md` warns about: a contaminated sweep producing a confidently
+      worded plan for a defect that never existed.
 
 ## Acceptance Criteria [0/3]
 

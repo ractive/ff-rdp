@@ -45,12 +45,28 @@ a silent early return.)
 LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K vanished=V launch_timeout=L total=T
 ```
 
-- `executed=N` — actually ran. This is the number to quote.
+- `executed=N` — the tests the sweep **intended** to run (`part.qualified.len()`, a partition
+  computed before anything executes). It is *not* a count of results. Quote it only alongside the
+  runner's own `P passed / F failed`, and **check that `P + F == N`**: on 2026-08-23 five sweeps
+  out of eight reported `executed` nine higher than `passed + failed`, with `skipped=0` — nine
+  tests produced no verdict and the summary line did not say so. A mismatch means the record is
+  incomplete; do not treat the pass count as evidence until it reconciles.
 - `skipped=M` — env gate not set. Usually the `FF_RDP_LIVE_NETWORK_TESTS` set.
 - `preexisting=K` — needs a Firefox *somebody else* started on the fixed port 6000 (the
   `ff-rdp-core` live tests never launch one). The sweep probes that port at start and, finding
   nothing, reports them `ignored` rather than folding them into `executed`. Start one with
-  `firefox -no-remote --start-debugger-server 6000 --headless` to execute them.
+  **exactly** this — a raw browser, never `ff-rdp launch`:
+
+  ```sh
+  firefox -no-remote --start-debugger-server 6000 --headless
+  ```
+
+  `ff-rdp launch` creates an ff-rdp-*managed* profile, which is precisely the state
+  `live_96_profile_cleanup` asserts is absent — so using it red-lines that test and the failure
+  looks like a product defect. Four separate agents made this exact substitution on 2026-08-23
+  (iters 174, 175, 177, 186); one of them filed a plan blaming this skill for a conflict that
+  did not exist. If `live_96` fails, check how you started the port-6000 browser before
+  diagnosing anything else.
 - `vanished=V` (iter-173) — the port-6000 browser was there at classification time and gone when
   the tier ran. The sweep re-probes immediately before each tier that needs it (and again after a
   failing phase), and reports those tests `ignored`. **Does not fail the sweep.** A non-zero `V`
