@@ -8,28 +8,30 @@ depends_on: []
 first_call_sites: []
 dogfood_path: |
   # Test-reliability defect, not a product defect. The measurement itself is
-  # honest — throttling really does slow the fetch — but the threshold sits so
-  # close to the observed ratio that ordinary baseline jitter decides the
-  # verdict.
+  # honest — throttling really does slow the fetch — but the assertion compared
+  # two measurements from the same jittery population, so origin latency, not
+  # throttling, decided the verdict.
 
-  # 1. Run the test in isolation on an idle machine and read the numbers it
-  #    already prints. They are the whole repro.
+  # 1. Run the test in isolation and read the numbers it prints. Since this
+  #    iteration it prints DELIVERY DELAY (total minus the request's
+  #    responseStart-requestStart), which is the throttler's own contribution.
   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 \
     cargo test -p ff-rdp-cli --test live live_throttle_slow3g_slows_fetch \
       -- --include-ignored --nocapture
-  # → observed 2026-08-17, idle:  baseline 378ms  throttled 775ms  = 2.05x  PASS
-  # → observed 2026-08-17, sweep: baseline 409ms  throttled 779ms  = 1.90x  FAIL
-  #   The throttled figure barely moved (775 → 779 ms, +0.5%). The BASELINE
-  #   moved 8%, and that is what flipped the result.
+  # → expected: baseline median 1-12 ms, throttled median ~410 ms, i.e. the
+  #   400 ms round-trip latency slow-3g declares, against a 200 ms requirement.
 
-  # 2. Repeat it a few times to see the spread for yourself before changing
-  #    anything — the fix must be argued from a measured distribution, not from
-  #    one pass and one fail.
+  # 2. Repeat it to see the spread. 20 runs (10 idle, 10 loaded) gave
+  #    402-413 ms; anything in that band is the throttler working.
   for i in 1 2 3 4 5; do
     FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 \
       cargo test -p ff-rdp-cli --test live live_throttle_slow3g_slows_fetch \
-        -- --include-ignored --nocapture 2>&1 | grep -E "baseline fetch|throttled fetch"
+        -- --include-ignored --nocapture 2>&1 | grep -E "delivery delay"
   done
+
+  # 3. The pre-177 behaviour, for comparison: the old assertion compared TOTAL
+  #    fetch times (throttled >= baseline * 2.0) and reddened on 2 of 10 idle
+  #    runs. See "What iteration 177 measured" below.
 tags: [iteration, testing, reliability, throttle]
 ---
 
@@ -219,6 +221,13 @@ assert!(throttled_median_delay - baseline_median_delay >= required_delta, ...);
 - The estimator is the **median of 5**, not the min of 2, so two anomalous samples per side cannot
   decide the verdict.
 - The failure message prints every sample of both measurements, as the plan requires.
+
+### Cost
+
+The test now takes 10 samples where it took 4, so its wall time went from ~6.2 s to ~10.2 s idle
+(~12 s under load). That is +4 s on a sweep that runs 277 tests, and it is the price of the
+headroom; [[iteration-188-live-sweep-cost-and-parallelism]] is where sweep cost is being addressed
+and already names this test.
 
 ### Rejected alternatives
 
