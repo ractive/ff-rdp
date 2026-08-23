@@ -2,7 +2,7 @@
 title: "Iteration 191: `launch --replace` signals a recycled PID because a stale launch record is treated as ownership proof"
 type: iteration
 date: 2026-08-23
-status: in-progress
+status: in-review
 branch: iter-191/stale-launch-record-recycled-pid
 depends_on:
   - iteration-178-live-sweep-carryover-watch-conditions
@@ -11,15 +11,28 @@ first_call_sites:
   - primitive: >-
       daemon::process::PidIdentity and pid_identity(pid, recorded_token) — graded
       identity comparison for a persisted (pid, start_token) pair
-    site: crates/ff-rdp-cli/src/daemon_record.rs (record_pid_is_ours_with) and crates/ff-rdp-cli/src/daemon/client.rs (registry branch of stop_daemon_and_build_result_with)
+    site: >-
+      crates/ff-rdp-cli/src/daemon_record.rs (record_pid_is_ours_with) and
+      crates/ff-rdp-cli/src/daemon/client.rs (registry branch of
+      stop_daemon_and_build_result_with)
   - primitive: daemon_record::record_pid_is_ours(&DaemonRecord) — the ownership gate
-    site: crates/ff-rdp-cli/src/daemon/client.rs (StopDeps::real, consumed by both record branches)
+    site: >-
+      crates/ff-rdp-cli/src/daemon/client.rs (StopDeps::real, consumed by both record
+      branches)
   - primitive: DaemonRecord::start_token
-    site: written in crates/ff-rdp-cli/src/commands/launch.rs, read in crates/ff-rdp-cli/src/daemon_record.rs
+    site: >-
+      written in crates/ff-rdp-cli/src/commands/launch.rs, read in
+      crates/ff-rdp-cli/src/daemon_record.rs
   - primitive: registry::DaemonInfo::start_token
-    site: written in crates/ff-rdp-cli/src/daemon/server.rs, read in crates/ff-rdp-cli/src/daemon/client.rs
-  - primitive: daemon::client::unowned_record_pid_msg(pid, port) and the RecordOwnerCheck fn type
-    site: crates/ff-rdp-cli/src/daemon/client.rs (stop_prior_instance_with, stop_daemon_and_build_result_with, StopDeps)
+    site: >-
+      written in crates/ff-rdp-cli/src/daemon/server.rs, read in
+      crates/ff-rdp-cli/src/daemon/client.rs
+  - primitive: >-
+      daemon::client::unowned_record_pid_msg(pid, port) and the RecordOwnerCheck fn
+      type
+    site: >-
+      crates/ff-rdp-cli/src/daemon/client.rs (stop_prior_instance_with,
+      stop_daemon_and_build_result_with, StopDeps)
 dogfood_path: |
   # Reproduce the 2026-08-23 observation deterministically, without waiting for
   # a random port to collide with one of the ~4 600 leaked records on the
@@ -134,7 +147,7 @@ PID. The ESRCH luck that saved this machine does not exist there.
 - **Not a `live_110` test defect.** The test asserted the right thing and its message assertion is
   what caught this. Do not relax it.
 
-## Scope
+## Scope [3/3]
 
 - [x] Branch 1 of `stop_prior_instance_with` must establish that `rec.pid` still identifies the
       process the record was written for *before* signalling it — not merely that some process
@@ -149,7 +162,7 @@ PID. The ESRCH luck that saved this machine does not exist there.
       question. It is not implicated by this observation and may already be safe via the registry's
       own liveness handshake; say which, rather than leaving it unexamined.
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
 - [x] A unit test over `stop_prior_instance_with`'s injected `StopDeps` covers "record matches the
       port, its pid is alive, the pid is not ours" and asserts **no kill hook is invoked** — the
@@ -158,11 +171,24 @@ PID. The ESRCH luck that saved this machine does not exist there.
       "does not own", i.e. the string `live_110` requires
 - [x] The "still in use after stopping the prior instance" message is emitted only on a path where
       ff-rdp actually did stop something it owned
-- [ ] `live_110_kill_scoping::live_110_replace_never_kills_foreign_firefox` passes in a full
+- [x] `live_110_kill_scoping::live_110_replace_never_kills_foreign_firefox` passes in a full
       live-sweep run with a stale record planted for the target port (paste the
       `LIVE_SWEEP_SUMMARY` line and the gates)
-- [ ] The dogfood path above runs to its "EXPECTED AFTER" outcome: the sacrificial pid is still
+      [2026-08-23, `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1` →
+      `LIVE_SWEEP_SUMMARY executed=285 skipped=0 preexisting=0 vanished=0 launch_timeout=0
+      total=285`, 275 passed / 1 failed + 1/3/3/2 passed in the four core tiers (275+1+9 = 285,
+      reconciles); `live_110_kill_scoping::live_110_replace_never_kills_foreign_firefox ... ok`,
+      with the phase-B stale record planted for the port. The one failure,
+      `live_174_nav_verbs_resolve_from_events_daemon`, passes alone in 5.41 s — carried to
+      iteration 198]
+- [x] The dogfood path above runs to its "EXPECTED AFTER" outcome: the sacrificial pid is still
       alive after `launch --replace`, and the envelope is the refusal
+      [2026-08-23: victim pid 57281 `kill -0` OK after the command; envelope was
+      `{"error":"port 51999 is in use by PID 57281, which ff-rdp's launch record for this port
+      names — but that record is stale: ff-rdp could match the live PID neither to the start
+      token the record was written with nor to an owner-PID marker under a profile it manages,
+      so ff-rdp did not launch whatever holds that PID now. Refusing to stop a process ff-rdp
+      does not own …","error_type":"User"}`, exit 1, and the record was still on disk afterwards]
 
 ## Outcome
 
