@@ -1,5 +1,5 @@
 ---
-title: "Iteration 198: two live tests go red only when the sweep runs concurrently"
+title: "Iteration 198: the daemon's frame-target subscription misses a fixed 15 s bound under a parallel sweep"
 type: iteration
 date: 2026-08-23
 status: planned
@@ -36,15 +36,41 @@ tags: [iteration, testing, live-tests, flaky, daemon, carry-over]
 ran it repeatedly. Two tests failed once each across those runs, and neither is explained by any
 open plan:
 
-| test | failure | seen |
-|---|---|---|
-| `live_145_error_envelope_completeness::live_145_click_frame_scan_js_exception_envelope` | `daemon never reported live frame targets` | 1 of 3 parallel sweeps |
-| `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` | assertion under the daemon route | 1 of 3 parallel sweeps |
+| run | jobs | failing test | message |
+|---|---|---|---|
+| 1 | 6 | `live_145_error_envelope_completeness::live_145_click_frame_scan_js_exception_envelope` | `daemon never reported live frame targets` |
+| 2 | 6 | `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` | `daemon never reported live frame targets` |
+| 4 | 6 | `live_140_element_targeting::live_140_frame_error_bounded` | frame-target assertion |
+| 4 | 6 | `live_145_…click_frame_scan_js_exception_envelope` | `daemon never reported live frame targets` |
+| 4 | 6 | `live_169_nav_verb_status_parity::live_169_nav_verbs_report_status_daemon` | `status: null, status_reason: "not_observed"` after `elapsed_ms: 21017` |
+| 5 | 6 | `live_137_…consent_accept_via_daemon` | `daemon never reported live frame targets` |
+| 6 | 6 | `live_160_envelope_honesty::live_160_click_reachable_fires_handler` | click handler assertion |
 
-Both were also on iteration 188's Theme A list of tests that failed at `-j8` under `cargo nextest`
-and were classified there as "contention artifacts, not defects" — on no evidence beyond the fact
-that they passed at lower concurrency. **That classification is the thing this iteration exists to
-replace.** "It only fails under load" is a description, not a diagnosis: iteration 179 spent a
+**No test failed twice in the same way in consecutive runs, and no run repeated another's failure
+set** — but three of the seven failures carry the *same* message, which is the thread to pull.
+
+## The shared signature
+
+`live_137_daemon_mode_parity.rs:116`:
+
+```rust
+fn wait_for_live_targets(port: u16) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    …
+}
+```
+
+A fixed 15 s bound on "the daemon has established its frame-target subscription". `live_145`
+carries its own copy of the same wait with the same message. On an idle machine that bound is
+never approached; under a `--jobs 6` sweep (load average 150+ with six Firefox instances starting)
+it is. `live_169`'s failure is the same shape one level up: the daemon reported
+`status_reason: "not_observed"` after **21 s**, i.e. it did observe the navigation, just not
+inside whatever window the assertion allows.
+
+`live_137` was also on iteration 188's Theme A list of tests that failed at `-j8` under
+`cargo nextest`, classified there as a "contention artifact, not a defect" — on no evidence beyond
+the fact that it passed at lower concurrency. **That classification is the thing this iteration
+exists to replace.** "It only fails under load" is a description, not a diagnosis: iteration 179 spent a
 whole iteration establishing that exactly this description hid a real arming race
 (`assert_network` on the direct route), which iteration 181 then fixed.
 
@@ -68,9 +94,11 @@ survived several iterations.
 
 ## Tasks
 
-### A. Reproduce [0/2]
-- [ ] Each test 10x serially (control) and across at least 3 sweeps at `--jobs 6`
+### A. Reproduce [0/3]
+- [ ] Each named test 10x serially (control) and across at least 3 sweeps at `--jobs 6`
 - [ ] Capture the daemon-route logs from a failing instance, not just the assertion text
+- [ ] Instrument `wait_for_live_targets` to record how long the subscription *actually* takes,
+      idle and under sweep load — the distribution, not one number
 
 ### B. Classify and act [0/2]
 - [ ] One of the three verdicts above per test, in writing, with the evidence
@@ -78,7 +106,7 @@ survived several iterations.
 
 ## Acceptance Criteria [0/3]
 
-- [ ] Three consecutive `--jobs 6` sweeps whose failure set contains neither test
+- [ ] Three consecutive `--jobs 6` sweeps with an empty failure set
 - [ ] Neither fix widens a timeout without a stated measurement behind the new value
 - [ ] If either turns out to be a product race, it has a live Firefox test that fails before the
       fix and passes after — not only a unit test
@@ -86,7 +114,10 @@ survived several iterations.
 ## Out of scope
 
 - `live_153_replace_double_envelope` — diagnosed and fixed inside iteration 188 (it was a real
-  regression from that iteration's `FF_RDP_HOME` change, not load).
+  regression from that iteration's `FF_RDP_HOME` change, not load; it failed serially too, which
+  is exactly how it was told apart from the tests listed here).
+- Lowering the sweep's concurrency to make these pass. That trades the 8x this batch bought for a
+  green that hides the same race; iteration 188 chose to keep the speed and own the flakes here.
 - The sweep hanging on `live_158_launch_survives_contended_bind` — that is
   [[iteration-197-live-sweep-has-no-per-test-timeout]].
 
