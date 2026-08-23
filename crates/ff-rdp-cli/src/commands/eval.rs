@@ -479,7 +479,13 @@ fn brace_opens_block(
         if KEYWORDS_BEFORE_BLOCK.contains(&word.as_str()) {
             return true;
         }
-        // iter-176 Theme C: an anonymous class body, `class { … }`.
+        // iter-176 Theme C: an anonymous class body, `class { … }`. Review
+        // fix: as a *statement* (not an expression, which never reaches this
+        // branch — see `is_expr_body` at this function's call site) `class {}`
+        // with no binding name is not valid JS outside a module's
+        // `export default`, which this eval path never runs, so this arm is
+        // believed unreachable on valid input. Harmless either way: `true` is
+        // also the correct answer if it were ever reached.
         if word == "class" {
             return true;
         }
@@ -565,6 +571,19 @@ fn word_before(chars: &[(usize, char)], at: usize) -> Option<(usize, usize)> {
 /// A leading digit is rejected so a numeric object key (`{1: {a:2}}`) can
 /// never be mistaken for a label even if it somehow reached a statement
 /// position.
+///
+/// Review fix (known gap, not fixed here): the accepted-position list above —
+/// nothing before, `;`, or a *block*'s `}` — does not include an open `{`, so
+/// a label as the very first statement of an enclosing block
+/// (`if (1) { outer: { break outer } } /a;b/…`) stays unjudged too, not only
+/// the object-literal case DEC-042/iteration-176's plan names. Telling that
+/// `{` apart from an object literal's would need the *currently open*
+/// brace's kind, which this function is never handed (only `prev_brace`, the
+/// last *closed* one). Fails safe the same way: the nested label's own `{}`
+/// stays `ObjectLiteral`, but that never reaches a depth-0 boundary check, so
+/// it does not corrupt the enclosing block's own (correctly `Block`)
+/// classification or any top-level boundary. Unreached by any live or unit
+/// input; see iteration-176's plan for the reproduction and carry-over.
 fn label_precedes_block(
     chars: &[(usize, char)],
     colon_idx: Option<usize>,

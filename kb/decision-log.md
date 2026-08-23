@@ -1296,6 +1296,16 @@ second test pins every `}`-then-`/` that must stay a division — including
 DEC-042's own two guard rails, `const o = {v:8}; o.v / 2` → 4 and
 `!function(){ return 1 }()` → false.
 
+**Review fix (2026-08-23)**: the class/`extends` lookback above, as first landed, checked only the
+single identifier immediately before the `{` — so a *namespaced* superclass,
+`class K extends Foo.Bar {}` (the shape `extends React.Component`/`extends stream.Writable` take),
+hit the same `obj.try {`-style dotted-property guard that iter-170 added, and reproduced this
+iteration's own headline defect (silent `undefined`) on a very common real-world pattern that no
+test — unit, live, or the Theme A table — had exercised. Fixed by walking the whole
+`ident(.ident)*` chain back to the `class`/`extends` keyword before applying the dotted guard, not
+stopping at the first `.`. See `kb/iterations/iteration-176-eval-scanner-brace-positions.md`'s
+"Local review fix" section for the two smaller, documented-not-fixed findings from the same pass.
+
 ## DEC-043: `live-sweep` re-probes port 6000 per tier and counts unmet preconditions separately from failures
 
 **Decision** (iter-173): `live-sweep` keeps the fixed port 6000 and keeps its

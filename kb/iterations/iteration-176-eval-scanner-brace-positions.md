@@ -182,6 +182,43 @@ divergence only ever accepts input Firefox would reject; it never changes the va
 script. Recorded in the DEC-042 addendum and in `top_level_statement_boundaries`' doc comment
 rather than papered over.
 
+## Local review fix (2026-08-23)
+
+`/review-pr` (local-only) traced the new `class`/`extends` lookback in `brace_opens_block` by hand
+and found the PR's own headline bug reproduced for a **namespaced superclass**:
+`class K extends Foo.Bar {}` — the `class C extends React.Component {}` /
+`extends stream.Writable {}` shape, not an exotic one. The dotted-property guard iter-170 added to
+correctly exclude `obj.try {` fired on `Bar`'s preceding `.` before the class/`extends` lookback
+this iteration added ever ran, so the class body stayed `ObjectLiteral` — reproducing the exact
+silent-`undefined` defect this iteration exists to fix. Every test at the first landing (unit, live,
+Theme A) only ever exercised a bare superclass identifier (`extends Object`); none covered a dotted
+one.
+
+Confirmed by hand before fixing: a temporary case added to `unit_176_class_declaration_body_is_a_block`
+(`"class K extends Foo.Bar {} K.name"`) failed with `boundaries: []` (expected one boundary) on the
+pre-fix code.
+
+**Fix**: `brace_opens_block` now walks the whole `ident(.ident)*` chain back from the `{` (handling
+`class K extends Foo.Bar.Baz {}` too) before checking whether `class`/`extends` precedes it, instead
+of stopping at the first dot. The `obj.try {` guard itself is unchanged in effect — it still gates
+the bare `do`/`else`/`try`/`finally`/`class` keyword check — but no longer short-circuits the
+chain-walk. Regression-tested (`obj.try {}`, `obj.class {}`, `ns.obj.try {}` must still stay
+unjudged) in the same unit test.
+
+Two more, smaller findings from the same review, not fixed (fail-safe, documented instead):
+
+- A labelled block as the very first statement of a real (non-object-literal) block —
+  `if (1) { outer: { break outer } } /a;b/…` — is also unjudged. This is *not* the object-literal
+  case "Why the label is judgeable after all" names; it is the same conservative answer for a
+  different reason (the currently-open enclosing brace's kind is never handed to
+  `label_precedes_block`, only the last *closed* one). Traced by hand: fails safe — the nested
+  label's own misclassified `{}` never reaches a depth-0 boundary check, so it does not corrupt the
+  enclosing block's own boundary. Documented on `label_precedes_block`.
+- The bare `class {}` anonymous-declaration branch in `brace_opens_block` is believed unreachable on
+  valid input through this eval path (a nameless class declaration needs `export default`, which a
+  non-module script never has). Harmless if ever reached — `true` is the correct answer either way.
+  Documented at the call site.
+
 ## Acceptance Criteria [3/3]
 
 - [x] Each of the three positions is either fixed with a live test, or left as-is with the reason
@@ -227,6 +264,8 @@ re-run from a clean start.
 | 3 | Accepted divergence: `const g = () => {} /re/.test(s)` with no line terminator is now accepted where Firefox rejects it. | **no plan, with a stated reason** — nothing measured is left to act on: the divergence only ever accepts input Firefox rejects, and removing it would break the valid newline form. It is recorded in the DEC-042 addendum, in `top_level_statement_boundaries`' doc comment, and in "Accepted divergence" above. If a caller ever reports a *valid* script whose value changed because of it, that needs its own plan. |
 | 4 | Stale-marker residual on `expr_body_depths`: a `class` keyword in expression position never followed by a `{` at the same depth could misclassify a later `{}` — the same unreached residual `function_keyword_is_declaration` already carries. | **no plan, with a stated reason** — unreached by any live or unit input, and in the safe (pre-170) direction. Documented on `top_level_statement_boundaries`. If a measurement ever produces a matching input, it needs its own plan. |
 | 5 | Labels nested inside a non-block brace (`{ outer: {…} }`) stay unjudged. | **no plan, with a stated reason** — deliberate, in the fail-safe direction (a missing boundary, never a spurious one), and stated in "Why the label is judgeable after all". A measured case that produces a wrong value would change that. |
+| 7 | Local review (2026-08-23): a labelled block as the first statement of a real enclosing block (`if (1) { outer: {…} } ...`) also stays unjudged — a different mechanism than item 5. | **no plan, with a stated reason** — fail-safe by hand-trace (does not corrupt the enclosing block's own boundary; see "Local review fix"). Documented on `label_precedes_block`. |
+| 8 | Local review (2026-08-23): the bare `class {}` anonymous-declaration branch in `brace_opens_block` is believed unreachable through this eval path. | **no plan, with a stated reason** — harmless if ever reached (`true` is the correct answer). Documented at the call site. |
 | 6 | Plan's dogfood lines 1a/1b predicted an arrow-body defect on input that is invalid JavaScript in Firefox itself. | **closed in this PR** — recorded in the Theme A table as *not* defects, with Firefox's own error for each, rather than being quietly reused as evidence. The arrow position was confirmed reachable by a different line (1c) that the plan did not write. |
 
 ## Design notes
