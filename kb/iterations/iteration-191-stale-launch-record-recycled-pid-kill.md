@@ -2,7 +2,7 @@
 title: "Iteration 191: `launch --replace` signals a recycled PID because a stale launch record is treated as ownership proof"
 type: iteration
 date: 2026-08-23
-status: in-review
+status: done
 branch: iter-191/stale-launch-record-recycled-pid
 depends_on:
   - iteration-178-live-sweep-carryover-watch-conditions
