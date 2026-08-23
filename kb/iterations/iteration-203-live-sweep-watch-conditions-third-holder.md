@@ -96,6 +96,7 @@ Trigger and action text for conditions 1-7 lives in
 | 10 | Nothing lints `main` immediately after a merge — two individually-green PRs can merge into a lint-red `main`, and `ci.yml` is `pull_request`-only | a merge-introduced red `main` survives a full weekly canary cycle uncaught | not yet observed — **and see condition 13: no canary cycle has actually completed yet** | Accepted in iter-185 rather than fixed: the weekly canary is supposed to bound exposure to 7 days, and `push: [main]` would double CI cost per merge without having caught the original incident (zero commits involved). DEC-044. The acceptance is only as good as the canary actually running, which is why 13 now sits beside this row |
 | 11 | The canary does not alert on failure — it relies on GitHub's default scheduled-failure notification reaching one maintainer | two consecutive scheduled runs fail on the same cause with no intervening fix | **structurally unobservable** — zero scheduled runs exist | Cannot fire until at least two Mondays have passed with the cron firing. Earliest possible observation 2026-08-31. Check with `gh run list --workflow=toolchain-watch.yml --limit=10 --json conclusion,createdAt,event` and confirm `event` is `schedule`, not `workflow_dispatch` |
 | 13 | **New (2026-08-24).** `toolchain-watch.yml`'s cron has never fired. Its entire run history is one `workflow_dispatch` on 2026-08-23; the workflow landed in iter-185 (`63b25a4`) and its first scheduled run was still in the future when 192 checked | the first `event: schedule` run of `toolchain-watch.yml` does not appear by 2026-08-25, or any later Monday passes with no scheduled run | first scheduled run due 2026-08-24 04:00 UTC; 192 observed at 2026-08-23 22:14 UTC, six hours early | Cron demonstrably works in this repo — `live.yml` has fired every Monday since 2026-07-13 — so the default expectation is that it simply had not come due. But conditions 10 and 11 both *rest* on this canary running, and nobody has yet seen it do so unattended. One `gh run list` closes this row; it is cheap and it is load-bearing. Related: `live.yml`'s scheduled runs land 46 min – 3 h 26 min after their nominal 03:00 UTC, so toolchain-watch's "one hour after `live.yml` so they do not contend" comment is optimistic — worth a glance if either job starts flaking |
+| 14 | **New (2026-08-24).** The `iteration-close` skill tells a sweep runner to start a raw port-6000 Firefox and never tells them to stop it. Three were found alive at the start of 192 — `/tmp/ff-rdp-sweep188-profile`, `/tmp/ff-rdp-sweep188b-profile`, `/tmp/ff-rdp-sweep-6000-profile` — left by earlier iterations' runners. Only one can hold the port; the other two were inert processes competing for it | a sweep runner finds a port-6000 browser they did not start, **or** a sweep's `preexisting`/`vanished` counts are misread because the browser on the port belonged to a previous run | 3 found and reaped by hand before 192's sweeps | Not a product defect — `live_151_*` and `live_146_no_orphan_firefox_after_suite` both pass, so nothing ff-rdp *launches* is leaking; these were started by hand, by the skill's own instruction. The risk is interpretive rather than resource: a stale browser on port 6000 satisfies the sweep's probe, so the `preexisting` tier runs against a profile whose prefs and state nobody checked. Cheapest fix is one line in `.claude/skills/iteration-close/SKILL.md` telling the runner to kill the browser afterwards and to check for an existing one first; deliberately not done here because 192 was a watch-holder and editing a skill mid-loop is what condition 9's history warns about |
 
 ## Out of scope
 
@@ -109,7 +110,7 @@ Trigger and action text for conditions 1-7 lives in
 - Forcing the `vanished` / `launch_timeout` branches with a timed kill (condition 3). Costed and
   declined three times now; record the decision rather than re-deriving it.
 
-## Acceptance Criteria [0/12]
+## Acceptance Criteria [0/13]
 
 - [ ] Watch condition 1 (`live_160` intermittent failure) has either fired (and been forked into
       its own plan) or has not fired since this plan was filed
@@ -138,6 +139,9 @@ Trigger and action text for conditions 1-7 lives in
 - [ ] Watch condition 13 (the canary's cron has never fired) is closed by observing an
       `event: schedule` run of `toolchain-watch.yml`, or has fired and been forked into its own
       plan
+- [ ] Watch condition 14 (hand-started port-6000 browsers outliving their sweep) has either fired
+      again, or the `iteration-close` skill has grown the stop/check-first instruction that makes
+      it unnecessary
 - [ ] Whoever closes this plan has decided, explicitly, whether the still-open conditions get a
       fourth holder or are dropped with a written reason
 
