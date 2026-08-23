@@ -2,7 +2,7 @@
 title: "Iteration 182: 235 e2e-tier assertions still report only stderr, so their failure messages ship empty"
 type: iteration
 date: 2026-08-22
-status: in-review
+status: done
 branch: iter-182/e2e-tier-stdout-evidence
 depends_on: []
 first_call_sites: []
