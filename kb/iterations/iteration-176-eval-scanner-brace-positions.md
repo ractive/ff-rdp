@@ -143,19 +143,57 @@ JavaScript on a live browser.
 - [x] State explicitly, per position, whether it reproduces and with what symptom
 
 ### B. Arrow bodies
-- [ ] If it reproduces: `brace_opens_block` recognizes `=>` before the `{`
-- [ ] Unit test: a regex after an arrow body, and a division after an object literal, in one script
+- [x] If it reproduces: `brace_opens_block` recognizes `=>` before the `{`
+- [x] Unit test: a regex after an arrow body, and a division after an object literal, in one script
+      — `unit_176_arrow_body_is_a_block`, on the single script
+      `const g = () => {}\n/a;b/.test("a;b"); const o = {v:8}; o.v / 2`
 
 ### C. Class bodies and labelled blocks
-- [ ] If they reproduce: extend the word lookback, or record why a label stays unjudged
+- [x] If they reproduce: extend the word lookback, or record why a label stays unjudged — both are
+      now judged. See "Why the label is judgeable after all" below for the label decision, which the
+      plan explicitly left open.
 
-## Acceptance Criteria [0/3]
+## Why the label is judgeable after all
 
-- [ ] Each of the three positions is either fixed with a live test, or left as-is with the reason
-      recorded here — **no position is silently dropped**
-- [ ] `const o = {v:8}; o.v / 2` → 4 and `const r = !function(){ return 1 }(); r` → false still
-      hold on a live browser (the A/B comparison in iter-170's plan is the template)
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+iter-170's reason for leaving `:` alone was that "`{a: 1}` looks the same from the right", and read
+from the `:` alone it does. It stops looking the same **one token further left**. A label sits where
+a *statement* can start — nothing before it, a `;`, or a **block**'s `}` — and nothing that puts a
+`{` after a `:` can occupy that position:
+
+| what puts a `{` after a `:` | what precedes the `:`-identifier | judged |
+|---|---|---|
+| labelled block, `outer: { … }` | nothing / `;` / a block's `}` | **Block** |
+| object key, `{a: {b:1}}` | `{` | ObjectLiteral |
+| later object key, `{a:1, b:{c:2}}` | `,` | ObjectLiteral |
+| ternary alternative, `c ? x : {a:1}` | `?` | ObjectLiteral |
+| `case 1: {…}` | the word `case` (and a leading digit is rejected outright) | ObjectLiteral |
+
+`default: {…}` inside a `switch` is accepted, and is genuinely a block. The cost is that a label
+nested inside a non-block brace keeps the pre-176 answer — a missing boundary, never a spurious
+one, i.e. the fail-safe direction DEC-042 already chose.
+
+## Accepted divergence (recorded, not fixed)
+
+`const g = () => {} /re/.test(s)` — with **no** line terminator — is rejected by Firefox (an
+ArrowFunction is not a division operand, and ASI needs a newline) but is now accepted by the
+scanner, which reads the arrow body's `}` as self-terminating the way a block statement's is. That
+same rule is what makes the newline form (case 1c above), which *is* valid JavaScript, work. The
+divergence only ever accepts input Firefox would reject; it never changes the value of a valid
+script. Recorded in the DEC-042 addendum and in `top_level_statement_boundaries`' doc comment
+rather than papered over.
+
+## Acceptance Criteria [3/3]
+
+- [x] Each of the three positions is either fixed with a live test, or left as-is with the reason
+      recorded here — **no position is silently dropped**. All three are fixed:
+      `live_176_arrow_class_and_label_bodies_are_blocks` covers arrow (2 cases), class (3) and
+      label (3).
+- [x] `const o = {v:8}; o.v / 2` → 4 and `const r = !function(){ return 1 }(); r` → false still
+      hold on a live browser — both are the first two cases of
+      `live_176_object_literals_and_expressions_still_divide`, alongside 14 more `}`-then-`/`
+      divisions (object keys, ternary branches, class *expressions*, function expressions, an
+      arrow body followed by `,`).
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 

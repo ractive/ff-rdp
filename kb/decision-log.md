@@ -1240,6 +1240,62 @@ from four positions" trade-off claim above is superseded by this addendum,
 not corrected in place, per this repo's discipline against rewriting a claim
 to fit what was later found.
 
+**Addendum (iter-176, 2026-08-23)**: the "stays `ObjectLiteral`, which
+reproduces iter-167's answer exactly" paragraph above described the three
+remaining positions — an arrow function's `{` body, a `class` body, a labelled
+block — as a safe resting place. Measured against live Firefox, none of them
+was:
+
+- `class K { m(){ return 9 } } new K().m()` → `{"type":"undefined"}` where
+  Firefox returns `9`. A silent wrong *value*, the mode iter-142 Theme E named
+  the worst of this wrap.
+- `const n = 1; outer: { break outer } n` → `missing ) in parenthetical` where
+  Firefox returns `1`.
+- With a real line terminator (real ASI, which is what makes the source valid
+  JavaScript at all), all three reach the gap-2 symptom:
+  `const g = () => {}\n/a;b/.test("a;b")`,
+  `class K { m(){ return 9 } }\n/a;b/.test("a;b")` and
+  `const n = 1; outer: { break outer }\n/a;b/.test("a;b")` each threw
+  `unterminated regular expression literal` where Firefox returns `true`.
+
+So `brace_opens_block` now commits on all three, by the same rule DEC-042
+already used — commit only where JS admits no object literal:
+
+- `=>` before the `{`. It is the only two-character token ending in `>` whose
+  first character is `=`, and an arrow's block body is never an object literal
+  (`() => ({a:1})` needs its parentheses precisely because of that).
+- `class`, `class K`, `class K extends B` before the `{`. Both `class` and
+  `extends` are reserved words, so an identifier preceded by either can only be
+  a class name or a superclass.
+- an identifier followed by `:` **at a statement position** — nothing before
+  it, a `;`, or a *block*'s `}`. iter-170 left `:` unjudged because "`{a: 1}`
+  looks the same from the right", and from the `:` alone it does; one token
+  further left it does not, because no object key (`{`- or `,`-preceded), no
+  ternary branch (`?`-preceded) and no `case` label (`case`-preceded) can
+  occupy a statement position.
+
+A *class expression*'s body is excluded the same way a function expression's
+is, and for a stronger reason: a ClassExpression is a PrimaryExpression, so
+`const C = class {} / 2` really is a division. The `expr_function_depths`
+marker stack from the 2026-08-17 addendum is generalized to `expr_body_depths`
+and now takes a `class` keyword seen in expression position too.
+
+**Accepted divergence**: `const g = () => {} /re/.test(s)` with *no* line
+terminator is rejected by Firefox (an ArrowFunction is not a division operand,
+and ASI needs a newline) but accepted by the scanner, which reads the arrow
+body's `}` as self-terminating the way a block statement's is. The same rule
+is what makes the newline form — valid JavaScript — work. The divergence only
+ever accepts input Firefox would reject; it never changes the value of a valid
+script.
+
+**Evidence**: `unit_176_arrow_body_is_a_block`,
+`unit_176_class_declaration_body_is_a_block`,
+`unit_176_labelled_block_is_a_block`, and the two-test live suite
+`crates/ff-rdp-cli/tests/live/live_176_eval_scanner_brace_positions.rs`, whose
+second test pins every `}`-then-`/` that must stay a division — including
+DEC-042's own two guard rails, `const o = {v:8}; o.v / 2` → 4 and
+`!function(){ return 1 }()` → false.
+
 ## DEC-043: `live-sweep` re-probes port 6000 per tier and counts unmet preconditions separately from failures
 
 **Decision** (iter-173): `live-sweep` keeps the fixed port 6000 and keeps its
