@@ -215,9 +215,14 @@ fn live_186_launch_record_growth_bounded() {
         else {
             return;
         };
-        // Kill without a clean `daemon stop` on all but the last pass: the
-        // killed case is precisely the one `remove_in` never covers, so the
-        // record is left behind for the *next* launch's sweep to reclaim.
+        // `stop_instance` always tries a clean `daemon stop` (which itself
+        // reclaims the record via `remove_in`) and then hard-kills the pid as
+        // a safety net — every pass, not just some. The dead-record-left-for
+        // the-sweep-to-reclaim scenario (`remove_in` never runs; the sweep is
+        // the only thing that ever collects it) is covered end to end by
+        // `live_186_launch_record_gc_collects_dead_spares_live` above; this
+        // test instead exercises that ordinary clean launch/stop cycles never
+        // let the directory grow.
         stop_instance(home.path(), port, pid);
         drop(guard);
 
