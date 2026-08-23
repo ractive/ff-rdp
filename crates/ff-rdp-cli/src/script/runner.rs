@@ -220,7 +220,9 @@ fn run_script(
                 // stderr-ok: (b) debug/diagnostic — the NDJSON on stdout is
                 // unchanged and each step still reports its own outcome.
                 eprintln!(
-                    "warning: could not arm the playbook-scoped network subscription ({e});                      `assert_network` steps fall back to per-step arming, which can miss a                      request that completed before the step started"
+                    "warning: could not arm the playbook-scoped network subscription \
+                     ({e}); `assert_network` steps fall back to per-step arming, which \
+                     can miss a request that completed before the step started"
                 );
             }
         }
