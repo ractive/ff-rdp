@@ -2,7 +2,7 @@
 title: "Iteration 176: the eval scanner refuses to judge three brace positions"
 type: iteration
 date: 2026-08-17
-status: planned
+status: in-review
 branch: iter-176/eval-scanner-brace-positions
 depends_on:
   - iteration-170-eval-scanner-residual-gaps
@@ -26,22 +26,22 @@ dogfood_path: |
   # and iter-164 and iter-166 were both closed obsolete the same way.
   ff-rdp launch --headless --debug-port 7503
   ff-rdp --port 7503 navigate https://example.com
-
+  
   # 1 — arrow body. Predicted: the `/` reads as division, the regex is never
   #     entered, its `;` becomes a top-level boundary, and the wrap splits
   #     inside the literal (the iter-170 gap-2 symptom, one form along).
   ff-rdp --port 7503 eval --stringify 'const f = () => {}; f() /a;b/.test("a;b")'
   ff-rdp --port 7503 eval --stringify 'const g = () => {} /a;b/.test("a;b")'
-
+  
   # 2 — class body. Predicted: no boundary after `}`, so the trailing
   #     expression is not auto-returned and the value is silently undefined.
   ff-rdp --port 7503 eval --stringify 'class K { m(){ return 9 } } new K().m()'
   # Compare: with an explicit `;` after the class this already works today —
   ff-rdp --port 7503 eval --stringify 'class K { m(){ return 9 } } ; new K().m()'
-
+  
   # 3 — labelled block.
   ff-rdp --port 7503 eval --stringify 'const n = 1; outer: { break outer } n'
-
+  
   # Must NOT regress — the divisions the conservative bucket protects:
   ff-rdp --port 7503 eval --stringify 'const o = {v:8}; o.v / 2'
   ff-rdp --port 7503 eval --stringify 'const r = !function(){ return 1 }(); r'
