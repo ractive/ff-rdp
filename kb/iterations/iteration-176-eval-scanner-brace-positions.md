@@ -2,7 +2,7 @@
 title: "Iteration 176: the eval scanner refuses to judge three brace positions"
 type: iteration
 date: 2026-08-17
-status: in-review
+status: done
 branch: iter-176/eval-scanner-brace-positions
 depends_on:
   - iteration-170-eval-scanner-residual-gaps
