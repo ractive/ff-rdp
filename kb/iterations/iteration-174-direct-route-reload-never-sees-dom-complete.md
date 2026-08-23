@@ -173,7 +173,7 @@ The plan's step 4 asserts `back`/`forward` "can exhaust the readystate fallback 
 not failing here beforehand — the exit-124 case the plan recorded must need a page BFCache
 declines, and this iteration did not reproduce or chase it. Recorded rather than reworded.
 
-## Scope
+## Scope [3/4]
 
 - [x] measure which of the three candidates it is, and record the measurement here before fixing
 - [x] `reload --no-daemon` on a static localhost page resolves from the **events** path, not the
