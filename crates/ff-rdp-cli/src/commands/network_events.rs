@@ -145,36 +145,49 @@ pub(crate) fn merge_updates(
 ) -> HashMap<u64, NetworkResourceUpdate> {
     let mut update_map: HashMap<u64, NetworkResourceUpdate> = HashMap::new();
     for update in all_updates {
-        let entry = update_map.entry(update.resource_id).or_default();
-        if update.status.is_some() {
-            entry.status = update.status;
-        }
-        if update.http_version.is_some() {
-            entry.http_version = update.http_version;
-        }
-        if update.mime_type.is_some() {
-            entry.mime_type = update.mime_type;
-        }
-        if update.total_time.is_some() {
-            entry.total_time = update.total_time;
-        }
-        if update.content_size.is_some() {
-            entry.content_size = update.content_size;
-        }
-        if update.transferred_size.is_some() {
-            entry.transferred_size = update.transferred_size;
-        }
-        if update.from_cache.is_some() {
-            entry.from_cache = update.from_cache;
-        }
-        if update.remote_address.is_some() {
-            entry.remote_address.clone_from(&update.remote_address);
-        }
-        if update.security_state.is_some() {
-            entry.security_state.clone_from(&update.security_state);
-        }
+        fold_update(&mut update_map, update);
     }
     update_map
+}
+
+/// Fold one [`NetworkResourceUpdate`] into `update_map`, letting each
+/// `Some` field overwrite the value already recorded for that `resource_id`.
+///
+/// Split out of [`merge_updates`] (iter-181) so a long-lived subscription can
+/// fold updates as they arrive instead of re-merging a growing `Vec` on every
+/// look — see [`crate::commands::network_watch`].
+pub(crate) fn fold_update(
+    update_map: &mut HashMap<u64, NetworkResourceUpdate>,
+    update: NetworkResourceUpdate,
+) {
+    let entry = update_map.entry(update.resource_id).or_default();
+    if update.status.is_some() {
+        entry.status = update.status;
+    }
+    if update.http_version.is_some() {
+        entry.http_version = update.http_version;
+    }
+    if update.mime_type.is_some() {
+        entry.mime_type = update.mime_type;
+    }
+    if update.total_time.is_some() {
+        entry.total_time = update.total_time;
+    }
+    if update.content_size.is_some() {
+        entry.content_size = update.content_size;
+    }
+    if update.transferred_size.is_some() {
+        entry.transferred_size = update.transferred_size;
+    }
+    if update.from_cache.is_some() {
+        entry.from_cache = update.from_cache;
+    }
+    if update.remote_address.is_some() {
+        entry.remote_address.clone_from(&update.remote_address);
+    }
+    if update.security_state.is_some() {
+        entry.security_state.clone_from(&update.security_state);
+    }
 }
 
 /// Drain buffered network events from the daemon and split them into
