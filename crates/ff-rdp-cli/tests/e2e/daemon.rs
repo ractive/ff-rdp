@@ -7,7 +7,7 @@
 ///     `--help`; it should fail with a connection error, not an "unrecognised
 ///     subcommand" error.
 ///   - `--help` output advertises both `--no-daemon` and `--daemon-timeout`.
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
@@ -52,7 +52,7 @@ fn no_daemon_flag_bypasses_daemon_and_connects_directly() {
     assert!(
         output.status.success(),
         "--no-daemon tabs must succeed; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     // Verify the output is valid JSON — the daemon path is not involved.
@@ -88,7 +88,7 @@ fn no_daemon_flag_accepted_as_global_flag() {
     assert!(
         output.status.success(),
         "--no-daemon as global flag must succeed; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 }
 
@@ -130,11 +130,13 @@ fn daemon_subcommand_is_recognised_and_fails_gracefully_without_firefox() {
     // we must not see that here.
     assert!(
         !stderr.to_lowercase().contains("unrecognized subcommand"),
-        "_daemon must be a recognised subcommand; stderr: {stderr}"
+        "_daemon must be a recognised subcommand; stderr: {stderr} ({})",
+        support::output_note(&output)
     );
     assert!(
         !stderr.to_lowercase().contains("unknown subcommand"),
-        "_daemon must be a recognised subcommand; stderr: {stderr}"
+        "_daemon must be a recognised subcommand; stderr: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 
@@ -203,13 +205,14 @@ fn registry_not_found_warning_silent_when_direct_fallback_succeeds() {
     assert!(
         output.status.success(),
         "expected success when direct fallback works; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !stderr.contains("warning:"),
-        "happy path must be silent (no daemon warnings on stderr); got: {stderr}"
+        "happy path must be silent (no daemon warnings on stderr); got: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 
@@ -248,7 +251,8 @@ fn registry_not_found_warning_visible_when_direct_fallback_also_fails() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("warning:"),
-        "broken path must surface the deferred daemon warning; got: {stderr}"
+        "broken path must surface the deferred daemon warning; got: {stderr} ({})",
+        support::output_note(&output)
     );
     // The direct connection failure is now reported as the single JSON error
     // envelope on stdout (iter-98 Theme D removed the duplicate stderr line);
@@ -276,7 +280,7 @@ fn help_shows_daemon_flags() {
     assert!(
         output.status.success(),
         "--help must exit 0; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);

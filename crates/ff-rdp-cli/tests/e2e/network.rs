@@ -1,4 +1,4 @@
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
@@ -60,7 +60,7 @@ fn network_shows_summary_by_default() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -157,7 +157,7 @@ fn network_detail_shows_requests() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -421,7 +421,7 @@ fn network_jq_does_not_switch_results_to_an_array() {
     assert!(
         output.status.success(),
         "stderr={}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -517,7 +517,7 @@ fn network_empty_watcher_does_not_substitute_performance_api() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -577,7 +577,7 @@ fn network_source_performance_api_returns_perf_rows() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -641,7 +641,7 @@ fn network_summary_source_performance_api_returns_perf_rows() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -691,17 +691,19 @@ fn network_prints_hint_when_both_sources_empty() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("hint:"),
-        "expected a hint on stderr when both sources empty, got: {stderr:?}"
+        "expected a hint on stderr when both sources empty, got: {stderr:?} ({})",
+        support::output_note(&output)
     );
     assert!(
         stderr.contains("--follow") || stderr.contains("Navigate"),
-        "hint should mention --follow or Navigate, got: {stderr:?}"
+        "hint should mention --follow or Navigate, got: {stderr:?} ({})",
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -754,7 +756,7 @@ fn network_follow_streams_request_and_response_events() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -823,7 +825,7 @@ fn network_follow_filter_suppresses_non_matching_requests() {
     assert!(
         output.status.success(),
         "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -861,7 +863,7 @@ fn network_meta_source_watcher_when_watcher_has_entries() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -924,7 +926,7 @@ fn network_detail_headers_on_perf_source_emits_note() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =

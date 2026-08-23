@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
@@ -92,7 +92,7 @@ fn recorder_elides_explicit_default_wait_timeout() {
     assert!(
         start_out.status.success(),
         "record start failed: {}",
-        String::from_utf8_lossy(&start_out.stderr)
+        support::output_note(&start_out)
     );
 
     // wait --selector body --wait-timeout 5000
@@ -108,7 +108,7 @@ fn recorder_elides_explicit_default_wait_timeout() {
     assert!(
         wait_out.status.success(),
         "wait command failed: {}",
-        String::from_utf8_lossy(&wait_out.stderr)
+        support::output_note(&wait_out)
     );
 
     handle.join().unwrap();
@@ -120,7 +120,7 @@ fn recorder_elides_explicit_default_wait_timeout() {
     assert!(
         stop_out.status.success(),
         "record stop failed: {}",
-        String::from_utf8_lossy(&stop_out.stderr)
+        support::output_note(&stop_out)
     );
 
     // Parse the recorded file and assert `timeout: 5000` is present.
@@ -174,7 +174,7 @@ fn recorder_captures_nondefault_wait_timeout() {
     assert!(
         start_out.status.success(),
         "record start failed: {}",
-        String::from_utf8_lossy(&start_out.stderr)
+        support::output_note(&start_out)
     );
 
     // wait --selector body --wait-timeout 1234  (non-default)
@@ -190,7 +190,7 @@ fn recorder_captures_nondefault_wait_timeout() {
     assert!(
         wait_out.status.success(),
         "wait command failed: {}",
-        String::from_utf8_lossy(&wait_out.stderr)
+        support::output_note(&wait_out)
     );
 
     handle.join().unwrap();
@@ -201,7 +201,7 @@ fn recorder_captures_nondefault_wait_timeout() {
     assert!(
         stop_out.status.success(),
         "record stop failed: {}",
-        String::from_utf8_lossy(&stop_out.stderr)
+        support::output_note(&stop_out)
     );
 
     let content = std::fs::read_to_string(&output_path).expect("recorded file must exist");
@@ -242,7 +242,7 @@ fn recorder_omits_default_timeout() {
     assert!(
         start_out.status.success(),
         "record start failed: {}",
-        String::from_utf8_lossy(&start_out.stderr)
+        support::output_note(&start_out)
     );
 
     // wait --selector body  (no --wait-timeout, default of 5000 applies)
@@ -256,7 +256,7 @@ fn recorder_omits_default_timeout() {
     assert!(
         wait_out.status.success(),
         "wait command failed: {}",
-        String::from_utf8_lossy(&wait_out.stderr)
+        support::output_note(&wait_out)
     );
 
     handle.join().unwrap();
@@ -267,7 +267,7 @@ fn recorder_omits_default_timeout() {
     assert!(
         stop_out.status.success(),
         "record stop failed: {}",
-        String::from_utf8_lossy(&stop_out.stderr)
+        support::output_note(&stop_out)
     );
 
     let content = std::fs::read_to_string(&output_path).expect("recorded file must exist");
@@ -321,7 +321,7 @@ fn recorder_captures_nondefault_timeout_for_text_wait() {
     assert!(
         wait_out.status.success(),
         "wait --text failed: {}",
-        String::from_utf8_lossy(&wait_out.stderr)
+        support::output_note(&wait_out)
     );
     handle.join().unwrap();
 
@@ -368,7 +368,7 @@ fn recorder_captures_nondefault_timeout_for_eval_wait() {
     assert!(
         wait_out.status.success(),
         "wait --eval failed: {}",
-        String::from_utf8_lossy(&wait_out.stderr)
+        support::output_note(&wait_out)
     );
     handle.join().unwrap();
 
@@ -414,7 +414,7 @@ fn recorder_two_step_file_ends_with_correct_closing() {
     assert!(
         start_out.status.success(),
         "record start failed: {}",
-        String::from_utf8_lossy(&start_out.stderr)
+        support::output_note(&start_out)
     );
 
     // Step 1
@@ -428,7 +428,7 @@ fn recorder_two_step_file_ends_with_correct_closing() {
     assert!(
         out1.status.success(),
         "wait 1 failed: {}",
-        String::from_utf8_lossy(&out1.stderr)
+        support::output_note(&out1)
     );
     handle1.join().unwrap();
 
@@ -443,7 +443,7 @@ fn recorder_two_step_file_ends_with_correct_closing() {
     assert!(
         out2.status.success(),
         "wait 2 failed: {}",
-        String::from_utf8_lossy(&out2.stderr)
+        support::output_note(&out2)
     );
     handle2.join().unwrap();
 
@@ -453,7 +453,7 @@ fn recorder_two_step_file_ends_with_correct_closing() {
     assert!(
         stop_out.status.success(),
         "record stop failed: {}",
-        String::from_utf8_lossy(&stop_out.stderr)
+        support::output_note(&stop_out)
     );
 
     let content = std::fs::read_to_string(&output_path).expect("recorded file must exist");

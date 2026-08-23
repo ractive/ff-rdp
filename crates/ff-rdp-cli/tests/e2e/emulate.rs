@@ -5,6 +5,8 @@
 //! actor → updateConfiguration) and the applied-config probes are covered by
 //! the live suite `tests/live/live_103_emulate.rs`.
 
+use super::support;
+
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }
@@ -38,7 +40,7 @@ fn reset_with_field_flag_is_rejected() {
         out.status.code(),
         Some(1),
         "combining --reset with a field flag must be a user error; stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        support::output_note(&out)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let json: serde_json::Value =
@@ -58,7 +60,7 @@ fn no_flags_is_rejected() {
         out.status.code(),
         Some(1),
         "emulate with no flags must be a user error; stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        support::output_note(&out)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let json: serde_json::Value =
@@ -78,7 +80,7 @@ fn non_positive_dppx_is_rejected() {
         out.status.code(),
         Some(1),
         "--dppx 0 must be a user error; stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        support::output_note(&out)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let json: serde_json::Value =
@@ -98,7 +100,7 @@ fn invalid_color_scheme_is_usage_error() {
         out.status.code(),
         Some(2),
         "invalid enum value must be a clap usage error (exit 2); stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        support::output_note(&out)
     );
 }
 

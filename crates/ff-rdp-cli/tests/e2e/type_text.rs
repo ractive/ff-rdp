@@ -1,4 +1,4 @@
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
@@ -52,7 +52,7 @@ fn type_text_returns_confirmation_json() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -89,7 +89,7 @@ fn type_text_with_clear_flag() {
     assert!(
         output.status.success(),
         "expected success with --clear, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -132,7 +132,7 @@ fn type_text_named_flags_work() {
     assert!(
         output.status.success(),
         "expected --selector/--text form to succeed, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -167,7 +167,7 @@ fn type_text_named_with_clear_works() {
     assert!(
         output.status.success(),
         "expected --selector/--text/--clear form to succeed, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 }
 
@@ -192,7 +192,8 @@ fn type_text_conflict_positional_and_flag_selector_errors() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("--selector") || stderr.contains("cannot be used with"),
-        "expected conflict message mentioning --selector, got: {stderr}"
+        "expected conflict message mentioning --selector, got: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 
@@ -233,7 +234,8 @@ fn type_text_unknown_flag_emits_tailored_hint() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("hint:") && stderr.contains("--selector/--text"),
-        "expected tailored hint after clap error, got: {stderr}"
+        "expected tailored hint after clap error, got: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 

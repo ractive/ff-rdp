@@ -42,14 +42,15 @@ fn rust_files(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The test trees this scan covers: the two live tiers.
+/// The test trees this scan covers: both live tiers, the e2e (mock-server)
+/// tier, and the core crate's own tests.
 ///
-/// `crates/ff-rdp-cli/tests/e2e/` is deliberately **not** scanned. It is the
-/// mock-server tier, it has its own `support` module rather than the live
-/// `common` one, and iteration 179 measured 246 further sites there — a
-/// separate, larger mechanical change that
-/// [[iteration-182-e2e-tier-stdout-evidence]] carries. Widening this array is
-/// all that is needed once that lands.
+/// `crates/ff-rdp-cli/tests/e2e/` has its own `support` module rather than
+/// the live tier's `common`, so its `output_note` equivalent lives in
+/// `tests/e2e/support/mod.rs` rather than `tests/common/mod.rs`. Iteration
+/// 179 fixed the two live roots; iteration 182 added `tests/e2e` here after
+/// fixing its 236 offending invocations (see
+/// [[iteration-182-e2e-tier-stdout-evidence]]).
 fn scanned_roots() -> Vec<PathBuf> {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -57,6 +58,7 @@ fn scanned_roots() -> Vec<PathBuf> {
         .to_path_buf();
     vec![
         crates.join("ff-rdp-cli/tests/live"),
+        crates.join("ff-rdp-cli/tests/e2e"),
         crates.join("ff-rdp-core/tests"),
     ]
 }
@@ -352,15 +354,30 @@ fn f() {
     );
 }
 
+/// Per-tier floors, not just a global one. A single combined floor (the
+/// iter-179 original: `scanned >= 1200`) can hide a per-tier regression: one
+/// tree could lose most of its invocations to a lexer desync while another
+/// tree's volume papers over it in the sum. Measured on this branch
+/// (iteration 182, after widening [`scanned_roots`] to include e2e): live
+/// 1290, e2e 1258, core 168 — each floor sits ~10% below its measured count,
+/// tight enough that a desync swallowing a meaningful fraction of a tree's
+/// invocations still trips its own assertion, not just the global total.
+const MIN_PER_ROOT: [(&str, usize); 3] = [
+    ("ff-rdp-cli/tests/live", 1150),
+    ("ff-rdp-cli/tests/e2e", 1120),
+    ("ff-rdp-core/tests", 150),
+];
+
 /// AC `unit_179_no_assertion_reports_stderr_without_stdout`: every panic
 /// message that names `stderr` also names `stdout`.
 #[test]
 fn unit_179_no_assertion_reports_stderr_without_stdout() {
     let mut offenders: Vec<String> = Vec::new();
-    let mut scanned = 0usize;
+    let mut per_root: Vec<(String, usize)> = Vec::new();
 
     for root in scanned_roots() {
         assert!(root.is_dir(), "expected a test tree at {}", root.display());
+        let mut root_scanned = 0usize;
         for path in rust_files(&root) {
             if is_self(&path) {
                 continue;
@@ -369,7 +386,7 @@ fn unit_179_no_assertion_reports_stderr_without_stdout() {
                 continue;
             };
             for inv in panic_invocations(&src) {
-                scanned += 1;
+                root_scanned += 1;
                 if is_offender(&inv.text) {
                     let head: String = inv.text.chars().take(120).collect();
                     offenders.push(format!(
@@ -381,13 +398,21 @@ fn unit_179_no_assertion_reports_stderr_without_stdout() {
                 }
             }
         }
+        per_root.push((root.display().to_string(), root_scanned));
     }
 
-    assert!(
-        scanned >= 1200,
-        "the scan must actually reach the assertions: only {scanned} panic-macro \
-         invocations found across the live test trees"
-    );
+    for (label, min) in MIN_PER_ROOT {
+        let found = per_root
+            .iter()
+            .find(|(name, _)| name.ends_with(label))
+            .unwrap_or_else(|| panic!("scanned_roots must include a root ending in {label}"));
+        assert!(
+            found.1 >= min,
+            "the scan must actually reach the assertions in {label}: only {} panic-macro \
+             invocations found (expected at least {min}) — per-root counts: {per_root:?}",
+            found.1
+        );
+    }
     assert!(
         offenders.is_empty(),
         "ff-rdp writes its error envelopes to STDOUT, so a failure message that \

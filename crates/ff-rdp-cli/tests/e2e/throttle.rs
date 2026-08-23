@@ -5,6 +5,8 @@
 //! query. These tests exercise the client-side bookkeeping path directly:
 //! no `MockRdpServer` is needed at all.
 
+use super::support;
+
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }
@@ -36,7 +38,7 @@ fn throttle_status_without_daemon_reports_null_with_note() {
     assert!(
         output.status.success(),
         "throttle status must succeed even with no daemon running; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =

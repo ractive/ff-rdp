@@ -6,7 +6,7 @@
 ///   2   usage error (clap parse failure — unknown flag, missing subcommand)
 ///   3   connection failure (could not reach Firefox or daemon)
 ///   124 timeout (operation exceeded its deadline)
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
@@ -48,7 +48,7 @@ fn exit_0_happy_path_tabs() {
         output.status.code(),
         Some(0),
         "happy path must exit 0; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 }
 
@@ -67,7 +67,7 @@ fn exit_2_unknown_flag() {
         output.status.code(),
         Some(2),
         "unknown flag must exit 2; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 }
 
@@ -83,7 +83,7 @@ fn exit_2_missing_subcommand() {
         output.status.code(),
         Some(2),
         "missing subcommand must exit 2; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 }
 
@@ -112,7 +112,7 @@ fn exit_3_connection_refused_tabs() {
         output.status.code(),
         Some(3),
         "connection refused must exit 3; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     // The connection failure is reported as the single JSON error envelope on
@@ -148,7 +148,7 @@ fn exit_3_connection_refused_eval() {
         output.status.code(),
         Some(3),
         "connection refused in eval must exit 3; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 }
 
@@ -193,7 +193,7 @@ fn exit_124_wait_timeout() {
         output.status.code(),
         Some(124),
         "wait timeout must exit 124; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     // A2: selector-wait timeout now says "not found" instead of "timed out".
@@ -250,7 +250,7 @@ fn exit_1_wait_js_exception() {
         output.status.code(),
         Some(1),
         "JS exception during wait must exit 1; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 }
 
@@ -301,6 +301,6 @@ fn pre_fix_repro_error_emitted_twice() {
     assert!(
         !stderr.contains("error:"),
         "stderr must not carry a duplicate `error:` line; the JSON envelope is \
-         the single emission. stderr: {stderr}"
+         the single emission. stdout: {stdout} stderr: {stderr}"
     );
 }

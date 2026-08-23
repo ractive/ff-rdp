@@ -9,6 +9,8 @@ use std::path::PathBuf;
 
 use tempfile::TempDir;
 
+use super::support;
+
 fn ff_rdp_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }
@@ -65,7 +67,7 @@ fn dry_run_user_lists_files_no_writes() {
     assert!(
         out.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        support::output_note(&out)
     );
 
     let json: serde_json::Value =
@@ -111,7 +113,7 @@ fn install_writes_files_and_reinst_is_noop() {
     assert!(
         out.status.success(),
         "first install failed, stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        support::output_note(&out)
     );
 
     let json: serde_json::Value =
@@ -156,7 +158,7 @@ fn install_writes_files_and_reinst_is_noop() {
     assert!(
         out2.status.success(),
         "second install failed, stderr: {}",
-        String::from_utf8_lossy(&out2.stderr)
+        support::output_note(&out2)
     );
 
     let json2: serde_json::Value =
@@ -231,7 +233,7 @@ fn force_overwrites_unmanaged_file() {
     assert!(
         out_force.status.success(),
         "forced install should succeed, stderr: {}",
-        String::from_utf8_lossy(&out_force.stderr)
+        support::output_note(&out_force)
     );
 
     let json: serde_json::Value =
@@ -258,7 +260,7 @@ fn list_shows_installed_status() {
     assert!(
         out_before.status.success(),
         "list before install failed, stderr: {}",
-        String::from_utf8_lossy(&out_before.stderr)
+        support::output_note(&out_before)
     );
     let json_before: serde_json::Value =
         serde_json::from_slice(&out_before.stdout).expect("stdout must be valid JSON");
@@ -400,7 +402,7 @@ fn project_inside_git_repo_installs_correctly() {
     assert!(
         out.status.success(),
         "project install should succeed, stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        support::output_note(&out)
     );
 
     let expected = git_dir
@@ -451,7 +453,7 @@ fn from_dir_installs_custom_content() {
     assert!(
         out.status.success(),
         "install with --from-dir failed, stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        support::output_note(&out)
     );
 
     let installed = home_tmp

@@ -4,6 +4,8 @@
 //! any connection is attempted, so these run the compiled binary directly —
 //! no mock server needed.
 
+use super::support;
+
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }
@@ -19,7 +21,8 @@ fn scroll_bottom_flag_hints_at_scroll_bottom_subcommand() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("ff-rdp scroll bottom"),
-        "stderr must suggest `ff-rdp scroll bottom`, got: {stderr}"
+        "stderr must suggest `ff-rdp scroll bottom`, got: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 
@@ -34,7 +37,8 @@ fn scroll_top_flag_hints_at_scroll_top_subcommand() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("ff-rdp scroll top"),
-        "stderr must suggest `ff-rdp scroll top`, got: {stderr}"
+        "stderr must suggest `ff-rdp scroll top`, got: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 
@@ -54,11 +58,13 @@ fn dom_stats_flag_hints_at_dom_stats_subcommand_no_attrs_tip() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("ff-rdp dom stats"),
-        "stderr must suggest `ff-rdp dom stats`, got: {stderr}"
+        "stderr must suggest `ff-rdp dom stats`, got: {stderr} ({})",
+        support::output_note(&output)
     );
     assert!(
         !stderr.contains("--attrs"),
-        "the misleading '--attrs' tip must not appear, got: {stderr}"
+        "the misleading '--attrs' tip must not appear, got: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 
@@ -75,11 +81,13 @@ fn dom_stats_flag_with_selector_hints_at_dom_stats_subcommand() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("ff-rdp dom stats"),
-        "stderr must suggest `ff-rdp dom stats`, got: {stderr}"
+        "stderr must suggest `ff-rdp dom stats`, got: {stderr} ({})",
+        support::output_note(&output)
     );
     assert!(
         !stderr.contains("--attrs"),
-        "the misleading '--attrs' tip must not appear, got: {stderr}"
+        "the misleading '--attrs' tip must not appear, got: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 
@@ -96,6 +104,7 @@ fn unrelated_unknown_flag_keeps_default_clap_error() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !stderr.contains("is a subcommand, not a flag"),
-        "unrelated unknown flags must not get the subcommand-trap hint, got: {stderr}"
+        "unrelated unknown flags must not get the subcommand-trap hint, got: {stderr} ({})",
+        support::output_note(&output)
     );
 }

@@ -4,7 +4,7 @@
 //! across platforms, so the assertions stay coarse: structure of the JSON
 //! envelope, exit code direction, and presence of the key probes.
 
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
@@ -40,7 +40,7 @@ fn doctor_no_listener_fails_with_launch_hint() {
     assert!(
         !output.status.success(),
         "doctor should exit non-zero when nothing is listening; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -93,7 +93,7 @@ fn doctor_mock_server_passes_handshake_and_tabs() {
     let names: Vec<&str> = probes.iter().filter_map(|p| p["name"].as_str()).collect();
     assert!(
         names.contains(&"rdp_handshake"),
-        "rdp_handshake probe must be present; got names: {names:?}\nSTDERR: {stderr}"
+        "rdp_handshake probe must be present; got names: {names:?}\nSTDOUT:\n{stdout}\nSTDERR: {stderr}"
     );
     assert!(
         names.contains(&"tabs"),

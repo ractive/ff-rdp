@@ -1,4 +1,4 @@
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
@@ -54,7 +54,7 @@ fn wait_selector_succeeds_immediately() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -94,7 +94,7 @@ fn e2e_wait_sleep_form() {
     assert!(
         output.status.success(),
         "expected success with no server listening on port {port}, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
     assert!(
         elapsed >= std::time::Duration::from_millis(50),
@@ -126,7 +126,7 @@ fn e2e_wait_sleep_form_time_alias() {
     assert!(
         output.status.success(),
         "--time alias must work like --sleep-ms, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
@@ -182,7 +182,7 @@ fn wait_eval_succeeds_immediately() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -216,7 +216,7 @@ fn wait_text_succeeds_immediately() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -253,7 +253,8 @@ fn wait_no_condition_exits_nonzero() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("selector") || stderr.contains("text") || stderr.contains("eval"),
-        "stderr should mention the required flags: {stderr}"
+        "stderr should mention the required flags: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 

@@ -1,4 +1,4 @@
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
@@ -426,7 +426,7 @@ fn a11y_reports_native_source_when_walker_succeeds() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -625,7 +625,8 @@ fn a11y_native_conflicts_with_selector_at_cli_level() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("native") && stderr.contains("selector"),
-        "clap's conflict error should name both flags: {stderr}"
+        "clap's conflict error should name both flags: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 
