@@ -402,9 +402,14 @@ ff-rdp --no-daemon eval "1+1"
   per launch. A directory only counts as stale when both its own mtime and
   its newest top-level file mtime are past the threshold — a profile that a
   long-running Firefox is still writing into is not treated as an orphan.
-- Every managed profile carries an `.ff-rdp-owner-pid` marker (the launching
-  Firefox's PID), written right after launch. Any age-gated prune — the
-  automatic launch sweep and `profiles prune --older-than` — first checks
+- Every managed profile carries an `.ff-rdp-owner-pid` marker. It is written
+  the instant the profile directory is created, holding the launching **ff-rdp
+  process's own** PID, and rewritten with the **Firefox** PID as soon as the
+  browser is spawned (iter-175). Before that, the marker was written only after
+  the spawn, so a launch that died in between — a failed spawn, a browser that
+  exited immediately, a killed CLI — left a directory nothing could attribute
+  and only the seven-day mtime gate could ever reclaim. Any age-gated prune —
+  the automatic launch sweep and `profiles prune --older-than` — first checks
   whether that owner process is still alive and, if so, keeps the profile
   regardless of age. This is a positive "still in use" signal that closes the
   gap where a fully-idle-but-running Firefox could look stale by mtime alone.
@@ -414,14 +419,28 @@ ff-rdp --no-daemon eval "1+1"
   fixes an observed 62 profiles / 2.7 GB accumulating in a single day, all
   younger than the old 7-day gate).
 - The marker is a **pair**: alongside the PID, `.ff-rdp-owner-start` records
-  the owning process's OS start time, and both are written the instant Firefox
-  is spawned. A profile directory outlives the Firefox that owned it, so its
-  PID marker does too — and once the OS recycles that PID, a bare liveness
+  that process's OS start time, and both are written together — the old token
+  is cleared first, so the pair can never describe two different processes. A
+  profile directory outlives the Firefox that owned it, so its PID marker does
+  too — and once the OS recycles that PID, a bare liveness
   check reports the abandoned profile as still in use, so no age-gated prune
   will ever reclaim it. Comparing the recorded start time against the live
   PID's makes the check an *identity* check: a recycled PID no longer passes
   for the original owner (iter-171). A profile written by an older ff-rdp has
   no start marker and keeps the previous PID-only behaviour.
+- A `launch` that fails **after** creating its profile directory removes that
+  directory on the way out (iter-175) — spawn failure, a Firefox that exits
+  immediately, a debug port that never opens, or a `--auto-consent` extension
+  install that fails. A directory the user passed via `--profile` is never
+  touched by this.
+- Directories left by a *pre-iter-175* failed launch are reclaimed too: a
+  managed directory with no owner marker at all, holding nothing but the
+  `user.js` ff-rdp writes before the spawn, is proof that no Firefox ever
+  opened it, so the next `launch` removes it after a ten-minute race grace
+  instead of after seven days. Age gating is unchanged for every other
+  directory — a profile Firefox actually used still keeps the full
+  `FF_RDP_PROFILE_PRUNE_DAYS` threshold, and `profiles prune --older-than`
+  stays a pure age query.
 - Every `ff-rdp launch` also sweeps `~/.ff-rdp/` housekeeping files: stale
   per-port spawn locks, the per-port registry write locks (iter-172), the
   legacy port-less `daemon.spawn.lock` name, and
