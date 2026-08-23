@@ -36,11 +36,11 @@ const PORT_FREE_WAIT_BOUND: Duration = Duration::from_secs(8);
 pub(crate) fn unowned_record_pid_msg(pid: u32, port: u16) -> String {
     format!(
         "port {port} is in use by PID {pid}, which ff-rdp's launch record for this port names \
-         — but that record is stale: the PID no longer identifies the process ff-rdp launched \
-         (its recorded start token does not match the live process, and no owner-PID marker \
-         names it either), so ff-rdp did not launch whatever holds that PID now. Refusing to \
-         stop a process ff-rdp does not own — stop it yourself, run `ff-rdp doctor`, or pass \
-         --port to use a different port."
+         — but that record is stale: ff-rdp could match the live PID neither to the start token \
+         the record was written with nor to an owner-PID marker under a profile it manages, so \
+         ff-rdp did not launch whatever holds that PID now. Refusing to stop a process ff-rdp \
+         does not own — stop it yourself, run `ff-rdp doctor`, or pass --port to use a \
+         different port."
     )
 }
 
