@@ -186,16 +186,17 @@ fn body_introduces_pub_symbols(body: &str) -> bool {
 
 /// Matches an iteration plan file name and captures its iteration id.
 ///
-/// The capture is `<digits>` with an OPTIONAL single trailing letter, anchored so
+/// The capture is `<digits>` with an optional trailing letter run, anchored so
 /// that the character after the id must be `-`. That boundary is what keeps
 /// `iteration-162a-*.md` and `iteration-162b-*.md` — deliberate sibling plans —
 /// from being read as two plans numbered 162. It also means `iteration-61b-*` and
 /// `iteration-61c-*` are distinct ids, while two files both claiming `61b` still
-/// collide. The `.md` suffix requirement excludes `.dogfood.sh` sidecars, which
+/// collide. The letter run is `*` rather than `?` because `iteration-61aa-*.md`
+/// exists: a single-letter pattern would silently exempt it from the check. The `.md` suffix requirement excludes `.dogfood.sh` sidecars, which
 /// share a plan's stem (`iteration-96-profile-leak-cleanup.dogfood.sh`).
 fn plan_file_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^iteration-([0-9]+[a-z]?)-.+\.md$").expect("static regex"))
+    RE.get_or_init(|| Regex::new(r"^iteration-([0-9]+[a-z]*)-.+\.md$").expect("static regex"))
 }
 
 /// Extract the iteration id from a plan file name, or `None` if the name is not
@@ -580,6 +581,25 @@ mod tests {
         assert_eq!(
             plan_id_from_file_name("iteration-162b-ac-fidelity-shrink.md").as_deref(),
             Some("162b")
+        );
+    }
+
+    #[test]
+    fn plan_id_handles_a_multi_letter_suffix() {
+        // `iteration-61aa-claim-miss-hard-gate.md` is real. A single-letter
+        // pattern would classify it as "not a plan" and skip it silently.
+        assert_eq!(
+            plan_id_from_file_name("iteration-61aa-claim-miss-hard-gate.md").as_deref(),
+            Some("61aa")
+        );
+        let target = p("iteration-61aa-claim-miss-hard-gate.md");
+        assert!(
+            duplicate_id_findings(&target, &[p("iteration-61a-other.md")]).is_empty(),
+            "61aa must not collide with 61a"
+        );
+        assert!(
+            !duplicate_id_findings(&target, &[p("iteration-61aa-other.md")]).is_empty(),
+            "two plans claiming 61aa must collide"
         );
     }
 

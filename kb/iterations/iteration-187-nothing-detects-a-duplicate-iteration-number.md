@@ -204,7 +204,8 @@ or lost a finding.** Zero plans produce a `duplicate iteration number` finding, 
 The 85 are legacy: plans 01–61y predate the `dogfood_path` requirement, and
 `iteration-80/82/83` have YAML frontmatter that does not parse at all. That is a real and
 separate problem — it means `check-iteration-plan` has never been runnable as a
-whole-directory sweep — and it is filed as its own iteration rather than absorbed here. The
+whole-directory sweep — and it is filed as
+[[iteration-195-check-iteration-plan-fails-on-85-of-222-plans]] rather than absorbed here. The
 plan's dogfood step 3 (`… | uniq -d`, "expected: no output") and step 4 ("expected: no output")
 were both written from an assumption that did not hold; step 3's own sed also strips letter
 suffixes, so it reports `44` and `73` on main today.
