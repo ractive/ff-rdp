@@ -575,9 +575,18 @@ a SyntaxError) or an object literal (`const o = {v:8}; o.v / 2`, still
 division). A block also ends its own statement, so no `;` or newline is needed
 after `}`.
 
-It is still a scanner rather than a full JS parser. It does not commit on an
-arrow function's `{` body, a `class` body or a labelled block, so each is read
-as an object literal — the conservative answer, which can only cost a wrap.
+iter-176 closed the three positions that left unjudged, after measuring that
+each turned valid JavaScript into a SyntaxError (and a class declaration into
+a silent `undefined`): an arrow function's `{` body, a `class` body and a
+labelled block are now read as the blocks they are, so
+`eval --stringify 'class K { m(){ return 9 } } new K().m()'` returns 9 instead
+of `undefined`, and `const n = 1; outer: { break outer } n` returns 1 instead
+of a SyntaxError. Class *expressions* still divide: `const C = class {} / 2`
+is one statement, as in JS.
+
+It is still a scanner rather than a full JS parser. A label nested inside an
+object literal or a ternary stays unjudged — the conservative answer, which
+can only cost a wrap.
 
 Since iter-165 that same last-statement rule also governs a plain (non-await)
 script that declares something, because that script now runs in the per-call
