@@ -2,23 +2,24 @@
 title: "Iteration 175: a launch that fails before its owner marker is written leaks an unattributable, unreclaimable profile dir"
 type: iteration
 date: 2026-08-17
-status: in-review
+status: done
 branch: iter-175/failed-launch-leaks-unmarked-profile
-depends_on: [iteration-171-stale-owner-pid-marker-and-pid-reuse]
+depends_on:
+  - iteration-171-stale-owner-pid-marker-and-pid-reuse
 first_call_sites:
   - primitive: >-
       ManagedProfileGuard (armed / armed_under / disarmed / disarm) — RAII owner of a
       freshly-created managed profile dir, removed on any early return
     site: crates/ff-rdp-cli/src/commands/launch.rs (build_command, run_with_hooks)
   - primitive: >-
-      LaunchHooks::locate_firefox — injected Firefox lookup so the post-profile-creation
-      error paths are reachable without a real browser
+      LaunchHooks::locate_firefox — injected Firefox lookup so the
+      post-profile-creation error paths are reachable without a real browser
     site: crates/ff-rdp-cli/src/commands/launch.rs (run_with_hooks, LaunchHooks::real)
 dogfood_path: |
   # Product defect. The observable is a managed profile dir containing only
   # `user.js` — no owner-PID marker, no owner-test marker, no Firefox
   # artefacts — which no prune path will reclaim for seven days.
-
+  
   # 1. Show the leak exists in the wild.
   ROOT=$(ff-rdp profiles list --jq -r '.results.path')
   for d in "$ROOT"/ff-rdp-profile-*; do
@@ -26,22 +27,26 @@ dogfood_path: |
   done
   # → OBSERVED 2026-08-17 during iteration 171's Theme A: 20 of 20 directories
   #   under the real profile root were unmarked and contained only `user.js`.
-
+  
   # 2. Force one deterministically: make the spawn fail after build_command has
   #    already created the profile dir and written user.js. A --debug-port that
   #    is already held, or a --profile the process cannot write into, both
   #    reach the same error paths.
   ff-rdp launch --headless --debug-port <port held by something else>
   ls "$ROOT" | wc -l    # before and after
-
+  
   # 3. Show that nothing reclaims it inside the age gate.
   ff-rdp profiles prune --older-than 1h --dry-run --jq '.results.would_remove'
   # → EXPECTED: the freshly leaked dir is absent, because an unmarked dir falls
   #   back to the mtime heuristic and it is minutes old.
-
+  
   # 4. Measure how often this fires in a real sweep: count unmarked dirs before
   #    and after one `cargo run -p xtask -- live-sweep`.
-tags: [iteration, profiles, launch, cleanup]
+tags:
+  - iteration
+  - profiles
+  - launch
+  - cleanup
 ---
 
 # Iteration 175: a failed launch leaks an unmarked profile directory
