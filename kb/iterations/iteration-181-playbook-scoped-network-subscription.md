@@ -2,7 +2,7 @@
 title: "Iteration 181: `assert_network` in `ff-rdp run` is a race by construction on the direct route"
 type: iteration
 date: 2026-08-22
-status: in-progress
+status: done
 branch: iter-181/playbook-scoped-network-subscription
 depends_on: []
 first_call_sites: []
