@@ -26,7 +26,9 @@ impl Args {
 
 /// Environment variable through which the gate tells the dogfood script where to
 /// write its sentinel. Set fresh for every invocation (iter-184); scripts must
-/// read it rather than hardcoding a path.
+/// read it rather than hardcoding a path. `cfg(unix)` because the whole
+/// script-execution path is: the non-unix `run_script` returns SKIP.
+#[cfg(unix)]
 const SENTINEL_ENV: &str = "FF_RDP_DOGFOOD_SENTINEL";
 
 /// The ff-rdp-specific `.dogfood.sh` linter, rehosted here in iter-162a when
