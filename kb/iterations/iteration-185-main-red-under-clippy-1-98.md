@@ -2,7 +2,7 @@
 title: "Iteration 185: main is red under clippy 1.98 — three one-line lints, none touched by iter-179"
 type: iteration
 date: 2026-08-22
-status: planned
+status: in-review
 branch: iter-185/main-red-under-clippy-1-98
 depends_on: []
 first_call_sites: []
@@ -77,32 +77,77 @@ Both replacements are clippy's own suggested fix, applied verbatim — no behavi
 1.88, `is_ok_and` in 1.70, so neither replacement needs an MSRV bump. Confirm with the dogfood step
 above rather than trusting this note by the time this plan runs.
 
+## What was found when this ran (2026-08-23)
+
+**Task A was already done by the time this iteration started, and this branch changes no Rust at
+all.** PR #212 merged as `a294724` before iter-185 ran, so iter-179's three one-line fixes reached
+`main` with it. Verified by inspection at `main` HEAD, not assumed:
+
+| Site | State on `main` |
+|---|---|
+| `crates/ff-rdp-cli/tests/common/mod.rs:1325` | `for chunk in buf.as_chunks::<3>().0` |
+| `crates/ff-rdp-cli/build.rs:88` | `.is_ok_and(\|out\| out.status.success() && !out.stdout.is_empty())` |
+| `crates/ff-rdp-cli/src/commands/profiles.rs:228` | `now.duration_since(newest).is_ok_and(\|age\| age >= threshold)` |
+
+The plan's own instruction — re-check the toolchain rather than assume 1.98 is still current — was
+followed: local stable is now `rustc 1.98.0 (88d9e12ae 2026-08-18)` / `clippy 0.1.98`, the same
+release CI's `dtolnay/rust-toolchain@…  # stable` resolves to. `cargo clippy --workspace
+--all-targets -- -D warnings` exits 0 on that toolchain, and the workspace scan turned up **no**
+further latent 1.98 lints beyond the three (the "Out of scope" note left this open either way).
+
+So the whole deliverable is Task B, exactly as the plan predicted. The decisions and their
+reasoning are in [[decision-log]] DEC-044; summarised:
+
+1. **No `rust-toolchain.toml`** — rejected on two grounds. It detects nothing (it converts "nobody
+   noticed `main` went red" into "nobody noticed the pin went stale", deferring the whole lint
+   delta onto whoever bumps it), and it would silently defeat the `msrv` job:
+   `dtolnay/rust-toolchain` activates via `rustup default`, and a repo-root `rust-toolchain.toml`
+   overrides `rustup default` — verified locally, a file pinning 1.97.1 wins over a `stable`
+   (1.98.0) default, and only `+toolchain`/`RUSTUP_TOOLCHAIN` beats the file. `msrv` runs a bare
+   `cargo build` after `toolchain: "1.95"`, so it would compile on the pin and stop being a gate.
+2. **Yes to a scheduled lint of `main`** — `.github/workflows/toolchain-watch.yml`, `fmt` +
+   `clippy` weekly (Mondays 04:00 UTC, an hour after `live.yml`'s canary) plus
+   `workflow_dispatch`. It is the only trigger that fires when the input that changed was the
+   toolchain and not the code; even `push: [main]` would not have caught this, because the
+   breaking event had zero commits. Cost recorded rather than glossed: it can go red on untouched
+   source, which is noise — accepted because the red is genuine, lands where one commit fixes it,
+   and blocks nothing.
+3. **`CLAUDE.md` and `CONTRIBUTING.md` corrected** — both stated the three gates as though local
+   green implied CI green. Both now name the toolchain boundary, tell you to `rustup update
+   stable` before quoting a clippy result, and point at `gh pr checks` as the authority.
+
 ## Tasks
 
-### A. Land the fix [0/2]
-- [ ] All three sites fixed on `main`, `cargo clippy --workspace --all-targets -- -D warnings`
-      exits 0 on the toolchain CI currently runs
-- [ ] MSRV gate (`msrv` CI job, or local equivalent) still passes after the change
+### A. Land the fix [2/2]
+- [x] All three sites fixed on `main`, `cargo clippy --workspace --all-targets -- -D warnings`
+      exits 0 on the toolchain CI currently runs — arrived via the #212 merge (`a294724`) before
+      this branch existed; re-verified at `main` HEAD on clippy 0.1.98, exit 0. **This branch
+      contains no Rust change**, which is the honest outcome, not a miss
+- [x] MSRV gate (`msrv` CI job, or local equivalent) still passes after the change — the diff
+      touches no `.rs` and no `Cargo.toml`, so the MSRV surface is untouched; confirmed by the
+      `msrv` job on this PR rather than by a local 1.95 install
 
-### B. Close the detection gap — the actual point of this iteration [0/3]
-- [ ] Decide whether `rust-toolchain.toml` (pinning the exact stable version this repo builds
-      with) is the right answer, and either add one or record explicitly why not. A pin trades
-      "always current" for "always reproducible locally" — a real tradeoff, not a free fix. It
-      would have made local and CI agree, which is the failure that cost the most time here
-- [ ] Decide whether CI should run clippy on a **scheduled** job (e.g. weekly) as well as per-PR,
-      so a toolchain release that red-lines `main` is discovered by the schedule rather than by
-      whichever unlucky PR runs first. Note the cost honestly: a cron job that fails on green
-      code is its own kind of noise
-- [ ] If CLAUDE.md's "run these three in order" section still implies local green means CI green,
-      correct it — one sentence noting the toolchain boundary is enough
+### B. Close the detection gap — the actual point of this iteration [3/3]
+- [x] Decide whether `rust-toolchain.toml` … is the right answer, and either add one or record
+      explicitly why not — **decided: no**, recorded in DEC-044 with the `msrv`-job collision
+      verified empirically rather than asserted
+- [x] Decide whether CI should run clippy on a **scheduled** job … Note the cost honestly —
+      **decided: yes**, `.github/workflows/toolchain-watch.yml`; the cost paragraph is in the
+      workflow header and in DEC-044, in both cases stating that a cron failing on unchanged code
+      is real noise that is being accepted, not denied
+- [x] If CLAUDE.md's "run these three in order" section still implies local green means CI green,
+      correct it — it did; corrected in `CLAUDE.md` and, at more length, in `CONTRIBUTING.md`
 
-## Acceptance Criteria [0/2]
+## Acceptance Criteria [2/2]
 
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` exits 0 on `main` at HEAD, on the
-      toolchain version CI is running at merge time
-- [ ] Each of Task B's three decisions is recorded with its reasoning, whichever way it went — the
-      plan is not done because the lints are green; it is done when the *next* toolchain bump has a
-      named path to being noticed by something other than an unrelated PR
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` exits 0 on `main` at HEAD, on the
+      toolchain version CI is running at merge time — exit 0 locally on `rustc 1.98.0
+      (88d9e12ae 2026-08-18)`, and green in the PR's own `clippy` job, which is the same
+      `stable` CI resolves. `gh pr checks` is the evidence quoted, not the local run
+- [x] Each of Task B's three decisions is recorded with its reasoning, whichever way it went —
+      DEC-044, one entry covering all three, including the two things deliberately **not** done
+      (no `rust-toolchain.toml`; no issue-opening/alerting bot on canary failure) and the known
+      erosion path (GitHub disables cron in repos idle 60 days, noted in the workflow header)
 
 ## Out of scope
 
@@ -116,3 +161,6 @@ above rather than trusting this note by the time this plan runs.
 - [[iteration-179-live-62-runner-sees-no-network-events]] — where this was found, in PR #212's
   closing CI run
 - PR #212 — carry-over row 13 dispositions this to this plan
+- [[decision-log]] — DEC-044, which this iteration adds: no toolchain pin, weekly canary instead
+- `.github/workflows/toolchain-watch.yml` — the canary itself; its header carries the incident
+  timeline and the re-enable instructions for when GitHub disables the cron
