@@ -502,6 +502,8 @@ On a published release the shared pipeline builds every target, publishes `ff-rd
 
 [`live.yml`](.github/workflows/live.yml) runs the Firefox-dependent live tests on each release and weekly as a drift canary (not per-PR).
 
+[`toolchain-watch.yml`](.github/workflows/toolchain-watch.yml) runs `cargo fmt --check` and `cargo clippy -D warnings` against `main` weekly (and on `workflow_dispatch`). `ci.yml` lints on `pull_request` only, so a new stable release can red-line `main` with no commit pushed and nothing would notice until an unrelated PR absorbed the cost — which is exactly what happened when 1.98.0 shipped. See `kb/decision-log.md` DEC-044.
+
 ### Verifying release artifacts
 
 Every release binary is signed via Sigstore-backed [build provenance attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds). To verify a downloaded artifact:

@@ -23,6 +23,14 @@ Before committing or creating a PR, run **in this order** and fix all issues:
 
 Never skip a step. Never commit code that fails any of these.
 
+**A local pass is not a CI pass.** CI lints on whatever `stable` resolves to on the day it runs;
+your machine lints on whatever `stable` was when you last ran `rustup update`. Across a toolchain
+boundary step 2 exits 0 locally and fails in CI on *unchanged* code — that skew kept `main` red for
+four days in August 2026 (`kb/decision-log.md` DEC-044). So: run `rustup update stable` before
+treating a green clippy as evidence, and read `gh pr checks <PR>` instead of substituting your
+local run for it. `.github/workflows/toolchain-watch.yml` lints `main` weekly to catch the case
+where a stable release breaks the build with no commit at all.
+
 ## Code Patterns
 - No `.unwrap()` / `.expect()` outside of tests — use `anyhow::Context` with `?`
 - No `clone()` unless the borrow checker demands it — try references first

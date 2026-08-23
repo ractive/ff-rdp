@@ -12,6 +12,31 @@ cargo test --workspace -q
 
 Never skip a step. Never commit code that fails any of these.
 
+### A local pass is not a CI pass
+
+The gates above are necessary, not sufficient. CI's `fmt`/`clippy` jobs use a
+SHA-pinned `dtolnay/rust-toolchain` on the `stable` channel — the *action* is
+pinned, the *toolchain* is not, so it resolves to whatever stable is current
+*on the day the job runs*; your machine uses whatever stable was current when
+you last ran `rustup update`. When a new stable lands in between, clippy gains
+lints, and `cargo clippy --workspace --all-targets -- -D warnings` exits 0 for
+you and fails in CI **on code you did not touch**. There is no local signal
+that the boundary was crossed.
+
+- Run `rustup update stable` before treating a green local clippy as evidence
+  about CI, and quote `cargo clippy --version` if you are reporting a result.
+- Read `gh pr checks <PR>`. CI is the authority on green; a local run is not a
+  proxy for it.
+- Lint and build failures mask each other — a `build.rs` failure halts the run
+  before anything downstream is linted, so "the errors CI showed" is a lower
+  bound. Re-check after each fix rather than assuming the list was complete.
+
+`.github/workflows/toolchain-watch.yml` runs `fmt` + `clippy` against `main`
+weekly (and on `workflow_dispatch`) for the case no PR can catch: a stable
+release that red-lines the default branch with zero commits pushed. It is the
+canary, not a gate — see `kb/decision-log.md` DEC-044 for why the repo does
+*not* pin `rust-toolchain.toml` instead.
+
 ## Test layout
 
 Integration tests for `ff-rdp-cli` are organized into a few consolidated

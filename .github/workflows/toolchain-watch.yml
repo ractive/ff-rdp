@@ -1,0 +1,72 @@
+name: Toolchain Watch
+
+# iter-185. `ci.yml` runs `fmt` and `clippy` on `pull_request` only. Nothing in
+# this repo lints `main` on any other trigger, so a *stable toolchain release*
+# can turn `main` red with zero commits pushed and no local signal at all.
+#
+# That is not hypothetical. Stable 1.98.0 shipped on 2026-08-18 with
+# `chunks_exact_to_as_chunks` and `manual_is_variant_and`; three pre-existing
+# lines on `main` tripped them. No PR ran CI between 2026-08-18 and 2026-08-22,
+# so `main` was red for four days and nobody could have known. The first PR to
+# run afterwards (#212, an `assert_network` iteration unrelated to any of it)
+# absorbed the whole cost: one failed CI run plus an evening establishing that
+# the branch was innocent.
+#
+# This workflow is the named path to noticing that class of breakage: it lints
+# the default branch weekly on whatever `stable` resolves to that day, and
+# prints the toolchain version *before* linting so a red run identifies the
+# release that caused it without anyone having to reconstruct the date.
+#
+# Cost, stated honestly (this was a real trade-off, not a free fix): this job
+# can go red on code nobody touched, and a cron that fails on unchanged source
+# is its own kind of noise. Accepted, because the failure is genuine — every PR
+# opened after it would hit the same lints — it lands against `main`, where it
+# is fixable in one direct commit instead of on whichever branch is unlucky,
+# and GitHub notifies on scheduled-workflow failures. Pinning
+# `rust-toolchain.toml` is *not* a substitute and was deliberately rejected;
+# see DEC-044 in `kb/decision-log.md`.
+#
+# Note: GitHub disables cron triggers in repositories with 60 days of no
+# activity. If this stops reporting, re-enable it from the Actions tab or fire
+# it by hand with `gh workflow run toolchain-watch.yml`.
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays 04:00 UTC — one hour after the weekly live-test drift canary in
+    # `live.yml`, so the two scheduled jobs do not contend for a runner.
+    - cron: "0 4 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Deliberately mirrors the `fmt` and `clippy` jobs in `ci.yml` — same
+  # commands, same flags. If they ever diverge, this canary stops predicting
+  # what a PR will see, which is the only thing it is for.
+  lint-default-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          components: clippy, rustfmt
+      - name: Record toolchain version
+        # First step after install, and kept separate from the lint steps on
+        # purpose: when this goes red, the single most useful fact in the log
+        # is which stable release was running.
+        run: |
+          rustc --version
+          cargo clippy --version
+          cargo fmt --version
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: cargo fmt --all --check
+        run: cargo fmt --all --check
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        # `if: always()` so a rustfmt-only change does not mask a new clippy
+        # lint. Build and lint errors mask each other; a canary that reports
+        # the first failure and stops gives a lower bound, not the full set.
+        if: always()
+        run: cargo clippy --workspace --all-targets -- -D warnings

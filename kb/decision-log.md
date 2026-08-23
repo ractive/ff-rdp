@@ -1360,3 +1360,74 @@ instead of run: iter-155's false green by another road.
 
 **Applies to**: `crates/xtask/src/live_sweep.rs`, `crates/xtask/src/main.rs`,
 `CONTRIBUTING.md`, `.claude/skills/iteration-close/SKILL.md`.
+
+## DEC-044: no `rust-toolchain.toml`; `main` gets a weekly lint canary instead
+
+**Decision** (iter-185), three parts:
+
+1. **No `rust-toolchain.toml`.** The repo keeps tracking whatever `stable`
+   resolves to, in CI and locally.
+2. **A scheduled lint of the default branch is added** —
+   `.github/workflows/toolchain-watch.yml`, `fmt` + `clippy` on `main`, weekly
+   (Mondays 04:00 UTC) plus `workflow_dispatch`.
+3. **`CLAUDE.md` and `CONTRIBUTING.md` no longer imply local green means CI
+   green.** Both now state the toolchain boundary explicitly and point at
+   `gh pr checks` as the authority.
+
+**The failure being answered**: stable 1.98.0 shipped 2026-08-18 with
+`chunks_exact_to_as_chunks` and `manual_is_variant_and`. Three pre-existing
+lines on `main` tripped them: `crates/ff-rdp-cli/tests/common/mod.rs`
+(`chunks_exact(3)`), `crates/ff-rdp-cli/build.rs` and
+`crates/ff-rdp-cli/src/commands/profiles.rs` (`.output().ok().is_some_and(…)`).
+No PR ran CI between then and 2026-08-22, so `main` was red for four days with
+nobody able to know. The first PR to run (#212, an `assert_network` iteration
+with no connection to any of it) absorbed a failed CI run and an evening of
+diagnosis before concluding its own branch was innocent — and fixed the three
+lines on its branch, which did nothing for any other branch until it merged.
+Compounding it, the local gate **disagreed with CI on identical code**: `cargo
+clippy --workspace --all-targets -- -D warnings` exited 0 on the contributor's
+1.97 against the same tree CI failed on 1.98.
+
+**Why not pin `rust-toolchain.toml`** — the obvious fix, and the one rejected:
+
+- A pin makes local and CI agree, which was the most expensive part of this
+  incident. But it does not *detect* anything. It converts "nobody noticed
+  `main` went red" into "nobody noticed the pin went stale", and defers the
+  entire accumulated lint delta onto whoever eventually bumps it — the same
+  surprise, larger, landing on one unlucky person instead of one unlucky PR.
+  The durable item in iter-185 was the detection gap, and a pin does not
+  address it.
+- It would silently break the `msrv` job. `dtolnay/rust-toolchain` activates a
+  toolchain with `rustup default` (verified against the action's `action.yml`),
+  and a repo-root `rust-toolchain.toml` overrides `rustup default` — only
+  `+toolchain` or `RUSTUP_TOOLCHAIN` beats the file. Verified locally: with a
+  `rust-toolchain.toml` pinning 1.97.1 and `rustup default stable` (1.98.0),
+  bare `rustc --version` reports 1.97.1 and `rustc +stable --version` reports
+  1.98.0. So `msrv`, which passes `toolchain: "1.95"` and then runs a bare
+  `cargo build`, would compile on the pinned stable and stop being an MSRV gate
+  at all — a gate that reports green while checking nothing, which is the
+  failure mode this repo has already deleted three gates for.
+- Reproducibility is not currently a problem this repo has: MSRV is pinned
+  separately (`rust-version = "1.95"` plus the `msrv` CI job), so the floor is
+  already tested. What stable adds on top is lints, and lints are the thing
+  worth learning about early.
+
+**Why a cron, and what it costs**: it is the only trigger that fires when the
+input that changed was *the toolchain*, not the code. `ci.yml` runs on
+`pull_request` only; even adding `push: [main]` would not help, because the
+breaking event involves zero commits. The honest cost is that this job can go
+red on source nobody touched — real noise. Accepted: the failure is genuine
+(every PR opened after it hits the same lints), it lands on `main` where one
+direct commit fixes it, GitHub notifies on scheduled-workflow failure, and it
+is a canary rather than a required check, so it blocks nothing. Its clippy step
+carries `if: always()` so an unrelated `fmt` failure cannot mask the lint delta
+it exists to report. Known erosion path: GitHub disables cron in repos idle for
+60 days — recorded in the workflow's own header.
+
+**Not done, on purpose**: the workflow does not open an issue or ping on
+failure. That is a second mechanism to maintain (and to be wrong), and the
+default notification already reaches the one maintainer. Revisit if a red
+canary ever goes unnoticed for a week.
+
+**Applies to**: `.github/workflows/toolchain-watch.yml`, `CLAUDE.md`,
+`CONTRIBUTING.md`.
