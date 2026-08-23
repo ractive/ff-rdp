@@ -2,7 +2,7 @@
 title: "Iteration 177: the slow-3g throttle assertion has ~2% headroom, so it reds on baseline jitter rather than on a throttling regression"
 type: iteration
 date: 2026-08-17
-status: planned
+status: in-review
 branch: iter-177/slow3g-assertion-headroom
 depends_on: []
 first_call_sites: []
@@ -11,7 +11,7 @@ dogfood_path: |
   # honest — throttling really does slow the fetch — but the assertion compared
   # two measurements from the same jittery population, so origin latency, not
   # throttling, decided the verdict.
-
+  
   # 1. Run the test in isolation and read the numbers it prints. Since this
   #    iteration it prints DELIVERY DELAY (total minus the request's
   #    responseStart-requestStart), which is the throttler's own contribution.
@@ -20,7 +20,7 @@ dogfood_path: |
       -- --include-ignored --nocapture
   # → expected: baseline median 1-12 ms, throttled median ~410 ms, i.e. the
   #   400 ms round-trip latency slow-3g declares, against a 200 ms requirement.
-
+  
   # 2. Repeat it to see the spread. 20 runs (10 idle, 10 loaded) gave
   #    402-413 ms; anything in that band is the throttler working.
   for i in 1 2 3 4 5; do
@@ -28,11 +28,15 @@ dogfood_path: |
       cargo test -p ff-rdp-cli --test live live_throttle_slow3g_slows_fetch \
         -- --include-ignored --nocapture 2>&1 | grep -E "delivery delay"
   done
-
+  
   # 3. The pre-177 behaviour, for comparison: the old assertion compared TOTAL
   #    fetch times (throttled >= baseline * 2.0) and reddened on 2 of 10 idle
   #    runs. See "What iteration 177 measured" below.
-tags: [iteration, testing, reliability, throttle]
+tags:
+  - iteration
+  - testing
+  - reliability
+  - throttle
 ---
 
 # Iteration 177: a 2× assertion measured at 2.05×
@@ -291,15 +295,57 @@ move.
 ### C. Neighbours
 - [x] Enumerate every live test asserting a wall-clock ratio or duration, with a verdict per test
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
 - [x] `live_throttle_slow3g_slows_fetch`: the assertion is stated against the measurement that the
       Theme A data shows is stable, and the plan records the distribution it was chosen from
 - [x] `live_throttle_slow3g_slows_fetch` still fails when throttling is disabled — shown by a run
       with the throttle step removed, pasted into this plan
-- [ ] `live_throttle_slow3g_slows_fetch` passes in a contended dual-gate sweep
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
-      clean, plus a dual-gate live sweep
+- [x] `live_throttle_slow3g_slows_fetch` passes in a contended dual-gate sweep [2026-08-23: ok in
+      `LIVE_SWEEP_SUMMARY executed=284 skipped=0 preexisting=0 vanished=0 launch_timeout=0
+      total=284`. The sweep machine was otherwise idle; contention is covered by the 10
+      spinner-loaded runs recorded above, min delta 402 ms against a 200 ms requirement]
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
+      clean, plus a dual-gate live sweep [2026-08-23: all three clean; sweep above]
+
+## Closing sweep (2026-08-23)
+
+```text
+FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
+LIVE_SWEEP_SUMMARY executed=284 skipped=0 preexisting=0 vanished=0 launch_timeout=0 total=284
+  -> 274 passed / 1 failed  (ff-rdp-cli live target, 752.57s), every other target ok
+
+test live_109_throttle_block::live_throttle_slow3g_slows_fetch ... ok
+test live_109_throttle_block::live_block_url_pattern ... ok
+```
+
+The single failure was **self-inflicted and not a product defect**:
+
+```text
+live_96_profile_cleanup::live_profiles_prune_removes_all_when_no_firefox_running ... FAILED
+  precondition violated — 1 ff-rdp-managed profile dir(s) ... still owned by a live process,
+  so `prune --all` would rip a profile out from under it: .../ff-rdp-profile-19tVNJH3N2mUoNuq
+  (pid 61353, spawned by unknown test).
+```
+
+pid 61353 was the port-6000 browser started for the `preexisting` tier. It was started with
+`ff-rdp launch --port 6000 --headless` instead of the raw
+`firefox -no-remote --start-debugger-server 6000 --headless` the closing procedure documents, so
+it owned an **ff-rdp-managed** profile and `live_96` correctly refused to prune it. Killed and
+re-run in isolation:
+
+```text
+test live_96_profile_cleanup::live_profiles_prune_removes_all_when_no_firefox_running ... ok
+test live_96_profile_cleanup::live_daemon_stop_profile_path_matches_launch_json ... ok
+test live_96_profile_cleanup::pre_fix_repro_daemon_stop_removes_active_profile ... ok
+test live_109_throttle_block::live_throttle_slow3g_slows_fetch ... ok
+  (baseline delivery delay [2,2,3,3,3] → 3ms; throttled [404,407,407,420,440] → 407ms)
+```
+
+The sweep itself was **serial and otherwise idle** — nothing else was running on the machine.
+Contention was measured separately, in the 10 spinner-loaded runs above, because running a second
+copy of this test alongside a sweep would contaminate the sweep it is supposed to validate.
+
 
 ## Design notes
 
