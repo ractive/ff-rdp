@@ -7,7 +7,19 @@ branch: iter-191/stale-launch-record-recycled-pid
 depends_on:
   - iteration-178-live-sweep-carryover-watch-conditions
   - iteration-186-launch-records-leak-one-file-per-port
-first_call_sites: []
+first_call_sites:
+  - primitive: >-
+      daemon::process::PidIdentity and pid_identity(pid, recorded_token) — graded
+      identity comparison for a persisted (pid, start_token) pair
+    site: crates/ff-rdp-cli/src/daemon_record.rs (record_pid_is_ours_with) and crates/ff-rdp-cli/src/daemon/client.rs (registry branch of stop_daemon_and_build_result_with)
+  - primitive: daemon_record::record_pid_is_ours(&DaemonRecord) — the ownership gate
+    site: crates/ff-rdp-cli/src/daemon/client.rs (StopDeps::real, consumed by both record branches)
+  - primitive: DaemonRecord::start_token
+    site: written in crates/ff-rdp-cli/src/commands/launch.rs, read in crates/ff-rdp-cli/src/daemon_record.rs
+  - primitive: registry::DaemonInfo::start_token
+    site: written in crates/ff-rdp-cli/src/daemon/server.rs, read in crates/ff-rdp-cli/src/daemon/client.rs
+  - primitive: daemon::client::unowned_record_pid_msg(pid, port) and the RecordOwnerCheck fn type
+    site: crates/ff-rdp-cli/src/daemon/client.rs (stop_prior_instance_with, stop_daemon_and_build_result_with, StopDeps)
 dogfood_path: |
   # Reproduce the 2026-08-23 observation deterministically, without waiting for
   # a random port to collide with one of the ~4 600 leaked records on the
