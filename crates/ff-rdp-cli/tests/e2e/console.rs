@@ -1,4 +1,4 @@
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 use serde_json::json;
 
 fn ff_rdp_bin() -> std::path::PathBuf {
@@ -52,7 +52,7 @@ fn console_shows_all_messages() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -264,7 +264,7 @@ fn console_handles_page_error_messages() {
     assert!(
         output.status.success(),
         "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -315,7 +315,7 @@ fn console_summary_present_in_output() {
     assert!(
         output.status.success(),
         "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -352,7 +352,7 @@ fn console_limit_10_summary_reflects_true_total() {
     assert!(
         output.status.success(),
         "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -437,7 +437,7 @@ fn console_limit_truncates_results() {
     assert!(
         output.status.success(),
         "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -528,7 +528,7 @@ fn console_follow_streams_messages_as_ndjson() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -604,7 +604,7 @@ fn console_follow_level_filter_applies_to_stream() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -680,7 +680,7 @@ fn console_follow_handles_direct_consoleapicall_notification() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -730,7 +730,7 @@ fn console_follow_handles_direct_pageerror_notification() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);

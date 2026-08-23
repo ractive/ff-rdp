@@ -12,7 +12,7 @@ use std::process::{Child, Command};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 // Serialize all daemon tests to avoid port/process conflicts.
 fn daemon_test_mutex() -> &'static Mutex<()> {
@@ -253,7 +253,7 @@ fn daemon_navigate_with_network_captures_requests() {
     assert!(
         output.status.success(),
         "daemon navigate --with-network must succeed; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -303,7 +303,7 @@ fn daemon_network_shows_summary() {
     // asynchronously; poll with a short interval and a reasonable timeout.
     let poll_timeout = Duration::from_secs(5);
     let poll_start = Instant::now();
-    let (json, stderr) = loop {
+    let (json, stdout, stderr) = loop {
         let mut args = daemon_args(mock_port);
         args.push("network".to_owned());
 
@@ -317,13 +317,17 @@ fn daemon_network_shows_summary() {
             && let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
             && parsed["results"]["total_requests"].as_u64().unwrap_or(0) > 0
         {
-            break (parsed, String::from_utf8_lossy(&output.stderr).to_string());
+            break (
+                parsed,
+                String::from_utf8_lossy(&output.stdout).to_string(),
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            );
         }
 
         assert!(
             poll_start.elapsed() < poll_timeout,
             "daemon did not buffer events within {poll_timeout:?}; stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
+            support::output_note(&output)
         );
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -334,7 +338,7 @@ fn daemon_network_shows_summary() {
     // Summary mode: results is an object matching the --no-daemon output shape.
     assert!(
         json["results"].is_object(),
-        "default network output should be summary (object), got: {}; stderr: {stderr}",
+        "default network output should be summary (object), got: {}; stdout: {stdout} stderr: {stderr}",
         json["results"]
     );
     assert_eq!(

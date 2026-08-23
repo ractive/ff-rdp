@@ -1,4 +1,4 @@
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
@@ -46,7 +46,7 @@ fn inspect_shows_properties() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =

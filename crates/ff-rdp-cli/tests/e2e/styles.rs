@@ -1,4 +1,4 @@
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
@@ -68,7 +68,7 @@ fn styles_computed_outputs_json() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -122,7 +122,7 @@ fn styles_applied_outputs_json() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -186,7 +186,7 @@ fn styles_layout_outputs_json() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -246,7 +246,7 @@ fn styles_with_jq_filter() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     // Properties are sorted alphabetically; "color" should come before "display", "font-size".
@@ -286,7 +286,7 @@ fn styles_properties_filter_returns_only_requested() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =

@@ -1,4 +1,4 @@
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
@@ -48,7 +48,7 @@ fn click_returns_confirmation_json() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -88,7 +88,7 @@ fn click_frame_url_present_in_both_results_and_meta() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -168,7 +168,7 @@ fn click_selector_flag_is_interchangeable_with_positional() {
     assert!(
         output.status.success(),
         "click --selector should succeed just like positional: stderr={}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -206,7 +206,8 @@ fn click_both_positional_and_selector_flag_errors() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("not both") || stderr.contains("one") || stderr.contains("selector"),
-        "stderr should explain the conflict: {stderr}"
+        "stderr should explain the conflict: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 

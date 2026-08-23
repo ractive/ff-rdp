@@ -1,4 +1,4 @@
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 use serde_json::json;
 
 fn ff_rdp_bin() -> std::path::PathBuf {
@@ -153,7 +153,7 @@ fn reload_outputs_json_envelope() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -202,7 +202,7 @@ fn reload_get_watcher_enables_server_target_switching() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let requests = requests
@@ -319,7 +319,8 @@ fn reload_wait_idle_observes_network_events() {
 
     assert!(
         output.status.success(),
-        "expected success, stderr: {stderr}",
+        "expected success, {}",
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -383,7 +384,8 @@ fn reload_wait_idle_no_traffic_returns_idle_quickly() {
 
     assert!(
         output.status.success(),
-        "expected success, stderr: {stderr}",
+        "expected success, {}",
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -412,7 +414,7 @@ fn back_outputs_json_envelope() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -445,7 +447,7 @@ fn forward_outputs_json_envelope() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -483,7 +485,7 @@ fn e2e_no_wait_flag_consistency() {
         assert!(
             out.status.success(),
             "{subcommand} --help must exit 0; stderr: {}",
-            String::from_utf8_lossy(&out.stderr)
+            support::output_note(&out)
         );
         let help = String::from_utf8_lossy(&out.stdout);
         assert!(
@@ -532,7 +534,7 @@ fn back_no_wait_returns_bare_envelope_immediately() {
     assert!(
         output.status.success(),
         "back --no-wait must succeed without a document-event reply: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["results"]["action"], "back");
@@ -591,7 +593,7 @@ fn nav_verbs_emit_status_and_reason_on_commit_path() {
         assert!(
             output.status.success(),
             "{verb}: expected success, stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
+            support::output_note(&output)
         );
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_status_pair_present(&json["results"], verb);
@@ -615,7 +617,7 @@ fn nav_verbs_emit_status_and_reason_on_commit_path() {
     assert!(
         output.status.success(),
         "reload: expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_status_pair_present(&json["results"], "reload");
@@ -644,7 +646,7 @@ fn nav_verbs_no_wait_report_not_observed() {
     assert!(
         output.status.success(),
         "back --no-wait must succeed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["results"]["status"], serde_json::Value::Null);

@@ -6,6 +6,8 @@
 
 use std::path::PathBuf;
 
+use super::support;
+
 fn ff_rdp_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }
@@ -25,7 +27,7 @@ fn completions_each_supported_shell_produces_binary_name() {
         assert!(
             output.status.success(),
             "completions {shell} should exit 0; stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
+            support::output_note(&output)
         );
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -59,11 +61,13 @@ fn completions_unknown_shell_fails_with_clap_parse_error() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("bogus"),
-        "stderr should mention the invalid value 'bogus'; got: {stderr}"
+        "stderr should mention the invalid value 'bogus'; got: {stderr} ({})",
+        support::output_note(&output)
     );
     assert!(
         stderr.to_lowercase().contains("invalid value") || stderr.to_lowercase().contains("error"),
-        "stderr should read as a clap usage error; got: {stderr}"
+        "stderr should read as a clap usage error; got: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 
@@ -79,7 +83,7 @@ fn completions_requires_no_connection_flags() {
     assert!(
         output.status.success(),
         "completions bash without any connection flags should exit 0; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
     assert!(
         !output.stdout.is_empty(),

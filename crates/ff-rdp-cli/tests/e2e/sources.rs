@@ -1,4 +1,4 @@
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
@@ -43,7 +43,7 @@ fn sources_lists_all_scripts() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -185,7 +185,7 @@ fn sources_handles_null_entries_in_response() {
     assert!(
         output.status.success(),
         "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -260,13 +260,14 @@ fn sources_fallback_is_silent_by_default() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !stderr.contains("debug:"),
-        "debug: message must be suppressed without --verbose, got: {stderr}"
+        "debug: message must be suppressed without --verbose, got: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 
@@ -290,12 +291,13 @@ fn sources_fallback_emits_debug_with_verbose() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("debug:"),
-        "--verbose must cause the debug: fallback message to appear on stderr"
+        "--verbose must cause the debug: fallback message to appear on stderr; got: {}",
+        support::output_note(&output)
     );
 }

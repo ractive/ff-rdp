@@ -1,4 +1,4 @@
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 /// Full JSON produced by the mock substring actor for the long-string resource test.
 const LONGSTRING_PERF_JSON: &str = r#"{"entries":[{"name":"https://example.com/app.js","initiatorType":"script","duration":42.5,"transferSize":12345,"encodedBodySize":12000,"decodedBodySize":36000,"startTime":100.0,"responseEnd":142.5,"nextHopProtocol":"h2"}],"hostname":"example.com"}"#;
@@ -53,7 +53,7 @@ fn perf_shows_resources() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -179,7 +179,7 @@ fn perf_jq_array_iteration_works() {
     assert!(
         output.status.success(),
         ".results[].url should work: stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -216,7 +216,7 @@ fn perf_navigation_type() {
     assert!(
         output.status.success(),
         "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -372,7 +372,7 @@ fn perf_vitals_computes_cwv() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -446,7 +446,7 @@ fn perf_audit_returns_structured_report() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -578,7 +578,7 @@ fn perf_handles_long_string() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =

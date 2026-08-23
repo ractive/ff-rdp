@@ -1,4 +1,4 @@
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -45,7 +45,7 @@ fn json_output_has_hints_key() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -80,7 +80,7 @@ fn json_with_hints_flag_has_populated_hints() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -130,7 +130,7 @@ fn text_output_includes_hint_lines() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -172,7 +172,7 @@ fn text_no_hints_suppresses_hints() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -214,7 +214,7 @@ fn jq_suppresses_hints() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);

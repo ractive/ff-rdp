@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 use base64::Engine as _;
 
 fn ff_rdp_bin() -> PathBuf {
@@ -106,7 +106,7 @@ fn screenshot_saves_png_to_explicit_output_path() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     assert!(out_path.exists(), "PNG file should have been written");
@@ -154,7 +154,7 @@ fn screenshot_auto_names_file_when_no_output_given() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -203,7 +203,7 @@ fn screenshot_base64_returns_png_data_without_writing_file() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -400,7 +400,8 @@ fn screenshot_full_page_and_viewport_height_conflict() {
         stderr.contains("full-page")
             || stderr.contains("viewport-height")
             || stderr.contains("cannot be used with"),
-        "expected conflict error, got: {stderr}"
+        "expected conflict error, got: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 
@@ -465,7 +466,7 @@ fn screenshot_with_jq_filter_extracts_path() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -520,7 +521,8 @@ fn screenshot_window_size_conflicts_with_full_page() {
         stderr.contains("window-size")
             || stderr.contains("full-page")
             || stderr.contains("cannot be used with"),
-        "expected conflict error, got: {stderr}"
+        "expected conflict error, got: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 
@@ -541,7 +543,8 @@ fn screenshot_has_no_dppx_flag() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("dppx") || stderr.contains("unexpected argument"),
-        "expected an unknown-flag error naming --dppx: {stderr}"
+        "expected an unknown-flag error naming --dppx: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 

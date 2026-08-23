@@ -26,7 +26,7 @@ fn launch_help_exits_zero() {
     assert!(
         output.status.success(),
         "expected zero exit for --help, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -60,7 +60,7 @@ fn launch_detects_port_collision() {
     assert!(
         !output.status.success(),
         "expected non-zero exit when port is in use; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     // The port-collision error is emitted as the JSON error envelope on stdout

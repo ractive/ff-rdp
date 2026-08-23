@@ -7,6 +7,8 @@
 
 use std::io::Write as _;
 
+use super::support;
+
 // ---------------------------------------------------------------------------
 // B2: JSON Schema validation of example fixtures
 // ---------------------------------------------------------------------------
@@ -116,7 +118,7 @@ fn dry_run_minimal_json_script() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
@@ -131,7 +133,7 @@ fn dry_run_minimal_yaml_script() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
@@ -153,7 +155,7 @@ fn dry_run_with_defined_vars() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 }
 
@@ -258,7 +260,7 @@ fn dry_run_with_vars_flag() {
     assert!(
         output.status.success(),
         "expected success with --vars url provided, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 }
 
@@ -308,7 +310,7 @@ fn dry_run_page_map_target_is_valid_format() {
     assert!(
         output.status.success(),
         "page_map target should be valid format in dry-run; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 }
 
@@ -336,7 +338,7 @@ fn script_format_flag_overrides_extension_detection() {
     assert!(
         output.status.success(),
         "--script-format json should override no-extension detection: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
@@ -393,7 +395,7 @@ fn self_referencing_run_step_parses_and_dry_runs_cleanly() {
     assert!(
         output.status.success(),
         "dry-run on self-referencing script should succeed (no execution): {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 }
 
@@ -446,7 +448,7 @@ fn record_stop_on_nonempty_recording_produces_valid_json() {
     assert!(
         stop_out.status.success(),
         "record stop failed: {}",
-        String::from_utf8_lossy(&stop_out.stderr)
+        support::output_note(&stop_out)
     );
 
     let content = std::fs::read_to_string(&out_file).expect("read file");
@@ -474,7 +476,7 @@ fn record_status_when_not_recording() {
     assert!(
         output.status.success(),
         "record status should succeed, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value =
@@ -498,7 +500,7 @@ fn record_start_creates_state_and_stop_finalises() {
     assert!(
         start_out.status.success(),
         "record start failed: {}",
-        String::from_utf8_lossy(&start_out.stderr)
+        support::output_note(&start_out)
     );
 
     // Status should now show active.
@@ -522,7 +524,7 @@ fn record_start_creates_state_and_stop_finalises() {
     assert!(
         stop_out.status.success(),
         "record stop failed: {}",
-        String::from_utf8_lossy(&stop_out.stderr)
+        support::output_note(&stop_out)
     );
 
     // The output file should contain a valid script.
@@ -594,7 +596,7 @@ fn dry_run_stdout_is_pure_ndjson() {
     assert!(
         output.status.success(),
         "dry-run failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Dry-run emits a single JSON object (the plan) — verify it's valid JSON.
@@ -636,7 +638,7 @@ fn vars_file_populates_vars() {
     assert!(
         output.status.success(),
         "--vars-file should populate vars for dry-run: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 }
 
@@ -659,12 +661,13 @@ fn env_file_deprecated_alias_warns() {
     assert!(
         output.status.success(),
         "--env-file alias should still work: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("deprecated") || stderr.contains("--vars-file"),
-        "deprecated warning should mention --vars-file: {stderr}"
+        "deprecated warning should mention --vars-file: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 
@@ -683,6 +686,6 @@ fn default_timeout_ms_accepted_at_parse_time() {
     assert!(
         output.status.success(),
         "default_timeout_ms should be accepted: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 }

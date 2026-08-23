@@ -1,4 +1,4 @@
-use super::support::{MockRdpServer, load_fixture};
+use super::support::{self, MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
@@ -48,7 +48,7 @@ fn eval_string_result() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -231,7 +231,7 @@ fn eval_from_file() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -275,7 +275,7 @@ fn eval_from_stdin() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -295,7 +295,8 @@ fn eval_missing_source_errors_cleanly() {
     // clap error should mention one of the required args.
     assert!(
         stderr.contains("script") || stderr.contains("--file") || stderr.contains("--stdin"),
-        "expected clap error mentioning required args, got: {stderr}"
+        "expected clap error mentioning required args, got: {stderr} ({})",
+        support::output_note(&output)
     );
 }
 
@@ -347,7 +348,7 @@ fn eval_long_string_result_is_fetched_in_full() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -389,7 +390,7 @@ fn eval_no_isolate_flag_is_accepted() {
     assert!(
         output.status.success(),
         "expected success with --no-isolate, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 }
 
@@ -414,7 +415,7 @@ fn eval_default_isolation_succeeds_with_const_declaration() {
     assert!(
         output.status.success(),
         "default isolate must accept `const x = 1; x`, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 }
 
@@ -448,7 +449,7 @@ fn eval_stringify_string_no_double_encoding() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -488,7 +489,7 @@ fn eval_stringify_object_parsed_to_json_value() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -526,7 +527,7 @@ fn eval_stringify_number_parsed_to_json_number() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -567,7 +568,7 @@ fn eval_stringify_returns_parsed_json_array() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -612,7 +613,7 @@ fn eval_stringify_text_suppresses_hints() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -653,7 +654,7 @@ fn eval_meta_has_no_eval_path() {
     assert!(
         output.status.success(),
         "expected success, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
@@ -703,7 +704,7 @@ fn e2e_eval_asi_await_script() {
     assert!(
         output.status.success(),
         "ASI-separated await script must exit 0, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =

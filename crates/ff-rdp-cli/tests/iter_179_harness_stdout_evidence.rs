@@ -57,6 +57,7 @@ fn scanned_roots() -> Vec<PathBuf> {
         .to_path_buf();
     vec![
         crates.join("ff-rdp-cli/tests/live"),
+        crates.join("ff-rdp-cli/tests/e2e"),
         crates.join("ff-rdp-core/tests"),
     ]
 }
@@ -371,7 +372,7 @@ fn unit_179_no_assertion_reports_stderr_without_stdout() {
             for inv in panic_invocations(&src) {
                 scanned += 1;
                 if is_offender(&inv.text) {
-                    let head: String = inv.text.chars().take(120).collect();
+                    let head: String = inv.text.clone();
                     offenders.push(format!(
                         "{}:{}: {}",
                         path.display(),

@@ -36,7 +36,7 @@ fn throttle_status_without_daemon_reports_null_with_note() {
     assert!(
         output.status.success(),
         "throttle status must succeed even with no daemon running; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::output_note(&output)
     );
 
     let json: serde_json::Value =
