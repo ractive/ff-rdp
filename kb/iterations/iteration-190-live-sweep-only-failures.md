@@ -111,6 +111,34 @@ Two things follow, and Theme A's chosen fix must address both or say why not:
    Related but distinct from `vanished` (iter-173), which is about the port-6000 browser leaving,
    not about a test browser refusing to.
 
+## Folded in from iteration 181's closing sweep (2026-08-23)
+
+A **second** instance of Theme B's class — a live test asserting on a third-party site under sweep
+load — this time on the daemon route.
+
+```
+FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1
+LIVE_SWEEP_SUMMARY executed=275 skipped=0 preexisting=9 vanished=0 launch_timeout=0 total=284
+274 passed / 1 failed — live_137_daemon_mode_parity::live_137_consent_accept_via_daemon
+
+  daemon never reported live frame targets — status: {
+    "running": true, "uptime_seconds": 16, "connections": 0,
+    "buffer_sizes": {"network-event": 438},
+    "target_count": 1, "live_target_count": 0
+  }
+```
+
+It navigates to theguardian.com and waits for the daemon to enumerate live frame targets before
+driving the consent banner. `network-event: 438` says the page was very much loading; the daemon
+just had no *live* frame target 16 s in. Iteration 181's diff cannot reach this: it changes only
+`ff-rdp run`'s `assert_network`, and `consent accept` is not a script step. Not re-run in
+isolation, so whether this is load, the site, or a real frame-target enumeration gap on the daemon
+is open — that determination belongs to Theme B's audit.
+
+This makes Theme B's third task concrete rather than speculative: there are now **two** named
+third-party-content assertions (`live_eval_on_hn` → news.ycombinator.com,
+`live_137_consent_accept_via_daemon` → theguardian.com), so it is a class.
+
 ## Tasks
 
 ### A. live_96 versus the sweep setup
@@ -126,7 +154,10 @@ Two things follow, and Theme A's chosen fix must address both or say why not:
 
 ### B. live_eval_on_hn
 - [ ] Determine whether the empty title is a readiness gap on our side or the site not answering
-- [ ] Audit the live suite for other assertions on third-party page content
+- [ ] Audit the live suite for other assertions on third-party page content — start from the two
+      already named (`live_eval_on_hn`, `live_137_consent_accept_via_daemon`)
+- [ ] Re-run `live_137_consent_accept_via_daemon` in isolation and decide whether its
+      `live_target_count: 0` is load, the site, or a daemon frame-target enumeration gap
 - [ ] Fix or re-scope, with the reasoning recorded
 
 ## Acceptance Criteria [0/3]
