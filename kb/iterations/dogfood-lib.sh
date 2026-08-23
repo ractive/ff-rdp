@@ -37,6 +37,7 @@ FF_RDP_DOGFOOD_PORTS=""
 FF_RDP_DOGFOOD_PIDS=""
 FF_RDP_DOGFOOD_HOOKS=""
 FF_RDP_DOGFOOD_PRIVATE_HOME=""
+FF_RDP_DOGFOOD_WORKDIR=""
 FF_RDP_DOGFOOD_TORN_DOWN=0
 
 # --- helpers ---------------------------------------------------------------
@@ -124,6 +125,14 @@ dogfood_record_pid() {
   esac
 }
 
+# Scratch directory for this run's intermediate files (screenshots, captured
+# JSON, …), removed by `dogfood_teardown`. Scripts used fixed `/tmp/iterNN-*`
+# paths until iteration 193; those are shared state between concurrent runs in
+# the same way the pre-184 sentinel was.
+dogfood_workdir() {
+  printf '%s\n' "$FF_RDP_DOGFOOD_WORKDIR"
+}
+
 # Register an extra cleanup function, run (in registration order) before the
 # standard teardown. Use this instead of installing a second EXIT trap, which
 # would silently replace `dogfood_teardown`.
@@ -132,17 +141,28 @@ dogfood_on_exit() {
 }
 
 # Launch Firefox on `$1`, recording the port and pid so teardown can reach
-# exactly this browser. Extra arguments are passed through to `launch`.
-# Prints the full launch JSON on stdout.
+# exactly this browser and nothing else. Extra arguments pass through to
+# `launch`; `--headless` is implied (use `dogfood_launch_headful` otherwise).
+#
+# The launch JSON lands in `$DOGFOOD_LAUNCH_JSON` rather than on stdout on
+# purpose: `JSON=$(dogfood_launch …)` would run the bookkeeping in a subshell
+# and the recorded port and pid would vanish with it, leaving teardown with
+# nothing to stop.
 dogfood_launch() {
-  local port="$1" json pid
-  shift
-  json="$(ffrdp launch --headless --port "$port" "$@")" || return 1
-  dogfood_record_port "$port"
-  pid="$(dogfood_json_number "$json" pid)"
-  dogfood_record_pid "$pid"
-  printf '%s\n' "$json"
+  dogfood_launch_headful "$@" --headless
 }
+
+# `dogfood_launch` without the implicit `--headless`, for the scripts that
+# deliberately exercise a headful launch.
+dogfood_launch_headful() {
+  local port="$1" pid
+  shift
+  DOGFOOD_LAUNCH_JSON="$(ffrdp launch --port "$port" "$@")" || return 1
+  dogfood_record_port "$port"
+  pid="$(dogfood_json_number "$DOGFOOD_LAUNCH_JSON" pid)"
+  dogfood_record_pid "$pid"
+}
+DOGFOOD_LAUNCH_JSON=""
 
 # Extract a top-level numeric field from `results` in a CLI JSON envelope,
 # without depending on jq or python3 (not every dogfood script has either).
@@ -187,6 +207,9 @@ dogfood_teardown() {
   for pid in $FF_RDP_DOGFOOD_PIDS; do
     dogfood_stop_pid "$pid"
   done
+  if [ -n "$FF_RDP_DOGFOOD_WORKDIR" ] && [ -d "$FF_RDP_DOGFOOD_WORKDIR" ]; then
+    rm -rf "$FF_RDP_DOGFOOD_WORKDIR"
+  fi
   if [ -n "$FF_RDP_DOGFOOD_PRIVATE_HOME" ] && [ -d "$FF_RDP_DOGFOOD_PRIVATE_HOME" ]; then
     rm -rf "$FF_RDP_DOGFOOD_PRIVATE_HOME"
   fi
@@ -202,6 +225,7 @@ dogfood_init() {
   # a sibling run and nothing this run prunes can belong to one.
   FF_RDP_DOGFOOD_PRIVATE_HOME="$(mktemp -d -t ff-rdp-dogfood-home-XXXXXX)"
   export FF_RDP_HOME="$FF_RDP_DOGFOOD_PRIVATE_HOME"
+  FF_RDP_DOGFOOD_WORKDIR="$(mktemp -d -t ff-rdp-dogfood-work-XXXXXX)"
 
   trap dogfood_teardown EXIT
   dogfood_build_cli
