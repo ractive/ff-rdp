@@ -3,7 +3,8 @@ use clap::Args as ClapArgs;
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -183,12 +184,203 @@ fn body_introduces_pub_symbols(body: &str) -> bool {
     re.is_match(body)
 }
 
+/// Matches an iteration plan file name and captures its iteration id.
+///
+/// The capture is `<digits>` with an optional trailing letter run, anchored so
+/// that the character after the id must be `-`. That boundary is what keeps
+/// `iteration-162a-*.md` and `iteration-162b-*.md` — deliberate sibling plans —
+/// from being read as two plans numbered 162. It also means `iteration-61b-*` and
+/// `iteration-61c-*` are distinct ids, while two files both claiming `61b` still
+/// collide. The letter run is `*` rather than `?` because `iteration-61aa-*.md`
+/// exists: a single-letter pattern would silently exempt it from the check. The `.md` suffix requirement excludes `.dogfood.sh` sidecars, which
+/// share a plan's stem (`iteration-96-profile-leak-cleanup.dogfood.sh`).
+fn plan_file_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^iteration-([0-9]+[a-z]*)-.+\.md$").expect("static regex"))
+}
+
+/// Extract the iteration id from a plan file name, or `None` if the name is not
+/// an iteration plan (`_template.md`, `stability-roadmap.md`, an arbitrary
+/// scratch file). A `None` here is not an error — it simply means uniqueness is
+/// not a meaningful question for this file.
+fn plan_id_from_file_name(file_name: &str) -> Option<String> {
+    plan_file_re()
+        .captures(file_name)
+        .map(|caps| caps[1].to_owned())
+}
+
+/// Duplicate iteration numbers that already exist in `kb/iterations/` and are
+/// deliberately kept, recorded as an explicit exemption.
+///
+/// Disposition (iteration 187, 2026-08-23): all four plans below are terminal
+/// (`done` or `obsolete`) and are cited by `[[wikilink]]` from kb notes and from
+/// merged PR bodies. Renumbering them would break inbound links to no benefit,
+/// so the two historical collisions are grandfathered rather than fixed — and
+/// the check itself is NOT weakened to accommodate them.
+///
+/// The exemption is keyed on the *exact set of file names*, not on the number.
+/// A third plan claiming 44 or 73 still fails, because the colliding set would no
+/// longer match the recorded pair.
+const LEGACY_COLLISIONS: &[(&str, &[&str])] = &[
+    (
+        "44",
+        &[
+            "iteration-44-github-setup-guide.md",
+            "iteration-44-public-release.md",
+        ],
+    ),
+    (
+        "73",
+        &[
+            "iteration-73-hyalo-schema-for-iteration-plans.md",
+            "iteration-73-spec-fidelity-gates.md",
+        ],
+    ),
+];
+
+/// True if `names` (sorted) is exactly a recorded historical collision for `id`.
+fn is_legacy_collision(id: &str, names: &[String]) -> bool {
+    LEGACY_COLLISIONS.iter().any(|(legacy_id, legacy_names)| {
+        *legacy_id == id && names.len() == legacy_names.len() && {
+            let mut expected: Vec<&str> = legacy_names.to_vec();
+            expected.sort_unstable();
+            names.iter().zip(expected).all(|(a, b)| a == b)
+        }
+    })
+}
+
+/// Check that `target` is the only plan claiming its iteration id among
+/// `candidates`.
+///
+/// Pure: `candidates` is the already-collected list of sibling `*.md` paths, so
+/// this is unit-testable without touching the filesystem. A candidate whose file
+/// name equals the target's is treated as the target itself, so a plan can never
+/// collide with its own copy in a second scanned directory.
+fn duplicate_id_findings(target: &Path, candidates: &[PathBuf]) -> Vec<String> {
+    let Some(target_name) = target.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+        return Vec::new();
+    };
+    let Some(id) = plan_id_from_file_name(&target_name) else {
+        // Not a `iteration-<id>-<slug>.md` name — uniqueness does not apply.
+        return Vec::new();
+    };
+
+    let mut colliding: Vec<&PathBuf> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for cand in candidates {
+        let Some(name) = cand.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        if name == target_name || seen.contains(&name) {
+            continue;
+        }
+        if plan_id_from_file_name(&name).as_deref() == Some(id.as_str()) {
+            seen.push(name);
+            colliding.push(cand);
+        }
+    }
+
+    if colliding.is_empty() {
+        return Vec::new();
+    }
+
+    let mut all_names: Vec<String> = seen.clone();
+    all_names.push(target_name.clone());
+    all_names.sort();
+    if is_legacy_collision(&id, &all_names) {
+        return Vec::new();
+    }
+
+    let others = colliding
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join("\n      ");
+    vec![format!(
+        "duplicate iteration number {id}: this plan shares its number with another plan.\n    \
+         this plan: {}\n    also claiming iteration-{id}:\n      {others}\n    \
+         Pick a free number (`ls kb/iterations/`) and rename this file, or — if the two plans are \
+         deliberately paired — give one a letter suffix (`iteration-{id}b-<slug>.md`).",
+        target.display()
+    )]
+}
+
+/// Collect the `*.md` files that `target`'s iteration id must be unique against:
+/// every plan in the target's own directory, plus every plan in the repository's
+/// `kb/iterations/` registry when that is a different directory.
+///
+/// Both are scanned because the registry — not the directory a file happens to
+/// sit in — is what owns iteration numbers: a draft written to a scratch path
+/// still collides with a filed plan. Missing or unreadable directories are
+/// skipped silently; a path outside `kb/iterations/` must be validated, not
+/// rejected, or the ralph-loop preflight would red-line on it.
+fn collect_sibling_plans(target: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = target.parent() {
+        // `parent` is empty for a bare file name like `iteration-9-x.md`.
+        let parent = if parent.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            parent.to_path_buf()
+        };
+        dirs.push(parent);
+    }
+    if let Some(registry) = repo_iterations_dir() {
+        dirs.push(registry);
+    }
+
+    let mut canonical_seen: Vec<PathBuf> = Vec::new();
+    let mut out: Vec<PathBuf> = Vec::new();
+    for dir in dirs {
+        let canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        if canonical_seen.contains(&canonical) {
+            continue;
+        }
+        canonical_seen.push(canonical);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The repository's `kb/iterations/` directory, resolved from the current working
+/// directory via git. Returns `None` outside a git checkout or when the directory
+/// does not exist, so the uniqueness check degrades to a same-directory scan
+/// rather than failing.
+fn repo_iterations_dir() -> Option<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8(output.stdout).ok()?;
+    let dir = PathBuf::from(root.trim()).join("kb").join("iterations");
+    dir.is_dir().then_some(dir)
+}
+
 pub fn run(args: Args) -> Result<()> {
     let content = std::fs::read_to_string(&args.path)
         .with_context(|| format!("failed to read {:?}", args.path))?;
 
     let plan = parse_plan(&content)?;
-    let (findings, warnings) = validate_plan(&plan);
+    let (mut findings, warnings) = validate_plan(&plan);
+
+    // Uniqueness is a property of the file, not of its contents, so it is checked
+    // here rather than inside `validate_plan`.
+    findings.extend(duplicate_id_findings(
+        &args.path,
+        &collect_sibling_plans(&args.path),
+    ));
 
     for w in &warnings {
         eprintln!("check-iteration-plan: warn: {w}");
@@ -363,5 +555,215 @@ mod tests {
             findings.iter().any(|f| f.contains("dogfood")),
             "expected dogfood finding when neither field set: {findings:?}"
         );
+    }
+
+    // --- iteration-number uniqueness (iteration 187) ---
+
+    fn p(name: &str) -> PathBuf {
+        PathBuf::from("kb/iterations").join(name)
+    }
+
+    #[test]
+    fn plan_id_plain_number() {
+        assert_eq!(
+            plan_id_from_file_name("iteration-186-launch-records-leak.md").as_deref(),
+            Some("186")
+        );
+    }
+
+    #[test]
+    fn plan_id_letter_suffix_is_its_own_id() {
+        // 162a and 162b are deliberate siblings, not a collision.
+        assert_eq!(
+            plan_id_from_file_name("iteration-162a-discipline-removal.md").as_deref(),
+            Some("162a")
+        );
+        assert_eq!(
+            plan_id_from_file_name("iteration-162b-ac-fidelity-shrink.md").as_deref(),
+            Some("162b")
+        );
+    }
+
+    #[test]
+    fn plan_id_handles_a_multi_letter_suffix() {
+        // `iteration-61aa-claim-miss-hard-gate.md` is real. A single-letter
+        // pattern would classify it as "not a plan" and skip it silently.
+        assert_eq!(
+            plan_id_from_file_name("iteration-61aa-claim-miss-hard-gate.md").as_deref(),
+            Some("61aa")
+        );
+        let target = p("iteration-61aa-claim-miss-hard-gate.md");
+        assert!(
+            duplicate_id_findings(&target, &[p("iteration-61a-other.md")]).is_empty(),
+            "61aa must not collide with 61a"
+        );
+        assert!(
+            !duplicate_id_findings(&target, &[p("iteration-61aa-other.md")]).is_empty(),
+            "two plans claiming 61aa must collide"
+        );
+    }
+
+    #[test]
+    fn plan_id_ignores_non_plan_names() {
+        assert_eq!(plan_id_from_file_name("_template.md"), None);
+        assert_eq!(plan_id_from_file_name("stability-roadmap.md"), None);
+        // A sidecar shell script shares the stem but is not a plan.
+        assert_eq!(
+            plan_id_from_file_name("iteration-96-profile-leak-cleanup.dogfood.sh"),
+            None
+        );
+        // No slug after the number.
+        assert_eq!(plan_id_from_file_name("iteration-96.md"), None);
+    }
+
+    #[test]
+    fn duplicate_id_is_reported_with_both_paths_and_the_number() {
+        let target = p("iteration-186-launch-records-leak.md");
+        let candidates = vec![
+            p("iteration-185-main-red.md"),
+            p("iteration-186-something-else-entirely.md"),
+            p("iteration-187-uniqueness.md"),
+        ];
+        let findings = duplicate_id_findings(&target, &candidates);
+        assert_eq!(findings.len(), 1, "expected one finding: {findings:?}");
+        let f = &findings[0];
+        assert!(f.contains("duplicate iteration number 186"), "{f}");
+        assert!(f.contains("iteration-186-launch-records-leak.md"), "{f}");
+        assert!(
+            f.contains("iteration-186-something-else-entirely.md"),
+            "{f}"
+        );
+    }
+
+    #[test]
+    fn a_plan_never_collides_with_itself() {
+        // The target is included in the scanned directory listing, and the same
+        // file name can turn up twice when two directories are scanned.
+        let target = p("iteration-187-uniqueness.md");
+        let candidates = vec![
+            target.clone(),
+            PathBuf::from("/tmp/iteration-187-uniqueness.md"),
+        ];
+        assert!(
+            duplicate_id_findings(&target, &candidates).is_empty(),
+            "a plan must not collide with itself"
+        );
+    }
+
+    #[test]
+    fn letter_suffixed_siblings_are_not_duplicates() {
+        let target = p("iteration-162a-discipline-removal.md");
+        let candidates = vec![
+            p("iteration-162a-discipline-removal.md"),
+            p("iteration-162b-ac-fidelity-shrink.md"),
+            p("iteration-162-nonexistent-plain.md"),
+        ];
+        assert!(
+            duplicate_id_findings(&target, &candidates).is_empty(),
+            "162a must not collide with 162b or 162"
+        );
+    }
+
+    #[test]
+    fn identical_letter_suffixes_do_collide() {
+        let target = p("iteration-61b-recorder-cli-wiring.md");
+        let candidates = vec![p("iteration-61b-something-else.md")];
+        let findings = duplicate_id_findings(&target, &candidates);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.contains("duplicate iteration number 61b")),
+            "two plans claiming 61b must collide: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn dogfood_sidecars_are_not_counted() {
+        let target = p("iteration-96-profile-leak-cleanup.md");
+        let candidates = vec![
+            p("iteration-96-profile-leak-cleanup.md"),
+            p("iteration-96-profile-leak-cleanup.dogfood.sh"),
+        ];
+        assert!(
+            duplicate_id_findings(&target, &candidates).is_empty(),
+            "a .dogfood.sh sidecar is not a second plan"
+        );
+    }
+
+    #[test]
+    fn legacy_44_and_73_collisions_are_exempt() {
+        for (a, b) in [
+            (
+                "iteration-44-github-setup-guide.md",
+                "iteration-44-public-release.md",
+            ),
+            (
+                "iteration-73-hyalo-schema-for-iteration-plans.md",
+                "iteration-73-spec-fidelity-gates.md",
+            ),
+        ] {
+            assert!(
+                duplicate_id_findings(&p(a), &[p(b)]).is_empty(),
+                "{a} / {b} is a recorded historical collision and must not fail"
+            );
+            assert!(
+                duplicate_id_findings(&p(b), &[p(a)]).is_empty(),
+                "the exemption must hold from either side"
+            );
+        }
+    }
+
+    #[test]
+    fn a_third_plan_claiming_a_legacy_number_still_fails() {
+        // The exemption is keyed on the exact recorded pair, so it does not
+        // become a permanent licence to reuse 44.
+        let target = p("iteration-44-brand-new-plan.md");
+        let candidates = vec![
+            p("iteration-44-github-setup-guide.md"),
+            p("iteration-44-public-release.md"),
+        ];
+        let findings = duplicate_id_findings(&target, &candidates);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.contains("duplicate iteration number 44")),
+            "a new 44 must still fail: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn non_plan_paths_are_handled_not_rejected() {
+        // A path outside kb/iterations that is not named like a plan must be
+        // silently accepted — the ralph-loop hands arbitrary paths to this check.
+        assert!(duplicate_id_findings(&PathBuf::from("/tmp/notes.md"), &[]).is_empty());
+        assert!(duplicate_id_findings(&PathBuf::from("kb/iterations"), &[]).is_empty());
+        assert!(duplicate_id_findings(&PathBuf::from("/"), &[]).is_empty());
+        assert!(duplicate_id_findings(&PathBuf::from(""), &[]).is_empty());
+    }
+
+    #[test]
+    fn the_real_kb_iterations_directory_has_no_unexempted_duplicates() {
+        // Non-regression: every plan filed in this repo must pass the check the
+        // moment it lands. If this fails, two plans share a number — renumber the
+        // newer one rather than widening LEGACY_COLLISIONS.
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("kb")
+            .join("iterations");
+        let entries: Vec<PathBuf> = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+                .collect(),
+            Err(e) => panic!("cannot read {}: {e}", dir.display()),
+        };
+        assert!(!entries.is_empty(), "no plans found in {}", dir.display());
+        let mut failures: Vec<String> = Vec::new();
+        for plan in &entries {
+            failures.extend(duplicate_id_findings(plan, &entries));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }
