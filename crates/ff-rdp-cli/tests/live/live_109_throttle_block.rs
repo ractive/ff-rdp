@@ -30,19 +30,18 @@ use crate::common::{LiveFirefox, ff_rdp_bin, live_network_tests_enabled, live_te
 
 /// Samples taken on each side of the throttled/baseline comparison.
 ///
-/// Odd, so the median is a real sample. Five is enough for the median to
-/// survive the connection-reuse regime: roughly one fetch in five completes
-/// ~260 ms faster than its neighbours because it rides an already-open
-/// connection, and that regime shift is present *both* throttled and
-/// un-throttled (iteration 177 measured it on both sides).
+/// Odd, so the median is a real sample. Five leaves room for two anomalous
+/// samples per side without moving the verdict.
 const FETCH_SAMPLES: usize = 5;
 
 /// Fraction of the profile's declared round-trip latency that the throttled
-/// fetch must actually pay, over and above baseline.
+/// fetch must actually pay in delivery delay, over and above baseline.
 ///
-/// Iteration 177 measured the real delta at 400–420 ms against slow-3g's
-/// declared 400 ms, idle and under load, so half of the declared figure is a
-/// floor with ~100% headroom rather than the ~2% the old ratio assertion had.
+/// Iteration 177 measured the real delivery delay at 407-413 ms against
+/// slow-3g's declared 400 ms — a 1.5% spread across every sample taken, idle
+/// and under load — while baseline delivery delay sat at 1-3 ms. Half of the
+/// declared figure is therefore a floor with ~100% headroom, where the ratio
+/// assertion it replaces had ~2%.
 const MIN_LATENCY_FRACTION: f64 = 0.5;
 
 /// Build daemon-path args (no `--no-daemon`): commands share the persistent
@@ -98,45 +97,89 @@ fn eval(port: u16, expr: &str) -> Value {
     json["results"].clone()
 }
 
-/// Time an in-page fetch of `url` (cache-busted) via `performance.now()`,
-/// returning the elapsed milliseconds. The fetch reads the body to completion
-/// so bandwidth throttling — not just latency — is exercised.
-fn time_fetch_ms(port: u16, url: &str) -> f64 {
+/// One timed in-page fetch, split into the two parts that behave differently.
+struct FetchTiming {
+    /// Wall-clock milliseconds for the whole `fetch()` plus body read.
+    total_ms: f64,
+    /// Network time-to-first-byte (`responseStart - requestStart`) taken from
+    /// the request's `PerformanceResourceTiming` entry.
+    ttfb_ms: f64,
+}
+
+impl FetchTiming {
+    /// The part of the fetch that throttling is responsible for: everything
+    /// that is *not* the network's own time-to-first-byte.
+    ///
+    /// Firefox's parent-process throttler holds the response back before
+    /// handing it to content, so the injected latency lands entirely after
+    /// `responseStart`. Iteration 177 measured this directly: with slow-3g on,
+    /// TTFB is unchanged (99-450 ms, exactly the un-throttled spread) while
+    /// this figure jumps from ~2 ms to 407-413 ms.
+    fn delivery_delay_ms(&self) -> f64 {
+        self.total_ms - self.ttfb_ms
+    }
+}
+
+/// Time an in-page fetch of `url` (cache-busted), returning both its total
+/// duration and its network TTFB. The fetch reads the body to completion so
+/// bandwidth throttling — not just latency — is exercised.
+fn time_fetch(port: u16, url: &str) -> FetchTiming {
     // A single self-timing expression keeps the whole measurement inside one
-    // eval so daemon round-trip overhead is excluded from the number we assert.
+    // eval so daemon round-trip overhead is excluded from the numbers we
+    // assert. The result is JSON-stringified because the RDP eval reply
+    // returns a *grip preview* for object results, not the object itself.
     let expr = format!(
         "(async () => {{ \
-           const u = '{url}' + (('{url}'.includes('?')) ? '&' : '?') + 'cb=' + Date.now(); \
+           const u = '{url}' + (('{url}'.includes('?')) ? '&' : '?') \
+             + 'cb=' + Date.now() + '_' + Math.random().toString(36).slice(2); \
            const t0 = performance.now(); \
            const r = await fetch(u, {{ cache: 'no-store' }}); \
            await r.arrayBuffer(); \
-           return performance.now() - t0; \
+           const total = performance.now() - t0; \
+           const e = performance.getEntriesByName(u)[0]; \
+           return JSON.stringify({{ \
+             total, ttfb: e ? (e.responseStart - e.requestStart) : -1 \
+           }}); \
          }})()"
     );
     let v = eval(port, &expr);
-    v.as_f64()
-        .unwrap_or_else(|| panic!("fetch timing not a number: {v}"))
+    let raw = v
+        .as_str()
+        .unwrap_or_else(|| panic!("fetch timing not a JSON string: {v}"));
+    let parsed: Value =
+        serde_json::from_str(raw).unwrap_or_else(|e| panic!("fetch timing not JSON: {e}\n{raw}"));
+    let total_ms = parsed["total"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("fetch timing has no total: {parsed}"));
+    let ttfb_ms = parsed["ttfb"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("fetch timing has no ttfb: {parsed}"));
+    assert!(
+        ttfb_ms >= 0.0,
+        "no PerformanceResourceTiming entry for the probe fetch — the throttle \
+         measurement this test relies on is unavailable: {parsed}"
+    );
+    FetchTiming { total_ms, ttfb_ms }
 }
 
-/// Take [`FETCH_SAMPLES`] timed fetches of `url` and return them **sorted**
-/// together with their median.
+/// Take [`FETCH_SAMPLES`] timed fetches of `url` and return their delivery
+/// delays **sorted**, together with the median.
 ///
-/// The median — not the minimum — is the estimator: iteration 177 measured a
-/// bimodal distribution (fresh connection vs. reused connection, ~260 ms
-/// apart) on both the throttled and the un-throttled side, and a `min` over
-/// two samples picks whichever mode it happens to hit. Comparing a
-/// fresh-connection baseline against a reused-connection throttled sample is
-/// what actually produced the reds this test was seeing.
-fn fetch_ms_samples(port: u16, url: &str) -> (Vec<f64>, f64) {
-    let mut samples: Vec<f64> = (0..FETCH_SAMPLES)
-        .map(|_| time_fetch_ms(port, url))
+/// The median, not the minimum: iteration 177 measured example.com answering
+/// in either ~100 ms or ~370-470 ms at random, on both the throttled and the
+/// un-throttled side. That variance is in TTFB, which `delivery_delay_ms`
+/// already subtracts out, but a `min` over two samples would still pick
+/// whichever end of any remaining spread it happened to hit.
+fn delivery_delays_ms(port: u16, url: &str) -> (Vec<f64>, f64) {
+    let mut delays: Vec<f64> = (0..FETCH_SAMPLES)
+        .map(|_| time_fetch(port, url).delivery_delay_ms())
         .collect();
-    samples.sort_by(f64::total_cmp);
-    let median = samples[FETCH_SAMPLES / 2];
-    (samples, median)
+    delays.sort_by(f64::total_cmp);
+    let median = delays[FETCH_SAMPLES / 2];
+    (delays, median)
 }
 
-/// Render timing samples for the failure message: `368,371,374,459,801`.
+/// Render timing samples for the failure message: `1,2,2,3,3`.
 fn fmt_ms(samples: &[f64]) -> String {
     samples
         .iter()
@@ -148,7 +191,8 @@ fn fmt_ms(samples: &[f64]) -> String {
 /// `live_throttle_slow3g_slows_fetch`:
 ///
 /// A timed in-page fetch under `throttle slow-3g` pays at least half of the
-/// profile's declared round-trip latency on top of the un-throttled baseline.
+/// profile's declared round-trip latency in *delivery delay* — the part of the
+/// fetch that is not the network's own TTFB — over the un-throttled baseline.
 /// `throttle off` restores full speed.
 #[test]
 #[ignore = "requires Firefox + network access — set FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1"]
@@ -179,10 +223,10 @@ fn live_throttle_slow3g_slows_fetch() {
     // example.com's own document is same-origin here.
     let target = "https://example.com/";
 
-    // Baseline: median of FETCH_SAMPLES samples (see `fetch_ms_samples`).
-    let (base_samples, baseline) = fetch_ms_samples(port, target);
+    // Baseline delivery delay: median of FETCH_SAMPLES samples.
+    let (base_samples, baseline) = delivery_delays_ms(port, target);
     let base_list = fmt_ms(&base_samples);
-    eprintln!("baseline fetch: [{base_list}] → median {baseline:.0}ms");
+    eprintln!("baseline delivery delay: [{base_list}] → median {baseline:.0}ms");
 
     // Apply slow-3g throttling; the envelope must echo the active profile.
     let applied = run_json(port, &["throttle", "slow-3g"]);
@@ -196,27 +240,30 @@ fn live_throttle_slow3g_slows_fetch() {
     );
 
     // Throttled: same estimator on the same target.
-    let (thr_samples, throttled) = fetch_ms_samples(port, target);
+    let (thr_samples, throttled) = delivery_delays_ms(port, target);
     let thr_list = fmt_ms(&thr_samples);
-    eprintln!("throttled fetch: [{thr_list}] → median {throttled:.0}ms");
+    eprintln!("throttled delivery delay: [{thr_list}] → median {throttled:.0}ms");
 
     // iter-177: assert the *additive* cost of the profile's declared
-    // round-trip latency, not a ratio.
+    // round-trip latency on the delivery delay, not a ratio of total times.
     //
-    // The old assertion was `throttled >= baseline * 2.0`, which multiplies
-    // every baseline error by two: on the machine where this was diagnosed the
-    // idle ratio was 2.05, so a baseline 3% slower than usual reddened the test
-    // while the throttled figure had not moved at all. Throttling is additive —
-    // slow-3g injects a fixed round-trip latency — so the delta is what is
-    // actually reproducible, and a baseline error costs it 1:1 instead of 2:1.
-    let declared_latency_ms = ThrottleProfile::Slow3g.latency_ms() as f64;
+    // The old assertion was `total_throttled >= total_baseline * 2.0`, which
+    // multiplies every baseline error by two and compares two numbers that are
+    // mostly origin latency. On the machine where this was diagnosed the idle
+    // ratio was 2.05, so a baseline 3% slower than usual reddened the test
+    // while the throttled figure had not moved at all. Throttling is additive
+    // and lands wholly after `responseStart`, so the delivery delay isolates
+    // it: it is reproducible to ~1.5% where the totals are not.
+    let declared_latency_ms = f64::from(
+        u32::try_from(ThrottleProfile::Slow3g.latency_ms()).expect("declared latency fits in u32"),
+    );
     let required_delta = declared_latency_ms * MIN_LATENCY_FRACTION;
     let delta = throttled - baseline;
     assert!(
         delta >= required_delta,
-        "under slow-3g the fetch must pay at least {required_delta:.0}ms more than baseline \
-         (half of the profile's declared {declared_latency_ms:.0}ms round-trip latency), \
-         but paid {delta:.0}ms: baseline median={baseline:.0}ms [{base_list}] \
+        "under slow-3g the fetch must pay at least {required_delta:.0}ms more delivery delay \
+         than baseline (half of the profile's declared {declared_latency_ms:.0}ms round-trip \
+         latency), but paid {delta:.0}ms: baseline median={baseline:.0}ms [{base_list}] \
          throttled median={throttled:.0}ms [{thr_list}]"
     );
 
