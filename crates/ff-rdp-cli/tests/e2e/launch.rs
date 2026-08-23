@@ -162,13 +162,20 @@ fn spawn_sacrificial_child() -> std::process::Child {
         c.arg("30");
         c
     };
+    // `ping` rather than `timeout`: `timeout /t` needs a real console and
+    // exits immediately with "Input redirection is not supported" when stdin
+    // is redirected, which is exactly how CI runs the test binary. That made
+    // the child die before ff-rdp ever ran, and the survival assertion below
+    // then reported a regression that had not happened (windows-latest, PR
+    // #224).
     #[cfg(windows)]
     let mut cmd = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/c", "timeout", "/t", "30", "/nobreak"]);
+        let mut c = std::process::Command::new("ping");
+        c.args(["-n", "31", "127.0.0.1"]);
         c
     };
-    cmd.stdout(std::process::Stdio::null())
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn sacrificial child")
@@ -199,6 +206,16 @@ fn launch_replace_refuses_stale_record_naming_a_foreign_pid() {
 
     let mut victim = spawn_sacrificial_child();
     let victim_pid = victim.id();
+
+    // Precondition, asserted separately from the guarantee: the record is only
+    // consulted while its PID is alive, so a child that died on its own would
+    // make the branch under test unreachable *and* make the survival assertion
+    // below report a regression that never happened.
+    assert!(
+        matches!(victim.try_wait(), Ok(None)),
+        "precondition: the sacrificial child (pid {victim_pid}) must outlive the command \
+         under test; it exited before ff-rdp ran"
+    );
 
     let dir = home.path().join(".ff-rdp");
     std::fs::create_dir_all(&dir).expect("create .ff-rdp");
