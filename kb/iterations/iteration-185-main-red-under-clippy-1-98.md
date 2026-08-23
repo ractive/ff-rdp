@@ -127,7 +127,8 @@ reasoning are in [[decision-log]] DEC-044; summarised:
 - All six xtask `check-*` gates exit 0 (`check-dogfood-script` needs `FF_RDP_LIVE_TESTS=1` even
   when the plan has no `dogfood_script`, else it fails closed on an `iter-*` branch; with the gate
   set it reports SKIP).
-- **No live sweep was run, on purpose.** The diff is one workflow file and three markdown files —
+- **No live sweep was run, on purpose.** The diff is one workflow file and five markdown/doc files
+  (`CLAUDE.md`, `CONTRIBUTING.md`, `README.md`, `kb/decision-log.md`, this plan) —
   no `.rs`, no `Cargo.toml`, no product behaviour. `iteration-close`'s standing sweep policy is
   scoped to iterations touching product source, and a 40-minute sweep here could only report on
   code identical to `main`'s while risking contention with other Firefox work in flight. Stated
