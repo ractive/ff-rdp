@@ -240,6 +240,12 @@ pub(crate) fn build_command(
     auto_consent: bool,
     window_size: Option<(u32, u32)>,
 ) -> Result<(std::process::Command, Option<PathBuf>), AppError> {
+    // iter-175: every `?` below the temp-profile creation used to return past a
+    // directory this function had already created on disk. Arming this guard
+    // the moment the directory exists makes those returns remove it again; it
+    // is disarmed only on the success return, where the caller takes over (see
+    // `run`, which re-arms one of its own across the spawn).
+    let mut managed_guard = crate::util::profile_dir::ManagedProfileGuard::disarmed();
     let mut cmd = std::process::Command::new(firefox);
 
     // Always launch as an independent instance.
@@ -339,6 +345,28 @@ pub(crate) fn build_command(
                 ))
             })?
             .keep();
+
+        // iter-175: claim the directory *before* anything else can fail.
+        //
+        // Two independent leak paths converge here. The first is an early
+        // `return Err` from the rest of this function or from `run` — the
+        // guard below removes the directory for those. The second is the
+        // process simply ceasing to exist (SIGKILL, a CI timeout, a live sweep
+        // interrupted mid-test), where no `Drop` ever runs; iteration 171's
+        // postmortem hit exactly that, and iteration 175 found eight
+        // directories on disk holding nothing but `user.js` and no marker.
+        // Recording *our own* PID makes an unmarked managed directory
+        // impossible, so a killed launch leaves an attributable directory that
+        // the iter-142 dead-owner rule reclaims on the next `launch` (this
+        // process is gone by then, and the start token beside the PID stops a
+        // recycled PID from resurrecting the claim — iter-171).
+        //
+        // The post-spawn write in `run` overwrites this pair with Firefox's
+        // PID and token; `write_owner_pid_marker` clears the old token first so
+        // the two halves can never describe different processes.
+        crate::util::profile_dir::write_owner_pid_marker(&tmp, std::process::id());
+
+        managed_guard = crate::util::profile_dir::ManagedProfileGuard::armed(&tmp);
         std::fs::write(tmp.join("user.js"), USER_JS).map_err(|e| {
             AppError::User(format!(
                 "failed to write user.js to temporary profile {}: {e}",
@@ -386,6 +414,8 @@ pub(crate) fn build_command(
         cmd.process_group(0);
     }
 
+    // Nothing below can fail: hand the directory to the caller intact.
+    managed_guard.disarm();
     Ok((cmd, profile_path))
 }
 
@@ -693,6 +723,22 @@ pub(crate) fn run_with_hooks(
     let (mut cmd, profile_path) =
         build_command(&firefox, port, headless, profile, auto_consent, window_size)?;
 
+    // iter-175: `build_command` handed the managed profile directory back
+    // intact; take responsibility for it again until this launch is known to
+    // have succeeded. Every `return Err` below — spawn failure, Firefox exiting
+    // immediately, the debug port never opening, an unreadable child status —
+    // now removes the directory on the way out instead of leaving it for a
+    // seven-day age gate. A user-supplied `--profile` directory is never
+    // guarded: `should_write_owner_marker` is exactly the "we created it"
+    // predicate, and deleting a directory the user chose would be far worse
+    // than leaking one we made.
+    let mut profile_guard = match profile_path.as_deref() {
+        Some(dir) if should_write_owner_marker(profile) => {
+            crate::util::profile_dir::ManagedProfileGuard::armed(dir)
+        }
+        _ => crate::util::profile_dir::ManagedProfileGuard::disarmed(),
+    };
+
     let mut child = (hooks.spawn)(&mut cmd).map_err(|e| {
         AppError::User(format!(
             "failed to start Firefox at {}: {e}",
@@ -766,6 +812,12 @@ pub(crate) fn run_with_hooks(
             // probe; iter-171 moved them up to immediately after the spawn so
             // an interrupted launch still leaves an attributable profile —
             // see the write site above `try_wait`. Nothing to do here.
+
+            // iter-175: the launch is now known-good — Firefox is running and
+            // its debug port is reachable — so the profile directory belongs to
+            // that Firefox, not to this command. This is the single place the
+            // guard is released; every other exit from `run` removes it.
+            profile_guard.disarm();
 
             // Write the shared daemon record so `daemon stop` and
             // `launch --replace` can find and terminate this instance.

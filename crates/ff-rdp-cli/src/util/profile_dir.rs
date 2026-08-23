@@ -248,6 +248,25 @@ pub(crate) fn latest_profile_activity(dir: &Path, dir_mtime: SystemTime) -> Syst
 pub(crate) fn write_owner_pid_marker(dir: &Path, pid: u32) {
     let start_token = crate::daemon::process::process_start_token(pid);
 
+    // iter-175: this call now *overwrites* an earlier marker pair on the
+    // normal path — `launch` claims the directory with its own PID the instant
+    // it exists, then re-marks it with Firefox's PID after the spawn. A stale
+    // token left beside a fresh PID grades the profile `Dead` (the tokens
+    // disagree) while its Firefox is very much alive, and the iter-142
+    // dead-owner rule would then delete the profile out from under a running
+    // browser. So drop any previous token first: the file must only ever hold
+    // a token captured for the PID currently recorded beside it, and a missing
+    // token degrades safely to bare-PID liveness (`OwnerLiveness::Live`).
+    let start_marker = dir.join(OWNER_START_MARKER);
+    if let Err(e) = std::fs::remove_file(&start_marker)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(
+            "write_owner_pid_marker: could not clear stale {}: {e}",
+            start_marker.display()
+        );
+    }
+
     let marker = dir.join(OWNER_PID_MARKER);
     if let Err(e) = std::fs::write(&marker, format!("{pid}\n")) {
         tracing::warn!(
@@ -267,7 +286,6 @@ pub(crate) fn write_owner_pid_marker(dir: &Path, pid: u32) {
         );
         return;
     };
-    let start_marker = dir.join(OWNER_START_MARKER);
     if let Err(e) = std::fs::write(&start_marker, format!("{token}\n")) {
         tracing::warn!(
             "write_owner_pid_marker: could not write {}: {e}",
@@ -508,8 +526,16 @@ pub fn cleanup_profile_dir(path: &Path) -> ProfileCleanup {
             return ProfileCleanup::Skipped;
         }
     };
+    cleanup_profile_dir_under(&root, path)
+}
 
-    if !path.starts_with(&root) {
+/// Root-parameterised core of [`cleanup_profile_dir`], so both safety checks
+/// (under the root, managed basename) can be exercised against a temp root
+/// instead of the caller's real per-user profile directory — the same split
+/// [`pid_is_ff_rdp_spawned_under`] already uses, and what lets
+/// [`ManagedProfileGuard`] be unit-tested at all.
+fn cleanup_profile_dir_under(root: &Path, path: &Path) -> ProfileCleanup {
+    if !path.starts_with(root) {
         tracing::debug!(
             "cleanup_profile_dir: refusing to remove {} — not under secure profile root {}",
             path.display(),
@@ -539,6 +565,157 @@ pub fn cleanup_profile_dir(path: &Path) -> ProfileCleanup {
             ProfileCleanup::Skipped
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// iter-175: the profile directory a failed launch must not leave behind
+// ---------------------------------------------------------------------------
+
+/// RAII owner of a freshly-created *managed* profile directory: removes it on
+/// drop unless [`disarm`](Self::disarm) is called first (iter-175).
+///
+/// `launch` creates the profile directory and writes its `user.js` **before**
+/// Firefox is spawned, and several things can fail in between — the
+/// `auto_consent` extension install, `spawn` itself, Firefox exiting
+/// immediately, the debug port never opening. Every one of those paths used to
+/// `return Err` straight past the directory, leaving an `ff-rdp-profile-*` dir
+/// that (pre-iter-175) carried no owner marker at all, so the iter-96 mtime
+/// heuristic held it for seven days and nothing else could attribute it. Eight
+/// such directories were sitting under the real profile root when this
+/// iteration was written; twenty when iteration 171 measured it.
+///
+/// The guard makes every one of those returns remove the directory instead, by
+/// construction rather than by remembering to clean up at each `?`. It routes
+/// through [`cleanup_profile_dir_under`], so the two safety checks that protect
+/// a user's `--profile` directory apply here too: only a
+/// `ff-rdp-profile-<16 chars>` basename under the profile root is ever removed.
+///
+/// It is deliberately **not** the whole fix. `Drop` does not run when the
+/// process is killed (SIGKILL, a CI timeout, a live sweep interrupted
+/// mid-test), which is the case iteration 171's postmortem actually hit. The
+/// pre-spawn owner marker `launch` now writes — see
+/// [`write_owner_pid_marker`] — covers that half: the directory is claimed by
+/// the launching CLI's own PID from the moment it exists, so once that CLI is
+/// gone the iter-142 dead-owner rule in [`prune_orphan_profiles`] reclaims it
+/// on the very next `launch`, rather than waiting out a seven-day age gate.
+pub(crate) struct ManagedProfileGuard {
+    /// Profile root the removal is confined to. Resolved once at construction.
+    root: PathBuf,
+    /// `None` once disarmed — the success path transfers ownership of the
+    /// directory to the Firefox that is now using it.
+    path: Option<PathBuf>,
+}
+
+impl ManagedProfileGuard {
+    /// Guard `path` against every early return, confining removal to the real
+    /// [`secure_profile_root`].
+    ///
+    /// An unresolvable profile root yields a permanently disarmed guard: the
+    /// same fail-closed default [`cleanup_profile_dir`] takes, since without a
+    /// root there is no way to prove `path` is one of ours.
+    pub(crate) fn armed(path: &Path) -> Self {
+        match secure_profile_root() {
+            Ok(root) => Self::armed_under(root, path),
+            Err(e) => {
+                tracing::debug!(
+                    "ManagedProfileGuard: could not resolve secure profile root, not guarding \
+                     {}: {e:#}",
+                    path.display()
+                );
+                Self {
+                    root: PathBuf::new(),
+                    path: None,
+                }
+            }
+        }
+    }
+
+    /// [`armed`](Self::armed) with the profile root supplied, so the guard's
+    /// behaviour is testable against a temp root.
+    fn armed_under(root: PathBuf, path: &Path) -> Self {
+        Self {
+            root,
+            path: Some(path.to_path_buf()),
+        }
+    }
+
+    /// A guard that will never remove anything — used for the branches that
+    /// have no managed directory to protect (a user-supplied `--profile`).
+    pub(crate) fn disarmed() -> Self {
+        Self {
+            root: PathBuf::new(),
+            path: None,
+        }
+    }
+
+    /// Hand the directory over to its new owner: the launch succeeded and
+    /// Firefox is using it, so dropping this guard must no longer delete it.
+    pub(crate) fn disarm(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for ManagedProfileGuard {
+    fn drop(&mut self) {
+        let Some(path) = self.path.take() else {
+            return;
+        };
+        match cleanup_profile_dir_under(&self.root, &path) {
+            ProfileCleanup::Removed(p) => {
+                tracing::debug!(
+                    "ManagedProfileGuard: removed profile dir of a launch that never started \
+                     Firefox: {}",
+                    p.display()
+                );
+            }
+            ProfileCleanup::Skipped => {
+                tracing::warn!(
+                    "ManagedProfileGuard: could not remove {} — it may survive as an orphan until \
+                     the next launch's prune",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
+/// How long an unmarked, never-opened profile directory is left alone before
+/// [`prune_orphan_profiles`] treats it as a failed launch (iter-175 Theme C).
+///
+/// Purely a race guard, not an age gate: it only has to outlast the window
+/// between a *concurrent* launch creating its directory and that launch
+/// writing its owner marker. Post-iter-175 that window is two syscalls wide;
+/// ten minutes covers a pre-iter-175 binary running alongside a current one,
+/// and is still far inside the time a real Firefox takes to write `prefs.js`
+/// (a second or two after startup).
+const FAILED_LAUNCH_GRACE: Duration = Duration::from_secs(10 * 60);
+
+/// Returns `true` iff `dir` is a managed profile directory that a launch
+/// created but Firefox never opened (iter-175 Theme C).
+///
+/// The evidence is that the directory contains nothing except the `user.js`
+/// ff-rdp itself wrote before the spawn. A Firefox that actually started
+/// populates the profile within seconds — `prefs.js`, `times.json`,
+/// `*.sqlite`, `storage/` — so "only `user.js`" cannot describe a browser that
+/// ever ran against it. The check is self-contained: an owner marker is a
+/// directory entry too, so a marked directory fails it and is graded by
+/// [`owner_liveness`] instead.
+///
+/// Errs toward `false` on any read failure — an unreadable directory is never
+/// "provably" anything.
+fn profile_is_provably_failed_launch(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        if entry.file_name() != std::ffi::OsStr::new("user.js") {
+            return false;
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -658,8 +835,45 @@ pub fn prune_orphan_profiles(
                 continue;
             }
             OwnerLiveness::Unmarked => {
-                // No marker (pre-97 profile, or the marker write failed) —
-                // fall back to the mtime heuristic below.
+                // No marker (pre-97 profile, a pre-iter-175 failed launch, or
+                // the marker write failed).
+                //
+                // iter-175 Theme C: an unmarked directory holding nothing but
+                // the `user.js` ff-rdp wrote before the spawn is not merely
+                // *old enough to guess at* — it is proof that no Firefox ever
+                // opened it, i.e. the leftovers of a launch that died between
+                // creating the profile and starting the browser. Those are the
+                // twenty directories iteration 171 found and the eight still
+                // on disk when iteration 175 was written, and the age gate
+                // below (7 days by default) is the only reason they survive.
+                // Reclaim them past a short race grace instead. Every other
+                // unmarked directory — one a Firefox did populate — keeps the
+                // full age gate untouched.
+                if profile_is_provably_failed_launch(&path) {
+                    let stale_enough = entry
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .map(|mtime| latest_profile_activity(&path, mtime))
+                        .and_then(|newest| now.duration_since(newest).ok())
+                        .is_some_and(|age| age >= FAILED_LAUNCH_GRACE);
+                    if stale_enough {
+                        tracing::debug!(
+                            "prune_orphan_profiles: {} has no owner marker and holds only \
+                             user.js — no Firefox ever opened it, removing immediately",
+                            path.display()
+                        );
+                        match std::fs::remove_dir_all(&path) {
+                            Ok(()) => summary.removed.push(path),
+                            Err(e) => tracing::warn!(
+                                "prune_orphan_profiles: failed to remove failed-launch {}: {e}",
+                                path.display()
+                            ),
+                        }
+                        continue;
+                    }
+                }
+                // Otherwise fall back to the mtime heuristic below.
             }
         }
 
