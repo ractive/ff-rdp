@@ -574,37 +574,79 @@ fn ownership_scan_roots() -> Vec<PathBuf> {
 /// "never signal a process we did not spawn" guarantee intact regardless of
 /// what `$FF_RDP_HOME` points at.
 ///
-/// Fails **closed** on Unix: unreadable metadata means "cannot vouch for
-/// this root", so it is refused, not trusted by default. Windows is always
-/// `true` — `%LOCALAPPDATA%`-derived paths already deny Everyone by
-/// inheritance (see this module's top-level doc comment), and an override
-/// still resolves under the same per-user ACL model rather than an
-/// arbitrary Unix-style mode.
+/// Checks **ownership**, not only mode bits: a root at mode `0o755` owned by
+/// a *different* account passes a bits-only test (nothing in `0o022`) but is
+/// exactly the case that matters — the other account owns the directory and
+/// can plant a marker in it whenever it likes, and `0o755` is world-readable
+/// so ff-rdp would honour that marker. A root this process does not own is
+/// refused regardless of its mode, the same check `git`'s `safe.directory`
+/// applies for the analogous threat.
+///
+/// Fails **closed** on Unix: unreadable metadata, or a root this process
+/// does not own, means "cannot vouch for this root", so it is refused, not
+/// trusted by default. `ENOENT` is not a threat, though — the default root
+/// simply does not exist yet on a fresh checkout, in CI, or under any
+/// `$FF_RDP_HOME`-isolated live test (the 188 work added several) — so a
+/// missing root returns `false` without the "writable by group or other"
+/// warning below, which would otherwise fire on every one of those, every
+/// time, about a directory that was never created.
+///
+/// Windows is always `true` — `%LOCALAPPDATA%`-derived paths already deny
+/// Everyone by inheritance (see this module's top-level doc comment), and an
+/// override still resolves under the same per-user ACL model rather than an
+/// arbitrary Unix-style mode/owner pair.
+// The crate default is `unsafe_code = "deny"` (see `Cargo.toml`'s `[lints]`
+// comment); `libc::geteuid()` is real, audited FFI, so the allowance is
+// scoped to this one function rather than the module.
 #[cfg(unix)]
-fn root_is_trustworthy(root: &Path) -> bool {
+#[allow(unsafe_code)]
+fn root_is_trustworthy(root: &Path) -> Result<bool, std::io::ErrorKind> {
+    use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
     match std::fs::metadata(root) {
-        Ok(meta) => meta.permissions().mode() & 0o022 == 0,
-        Err(_) => false,
+        Ok(meta) => {
+            // SAFETY: `geteuid()` takes no arguments, performs no pointer
+            // dereferences, and cannot fail — it is documented to always
+            // succeed.
+            let euid = unsafe { libc::geteuid() };
+            Ok(meta.uid() == euid && meta.permissions().mode() & 0o022 == 0)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(std::io::ErrorKind::NotFound),
+        Err(_) => Ok(false),
     }
 }
 
 #[cfg(not(unix))]
-fn root_is_trustworthy(_root: &Path) -> bool {
-    true
+fn root_is_trustworthy(_root: &Path) -> Result<bool, std::io::ErrorKind> {
+    Ok(true)
 }
 
 /// Root-parameterised core of [`pid_is_ff_rdp_spawned`] so the ownership gate
 /// can be unit-tested against a temp profile root without touching the real
 /// per-user directory.
 fn pid_is_ff_rdp_spawned_under(root: &Path, pid: u32) -> bool {
-    if !root_is_trustworthy(root) {
-        tracing::warn!(
-            "pid_is_ff_rdp_spawned: refusing to trust {} for ownership proof — it is writable \
-             by group or other, which would let another account plant an owner-PID marker",
-            root.display()
-        );
-        return false;
+    match root_is_trustworthy(root) {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::warn!(
+                "pid_is_ff_rdp_spawned: refusing to trust {} for ownership proof — it is not \
+                 owned by this process's user, or is writable by group or other, either of \
+                 which would let another account plant an owner-PID marker",
+                root.display()
+            );
+            return false;
+        }
+        // Every `Err` returns the same `false` — there is nothing to scan
+        // either way. The distinction between "root is missing" and "root
+        // exists but its metadata could not be read" is real at the type
+        // level (`root_is_trustworthy`'s return type, and
+        // `root_is_trustworthy_distinguishes_missing_from_untrustworthy`
+        // below), it just does not change this function's behavior: neither
+        // case logs — the warning above only fires for `Ok(false)`, an
+        // *actual* untrustworthy root — so a missing default root under an
+        // isolated `$FF_RDP_HOME` (every live test the 188 work added) stays
+        // silent rather than logging a false "writable by group or other".
+        Err(_) => return false,
     }
     let Ok(entries) = std::fs::read_dir(root) else {
         return false;
@@ -1493,9 +1535,9 @@ mod tests {
         );
     }
 
-    /// AC: `root_is_trustworthy` accepts a private (0700) root and refuses
-    /// one that is group- or world-writable — the read-side half of
-    /// iter-188's `$FF_RDP_HOME` hardening, since an override root is not
+    /// AC: `root_is_trustworthy` accepts a private (0700), self-owned root
+    /// and refuses one that is group- or world-writable — the read-side half
+    /// of iter-188's `$FF_RDP_HOME` hardening, since an override root is not
     /// guaranteed private the way the default `secure_profile_root` output
     /// is.
     #[test]
@@ -1506,28 +1548,83 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
             .expect("chmod 0700");
-        assert!(
+        assert_eq!(
             root_is_trustworthy(root.path()),
-            "a private 0700 root must be trusted"
+            Ok(true),
+            "a private, self-owned 0700 root must be trusted"
         );
 
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o770))
             .expect("chmod 0770");
-        assert!(
-            !root_is_trustworthy(root.path()),
+        assert_eq!(
+            root_is_trustworthy(root.path()),
+            Ok(false),
             "a group-writable root must not be trusted"
         );
 
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o707))
             .expect("chmod 0707");
-        assert!(
-            !root_is_trustworthy(root.path()),
+        assert_eq!(
+            root_is_trustworthy(root.path()),
+            Ok(false),
             "a world-writable root must not be trusted"
         );
 
         // Restore a mode `TempDir`'s own cleanup can rely on.
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
             .expect("restore 0700");
+    }
+
+    /// AC: `root_is_trustworthy` compares ownership, not only mode bits — a
+    /// bits-only check would accept an other-account-owned `0o755` root
+    /// (`0o755 & 0o022 == 0`), but that account owns the directory and can
+    /// plant a marker in it whenever it likes. A same-uid test process
+    /// cannot fabricate a foreign-owned directory to exercise the *refusal*
+    /// branch directly (that needs root privilege to `chown` away from the
+    /// test's own euid), so this pins the precondition the refusal depends
+    /// on: a normally-created directory is owned by this process, and
+    /// `root_is_trustworthy` reports it trusted on that basis together with
+    /// its mode — i.e. the ownership comparison is exercised on its
+    /// true-branch, and the ownership *field* the ownership comparison
+    /// reads is confirmed to be what this process expects.
+    #[test]
+    #[cfg(unix)]
+    #[allow(unsafe_code)]
+    fn root_is_trustworthy_checks_ownership_matches_euid() {
+        use std::os::unix::fs::MetadataExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let meta = std::fs::metadata(root.path()).expect("metadata");
+        // SAFETY: see `root_is_trustworthy`.
+        let euid = unsafe { libc::geteuid() };
+        assert_eq!(
+            meta.uid(),
+            euid,
+            "a freshly-created tempdir must be owned by this process"
+        );
+        assert_eq!(
+            root_is_trustworthy(root.path()),
+            Ok(true),
+            "a self-owned, private root must be trusted"
+        );
+    }
+
+    /// AC: `root_is_trustworthy` returns `Err(NotFound)` for a root that
+    /// simply does not exist yet — the common case under an isolated
+    /// `$FF_RDP_HOME` with no default root ever created — rather than the
+    /// generic `Ok(false)` a real permission/ownership refusal uses, so the
+    /// caller can skip the "writable by group or other" warning on a path
+    /// where nothing was ever untrustworthy, only absent.
+    #[test]
+    #[cfg(unix)]
+    fn root_is_trustworthy_distinguishes_missing_from_untrustworthy() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let missing = root.path().join("never-created");
+        assert_eq!(
+            root_is_trustworthy(&missing),
+            Err(std::io::ErrorKind::NotFound),
+            "a root that was never created must be reported as missing, not refused as untrustworthy"
+        );
     }
 
     /// AC: `pid_is_ff_rdp_spawned_under` refuses to authorise a kill on the
