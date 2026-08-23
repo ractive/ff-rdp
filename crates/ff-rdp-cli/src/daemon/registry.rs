@@ -223,12 +223,12 @@ pub(crate) fn remove_legacy_registry_in(dir: &Path) {
 
 /// Return the `~/.ff-rdp/` directory, creating it if it does not exist.
 ///
-/// Respects `FF_RDP_HOME` env var as an override (useful for testing on
-/// Windows where `dirs::home_dir()` uses the Windows API and ignores
-/// `HOME`/`USERPROFILE` overrides).
+/// Respects [`crate::util::HOME_OVERRIDE_ENV`] (`FF_RDP_HOME`) as an override
+/// (useful for testing, and on Windows where `dirs::home_dir()` uses the
+/// Windows API and ignores `HOME`/`USERPROFILE` overrides).
 pub fn registry_dir() -> Result<PathBuf> {
-    let home = match std::env::var_os("FF_RDP_HOME") {
-        Some(h) => PathBuf::from(h),
+    let home = match crate::util::home_override() {
+        Some(h) => h,
         None => dirs::home_dir().context("could not determine home directory")?,
     };
     let dir = home.join(".ff-rdp");

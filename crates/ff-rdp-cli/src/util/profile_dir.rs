@@ -36,30 +36,57 @@ use std::time::{Duration, SystemTime};
 
 use crate::error::AppError;
 
+/// Pure resolution behind [`secure_profile_root`]: turn an override and the
+/// two `dirs` candidates into the profile-root path, without touching the
+/// filesystem or the process environment.
+///
+/// Split out so both branches (override set / unset) are unit-testable
+/// without a Firefox, without `std::env::set_var` — which is process-global
+/// and visible to every other test thread — and without writing into the
+/// developer's real state directory.
+fn resolve_profile_root(
+    home_override: Option<PathBuf>,
+    state: Option<PathBuf>,
+    data_local: Option<PathBuf>,
+) -> Result<PathBuf, AppError> {
+    let base = home_override.or(state).or(data_local).ok_or_else(|| {
+        AppError::User(
+            "no per-user state or data directory available — cannot create \
+             a secure Firefox profile root.  Set $FF_RDP_HOME, $XDG_STATE_HOME or $HOME."
+                .to_owned(),
+        )
+    })?;
+    Ok(base.join("ff-rdp").join("profiles"))
+}
+
 /// Resolve (and create, mode 0700 on Unix) the per-user root directory under
 /// which ff-rdp drops ephemeral Firefox profile sub-directories.
 ///
 /// Resolution order:
-/// 1. `dirs::state_dir()` — `$XDG_STATE_HOME` on Linux, falls back to
+/// 1. `$FF_RDP_HOME` ([`crate::util::HOME_OVERRIDE_ENV`]) — an explicit base directory,
+///    the same override `registry_dir()` and `record_base_dir()` honour, and
+///    documented in the same terms: set it and *all* of ff-rdp's per-user
+///    state follows, rather than only two thirds of it.
+/// 2. `dirs::state_dir()` — `$XDG_STATE_HOME` on Linux, falls back to
 ///    `~/.local/state` when unset.  `None` on macOS / Windows.
-/// 2. `dirs::data_local_dir()` — `~/Library/Application Support` on macOS,
+/// 3. `dirs::data_local_dir()` — `~/Library/Application Support` on macOS,
 ///    `%LOCALAPPDATA%` on Windows.
 ///
-/// The chosen base is joined with `ff-rdp/profiles`.  The full path is
-/// created with `create_dir_all`; on Unix, the leaf is then chmod'd to
-/// `0o700` (the recursive parents are left alone — they already exist with
-/// user-default modes).
+/// The chosen base is joined with `ff-rdp/profiles` — the suffix is the same
+/// in every branch, so an overridden tree has exactly the layout of a real
+/// one, and never collides with the `.ff-rdp/` registry directory the two
+/// sibling resolvers place under the same override.  The full path is
+/// created with `create_dir_all`; on Unix, the leaf and the `<base>/ff-rdp`
+/// intermediate (both ff-rdp's own, unlike `<base>` itself) are then
+/// chmod'd to `0o700` — the intermediate matters since iter-188, when
+/// `<base>` stopped being guaranteed a private per-user path and became
+/// whatever `$FF_RDP_HOME` names.
 pub fn secure_profile_root() -> Result<PathBuf, AppError> {
-    let base = dirs::state_dir()
-        .or_else(dirs::data_local_dir)
-        .ok_or_else(|| {
-            AppError::User(
-                "no per-user state or data directory available — cannot create \
-                 a secure Firefox profile root.  Set $XDG_STATE_HOME or $HOME."
-                    .to_owned(),
-            )
-        })?;
-    let root = base.join("ff-rdp").join("profiles");
+    let root = resolve_profile_root(
+        crate::util::home_override(),
+        dirs::state_dir(),
+        dirs::data_local_dir(),
+    )?;
 
     std::fs::create_dir_all(&root).map_err(|e| {
         AppError::User(format!(
@@ -72,12 +99,30 @@ pub fn secure_profile_root() -> Result<PathBuf, AppError> {
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o700);
-        std::fs::set_permissions(&root, perms).map_err(|e| {
+        std::fs::set_permissions(&root, perms.clone()).map_err(|e| {
             AppError::User(format!(
                 "failed to set mode 0o700 on profile root {}: {e}",
                 root.display()
             ))
         })?;
+        // Best-effort: also secure the intermediate `<base>/ff-rdp`
+        // directory, not only the `profiles` leaf. It is ff-rdp's own —
+        // created by the `create_dir_all` above, never shared with another
+        // application — but since iter-188 `<base>` may be an
+        // `$FF_RDP_HOME` an operator chose rather than a guaranteed-private
+        // per-user path, so it is no longer safe to assume it inherits a
+        // restrictive mode from its parent. This is defense in depth for
+        // the write side; `root_is_trustworthy` below covers the read side
+        // (refusing to trust a marker found in a directory that turned out
+        // writable by others anyway).
+        if let Some(parent) = root.parent()
+            && let Err(e) = std::fs::set_permissions(parent, perms)
+        {
+            tracing::debug!(
+                "secure_profile_root: could not set mode 0o700 on {}: {e}",
+                parent.display()
+            );
+        }
     }
 
     Ok(root)
@@ -453,16 +498,167 @@ fn read_owner_pid_marker(dir: &Path) -> Option<u32> {
 /// opposite of what the prune paths do with it), because "cannot confirm"
 /// must never mean "go ahead and kill".
 pub(crate) fn pid_is_ff_rdp_spawned(pid: u32) -> bool {
-    let Ok(root) = secure_profile_root() else {
-        return false;
+    ownership_scan_roots()
+        .iter()
+        .any(|root| pid_is_ff_rdp_spawned_under(root, pid))
+}
+
+/// Every root a profile ff-rdp created may be sitting under, for the
+/// **read-only** ownership check above (iter-188 Theme B).
+///
+/// Ownership deliberately spans both the `$FF_RDP_HOME`-overridden root *and*
+/// the default one, while creation and deletion stay scoped to whichever root
+/// the current invocation resolves. The asymmetry is the point:
+///
+/// - Scoping *writes* is what makes the override an isolation tool.
+/// - Scoping *ownership proof* the same way would make ff-rdp forget its own
+///   children across an override. That is not hypothetical: with the override
+///   honoured but ownership narrowed to one root, `launch --replace` under an
+///   isolated `$FF_RDP_HOME` stopped recognising the Firefox it had launched
+///   under the default home, so the port-owner branch in `daemon/client.rs`
+///   left `firefox_pid` as `None`, escalated against the proxy daemon instead,
+///   and failed with "port still listening after 8 s"
+///   (`live_153_replace_double_envelope`, 3/3 during iteration 188).
+///
+/// Widening the *read* does not, by itself, authorise a kill ff-rdp was not
+/// already entitled to make: both roots only ever contain profiles ff-rdp
+/// itself created, each still gated on a live owner-PID marker plus a
+/// matching start token. The iter-110 guarantee — never signal a process we
+/// did not spawn — depends on that assumption holding, though, and an
+/// override root is not guaranteed to hold it the way the default root is:
+/// the default root is always `chmod`'d `0o700` by
+/// [`secure_profile_root`] before ff-rdp writes anything there, but
+/// `$FF_RDP_HOME` names a directory an operator chose, which could be
+/// writable by another account on a shared machine. `root_is_trustworthy`
+/// (used by [`pid_is_ff_rdp_spawned_under`]) is the other half of this: it
+/// refuses to read an ownership marker from a root that turns out to be
+/// group- or world-writable, so a planted marker in a loosely-permissioned
+/// override cannot authorise a kill either.
+fn ownership_scan_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut push = |root: Result<PathBuf, AppError>| {
+        if let Ok(root) = root
+            && !roots.contains(&root)
+        {
+            roots.push(root);
+        }
     };
-    pid_is_ff_rdp_spawned_under(&root, pid)
+    // The configured root first — under an override it is the one that
+    // actually holds this invocation's own profiles.
+    push(resolve_profile_root(
+        crate::util::home_override(),
+        dirs::state_dir(),
+        dirs::data_local_dir(),
+    ));
+    // Then the default one, which an override hides.
+    push(resolve_profile_root(
+        None,
+        dirs::state_dir(),
+        dirs::data_local_dir(),
+    ));
+    roots
+}
+
+/// Whether `root` is safe to trust as a source of ownership proof.
+///
+/// [`pid_is_ff_rdp_spawned_under`] reads an owner-PID marker from files
+/// under `root` and, if one matches `pid`, authorises a kill. Under the
+/// default (non-overridden) root that trust is earned by construction:
+/// [`secure_profile_root`] always `chmod`s it `0o700` before ff-rdp writes
+/// into it. Since iter-188 Theme B, `ownership_scan_roots` also scans an
+/// `$FF_RDP_HOME`-overridden root, which names a directory an operator
+/// chose and ff-rdp does not fully control — if it turned out
+/// group-or-world-writable, another same-machine account could plant a
+/// marker file naming an arbitrary PID and get ff-rdp to authorise a kill
+/// against it. Refusing to trust a root that this process does not own, or
+/// that others can write, closes that direct planting attack.
+///
+/// **This does not close a substitution attack one level up.** If
+/// `$FF_RDP_HOME` or `$FF_RDP_HOME/ff-rdp` is itself writable by another
+/// account, that account can `rename()` the vetted leaf away and replace it
+/// with a directory it owns at a mode that passes both checks below —
+/// `root_is_trustworthy` only ever inspects the leaf it is handed, it does
+/// not walk the chain up to the override base. Vetting the whole chain is
+/// deliberately out of scope here: **`$FF_RDP_HOME` must itself be a
+/// directory only the invoking user can write**, the same precondition the
+/// README's `FF_RDP_HOME` paragraph states for the operator choosing a
+/// value for it. iter-110's "never signal a process we did not spawn"
+/// guarantee holds given that precondition, not unconditionally.
+///
+/// Checks **ownership**, not only mode bits: a root at mode `0o755` owned by
+/// a *different* account passes a bits-only test (nothing in `0o022`) but is
+/// exactly the case that matters — the other account owns the directory and
+/// can plant a marker in it whenever it likes, and `0o755` is world-readable
+/// so ff-rdp would honour that marker. A root this process does not own is
+/// refused regardless of its mode, the same check `git`'s `safe.directory`
+/// applies for the analogous threat.
+///
+/// Fails **closed** on Unix: unreadable metadata, or a root this process
+/// does not own, means "cannot vouch for this root", so it is refused, not
+/// trusted by default. `ENOENT` is not a threat, though — the default root
+/// simply does not exist yet on a fresh checkout, in CI, or under any
+/// `$FF_RDP_HOME`-isolated live test (the 188 work added several) — so a
+/// missing root returns `false` without the "writable by group or other"
+/// warning below, which would otherwise fire on every one of those, every
+/// time, about a directory that was never created.
+///
+/// Windows is always `true` — `%LOCALAPPDATA%`-derived paths already deny
+/// Everyone by inheritance (see this module's top-level doc comment), and an
+/// override still resolves under the same per-user ACL model rather than an
+/// arbitrary Unix-style mode/owner pair.
+// The crate default is `unsafe_code = "deny"` (see `Cargo.toml`'s `[lints]`
+// comment); `libc::geteuid()` is real, audited FFI, so the allowance is
+// scoped to this one function rather than the module.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn root_is_trustworthy(root: &Path) -> Result<bool, std::io::ErrorKind> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::PermissionsExt;
+    match std::fs::metadata(root) {
+        Ok(meta) => {
+            // SAFETY: `geteuid()` takes no arguments, performs no pointer
+            // dereferences, and cannot fail — it is documented to always
+            // succeed.
+            let euid = unsafe { libc::geteuid() };
+            Ok(meta.uid() == euid && meta.permissions().mode() & 0o022 == 0)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(std::io::ErrorKind::NotFound),
+        Err(_) => Ok(false),
+    }
+}
+
+#[cfg(not(unix))]
+fn root_is_trustworthy(_root: &Path) -> Result<bool, std::io::ErrorKind> {
+    Ok(true)
 }
 
 /// Root-parameterised core of [`pid_is_ff_rdp_spawned`] so the ownership gate
 /// can be unit-tested against a temp profile root without touching the real
 /// per-user directory.
 fn pid_is_ff_rdp_spawned_under(root: &Path, pid: u32) -> bool {
+    match root_is_trustworthy(root) {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::warn!(
+                "pid_is_ff_rdp_spawned: refusing to trust {} for ownership proof — it is not \
+                 owned by this process's user, or is writable by group or other, either of \
+                 which would let another account plant an owner-PID marker",
+                root.display()
+            );
+            return false;
+        }
+        // Every `Err` returns the same `false` — there is nothing to scan
+        // either way. The distinction between "root is missing" and "root
+        // exists but its metadata could not be read" is real at the type
+        // level (`root_is_trustworthy`'s return type, and
+        // `root_is_trustworthy_distinguishes_missing_from_untrustworthy`
+        // below), it just does not change this function's behavior: neither
+        // case logs — the warning above only fires for `Ok(false)`, an
+        // *actual* untrustworthy root — so a missing default root under an
+        // isolated `$FF_RDP_HOME` (every live test the 188 work added) stays
+        // silent rather than logging a false "writable by group or other".
+        Err(_) => return false,
+    }
     let Ok(entries) = std::fs::read_dir(root) else {
         return false;
     };
@@ -955,6 +1151,97 @@ pub fn prune_orphan_profiles(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::HOME_OVERRIDE_ENV;
+
+    // -----------------------------------------------------------------
+    // iter-188 Theme B — `$FF_RDP_HOME` resolution
+    // -----------------------------------------------------------------
+
+    /// AC: `FF_RDP_HOME` resolves the profiles root — the override wins over
+    /// both `dirs` candidates, and keeps the `ff-rdp/profiles` suffix so an
+    /// isolated tree has the same shape as the real one.
+    #[test]
+    fn resolve_profile_root_prefers_the_home_override() {
+        let root = resolve_profile_root(
+            Some(PathBuf::from("/isolated/base")),
+            Some(PathBuf::from("/xdg/state")),
+            Some(PathBuf::from("/local/share")),
+        )
+        .expect("override branch must resolve");
+        assert_eq!(root, PathBuf::from("/isolated/base/ff-rdp/profiles"));
+    }
+
+    /// AC: with no override, resolution is exactly what it was before
+    /// iter-188 — `state_dir()` first, `data_local_dir()` as the fallback.
+    #[test]
+    fn resolve_profile_root_without_override_is_unchanged() {
+        let state_first = resolve_profile_root(
+            None,
+            Some(PathBuf::from("/xdg/state")),
+            Some(PathBuf::from("/local/share")),
+        )
+        .expect("state branch must resolve");
+        assert_eq!(state_first, PathBuf::from("/xdg/state/ff-rdp/profiles"));
+
+        let data_local_fallback =
+            resolve_profile_root(None, None, Some(PathBuf::from("/local/share")))
+                .expect("data_local branch must resolve");
+        assert_eq!(
+            data_local_fallback,
+            PathBuf::from("/local/share/ff-rdp/profiles")
+        );
+    }
+
+    /// With nothing at all to resolve against, the error names every knob a
+    /// user can turn — including the new one.
+    #[test]
+    fn resolve_profile_root_error_names_the_override() {
+        let err = resolve_profile_root(None, None, None).expect_err("no base must be an error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(HOME_OVERRIDE_ENV),
+            "error must name {HOME_OVERRIDE_ENV}, got: {msg}"
+        );
+    }
+
+    /// The ownership scan spans both roots under an override, and collapses
+    /// to one when there is none — the read-side asymmetry that keeps
+    /// `launch --replace` able to recognise a Firefox it launched under the
+    /// default home (iter-188; `live_153` regressed on exactly this).
+    #[test]
+    fn ownership_scan_roots_span_override_and_default() {
+        let roots = ownership_scan_roots();
+        assert!(
+            !roots.is_empty(),
+            "the ownership scan must have at least one root to look in"
+        );
+        let default = resolve_profile_root(None, dirs::state_dir(), dirs::data_local_dir())
+            .expect("the default root must resolve on a machine with a home directory");
+        assert!(
+            roots.contains(&default),
+            "the default root {} must always be scanned, override or not; got {roots:?}",
+            default.display()
+        );
+        let mut deduped = roots.clone();
+        deduped.dedup();
+        assert_eq!(deduped, roots, "the scan must not repeat a root");
+    }
+
+    /// The override is a *directory* substitution, not a home-directory
+    /// substitution: it does not acquire the `.ff-rdp/` component the
+    /// registry and launch-record resolvers add, so the two trees stay
+    /// distinguishable under one `$FF_RDP_HOME`.
+    #[test]
+    fn resolve_profile_root_does_not_collide_with_the_registry_dir() {
+        let home = PathBuf::from("/isolated/base");
+        let profiles = resolve_profile_root(Some(home.clone()), None, None)
+            .expect("override branch must resolve");
+        assert!(
+            !profiles.starts_with(home.join(".ff-rdp")),
+            "profiles root {} must not sit inside the registry dir",
+            profiles.display()
+        );
+    }
 
     /// AC: `secure_profile_root_mode_0700` — the resolved directory exists,
     /// sits under `dirs::state_dir()` or `data_local_dir()`, and has mode
@@ -966,7 +1253,14 @@ mod tests {
 
         let root = secure_profile_root().expect("secure profile root must resolve");
         assert!(root.is_dir(), "expected a directory at {}", root.display());
-        let expected_base = dirs::state_dir().or_else(dirs::data_local_dir).unwrap();
+        // iter-188 Theme B: `$FF_RDP_HOME` now wins over both `dirs`
+        // candidates, so the expected base has to follow the same order the
+        // resolver uses — otherwise this test would fail for anyone who
+        // exports the override in their own shell.
+        let expected_base = crate::util::home_override()
+            .or_else(dirs::state_dir)
+            .or_else(dirs::data_local_dir)
+            .unwrap();
         assert!(
             root.starts_with(&expected_base),
             "profile root {} must be under {}",
@@ -988,7 +1282,10 @@ mod tests {
     fn secure_profile_root_windows_per_user() {
         let root = secure_profile_root().expect("secure profile root must resolve");
         assert!(root.is_dir(), "expected a directory at {}", root.display());
-        let local_appdata = dirs::data_local_dir().expect("LOCALAPPDATA must be defined");
+        // iter-188 Theme B: `$FF_RDP_HOME` wins over `%LOCALAPPDATA%`.
+        let local_appdata = crate::util::home_override()
+            .or_else(dirs::data_local_dir)
+            .expect("LOCALAPPDATA must be defined");
         assert!(
             root.starts_with(&local_appdata),
             "profile root {} must be under {}",
@@ -1247,6 +1544,131 @@ mod tests {
             "a foreign PID with no marker naming it must NEVER be authorised — \
              this is the guard that spared James's interactive Firefox"
         );
+    }
+
+    /// AC: `root_is_trustworthy` accepts a private (0700), self-owned root
+    /// and refuses one that is group- or world-writable — the read-side half
+    /// of iter-188's `$FF_RDP_HOME` hardening, since an override root is not
+    /// guaranteed private the way the default `secure_profile_root` output
+    /// is.
+    #[test]
+    #[cfg(unix)]
+    fn root_is_trustworthy_rejects_group_and_world_writable_roots() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("chmod 0700");
+        assert_eq!(
+            root_is_trustworthy(root.path()),
+            Ok(true),
+            "a private, self-owned 0700 root must be trusted"
+        );
+
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o770))
+            .expect("chmod 0770");
+        assert_eq!(
+            root_is_trustworthy(root.path()),
+            Ok(false),
+            "a group-writable root must not be trusted"
+        );
+
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o707))
+            .expect("chmod 0707");
+        assert_eq!(
+            root_is_trustworthy(root.path()),
+            Ok(false),
+            "a world-writable root must not be trusted"
+        );
+
+        // Restore a mode `TempDir`'s own cleanup can rely on.
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("restore 0700");
+    }
+
+    /// AC: `root_is_trustworthy` compares ownership, not only mode bits — a
+    /// bits-only check would accept an other-account-owned `0o755` root
+    /// (`0o755 & 0o022 == 0`), but that account owns the directory and can
+    /// plant a marker in it whenever it likes. A same-uid test process
+    /// cannot fabricate a foreign-owned directory to exercise the *refusal*
+    /// branch directly (that needs root privilege to `chown` away from the
+    /// test's own euid), so this pins the precondition the refusal depends
+    /// on: a normally-created directory is owned by this process, and
+    /// `root_is_trustworthy` reports it trusted on that basis together with
+    /// its mode — i.e. the ownership comparison is exercised on its
+    /// true-branch, and the ownership *field* the ownership comparison
+    /// reads is confirmed to be what this process expects.
+    #[test]
+    #[cfg(unix)]
+    #[allow(unsafe_code)]
+    fn root_is_trustworthy_checks_ownership_matches_euid() {
+        use std::os::unix::fs::MetadataExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let meta = std::fs::metadata(root.path()).expect("metadata");
+        // SAFETY: see `root_is_trustworthy`.
+        let euid = unsafe { libc::geteuid() };
+        assert_eq!(
+            meta.uid(),
+            euid,
+            "a freshly-created tempdir must be owned by this process"
+        );
+        assert_eq!(
+            root_is_trustworthy(root.path()),
+            Ok(true),
+            "a self-owned, private root must be trusted"
+        );
+    }
+
+    /// AC: `root_is_trustworthy` returns `Err(NotFound)` for a root that
+    /// simply does not exist yet — the common case under an isolated
+    /// `$FF_RDP_HOME` with no default root ever created — rather than the
+    /// generic `Ok(false)` a real permission/ownership refusal uses, so the
+    /// caller can skip the "writable by group or other" warning on a path
+    /// where nothing was ever untrustworthy, only absent.
+    #[test]
+    #[cfg(unix)]
+    fn root_is_trustworthy_distinguishes_missing_from_untrustworthy() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let missing = root.path().join("never-created");
+        assert_eq!(
+            root_is_trustworthy(&missing),
+            Err(std::io::ErrorKind::NotFound),
+            "a root that was never created must be reported as missing, not refused as untrustworthy"
+        );
+    }
+
+    /// AC: `pid_is_ff_rdp_spawned_under` refuses to authorise a kill on the
+    /// strength of a marker read from an untrustworthy (group/world-writable)
+    /// root, even when the marker itself names the live PID being checked —
+    /// otherwise another same-machine account could plant a marker under a
+    /// loosely-permissioned `$FF_RDP_HOME` and get ff-rdp to vouch for it.
+    #[test]
+    #[cfg(unix)]
+    fn unit_pid_is_ff_rdp_spawned_refuses_untrustworthy_root() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let live_pid = std::process::id();
+        let dir = seed_fake_profile(root.path(), &"c".repeat(16), Duration::from_secs(1));
+        write_owner_pid_marker(&dir, live_pid);
+
+        // Sanity: trustworthy by default, so the marker would otherwise pass.
+        assert!(
+            pid_is_ff_rdp_spawned_under(root.path(), live_pid),
+            "precondition: a private root with a valid marker must authorise"
+        );
+
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o777))
+            .expect("chmod 0777");
+        assert!(
+            !pid_is_ff_rdp_spawned_under(root.path(), live_pid),
+            "a world-writable root must never authorise a kill, even with a matching marker"
+        );
+
+        // Restore so `TempDir`'s own `Drop` can clean up.
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("restore 0700");
     }
 
     /// AC: `unit_pid_is_ff_rdp_spawned_ignores_marker_in_unmanaged_dir` — a

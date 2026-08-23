@@ -38,6 +38,42 @@
 //! `qualified.len()`, known before a single `cargo test` process is spawned,
 //! and is `0` whenever the relevant env vars are unset.
 //!
+//! ## Concurrency (iter-188 Theme C)
+//!
+//! Phase 1 used to pass `--test-threads=1` unconditionally, so the sweep ran
+//! ~280 live tests one at a time and took 38 minutes. Iteration 188 measured
+//! where that time goes: a headless Firefox cold start costs 5.64 s ± 0.02,
+//! the tier performs ~200 of them, and only 8% of tests finish in under 6 s —
+//! i.e. roughly half the wall clock is browsers starting up, and the machine
+//! is idle for most of it.
+//!
+//! Phase 1 now runs [`Args::jobs`] tests concurrently, with two deliberate
+//! exceptions:
+//!
+//! - **Targets whose tests need the port-6000 Firefox stay serial.** They all
+//!   drive one browser somebody else started; running them concurrently would
+//!   interleave several RDP clients on a single connection, and iter-173's
+//!   "did the browser vanish mid-tier?" inference assumes one test at a time.
+//!   See [`jobs_for_target`].
+//! - **Phase 2 is unaffected**: it deliberately omits `--include-ignored` so
+//!   libtest reports those tests `ignored` without running them, and a
+//!   thread count for tests that never execute would be noise.
+//!
+//! This drives libtest's own `--test-threads` rather than shelling out to
+//! `cargo nextest`. nextest would additionally give process-per-test
+//! isolation, per-test timings and per-test timeouts — all real — but it is a
+//! second test runner with a different failure-output format, and every one of
+//! this module's accounting guarantees ([`classify_failures`],
+//! [`failure_blocks`], the `executed`/`skipped`/`preexisting`/`vanished`/
+//! `launch_timeout` tiers) is written against libtest's. Re-deriving them
+//! against a second format is exactly the kind of change that makes a gate lie
+//! about what passed, which is the failure class this module exists to
+//! prevent. libtest's in-process threads are also *not* free of hazards: see
+//! `kb/iterations/iteration-196-frame-cap-lock-has-no-readers.md`. The live
+//! tier is safe for them because it spawns Firefox as a child process per test
+//! and the harness deliberately never mutates process-global env
+//! (`tests/common/mod.rs`, `kill_wait_timeout_from` / `parse_launch_timeout`).
+//!
 //! `FF_RDP_LIVE_TESTS_RECORD`-driven fixture recording
 //! (`ff-rdp-core/tests/live_record_fixtures.rs`) is out of scope: it has its
 //! own documented one-off workflow and a third env var this classifier does
@@ -64,6 +100,63 @@ pub struct Args {
     /// without invoking `cargo test`.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// How many live tests phase 1 runs concurrently (libtest
+    /// `--test-threads`), for targets that launch their own Firefox.
+    ///
+    /// Defaults to the measured knee of 6, capped by the machine's own
+    /// parallelism (see `default_jobs`). Pass `--jobs 1` to reproduce the
+    /// pre-188 serial sweep.
+    ///
+    /// An explicit `--jobs` is **not** clamped to [`MAX_SWEEP_JOBS`] — that
+    /// cap only shapes the *default*. Passing `--jobs 8` or higher is a
+    /// deliberate escape hatch, not a recommendation: iteration 188 measured
+    /// 8 workers manufacturing four contention-only failures on a 10-core
+    /// machine that do not occur at 6 (see [`MAX_SWEEP_JOBS`]'s doc), so a
+    /// higher value trades the gate's "does not lie about what passed"
+    /// property for wall clock. Only reach for it with reason to believe the
+    /// box underneath is meaningfully bigger than the one that set the cap.
+    #[arg(long, default_value_t = default_jobs())]
+    pub jobs: usize,
+}
+
+/// Concurrency ceiling for phase 1 (iter-188 Theme C).
+///
+/// Chosen from repeated whole-tier runs on a 10-core / 32 GB machine, not
+/// from a single one: at 8 workers four extra tests fail
+/// (`live_emulate_color_scheme_dark`, `live_137_consent_accept_via_daemon`,
+/// `live_138_back_forward_committed_url_is_top_frame`,
+/// `live_runner_page_map_resolution`) purely from contention. A gate whose
+/// job is to not lie about what passed cannot be allowed to manufacture reds,
+/// so the extra ~15% of wall clock is refused.
+pub const MAX_SWEEP_JOBS: usize = 6;
+
+/// Default phase-1 concurrency: [`MAX_SWEEP_JOBS`], but never more than the
+/// machine reports it can run in parallel — a 2-core CI box oversubscribed 3×
+/// with Firefox processes is how launch timeouts get manufactured.
+pub fn default_jobs() -> usize {
+    std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        // `unwrap_or(1)` already floors this, so `min` alone is the whole
+        // clamp — spelling it as `clamp(1, ..)` trips `clippy::manual_clamp`.
+        .unwrap_or(1)
+        .min(MAX_SWEEP_JOBS)
+}
+
+/// Phase-1 concurrency for one target.
+///
+/// A target whose tests connect to the Firefox on [`PREEXISTING_PORT`] runs
+/// serially no matter what `--jobs` says: those tests share one browser they
+/// did not start, so concurrency would have several of them issuing RDP
+/// commands over one connection, and the vanished-browser inference
+/// ([`repartition_for_probe`], [`classify_failures`]) is written for a tier
+/// that runs one test at a time.
+pub fn jobs_for_target(target_needs_preexisting: bool, requested: usize) -> usize {
+    if target_needs_preexisting {
+        1
+    } else {
+        requested.max(1)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -678,13 +771,18 @@ fn failure_block_header(line: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// Build the `cargo test -p <package> --test <test_name> -- [--include-ignored
-/// --test-threads=1] --exact <names…>` command for one phase, or `None` when
-/// `names` is empty (nothing to run for this phase).
+/// --test-threads=<jobs>] --exact <names…>` command for one phase, or `None`
+/// when `names` is empty (nothing to run for this phase).
+///
+/// `jobs` is only emitted for the real run (`include_ignored`): phase 2's
+/// tests are selected precisely so libtest reports them `ignored` without
+/// executing, and a thread count there would describe nothing.
 pub fn phase_command(
     package: &str,
     test_name: &str,
     names: &[String],
     include_ignored: bool,
+    jobs: usize,
 ) -> Option<Command> {
     if names.is_empty() {
         return None;
@@ -694,7 +792,8 @@ pub fn phase_command(
     cmd.args(["-p", package, "--test", test_name]);
     cmd.arg("--");
     if include_ignored {
-        cmd.args(["--include-ignored", "--test-threads=1"]);
+        cmd.arg("--include-ignored");
+        cmd.arg(format!("--test-threads={}", jobs.max(1)));
     }
     cmd.arg("--exact");
     cmd.args(names);
@@ -817,9 +916,14 @@ pub fn run(args: Args) -> Result<()> {
         totals.vanished += vanished_before_tier.len();
         let mut executed = summary.executed;
 
+        // Computed once so the number this prints and the number the real
+        // run below actually passes to libtest cannot drift apart.
+        let jobs = jobs_for_target(needs_preexisting, args.jobs);
+
         eprintln!(
-            "live-sweep: -p {} --test {}: {} qualified (will run for real), {} will report \
-             `ignored` (env gate), {} will report `ignored` (no Firefox on {PREEXISTING_PORT})",
+            "live-sweep: -p {} --test {}: {} qualified (will run for real at \
+             --test-threads={jobs}), {} will report `ignored` (env gate), {} will report \
+             `ignored` (no Firefox on {PREEXISTING_PORT})",
             target.package,
             target.test_name,
             summary.executed,
@@ -832,11 +936,15 @@ pub fn run(args: Args) -> Result<()> {
             continue;
         }
 
-        if let Some(mut cmd) =
-            phase_command(&target.package, &target.test_name, &part.qualified, true)
-        {
+        if let Some(mut cmd) = phase_command(
+            &target.package,
+            &target.test_name,
+            &part.qualified,
+            true,
+            jobs,
+        ) {
             let what = format!(
-                "`cargo test -p {} --test {}` (phase 1: real run)",
+                "`cargo test -p {} --test {}` (phase 1: real run, --test-threads={jobs})",
                 target.package, target.test_name
             );
             let outcome = run_phase(&mut cmd, &what)?;
@@ -903,6 +1011,7 @@ pub fn run(args: Args) -> Result<()> {
             &target.test_name,
             &part.not_running(),
             false,
+            1,
         ) {
             let what = format!(
                 "`cargo test -p {} --test {}` (phase 2: report ignored)",
@@ -1508,19 +1617,22 @@ failures:
     // phase_command
     // -----------------------------------------------------------------------
 
+    fn arg_strings(cmd: &Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
     #[test]
     fn phase_command_none_when_names_empty() {
-        assert!(phase_command("ff-rdp-cli", "live", &[], true).is_none());
-        assert!(phase_command("ff-rdp-cli", "live", &[], false).is_none());
+        assert!(phase_command("ff-rdp-cli", "live", &[], true, 6).is_none());
+        assert!(phase_command("ff-rdp-cli", "live", &[], false, 1).is_none());
     }
 
     #[test]
     fn phase_command_omits_include_ignored_when_false() {
-        let cmd = phase_command("ff-rdp-cli", "live", &["a::b".to_owned()], false).unwrap();
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
+        let cmd = phase_command("ff-rdp-cli", "live", &["a::b".to_owned()], false, 1).unwrap();
+        let args = arg_strings(&cmd);
         assert!(!args.iter().any(|a| a == "--include-ignored"));
         assert!(args.iter().any(|a| a == "--exact"));
         assert!(args.iter().any(|a| a == "a::b"));
@@ -1528,12 +1640,86 @@ failures:
 
     #[test]
     fn phase_command_includes_include_ignored_when_true() {
-        let cmd = phase_command("ff-rdp-cli", "live", &["a::b".to_owned()], true).unwrap();
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
+        let cmd = phase_command("ff-rdp-cli", "live", &["a::b".to_owned()], true, 1).unwrap();
+        let args = arg_strings(&cmd);
         assert!(args.iter().any(|a| a == "--include-ignored"));
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-188 Theme C — concurrency
+    // -----------------------------------------------------------------------
+
+    /// The real run carries the requested thread count, so the sweep is no
+    /// longer pinned to one test at a time.
+    #[test]
+    fn test_188_phase_one_carries_the_requested_thread_count() {
+        let cmd = phase_command("ff-rdp-cli", "live", &["a::b".to_owned()], true, 6).unwrap();
+        let args = arg_strings(&cmd);
+        assert!(
+            args.iter().any(|a| a == "--test-threads=6"),
+            "phase 1 must pass the requested concurrency; got {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a == "--test-threads=1"),
+            "the pre-188 hard-coded serial flag must be gone; got {args:?}"
+        );
+    }
+
+    /// `--jobs 1` reproduces the pre-188 serial sweep exactly.
+    #[test]
+    fn test_188_jobs_one_reproduces_the_serial_sweep() {
+        let cmd = phase_command("ff-rdp-cli", "live", &["a::b".to_owned()], true, 1).unwrap();
+        assert!(arg_strings(&cmd).iter().any(|a| a == "--test-threads=1"));
+    }
+
+    /// Phase 2 never executes anything, so it must not carry a thread count
+    /// at all — a concurrency for tests that report `ignored` describes
+    /// nothing and would only invite the reader to believe they ran.
+    #[test]
+    fn test_188_phase_two_carries_no_thread_count() {
+        let cmd = phase_command("ff-rdp-cli", "live", &["a::b".to_owned()], false, 6).unwrap();
+        assert!(
+            !arg_strings(&cmd)
+                .iter()
+                .any(|a| a.starts_with("--test-threads")),
+            "phase 2 must not pass --test-threads"
+        );
+    }
+
+    /// A zero (or absent) job count can never disable libtest's own default
+    /// by emitting `--test-threads=0`, which libtest rejects.
+    #[test]
+    fn test_188_zero_jobs_is_clamped_to_one() {
+        let cmd = phase_command("ff-rdp-cli", "live", &["a::b".to_owned()], true, 0).unwrap();
+        assert!(arg_strings(&cmd).iter().any(|a| a == "--test-threads=1"));
+    }
+
+    /// Targets that depend on the port-6000 Firefox stay serial regardless of
+    /// `--jobs`: they share one browser they did not start.
+    #[test]
+    fn test_188_preexisting_targets_stay_serial() {
+        assert_eq!(jobs_for_target(true, 6), 1);
+        assert_eq!(jobs_for_target(true, 1), 1);
+        assert_eq!(jobs_for_target(false, 6), 6);
+        assert_eq!(jobs_for_target(false, 0), 1);
+    }
+
+    /// The default never exceeds the measured knee, and never drops below 1
+    /// however odd the machine looks.
+    #[test]
+    fn test_188_default_jobs_is_capped_by_the_measured_knee() {
+        let jobs = default_jobs();
+        assert!(
+            (1..=MAX_SWEEP_JOBS).contains(&jobs),
+            "default concurrency {jobs} must be in 1..={MAX_SWEEP_JOBS}"
+        );
+        let cores = std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1);
+        assert!(
+            jobs <= cores,
+            "default concurrency {jobs} must not oversubscribe {cores} core(s)"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1583,6 +1769,7 @@ failures:
         let args = Args {
             workspace_root: tmp.path().to_path_buf(),
             dry_run: true,
+            jobs: 1,
         };
         let err = run(args).unwrap_err();
         assert!(
@@ -1641,6 +1828,7 @@ failures:
             "live",
             std::slice::from_ref(&target.full_name),
             false,
+            1,
         )
         .expect("phase command for a non-empty name list");
         cmd.env_remove("FF_RDP_LIVE_TESTS");
