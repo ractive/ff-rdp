@@ -128,9 +128,10 @@ pub const MAX_SWEEP_JOBS: usize = 6;
 pub fn default_jobs() -> usize {
     std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
+        // `unwrap_or(1)` already floors this, so `min` alone is the whole
+        // clamp — spelling it as `clamp(1, ..)` trips `clippy::manual_clamp`.
         .unwrap_or(1)
         .min(MAX_SWEEP_JOBS)
-        .max(1)
 }
 
 /// Phase-1 concurrency for one target.

@@ -274,15 +274,32 @@ fn live_owned_profile_dirs(root: &str) -> Vec<(std::path::PathBuf, u32, Option<S
 /// never kills anything itself; a live owner means the test environment
 /// isn't clean, which is worth failing loudly on rather than skipping quietly
 /// or reporting a bare `left: 1 / right: 0` at the very end.
+///
+/// iter-188 Theme C: the precondition asserts a *global* property — "no
+/// ff-rdp-managed Firefox is running anywhere under this root" — which cannot
+/// hold while sibling tests run their own browsers, so this was the one test
+/// measured as structurally incompatible with a parallel sweep (it failed at
+/// every concurrency, naming the concurrently-running tests that owned the
+/// live profiles). The fix is **isolation, not a weaker assertion**: every
+/// `ff-rdp` invocation below now runs under its own `$FF_RDP_HOME`, so the
+/// root it lists, seeds and prunes belongs to this test alone. The assertion
+/// is byte-for-byte the one iter-146 Theme B made loud, and it still fails
+/// hard — it simply now describes a root whose emptiness this test controls.
+/// Anything alive in *here* is a genuine leak from this test's own launches,
+/// which is a stronger signal than the old one, not a weaker one.
 #[test]
-#[ignore = "touches the real per-user profile root — set FF_RDP_LIVE_TESTS=1"]
+#[ignore = "prunes an isolated per-test profile root — set FF_RDP_LIVE_TESTS=1"]
 fn live_profiles_prune_removes_all_when_no_firefox_running() {
     if !live_tests_enabled() {
         return;
     }
 
+    let home = tempfile::tempdir()
+        .expect("live_profiles_prune_removes_all_when_no_firefox_running: tempdir for FF_RDP_HOME");
+
     let list_out = Command::new(ff_rdp_bin())
         .args(["profiles", "list"])
+        .env("FF_RDP_HOME", home.path())
         .output()
         .expect(
             "live_profiles_prune_removes_all_when_no_firefox_running: profiles list spawn failed",
@@ -338,6 +355,7 @@ fn live_profiles_prune_removes_all_when_no_firefox_running() {
 
     let prune_out = Command::new(ff_rdp_bin())
         .args(["profiles", "prune", "--all"])
+        .env("FF_RDP_HOME", home.path())
         .output()
         .expect(
             "live_profiles_prune_removes_all_when_no_firefox_running: profiles prune spawn failed",
