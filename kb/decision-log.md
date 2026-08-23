@@ -1431,3 +1431,65 @@ canary ever goes unnoticed for a week.
 
 **Applies to**: `.github/workflows/toolchain-watch.yml`, `CLAUDE.md`,
 `CONTRIBUTING.md`.
+
+## DEC-045: a recorded PID authorises a kill only with an identity token beside it; "cannot confirm" refuses
+
+**Decision**: Every artefact ff-rdp writes a PID into and later reads back *on
+a path that sends signals* also records that PID's OS start token
+(`process::process_start_token`, iter-171), and the reader compares the pair
+before signalling. Concretely: `DaemonRecord.start_token` in
+`launch-record.<port>.json`, and `DaemonInfo.start_token` in
+`daemon.<port>.json`. `process::pid_identity(pid, recorded)` grades the
+comparison `Confirmed` / `Recycled` / `Unknown`, and the two artefacts resolve
+`Unknown` **differently on purpose** (below).
+
+**The failure being answered**: the 2026-08-23 live sweep failed
+`live_110_replace_never_kills_foreign_firefox` on its refusal-message
+assertion. The cause was not the test. `stop_prior_instance_with`'s first
+branch matched on `rec.port == port && is_alive(rec.pid)` alone; the random
+port the test picked collided with one of ~4 600 leaked launch records, written
+seven days earlier, naming pid 65225 — which by then belonged to an unrelated
+desktop application started four days *after* the record. ff-rdp sent that PID
+`kill(-pid, SIGTERM)` then `kill(-pid, SIGKILL)` and reported "port still in
+use after stopping the prior instance (pid 65225)". Nothing died only because
+that particular PID was not a process-group leader, so both signals returned
+ESRCH and the pgid guard skipped the tree kill. Every process `launch` itself
+spawns *is* a group leader (`process_group(0)`), and on Windows
+`kill_process_group` degrades to a plain `kill_process(pid)` with no group
+semantics at all — so the survival was ancestry luck, not a protection.
+
+**Why an identity token and not a timestamp**: the record already carried
+`launched_at`, and "process start time is later than `launched_at` ⇒ recycled"
+is sound reasoning. It is not portable reasoning: macOS reports a start time in
+epoch seconds, Linux in clock ticks since boot, Windows as a `FILETIME`, and
+converting any of them to a comparable wall clock means reading boot time and
+tick rate per platform. iter-171 already had an opaque token that needs no
+conversion because it is only ever compared against itself, so the fix is to
+persist what already existed rather than to invent a second, weaker rule.
+
+**Why the launch record fails closed and the registry does not**: a launch
+record with no token (written by a pre-iter-191 binary) falls back to
+`pid_is_ff_rdp_spawned` — the iter-110 owner-PID-marker gate — and refuses when
+that finds nothing, because leaked launch records are abundant (iter-186
+measured 4 803 on one machine over ten days) and the branch reaches the full
+escalation ladder including the tree kill. `daemon.<port>.json` is deleted on
+every clean stop, is not subject to that leak, and its direct kill runs with
+`port: None` so it cannot reach the port-wait or tree-kill steps; refusing on
+an absent token there would strand a daemon started by an older binary in
+exchange for closing a much smaller hole. So the registry path refuses only on
+positive disproof (`Recycled`), the record path on anything short of positive
+proof.
+
+**What this deliberately does not do**: it does not stop the record *leak* —
+that is iter-186's, and shrinking the population never makes trusting one
+record safe; a single record left by a crash between `launch` and cleanup
+reproduces this against an otherwise empty directory. It also does not remove
+the offending record on refusal: a failed stop must not destroy its own
+ownership proof (iter-158 Theme B), and iter-186's sweep is what reclaims it.
+
+**Applies to**: `crates/ff-rdp-cli/src/daemon/process.rs`,
+`crates/ff-rdp-cli/src/daemon_record.rs`,
+`crates/ff-rdp-cli/src/daemon/registry.rs`,
+`crates/ff-rdp-cli/src/daemon/client.rs`,
+`crates/ff-rdp-cli/src/daemon/server.rs`,
+`crates/ff-rdp-cli/src/commands/launch.rs`.
