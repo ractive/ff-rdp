@@ -429,9 +429,16 @@ enum BraceKind {
 ///   dotted property access (`obj.try {`) for the same reason
 ///   [`slash_starts_regex`] excludes one.
 ///
-/// `=>` is intentionally *not* here: `x => {}` is a block body, but calling it
-/// one would make `/` after it a regex, and this scanner has no need to take
-/// that risk for a form nobody divides.
+/// - `=>` — an arrow function's body (iter-176 Theme B). `=>` is the only
+///   two-character token ending in `>` whose first character is `=`, and the
+///   `{` after one is always a block, never an object literal (`() => ({a:1})`
+///   needs the parentheses precisely because of that).
+/// - `class` / `class K` / `class K extends B` — a class body (iter-176 Theme
+///   C). A class *expression*'s body never reaches here: the scanner marks it
+///   at the `class` keyword and forces [`BraceKind::ObjectLiteral`], the same
+///   way it does for a function expression.
+/// - an identifier followed by `:` at statement position — a labelled block
+///   (iter-176 Theme C, [`label_precedes_block`]).
 fn brace_opens_block(
     chars: &[(usize, char)],
     prev_significant: Option<char>,
@@ -444,6 +451,13 @@ fn brace_opens_block(
     match prev {
         ';' | '{' | ')' => return true,
         '}' => return prev_brace == BraceKind::Block,
+        // iter-176 Theme B: `=>`. No whitespace is allowed inside the token,
+        // so the character immediately before the `>` decides it. `>=`, `>>`
+        // and `>>>` all end in a character that is not `>`, or are preceded by
+        // `>` rather than `=`, so none of them reaches this arm.
+        '>' => return prev_idx.is_some_and(|i| i > 0 && chars[i - 1].1 == '='),
+        // iter-176 Theme C: a labelled block, `outer: { … }`.
+        ':' => return label_precedes_block(chars, prev_idx, prev_brace),
         _ => {}
     }
     let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
@@ -461,7 +475,99 @@ fn brace_opens_block(
         return false;
     }
     let word: String = chars[start..=end].iter().map(|&(_, c)| c).collect();
-    KEYWORDS_BEFORE_BLOCK.contains(&word.as_str())
+    if KEYWORDS_BEFORE_BLOCK.contains(&word.as_str()) {
+        return true;
+    }
+    // iter-176 Theme C: an anonymous class body, `class { … }`.
+    if word == "class" {
+        return true;
+    }
+    // iter-176 Theme C: `class K {` and `class K extends B {` put an
+    // *identifier* before the `{`, so the keyword is one word further back.
+    // Both `class` and `extends` are reserved words, so an identifier
+    // preceded by either can only be a class name or a superclass — there is
+    // no object literal in that position.
+    let Some((prev_word_start, prev_word_end)) = word_before(chars, start) else {
+        return false;
+    };
+    if prev_word_start > 0 && chars[prev_word_start - 1].1 == '.' {
+        return false;
+    }
+    let prev_word: String = chars[prev_word_start..=prev_word_end]
+        .iter()
+        .map(|&(_, c)| c)
+        .collect();
+    matches!(prev_word.as_str(), "class" | "extends")
+}
+
+/// The `chars` range of the identifier-ish word ending immediately before
+/// `at` (skipping whitespace), or `None` if there is no such word.
+///
+/// Split out in iter-176: [`brace_opens_block`] and [`label_precedes_block`]
+/// both need to look one token further back than the character
+/// `top_level_statement_boundaries` hands them.
+fn word_before(chars: &[(usize, char)], at: usize) -> Option<(usize, usize)> {
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    let mut k = at;
+    while k > 0 && chars[k - 1].1.is_whitespace() {
+        k -= 1;
+    }
+    if k == 0 || !is_ident(chars[k - 1].1) {
+        return None;
+    }
+    let end = k - 1;
+    let mut start = end;
+    while start > 0 && is_ident(chars[start - 1].1) {
+        start -= 1;
+    }
+    Some((start, end))
+}
+
+/// Whether the `:` at `colon_idx` is a *label* terminator — so the `{` after
+/// it opens a labelled block, `outer: { break outer }` — rather than an object
+/// literal key or a ternary's `:` (iter-176 Theme C).
+///
+/// iter-170 left this position unjudged because `{a: 1}` "looks the same from
+/// the right", and read from the `:` alone it does. It stops looking the same
+/// one token further left: the rule here is that the label identifier must sit
+/// where a *statement* can start — nothing before it, a `;`, or a **block**'s
+/// `}` — which is a position no object-literal key and no ternary branch can
+/// occupy:
+///
+/// - `{a: {b:1}}`, `{a:1, b:{c:2}}` — the key is preceded by `{` or `,`.
+/// - `c ? x : {a:1}` — the `:`-preceding identifier is preceded by `?`.
+/// - `switch (x) { case 1: {…} }` — `1` is preceded by the word `case`.
+///   (`default: {…}` *is* accepted, and is genuinely a block.)
+///
+/// A leading digit is rejected so a numeric object key (`{1: {a:2}}`) can
+/// never be mistaken for a label even if it somehow reached a statement
+/// position.
+fn label_precedes_block(
+    chars: &[(usize, char)],
+    colon_idx: Option<usize>,
+    prev_brace: BraceKind,
+) -> bool {
+    let Some(colon) = colon_idx else {
+        return false;
+    };
+    let Some((start, _)) = word_before(chars, colon) else {
+        return false;
+    };
+    if chars[start].1.is_ascii_digit() {
+        return false;
+    }
+    let mut j = start;
+    while j > 0 && chars[j - 1].1.is_whitespace() {
+        j -= 1;
+    }
+    if j == 0 {
+        return true;
+    }
+    match chars[j - 1].1 {
+        ';' => true,
+        '}' => prev_brace == BraceKind::Block,
+        _ => false,
+    }
 }
 
 /// Review fix (post-iter-170): whether a `function` keyword whose immediately
@@ -776,13 +882,33 @@ fn push_boundary(boundaries: &mut Vec<usize>, at: usize) {
 /// still one statement beginning with `if`, and an `if` is not something the
 /// wrap can auto-return.
 ///
+/// iter-176 closed the three positions iter-170 left unjudged, after measuring
+/// that all three turn valid JavaScript into a SyntaxError (and, for a class
+/// declaration, into a silent `undefined`) on a live browser:
+/// [`brace_opens_block`] now commits on an arrow function's `{` body, a class
+/// body and a labelled block. See
+/// `kb/iterations/iteration-176-eval-scanner-brace-positions.md`.
+///
 /// Still not a JS tokenizer, and deliberately so (all code stays in Rust and
-/// this repo has no JS parser dependency). Known remaining gaps, all in the
-/// fail-safe direction (a missing boundary leaves the pre-170 answer):
-/// [`brace_opens_block`] does not commit on an arrow function's `{` body, a
-/// `class` body or a labelled block, so each is treated as an object literal
-/// — a `/` after one reads as division and no statement boundary follows it.
-/// Filed as `kb/iterations/iteration-171-eval-scanner-brace-positions.md`.
+/// this repo has no JS parser dependency). Known remaining gaps:
+///
+/// - An object literal, ternary branch or `case` label nested inside a
+///   non-block brace keeps the pre-170 answer, because
+///   [`label_precedes_block`] only commits at a statement position it can see
+///   from one token of lookback. Fail-safe: a missing boundary, never a
+///   spurious one.
+/// - `const g = () => {} /re/.test(s)` — with no line terminator, Firefox
+///   rejects this (an ArrowFunction is not a division operand and ASI needs a
+///   newline) but the scanner accepts it, because it reads the arrow body's
+///   `}` as self-terminating the way a block statement's is. A deliberate
+///   trade: the same rule is what makes the newline form — which *is* valid
+///   JavaScript — work. The divergence only ever accepts input Firefox would
+///   reject; it never changes the value of a valid script.
+/// - The stale-marker residual documented on
+///   [`function_keyword_is_declaration`] now also applies to a `class`
+///   keyword in expression position that is never followed by a `{` at the
+///   same depth. Unreached by any live or unit input, and in the safe
+///   direction.
 fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
     #[derive(Clone, Copy, PartialEq)]
     enum Str {
@@ -802,14 +928,17 @@ fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
     // `prev_significant` is `}`, so the last-closed brace is that `}`.
     let mut braces: Vec<BraceKind> = Vec::new();
     let mut prev_brace = BraceKind::Unknown;
-    // Review fix (post-iter-170): depths at which a `function` keyword was
-    // seen in *expression* position (`function_keyword_is_declaration`
-    // false). Consulted only at the `{` that follows — if that `{` is
-    // reached at the same depth, it is this function's body, and must not be
+    // Review fix (post-iter-170), extended to `class` in iter-176: depths at
+    // which a `function` or `class` keyword was seen in *expression* position
+    // (`function_keyword_is_declaration` / `brace_opens_block` false).
+    // Consulted only at the `{` that follows — if that `{` is reached at the
+    // same depth, it is this function's or class's body, and must not be
     // classified `Block` the way a declaration's body is (see
     // `function_keyword_is_declaration`'s doc comment for the regression this
-    // closes).
-    let mut expr_function_depths: Vec<i32> = Vec::new();
+    // closes; `const C = class {} / 2` is the class analogue, and unlike the
+    // arrow case it really is a valid division because a ClassExpression is a
+    // PrimaryExpression).
+    let mut expr_body_depths: Vec<i32> = Vec::new();
     let is_ident_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
     let chars: Vec<(usize, char)> = body.char_indices().collect();
     let n = chars.len();
@@ -930,7 +1059,24 @@ fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
                 prev_brace,
             )
         {
-            expr_function_depths.push(depth);
+            expr_body_depths.push(depth);
+        }
+
+        // iter-176 Theme C: the same treatment for a `class` keyword in
+        // expression position (`const C = class {}`, `f(class {})`), whose
+        // body's `}` — unlike a class *declaration*'s — does not end a
+        // statement and may legally be divided.
+        if state == Str::None
+            && c == 'c'
+            && (i == 0 || !is_ident_char(chars[i - 1].1))
+            && prev_significant != Some('.')
+            && chars
+                .get(i..i + 5)
+                .is_some_and(|w| w.iter().map(|&(_, ch)| ch).eq("class".chars()))
+            && chars.get(i + 5).is_none_or(|&(_, ch)| !is_ident_char(ch))
+            && !brace_opens_block(&chars, prev_significant, prev_significant_idx, prev_brace)
+        {
+            expr_body_depths.push(depth);
         }
 
         match c {
@@ -939,19 +1085,20 @@ fn top_level_statement_boundaries(body: &str) -> Vec<usize> {
             '`' => state = Str::Template,
             '(' | '[' => depth += 1,
             '{' => {
-                // Review fix (post-iter-170): a function *expression*'s body,
-                // reached at the same depth its `function` keyword was seen
-                // at. Force `ObjectLiteral` — the pre-170 safe answer — no
-                // matter what `brace_opens_block` would say from the `)`
-                // immediately before this `{`, which cannot by itself tell a
-                // declaration's parameter list from an expression's.
-                let is_expr_function_body = expr_function_depths.last() == Some(&depth);
-                if is_expr_function_body {
-                    expr_function_depths.pop();
+                // Review fix (post-iter-170), extended to `class` in
+                // iter-176: a function or class *expression*'s body, reached
+                // at the same depth its keyword was seen at. Force
+                // `ObjectLiteral` — the pre-170 safe answer — no matter what
+                // `brace_opens_block` would say from the `)` or identifier
+                // immediately before this `{`, neither of which can by itself
+                // tell a declaration from an expression.
+                let is_expr_body = expr_body_depths.last() == Some(&depth);
+                if is_expr_body {
+                    expr_body_depths.pop();
                 }
                 depth += 1;
                 braces.push(
-                    if !is_expr_function_body
+                    if !is_expr_body
                         && brace_opens_block(
                             &chars,
                             prev_significant,
